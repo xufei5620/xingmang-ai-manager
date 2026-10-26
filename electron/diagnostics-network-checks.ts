@@ -1,7 +1,8 @@
 // 一键检测里「网络与代理」那几项（#1070 第 9 步，从 diagnostics.ts 的 runDiagnostics 原样搬来）：星芒 AI 网络（向当前站点
 // 的公开状态接口发一次请求，「自动」先走的那条没查通就改查备用那条，顺带比一次系统时间）、安全证书（用跑工具的那个
-// Node.js 握手两次）、代理软件的全局接管模式（Clash Verge Rev）、电脑里的代理设置（环境变量和系统代理）。前两项挨着排在
-// 工具那几项后面，后两项排在磁盘与文件夹那几项后面，所以分成 buildNetworkChecks、buildProxyChecks 两段。
+// Node.js 握手两次）、代理软件的全局接管模式（Clash Verge Rev）、电脑里的代理设置（另外设的代理；系统设置里的代理归
+// diagnostics-proxy-software-check.ts 的「别的代理软件」）。前两项挨着排在工具那几项后面，后两项排在磁盘与文件夹
+// 那几项后面，所以分成 buildNetworkChecks、buildProxyChecks 两段。
 //
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
 import fs from 'node:fs'
@@ -32,7 +33,6 @@ import type {
 } from './diagnostics'
 import { errorChainText, relayLineNames, type DiagnosticsContext } from './diagnostics-context'
 import { pathForDisplay } from './diagnostics-redaction'
-import { isLoopbackDownloadProxy, parseChromiumProxyResult } from './download-proxy'
 import { isRecord } from './input-guards'
 import { classifyNetworkFailure, isJsonContentType, networkFailureCode, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailure } from './relay-line-fetch'
@@ -128,7 +128,9 @@ export async function windowsProxySettingsOutcome(
   readScopes: () => Promise<ProxyVariableScopes | null>,
 ): Promise<Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>> {
   const findings = await inspectProxyVariables(env, probe)
-  if (!findings.length) return { state: 'pass', summary: '电脑里没有设代理，工具直接联网' }
+  // 系统设置里的代理归「别的代理软件」那一项说（diagnostics-proxy-software-check.ts）：这里只管另外设的那几条，
+  // 和 Mac 上同一句，免得系统代理开着时两行说法打架。
+  if (!findings.length) return { state: 'pass', summary: '没有另外设过代理' }
   const closed = findings.filter((finding) => finding.reach === 'closed')
   const details = proxyFindingDetails(findings)
   if (closed.length) {
@@ -177,76 +179,6 @@ function otherProxySettingsOutcome(
     state: unique.length ? 'warn' : 'pass',
     summary: unique.length ? `电脑里另外设了 ${unique.length} 处代理，详情里能看到` : '没有另外设过代理',
     details: Object.fromEntries(unique.map((item, index) => [`variable${index + 1}`, `${item.name} (${item.source})`])),
-  }
-}
-
-/** 系统代理只是一句附加说明，读不出来就当没有，不拖慢整项检查。 */
-const appProxyResolveTimeoutMs = 3_000
-
-export type AppProxyRoute =
-  | { reach: 'open' | 'closed'; port: number }
-  | { reach: 'remote' }
-
-/**
- * 客户开着别的代理软件或 VPN 时，它通常改的是系统设置里的代理，而不是那几个环境
- * 变量；星芒的账号、余额请求跟着系统代理走，于是全部超时，可这一项此前只看环境
- * 变量，照样报「正常」（2026-10-01 客户 Mac 报障）。这里问 Chromium 这一个地址
- * 实际走哪条路，DIRECT 或认不出的写法都按没有代理处理，和以前一样。
- */
-export async function inspectAppProxyRoute(
-  resolve: (url: string) => Promise<string>,
-  url: string,
-  probe: LoopbackProbe,
-): Promise<AppProxyRoute | null> {
-  let timer: NodeJS.Timeout | undefined
-  const timeout = new Promise<null>((done) => {
-    timer = setTimeout(() => done(null), appProxyResolveTimeoutMs)
-    timer.unref()
-  })
-  try {
-    const resolved = await Promise.race([resolve(url).catch(() => null), timeout])
-    const endpoint = parseChromiumProxyResult(resolved)
-    if (!endpoint) return null
-    if (!isLoopbackDownloadProxy(endpoint)) return { reach: 'remote' }
-    const host = endpoint.host.replace(/^\[(.*)\]$/, '$1').toLowerCase()
-    const open = await probe({ host, port: endpoint.port }).catch(() => false)
-    return { reach: open ? 'open' : 'closed', port: endpoint.port }
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-/**
- * 把系统代理并进「电脑里的代理设置」这一项。只写本机端口或「别的机器」，不写代理
- * 地址：和环境变量那半边同一个口径，报告会被导出发给客服。
- */
-export function withAppProxyRoute(
-  outcome: Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>,
-  route: AppProxyRoute | null,
-  siteDirect = false,
-): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
-  if (!route) return outcome
-  // 代理开着、只是不转发星芒时，账号和 AI 对话已经自己改走直连：再叫客户退出代理软件
-  // 是白折腾，这半也不再标黄；另外设过代理的那半照旧（已知30）。代理没开的那种照旧说，
-  // 装工具这些还跟着系统代理走。
-  const bypassed = siteDirect && route.reach !== 'closed'
-  const sentence = bypassed
-    ? `电脑里开着代理（${route.reach === 'remote' ? '用的是别的机器上的代理' : `本机 ${route.port} 端口`}）。星芒经它连不上，账号和 AI 对话已经自动改成直接连接，不用关掉代理。`
-    : route.reach === 'remote'
-      ? '电脑里开着代理（用的是别的机器上的代理），星芒会跟着它走；连不上账号时先关掉这个代理再试。'
-      : route.reach === 'closed'
-        ? `电脑里开着代理（本机 ${route.port} 端口），但它现在没开，星芒会连不上账号。打开对应的代理软件，或者在系统设置里把代理关掉再试。`
-        : `电脑里开着代理（本机 ${route.port} 端口），星芒会跟着它走；连不上账号时先退出代理软件再试。`
-  const details = outcome.details ?? {}
-  const variablesFound = Object.keys(details).length > 0
-  return {
-    ...outcome,
-    state: outcome.state === 'pass' && !bypassed ? 'warn' : outcome.state,
-    summary: variablesFound ? `${sentence}另外，${outcome.summary}` : sentence,
-    details: {
-      ...details,
-      systemProxy: route.reach === 'remote' ? '别的机器' : `本机 ${route.port} 端口（${route.reach === 'open' ? '开着' : '没开'}）`,
-    },
   }
 }
 
@@ -676,16 +608,9 @@ export function buildNetworkChecks(context: DiagnosticsContext): CheckDefinition
 }
 
 export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[] {
-  const { dependencies, env, userHome, displayRoots, platform, relaySite } = context
+  const { dependencies, env, userHome, displayRoots, platform } = context
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
-  async function inspectAppProxyRouteUnlessAccelerating(): Promise<AppProxyRoute | null> {
-    const resolve = dependencies.resolveAppProxy
-    if (!resolve) return null
-    // 加速开着时系统代理就是星芒自己设的那个，不算「别的程序开着代理」。
-    if (await dependencies.inspectAccelerationActive?.().catch(() => false)) return null
-    return inspectAppProxyRoute(resolve, relaySite.accountBaseUrl ?? relayStatusProbeUrl(relaySite), dependencies.probeLoopbackProxy ?? probeLoopbackProxy)
-  }
 
   return [
     {
@@ -719,19 +644,14 @@ export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[]
     {
       code: 'PROXY_ENVIRONMENT',
       title: '电脑里的代理设置',
-      run: async (signal) => {
-        const [variables, route] = await Promise.all([
-          platform === 'win32'
-            ? windowsProxySettingsOutcome(
-              env,
-              dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
-              dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
-            )
-            : otherProxySettingsOutcome(await inspectProxy(signal)),
-          inspectAppProxyRouteUnlessAccelerating(),
-        ])
-        return withAppProxyRoute(variables, route, dependencies.siteDirectActive?.() ?? false)
-      },
+      // 系统设置里的代理（别的代理软件）是下一项（diagnostics-proxy-software-check.ts），这里只看另外设的。
+      run: async (signal) => platform === 'win32'
+        ? windowsProxySettingsOutcome(
+          env,
+          dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
+          dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
+        )
+        : otherProxySettingsOutcome(await inspectProxy(signal)),
     },
   ]
 }

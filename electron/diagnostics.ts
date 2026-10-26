@@ -23,16 +23,15 @@ import {
   clockSkewMs,
   clockSyncGuidance,
   describeRelayRouteChange,
-  inspectAppProxyRoute,
   parseClashTunConfig,
   reconcileCertificateTrustWithNetwork,
   relayNetworkPassSummary,
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   windowsProxySettingsOutcome,
-  withAppProxyRoute,
-  type AppProxyRoute,
 } from './diagnostics-network-checks'
+import { buildDnsChecks } from './diagnostics-dns-check'
+import { buildProxySoftwareChecks } from './diagnostics-proxy-software-check'
 import {
   buildStorageChecks,
   describeRelocationTarget,
@@ -54,6 +53,7 @@ import type { LinuxTerminalCandidate } from './linux-terminal'
 import type { NodeTlsProbeResult } from './certificate-trust-probe'
 import type { RelayRouteChange } from './relay-route-controller'
 import type { RelayEndpointId, RelaySite } from './relay-sites'
+import type { RouteStatus } from './route-status-file'
 import type { ReparseComponent } from './safe-local-data'
 import type { DocumentsWritability } from './documents-fallback'
 import type { StarterWorkspaceLocationContext } from './starter-workspace'
@@ -196,18 +196,24 @@ export interface DiagnosticsDependencies {
   /** 试连代理设置指向的本机端口；缺省 = 真的去连。 */
   probeLoopbackProxy?: LoopbackProbe
   /**
-   * 「电脑里的代理设置」一项另看星芒自己连账号服务走不走代理：宿主交给 Electron 的
-   * `session.resolveProxy`，答案就是账号请求（net.fetch）真正走的那条路，系统设置
-   * 里勾的 HTTP / HTTPS / SOCKS / 自动代理配置都已经算进去，不起任何外部命令。
-   * 缺省 = 不看（旧行为）。
+   * 「别的代理软件」一项问系统代理对星芒这个地址生不生效：宿主交给只跟随系统代理的那个会话的
+   * `resolveProxy`（network-routes.ts 的 resolveSystemProxy），系统设置里勾的 HTTP / HTTPS / SOCKS /
+   * 自动代理配置都已经算进去，不起任何外部命令。不问默认会话：星芒自己改了直连以后它答 DIRECT，
+   * 会把一个没在运行的代理说成没有。下面三样都给了才有这一项；缺省 = 没有这一项。
    */
-  resolveAppProxy?: (url: string) => Promise<string>
+  resolveSystemProxy?: (url: string) => Promise<string>
+  /** 「别的代理软件」：只经系统代理的会话发请求（network-routes.ts 的 systemProxyFetch）。 */
+  fetchThroughSystemProxy?: typeof globalThis.fetch
+  /** 「别的代理软件」：只直接连的会话发请求（network-routes.ts 的 siteDirectFetch）。 */
+  fetchDirect?: typeof globalThis.fetch
   /**
-   * 代理开着、只是不转发星芒时，连星芒的请求（账号、AI 对话）是不是已经改走直连会话
-   * （proxy-bypass.ts 的 siteDirect）。那时默认会话照旧跟着系统代理，resolveAppProxy 还是
-   * 答「走代理」，结论得照实说已经改了直连。缺省 = 没改（旧行为）。
+   * 「查网址的服务（DNS）」一项：用电脑自己的 DNS、公共 DNS 各查一个域名（diagnostics-dns-check.ts 的
+   * lookupWithSystemDns、lookupWithPublicDns）。两样都给了才有这一项；缺省 = 没有这一项，测试不会对外发查询。
    */
-  siteDirectActive?: () => boolean
+  lookupHost?: (host: string) => Promise<string[]>
+  lookupHostWithPublicDns?: (host: string) => Promise<string[]>
+  /** 上次读到的线路状态文件（不为检查专门去读）：星芒账号线路2 的地址对不对看它。缺省 = 没有。 */
+  routeStatus?: () => RouteStatus | null
   /**
    * 「安全证书」一项用电脑上的 Node.js 做一次 TLS 握手（certificate-trust-probe.ts）。
    * 缺省 = 真的起 `node -e`；测试用它造「公司证书」「Node 太旧」这些情况。
@@ -377,16 +383,13 @@ export {
   clockSkewMs,
   clockSyncGuidance,
   describeRelayRouteChange,
-  inspectAppProxyRoute,
   parseClashTunConfig,
   reconcileCertificateTrustWithNetwork,
   relayNetworkPassSummary,
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   windowsProxySettingsOutcome,
-  withAppProxyRoute,
 }
-export type { AppProxyRoute }
 
 // 「磁盘与文件夹」那几项搬进了 diagnostics-storage-checks.ts（#1070 第 9 步），这里照旧导出。
 export { describeRelocationTarget, documentsWritabilityOutcome, findRelocatedFolders }
@@ -485,8 +488,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     ...buildSystemChecks(context),
     ...buildToolChecks(context),
     ...buildNetworkChecks(context),
+    ...buildDnsChecks(context),
     ...buildStorageChecks(context),
     ...buildProxyChecks(context),
+    ...buildProxySoftwareChecks(context),
     ...buildOverrideChecks(context),
   ]
 

@@ -8282,6 +8282,36 @@ test('a guest or a check of another site gets no route fix on the cut-off networ
   } finally { await guest.close() }
 })
 
+// 检查页「查网址的服务（DNS）」「别的代理软件」：改 DNS、关代理都在系统设置里，行里直接给按钮，打开哪一页由主进程
+// 按 kind 定；系统没让打开时页头说去哪里找。DNS 只错一条、又固定用着错的那条时，另给「去处理」翻到线路那一行。
+test('the DNS and proxy rows open the system settings and the wrong fixed line goes to the route setting', async () => {
+  const page = await open()
+  try {
+    await stubHealthReport(page, [
+      { code: 'RELAY_DNS', title: '查网址的服务（DNS）', state: 'warn', summary: '你这台电脑用的 DNS 把星芒线路2的地址查错了，线路1是对的。',
+        details: { siteId: 'solov', line1: 'ok', line2: 'wrong', fix: 'open-dns-settings', reroute: 'auto' } },
+      { code: 'SYSTEM_PROXY_SOFTWARE', title: '别的代理软件', state: 'warn', summary: '系统设置里还开着代理（本机 7890 端口），可是那个代理软件没在运行。',
+        details: { systemProxy: 'dead', proxyPort: 7890, fix: 'open-proxy-settings' } },
+    ])
+    await page.getByTestId('nav-health').click()
+    const opened = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'openNetworkSettings').map((call) => call.args))
+    await expect(page.getByTestId('health-network-settings-RELAY_DNS')).toHaveText('打开网络设置')
+    await page.getByTestId('health-network-settings-RELAY_DNS').click()
+    await expect.poll(opened).toEqual([['dns']])
+    await expect(page.getByTestId('health-network-settings-SYSTEM_PROXY_SOFTWARE')).toHaveText('打开系统代理设置')
+    await page.getByTestId('health-network-settings-SYSTEM_PROXY_SOFTWARE').click()
+    await expect.poll(opened).toEqual([['dns'], ['proxy']])
+    // 代理那一行在软件里没有能处理它的地方：不给「去处理」。
+    await expect(page.getByTestId('health-fix-SYSTEM_PROXY_SOFTWARE')).toHaveCount(0)
+    await page.evaluate(() => { window.xingmang.openNetworkSettings = async () => false })
+    await page.getByTestId('health-network-settings-RELAY_DNS').click()
+    await expect(page.getByTestId('page-health')).toContainText('没能打开网络设置，请在系统设置里找「网络」。')
+    await page.getByTestId('health-fix-RELAY_DNS').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 顶部搜索能搜到设置里的每一行，靠的是每一行都带着注册表里的 id。这里把注册表和
 // 页面对一遍：这台电脑该有的行（含批09 并进来的游戏加速、工具配置备份、版本卡三张卡）一行不少、
 // 次序一样，不该有的（Windows 上 Mac 才有的那行「卸载星芒」、不支持自动更新时的「自动下载更新」）不出现。
