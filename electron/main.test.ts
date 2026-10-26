@@ -177,7 +177,13 @@ describe('main process quit cleanup', () => {
     expect(statements).toEqual({
       'acceleration-power': ["powerMonitor.off('suspend', onSuspend)", "powerMonitor.off('resume', onResume)"],
       'cli-hook-events': ['cliHookEvents.dispose()'],
-      'keep-awake': ['cliKeepAwake.dispose()', 'unsubscribeInstallKeepAwakeQueue()', 'unsubscribeInstallKeepAwakeUpdate()', 'installKeepAwake.dispose()'],
+      'keep-awake': [
+        'cliKeepAwake.dispose()',
+        'unsubscribeInstallKeepAwakeQueue()',
+        'unsubscribeInstallKeepAwakeUpdate()',
+        'installKeepAwake.dispose()',
+        'codexRemoteKeepAwake.dispose()',
+      ],
       routes: [
         'unsubscribeRelayRoute()',
         'unsubscribeToolRoutes()',
