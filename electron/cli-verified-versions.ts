@@ -65,11 +65,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.302',
-      verifiedAt: '2026-10-17',
+      version: '2.1.310',
+      verifiedAt: '2026-10-26',
       verifiedSites: [],
-      note: '当前 npm latest(2.1.297、2.1.298 没发过);2.1.299~2.1.302 没有新的网关回归;2.1.299 修了功能开关、启动、快速模式、账号资料、反馈几类发往 Anthropic 的请求带着第三方网关的 Key,以及自定义 ANTHROPIC_BASE_URL 下流式 180 秒没数据就被掐断(改为 300 秒);2.1.300 修了 MCP 工具 schema 被拒时每轮 400;2.1.301 修了网关回的型号名与请求的不同时反复压缩;2.1.302 让没设权限模式的 -p 会话在第三方 provider 上进 default 模式,模板写死 bypassPermissions 不受影响;沙箱本地假接口对照 2.1.296 请求体字段、20 个工具、只带 Authorization 都一样,/context 仍是 1M',
-      userNote: '修好了回复慢的时候三分钟就被断开的问题，密钥也不会再顺带发给官方',
+      note: '当前 npm latest;2.1.304 起接自定义 ANTHROPIC_BASE_URL 时默认开工具搜索(多带 advanced-tool-use beta、ToolSearch 与延迟加载的工具),网关回 400/422 就去掉重发,2.1.304 本身有一处拒收工具搜索时每次请求都失败的回归(2.1.305 修,所以加了 blocked);2.1.307 不再给自定义网关发 prompt-caching-scope beta,2.1.310 网关拒收 effort beta 或对话中途的 system 消息时去掉重发;沙箱本地假接口:-p hi 拿到回复、只带 Authorization,假接口对工具搜索回 400 时重发一次不带它的请求后照常回复,haiku 别名仍发 claude-haiku-5-5,/context 仍是 1M,install.cjs 逐字相同',
+      userNote: '修好了一些情况下提问被拒、长对话整理后仍然出错的问题；回复慢的时候不会三分钟就断开，密钥也不会顺带发给官方',
     },
     blocked: [
       {
@@ -82,15 +82,20 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
         fixed: '2.1.277',
         reason: '这个版本每次提问都会失败，换到推荐版本就好',
       },
+      {
+        introduced: '2.1.304',
+        fixed: '2.1.305',
+        reason: '这个版本在一些情况下每次提问都会失败，换到推荐版本就好',
+      },
     ],
   },
   codex: {
     recommended: {
-      version: '0.162.1',
-      verifiedAt: '2026-10-13',
+      version: '0.164.0',
+      verifiedAt: '2026-10-26',
       verifiedSites: [],
-      note: '当前 npm latest,随包型号名单换成 rust-v0.162.1(只删了已废弃的 instructions_variables: null,其余逐字相同);0.161.0~0.162.1 修了 Windows 10 盘符路径读不到、服务端繁忙时过早报错、后台服务功能设置不一致导致起不来,未见与自定义 model_providers / base_url 相关的回归;模板显式写了 model,0.161.0 改默认型号不影响;daemon_auto_start = false 与 --no-daemon 在 0.162.1 上仍然认',
-      userNote: '修好了 Windows 10 上读不到某些盘里文件、服务繁忙时太早放弃的问题',
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.164.0(models.json 与 rust-v0.162.1、rust-v0.163.0 逐字相同,sha256 不变);0.164.0 的 release note 没有一条碰自定义 model_providers / base_url / wire_api,压缩失败不再留半截摘要、恢复会话带回原来的线程设置、Windows 上的代理认证支持 Negotiate / NTLM;daemon_auto_start = false 与 --no-daemon 在 0.164.0 上仍然认,沙箱 debug models 列出全部 11 个型号,exec 的请求字段与出网记录同 0.163.0',
+      userNote: '修好了长对话整理失败后留下半截内容、重新打开对话时设置丢失的问题',
     },
     blocked: [
       {
@@ -102,10 +107,10 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   grok: {
     recommended: {
-      version: '1.0.52',
-      verifiedAt: '2026-10-13',
+      version: '1.0.70',
+      verifiedAt: '2026-10-26',
       verifiedSites: [],
-      note: '当前 npm latest 与 xAI stable;没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效',
+      note: '当前 npm latest 与 xAI stable(X Corp. 签名,#1051 已认);没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效,装插件不带 --trust 仍拒装、带了一次装好,结果与 1.0.62 逐条相同',
       userNote: '跟上官方最新的稳定版，画图、起标题照旧走当前账号',
     },
     blocked: [],
