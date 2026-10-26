@@ -1837,6 +1837,11 @@ test('a reminder setting fixed on startup is announced once and leaves the card 
     await expect(page.getByTestId('tool-row-codexDesktop')).toContainText('v1.2.3')
     await page.waitForTimeout(300)
     await assertNoToast(page, text)
+    // 窗口缩在托盘久了界面被关掉、叫出来时同一个窗口重新加载（#1411），也不再说。
+    await page.reload()
+    await expect(page.getByTestId('tool-row-codexDesktop')).toContainText('v1.2.3')
+    await page.waitForTimeout(300)
+    await assertNoToast(page, text)
     await clean(page)
   } finally { await page.close() }
 })

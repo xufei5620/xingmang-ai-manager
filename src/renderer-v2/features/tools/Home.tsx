@@ -20,7 +20,7 @@ import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSu
 import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { dollars as money, errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
-import { isActiveProviderId } from '../../../../electron/catalog'
+import { isActiveProviderId, isProviderId } from '../../../../electron/catalog'
 import { isCertificateFailureText, isNetworkFailureText } from './online-resync'
 import { gitHostPlatform, gitMacInstallWaitingHint, gitMissingFirstRunHint, gitMissingHomeNotice } from '../../../../electron/git-runtime'
 import { managedRuntimeNotice, runtimeButtonLabel, runtimeInstallButtonShown, runtimeInstallGuide } from './runtime-install-guide'
@@ -37,6 +37,7 @@ import { buildUninstallGuide, UninstallGuideDialog, type UninstallGuide, type Un
 import { buildSourceMenuItems, SourceMenu, sourceChipLabels } from './SourceMenu'
 import { weekSpendHint, weekSpendLabel, type WeekSpend } from './week-spend'
 import { currentWindowOs, windowOsFor } from '../app/window-os'
+import { readWindowSession, writeWindowSession } from '../../window-session'
 
 /** 正在装的这一次是更新、回到推荐版本还是退回：进度那一行开头说清楚（批 04 字表）。 */
 export interface ToolInstallIntent {
@@ -236,10 +237,17 @@ const codexShadowedDetail = '这份配置里有一处 Codex 认不出，打开�
 const cliHooksStaleDetail = '「做完弹通知」的设置记着旧地址，每次用都会多报一行错'
 
 /**
- * 打开软件时替客户改好的提醒设置这次运行里说过的那几家。放在模块里：离开首页再回来、首页重画都不再弹；
- * 重开软件从头算，同主进程那份只在内存里的记录（autoRepairedCliHooks）。
+ * 打开软件时替客户改好的提醒设置这次运行里说过的那几家。模块里一份，窗口的 sessionStorage 里再记一份：离开首页再回来、
+ * 首页重画、窗口缩在托盘久了界面被关掉再叫出来（#1411，同一个窗口重新加载）都不再弹；重开软件是新窗口，从头算，
+ * 同主进程那份只在内存里的记录（autoRepairedCliHooks）。
  */
 const announcedHookRepairs = new Set<ProviderId>()
+const announcedHookRepairsKey = 'xingmang-v2-announced-hook-repairs'
+
+/** 界面重新加载前记下的那几家（逗号隔开）；认不出的名字不算，读不到就当没说过。 */
+export function parseAnnouncedHookRepairs(saved: string | null): ProviderId[] {
+  return (saved ?? '').split(',').filter(isProviderId)
+}
 
 /**
  * 打开软件时替客户改好了提醒设置（第十八批 1b）：只在右下角说一次、到点自己收起。原来写在卡片中间那行，
@@ -1133,9 +1141,11 @@ export function Home(props: HomeProps) {
   const repairedHooksKey = [...new Set(repairedHooks)].sort().join(',')
   const showToast = toast.show
   useEffect(() => {
+    for (const provider of parseAnnouncedHookRepairs(readWindowSession(announcedHookRepairsKey))) announcedHookRepairs.add(provider)
     const due = hookRepairsToAnnounce(repairedHooks, announcedHookRepairs)
     if (!due.length) return
     for (const provider of due) announcedHookRepairs.add(provider)
+    writeWindowSession(announcedHookRepairsKey, [...announcedHookRepairs].join(','))
     showToast(cliHooksAutoRepairedText(due), 'ok')
     // repairedHooks 每次重画都是新数组，按里面是哪几家来判断要不要再看一遍。
   }, [repairedHooksKey, showToast])

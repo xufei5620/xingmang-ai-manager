@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, hookRepairsToAnnounce, lowBalanceText, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -1293,6 +1293,13 @@ describe('renderer-v2 home missing runtime guidance on macOS', () => {
       expect(hookRepairsToAnnounce(['codex', 'codex', 'claude'], new Set())).toEqual(['codex', 'claude'])
       expect(hookRepairsToAnnounce(['codex', 'claude'], new Set<ProviderId>(['codex']))).toEqual(['claude'])
       expect(hookRepairsToAnnounce(['codex'], new Set<ProviderId>(['codex']))).toEqual([])
+    })
+
+    // 窗口缩在托盘久了界面会重新加载（#1411），说过的那几家记在窗口的 sessionStorage 里带过去。
+    it('reads back the tools already announced before the window reloaded', () => {
+      expect(parseAnnouncedHookRepairs('codex,claude')).toEqual(['codex', 'claude'])
+      expect(parseAnnouncedHookRepairs('codex,,nope')).toEqual(['codex'])
+      expect(parseAnnouncedHookRepairs(null)).toEqual([])
     })
 
     it('names the fixed tools the way the home page does', () => {
