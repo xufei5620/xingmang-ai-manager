@@ -1,3 +1,7 @@
+## 用户
+
+- 余额用完时，Claude Code 弹的提醒改成说额度不够，点一下直接到充值页。
+
 ## 开发
 
 - 终端钩子（`bundled-catalog/cli-hooks/xingmang-hook.cjs`）：余额用完时 Claude Code 的「刚才没回上」通知改说额度不够、点了去充值页。
