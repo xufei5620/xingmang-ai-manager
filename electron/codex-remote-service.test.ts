@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AppServerProcess } from './codex-remote-app-server'
 import type {
   CodexRemoteSnapshot,
+  RemoteApprovalRequest,
   RemoteChannelAdapter,
   RemoteChannelHandlers,
   RemoteInbound,
@@ -19,8 +20,10 @@ import {
   buildThreadStartParams,
   collectCredentialSecrets,
   CodexRemoteService,
+  generateApprovalNonce,
   generatePairingCode,
   isStaleInbound,
+  nextApprovalNumber,
   validateRemoteWorkspace,
 } from './codex-remote-service'
 
@@ -150,8 +153,8 @@ interface Setup {
   unavailable: { reason: string | null }
 }
 
-async function setup(options: { workspace?: boolean; credential?: boolean; codexProblem?: string } = {}): Promise<Setup> {
-  const root = tempRoot()
+async function setup(options: { workspace?: boolean; credential?: boolean; codexProblem?: string; root?: string } = {}): Promise<Setup> {
+  const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
   const workspace = path.join(home, 'projects', 'demo')
   fs.mkdirSync(workspace, { recursive: true })
@@ -205,12 +208,37 @@ async function prompted(s: Setup, channel: FakeChannel, body = '跑一下测试'
   return s.codex[0]
 }
 
+function approvalsSent(channel: FakeChannel): RemoteApprovalRequest[] {
+  return channel.sent.flatMap((entry) => (entry.message.kind === 'approval' ? [entry.message.request] : []))
+}
+
+function cardClick(peer: RemotePeer, request: Pick<RemoteApprovalRequest, 'approvalId'> & { nonce: string | null }, decision: 'accept' | 'decline', direct = true): RemoteInbound {
+  return { kind: 'approval', peer, direct, approvalId: request.approvalId, nonce: request.nonce, decision }
+}
+
+const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
+
 afterEach(() => {
   vi.useRealTimers()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe('codex-remote-service helpers', () => {
+  it('keeps counting approval numbers and wraps after four digits', () => {
+    expect(nextApprovalNumber(0)).toBe(1)
+    expect(nextApprovalNumber(41)).toBe(42)
+    expect(nextApprovalNumber(9998)).toBe(9999)
+    expect(nextApprovalNumber(9999)).toBe(1)
+    expect(nextApprovalNumber(-3)).toBe(1)
+    expect(nextApprovalNumber(1.5)).toBe(1)
+  })
+
+  it('makes a fresh button-safe nonce for every approval', () => {
+    const nonces = new Set(Array.from({ length: 50 }, () => generateApprovalNonce()))
+    expect(nonces.size).toBe(50)
+    for (const nonce of nonces) expect(nonce).toMatch(/^[A-Za-z0-9_-]{16}$/)
+  })
+
   it('pads pairing codes to six digits', () => {
     expect(generatePairingCode(() => 42)).toBe('000042')
     expect(generatePairingCode(() => 999_999)).toBe('999999')
@@ -254,16 +282,17 @@ describe('codex-remote-service helpers', () => {
   })
 
   it('redacts and shortens what an approval shows', () => {
-    const request = buildApprovalRequest('7', 'command', {
+    const request = buildApprovalRequest('7', 'nonce-seven', 'command', {
       command: `curl -H "Authorization: Bearer ${apiKey}" https://example.com`,
       cwd: '/Users/alice/projects/demo',
       reason: 'needs network',
     }, [], { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [apiKey] })
+    expect(request).toMatchObject({ approvalId: '7', nonce: 'nonce-seven' })
     expect(request.summary).not.toContain(apiKey)
     expect(request.cwd).toBe('~/projects/demo')
     expect(request.reason).toBe('needs network')
     const files = Array.from({ length: 25 }, (_, index) => `/Users/alice/projects/demo/f${index}.ts`)
-    const change = buildApprovalRequest('8', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
+    const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
     expect(change.summary).toContain('另外还有 5 个文件')
   })
@@ -449,15 +478,91 @@ describe('codex-remote-service approvals', () => {
     await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
     const approval = channel.sent.find((entry) => entry.message.kind === 'approval')?.message
     expect(approval).toMatchObject({ kind: 'approval', request: { approvalId: '1', kind: 'command', summary: 'npm test' } })
+    expect(approvalsSent(channel)[0].nonce).toMatch(/^[A-Za-z0-9_-]{16}$/)
     expect((await s.service.snapshot()).task).toBe('waiting-approval')
     channel.handlers?.onInbound(text(alice, '同意'))
     expect((await answer).result).toEqual({ decision: 'accept' })
     await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
 
     const second = codex.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'i2', startedAtMs: 0 })
-    await vi.waitFor(() => expect(channel.sent.filter((entry) => entry.message.kind === 'approval')).toHaveLength(2))
-    channel.handlers?.onInbound({ kind: 'approval', peer: alice, direct: true, approvalId: '2', decision: 'decline' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(2))
+    channel.handlers?.onInbound(cardClick(alice, approvalsSent(channel)[1], 'decline'))
     expect((await second).result).toEqual({ decision: 'decline' })
+  })
+
+  it('takes a card click only with the nonce of the request that card was sent for', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    const request = approvalsSent(channel)[0]
+    channel.handlers?.onInbound(cardClick(alice, { approvalId: request.approvalId, nonce: generateApprovalNonce() }, 'accept'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(staleCardText))
+    channel.handlers?.onInbound(cardClick(alice, { approvalId: request.approvalId, nonce: null }, 'accept'))
+    await vi.waitFor(() => expect(channel.texts().filter((line) => line === staleCardText)).toHaveLength(2))
+    expect((await s.service.snapshot()).pendingApprovals).toBe(1)
+    channel.handlers?.onInbound(cardClick(alice, request, 'accept'))
+    expect((await answer).result).toEqual({ decision: 'accept' })
+    await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
+    // Pressing the same card again after it was answered changes nothing.
+    channel.handlers?.onInbound(cardClick(alice, request, 'decline'))
+    await vi.waitFor(() => expect(channel.texts().filter((line) => line === staleCardText)).toHaveLength(3))
+    expect(s.logs).toContain('remote.approval-card-stale')
+  })
+
+  it('keeps counting after a restart so an old card or an old number answers nothing new', async () => {
+    const root = tempRoot()
+    const before = await setup({ root })
+    const beforeChannel = await enabledAndPaired(before)
+    const beforeCodex = await prompted(before, beforeChannel)
+    void beforeCodex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(approvalsSent(beforeChannel)).toHaveLength(1))
+    const oldCard = approvalsSent(beforeChannel)[0]
+    expect(oldCard.approvalId).toBe('1')
+    before.service.dispose()
+
+    // The same person is still bound after the restart; the switch has to be turned on again.
+    const after = await setup({ root })
+    await after.service.setChannelEnabled('feishu', true)
+    const channel = after.channels[0]
+    const codex = await prompted(after, channel)
+    const answer = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, command: 'rm -rf build' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    const fresh = approvalsSent(channel)[0]
+    expect(fresh.approvalId).toBe('2')
+    expect(fresh.nonce).not.toBe(oldCard.nonce)
+    channel.handlers?.onInbound(cardClick(alice, oldCard, 'accept'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(staleCardText))
+    channel.handlers?.onInbound(text(alice, '同意 1'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('没有第 1 条等你同意的操作。'))
+    expect((await after.service.snapshot()).pendingApprovals).toBe(1)
+    channel.handlers?.onInbound(text(alice, '拒绝 2'))
+    expect((await answer).result).toEqual({ decision: 'decline' })
+    expect((await after.store.readSettings()).lastApprovalNumber).toBe(2)
+  })
+
+  it('refuses an old card even when its number comes round again', async () => {
+    const first = await setup()
+    const firstChannel = await enabledAndPaired(first)
+    const firstCodex = await prompted(first, firstChannel)
+    void firstCodex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(approvalsSent(firstChannel)).toHaveLength(1))
+    const oldCard = approvalsSent(firstChannel)[0]
+    first.service.dispose()
+
+    // Lost settings (or a counter that wrapped) hand out number 1 again.
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const answer = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, command: 'rm -rf build' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0].approvalId).toBe(oldCard.approvalId)
+    channel.handlers?.onInbound(cardClick(alice, oldCard, 'accept'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(staleCardText))
+    expect((await s.service.snapshot()).pendingApprovals).toBe(1)
+    channel.handlers?.onInbound(text(alice, '停止'))
+    expect((await answer).result).toEqual({ decision: 'decline' })
   })
 
   it('asks which one when several are waiting and rejects unknown numbers', async () => {
@@ -483,9 +588,10 @@ describe('codex-remote-service approvals', () => {
     const codex = await prompted(s, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
     await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
-    channel.handlers?.onInbound({ kind: 'approval', peer: mallory, direct: true, approvalId: '1', decision: 'accept' })
+    const request = approvalsSent(channel)[0]
+    channel.handlers?.onInbound(cardClick(mallory, request, 'accept'))
     channel.handlers?.onInbound(text(mallory, '同意 1'))
-    channel.handlers?.onInbound({ kind: 'approval', peer: alice, direct: false, approvalId: '1', decision: 'accept' })
+    channel.handlers?.onInbound(cardClick(alice, request, 'accept', false))
     channel.handlers?.onInbound(text(alice, '停止'))
     expect((await answer).result).toEqual({ decision: 'decline' })
   })

@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { randomInt as cryptoRandomInt } from 'node:crypto'
+import { randomBytes, randomInt as cryptoRandomInt } from 'node:crypto'
 import {
   AppServerMethodError,
   CodexAppServerClient,
@@ -21,6 +21,7 @@ import {
   type RemoteChannelLogLevel,
   type RemoteChannelStatus,
   type RemoteInbound,
+  type RemoteInboundApproval,
   type RemoteOutbound,
   type RemotePeer,
 } from './codex-remote-channel'
@@ -57,6 +58,9 @@ import { isRecord } from './input-guards'
 //   answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
+// - Approval numbers keep counting across restarts, and every button carries a
+//   per-request random nonce: a card left in the chat history from an earlier
+//   request or an earlier run can never answer a newer one.
 // - Text that leaves the machine is redacted (I13) and capped.
 
 const pairingTtlMs = 10 * 60_000
@@ -74,6 +78,8 @@ const maxFileLines = 20
 const seenMessageLimit = 512
 const secretsTtlMs = 60_000
 const shutdownSendTimeoutMs = 1500
+/** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
+const maxApprovalNumber = 9999
 
 const developerInstructions = [
   'You are being driven remotely from a phone chat through the Xingmang desktop app.',
@@ -107,6 +113,16 @@ export interface CodexRemoteServiceOptions {
 
 export function generatePairingCode(randomInt: (maxExclusive: number) => number): string {
   return String(randomInt(1_000_000)).padStart(6, '0')
+}
+
+/** 上一条是 last，这一条用几号：往下数，过了 9999（或读回来的值不对）回到 1。 */
+export function nextApprovalNumber(last: number): number {
+  return Number.isSafeInteger(last) && last >= 0 && last < maxApprovalNumber ? last + 1 : 1
+}
+
+/** 只对这一条审批有效的随机串，放进有按钮渠道的按钮里（16 个字符，飞书按钮值里放得下）。 */
+export function generateApprovalNonce(): string {
+  return randomBytes(12).toString('base64url')
 }
 
 /** 渠道开启前 1 分钟以上、或 10 分钟以前发的消息不算：星芒关着时发的指令不该在下次打开时突然执行。 */
@@ -195,6 +211,7 @@ function describePermissions(permissions: unknown, options: ApprovalDisplayOptio
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
 export function buildApprovalRequest(
   approvalId: string,
+  nonce: string,
   kind: RemoteApprovalKind,
   params: Record<string, unknown>,
   changedFiles: readonly string[],
@@ -218,6 +235,7 @@ export function buildApprovalRequest(
   const reason = stringField(params.reason)
   return {
     approvalId,
+    nonce,
     kind,
     summary: truncateRemoteText(redact(summary), maxSummaryLength),
     ...(cwd ? { cwd: truncateRemoteText(redact(displayPath(cwd, options)), 300) } : {}),
@@ -261,6 +279,7 @@ interface ChannelRuntime {
 
 interface PendingApproval {
   id: string
+  nonce: string
   channel: RemoteChannelId
   threadId: string
   timer: NodeJS.Timeout
@@ -293,7 +312,8 @@ export class CodexRemoteService {
   private readonly runtimes: Record<RemoteChannelId, ChannelRuntime>
   private readonly pending = new Map<string, PendingApproval>()
   private readonly fileChanges = new Map<string, string[]>()
-  private nextApprovalId = 1
+  /** 上一条审批的编号；null = 这次打开星芒还没从设置里读过。 */
+  private lastApprovalNumber: number | null = null
   private revision = 0
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
@@ -522,9 +542,9 @@ export class CodexRemoteService {
     void this.emit().catch(() => undefined)
   }
 
+  /** 按问出来的先后排（Map 记得放进去的顺序）；编号过了 9999 会回到 1，不能按编号大小排。 */
   private pendingFor(channel: RemoteChannelId): PendingApproval[] {
     return [...this.pending.values()].filter((entry) => entry.channel === channel)
-      .sort((left, right) => Number(left.id) - Number(right.id))
   }
 
   private async startChannel(runtime: ChannelRuntime): Promise<void> {
@@ -717,7 +737,7 @@ export class CodexRemoteService {
       return
     }
     if (message.kind === 'approval') {
-      await this.answerApproval(runtime, message.decision, message.approvalId)
+      await this.answerApprovalCard(runtime, message)
       return
     }
     const command = parseRemoteCommand(message.text, this.pendingFor(runtime.id).length > 0)
@@ -811,6 +831,26 @@ export class CodexRemoteService {
       await this.sendText(runtime, whichApprovalMessage(waiting.map((entry) => entry.id)))
       return
     } else return
+    await this.settleApproval(runtime, target, decision)
+  }
+
+  /**
+   * 卡片按钮只认发这张卡片时的那一条：编号和随机串都对上才算。旧卡片一直留在聊天记录里随时能点，
+   * 处理过的、超时的、星芒重开前发的都不认，免得点一张旧的「同意」同意了一条没看过的新命令。
+   */
+  private async answerApprovalCard(runtime: ChannelRuntime, message: RemoteInboundApproval): Promise<void> {
+    const target = message.nonce === null
+      ? undefined
+      : this.pendingFor(runtime.id).find((entry) => entry.id === message.approvalId && entry.nonce === message.nonce)
+    if (!target) {
+      this.options.log('info', 'remote.approval-card-stale', { channel: runtime.id })
+      await this.sendText(runtime, remoteMessages.staleApprovalCard)
+      return
+    }
+    await this.settleApproval(runtime, target, message.decision)
+  }
+
+  private async settleApproval(runtime: ChannelRuntime, target: PendingApproval, decision: RemoteApprovalDecision): Promise<void> {
     target.settle(decision)
     this.options.log('info', 'remote.approval-answered', { channel: runtime.id, decision })
     await this.sendText(runtime, decision === 'accept' ? approvalAcceptedMessage(target.id) : approvalDeclinedMessage(target.id))
@@ -1007,17 +1047,43 @@ export class CodexRemoteService {
     }
   }
 
+  /**
+   * 下一条审批的编号，接着设置里记的上一条往下数，重开星芒也不从 1 重来：手机上留着的旧「同意 1」
+   * 不会落到新的第 1 条头上。记不下来照样问，按钮另有随机串兜底；回文字的渠道这次重开后可能撞号。
+   */
+  private async allocateApprovalId(): Promise<string> {
+    if (this.lastApprovalNumber === null) {
+      const stored = (await this.options.store.readSettings()).lastApprovalNumber
+      // 两条请求同时进来时，先读完的那条已经往下数了，别拿设置里的旧值盖回去。
+      this.lastApprovalNumber ??= stored
+    }
+    let number = nextApprovalNumber(this.lastApprovalNumber)
+    while (this.pending.has(String(number))) number = nextApprovalNumber(number)
+    this.lastApprovalNumber = number
+    try {
+      await this.options.store.updateSettings((settings) => {
+        settings.lastApprovalNumber = number
+      })
+    } catch {
+      this.options.log('warn', 'remote.approval-number-unsaved')
+    }
+    return String(number)
+  }
+
   private async requestApproval(kind: RemoteApprovalKind, params: unknown): Promise<RemoteApprovalDecision> {
     if (!isRecord(params)) return 'decline'
     const threadId = stringField(params.threadId)
     const runtime = this.runtimeByThread(threadId)
     const peer = runtime?.peer
     if (!runtime || !threadId || !peer || !runtime.turn || runtime.turn.stoppedByUser || !runtime.adapter) return 'decline'
+    const turn = runtime.turn
     await this.refreshSecrets()
-    const id = String(this.nextApprovalId)
-    this.nextApprovalId += 1
+    const id = await this.allocateApprovalId()
+    // 读密钥、记编号的这一会儿，这一轮可能已经被停掉、渠道已经关了：不再问人。
+    if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
+    const nonce = generateApprovalNonce()
     const itemId = stringField(params.itemId)
-    const request = buildApprovalRequest(id, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], {
+    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], {
       homeDirectory: this.options.homeDirectory,
       platform: this.platform,
       secrets: this.secrets,
@@ -1033,6 +1099,7 @@ export class CodexRemoteService {
       timer.unref?.()
       const entry: PendingApproval = {
         id,
+        nonce,
         channel: runtime.id,
         threadId,
         timer,
