@@ -680,6 +680,28 @@ test('a real backup and a verified switch appear after account switching, and a 
   } finally { await page.close() }
 })
 
+// 主路卡点 F3：新账号余额 $0 走完引导，「去充值」排在最底下，小屏上要往下翻才看得到。
+test('an empty wallet puts top-up in view on the last step without scrolling', async () => {
+  const page = await open('scenario=guide&installed=1&connected=1&runtime=1&switchable=1&walletEmpty=1')
+  try {
+    // 1366×768 的笔记本按八五折开窗，再缩放到 0.9，能看到的大约就这么高。
+    await page.setViewportSize({ width: 1280, height: 620 })
+    await page.getByTestId('guide-route-claude').check()
+    while (await page.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('guide-wallet-empty').innerText(), '当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    const body = page.locator('.xm-dialog-body')
+    assert.equal(await body.evaluate((element) => element.scrollTop), 0)
+    const box = await page.getByTestId('guide-recharge-button').boundingBox()
+    const frame = await body.boundingBox()
+    assert.ok(box && frame && box.y >= frame.y && box.y + box.height <= frame.y + frame.height, `top-up button ${JSON.stringify(box)} is outside the visible dialog ${JSON.stringify(frame)}`)
+    assert.equal(await page.getByTestId('guide-recharge-button').count(), 1)
+    assert.equal(await page.getByTestId('guide-open-tool').isEnabled(), true)
+    await page.getByTestId('guide-recharge-button').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('exit'))
+    assert.deepEqual((await calls(page)).slice(-2), [{ method: 'complete', input: 'claude' }, { method: 'exit', input: 'recharge' }])
+  } finally { await page.close() }
+})
+
 // #622 接手时的回归：切换后没试通，原因（余额不足、网络不通）必须留在回执里。
 test('an unverified switch still shows why it could not be confirmed', async () => {
   const page = await open('scenario=guide&installed=1&unknown=1&switchable=1&switchUnverified=1')

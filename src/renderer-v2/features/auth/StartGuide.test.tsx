@@ -93,6 +93,40 @@ describe('renderer-v2 start guide first run', () => {
     expect(render([guideTool()], { onFailureAction: () => undefined })).not.toContain('data-testid="guide-recharge"')
   })
 
+  // 主路卡点 F3：余额 $0 时「去充值」排在最底下，要往下翻才看得到。
+  it('leads with the empty wallet and puts top-up first when the current account has nothing to spend', () => {
+    stubResumedGuide('claude', 'ready')
+    const markup = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
+    expect(markup).toContain('data-testid="guide-wallet-empty"')
+    expect(markup).toContain('当前账号余额是 $0，充值后 AI 工具才能用。付完马上生效，不用重新设置。')
+    expect(markup).not.toContain('已准备好。打开工具，即可开始第一次任务。')
+    expect(markup.match(/data-testid="guide-recharge-button"/g)).toHaveLength(1)
+    // 紧跟在顶上那句后面，排在结果卡、第一句话、文件夹提示前面。
+    expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-result"'))
+    expect(markup.indexOf('data-testid="guide-recharge-button"')).toBeLessThan(markup.indexOf('data-testid="guide-folder-hint"'))
+    expect(markup).toMatch(/class="[^"]*xm-btn-primary[^"]*"[^>]*data-testid="guide-recharge-button"/)
+    // 「打开」照样能点，只是不再抢主按钮。
+    expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool"/)
+    expect(markup).not.toMatch(/data-testid="guide-open-tool"[^>]*disabled/)
+    stubResumedGuide('chat', 'ready')
+    const chat = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
+    expect(chat).toContain('data-testid="guide-wallet-empty"')
+    expect(chat).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-chat"/)
+  })
+
+  it('keeps the ready wording when the empty wallet is not what the tool spends', () => {
+    stubResumedGuide('claude', 'ready')
+    for (const tool of [guideTool({ source: 'official' }), guideTool({ source: 'manual' })]) {
+      const markup = render([tool], { onFailureAction: () => undefined, walletEmpty: true })
+      expect(markup).not.toContain('data-testid="guide-wallet-empty"')
+      expect(markup).toContain('已准备好。打开工具，即可开始第一次任务。')
+    }
+    const funded = render([guideTool()], { onFailureAction: () => undefined })
+    expect(funded).not.toContain('data-testid="guide-wallet-empty"')
+    expect(funded).toMatch(/class="[^"]*xm-btn-primary[^"]*"[^>]*data-testid="guide-open-tool"/)
+    expect(funded).toMatch(/class="[^"]*xm-btn-ghost[^"]*"[^>]*data-testid="guide-recharge-button"/)
+  })
+
   it('does not offer a folder for the desktop app, the chat route or a tool that is not ready', () => {
     stubResumedGuide('codexDesktop', 'ready')
     expect(render([guideTool({ id: 'codexDesktop' })])).not.toContain('data-testid="guide-folder-hint"')
