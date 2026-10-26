@@ -13,6 +13,7 @@ import {
   screen,
   session,
   shell,
+  webContents,
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
@@ -46,6 +47,11 @@ import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
+import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
+import { createReleasedRendererWatch, noticeFingerprint } from './released-renderer-watch'
+import { createBalanceAlerts, createSpendSpikeRecordStore, readSpendBaseline } from './balance-alerts'
+import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
+import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
@@ -212,6 +218,7 @@ const canvasExternalUrlAllowlist = [
 const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
 const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()
 const rendererCrashRecoveries = new WeakMap<WebContents, RendererCrashRecovery>()
+const rendererReleases = new WeakMap<WebContents, RendererRelease>()
 
 const updateCheckIntervalMs = 3 * 60 * 60 * 1_000
 // 启动时看一眼本机配置就够了：内存和核数不会在运行中变化。
@@ -328,8 +335,6 @@ function createWindow(
   revealOnReady: () => boolean,
 ): BrowserWindow {
   const stored = systemService.readStoredConfig()
-  const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
-  const previewDashboard = !app.isPackaged && process.env.XINGMANG_DASHBOARD_PREVIEW === '1'
   const placement = resolveWindowPlacement(stored.windowState, screen.getAllDisplays(), screen.getPrimaryDisplay().id)
   const palette = resolveWindowPalette(stored.theme)
   const windowIcon = path.join(app.getAppPath(), 'assets', 'brand', 'v3', windowIconFileName(process.platform))
@@ -434,6 +439,11 @@ function createWindow(
   rendererCrashRecoveries.set(window.webContents, crashRecovery)
   window.once('closed', () => { crashRecovery.dispose() })
   window.webContents.on('render-process-gone', (_event, details) => {
+    // 缩在托盘里久了这里自己关掉的（renderer-release.ts），不是崩溃：不报、不自动重载。
+    if (rendererReleases.get(window.webContents)?.consumeExpectedExit()) {
+      runtimeLog.log('info', 'renderer', 'process.released', '窗口缩在托盘里，界面进程已关掉省内存', { reason: details.reason })
+      return
+    }
     runtimeLog.log('error', 'renderer', 'process.gone', '渲染进程异常退出', {
       reason: details.reason,
       exitCode: details.exitCode,
@@ -486,25 +496,43 @@ function createWindow(
   window.on('responsive', () => { responsiveness.handleResponsive() })
   window.once('closed', () => { responsiveness.dispose() })
 
-  const devServerUrl = !app.isPackaged ? process.env.VITE_DEV_SERVER_URL : undefined
-  if (devServerUrl) {
-    const url = new URL(devServerUrl)
-    url.searchParams.set('theme', stored.theme)
-    if (previewOnboarding) url.searchParams.set('onboardingPreview', '1')
-    if (previewDashboard) url.searchParams.set('dashboardPreview', '1')
-    void window.loadURL(url.toString()).catch((error) => {
-      runtimeLog.exception('renderer', 'page.load.failed', error)
-    })
-  } else {
-    const applicationUrl = new URL('index.html', packagedApplicationBaseUrl)
-    applicationUrl.searchParams.set('theme', stored.theme)
-    if (previewOnboarding) applicationUrl.searchParams.set('onboardingPreview', '1')
-    if (previewDashboard) applicationUrl.searchParams.set('dashboardPreview', '1')
-    void window.loadURL(applicationUrl.href).catch((error) => {
-      runtimeLog.exception('renderer', 'page.load.failed', error)
-    })
-  }
+  void window.loadURL(resolveMainWindowUrl(stored.theme)).catch((error) => {
+    runtimeLog.exception('renderer', 'page.load.failed', error)
+  })
   return window
+}
+
+// 关掉主窗口的界面进程（renderer-release.ts）。和别的页面共用同一个进程时不关，会把它们一起带走；
+// 画布、付款窗口平时各有各的进程，这只是防万一。
+function releaseRendererProcess(contents: WebContents): boolean {
+  if (contents.isDestroyed() || contents.isCrashed()) return false
+  const pid = contents.getOSProcessId()
+  if (!(pid > 0)) return false
+  const shared = webContents.getAllWebContents().some((other) => other !== contents && !other.isDestroyed() && other.getOSProcessId() === pid)
+  if (shared) return false
+  contents.forcefullyCrashRenderer()
+  return true
+}
+
+const rendererReleaseLogMessages: Record<RendererReleaseLogEvent, string> = {
+  'release.done': '窗口缩在托盘里有一阵了，关掉界面省内存',
+  'release.deferred': '窗口缩在托盘里，还有事没做完，先不关界面',
+  'release.skipped': '界面进程和别的页面共用，这次不关',
+  'restore.started': '重新加载关掉的界面',
+  'restore.ready': '关掉的界面重新加载好了',
+}
+
+// 主窗口界面的地址：开发时连 Vite，打包后走 xingmang://。缩到托盘关掉界面以后重新加载也用它，
+// 主题按那一刻的设置，免得先闪一下旧主题。
+function resolveMainWindowUrl(theme: AppTheme): string {
+  const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
+  const previewDashboard = !app.isPackaged && process.env.XINGMANG_DASHBOARD_PREVIEW === '1'
+  const devServerUrl = !app.isPackaged ? process.env.VITE_DEV_SERVER_URL : undefined
+  const url = devServerUrl ? new URL(devServerUrl) : new URL('index.html', packagedApplicationBaseUrl)
+  url.searchParams.set('theme', theme)
+  if (previewOnboarding) url.searchParams.set('onboardingPreview', '1')
+  if (previewDashboard) url.searchParams.set('dashboardPreview', '1')
+  return url.toString()
 }
 
 function focusExistingWindow(): boolean {
@@ -521,6 +549,8 @@ function focusExistingWindow(): boolean {
 // 还是那块空白（#1061 第 12 项）。
 function reloadIfRendererGone(window: BrowserWindow): void {
   if (window.webContents.isDestroyed()) return
+  // 缩在托盘里被关掉的界面由 renderer-release.ts 重新加载，不当崩溃再载一次。
+  if (rendererReleases.get(window.webContents)?.restore('show')) return
   rendererCrashRecoveries.get(window.webContents)?.handleReopen(window.webContents.isCrashed())
 }
 
@@ -1406,13 +1436,25 @@ if (!hasSingleInstanceLock) {
     let latestTrayBalance: AccountBalance | null = null
     let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
+    // 缩到托盘久了关掉界面省内存（renderer-release.ts）；主窗口建好以后接上。
+    let mainRendererRelease: RendererRelease | null = null
+    // 界面最后一次读到的公告：界面关着时主进程拿它比对有没有新公告（released-renderer-watch.ts）。
+    let lastRendererNotice: string | null = null
     // 账号状态、付款结果（带订单号）、更新状态只发给主窗口（#1069）。画布跑第三方前端代码，
     // 支付窗口装的是支付商的网页，两边都不靠这几条：画布换账号听自己的 canvas-host:account-changed，
     // 支付窗口没挂 preload，付完由主进程判断、自己关。挨个窗口发只是把订单号和账号送到它们手边。
     const sendToMainWindow = <Event extends keyof XingmangEventContract>(event: Event, payload: IpcEventPayload<XingmangEventContract[Event]>) => {
       const window = managedMainWindow
       if (!window || window.isDestroyed() || window.webContents.isDestroyed()) return
+      // 界面关着没人接；重新加载好了它会自己把这些状态读一遍。
+      if (mainRendererRelease?.state === 'released') return
       window.webContents.send(ipcEventChannels[event], payload)
+    }
+    // 跳页、打开工具、外部链接要界面接住才算数：界面关着、正在重新加载时先存着，好了再发。
+    const deliverToMainWindow = <Event extends 'onNavigate' | 'onLaunchTool' | 'onExternalDeepLink'>(event: Event, payload: IpcEventPayload<XingmangEventContract[Event]>) => {
+      const send = () => sendToMainWindow(event, payload)
+      if (mainRendererRelease) mainRendererRelease.deliver(event, send)
+      else send()
     }
     diagnostics.attachFeedbackDescribers({ latestTraySystem: () => latestTraySystem })
     const desktopNotifications = createDesktopNotificationController({
@@ -1423,9 +1465,7 @@ if (!hasSingleInstanceLock) {
         managedMainWindow.show()
         managedMainWindow.focus()
       },
-      onOpenUpdates: () => {
-        if (managedMainWindow && !managedMainWindow.isDestroyed()) managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'updates')
-      },
+      onOpenUpdates: () => { deliverToMainWindow('onNavigate', 'updates') },
       onError: (error) => runtimeLog.exception('window', 'notification.failed', error),
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       readAutoUpdate: () => updaterService.autoUpdateEnabled(),
@@ -1683,6 +1723,33 @@ if (!hasSingleInstanceLock) {
       return issue()
     }
     const accountService = accounts.client
+    // 余额跌破 5 美元、花费突然变多这两条提醒由主进程判断（balance-alerts.ts），界面关着时也照样提醒。
+    const balanceAlerts = createBalanceAlerts({
+      notify: (kind, eventKey, notice) => { hostNotifier()({ activity: kind, eventKey, ...(notice ? { detail: notice } : {}) }) },
+      readBaseline: () => readSpendBaseline({
+        dateOnly: accounts.getSiteId() === 'solov-api',
+        getUsage: (query) => accountService.getUsage(query),
+      }),
+      ...createSpendSpikeRecordStore(managerDataDirectory),
+    })
+    // 托盘余额和两条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
+    const observeAccountBalance = (balance: AccountBalance) => {
+      latestTrayBalance = balance
+      applicationTray?.updateSnapshot()
+      const state = accountService.getSessionState()
+      if (!state.authenticated || !state.account) return
+      const siteId = accounts.getSiteId()
+      const at = Date.now()
+      void balanceAlerts.observe({
+        scope: `${siteId}:${state.account.userId}`,
+        userId: state.account.userId,
+        quota: balance.quota,
+        quotaPerUnit: balance.quotaPerUnit,
+        at,
+        supportsUsage: accountService.capabilities.supportsUsage,
+        subscribed: resolveUsableSubscription(latestTraySubscription, { now: at, quotaPerUnit: balance.quotaPerUnit }) !== null,
+      }).catch((cause: unknown) => runtimeLog.exception('account', 'balance-alert.failed', cause))
+    }
     readBillingAccountScope = () => {
       const state = accountService.getSessionState()
       const realm = accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'
@@ -1801,11 +1868,7 @@ if (!hasSingleInstanceLock) {
               hostNotifier()({
                 event: 'paymentSettled',
                 eventKey: event.tradeNo,
-                onClick: () => {
-                  if (managedMainWindow && !managedMainWindow.isDestroyed()) {
-                    managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'topup')
-                  }
-                },
+                onClick: () => { deliverToMainWindow('onNavigate', 'topup') },
               })
             } catch (cause) {
               runtimeLog.exception('payment', 'settled.notify-failed', cause)
@@ -2022,7 +2085,12 @@ if (!hasSingleInstanceLock) {
         ...(unexpectedExit ? { unexpectedExit } : {}),
         ...(claudeDesktopRepaired ? { claudeDesktopRepaired: true as const } : {}),
         ...(linuxSystemLabel ? { systemLabel: linuxSystemLabel } : {}),
+        ...(mainRendererRelease?.restoredBoot ? { rendererRestored: true as const } : {}),
       }),
+      onRendererActivity: (target, activity) => {
+        if (managedMainWindow && !managedMainWindow.isDestroyed() && target === managedMainWindow.webContents) mainRendererRelease?.reportActivity(activity.busy)
+      },
+      onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
       confirmUpdateInstall: () => confirmUpdateInstall?.() ?? Promise.resolve(true),
       ...(process.platform === 'darwin'
@@ -2072,7 +2140,7 @@ if (!hasSingleInstanceLock) {
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
       onRouteRecheckRequested: () => recheckRoutes('manual'),
       startupQuiet,
-      onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
+      onAccountBalance: observeAccountBalance,
       onAccountSubscription: (subscription) => { latestTraySubscription = subscription; applicationTray?.updateSnapshot() },
       setWindowMode,
       setWindowTheme: (contents, theme) => {
@@ -2228,7 +2296,7 @@ if (!hasSingleInstanceLock) {
     }
     // 以前发给在前面的那个窗口：画布、付款窗口在前时发进了它们，没人接；主窗口缩在托盘里时发到了却不出来（#1210）。
     // 跟托盘跳页一样，先把主窗口叫出来，再只发给它。
-    navigateFromAppMenu = (target) => { showMainWindow(); sendToMainWindow('onNavigate', target) }
+    navigateFromAppMenu = (target) => { showMainWindow(); deliverToMainWindow('onNavigate', target) }
     // 退出、重启安装更新都会把正在装的工具打断，两处问同一句（已知31）。true = 点了「仍然退出」。
     const confirmInterruptingInstall = async (task: InterruptibleInstallTask): Promise<boolean> => {
       // 托盘「退出」「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
@@ -2327,7 +2395,7 @@ if (!hasSingleInstanceLock) {
     receiveDeepLink = (raw) => {
       if (!deepLinkInbox.accept(raw)) return
       showMainWindow()
-      mainWindow.webContents.send(ipcEventChannels.onExternalDeepLink, undefined)
+      deliverToMainWindow('onExternalDeepLink', undefined)
     }
     let trayHintShown = false
     const lifecycle = createWindowLifecycle({
@@ -2491,6 +2559,60 @@ if (!hasSingleInstanceLock) {
       },
     })
     lifecycle.attach(mainWindow, app)
+    // 缩到托盘满 10 分钟、手上没事就关掉界面进程省内存，叫出来时重新加载（renderer-release.ts）。
+    // 关着的那段时间，托盘余额、余额提醒、新公告由主进程照原来的节奏看着（released-renderer-watch.ts）。
+    const releasedWatch = createReleasedRendererWatch({
+      signedIn: () => accountService.getSessionState().authenticated,
+      readBalance: async () => { observeAccountBalance(await accountService.getBalance()) },
+      readNotice: async () => await accountService.getNotice?.('cached') ?? null,
+      lastSeenNotice: () => lastRendererNotice,
+      wake: (reason) => {
+        runtimeLog.log('info', 'window', 'renderer.wake', reason === 'notice' ? '有新公告，界面在后台重新加载，看要不要提醒' : '充值活动还没结束，界面在后台重新加载，看今天要不要提醒')
+        mainRendererRelease?.restore('wake')
+      },
+      onError: (cause) => runtimeLog.exception('window', 'renderer.watch.failed', cause),
+    })
+    const rendererRelease = createRendererRelease({
+      // 最小化的还在任务栏上，随时会被点开，不算。
+      hiddenInTray: () => !mainWindow.isDestroyed() && !mainWindow.isVisible() && !mainWindow.isMinimized() && !mainWindow.isFocused(),
+      mainBlocker: () => {
+        if (lifecycle.isQuitting) return 'quitting'
+        const queue = systemService.inspectInstallationQueue()
+        if (queue.activeKey !== null || queue.pendingKeys.length > 0) return 'installing'
+        if (paymentWindow.isOpen()) return 'payment'
+        return null
+      },
+      release: () => releaseRendererProcess(mainWindow.webContents),
+      reload: () => {
+        void mainWindow.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme)).catch((error) => {
+          runtimeLog.exception('renderer', 'page.load.failed', error)
+        })
+      },
+      onReleased: () => { releasedWatch.start() },
+      onRestoring: () => { releasedWatch.stop() },
+      log: (event, detail) => { runtimeLog.log('info', 'window', `renderer.${event}`, rendererReleaseLogMessages[event], detail) },
+      onError: (cause) => runtimeLog.exception('window', 'renderer.release.failed', cause),
+    })
+    mainRendererRelease = rendererRelease
+    rendererReleases.set(mainWindow.webContents, rendererRelease)
+    const deliverWhenRendererReady = (key: string, send: () => void) => { rendererRelease.deliver(key, send) }
+    attachRendererDelivery(deliverWhenRendererReady)
+    mainWindow.on('hide', () => { rendererRelease.noteHidden() })
+    // 托盘、第二个实例、系统通知、Dock 把窗口叫出来，最后都会走到其中一个。
+    mainWindow.on('show', () => { rendererRelease.noteShown() })
+    mainWindow.on('focus', () => { rendererRelease.noteShown() })
+    mainWindow.on('restore', () => { rendererRelease.noteShown() })
+    // 开机自启一直缩在托盘里的，从没显示过也就没有 hide：界面加载好就开始计时。
+    mainWindow.once('ready-to-show', () => {
+      if (!mainWindow.isDestroyed() && !mainWindow.isVisible()) rendererRelease.noteHidden()
+    })
+    const disposeRendererRelease = () => {
+      releasedWatch.stop()
+      rendererRelease.dispose()
+      detachRendererDelivery(deliverWhenRendererReady)
+    }
+    mainWindow.once('closed', disposeRendererRelease)
+    quitCleanup.add('renderer-release', disposeRendererRelease)
     // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：听到这一声，
     // 接下来的退出和 Windows 关机一样不问、不装（下好的更新下次打开再装），开着的确认框和
     // 正在等的安装器都不等了。Electron 只在系统发出关机通知时发它，Command + Q 不发。
@@ -2654,8 +2776,12 @@ if (!hasSingleInstanceLock) {
         }
       },
       onOpen: showMainWindow,
-      onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
-      onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
+      onNavigate: (target) => deliverToMainWindow('onNavigate', target),
+      onLaunchTool: (id) => {
+        showMainWindow()
+        // 托盘菜单里的编号都是自己按名单拼的，这里只是让类型对上。
+        if (id === 'codexDesktop' || isProviderId(id)) deliverToMainWindow('onLaunchTool', id)
+      },
       onAccelerationToggle: () => trayAcceleration?.toggle(),
       // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
       onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },

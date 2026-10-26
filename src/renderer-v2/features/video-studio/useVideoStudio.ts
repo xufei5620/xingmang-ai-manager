@@ -3,6 +3,7 @@ import type { AiChatGroupSummary, XingmangApi } from '../../../../electron/ipc-c
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { speaksChinese, userFacingErrorMessage } from '../../business-common'
+import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
@@ -328,6 +329,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   }
 
   const busy = Boolean(planning) || project.shots.some(isVideoStudioShotBusy) || composeState.phase !== 'idle'
+  // 写分镜、出片、拼片都靠这一页接着往下走：做着的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
+  useBackgroundWork('video-studio', busy)
   return {
     site, project, groups, preparations, catalogLoading, catalogError, planning: Boolean(planning), composeState, error, notice, storageWarning, busy,
     catalogs: buildVideoStudioCatalogs(groups, preparations),

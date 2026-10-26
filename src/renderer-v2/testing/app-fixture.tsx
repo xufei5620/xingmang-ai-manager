@@ -406,7 +406,8 @@ const methods = {
     if (window.v2Test.fail === 'getAccountBalance') window.v2Test.fail = ''
     return 'direct' as const
   },
-  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}), ...(query.has('claudeDesktopRepaired') ? { claudeDesktopRepaired: true as const } : {}) }),
+  getWindowCapabilities: async () => ({ tray: true, notifications: true, ...(query.has('lowEnd') ? { lowEndDevice: true } : {}), ...(query.has('displayCompat') && settings.hardwareAcceleration === undefined ? { displayCompat: 'auto' as const } : {}), ...(query.has('claudeDesktopRepaired') ? { claudeDesktopRepaired: true as const } : {}), ...(query.has('rendererRestored') ? { rendererRestored: true as const } : {}) }),
+  reportWindowActivity: async () => undefined,
   relaunchApp: async () => true,
   uninstallApp: async () => ({ trashed: true, leftovers: [] }),
   // 设置 › 工具管理里的「手机遥控 Codex」只读一次状态；操作的界面测在 e2e/v2-business 里。
