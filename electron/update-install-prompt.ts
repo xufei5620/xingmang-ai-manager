@@ -6,8 +6,11 @@
  * 很多客户配好工具以后窗口一直缩在托盘（Mac 是菜单栏）里，Mac 又很少关机，几周碰不到退出和
  * 重开，下好的新版就一直摆着。
  *
- * - **跳框**：只问这次运行里在后台下好的版本。打开星芒时就已经下好的，由打开时装去装，这里
- *   再问会跟它抢。默认按钮是「稍后再说」，回车、空格、Esc 都落在它上面，只有用鼠标点「现在
+ * - **跳框**：下好的版本都问，只有打开时装已经接手的那一版不问（记了 attempted），再问会跟它抢。
+ *   打开时就已经下好、打开时装却没接手的照样问：开机自启以后窗口一直缩着（Windows 等第一次开窗口
+ *   才装，Mac 要输开机密码的留到退出），或者开机两分钟里没轮到。以前这些这次运行既不装也不问，
+ *   开机自启、只关机不退出的电脑就一直停在旧版（#1410）。问过以后宿主把打开时装撤下，叫出窗口
+ *   时不再预告装一遍。默认按钮是「稍后再说」，回车、空格、Esc 都落在它上面，只有用鼠标点「现在
  *   安装」才装；等电脑几秒没人按键盘、动鼠标再弹，免得客户正打着字框跳出来。每个版本每次运行
  *   最多问一次。账号不在管理员组的 Windows 自己装不了，不问；关了「自动更新」的不问。网络加速开着
  *   时先不问：开加速的多半在打游戏，过场、读图那几秒就凑够「没人动」，框一跳会把游戏切出去；点了
@@ -73,8 +76,8 @@ export function buildInstallPrompt(version: string, platform: NodeJS.Platform, o
 export interface InstallPromptInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
-  /** 打开星芒时记录里已经下好的版本（auto-update-install.ts 的 recordAtLaunch.downloadedVersion）。 */
-  downloadedAtLaunch: string | null
+  /** 这一版已经自动装过或正在装（打开时装接手了、退出时、闲时，任何一种）。 */
+  attempted: boolean
   /** Windows 上这个账号不在管理员组；null = 还没问出来。 */
   standardAccount: boolean | null
 }
@@ -88,7 +91,7 @@ export function resolveInstallPromptVersion(input: InstallPromptInput): string |
   // 交给系统安装器的版本（Linux）装的时候要输开机密码、装完不会自己打开，框里那几句都不对。
   if (input.snapshot.installMethod === 'system-installer' || input.snapshot.launchInstallNotice) return null
   const version = resolveInstallableUpdateOnQuit(input.snapshot)?.version
-  if (!version || version === input.downloadedAtLaunch) return null
+  if (!version || input.attempted) return null
   return version
 }
 
@@ -139,7 +142,6 @@ export interface UpdateInstallPrompterOptions {
   platform: NodeJS.Platform
   getState(): UpdateSnapshot
   autoUpdate(): boolean
-  downloadedAtLaunch: string | null
   /** 见 InstallPromptInput.standardAccount。 */
   standardAccount(): boolean | null
   unattended(): boolean
@@ -206,10 +208,12 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   }
 
   function promptVersion(snapshot: UpdateSnapshot): string | null {
+    const version = installableVersion(snapshot)
     return resolveInstallPromptVersion({
       autoUpdate: read(options.autoUpdate, false),
       snapshot,
-      downloadedAtLaunch: options.downloadedAtLaunch,
+      // 每次现问：等着跳框的这几秒里，打开时装可能刚接手（客户从托盘点开了窗口）。
+      attempted: !version || read(() => options.attempted(version), true),
       standardAccount: read(options.standardAccount, null),
     })
   }
