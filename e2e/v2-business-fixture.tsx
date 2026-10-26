@@ -435,6 +435,7 @@ let settings: Awaited<ReturnType<V2Bridge['getSettings']>> = {
   checkUpdatesOnStartup: true,
   runDiagnosticsOnStartup: false,
   crashReportingNoticeShown: true,
+  usageStatsNoticeShown: true,
 }
 const capabilities = {
   available: true,
@@ -1522,7 +1523,7 @@ if (query.has('system')) {
     setPrivacyPreference: async (kind, enabled) => {
       guard()
       record('platform-privacy', { kind, enabled })
-      const privacy = { anonymousUsage: false, ...systemState.preferences.privacy }
+      const privacy = { anonymousUsage: true, ...systemState.preferences.privacy }
       privacy[kind] = enabled
       systemState = {
         ...systemState,

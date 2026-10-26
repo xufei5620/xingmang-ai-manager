@@ -1,6 +1,7 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
 import {
   canvasRunContractVersion,
+  canvasRunKernelOnlyNodeLabels,
   canvasRunTimelineLimit,
   type CanvasRunAsset,
   type CanvasRunAttempt,
@@ -74,6 +75,10 @@ export type CanvasNodeExecutor = (
 
 export type CanvasNodeExecutors = Record<'text' | 'image' | 'video', CanvasNodeExecutor>
   & Partial<Record<Exclude<CanvasRunNodeKind, 'text' | 'image' | 'video'>, CanvasNodeExecutor>>
+
+function isCanvasRunKernelOnlyNodeKind(kind: CanvasRunNodeKind): boolean {
+  return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
+}
 
 function fallbackExecutorKind(kind: CanvasRunNodeKind): 'text' | 'image' | 'video' {
   if (kind === 'prompt' || kind === 'note' || kind === 'drama-bible' || kind === 'drama-script' || kind === 'drama-parse' || kind === 'drama-shot') return 'text'
@@ -334,6 +339,31 @@ export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope
   return remoteCount
 }
 
+/**
+ * The first reason a node that this run would actually execute cannot run on
+ * the desktop. Disabled nodes and everything downstream of them are skipped
+ * without calling an executor, so they do not block the run; nodes outside
+ * the scope are never touched. Callers refuse the whole run on a reason,
+ * before a single paid request goes out.
+ */
+export function canvasRunDesktopUnsupportedReason(graph: CanvasRunGraph, scope: CanvasRunScope): string | undefined {
+  const index = validateGraph(graph)
+  const selected = selectScope(index, scope)
+  const skipped = new Set<string>()
+  for (const nodeId of index.topological) {
+    if (!selected.has(nodeId)) continue
+    const node = index.nodesById.get(nodeId)!
+    const upstreamSkipped = (index.incoming.get(nodeId) ?? [])
+      .some((edge) => selected.has(edge.source) && skipped.has(edge.source))
+    if (node.disabled || upstreamSkipped) {
+      skipped.add(nodeId)
+      continue
+    }
+    if (node.desktopUnsupported) return node.desktopUnsupported
+  }
+  return undefined
+}
+
 export function appendCanvasRunTimelineEvent(
   events: CanvasRunEvent[],
   event: CanvasRunEvent,
@@ -584,6 +614,13 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
       if (node.disabled) {
         await updateNode(nodeId, 'skipped', { errorMessage: '节点已禁用' })
+        return
+      }
+      // The run service refuses these runs up front. This stays as a second
+      // line in case a caller skips that check: a kernel-only kind would
+      // otherwise fall back to the video executor and spend money.
+      if (node.desktopUnsupported || isCanvasRunKernelOnlyNodeKind(node.kind)) {
+        await updateNode(nodeId, 'failed', { errorMessage: sanitizeRunError(node.desktopUnsupported ?? '该节点桌面版暂不支持，本次没有提交任何付费请求') })
         return
       }
 

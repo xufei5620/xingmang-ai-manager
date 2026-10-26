@@ -12,12 +12,12 @@ import { firstProblemAnchor } from './row-focus'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'usage-stats' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'
 /**
  * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
  * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'usage-stats' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -26,7 +26,7 @@ export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 
 /** page 的 section：落到那一页里的哪一组或哪一行，同外壳的 navigate；缺省 = 只跳页。 */
 export type StartupNoticeAction = { label: string; page: PageId; section?: string } | { label: string; login: true } | { label: string; dismiss: true }
   | { label: string; displayCompat: 'keep' | 'restore' } | { label: string; relaunch: true }
-  | { label: string; crashReporting: 'keep' | 'off' } | { label: string; supportFailure: SupportFailure }
+  | { label: string; crashReporting: 'keep' | 'off' } | { label: string; usageStats: 'keep' | 'off' } | { label: string; supportFailure: SupportFailure }
   | { label: string; restartCodexDesktop: true }
 
 export interface StartupNotice {
@@ -234,6 +234,31 @@ export function crashReportingNotice(settings: Pick<AppSettingsV2, 'crashReporti
   }
 }
 
+/**
+ * 匿名使用统计（主进程 usage-stats.ts）缺省开着，登录进来后说一次，给一颗「不想发送」当场关掉，
+ * 和崩溃上报那张同一个做法。错误报告那张还没说过时先出那张，这张等它说过以后（useStartupChecks
+ * 另管「这次打开已经出过那张就等下次」）。enabled 是设置里那个开关现在的值，读不到（null）就不说：
+ * 说了也没法当场关。
+ */
+export function usageStatsNotice(
+  settings: Pick<AppSettingsV2, 'crashReporting' | 'crashReportingNoticeShown' | 'usageStatsNoticeShown'> | null | undefined,
+  authenticated: boolean,
+  enabled: boolean | null,
+): StartupNotice | null {
+  if (!authenticated || !settings || settings.usageStatsNoticeShown === true || enabled !== true) return null
+  if (crashReportingNotice(settings, authenticated)) return null
+  return {
+    id: 'usage-stats',
+    failure: false,
+    tone: 'neutral',
+    title: '软件会发送匿名使用情况',
+    body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
+    action: { label: '知道了', usageStats: 'keep' },
+    secondaryAction: { label: '不想发送', usageStats: 'off' },
+    waitsForOnboarding: true,
+  }
+}
+
 function clockTime(at: Date): string {
   return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
 }
@@ -333,8 +358,8 @@ export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotic
 /**
  * 第一次登录时新手引导、首页导览本身就占着一屏，告知卡再挤上来，客户不知道先看哪个，错误报告
  * 那张还正好盖住工具卡的按钮（主路卡点 F11）。标了 waitsForOnboarding 的先不摊出来，卡片仍留在
- * 那一摞里，引导和导览都关了再出；以后再加登录后说一次的告知卡，标上它就跟着等。没标的照旧马上出：
- * 出了事要客户知道的不该被引导压着。
+ * 那一摞里，引导和导览都关了再出。错误报告、使用统计这两张登录后说一次的告知卡标了它，以后再加
+ * 同类的标上就跟着等。没标的照旧马上出：出了事要客户知道的不该被引导压着。
  */
 export function startupNoticesShown(notices: readonly StartupNotice[], onboarding: boolean): readonly StartupNotice[] {
   return onboarding ? notices.filter((notice) => notice.waitsForOnboarding !== true) : notices

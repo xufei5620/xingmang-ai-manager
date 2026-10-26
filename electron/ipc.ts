@@ -10,6 +10,7 @@ import type { ProviderId } from './catalog'
 import type { ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { ManagedCliKeyStoreLike } from './account-cli-provisioner'
 import { requestDiagnosticsOf } from './request-diagnostics'
+import { usageArgumentChannels, type UsageOperation } from './usage-stats'
 import type { CodexExtensionService } from './codex-extensions'
 import { ProviderExtensionService } from './provider-extensions'
 import { CodexSessionsService } from './codex-sessions'
@@ -195,6 +196,12 @@ export interface IpcRegistrationOptions {
   /** Renderer-side crashes the host may forward to crash reporting. The
    *  payload is the already-validated one, never the raw IPC value. */
   onRendererError?(error: RendererErrorPayload): void
+  /**
+   * 每次操作结束（成功或失败）都告诉一声，匿名使用统计靠它数装失败、付款页打开慢（usage-stats.ts）。
+   * 参数只给装工具那两条通道的第一个（usageArgumentChannels），其余一律不给。缺省 = 不数。
+   * 它抛错也不影响这次操作的结果。
+   */
+  observeOperation?(operation: UsageOperation): void
   onSystemSnapshot?(snapshot: SystemSnapshot): void
   /** 客户点了首页的「重新检测」（system:scan 带 recheckRoutes）：叫工具线路马上查一轮。 */
   onRouteRecheckRequested?(): void
@@ -246,7 +253,7 @@ export interface IpcRegistrationOptions {
   chatHistory?: AiChatHistoryStore
   chatAttachments?: ChatAttachmentService
   // 对话页和视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
-  videoService?: Pick<AiVideoService, 'generate' | 'cancel' | 'cancelSender' | 'cancelAll'>
+  videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
@@ -275,7 +282,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const policy = ipcChannelPolicies[channel]
     ipcMain.handle(channel, (event, ...args) => {
       const startedAt = Date.now()
+      const observe = (failed: boolean, error?: unknown) => {
+        try {
+          options.observeOperation?.({ channel, args: usageArgumentChannels.has(channel) ? args.slice(0, 1) : [], durationMs: Date.now() - startedAt, failed, ...(failed ? { error } : {}) })
+        } catch {
+          // Counting is best effort; it must never turn a finished operation into a failure.
+        }
+      }
       const recordSuccess = (result: unknown) => {
+        observe(false)
         if (policy.log === 'quiet-success' || policy.log === 'silent') return
         if (channel === 'acceleration:get-state') {
           const key = accelerationStateLogKey(result)
@@ -303,6 +318,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         )
       }
       const recordFailure = (error: unknown) => {
+        observe(true, error)
         if (policy.log === 'polling') failedPollingChannels.add(channel)
         if (policy.log === 'silent') return
         const reason = error instanceof Error ? error.message : String(error)

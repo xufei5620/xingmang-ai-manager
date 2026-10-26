@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, startupNoticesShown, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, startupNoticesShown, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, usageStatsNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -198,6 +198,8 @@ describe('startupNoticesShown', () => {
 
   it('holds back only the notices that wait for onboarding while the guide or the tour is open', () => {
     expect(startupNoticesShown([vault, crash, diagnostics], true).map((notice) => notice.id)).toEqual(['vault-recovered', 'diagnostics'])
+    const usage = usageStatsNotice({ crashReportingNoticeShown: true }, true, true)!
+    expect(startupNoticesShown([usage, vault], true)).toEqual([vault])
   })
 
   it('shows every notice, in its original order, once onboarding is closed', () => {
@@ -210,6 +212,34 @@ describe('startupNoticesShown', () => {
       expect(notice.waitsForOnboarding).toBeUndefined()
       expect(startupNoticesShown([notice], true)).toEqual([notice])
     }
+  })
+})
+
+describe('usageStatsNotice', () => {
+  const told = { crashReportingNoticeShown: true }
+
+  it('tells a signed-in user once what is sent and offers to turn it off', () => {
+    const notice = usageStatsNotice(told, true, true)
+    expect(notice).toEqual({
+      id: 'usage-stats',
+      failure: false,
+      tone: 'neutral',
+      title: '软件会发送匿名使用情况',
+      body: '为了知道新版本有没有顺利装上、哪里容易出错，星芒每天最多发一次匿名使用情况：版本、电脑系统、装了哪些工具、安装和更新是否成功。不含你的账号、密钥、文件路径和聊天内容，也没有能认出这台电脑的编号。以后想改，可以在「设置」的「隐私数据」里关掉。',
+      action: { label: '知道了', usageStats: 'keep' },
+      secondaryAction: { label: '不想发送', usageStats: 'off' },
+      waitsForOnboarding: true,
+    })
+  })
+
+  it('waits for the crash reporting notice, and stays quiet before sign-in, once told, or when already off', () => {
+    expect(usageStatsNotice({}, true, true)).toBeNull()
+    expect(usageStatsNotice({ crashReporting: false }, true, true)).not.toBeNull()
+    expect(usageStatsNotice(told, false, true)).toBeNull()
+    expect(usageStatsNotice(null, true, true)).toBeNull()
+    expect(usageStatsNotice({ ...told, usageStatsNoticeShown: true }, true, true)).toBeNull()
+    expect(usageStatsNotice(told, true, false)).toBeNull()
+    expect(usageStatsNotice(told, true, null)).toBeNull()
   })
 })
 

@@ -7,6 +7,26 @@ export type CanvasRunNodeKind =
   | 'frame-extract' | 'router' | 'gallery' | 'output' | 'group' | 'note'
   | 'drama-bible' | 'drama-script' | 'drama-parse'
   | 'drama-character' | 'drama-scene' | 'drama-prop' | 'drama-shot'
+  | CanvasRunKernelOnlyNodeKind
+
+/**
+ * Node kinds the xingmang-canvas kernel can put in a run graph but the desktop
+ * has no executor for yet. They parse so a graph that merely contains one is
+ * not refused as a whole; a run whose scope reaches one is refused before any
+ * paid request (#1392). Each label is the kernel's own node title.
+ */
+export const canvasRunKernelOnlyNodeLabels = {
+  'text-generate': '文字生成',
+  'image-crop': '裁剪图片',
+  'image-collage': '拼图',
+  'image-grid-split': '宫格裁剪',
+  'image-tile': '平铺图片',
+  'image-layer': '图层合成',
+  'image-compare': '图片对比',
+  'image-panorama': '全景预览',
+} as const
+
+export type CanvasRunKernelOnlyNodeKind = keyof typeof canvasRunKernelOnlyNodeLabels
 export type CanvasRunScope =
   | { kind: 'all' }
   | { kind: 'to-node'; nodeId: string }
@@ -29,6 +49,14 @@ export interface CanvasRunGraphNode {
   kind: CanvasRunNodeKind
   definitionVersion: number
   disabled?: boolean
+  /**
+   * Set by the request parser when the node is a kernel-only kind or carries a
+   * parameter the desktop cannot honour. The parameter itself is never passed
+   * on, so running the node would silently drop what the user paid for; a run
+   * that reaches it is refused instead. It is not part of the fingerprint or
+   * the graph revision.
+   */
+  desktopUnsupported?: string
   data: {
     prompt: string
     model: string

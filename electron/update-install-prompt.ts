@@ -6,16 +6,23 @@
  * 很多客户配好工具以后窗口一直缩在托盘（Mac 是菜单栏）里，Mac 又很少关机，几周碰不到退出和
  * 重开，下好的新版就一直摆着。
  *
- * - **跳框**：只问这次运行里在后台下好的版本。打开星芒时就已经下好的，由打开时装去装，这里
- *   再问会跟它抢。默认按钮是「稍后再说」，回车、空格、Esc 都落在它上面，只有用鼠标点「现在
+ * - **跳框**：下好的版本都问，只有打开时装已经接手的那一版不问（记了 attempted），再问会跟它抢。
+ *   打开时就已经下好、打开时装却没接手的照样问：开机自启以后窗口一直缩着（Windows 等第一次开窗口
+ *   才装，Mac 要输开机密码的留到退出），或者开机两分钟里没轮到。以前这些这次运行既不装也不问，
+ *   开机自启、只关机不退出的电脑就一直停在旧版（#1410）。问过以后宿主把打开时装撤下，叫出窗口
+ *   时不再预告装一遍。默认按钮是「稍后再说」，回车、空格、Esc 都落在它上面，只有用鼠标点「现在
  *   安装」才装；等电脑几秒没人按键盘、动鼠标再弹，免得客户正打着字框跳出来。每个版本每次运行
- *   最多问一次。账号不在管理员组的 Windows 自己装不了，不问；关了「自动更新」的不问。
+ *   最多问一次。账号不在管理员组的 Windows 自己装不了，不问；关了「自动更新」的不问。网络加速开着
+ *   时先不问：开加速的多半在打游戏，过场、读图那几秒就凑够「没人动」，框一跳会把游戏切出去；点了
+ *   「现在安装」加速会先断，装好也不会自己连回去。等加速关了再按上面的规矩问，一直没关的这次就
+ *   不问了，留给退出时或下次打开时装。
  * - **闲时装**：只在装的时候一个窗口也不弹的 Mac 上（canInstallUnattended）。Windows 每次装都要
  *   有人点授权窗口的「是」，没人在电脑前就卡在那儿，不做。要等电脑 10 分钟没人碰或者锁了屏，
  *   星芒的窗口都缩着，没在装工具，Claude Code 这些工具没在干活，网络加速没开；问过的版本还要
  *   等「稍后再说」之后 10 分钟。每个版本只自动试一次，记在打开时装的同一条记录里（attempted），
  *   没装上就退回到退出时装。客户不在电脑前时下好的不问，直接等着闲时装；框弹出来以后人一直
- *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。
+ *   没回、电脑 10 分钟没人碰的，把框收掉，再按闲时装的规矩办。装之前跟退出时装一样，先现读一次
+ *   服务状态文件（最多等几秒）：下载之后才被撤回的版本在这里收回，不装。
  *
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
  */
@@ -30,8 +37,10 @@ export const IDLE_INSTALL_IDLE_MS = 10 * 60_000
 export const IDLE_INSTALL_AFTER_PROMPT_MS = 10 * 60_000
 /** 等着跳框时多久看一次有没有人在打字。 */
 export const PROMPT_POLL_MS = 2_000
-/** 等着闲时装、框开着等回答时多久看一次。 */
+/** 等着闲时装、框开着等回答、加速开着先不问时多久看一次。 */
 export const IDLE_POLL_MS = 30_000
+/** 闲时装之前现读服务状态文件最多等这么久，读不到就按上次读到的撤回名单算（同退出时装）。 */
+export const IDLE_INSTALL_STATUS_WAIT_MS = 3_000
 
 export interface InstallPrompt {
   title: string
@@ -67,8 +76,8 @@ export function buildInstallPrompt(version: string, platform: NodeJS.Platform, o
 export interface InstallPromptInput {
   autoUpdate: boolean
   snapshot: UpdateSnapshot
-  /** 打开星芒时记录里已经下好的版本（auto-update-install.ts 的 recordAtLaunch.downloadedVersion）。 */
-  downloadedAtLaunch: string | null
+  /** 这一版已经自动装过或正在装（打开时装接手了、退出时、闲时，任何一种）。 */
+  attempted: boolean
   /** Windows 上这个账号不在管理员组；null = 还没问出来。 */
   standardAccount: boolean | null
 }
@@ -82,7 +91,7 @@ export function resolveInstallPromptVersion(input: InstallPromptInput): string |
   // 交给系统安装器的版本（Linux）装的时候要输开机密码、装完不会自己打开，框里那几句都不对。
   if (input.snapshot.installMethod === 'system-installer' || input.snapshot.launchInstallNotice) return null
   const version = resolveInstallableUpdateOnQuit(input.snapshot)?.version
-  if (!version || version === input.downloadedAtLaunch) return null
+  if (!version || input.attempted) return null
   return version
 }
 
@@ -133,7 +142,6 @@ export interface UpdateInstallPrompterOptions {
   platform: NodeJS.Platform
   getState(): UpdateSnapshot
   autoUpdate(): boolean
-  downloadedAtLaunch: string | null
   /** 见 InstallPromptInput.standardAccount。 */
   standardAccount(): boolean | null
   unattended(): boolean
@@ -150,6 +158,11 @@ export interface UpdateInstallPrompterOptions {
   ask(prompt: InstallPrompt, signal: AbortSignal): Promise<InstallPromptAnswer>
   /** 客户点了「现在安装」。 */
   installNow(version: string): Promise<void>
+  /**
+   * 现读一次服务状态文件。撤回名单平时 15 分钟才读一次，读到这一版被撤回时更新器自己把它收回
+   * （updater.ts 的 withdrawOffer），getState 就不再给这一版。
+   */
+  refreshServiceStatus(): Promise<unknown>
   /** 闲时装：记下「试过了」再装。 */
   installWhileIdle(version: string): Promise<void>
   log(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
@@ -181,6 +194,7 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   let open: { version: string; controller: AbortController } | null = null
   let notBefore: number | null = null
   let idleTried: string | null = null
+  let heldForAcceleration: string | null = null
   let cancelTimer: (() => void) | null = null
   let armedMs: number | null = null
   let disposed = false
@@ -194,10 +208,12 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
   }
 
   function promptVersion(snapshot: UpdateSnapshot): string | null {
+    const version = installableVersion(snapshot)
     return resolveInstallPromptVersion({
       autoUpdate: read(options.autoUpdate, false),
       snapshot,
-      downloadedAtLaunch: options.downloadedAtLaunch,
+      // 每次现问：等着跳框的这几秒里，打开时装可能刚接手（客户从托盘点开了窗口）。
+      attempted: !version || read(() => options.attempted(version), true),
       standardAccount: read(options.standardAccount, null),
     })
   }
@@ -227,12 +243,20 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     return options.platform === 'darwin' && read(options.unattended, false)
   }
 
+  // 读不出加速开没开时当作开着：宁可这次不问，也不能把正在打的游戏切出去。
+  function accelerationOn(): boolean {
+    return read(options.accelerationActive, true)
+  }
+
   // 更新状态每变一次都会来一遍：已经排着同样间隔的就不重排，免得一直往后推。
   function schedule(): void {
     const downloaded = installableVersion(read<UpdateSnapshot | null>(options.getState, null)) !== null
+    // 加速开着时一局游戏可能打几个小时，这段时间放慢着看，加速关了再按 2 秒一次等人停手。
     const wanted = disposed
       ? null
-      : waiting ? PROMPT_POLL_MS : downloaded && canInstallWhileIdle() && idleTried === null ? IDLE_POLL_MS : null
+      : waiting
+        ? accelerationOn() ? IDLE_POLL_MS : PROMPT_POLL_MS
+        : downloaded && canInstallWhileIdle() && idleTried === null ? IDLE_POLL_MS : null
     if (wanted !== null && wanted === armedMs && cancelTimer) return
     cancelTimer?.()
     cancelTimer = null
@@ -257,6 +281,14 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     if (!version) return
     if (promptVersion(snapshot) !== version) {
       waiting = null
+      return
+    }
+    // 先于「人在不在」看：加速开着时什么都不记，关了以后再按原规矩办，人走开了的照样等闲时装。
+    if (accelerationOn()) {
+      if (heldForAcceleration !== version) {
+        heldForAcceleration = version
+        log('info', 'install.prompt.held', `网络加速开着，新版本 ${version} 先不跳框问，等加速关了再问`)
+      }
       return
     }
     const idleMs = read(options.idleMs, 0)
@@ -317,13 +349,37 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
     open.controller.abort()
   }
 
+  // 读得慢、读不到都不能把闲时装一直挂着：等满了就按上次读到的撤回名单装。
+  function refreshServiceStatus(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const cancel = setTimer(resolve, IDLE_INSTALL_STATUS_WAIT_MS)
+      void Promise.resolve()
+        .then(() => options.refreshServiceStatus())
+        .catch(() => undefined)
+        .then(() => {
+          cancel()
+          resolve()
+        })
+    })
+  }
+
   function considerIdleInstall(snapshot: UpdateSnapshot): void {
     const version = idleVersion(snapshot)
     if (!version) return
     idleTried = version
-    log('info', 'install.idle', `电脑闲着、窗口缩着，在后台装下好的 ${version}，装好照旧缩在菜单栏`)
-    void Promise.resolve()
-      .then(() => options.installWhileIdle(version))
+    void refreshServiceStatus()
+      .then(() => {
+        if (disposed) return
+        // 下载之后才被撤回的版本在这一步收回（同退出时装）。这一版没试过，下一版下好以后照样能闲时装。
+        if (installableVersion(read<UpdateSnapshot | null>(options.getState, null)) !== version) {
+          idleTried = null
+          log('info', 'install.idle.withdrawn', `${version} 刚被撤回或换了一版，这次不闲时装`)
+          schedule()
+          return
+        }
+        log('info', 'install.idle', `电脑闲着、窗口缩着，在后台装下好的 ${version}，装好照旧缩在菜单栏`)
+        return options.installWhileIdle(version)
+      })
       .catch((cause: unknown) => {
         log('warn', 'install.idle.failed', '闲时装没装起来，留到退出时再装', { cause: cause instanceof Error ? cause.message : String(cause) })
       })

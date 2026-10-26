@@ -212,3 +212,22 @@ export function resolveCliModelUpgrade(
   if (model === table.default || !table.previous.includes(model) || table.retired.includes(table.default)) return null
   return models.includes(table.default) ? table.default : null
 }
+
+/**
+ * Claude Code 主型号临时用不了时按顺序换着试的备用型号（settings.json 的 fallbackModel）。沙箱假接口实测
+ * 2.1.302、2.1.310：主型号回「当前分组下无可用渠道」503、上游 500/502/529、找不到型号 404 时，有备用一两秒内
+ * 换过去答完这一轮（备用也用不了就接着试下一个），没有备用要重试十次、约三分钟后报英文错。额度不足、限流不换。
+ * 按 Claude Code 的说明，下一轮又先试主型号，只有找不到型号是这一场都用备用。
+ *
+ * 只从这个密钥列着的 Claude 型号里挑，最多两个（Claude Code 认三个，多的不看）：先是跟主型号同系列、版本最新的
+ * 另一版（Opus 5.5 → Opus 5），再是另一档里最新的（Opus、Haiku 配 Sonnet，Sonnet 配 Opus）。Haiku 不当备用：
+ * 写代码答不动，换过去不如照旧报错让客户自己挑。一个都挑不到是空数组。
+ */
+export function resolveClaudeFallbackModels(models: readonly string[], primary: string): string[] {
+  const candidates = [...new Set(models)].filter((model) => /^claude-/i.test(model) && model !== primary && claudeTier(model) !== 0)
+  const { family } = modelLineage(primary)
+  const sameFamily = candidates.filter((model) => modelLineage(model).family === family).sort(compareNewerFirst)[0]
+  const otherTier = claudeTier(primary) === 1 ? 2 : 1
+  const nextTier = candidates.filter((model) => claudeTier(model) === otherTier).sort(compareNewerFirst)[0]
+  return [sameFamily, nextTier].filter((model): model is string => Boolean(model))
+}

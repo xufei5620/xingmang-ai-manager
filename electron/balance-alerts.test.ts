@@ -9,6 +9,7 @@ import {
   readSpendBaseline,
   type BalanceAlertObservation,
 } from './balance-alerts'
+import type { EmptyBalanceRecord } from './empty-balance-alert'
 import type { NewApiAccountUsageQuery } from './new-api-client'
 import { spendSpikeQuietPeriod, type SpendBaseline } from './spend-spike'
 
@@ -91,6 +92,104 @@ describe('balance alerts', () => {
     await h.see(100, { supportsUsage: false })
     await h.see(90, { supportsUsage: false })
     expect(h.readBaseline).not.toHaveBeenCalled()
+    expect(h.notify).not.toHaveBeenCalled()
+  })
+})
+
+describe('empty balance notice', () => {
+  function emptyFixture(claimed = new Set<string>()) {
+    const notify = vi.fn()
+    const emptyRecord: EmptyBalanceRecord = {
+      async claim(account) {
+        if (claimed.has(account)) return false
+        claimed.add(account)
+        return true
+      },
+      release: vi.fn(async (account: string) => { claimed.delete(account) }),
+    }
+    const alerts = createBalanceAlerts({
+      notify,
+      readBaseline: vi.fn(async () => ({ hourQuota: 0, weekQuota: 0 })),
+      readNotifiedAt: () => null,
+      rememberNotifiedAt: () => undefined,
+      emptyRecord,
+    })
+    let at = 1_000_000_000
+    async function see(balance: number, overrides: Partial<BalanceAlertObservation> = {}) {
+      at += minute
+      await alerts.observe({ scope: 'solov:7', userId: 7, quota: dollars(balance), quotaPerUnit: unit, at, supportsUsage: false, subscribed: false, ...overrides })
+    }
+    return { notify, see, claimed, emptyRecord, now: () => at }
+  }
+
+  it('tells a pay-as-you-go account once when the wallet runs out, and again only after a top-up', async () => {
+    const h = emptyFixture()
+    await h.see(3)
+    await h.see(0)
+    await h.see(-0.4)
+    expect(h.notify.mock.calls).toEqual([['balance', `balance-empty:7:${h.now() - minute}`]])
+    await h.see(20)
+    await h.see(0)
+    expect(h.notify).toHaveBeenCalledTimes(2)
+    expect(h.notify).toHaveBeenLastCalledWith('balance', `balance-empty:7:${h.now()}`)
+  })
+
+  it('tells an account that is already empty on the first reading', async () => {
+    const h = emptyFixture()
+    await h.see(0)
+    expect(h.notify.mock.calls).toEqual([['balance', `balance-empty:7:${h.now()}`]])
+  })
+
+  it('stays quiet when the same empty spell was already told before a restart', async () => {
+    const h = emptyFixture(new Set(['solov:7']))
+    await h.see(0)
+    expect(h.notify).not.toHaveBeenCalled()
+  })
+
+  it('waits for the subscription read before calling a zero wallet empty', async () => {
+    const h = emptyFixture()
+    await h.see(0, { subscribed: null })
+    expect(h.notify).not.toHaveBeenCalled()
+    await h.see(0, { subscribed: true })
+    expect(h.notify).not.toHaveBeenCalled()
+    // The subscription ran out: now the zero wallet is the whole story.
+    await h.see(0, { subscribed: false })
+    expect(h.notify.mock.calls).toEqual([['balance', `balance-empty:7:${h.now()}`]])
+  })
+
+  it('clears the record as soon as a usable subscription pays again', async () => {
+    const h = emptyFixture()
+    await h.see(0)
+    await h.see(0, { subscribed: true })
+    expect(h.claimed.has('solov:7')).toBe(false)
+    await h.see(0)
+    expect(h.notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('sends only the empty notice when one reading drops from above five dollars straight to zero', async () => {
+    const h = emptyFixture()
+    await h.see(6)
+    await h.see(0)
+    expect(h.notify.mock.calls).toEqual([['balance', `balance-empty:7:${h.now()}`]])
+  })
+
+  it('still sends the low-balance notice for a drop that leaves money in the wallet', async () => {
+    const h = emptyFixture()
+    await h.see(6)
+    await h.see(4)
+    expect(h.notify.mock.calls).toEqual([['balance', `balance:7:${h.now()}`]])
+  })
+
+  it('keeps each account to its own empty spell', async () => {
+    const h = emptyFixture()
+    await h.see(0)
+    await h.see(0, { scope: 'solov:8', userId: 8 })
+    expect(h.notify.mock.calls.map(([, key]) => key)).toEqual([`balance-empty:7:${h.now() - minute}`, `balance-empty:8:${h.now()}`])
+  })
+
+  it('keeps the old behaviour when no record is wired', async () => {
+    const h = alertsFixture()
+    await h.see(0, { supportsUsage: false })
     expect(h.notify).not.toHaveBeenCalled()
   })
 })

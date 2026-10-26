@@ -57,6 +57,7 @@ export function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
   const crashReporting = optionalBoolean(value.crashReporting, '崩溃上报设置')
   const crashReportingNoticeShown = optionalBoolean(value.crashReportingNoticeShown, '错误报告告知记录')
+  const usageStatsNoticeShown = optionalBoolean(value.usageStatsNoticeShown, '使用统计告知记录')
   // Unlike the degrade-don't-throw fields above, an unrecognized value here is
   // rejected: this one decides whether Codex starts with a local debugging
   // port, so a typo must not quietly read as "not asked yet" (E-S3).
@@ -89,6 +90,7 @@ export function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
     ...(crashReporting !== undefined ? { crashReporting } : {}),
     ...(crashReportingNoticeShown !== undefined ? { crashReportingNoticeShown } : {}),
+    ...(usageStatsNoticeShown !== undefined ? { usageStatsNoticeShown } : {}),
     ...(value.codexDesktopChineseRuntimePatch !== undefined
       ? { codexDesktopChineseRuntimePatch: value.codexDesktopChineseRuntimePatch as AppSettingsUpdate['codexDesktopChineseRuntimePatch'] }
       : {}),
