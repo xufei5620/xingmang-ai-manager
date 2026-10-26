@@ -367,10 +367,10 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.302`（2026-10-17） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)` | 上游 changelog 两条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302 的依据见下文 |
-| Codex CLI | `0.162.1`（2026-10-13） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1 的依据见下文 |
+| Claude Code | `2.1.310`（2026-10-26） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)`、`[2.1.304, 2.1.305)` | 上游 changelog 三条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.310 的依据见下文（2.1.303 那次核过、没合，并进 2.1.310） |
+| Codex CLI | `0.164.0`（2026-10-26） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0 的依据见下文（0.163.0 核过、没合） |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
-| Grok CLI | `1.0.52`（2026-10-13） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52 各一遍，见下文） |
+| Grok CLI | `1.0.70`（2026-10-26） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70 各一遍，见下文；1.0.62 核过、没合） |
 
 四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
 
@@ -553,6 +553,40 @@ npm `latest` 是 2.1.302（10-16 发布）；2.1.297、2.1.298 没发过。2.1.2
 交互式启动那几类请求，沙箱里没跑交互式会话，2.1.299 那条以上游 changelog 为准。
 没做的：中转上的真实请求（`verifiedSites` 仍为空）。
 
+**2.1.302 → 2.1.303（2026-10-19 每周巡检，核过、没合，10-26 并进 2.1.310）。** npm `latest` 是 2.1.303，上游 changelog 这一版只有一句
+*Bug fixes and reliability improvements*，看不出改了什么，所以全靠沙箱对照（做法同上一段，对照 2.1.296）：
+`claude -p "hi"` 两版都拿到假接口的回复，请求体字段一样，20 个工具、只带 `Authorization`；`anthropic-beta`
+头和 2.1.302 一样少了 `mid-conversation-system-2026-04-07`，没有新增；`--model haiku` 仍发 `claude-haiku-5-5`；
+`/context` 仍是 `2k / 1m`；npm 包文件列表与 `install.cjs` 和 2.1.296 逐字相同。没做的：中转上的真实请求
+（`verifiedSites` 仍为空）。
+
+**2.1.303 → 2.1.310（2026-10-26 每周巡检）：2.1.304 起默认开工具搜索，2.1.304 本身是一处回归。**
+npm `latest` 是 2.1.310；2.1.304~2.1.310 逐条读过。和接中转有关的：
+
+- 2.1.304：*Changed tool search to be on by default behind a custom `ANTHROPIC_BASE_URL`; a 400 or 422 from the gateway
+  is retried without it*。请求里多了 `advanced-tool-use-2025-11-20` beta、`ToolSearch` 工具和一个延迟加载
+  （`defer_loading`）的工具占位，主请求的工具从 20 个变成 12 个。中转后面的渠道认不认工具搜索，本软件这边看不出。
+- 2.1.305：*Fixed every request failing on Vertex, Bedrock and other providers when the endpoint or a gateway rejects tool
+  search, and behind gateways with ToolSearch disallowed or left out of `--tools` (a 2.1.304 regression)*。**上游自己写明是
+  2.1.304 的回归**，所以加 `blocked` 区间 `[2.1.304, 2.1.305)`。沙箱里假接口对工具搜索回 400 时，2.1.304 也是去掉重发、
+  拿到回复，没复现出「每次都失败」——它要的拒法和我们的假接口不同（推断）；区间按上游原文加。
+- 2.1.304：修了 LLM 网关报 `context_management: Extra inputs are not permitted`，改为去掉这个字段重发。
+- 2.1.307：不再给自定义 `ANTHROPIC_BASE_URL` 的网关发 `prompt-caching-scope` beta（沙箱里 2.1.310 的 beta 头确实没有它）。
+- 2.1.309：只发心跳的网关后面，「Waiting for API response」提示改为等 45 秒再出，不再闪。
+- 2.1.310：*Fixed requests failing behind some gateways and compatible servers that reject the `effort-2025-11-24` beta value
+  or mid-conversation system messages; Claude Code now retries without them*；同版修了 `cleanupPeriodDays` 写得很大时
+  后台清理误删最近的文件（模板写 365，推断不在「很大」之列）。
+
+没碰我们写的配置：没有一条改 `permissions.defaultMode`、`permissions.deny`、`skipWebFetchPreflight`、`modelPicker`、
+`effortLevel`、`DISABLE_AUTOUPDATER`；2.1.309 改的 `bypassPermissions` 下危险 `rm` 提示只在桌面端与 VS Code。
+
+沙箱（10-26 换了容器，假接口按同样的规格重写，2.1.303 一起重跑当对照）：`claude -p "hi"` 两版都拿到回复、只带
+`Authorization`、请求体字段一样；2.1.310 的主请求带工具搜索（见上）。假接口对工具搜索一律回 400 时，2.1.310 先带它试
+两次，再发一次不带它的请求（21 个工具，比 2.1.303 多一个 `Monitor`）拿到回复，退出码 0——中转要是不认，每次会多两次
+被拒的请求（推断：被拒的请求不扣额度）。`--model haiku` 仍发 `claude-haiku-5-5`；`/context` 仍按 `1m` 算；
+`claude doctor` 仍是 `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`；npm 包文件列表与 `install.cjs`
+和 2.1.303 逐字相同。没做的：中转上的真实请求（`verifiedSites` 仍为空），所以中转后面的渠道到底认不认工具搜索还不知道。
+
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
 每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
@@ -638,6 +672,60 @@ Grok：没有可读的变更记录。npm 上 1.0.47~1.0.55 都发了，`latest` 
 `UserPromptSubmit`、`Stop`、`SessionEnd`，配置无解析错误（钩子）。
 
 没做的：中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.52 Windows 版挑哪个 shell 没有重读二进制字符串。
+
+**Codex 0.162.1 → 0.163.0、Grok 1.0.52 → 1.0.62（2026-10-19 每周巡检，核过、没合，10-26 并进 0.164.0、1.0.70）。**
+
+Codex 区间内只有 0.163.0 一个正式版（10-15 发布），读了 `rust-v0.163.0` 的 release note，没有一条碰自定义
+`model_providers` / `base_url` / `wire_api`。和本产品有关的：
+
+- 没写完（incomplete）的 Responses 回复改成按出错结束，并照算用量——中转回得不完整时客户会看到报错，不会当成已经答完。
+- WebSocket 续接失败时说清原因；`/daemon` 能重启托管的后台服务——我们 `daemon_auto_start = false`，碰不到。
+- 关了统计时仍会用自定义的 OTLP 指标导出——模板没写 OTLP，`[analytics] enabled = false` 照旧。
+- Windows：`Ctrl+V` / `Shift+Insert` 能粘贴文字，沙箱迁到 MXC。
+- 「Daybreak」对符合条件的账号默认开——推断说的是 ChatGPT 账号，API Key 登录应不在其中，沙箱里请求没有变化。
+
+随包型号名单：`rust-v0.163.0` 的 `codex-rs/models-manager/models.json` 与 `rust-v0.162.1` 逐字相同（sha256
+`943ca7fe…2c2b` 不变），`LICENSE`、`NOTICE` 也一样，只把 tag 与提交号换成 `rust-v0.163.0`
+（`83086188ae0614bd882818ff1aa23f3194962012`）。沙箱实测（做法同上）：0.163.0 的 `codex debug models` 列出全部
+11 个型号；`codex exec` 与 `codex --no-daemon exec` 用 `gpt-6.1-sol` 都拿到回复，打到假接口的只有一次
+`POST /v1/responses`（带 `Authorization`），出网代理记下的 `github.com`、`api.github.com`、`chatgpt.com` 与 0.162.1 一模一样。
+
+Grok：没有可读的变更记录。npm `latest` 与 xAI stable 都在 1.0.62，所以选它。1.0.54 起 `grok.exe` 改由 X Corp. 签名，
+#1051 已经两张证书都认；Windows 先从星芒存储桶下，桶里还没有这一版时悄悄换回 xAI 那一路（`grok-bucket.ts`），
+同步作业也会按新的推荐版本补传。在 1.0.62 上重跑四项：有 `allowed_models` 时 `grok models` 只列 `grok`、去掉后
+多出 `grok-4.6`、`grok-4.5`（K3）；起标题那次请求是 `relay-x`、去掉 `session_summary` 变回 `grok-4.6`（K4）；
+`image_gen` 打到本地 `POST /v1/images/generations`（K1）；一轮 `-p` 触发 `UserPromptSubmit`、`Stop`×2、`SessionEnd`，
+配置无解析错误（钩子）。**K1 有一处变化**：去掉 `[endpoints] xai_api_base_url` 后，1.0.52 会去连 `api.x.ai`，
+1.0.62 改为本地直接报「no xAI credential available」，出网代理一条记录都没有——Key 照样不会发去 xAI，但出图会失败，
+所以这一项仍然要写。装插件的 `--trust` 10-18 已在 1.0.62 上核过（见上文）。
+
+没做的：两家都没有中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.62 Windows 版挑哪个 shell 没有重读二进制字符串。
+
+**Codex 0.163.0 → 0.164.0、Grok 1.0.62 → 1.0.70（2026-10-26 每周巡检）。**
+
+Codex 区间内只有 0.164.0 一个正式版（10-23 发布），读了 `rust-v0.164.0` 的 release note，没有一条碰自定义
+`model_providers` / `base_url` / `wire_api` / `requires_openai_auth`。和本产品有关的：
+
+- 压缩失败不再把半截摘要留在历史里；恢复会话时带回保存的线程设置；`-c` / `--config` 覆盖在各级子命令间保留。
+- Windows：代理认证支持 Negotiate / NTLM，沙箱改用 `mxc-sdk`。
+- 刷新失败时保留 provider 的型号名单缓存，换账号后重新加载型号名单——我们写的是本地 `model_catalog_json`，碰不到。
+- 没提 `daemon_auto_start`、`--no-daemon`、`check_for_update_on_startup`、`[analytics]`，沙箱里都照旧。
+
+随包型号名单：`rust-v0.164.0` 的 `models.json` 与 `rust-v0.162.1`、`rust-v0.163.0` 逐字相同（sha256 `943ca7fe…2c2b`
+不变），`LICENSE`、`NOTICE` 也一样，只把 tag 与提交号换成 `rust-v0.164.0`（`6aaac694803004a63c6f393d153c96d22521a6b9`）。
+沙箱（做法同上，0.163.0 一起重跑当对照；模板写 `supports_websockets = false`，测的是 HTTP 这一路，产品给 GPT 型号写的
+是 `true`，WebSocket 那一路没在沙箱里测）：两版的 `codex debug models` 都列出全部 11 个型号；`codex exec` 与
+`codex --no-daemon exec` 用 `gpt-6.1-sol` 都拿到回复，打到假接口的只有一次 `POST /v1/responses`（带 `Authorization`，
+请求字段两版一样），出网代理记下的 `github.com`、`api.github.com`、`chatgpt.com` 两版一样。
+
+Grok：没有可读的变更记录。npm 上 1.0.63~1.0.70 都发了，`latest` 与 xAI stable 都在 1.0.70，所以选它。在 1.0.70 上
+重跑四项，和 1.0.62 逐条相同：有 `allowed_models` 时 `grok models` 只列 `grok`、去掉后多出 `grok-4.6`、`grok-4.5`（K3）；
+起标题那次请求是 `relay-x`、去掉 `session_summary` 变回 `grok-4.6`（K4）；`image_gen` 打到本地
+`POST /v1/images/generations`，去掉 `[endpoints] xai_api_base_url` 后本地报「no xAI credential available」、不连外网（K1）；
+一轮 `-p` 触发 `UserPromptSubmit`、`Stop`×2、`SessionEnd`（钩子）。装插件：本地目录插件不带 `--trust` 退出码 1、什么都不写，
+带上以后拷进 `~/.grok/installed-plugins/`、`[plugins] enabled` 记上它，1.0.62 与 1.0.70 一样。
+
+没做的：两家都没有中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.70 Windows 版挑哪个 shell 没有重读二进制字符串。
 
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
