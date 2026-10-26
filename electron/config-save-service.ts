@@ -62,6 +62,7 @@ import {
   takeBackCodexModelCatalog,
   toNativeConfigSummary,
 } from './config-files'
+import { ensureEditorClaudeLoginPromptDisabled } from './editor-claude-login-prompt'
 import type { ExternalClientStatus } from './external-client-contract'
 import type { ManagedKeyFollowTarget } from './external-client-route-service'
 import type { MacosCodexAppInspection } from './macos-codex-app'
@@ -785,6 +786,29 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return repaired
   }
 
+  /**
+   * 写完 Claude Code 配置顺手在 VS Code、Cursor 的用户设置里关掉 Claude Code 插件的登录页
+   * （editor-claude-login-prompt.ts）。补不上只记日志，不算这次保存或补设置失败。
+   */
+  function disableEditorClaudeLoginPrompt(): void {
+    try {
+      for (const result of ensureEditorClaudeLoginPromptDisabled({ platform, userHome: providerRoots.userHome })) {
+        if (result.outcome === 'added') {
+          runtimeLog?.log('info', 'config', 'editor-login-prompt.disabled', '已在编辑器设置里关掉 Claude Code 插件的登录页', { editor: result.editor })
+        } else if (result.outcome === 'unreadable') {
+          runtimeLog?.log('info', 'config', 'editor-login-prompt.skipped', '编辑器设置读不懂，没有替 Claude Code 插件关登录页', { editor: result.editor })
+        } else if (result.outcome === 'failed') {
+          runtimeLog?.log('warn', 'config', 'editor-login-prompt.failed', '没能在编辑器设置里关掉 Claude Code 插件的登录页', {
+            editor: result.editor,
+            reason: credentialFailureReason(result.error),
+          })
+        }
+      }
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'editor-login-prompt.failed', '没能在编辑器设置里关掉 Claude Code 插件的登录页', { reason: credentialFailureReason(error) })
+    }
+  }
+
   async function saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
@@ -879,6 +903,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner, relayTemplateRevision)
+      if (payload.provider === 'claude' && !previewOnboarding) disableEditorClaudeLoginPrompt()
       if (shadowRepair) runtimeLog?.log('info', 'config', 'codex-provider.auto-repaired', '开机时把 Codex 认不出的连接设置改好了，原来的设置已备份', { provider: payload.provider })
       // 客服从日志看得出工具配置是什么时候、从哪条线路换到哪条的：只记线路 id，不记地址。
       if (followedRoute) {
@@ -1125,6 +1150,8 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
           const result = pending ? fillRelayTemplateDefaults(provider, providerRoots, site.providerBaseUrls) : null
           // 补的都是指纹之外的键，来源记录照旧是当前账号，只把版本号往前挪。
           await configOwnership.write(provider, inspectNativeProviderConfig(provider), 'account', owner, relayTemplateRevision)
+          // 第 5 版：编辑器设置不在工具配置目录里，不算进上面的「补齐」，每份配置跟着版本号只做这一次。
+          if (provider === 'claude') disableEditorClaudeLoginPrompt()
           return result !== null
         })
         if (wrote) {
