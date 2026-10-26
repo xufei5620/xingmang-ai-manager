@@ -19,7 +19,7 @@ import type { IpcHandlerContext } from './context'
 // 分镜要有点变化：同一句想法再写一次，或者第一次没按格式答、再问一次时，回答不该一模一样。
 const planTemperature = 0.7
 
-export function toAiVideoClip(asset: AiStoredVideoAsset): AiVideoClip {
+export function toAiVideoClip(asset: Pick<AiStoredVideoAsset, 'assetId' | 'width' | 'height' | 'durationSeconds'>): AiVideoClip {
   return {
     assetId: asset.assetId,
     thumbnailUrl: assetThumbnailUrl(asset.assetId, 'video'),
@@ -125,6 +125,18 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
       createAiVideoProgressForwarder(event.sender, parsed.requestId),
     )
     return toAiVideoClip(asset)
+  })
+
+  // 视频剪辑页重开时接回上次没等到的片段（关了软件、刷新了页面）。只按请求号查这个账号自己的任务记录，
+  // 不收模型、分组这些：找到的那一单怎么查、扣的哪份钱，都按当初提交时记下的来。
+  registerTrustedHandler('video:resume', async (event, requestId: unknown) => {
+    const videoService = options.videoService
+    if (!videoService) throw new Error('视频服务未就绪')
+    const id = requiredString(requestId, '视频请求标识', 160)
+    const userId = currentUserId()
+    observeSender(event.sender)
+    const asset = await videoService.resumeRequest(event.sender.id, userId, id, createAiVideoProgressForwarder(event.sender, id))
+    return asset ? toAiVideoClip(asset) : null
   })
 
   registerTrustedHandler('video:cancel', (event, requestId: unknown) => {

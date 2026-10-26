@@ -10,9 +10,12 @@ import {
 const FILE_LABEL = 'AI 视频任务记录'
 const MAXIMUM_FILE_BYTES = 2 * 1024 * 1024
 export const MAXIMUM_VIDEO_TASKS = 200
+export const MAXIMUM_FINISHED_VIDEO_TASKS = 100
 export const AI_VIDEO_TASK_VERSION = 2
 const MAXIMUM_PROMPT_LENGTH = 2_000
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
+const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
+const secretOrEndpoint = /\b(?:apiKey|accessToken|refreshToken)\b|https?:\/\//i
 
 export interface StoredAiVideoTask {
   version: typeof AI_VIDEO_TASK_VERSION
@@ -36,10 +39,32 @@ export interface StoredAiVideoTask {
   prompt?: string
 }
 
+/**
+ * Which clip a finished task became, kept after the task itself is gone. The
+ * window that asked for a clip is not always there when it lands: the app was
+ * closed and the next launch fetched it, or the page reloaded mid-wait. The
+ * video studio keeps the request id of every shot still generating and asks
+ * for it here when it reopens, so a clip the account already paid for goes
+ * back onto its shot instead of reading "not generated" and being paid for a
+ * second time.
+ */
+export interface FinishedAiVideoTask {
+  requestId: string
+  taskId: string
+  assetId: string
+  width?: number
+  height?: number
+  durationSeconds?: number
+  finishedAt: string
+}
+
+export type FinishedAiVideoAsset = Pick<FinishedAiVideoTask, 'assetId' | 'width' | 'height' | 'durationSeconds'>
+
 interface AiVideoTaskState {
   version: typeof AI_VIDEO_TASK_VERSION
   userId: number
   tasks: StoredAiVideoTask[]
+  finished: FinishedAiVideoTask[]
 }
 
 export interface AiVideoTaskStoreOptions {
@@ -122,6 +147,24 @@ function migrateTask(value: unknown, userId: number): StoredAiVideoTask | null {
   return safeTask(value, userId) ? value : null
 }
 
+function positive(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function readFinished(value: unknown): FinishedAiVideoTask | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const entry = value as Partial<FinishedAiVideoTask>
+  if (!safeString(entry.requestId, 160) || typeof entry.taskId !== 'string' || !TASK_ID_PATTERN.test(entry.taskId)
+    || typeof entry.assetId !== 'string' || !ASSET_ID_PATTERN.test(entry.assetId)
+    || typeof entry.finishedAt !== 'string' || Number.isNaN(Date.parse(entry.finishedAt))) return null
+  const width = positive(entry.width), height = positive(entry.height), durationSeconds = positive(entry.durationSeconds)
+  return {
+    requestId: entry.requestId, taskId: entry.taskId, assetId: entry.assetId,
+    ...(width ? { width } : {}), ...(height ? { height } : {}), ...(durationSeconds ? { durationSeconds } : {}),
+    finishedAt: entry.finishedAt,
+  }
+}
+
 function parseState(content: string, userId: number): AiVideoTaskState {
   const value = JSON.parse(content) as Partial<AiVideoTaskState>
   const version = (value as { version?: unknown }).version
@@ -136,11 +179,18 @@ function parseState(content: string, userId: number): AiVideoTaskState {
   // legitimately quote a URL; it is never fetched, and it is already persisted
   // verbatim beside the asset. Scanning it here would let one such prompt
   // condemn the whole file and lose every task waiting to be resumed.
-  const scanned = JSON.stringify({ ...value, tasks: tasks.map((task) => ({ ...task, prompt: undefined })) })
-  if (/\b(?:apiKey|accessToken|refreshToken)\b|https?:\/\//i.test(scanned)) {
+  const scanned = JSON.stringify({ ...value, finished: undefined, tasks: tasks.map((task) => ({ ...task, prompt: undefined })) })
+  if (secretOrEndpoint.test(scanned)) {
     throw new Error('AI 视频任务记录包含凭据或远程地址')
   }
-  return { version: AI_VIDEO_TASK_VERSION, userId, tasks: tasks as StoredAiVideoTask[] }
+  // A bad entry among the finished ones only means one shot cannot find its
+  // clip again. It is dropped on its own and must not condemn the tasks above,
+  // which are still waiting on money already spent.
+  const finished = (Array.isArray(value.finished) ? value.finished : [])
+    .map(readFinished)
+    .filter((entry): entry is FinishedAiVideoTask => entry !== null && !secretOrEndpoint.test(JSON.stringify(entry)))
+    .slice(0, MAXIMUM_FINISHED_VIDEO_TASKS)
+  return { version: AI_VIDEO_TASK_VERSION, userId, tasks: tasks as StoredAiVideoTask[], finished }
 }
 
 export class AiVideoTaskStore {
@@ -233,6 +283,29 @@ export class AiVideoTaskStore {
     })
   }
 
+  /** The clip is saved: drop the task and remember which clip its request became, in one write. */
+  async finish(task: Pick<StoredAiVideoTask, 'userId' | 'taskId' | 'requestId'>, asset: FinishedAiVideoAsset): Promise<void> {
+    assertTaskId(task.taskId)
+    return this.enqueue(task.userId, async () => {
+      const state = await this.read(task.userId)
+      state.tasks = state.tasks.filter((entry) => entry.taskId !== task.taskId)
+      const entry = readFinished({ ...asset, requestId: task.requestId, taskId: task.taskId, finishedAt: this.now().toISOString() })
+      if (entry) {
+        state.finished = [entry, ...state.finished.filter((existing) => existing.requestId !== entry.requestId)]
+          .slice(0, MAXIMUM_FINISHED_VIDEO_TASKS)
+      }
+      await this.write(task.userId, state)
+    })
+  }
+
+  async findFinished(userId: number, requestId: string): Promise<FinishedAiVideoTask | null> {
+    if (!safeString(requestId, 160)) return null
+    return this.enqueue(userId, async () => {
+      const entry = (await this.read(userId)).finished.find((candidate) => candidate.requestId === requestId)
+      return entry ? structuredClone(entry) : null
+    })
+  }
+
   private userDirectory(userId: number): string {
     assertUserId(userId)
     return path.join(this.rootDirectory, `user-${userId}`)
@@ -246,7 +319,7 @@ export class AiVideoTaskStore {
     const filePath = this.filePath(userId)
     try {
       const content = await readSafeUtf8File(filePath, FILE_LABEL, MAXIMUM_FILE_BYTES)
-      return content === null ? { version: AI_VIDEO_TASK_VERSION, userId, tasks: [] } : parseState(content, userId)
+      return content === null ? { version: AI_VIDEO_TASK_VERSION, userId, tasks: [], finished: [] } : parseState(content, userId)
     } catch {
       try {
         const backup = `${filePath}.corrupt-${this.now().getTime()}-${this.randomUUID()}.bak`
@@ -254,7 +327,7 @@ export class AiVideoTaskStore {
       } catch {
         // Unsafe or missing state is left untouched and ignored.
       }
-      return { version: AI_VIDEO_TASK_VERSION, userId, tasks: [] }
+      return { version: AI_VIDEO_TASK_VERSION, userId, tasks: [], finished: [] }
     }
   }
 
@@ -262,7 +335,10 @@ export class AiVideoTaskStore {
     const directory = this.userDirectory(userId)
     ensureSafeDataDirectory(this.rootDirectory, FILE_LABEL)
     ensureSafeDataDirectory(directory, FILE_LABEL)
-    const content = `${JSON.stringify(state, null, 2)}\n`
+    // Older builds read only `tasks` and drop the rest when they write, which
+    // costs nothing but the shots they never knew to look for.
+    const { finished, ...rest } = state
+    const content = `${JSON.stringify(finished.length ? state : rest, null, 2)}\n`
     if (Buffer.byteLength(content, 'utf8') > MAXIMUM_FILE_BYTES) throw new Error('AI 视频任务记录超过安全上限')
     await writeAtomicSafeUtf8File(this.filePath(userId), content, FILE_LABEL)
   }

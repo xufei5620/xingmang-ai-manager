@@ -117,6 +117,16 @@ export class CanvasProjectAssetManager {
     return asset
   }
 
+  /**
+   * Tags pictures this project has just stored, next to the tags already on
+   * them. The tag lands in the same metadata file as the picture: a project
+   * with its own folder keeps both there, the rest share the account library.
+   */
+  async addImageTag(userId: number, assetIds: readonly string[], tag: string, projectId?: string): Promise<void> {
+    const context = await this.forProject(userId, this.requiredMetadataProjectId({ projectId }))
+    for (const assetId of assetIds) await context.metadata.addTag(userId, assetId, tag)
+  }
+
   async readImageOwned(userId: number, assetId: string, projectId?: string): Promise<AiOwnedAssetRead> {
     return projectId
       ? (await this.forProject(userId, projectId)).images.readOwned(userId, assetId)
