@@ -583,11 +583,12 @@ jobs:
 
       - run: npm run typecheck
 
+      # 出货渲染层和画布的单测在 npm test 里：test:vitest 的 src 把 src/renderer-v2 和
+      # canvas-v2/src 都挑进去了。所以和 release:build:unsigned 一样，后面只补它不跑的
+      # 浏览器那半，不再整条跑 test:v2、test:canvas 把同一批文件再跑一遍。
       - run: npm test
 
-      - run: npm run test:v2
-
-      - run: npm run test:canvas
+      - run: npm run test:v2:browser
 
       - run: npm run test:ui
 

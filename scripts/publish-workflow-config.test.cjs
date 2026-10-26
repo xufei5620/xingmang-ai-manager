@@ -286,8 +286,12 @@ test('the Linux debs go through their own release gate, one native runner per ar
   assert.doesNotMatch(YAML.stringify(linuxBuildJob), /acceleration/i)
   // release:build:unsigned 里会跑的那几套测试，Linux 在 linux-checks 里跑一遍。
   const checks = linuxChecksJob.steps.map((step) => String(step.run || '').trim())
-  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2', 'npm run test:canvas', 'npm run test:ui']) {
+  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2:browser', 'npm run test:ui']) {
     assert.ok(checks.includes(command), `linux-checks must run ${command}`)
+  }
+  // 出货渲染层和画布的单测 npm test 已经跑过（ci-workflow-config.test.cjs 钉住），再跑就是第二遍。
+  for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
+    assert.equal(checks.includes(repeat), false, `linux-checks must not run ${repeat} after npm test`)
   }
 })
 

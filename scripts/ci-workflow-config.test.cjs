@@ -334,8 +334,8 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:3'], 'npm run test:vitest -- --shard=3/4')
   assert.equal(scripts['test:vitest:4'], 'npm run test:vitest -- --shard=4/4')
 
-  // quality.yml runs test:v2:browser whole nowhere (the release gates still run
-  // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
+  // quality.yml runs test:v2:browser whole nowhere (the release gates run it
+  // whole after npm test). The two suites that bring a Vite cacheDir of their own get a
   // runner of their own; the configFile:false browser-checks are
   // test:v2:browser:fixture, which Windows and Linux each cut into numbered
   // shares of their own below.
@@ -538,7 +538,7 @@ test('dealing a file across the fixture shares runs each of its tests exactly on
   }
   assert.deepEqual(deal(undefined), names, 'an unsharded run must register every test')
   // Unsharded, a file gets node:test's own test, so local runs and the release
-  // gates' whole test:v2 still report each test at its own line rather than at
+  // gates' whole test:v2:browser still report each test at its own line rather than at
   // the wrapper.
   assert.equal(shard.test === test, !process.env.XINGMANG_TEST_SHARD, 'only a named shard may wrap test')
   for (const total of [1, 2, 3]) {
@@ -688,6 +688,13 @@ test('each platform runs every vitest file once, through npm test or its shards'
   for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
     assert.equal(commands.includes(repeat), false, `${repeat} repeats files test:vitest already runs on every platform`)
   }
+  // Nor may the Windows release build, which runs `npm test` whole first. It
+  // ran test:v2 and test:canvas after it until the same was found there.
+  const gate = windowsReleaseGateCommands()
+  for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
+    assert.equal(gate.includes(repeat), false, `${repeat} repeats files the release build's npm test already runs`)
+  }
+  assert.ok(gate.includes('npm run test:v2:browser'), 'the release build must still run the half of test:v2 npm test does not')
 })
 
 test('the legacy rollback UI suites are verified on exactly one platform', () => {
