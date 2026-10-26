@@ -653,7 +653,11 @@ jobs:
     # minutes. The fixture half of its browser suites now runs beside it in
     # linux-renderer-v2-browser, split along the same seam the Windows matrix
     # uses, so nothing is skipped and nothing is run twice.
-    timeout-minutes: 30
+    #
+    # 35 rather than 30 since the apt step may take up to 18 of them when its
+    # cache misses on a slow mirror; the ~12 minutes of steps after it still
+    # have to fit.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -688,18 +692,58 @@ jobs:
       # took 25 seconds on other runners in the same hour. apt never gave up
       # on its own, so the bound has to come from outside it.
       - run: npx --no-install playwright install chromium
+      # The apt half used to download its ~26 MB on every run, and on
+      # 2026-10-26 the Azure Ubuntu mirror served some runners at ~40 KB/s
+      # while others in the same hour finished in 12 seconds: #1431 (run
+      # 40407332094, both attempts), #1426, #1442, #1447 and #1423 went red
+      # with no test run. So the .deb files are cached the way the Electron
+      # download is, and a slow mirror only costs a run whose cache missed.
+      # The key moves with the runner image (which decides what is already
+      # installed) and with Playwright (which decides the package list); a
+      # miss restores the newest entry for this Ubuntu release, so apt only
+      # fetches what changed since. Cached files are not trusted: apt would
+      # install a file already in its download folder as root after checking
+      # only its size, so the script hands it only the files whose SHA256
+      # matches this runner's signed package index and leaves the rest for
+      # apt to download and verify itself.
+      - name: Name the apt download cache after this runner image
+        id: apt-image
+        run: |
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - name: Restore the apt downloads for Chromium's system libraries
+        id: apt-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ci-apt-archives
+          key: chromium-apt-${{ runner.arch }}-${{ steps.apt-image.outputs.os }}-${{ steps.apt-image.outputs.version }}-${{ hashFiles('node_modules/playwright-core/package.json') }}
+          restore-keys: chromium-apt-${{ runner.arch }}-${{ steps.apt-image.outputs.os }}-
       - name: Install Chromium's system libraries
+        id: chromium-deps
         # Hosted Windows/macOS runners ship the libraries Chromium links
         # against; ubuntu-latest needs them (and the CJK fonts the renderer
-        # tests lay text out with) from apt. The script bounds each attempt,
-        # clears whatever apt left running and waits out the dpkg locks
-        # before its one retry (#695 lost both attempts to a surviving
-        # apt-get); this cap is the backstop over its own budget.
-        timeout-minutes: 13
+        # tests lay text out with) from apt. The script seeds apt with the
+        # cached .deb files, bounds each attempt, and clears whatever apt left
+        # running and waits out the dpkg locks before a retry (#695 lost both
+        # attempts to a surviving apt-get); this cap is the backstop over its
+        # own budget.
+        timeout-minutes: 18
         run: |
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            'APT::Keep-Downloaded-Packages "true";' \
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
-          bash scripts/ci-install-chromium-deps.sh
+          CI_APT_DEB_CACHE_DIR="$HOME/.cache/ci-apt-archives" bash scripts/ci-install-chromium-deps.sh
+      # Only this job writes, and only on main, for the Electron cache's
+      # reasons: a pull request's cache serves that pull request alone, and
+      # linux-renderer-v2-browser saving the same key at the same moment
+      # would only race this one. The script says whether it kept any files,
+      # because an empty entry would count as a hit and never be replaced.
+      - name: Save the apt downloads for later runs
+        if: github.event_name == 'push' && steps.apt-cache.outputs.cache-hit != 'true' && steps.chromium-deps.outputs.cache-ready == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ci-apt-archives
+          key: ${{ steps.apt-cache.outputs.cache-primary-key }}
       - run: npm run typecheck
       # Also the renderer v2 and canvas unit suites: test:vitest's `src`
       # argument takes in src/renderer-v2 and canvas-v2/src. Separate
@@ -768,13 +812,27 @@ jobs:
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
       - run: npx --no-install playwright install chromium
+      # Reads the apt download cache linux-test writes on main.
+      - name: Name the apt download cache after this runner image
+        id: apt-image
+        run: |
+          echo "os=${ImageOS:-unknown}" >> "$GITHUB_OUTPUT"
+          echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+      - name: Restore the apt downloads for Chromium's system libraries
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ci-apt-archives
+          key: chromium-apt-${{ runner.arch }}-${{ steps.apt-image.outputs.os }}-${{ steps.apt-image.outputs.version }}-${{ hashFiles('node_modules/playwright-core/package.json') }}
+          restore-keys: chromium-apt-${{ runner.arch }}-${{ steps.apt-image.outputs.os }}-
       - name: Install Chromium's system libraries
-        # Same bounded installer as linux-test, for the same reason (#653).
-        timeout-minutes: 13
+        # Same bounded installer as linux-test, for the same reasons (#653,
+        # and the slow mirror of 2026-10-26).
+        timeout-minutes: 18
         run: |
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            'APT::Keep-Downloaded-Packages "true";' \
             | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
-          bash scripts/ci-install-chromium-deps.sh
+          CI_APT_DEB_CACHE_DIR="$HOME/.cache/ci-apt-archives" bash scripts/ci-install-chromium-deps.sh
       - name: Run fixture shard ${{ matrix.shard }}
         run: ${{ matrix.command }}
       - name: Fail if the test run left files in the working tree
