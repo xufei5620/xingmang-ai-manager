@@ -147,7 +147,6 @@ export interface UpdateInstallPrompterOptions {
   busy(): boolean
   toolsWorking(): boolean
   accelerationActive(): boolean
-  /** 见 InstallPromptInput.attempted。 */
   attempted(version: string): boolean
   /** 跳框；signal 断开时宿主收起框，当作「稍后再说」。 */
   ask(prompt: InstallPrompt, signal: AbortSignal): Promise<InstallPromptAnswer>
