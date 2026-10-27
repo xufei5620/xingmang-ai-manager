@@ -86,7 +86,7 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 
 两条路径的最后一步都一样：产物校验之前，六个文件会被改成带芯片名的发行名（`XingMang-AI-Manager-<版本号>-Apple-Silicon-arm64.*` 与 `…-Intel-x64.*`），`latest-mac.yml` 的引用同步改写。上传时保持这些名字不变——架构后缀是 electron-updater 分架构下载的依据，手工改名会让一部分 Mac 更新到另一个架构的包。
 
-CI 上也走这条带线路的路径。`--ci-temporary-signing` 与两个加速参数在 2026-09-19 节点入仓之前互斥，之后不再互斥（见 `scripts/run-macos-free-build.cjs` 的 `parseFreeMacBuildArguments` 和 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）：`package-for-testing` 出的 Mac 测试包、PR 上 `quality` 的 `macos-release-rehearsal` 排练，都先在 runner 上用 `scripts/prepare-acceleration-bundle.cjs` 现场准备两个架构的资源，再带上这两个参数出包。它们由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布的包仍按本节用发布身份出（`publish-release` 的 `macos-build` 也是带着这两个参数跑 `dist:mac:free`）。`quality` 里的 `macos-test` 与 `macos-intel` 两个作业出的包仍不带线路。
+CI 上也走这条带线路的路径。`--ci-temporary-signing` 与两个加速参数在 2026-09-19 节点入仓之前互斥，之后不再互斥（见 `scripts/run-macos-free-build.cjs` 的 `parseFreeMacBuildArguments` 和 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）：`package-for-testing` 出的 Mac 测试包、`quality` 的 `macos-release-rehearsal` 排练（每次合进 `main` 都跑，PR 上只在动了打包相关文件时跑，名单见 `scripts/ci-change-scope.cjs`），都先在 runner 上用 `scripts/prepare-acceleration-bundle.cjs` 现场准备两个架构的资源，再带上这两个参数出包。它们由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布的包仍按本节用发布身份出（`publish-release` 的 `macos-build` 也是带着这两个参数跑 `dist:mac:free`）。`quality` 里的 `macos-test` 与 `macos-intel` 两个作业出的包仍不带线路。
 
 本次使用官方 Mihomo v1.19.29，内核、资源准备 JSON 和生成的五文件目录仍保存在仓库外，节点来源可使用仓库固定配置。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
 

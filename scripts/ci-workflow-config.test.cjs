@@ -858,7 +858,7 @@ test('the supported macOS runner runs the real isolated free-distribution build 
   assert.equal(macJob.steps.some((step) => String(step.uses || '').includes('upload-artifact')), false)
 })
 
-test('the release path itself is rehearsed on every pull request, not only when a release is cut', () => {
+test('the release path itself is rehearsed before a merge, not only when a release is cut', () => {
   const job = workflow.jobs['macos-release-rehearsal']
   const commands = runSteps('macos-release-rehearsal')
 
@@ -1144,9 +1144,15 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
+  }
+  // Their output is never true where code is false, so they skip on every
+  // documentation-only change too.
+  for (const job of ['macos-release-rehearsal', 'macos-intel']) {
+    assert.equal(workflow.jobs[job].needs, 'changes')
+    assert.equal(workflow.jobs[job].if, "needs.changes.outputs.macPackaging == 'true'")
   }
 })
 
@@ -1194,8 +1200,8 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     try { vm.runInNewContext(source, { process: { env: { JOB_RESULTS: JSON.stringify(jobs) }, exit: () => { throw new Error('failed') } } }) } catch { failed = true }
     return !failed
   }
-  const verify = (code, changeResult, results) => {
-    const jobs = { changes: { outputs: { code }, result: changeResult } }
+  const verify = (code, changeResult, results, macPackaging = code === 'true' ? 'true' : 'false') => {
+    const jobs = { changes: { outputs: { code, macPackaging }, result: changeResult } }
     for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
@@ -1231,6 +1237,25 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
   )
   assert.equal(verify('false', 'success', documentationOnly), true)
+  // G1: a pull request that leaves the packaging inputs alone skips the two
+  // packaging-only macOS jobs, and everything else still has to pass.
+  const packagingSkipped = { 'macos-release-rehearsal': 'skipped', 'macos-intel': 'skipped' }
+  assert.equal(verify('true', 'success', packagingSkipped, 'false'), true)
+  assert.equal(verify('true', 'success', { ...packagingSkipped, 'macos-test': 'skipped' }, 'false'), false)
+  assert.equal(verify('true', 'success', { ...packagingSkipped, 'linux-package': 'failure' }, 'false'), false)
+  assert.equal(verify('true', 'success', { ...packagingSkipped, test: 'failure' }, 'false'), false)
+  // Due and skipped is a failure, like every other job here.
+  assert.equal(verify('true', 'success', { 'macos-intel': 'skipped' }, 'true'), false)
+  assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'skipped' }, 'true'), false)
+  assert.equal(verify('true', 'success', { 'macos-intel': 'cancelled' }, 'true'), false)
+  // Not due means they cannot have run; anything else is a mismatch.
+  assert.equal(verify('true', 'success', { 'macos-intel': 'skipped' }, 'false'), false)
+  assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure', 'macos-intel': 'skipped' }, 'false'), false)
+  // A missing output reaches the gate as '', and one that contradicts code is
+  // just as unusable.
+  assert.equal(verify('true', 'success', {}, ''), false)
+  assert.equal(verify('true', 'success', {}, null), false)
+  assert.equal(verify('false', 'success', documentationOnly, 'true'), false)
   // The relay probe runs only when the verified-version list moves, so its
   // skip is a pass; a red one is the whole reason it exists and must block.
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'success' }), true)
@@ -1374,6 +1399,127 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY, '${{ secrets.XINGMANG_CLI_PATROL_KEY }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
+})
+
+test('the packaging-only macOS jobs run when a pull request moves a packaging input, and on every push to main', () => {
+  const { touchesMacPackaging, requiresMacPackagingChecksForEvent } = require('./ci-change-scope.cjs')
+  for (const file of [
+    'package.json',
+    'package-lock.json',
+    'electron-builder.config.cjs',
+    'build/entitlements.mac.plist',
+    'build/entitlements.mac.adhoc.inherit.plist',
+    'native/macos-system-proxy.swift',
+    'bundled-acceleration/profile.yaml',
+    'scripts/run-macos-free-build.cjs',
+    'scripts/macos-release-keychain-rehearsal.sh',
+    'scripts/stage-acceleration-bundle.cjs',
+    'e2e/macos-launch-smoke.mjs',
+    'electron/safe-local-data.ts',
+    '.github/workflows/quality.yml',
+    '.github/workflows/publish-release.yml',
+    'scripts/ci-change-scope.cjs',
+  ]) {
+    assert.equal(touchesMacPackaging(['README.md', file]), true, file)
+  }
+  for (const file of [
+    'electron/ipc.ts',
+    'src/renderer-v2/ui/brand.tsx',
+    'build/installer.nsh',
+    'build/linux/after-install.tpl',
+    // Claude Desktop's Mac download source, not this app's packaging.
+    'scripts/claude-mac-update-source.cjs',
+    '.github/workflows/package-for-testing.yml',
+    // Near misses.
+    'electron/safe-local-data.test.ts',
+    'e2e/macos-launch-smoke.test.mjs',
+  ]) {
+    assert.equal(touchesMacPackaging(['README.md', file]), false, file)
+  }
+
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', ['electron/ipc.ts']), false)
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', ['electron/ipc.ts', 'package.json']), true)
+  // Never where the code checks themselves are skipped.
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', ['docs/guide.md']), false)
+  // main stands in for every merge since its last finished run, so it runs
+  // them whatever the last merge touched; an unknown range runs everything.
+  assert.equal(requiresMacPackagingChecksForEvent('push', ['docs/guide.md']), true)
+  assert.equal(requiresMacPackagingChecksForEvent('push', ['electron/ipc.ts']), true)
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', null), true)
+
+  const scopeSource = fs.readFileSync(path.join(root, 'scripts', 'ci-change-scope.cjs'), 'utf8')
+  assert.match(scopeSource, /macPackaging=\$\{macPackaging\}/, 'the scope script must publish the packaging output')
+  assert.match(scopeSource, /const macPackaging = requiresMacPackagingChecksForEvent\(process\.env\.GITHUB_EVENT_NAME, files\)/)
+  assert.equal(workflow.jobs.changes.outputs.macPackaging, '${{ steps.scope.outputs.macPackaging }}')
+})
+
+// The packaging input list is only as good as its coverage of what those two
+// jobs actually run. This follows their commands to the scripts they start and
+// every local file those load, and requires each one to be on the list, so a
+// new import cannot quietly fall outside it.
+test('the packaging input list covers every local file the packaging-only macOS jobs load', () => {
+  const { touchesMacPackaging } = require('./ci-change-scope.cjs')
+  const entries = new Set()
+  function addCommand(command) {
+    for (const match of command.matchAll(/\bnpm run ([\w:-]+)/g)) {
+      // macos-test runs the same compile on every pull request that touches
+      // code (test:mac:dev-origin), so it is not something these two add.
+      if (match[1] === 'compile') continue
+      addCommand(packageJson.scripts[match[1]])
+    }
+    for (const match of command.matchAll(/\b(?:node|bash) ((?:scripts|e2e)\/[\w.-]+)/g)) entries.add(match[1])
+  }
+  for (const job of ['macos-intel', 'macos-release-rehearsal']) {
+    for (const command of runSteps(job)) addCommand(command)
+  }
+  // electron-builder reads its configuration, and the configuration names two
+  // scripts by path rather than by require.
+  entries.add('electron-builder.config.cjs')
+  const builderConfig = fs.readFileSync(path.join(root, 'electron-builder.config.cjs'), 'utf8')
+  for (const script of ['scripts/build-macos-system-proxy.cjs', 'scripts/macos-ephemeral-signing.cjs']) {
+    assert.ok(builderConfig.includes(script), script)
+    entries.add(script)
+  }
+  for (const entry of ['scripts/run-macos-free-build.cjs', 'e2e/macos-launch-smoke.mjs', 'scripts/prepare-acceleration-bundle.cjs', 'scripts/macos-release-keychain-rehearsal.sh']) {
+    assert.ok(entries.has(entry), `${entry} must still be reached from the job commands`)
+  }
+
+  function resolveLocal(from, specifier) {
+    let target = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))
+    // The staging tool loads compiled main-process modules.
+    const compiled = /^dist-electron\/(.+)\.js$/.exec(target)
+    if (compiled) target = `electron/${compiled[1]}.ts`
+    const candidate = [target, `${target}.ts`, `${target}.cjs`, `${target}.js`, `${target}.mjs`, `${target}/index.ts`]
+      .find((file) => fs.existsSync(path.join(root, file)) && fs.statSync(path.join(root, file)).isFile())
+    assert.ok(candidate, `${from} loads ${specifier}, which does not resolve`)
+    return candidate
+  }
+  const reached = new Set()
+  const queue = [...entries]
+  while (queue.length > 0) {
+    const file = queue.shift()
+    if (reached.has(file)) continue
+    reached.add(file)
+    const source = fs.readFileSync(path.join(root, file), 'utf8')
+    if (file.endsWith('.sh')) {
+      // A shell script runs from the repository root, so its paths already are.
+      for (const match of source.matchAll(/\bnode ((?:scripts|e2e)\/[\w.-]+)/g)) queue.push(match[1])
+      continue
+    }
+    const specifiers = [
+      ...source.matchAll(/\brequire\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g),
+      ...source.matchAll(/\bimport\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g),
+      // Type-only imports vanish at compile time and load nothing.
+      ...source.matchAll(/^\s*(?:import|export)\s+(?!type\b)[^'";]*?\sfrom\s+['"](\.{1,2}\/[^'"]+)['"]/gm),
+      ...source.matchAll(/^\s*import\s+['"](\.{1,2}\/[^'"]+)['"]/gm),
+    ].map((match) => match[1])
+    for (const specifier of specifiers) queue.push(resolveLocal(file, specifier))
+  }
+  // Sanity: the walk reached the main-process modules behind the staging tool.
+  assert.ok(reached.has('electron/safe-local-data.ts'))
+  assert.ok(reached.has('electron/relocated-folders.ts'))
+  const uncovered = [...reached].filter((file) => !touchesMacPackaging([file])).sort()
+  assert.deepEqual(uncovered, [], 'add these to macPackagingFiles in scripts/ci-change-scope.cjs')
 })
 
 test('every change, documentation included, is scanned for leaked keys before it can merge', () => {

@@ -491,7 +491,8 @@ jobs:
       # 上面那次只启动本机架构那一份，而这台 runner 是 Apple 芯片：直到 0.2.19，
       # Intel 版发出去之前一次都没被启动过（2026-10-17 查客户 Intel Mac 装不上时
       # 发现）。经 Rosetta 再启动一次要发出去的那份 Intel 包；原生 Intel 机器上的
-      # 那一遍在 quality.yml 的 macos-intel，每个 PR 都跑。
+      # 那一遍在 quality.yml 的 macos-intel，每次合进 main 都跑，PR 上动了打包相关
+      # 文件时也跑。
       - name: Make sure Rosetta can run the Intel package on this Apple silicon runner
         timeout-minutes: 10
         run: |
