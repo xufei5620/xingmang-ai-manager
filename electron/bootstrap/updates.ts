@@ -19,7 +19,7 @@ import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus }
 import type { SystemService } from '../system-service'
 import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from '../update-feed-route'
 import { verifyUpdatePackageDigest } from '../update-package-digest'
-import { verifyUpdateEntrySignature } from '../update-package-signature'
+import { shouldVerifyUpdateSignature, verifyUpdateEntrySignature } from '../update-package-signature'
 import { createUpdateRequestGuard } from '../update-request-guard'
 import { installStrictUpdateCodeSignatureVerifier } from '../update-signature'
 import { createUpdaterService } from '../updater'
@@ -153,10 +153,10 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
       // Intel 版在 Apple 芯片上经 Rosetta 跑时 process.arch 是 x64，这时照样算能跑 arm64，让它换回 M 系列芯片版。
       ...(process.platform === 'darwin' ? { macRunsArm64: process.arch === 'arm64' || app.runningUnderARM64Translation } : {}),
-      // 未签名通道里只有 Windows 的清单由发布者 Ed25519 签过（update-package-signature.ts），
-      // 没有 Authenticode 就只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签；Linux 的 deb
-      // 同样走未签名通道，但它的清单还没签，接上会让所有 Linux 更新都被拒装。
-      ...(unsignedChannel && process.platform === 'win32' ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),
+      // 未签名通道里 Windows 和 Linux 的清单由发布者 Ed25519 签过（update-package-signature.ts），
+      // 两边的包自己都没有装前能核的签名，只认它。Mac 的包由 Squirrel.Mac 按钉住的发布证书验签。
+      // Linux 从第一次对外发的那一版起清单就带签名，没有不认签名的老客户端要照顾。
+      ...(unsignedChannel && shouldVerifyUpdateSignature(process.platform) ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),
       // 盘快满的电脑上别每 3 小时下一次注定失败的安装包（第二十二批 2）。
       readFreeDiskBytes: async () => {
         const targets = updateDownloadProbeTargets(process.platform, {

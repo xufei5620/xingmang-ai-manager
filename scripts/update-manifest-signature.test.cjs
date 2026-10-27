@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { createHash, generateKeyPairSync } = require('node:crypto')
+const { spawnSync } = require('node:child_process')
 const YAML = require('yaml')
 const {
   SIGNATURE_FIELD,
@@ -169,4 +170,70 @@ test('rollback keeps an already signed backup as is and rejects a bad signature'
     () => prepareRollbackText(signed, { releaseDir: '/nonexistent', privateKey: other.privateKey, pinnedKeys: [other.publicKey] }),
     /签名校验不通过/,
   )
+})
+
+function linuxManifestText(version = '0.2.22', architecture = 'arm64') {
+  const file = `xingmang-ai-manager_${version}_${architecture}.deb`
+  const deb = Buffer.from(`deb ${version} ${architecture}`)
+  const sha512 = createHash('sha512').update(deb).digest('base64')
+  // latest-linux*.yml 和 latest.yml 同一个样子，只是没有 blockmap。
+  return {
+    file,
+    deb,
+    text: [
+      `version: ${version}`,
+      'files:',
+      `  - url: ${file}`,
+      `    sha512: ${sha512}`,
+      `    size: ${deb.length}`,
+      `path: ${file}`,
+      `sha512: ${sha512}`,
+      "releaseDate: '2026-10-27T12:00:00.000Z'",
+      '',
+    ].join('\n'),
+  }
+}
+
+test('signs a Linux manifest and names that manifest when a signature is missing or wrong', () => {
+  const { privateKey, publicKey } = keyPair()
+  const { text } = linuxManifestText()
+  const signed = signManifestText(text, privateKey, [publicKey], 'latest-linux-arm64.yml')
+  assert.equal(verifyManifestText(signed, [publicKey], 'latest-linux-arm64.yml'), 1)
+  assert.throws(
+    () => verifyManifestText(text, [publicKey], 'latest-linux-arm64.yml'),
+    /latest-linux-arm64\.yml 的 xingmang-ai-manager_0\.2\.22_arm64\.deb 没有发布者签名/,
+  )
+  const other = keyPair()
+  assert.throws(() => verifyManifestText(signed, [other.publicKey], 'latest-linux-arm64.yml'), /latest-linux-arm64\.yml 的 .* 签名校验不通过/)
+})
+
+test('the command line signs and verifies a Linux manifest under its own name', () => {
+  const { privateKey, publicKey } = keyPair()
+  const { text } = linuxManifestText('0.2.22', 'amd64')
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-manifest-'))
+  try {
+    // 真脚本照原样用，只把它读公钥的客户端源码换成一份只钉着本次临时公钥的。
+    fs.mkdirSync(path.join(workspace, 'scripts'))
+    fs.mkdirSync(path.join(workspace, 'electron'))
+    for (const name of ['update-manifest-signature.cjs', 'update-release-utils.cjs', 'macos-artifact-names.cjs', 'linux-artifact-names.cjs']) {
+      fs.copyFileSync(path.join(__dirname, name), path.join(workspace, 'scripts', name))
+    }
+    // junction：Windows 上建目录联接不要开发者模式，别的系统忽略这个参数。
+    fs.symlinkSync(path.join(__dirname, '..', 'node_modules'), path.join(workspace, 'node_modules'), 'junction')
+    fs.writeFileSync(path.join(workspace, 'electron', 'update-package-signature.ts'), `// update-signing-keys:begin\nexport const keys = [\n  '${publicKey}',\n]\n// update-signing-keys:end\n`)
+    const manifest = path.join(workspace, 'latest-linux.yml')
+    fs.writeFileSync(manifest, text)
+    const script = path.join(workspace, 'scripts', 'update-manifest-signature.cjs')
+    const env = { ...process.env, XINGMANG_UPDATE_SIGNING_KEY: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64') }
+    const unsigned = spawnSync(process.execPath, [script, 'verify', '--manifest', manifest], { encoding: 'utf8', env })
+    assert.notEqual(unsigned.status, 0)
+    assert.match(unsigned.stderr, /::error::latest-linux\.yml 的 xingmang-ai-manager_0\.2\.22_amd64\.deb 没有发布者签名/)
+    const signed = spawnSync(process.execPath, [script, 'sign', '--manifest', manifest], { encoding: 'utf8', env })
+    assert.equal(signed.status, 0, signed.stderr)
+    const verified = spawnSync(process.execPath, [script, 'verify', '--manifest', manifest], { encoding: 'utf8', env })
+    assert.equal(verified.status, 0, verified.stderr)
+    assert.equal(verifyManifestText(fs.readFileSync(manifest, 'utf8'), [publicKey], 'latest-linux.yml'), 1)
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true })
+  }
 })

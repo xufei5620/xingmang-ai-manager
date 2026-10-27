@@ -6,6 +6,7 @@ import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import {
   UPDATE_SIGNATURE_FIELD,
   buildUpdateSignaturePayload,
+  shouldVerifyUpdateSignature,
   updateSigningPublicKeys,
   verifyUpdateEntrySignature,
 } from './update-package-signature'
@@ -77,15 +78,21 @@ describe('update package signature', () => {
     expect(verifyUpdateEntrySignature('0.2.11', signed(privateKey), ['garbage', rsaPublic])).toMatchObject({ ok: false, code: 'UPDATE_SIGNATURE_UNCONFIGURED' })
   })
 
-  it('is wired into the Windows update channel only', () => {
-    // Linux 的 deb 也走未签名通道，可它的清单还没签：接上就会拒装所有 Linux 更新。
+  it('is required on Windows and Linux and left to Squirrel.Mac on macOS', () => {
+    expect(shouldVerifyUpdateSignature('win32')).toBe(true)
+    // Linux 的 deb 交给系统安装程序以 root 装，dpkg 自己不验签：只剩这道。
+    expect(shouldVerifyUpdateSignature('linux')).toBe(true)
+    expect(shouldVerifyUpdateSignature('darwin')).toBe(false)
+  })
+
+  it('is wired into the unsigned update channel through that one rule', () => {
     const main = readMainWiringSource()
-    expect(main).toContain("...(unsignedChannel && process.platform === 'win32' ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),")
+    expect(main).toContain("...(unsignedChannel && shouldVerifyUpdateSignature(process.platform) ? { verifyPackageSignature: verifyUpdateEntrySignature } : {}),")
     expect(main.match(/verifyPackageSignature:/g)).toHaveLength(1)
   })
 
   it('pins only well-formed Ed25519 keys', () => {
-    // 名单空了，Windows 客户端会拒装所有更新，发布时的签名那一步也会失败。
+    // 名单空了，Windows 和 Linux 客户端会拒装所有更新，发布时的签名那一步也会失败。
     expect(updateSigningPublicKeys.length).toBeGreaterThan(0)
     for (const key of updateSigningPublicKeys) {
       // Every Ed25519 SPKI DER key starts with the same 12-byte header.
@@ -125,5 +132,28 @@ describe('update package signature from publish to client', () => {
     expect(info.files).toHaveLength(1)
     expect(verifyUpdateEntrySignature(info.version, info.files[0], [publicKey])).toEqual({ ok: true })
     expect(verifyUpdateEntrySignature('0.2.19', info.files[0], [publicKey])).toMatchObject({ ok: false, code: 'UPDATE_SIGNATURE_INVALID' })
+  })
+
+  it('accepts a signed Linux manifest the same way', () => {
+    const { privateKey, publicKey } = keyPair()
+    const file = 'xingmang-ai-manager_0.2.22_amd64.deb'
+    const sha512 = createHash('sha512').update('deb 0.2.22').digest('base64')
+    // latest-linux.yml 和 latest.yml 同一个样子，只是没有 blockmap。
+    const manifest = [
+      'version: 0.2.22',
+      'files:',
+      `  - url: ${file}`,
+      `    sha512: ${sha512}`,
+      '    size: 104857600',
+      `path: ${file}`,
+      `sha512: ${sha512}`,
+      "releaseDate: '2026-10-27T12:00:00.000Z'",
+      '',
+    ].join('\n')
+    const info = parseUpdateInfo(signManifestText(manifest, privateKey, [publicKey]), 'latest-linux.yml', new URL('https://updates.example.test/latest-linux.yml'))
+    expect(verifyUpdateEntrySignature(info.version, info.files[0], [publicKey])).toEqual({ ok: true })
+    // 把签过名的 x64 那一项挪给 arm64 的包也不行：签的是地址。
+    expect(verifyUpdateEntrySignature(info.version, { ...info.files[0], url: 'xingmang-ai-manager_0.2.22_arm64.deb' }, [publicKey]))
+      .toMatchObject({ ok: false, code: 'UPDATE_SIGNATURE_INVALID' })
   })
 })
