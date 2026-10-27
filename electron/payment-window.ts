@@ -304,6 +304,21 @@ export function isAllowedPaymentNavigationUrl(
   }
 }
 
+// 收银台在手机上用这几种地址拉起支付宝、微信 App。有的收银台在电脑上画完二维码也照跳一次（乐风码付，#1458）。
+// 支付窗口照旧拦下它（放行规则不变），这里只用来认出它：日志里不再当成可疑跳转报警，客服看了不会被带偏。
+const paymentAppLaunchSchemes: ReadonlySet<string> = new Set(['alipays:', 'alipay:', 'weixin:'])
+
+/** 被拦下的地址是拉起支付宝、微信 App 的，返回协议名（不带冒号、不带后面的内容）；别的地址返回 null。 */
+export function resolvePaymentAppLaunchScheme(value: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+  return paymentAppLaunchSchemes.has(parsed.protocol) ? parsed.protocol.slice(0, -1) : null
+}
+
 /**
  * 付款页算「打开了」以主框架第一次提交为准（committed：did-navigate），不等 loadURL。loadURL 要等页面上
  * 每个资源都加载完才算完：付款页一张图、一个统计脚本卡在半路，「打开支付窗口」就一直转，窗口里的查单

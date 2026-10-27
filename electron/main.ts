@@ -123,7 +123,7 @@ import {
 } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
-import { createPaymentWindowController } from './payment-window'
+import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
@@ -1973,6 +1973,12 @@ if (!hasSingleInstanceLock) {
         assertReady: accounts.assertReady,
       }, tradeNo),
       onBlockedNavigation: (targetUrl) => {
+        // 收银台想拉起支付宝、微信 App：正常行为，扫码付款不受影响。只记协议名，后面那串带着付款码。
+        const scheme = resolvePaymentAppLaunchScheme(targetUrl)
+        if (scheme) {
+          runtimeLog.log('info', 'payment', 'navigation.blocked', '付款页想拉起支付 App，已拦下，不影响扫码付款', { scheme })
+          return
+        }
         let origin = 'invalid-url'
         try {
           origin = new URL(targetUrl).origin
