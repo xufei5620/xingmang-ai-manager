@@ -209,6 +209,29 @@ for (const [label, query, url] of [
   } finally { await page.close() }
 })
 
+// 账号没开通某个工具（签密钥时服务端说分组不可用）：横幅和卡片都给「找客服」，开的是帮助框里的客服二维码，
+// 不再把人送进帮不上忙的配置框（0.2.22 打磨 B5，主路卡点 F5）。
+test('a tool the account has not enabled sends the customer to support from the banner and the card', async () => {
+  const page = await open('allInstalled=1&notEnabled=grok')
+  try {
+    const banner = page.getByTestId('home-bootstrap-result')
+    await banner.waitFor()
+    await expect(banner).toContainText('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
+    await expect(banner.getByRole('button', { name: '重新同步', exact: true })).toHaveCount(0)
+    await page.getByTestId('home-bootstrap-support').click()
+    const dialog = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+    await dialog.waitFor()
+    await dialog.locator('[data-modal-close]').click()
+    await expect(dialog).toHaveCount(0)
+    const primary = page.getByTestId('tool-grok-primary')
+    await expect(primary).toHaveText('找客服')
+    await primary.click()
+    await dialog.waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('customer support returns to the default QR and browser destination after historical account logout', async () => {
   const page = await open('sub2api=1')
   try {
