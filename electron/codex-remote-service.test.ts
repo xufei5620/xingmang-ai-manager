@@ -23,8 +23,11 @@ import {
   CodexRemoteService,
   generateApprovalNonce,
   generatePairingCode,
+  grantRequestedPermissions,
   isStaleInbound,
   nextApprovalNumber,
+  permissionsShowInFull,
+  readRequestedPermissions,
   validateRemoteWorkspace,
 } from './codex-remote-service'
 
@@ -217,6 +220,28 @@ function cardClick(peer: RemotePeer, request: Pick<RemoteApprovalRequest, 'appro
   return { kind: 'approval', peer, direct, approvalId: request.approvalId, nonce: request.nonce, decision }
 }
 
+/** What Codex 0.164.0 sends for plain read/write roots: the legacy lists, then the same paths again as `entries`. */
+function codexPermissions(read: string[] | null, write: string[] | null, network: boolean | null = null): Record<string, unknown> {
+  return {
+    network: network === null ? null : { enabled: network },
+    fileSystem: {
+      read,
+      write,
+      entries: [
+        ...(read ?? []).map((entry) => ({ path: { type: 'path', path: entry }, access: 'read' })),
+        ...(write ?? []).map((entry) => ({ path: { type: 'path', path: entry }, access: 'write' })),
+      ],
+    },
+  }
+}
+
+const wholeDiskWrite = {
+  network: null,
+  fileSystem: { read: null, write: null, entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'write' }] },
+}
+
+const permissionsRefusedText = 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+
 const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
 
 afterEach(() => {
@@ -296,6 +321,73 @@ describe('codex-remote-service helpers', () => {
     const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
     expect(change.summary).toContain('另外还有 5 个文件')
+  })
+})
+
+describe('codex-remote-service permission requests', () => {
+  const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [] }
+
+  it('shows and grants exactly the plain paths of a permission request', () => {
+    const permissions = codexPermissions(['/Users/alice/ref'], ['/Users/alice/projects/out'], true)
+    const requested = readRequestedPermissions(permissions)
+    expect(requested).toEqual({ network: true, read: ['/Users/alice/ref'], write: ['/Users/alice/projects/out'] })
+    expect(requested && grantRequestedPermissions(requested)).toEqual({
+      network: { enabled: true },
+      fileSystem: { read: ['/Users/alice/ref'], write: ['/Users/alice/projects/out'] },
+    })
+    expect(buildApprovalRequest('9', 'nonce-nine', 'other', { permissions }, [], display).summary)
+      .toBe('联网\n写：~/projects/out\n读：~/ref')
+    expect(permissionsShowInFull(permissions, display)).toBe(true)
+    // The legacy lists alone (older Codex) mean the same thing.
+    expect(readRequestedPermissions({ network: null, fileSystem: { read: null, write: ['/Users/alice/out'] } }))
+      .toEqual({ network: false, read: [], write: ['/Users/alice/out'] })
+  })
+
+  it('refuses permission requests that carry anything the phone cannot show', () => {
+    const shown = '/Users/alice/projects/out'
+    function withEntries(read: string[] | null, write: string[] | null, entries: unknown[]): Record<string, unknown> {
+      return { network: null, fileSystem: { read, write, entries } }
+    }
+    const pathEntry = (entry: string, access: string) => ({ path: { type: 'path', path: entry }, access })
+    const refused: unknown[] = [
+      null,
+      'write everything',
+      wholeDiskWrite,
+      withEntries(null, null, [{ path: { type: 'glob_pattern', pattern: '/Users/alice/**' }, access: 'write' }]),
+      withEntries(null, null, [{ path: { type: 'special', value: { kind: 'project_roots', subpath: null } }, access: 'write' }]),
+      // Shown as read, asked as write.
+      withEntries([shown], null, [pathEntry(shown, 'write')]),
+      // One more path than the card lists.
+      withEntries(null, [shown], [pathEntry(shown, 'write'), pathEntry('/etc', 'write')]),
+      withEntries(null, [shown], [pathEntry(shown, 'write'), pathEntry('/Users/alice/.ssh', 'deny')]),
+      // The card lists a path the request itself (entries win) does not ask for.
+      withEntries(null, [shown], []),
+      withEntries(null, [shown], [{ ...pathEntry(shown, 'write'), recursive: true }]),
+      { ...codexPermissions(null, [shown]), fileSystem: { ...codexPermissions(null, [shown]).fileSystem as object, globScanMaxDepth: 3 } },
+      { ...codexPermissions(null, [shown]), fileSystem: { ...codexPermissions(null, [shown]).fileSystem as object, extra: [] } },
+      { ...codexPermissions(null, [shown]), macos: { accessibility: true } },
+      { network: { enabled: true, domains: ['*'] }, fileSystem: null },
+      { network: null, fileSystem: { read: null, write: [42] } },
+      { network: null, fileSystem: { read: null, write: [''] } },
+      { network: null, fileSystem: { read: null, write: shown } },
+      // Nothing to show: the card would be blank.
+      { network: { enabled: false }, fileSystem: null },
+      codexPermissions([], []),
+      codexPermissions(null, Array.from({ length: 21 }, (_, index) => `/Users/alice/projects/f${index}`)),
+    ]
+    for (const permissions of refused) {
+      expect(readRequestedPermissions(permissions)).toBeNull()
+      expect(permissionsShowInFull(permissions, display)).toBe(false)
+    }
+    expect(buildApprovalRequest('9', 'nonce-nine', 'other', { permissions: wholeDiskWrite }, [], display).summary).toBe('')
+  })
+
+  it('refuses a permission request whose list would be cut short on the card', () => {
+    const fits = codexPermissions(null, Array.from({ length: 20 }, (_, index) => `/Users/alice/projects/f${index}`))
+    expect(permissionsShowInFull(fits, display)).toBe(true)
+    const long = codexPermissions(null, Array.from({ length: 20 }, (_, index) => `/Users/alice/projects/${'deep/'.repeat(20)}f${index}`))
+    expect(readRequestedPermissions(long)).not.toBeNull()
+    expect(permissionsShowInFull(long, display)).toBe(false)
   })
 })
 
@@ -668,6 +760,43 @@ describe('codex-remote-service approvals', () => {
     await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('联网'))
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await permissions).result).toEqual({ permissions: {}, scope: 'turn' })
+  })
+})
+
+describe('codex-remote-service permission approvals', () => {
+  function permissionRequest(permissions: unknown): Record<string, unknown> {
+    return { threadId: 'th-1', turnId: 'tu-1', itemId: 'p', cwd: '/tmp', reason: '要写结果', startedAtMs: 0, environmentId: null, permissions }
+  }
+
+  it('declines a request the phone cannot show without asking, says why, and spends no approval number', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect((await codex.ask('item/permissions/requestApproval', permissionRequest(wholeDiskWrite))).result)
+      .toEqual({ permissions: {}, scope: 'turn' })
+    await vi.waitFor(() => expect(channel.texts()).toContain(permissionsRefusedText))
+    expect(approvalsSent(channel)).toHaveLength(0)
+    expect(s.logs).toContain('remote.permissions-refused')
+    const next = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0].approvalId).toBe('1')
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await next).result).toEqual({ decision: 'decline' })
+  })
+
+  it('grants only the paths the card listed, not the entries Codex sent alongside', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const out = path.join(s.workspace, 'out')
+    const answer = codex.ask('item/permissions/requestApproval', permissionRequest(codexPermissions(null, [out], true)))
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'other', summary: '联网\n写：~/projects/demo/out' })
+    channel.handlers?.onInbound(text(alice, '同意'))
+    expect((await answer).result).toEqual({
+      permissions: { network: { enabled: true }, fileSystem: { read: null, write: [out] } },
+      scope: 'turn',
+    })
   })
 })
 
