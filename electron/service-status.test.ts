@@ -11,6 +11,8 @@ import {
   parseServiceStatus,
   parseServiceStatusDocument,
   readServiceStatus,
+  resolveHiddenPaymentMethodsFor,
+  resolveKnownIssuesFor,
   resolveMinimumVersionFor,
   resolveReleaseGuardFor,
   resolveReleasePlatforms,
@@ -364,6 +366,104 @@ describe('release platforms (#1155 item 5)', () => {
       minimumVersion: '0.2.21',
       minimumVersionPlatforms: ['mac-arm64'],
     })
+  })
+})
+
+describe('known issues and payment method switches', () => {
+  const windows = resolveReleasePlatforms({ platform: 'win32', arch: 'x64' })
+  const intelMac = resolveReleasePlatforms({ platform: 'darwin', arch: 'x64', macRunsArm64: false })
+
+  it('reads known issues with their page, button and scope, dropping entries it cannot show', () => {
+    const status = parseServiceStatus(JSON.stringify({
+      knownIssues: [
+        { page: 'recharge', message: ' 支付宝暂时打不开，\u202e请先用微信付款。 ', action: 'support', versions: ['v0.2.23', '0.2.23'], platforms: ['Windows'] },
+        { message: '每一页都出', action: 'open-browser' },
+        { page: 'video', message: '以后才有的那一页' },
+        { page: 'home', message: '   ' },
+        { page: 'home', message: '请到 https://pay.example.com 充值' },
+        { page: 'home', message: '请到 xm-solov.cc 充值' },
+        { page: 'home', message: '版本表写坏了', versions: ['0.2'] },
+        { page: 'home', message: '平台表写坏了', platforms: ['windows', 'bsd'] },
+        'not an object',
+      ],
+    }), now)
+    expect(status.knownIssues).toEqual([
+      { page: 'recharge', message: '支付宝暂时打不开， 请先用微信付款。', action: 'support', versions: ['0.2.23'], platforms: ['windows'] },
+      { page: 'all', message: '每一页都出' },
+    ])
+    expect(parseServiceStatus(JSON.stringify({ knownIssues: [{ page: 'home' }] }), now)).not.toHaveProperty('knownIssues')
+    expect(parseServiceStatus(JSON.stringify({ knownIssues: 'none' }), now)).not.toHaveProperty('knownIssues')
+  })
+
+  it('caps how many known issues one file can put on screen', () => {
+    const knownIssues = Array.from({ length: 12 }, (_, index) => ({ page: 'home', message: `第 ${index} 条` }))
+    expect(parseServiceStatus(JSON.stringify({ knownIssues }), now).knownIssues).toHaveLength(8)
+  })
+
+  it('shows a known issue only on the versions and packages it names', () => {
+    const status = parseServiceStatus(JSON.stringify({
+      knownIssues: [
+        { page: 'recharge', message: '只给 0.2.23 的 Windows', versions: ['0.2.23'], platforms: ['windows'] },
+        { page: 'home', message: '只给 Intel 版 Mac', platforms: ['mac-x64'], action: 'update' },
+        { page: 'chat', message: '谁都给' },
+      ],
+    }), now)
+    expect(resolveKnownIssuesFor(status, '0.2.23', windows)).toEqual([
+      { page: 'recharge', message: '只给 0.2.23 的 Windows' },
+      { page: 'chat', message: '谁都给' },
+    ])
+    expect(resolveKnownIssuesFor(status, 'v0.2.24', windows)).toEqual([{ page: 'chat', message: '谁都给' }])
+    expect(resolveKnownIssuesFor(status, '0.2.23', intelMac)).toEqual([
+      { page: 'home', message: '只给 Intel 版 Mac', action: 'update' },
+      { page: 'chat', message: '谁都给' },
+    ])
+    // 认不出的平台对不上任何只给某几种安装包的条目。
+    expect(resolveKnownIssuesFor(status, '0.2.23', [])).toEqual([{ page: 'chat', message: '谁都给' }])
+    expect(resolveKnownIssuesFor(null, '0.2.23', windows)).toEqual([])
+  })
+
+  it('reads payment method switches and hides only on the versions and packages they name', () => {
+    const status = parseServiceStatus(JSON.stringify({
+      paymentMethodsOff: [
+        { method: ' AliPay ', versions: ['0.2.23'], platforms: ['windows'] },
+        { method: 'wxpay', platforms: ['mac'] },
+        { method: 'stripe' },
+        { method: 'alipay' },
+        { method: '支付宝' },
+        { method: 'qqpay', versions: [] },
+        { method: 'creem', platforms: 'windows' },
+        { versions: ['0.2.23'] },
+      ],
+    }), now)
+    expect(status.paymentMethodsOff).toEqual([
+      { method: 'alipay', versions: ['0.2.23'], platforms: ['windows'] },
+      { method: 'wxpay', platforms: ['mac'] },
+      { method: 'stripe' },
+      { method: 'alipay' },
+    ])
+    expect(resolveHiddenPaymentMethodsFor(status, '0.2.23', windows)).toEqual(['alipay', 'stripe'])
+    expect(resolveHiddenPaymentMethodsFor(status, '0.2.24', intelMac)).toEqual(['wxpay', 'stripe', 'alipay'])
+    expect(resolveHiddenPaymentMethodsFor(parseServiceStatus('{}', now), '0.2.23', windows)).toEqual([])
+    expect(resolveHiddenPaymentMethodsFor(undefined, '0.2.23', windows)).toEqual([])
+  })
+
+  it('reads back exactly what the publishing script writes', () => {
+    const load = createRequire(__filename)
+    const { applyStatusChanges } = load('../scripts/service-status.cjs') as {
+      applyStatusChanges: (current: Record<string, unknown>, changes: Record<string, string>, now: Date) => Record<string, unknown>
+    }
+    let written = applyStatusChanges({}, { 'known-issue': 'recharge：支付宝暂时打不开付款页，请先用微信付款。', 'known-issue-scope': '0.2.23 @windows support' }, now)
+    written = applyStatusChanges(written, { 'known-issue': 'all: 今晚 22 点前聊天可能慢一点。' }, now)
+    written = applyStatusChanges(written, { 'payment-methods-off': 'alipay@0.2.23@windows wxpay' }, now)
+    const status = parseServiceStatusDocument(JSON.stringify(written), now)
+    expect(status?.knownIssues).toEqual(written.knownIssues)
+    expect(status?.paymentMethodsOff).toEqual(written.paymentMethodsOff)
+    expect(resolveKnownIssuesFor(status, '0.2.23', windows)).toEqual([
+      { page: 'recharge', message: '支付宝暂时打不开付款页，请先用微信付款。', action: 'support' },
+      { page: 'all', message: '今晚 22 点前聊天可能慢一点。' },
+    ])
+    expect(resolveHiddenPaymentMethodsFor(status, '0.2.23', windows)).toEqual(['alipay', 'wxpay'])
+    expect(resolveHiddenPaymentMethodsFor(status, '0.2.23', intelMac)).toEqual(['wxpay'])
   })
 })
 

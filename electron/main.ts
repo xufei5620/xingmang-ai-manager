@@ -1399,7 +1399,7 @@ if (!hasSingleInstanceLock) {
     let updateAccount: WindowsElevationCapability | null = null
     // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
     let quitInstallAttempt: QuitInstallAttempt | null = null
-    const { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch } = updateFeed.createUpdater({
+    const { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch, hiddenPaymentMethods } = updateFeed.createUpdater({
       managerDataDirectory,
       runtimeLog,
       systemService,
@@ -2205,6 +2205,7 @@ if (!hasSingleInstanceLock) {
       accountGroupHints: readAccountGroupHints,
       peekAccountGroupHints,
       cliModelHints: readCliModelHints,
+      hiddenPaymentMethods,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,

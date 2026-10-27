@@ -1102,6 +1102,35 @@ describe('service status from the update feed', () => {
     service.dispose()
   })
 
+  it('carries only the known issues for this version and package, and keeps them across a failed read', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.23', isPackaged: true, platform: 'win32', arch: 'x64' })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push(state.knownIssues))
+    expect(service.getState()).not.toHaveProperty('knownIssues')
+
+    const status = {
+      maintenance: null,
+      knownIssues: [
+        { page: 'recharge' as const, message: '支付宝暂时打不开，请先用微信付款。', action: 'support' as const, versions: ['0.2.23'], platforms: ['windows'] },
+        { page: 'home' as const, message: '只给 Mac', platforms: ['mac'] },
+        { page: 'all' as const, message: '只给 0.2.24', versions: ['0.2.24'] },
+      ],
+    }
+    service.setServiceStatus(status)
+    service.setServiceStatus(status)
+    const shown = [{ page: 'recharge', message: '支付宝暂时打不开，请先用微信付款。', action: 'support' }]
+    expect(service.getState().knownIssues).toEqual(shown)
+    // 一次没读到状态文件：先这样绕过去的那句话不收起来，免得客户当成已经修好了。
+    service.setServiceStatus(null)
+    expect(service.getState().knownIssues).toEqual(shown)
+    // 读到了、发布者撤掉了，才收起来。
+    service.setServiceStatus({ maintenance: null })
+    expect(service.getState().knownIssues).toEqual([])
+    expect(seen).toEqual([shown, []])
+    service.dispose()
+  })
+
   it('does not disturb an update failure the user is looking at', () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
