@@ -44,7 +44,7 @@ import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
 import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
@@ -1538,6 +1538,13 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('updater', 'pending.record-failed', cause)
       })
     }
+    // 装的时候弹不弹窗口（Mac 闲时装的前提）：解符号链接、试两处能不能写，跳框器每两秒问一次，
+    // 同一种装法一分钟内只算一次（0.2.22 性能体检第 7 条）。
+    const installUnattended = memoizeUnattendedInstall((installMethod) => canInstallUnattended({
+      platform: process.platform,
+      installMethod,
+      bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
+    }))
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
     // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
@@ -1615,11 +1622,7 @@ if (!hasSingleInstanceLock) {
       if (!version) return
       launchInstallTried = true
       const accelerationActive = acceleration?.hasPossibleSession() === true
-      const unattended = canInstallUnattended({
-        platform: process.platform,
-        installMethod: state.installMethod,
-        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
-      })
+      const unattended = installUnattended(state.installMethod)
       const mode = resolveLaunchInstallMode({ platform: process.platform, launchedAtLogin, windowShown: mainWindowShown, accelerationActive, unattended })
       if (mode === 'skip' || mode === 'window') {
         if (mode === 'window') launchInstallAwaitingWindow = version
@@ -2399,14 +2402,16 @@ if (!hasSingleInstanceLock) {
     managedMainWindow = mainWindow
     mainWindow.once('show', () => {
       mainWindowShown = true
-      // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。
-      dropBackgroundInstall()
       startupQuiet.end('window-shown')
       // Windows 上开机时没装、等着窗口的那一版：用户点开了窗口，人就在电脑前，先预告再装。
       const awaiting = launchInstallAwaitingWindow
       launchInstallAwaitingWindow = null
       if (awaiting) startLaunchInstall(awaiting, 'window')
     })
+    // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。开机自启那次的后台装
+    // 和 Mac 的闲时装（多半是窗口开过又缩回去以后才装）都算，所以挂在每一次显示上，不只第一次
+    // （0.2.22 发版前回归检查第 5 条）。
+    mainWindow.on('show', dropBackgroundInstall)
     // Mac 的安装器打开新版本时会把它切到前台（ShipIt 用 NSWorkspaceLaunchDefault）：没有窗口，
     // 菜单栏却换成了星芒的，这时按 Command + Q 退出的是星芒。后台装完重新拉起、窗口留在
     // 菜单栏的这一次，把前台还给刚才在用的程序。
@@ -2475,11 +2480,7 @@ if (!hasSingleInstanceLock) {
       getState: () => updaterService.getState(),
       autoUpdate: () => updaterService.autoUpdateEnabled(),
       standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
-      unattended: () => canInstallUnattended({
-        platform: process.platform,
-        installMethod: updaterService.getState().installMethod,
-        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
-      }),
+      unattended: () => installUnattended(updaterService.getState().installMethod),
       elevated: () => windowsCliExecution.highIntegrity === true,
       idleMs: () => powerMonitor.getSystemIdleTime() * 1_000,
       locked: () => powerMonitor.getSystemIdleState(1) === 'locked',

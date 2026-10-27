@@ -12,6 +12,7 @@ import {
   decideQuitInstall,
   isBackgroundInstallFailed,
   isRelaunchAfterBackgroundInstall,
+  memoizeUnattendedInstall,
   previousAutoInstallFailureMessage,
   resolveLaunchInstallMode,
   resolvePreviousAutoInstallFailure,
@@ -214,6 +215,45 @@ describe('canInstallUnattended', () => {
     } finally {
       fs.chmodSync(directory, 0o755)
     }
+  })
+})
+
+describe('memoizeUnattendedInstall', () => {
+  it('computes once per install method and again after the memo expires', () => {
+    let clock = 1_760_000_000_000
+    const seen: Array<string | null | undefined> = []
+    const unattended = memoizeUnattendedInstall((installMethod) => {
+      seen.push(installMethod)
+      return installMethod !== 'system-installer'
+    }, { now: () => clock, ttlMs: 60_000 })
+
+    expect(unattended('manual')).toBe(true)
+    clock += 2_000
+    expect(unattended('manual')).toBe(true)
+    clock += 2_000
+    expect(unattended('manual')).toBe(true)
+    expect(seen).toEqual(['manual'])
+
+    // 装法是下载完才知道的：换了就重算，不等满一分钟。
+    expect(unattended('system-installer')).toBe(false)
+    expect(seen).toEqual(['manual', 'system-installer'])
+
+    clock += 60_000
+    expect(unattended('system-installer')).toBe(false)
+    expect(seen).toEqual(['manual', 'system-installer', 'system-installer'])
+  })
+
+  it('does not remember an answer across different install methods', () => {
+    const seen: Array<string | null | undefined> = []
+    const unattended = memoizeUnattendedInstall((installMethod) => {
+      seen.push(installMethod)
+      return installMethod === 'manual'
+    }, { now: () => 0 })
+
+    expect(unattended(null)).toBe(false)
+    expect(unattended('manual')).toBe(true)
+    expect(unattended(null)).toBe(false)
+    expect(seen).toEqual([null, 'manual', null])
   })
 })
 
