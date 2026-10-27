@@ -58,6 +58,8 @@ import { isRecord } from './input-guards'
 //   answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
+// - A permission request is only put to the user when every part of it fits on
+//   the card, and "accept" grants exactly the paths the card listed.
 // - Approval numbers keep counting across restarts, and every button carries a
 //   per-request random nonce: a card left in the chat history from an earlier
 //   request or an earlier run can never answer a newer one.
@@ -199,20 +201,86 @@ function displayPath(value: string, options: ApprovalDisplayOptions): string {
   return remoteDisplayPath(value, options.homeDirectory, options.platform)
 }
 
-function describePermissions(permissions: unknown, options: ApprovalDisplayOptions): string {
-  if (!isRecord(permissions)) return ''
-  const lines: string[] = []
-  if (isRecord(permissions.network) && permissions.network.enabled === true) lines.push('联网')
-  if (isRecord(permissions.fileSystem)) {
-    for (const [key, verb] of [['write', '写'], ['read', '读']] as const) {
-      const entries = permissions.fileSystem[key]
-      if (!Array.isArray(entries)) continue
-      for (const entry of entries.slice(0, maxFileLines)) {
-        if (typeof entry === 'string') lines.push(`${verb}：${displayPath(entry, options)}`)
-      }
-    }
+/** 一份权限申请里手机上逐条显示、同意后也只授予的那几样。 */
+export interface RequestedPermissions {
+  network: boolean
+  read: string[]
+  write: string[]
+}
+
+/** null 和缺省都算没要；其余的只认非空字符串数组。 */
+function readPathList(value: unknown): string[] | null {
+  if (value === null || value === undefined) return []
+  if (!Array.isArray(value)) return null
+  return value.every((entry): entry is string => typeof entry === 'string' && entry.length > 0) ? value : null
+}
+
+function hasOnlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.entries(record).every(([key, value]) => allowed.includes(key) || value === null || value === undefined)
+}
+
+/**
+ * Codex (checked against 0.164.0) also spells the legacy read/write roots as
+ * `entries`, and the protocol prefers `entries` when both are present. An
+ * `entries` list is only accepted when it is exactly those same plain paths
+ * with the same access, so nothing the phone does not show (the whole disk, a
+ * glob, a deny rule) can ride along on one "同意".
+ */
+function entriesMirrorPaths(entries: unknown, read: readonly string[], write: readonly string[]): boolean {
+  if (entries === null || entries === undefined) return true
+  if (!Array.isArray(entries)) return false
+  const listed = { read: new Set<string>(), write: new Set<string>() }
+  for (const entry of entries) {
+    if (!isRecord(entry) || !hasOnlyKeys(entry, ['path', 'access']) || !isRecord(entry.path)) return false
+    const target = entry.path
+    if (target.type !== 'path' || !hasOnlyKeys(target, ['type', 'path']) || typeof target.path !== 'string') return false
+    if (entry.access === 'read' && read.includes(target.path)) listed.read.add(target.path)
+    else if (entry.access === 'write' && write.includes(target.path)) listed.write.add(target.path)
+    else return false
   }
+  return read.every((entry) => listed.read.has(entry)) && write.every((entry) => listed.write.has(entry))
+}
+
+/**
+ * 权限申请拆成手机上能一条条显示的样子（严重-2 / #1407 P2-3）。显示不全的申请整份不认，返回 null，
+ * 由调用方直接拒：带着显示不出来的字段（整个硬盘、通配、扫描深度、以后协议新加的项）、路径超过一屏能列的条数，
+ * 或者什么都没要（手机上会是一张空白卡片）。
+ */
+export function readRequestedPermissions(permissions: unknown): RequestedPermissions | null {
+  if (!isRecord(permissions) || !hasOnlyKeys(permissions, ['network', 'fileSystem'])) return null
+  let network = false
+  if (permissions.network !== null && permissions.network !== undefined) {
+    if (!isRecord(permissions.network) || !hasOnlyKeys(permissions.network, ['enabled'])) return null
+    network = permissions.network.enabled === true
+  }
+  let read: string[] = []
+  let write: string[] = []
+  const fileSystem = permissions.fileSystem
+  if (fileSystem !== null && fileSystem !== undefined) {
+    if (!isRecord(fileSystem) || !hasOnlyKeys(fileSystem, ['read', 'write', 'entries'])) return null
+    const readList = readPathList(fileSystem.read)
+    const writeList = readPathList(fileSystem.write)
+    if (!readList || !writeList || readList.length + writeList.length > maxFileLines) return null
+    if (!entriesMirrorPaths(fileSystem.entries, readList, writeList)) return null
+    read = [...readList]
+    write = [...writeList]
+  }
+  if (!network && read.length === 0 && write.length === 0) return null
+  return { network, read, write }
+}
+
+function describePermissions(requested: RequestedPermissions, options: ApprovalDisplayOptions): string {
+  const lines: string[] = []
+  if (requested.network) lines.push('联网')
+  for (const entry of requested.write) lines.push(`写：${displayPath(entry, options)}`)
+  for (const entry of requested.read) lines.push(`读：${displayPath(entry, options)}`)
   return lines.join('\n')
+}
+
+/** 这份权限申请能不能在手机上一字不落地显示出来：不能就不问人，直接拒，截断了再问等于让人签看不全的字。 */
+export function permissionsShowInFull(permissions: unknown, options: ApprovalDisplayOptions): boolean {
+  const requested = readRequestedPermissions(permissions)
+  return requested !== null && redactRemoteText(describePermissions(requested, options), options).length <= maxSummaryLength
 }
 
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
@@ -237,7 +305,10 @@ export function buildApprovalRequest(
     const grantRoot = stringField(params.grantRoot)
     if (grantRoot) lines.push(`可写范围：${displayPath(grantRoot, options)}`)
     summary = lines.join('\n')
-  } else summary = describePermissions(params.permissions, options)
+  } else {
+    const requested = readRequestedPermissions(params.permissions)
+    summary = requested ? describePermissions(requested, options) : ''
+  }
   const cwd = stringField(params.cwd)
   const reason = stringField(params.reason)
   return {
@@ -250,12 +321,19 @@ export function buildApprovalRequest(
   }
 }
 
-/** 只放行请求里要的那几样，形状照 GrantedPermissionProfile。 */
-export function grantRequestedPermissions(permissions: unknown): Record<string, unknown> {
-  if (!isRecord(permissions)) return {}
+/**
+ * 同意以后只授予手机上显示过的那几样，形状照 GrantedPermissionProfile。只给旧的 read / write 两张表、
+ * 不带 entries：协议在没有 entries 时才看这两张表，给出去的就是显示过的那几条路径。
+ */
+export function grantRequestedPermissions(requested: RequestedPermissions): Record<string, unknown> {
   const granted: Record<string, unknown> = {}
-  if (isRecord(permissions.network)) granted.network = permissions.network
-  if (isRecord(permissions.fileSystem)) granted.fileSystem = permissions.fileSystem
+  if (requested.network) granted.network = { enabled: true }
+  if (requested.read.length > 0 || requested.write.length > 0) {
+    granted.fileSystem = {
+      read: requested.read.length > 0 ? [...requested.read] : null,
+      write: requested.write.length > 0 ? [...requested.write] : null,
+    }
+  }
   return granted
 }
 
@@ -1104,10 +1182,8 @@ export class CodexRemoteService {
         return { decision: await this.requestApproval('file-change', params) }
       case 'item/permissions/requestApproval': {
         const decision = await this.requestApproval('other', params)
-        return {
-          permissions: decision === 'accept' && isRecord(params) ? grantRequestedPermissions(params.permissions) : {},
-          scope: 'turn',
-        }
+        const requested = decision === 'accept' && isRecord(params) ? readRequestedPermissions(params.permissions) : null
+        return { permissions: requested ? grantRequestedPermissions(requested) : {}, scope: 'turn' }
       }
       case 'item/tool/requestUserInput':
         // 手机上答不了 Codex 的选择题；空着交回去，Codex 会按没有回答继续。
@@ -1155,16 +1231,19 @@ export class CodexRemoteService {
     const turn = runtime.turn
     this.noteTurnProgress(runtime)
     await this.refreshSecrets()
+    const display = { homeDirectory: this.options.homeDirectory, platform: this.platform, secrets: this.secrets }
+    if (kind === 'other' && !permissionsShowInFull(params.permissions, display)) {
+      // 手机上显示不全的权限申请不问人：问了，客户点的「同意」也不是对着他看到的那些点的。
+      this.options.log('info', 'remote.permissions-refused', { channel: runtime.id })
+      if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
+      return 'decline'
+    }
     const id = await this.allocateApprovalId()
     // 读密钥、记编号的这一会儿，这一轮可能已经被停掉、渠道已经关了：不再问人。
     if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
     const nonce = generateApprovalNonce()
     const itemId = stringField(params.itemId)
-    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], {
-      homeDirectory: this.options.homeDirectory,
-      platform: this.platform,
-      secrets: this.secrets,
-    })
+    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], display)
     const decision = new Promise<RemoteApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return
