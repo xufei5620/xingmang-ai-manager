@@ -2178,6 +2178,7 @@ if (!hasSingleInstanceLock) {
       codexEnv: rootedOptions.codexExtensions.env,
       providerRoots: rootedOptions.system.providerRoots,
       windowsExecution: windowsCliExecution,
+      enqueueLaunch: (launch) => systemService.enqueueCodexRemoteLaunch(launch),
       onStateChanged: (snapshot) => {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)

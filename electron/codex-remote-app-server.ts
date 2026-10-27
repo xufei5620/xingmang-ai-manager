@@ -113,6 +113,11 @@ export class CodexAppServerClient {
     return this.child !== null && !this.exited
   }
 
+  /** Codex 往 stderr 写的最后一段。起不来、半路退出时记进日志给客服看，用的人要先脱敏。 */
+  get lastStderr(): string {
+    return this.stderrTail
+  }
+
   async start(handlers: AppServerHandlers): Promise<unknown> {
     if (this.child) throw new Error('Codex 已经在运行')
     this.handlers = handlers

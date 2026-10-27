@@ -123,7 +123,11 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
     return true
   }
 
-  function deliver(message: WeixinInboundMessage, owner: string | null): void {
+  /**
+   * fromStart：这一批是从空游标拉的（每次打开都从头拉，游标不落盘），里面可能有星芒关着时发的旧消息。
+   * 旧不旧靠发送时间判断（底座的 isStaleInbound），没带时间的判断不了，宁可不执行（#1407 P3-5）。
+   */
+  function deliver(message: WeixinInboundMessage, owner: string | null, fromStart: boolean): void {
     const inbound = toWeixinRemoteInbound(message, owner)
     if (!inbound) {
       if (isWeixinUserMessage(message)) {
@@ -132,6 +136,10 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
       return
     }
     if (!remember(message.messageId)) return
+    if (fromStart && inbound.sentAt === undefined) {
+      dependencies.log('info', 'weixin-inbound-ignored', { reason: 'no-sent-time' })
+      return
+    }
     handlers?.onInbound(inbound)
   }
 
@@ -148,13 +156,14 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
     let backoffMs = 0
     while (!signal.aborted) {
       try {
+        const fromStart = cursor === ''
         const updates = await fetchWeixinUpdates(context(signal, active.origin), active.token, cursor, longPollMs)
         if (signal.aborted) return
         cursor = updates.cursor
         longPollMs = updates.nextLongPollMs
         backoffMs = 0
         report({ state: 'connected' })
-        for (const message of updates.messages) deliver(message, active.ownerUserId)
+        for (const message of updates.messages) deliver(message, active.ownerUserId, fromStart)
       } catch (error) {
         if (signal.aborted) return
         if (error instanceof WeixinIlinkError && (error.reason === 'session-expired' || error.reason === 'refused')) {

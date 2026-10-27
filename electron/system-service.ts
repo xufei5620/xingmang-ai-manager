@@ -144,7 +144,7 @@ import { createConfigSaveService } from './config-save-service'
 import { createOfficialCredentialService } from './official-credential-service'
 import { createToolRouteFollowService } from './tool-route-follow-service'
 import { createExternalClientRouteService } from './external-client-route-service'
-import { createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
+import { codexRemoteLaunchQueueKey, createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
 import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
@@ -559,6 +559,8 @@ export interface SystemService {
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
   onInstallationQueueChange(listener: (snapshot: InstallationQueueSnapshot) => void): () => void
+  /** 手机遥控起 Codex 排进安装队列（I11），排到了才起；起好就让出队列，Codex 进程本身不占着它。 */
+  enqueueCodexRemoteLaunch<T>(launch: () => Promise<T>): Promise<T>
   /**
    * 清掉以前中途被打断的安装留下的临时下载目录（见 install-leftovers.ts）。排在安装
    * 队列里，不会和正在进行的安装撞上；从不抛错。
@@ -1331,6 +1333,7 @@ export function createSystemService(
     switchExternalClientSource,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
+    enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),
     cleanupInstallLeftovers,
   }
 }

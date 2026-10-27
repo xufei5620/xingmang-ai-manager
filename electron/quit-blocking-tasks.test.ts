@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { providerIds } from './catalog'
 import { externalToolIds } from './external-client-contract'
 import { isKeepAwakeInstallKey } from './install-keep-awake'
+import { codexRemoteLaunchQueueKey } from './provider-launch-service'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
@@ -41,6 +42,13 @@ describe('interruptible install tasks', () => {
   it('ignores launches and uninstalls, which lose nothing when interrupted', () => {
     const keys = ['cli:launch:codex', 'desktop:codex:launch:new:default', 'cli:uninstall:gemini', 'desktop:codex:uninstall', 'external-client:launch:workbuddy']
     for (const key of keys) expect(resolveInterruptibleInstallTask(snapshot(key, keys))).toBeNull()
+  })
+
+  // 手机遥控起 Codex 也排进安装队列（#1407 P3-3），但它和终端里打开 Codex 一样只是拉起进程：不拦退出、不挡睡眠。
+  it('treats the remote control starting Codex as a launch', () => {
+    expect(codexRemoteLaunchQueueKey.startsWith('cli:launch:')).toBe(true)
+    expect(resolveInterruptibleInstallTask(snapshot(codexRemoteLaunchQueueKey))).toBeNull()
+    expect(isKeepAwakeInstallKey(codexRemoteLaunchQueueKey)).toBe(false)
   })
 
   it('ignores an unknown or malformed provider so quitting is never blocked by a typo', () => {

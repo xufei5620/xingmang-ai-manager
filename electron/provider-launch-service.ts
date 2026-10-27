@@ -116,6 +116,12 @@ export function buildCliLaunchQueueKey(provider: ProviderId, workspace: string, 
   return `cli:launch:${provider}:${resumed}:${path.resolve(workspace)}`
 }
 
+/**
+ * 手机遥控起 `codex app-server` 的排队 key（#1407 P3-3）：和终端里打开 Codex 一样排进安装队列，
+ * Codex 正在装、更新、卸载时等它做完再起，不会从换了一半的目录起。前缀同上，退出拦截不当它是安装。
+ */
+export const codexRemoteLaunchQueueKey = 'cli:launch:codex:remote'
+
 /** Keeps service-level macOS launching bound to the command already verified by CLI resolution. */
 export function buildDarwinCliLaunchPlan(
   command: { executable: string; argv: readonly string[] },
