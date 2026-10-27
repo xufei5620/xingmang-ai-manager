@@ -843,6 +843,57 @@ test('Sub2API opens with its Codex_pro group and gpt-5.6-sol model', async () =>
   } finally { await page.close() }
 })
 
+test('generating an image takes reference pictures and a generated one to keep editing, only with a model that edits', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal((await picked(page)).model, 'gpt-image-2')
+    const attach = page.getByTestId('chat-attach-image')
+    assert.equal(await attach.getAttribute('title'), '加参考图（也可以直接粘贴截图）')
+    await attach.click()
+    await page.locator('.chat-draft-image').first().waitFor()
+    assert.equal(await page.getByTestId('chat-cost-note').textContent(), '按实际用量计费，带参考图的会更贵一些。')
+    // 光有参考图不够，要写上怎么改。
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await page.getByTestId('chat-composer-input').fill('把背景换成海边')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'image'))
+    const request = (await calls(page, 'image')).at(-1).input
+    assert.equal((await calls(page, 'pick-images')).length, 1)
+    // 加进来的图只以主进程给的编号发出去。
+    assert.equal(request.sourceAssetIds.length, 1)
+    assert.match(request.sourceAssetIds[0], /^p0+\d+$/)
+    assert.equal(await page.locator('[data-role="user"] .chat-asset-preview').count(), 1)
+    await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
+    await page.getByRole('button', { name: '查看生成图片' }).waitFor()
+    // 用户自己发的参考图上没有「拿这张接着改」，生成的图上有。
+    assert.equal(await page.locator('[data-role="user"]').getByTestId('chat-asset-reuse').count(), 0)
+    // 切回文本对话再点它：回到「生成图片」，这张图放进输入框当参考图。
+    await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话' }).click()
+    await page.locator('[data-role="assistant"]').getByTestId('chat-asset-reuse').click()
+    await page.locator('.chat-draft-image').first().waitFor()
+    assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).getAttribute('aria-pressed'), 'true')
+    await page.getByTestId('chat-composer-input').fill('再加一只海鸥')
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.filter((item) => item.method === 'image').length === 2)
+    const second = (await calls(page, 'image')).at(-1).input
+    assert.deepEqual(second.sourceAssetIds, ['a'.repeat(43)])
+    await page.evaluate((id) => window.chatHarness.completeImage(id), second.requestId)
+    // 换成不能改图的模型：参考图留着，说清楚为什么发不了。
+    await page.locator('[data-role="assistant"]').getByTestId('chat-asset-reuse').first().click()
+    await page.locator('.chat-draft-image').first().waitFor()
+    await pickModel(page, 'gemini-3.1-flash-image')
+    assert.equal(await page.getByTestId('chat-images-unsupported').textContent(), '这个模型不能照着图片改，请换一个能改图的模型，或者先把图片去掉')
+    assert.equal(await attach.getAttribute('title'), '这个模型不能照着图片改，换一个能改图的模型才能加图片')
+    await page.getByTestId('chat-composer-input').fill('还是那张图')
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await page.getByTestId('chat-draft-image-remove').click()
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
+  } finally { await page.close() }
+})
+
 test('a model that reads images takes picked and pasted screenshots and sends them as references', async () => {
   const page = await open()
   try {

@@ -5,7 +5,7 @@ import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInp
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../business-common'
-import { canReadImages, chatLimits, inspectModel } from './api'
+import { canEditImages, canReadImages, chatLimits, inspectModel, noImageEditModelMessage } from './api'
 
 export type ChatMode = 'text' | 'image'
 export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'canceled' | 'error'
@@ -35,7 +35,7 @@ export interface ChatMessage {
 // draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。
 export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean }
 export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
-export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[] }
+export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[]; images: AiChatAsset[] }
 
 // Keep the first chat surface aligned with the account-side Codex defaults.
 // The server may return models in a different order, so the renderer must not
@@ -313,8 +313,10 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   if (!prompt && !images.length) throw new Error('请先输入消息内容')
   if (prompt.length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
   if (!settings.group || !settings.model) throw new Error('请先选择模型')
-  if (images.length && settings.mode === 'image') throw new Error('生成图片时还不能带图片，请先把图片去掉')
-  if (images.length && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
+  // 生成图片时带的图是参考图，照着它改；要说清楚怎么改，光有图不够。
+  if (settings.mode === 'image' && !prompt) throw new Error('请先输入消息内容')
+  if (images.length && settings.mode === 'image' && !canEditImages(settings.model)) throw new Error(noImageEditModelMessage)
+  if (images.length && settings.mode === 'text' && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
   const messages = contextMessages(history, settings)
   // 用户自己发的每条都在发出前查过长度，超长的只可能是 AI 的某条回复。不在这里拦，
   // 主进程会按单条上限拒掉，落到兜底「请稍后重试」，怎么重试都一样。
@@ -325,7 +327,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   const fresh = !input.retryId && !input.editId
   const title = conversation.messages.length ? conversation.title : prompt.slice(0, 32) || '图片提问'
   const { draftImages: _sent, ...rest } = conversation
-  return { conversation: { ...(fresh ? rest : conversation), title, updatedAt: Date.now(), draft: fresh ? '' : conversation.draft, messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages }
+  return { conversation: { ...(fresh ? rest : conversation), title, updatedAt: Date.now(), draft: fresh ? '' : conversation.draft, messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages, images }
 }
 
 export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string {
@@ -360,7 +362,7 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (quota) return relayQuotaFailureMessages[quota]
   // 本来就是说给客户听的话原样上屏，必须排在下面按字面猜的几条前面：从没登录过时主进程说
   // 「请先登录星芒账号」，里面有「登录」两个字，以前被 /登录|密钥/ 改成「已失效，请重新登录」。
-  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^生成图片时还不能带图片/.test(message)) return message
+  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^这个模型不能照着图片改/.test(message)) return message
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
