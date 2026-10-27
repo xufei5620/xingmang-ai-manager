@@ -683,10 +683,6 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     }
   }
 
-  function cliHooksStale(provider: ProviderId): boolean {
-    return managedCliHooksState(provider).stale
-  }
-
   /**
    * 打开 Grok 之前复核一遍星芒写的那几条钩子：Grok 换了 shell、或指向旧位置，就先修好再开，
    * 与 Codex「打开前先修」同一个路数。这是客户点了「打开」才做的，不是开机静默改文件；

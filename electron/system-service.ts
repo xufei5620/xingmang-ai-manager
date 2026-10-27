@@ -10,7 +10,6 @@ import {
 import type { ProviderConfigRoots } from './codex-home'
 import {
   findExecutable,
-  isUserWritablePath,
   runCommand,
 } from './command-runner'
 import type { RunningToolsReport } from './running-tools'
@@ -120,7 +119,7 @@ import {
   type RelayRouteSiteId,
 } from './relay-sites'
 import type { RelayRouteChange } from './relay-route-controller'
-import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
+import { inspectMacosCodexApp } from './macos-codex-app'
 import {
   installMacGitRuntime,
 } from './macos-git-install'
@@ -149,7 +148,6 @@ import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
-import { networkFailureMessages } from './network-failure'
 
 export type UpdateCheckStatus = 'checked' | 'failed' | 'skipped'
 export type UpdateState = 'available' | 'latest' | 'unknown'

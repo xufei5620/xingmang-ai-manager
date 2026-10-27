@@ -29,7 +29,6 @@ import {
   findExecutable,
   runCommand,
   trustedCommandEnvironment,
-  type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
 import type { DesktopBucketOptions } from './desktop-package-bucket'
