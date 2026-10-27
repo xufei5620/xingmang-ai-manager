@@ -94,15 +94,18 @@ export function isManagedClaudeModelPicker(value: unknown): boolean {
 /**
  * 写菜单与 Default 指向。菜单只在「没写过」或「是本软件写的」时覆盖；Default 指向跟着
  * 当前选定的型号走，它和 ANTHROPIC_BASE_URL 一样是中转专属设置。
+ * fallbackSeeded：这台电脑上的配置里出现过备用型号（app-settings.ts 的 seededToolDefaults）。出现过、现在
+ * 没有的是客户删的，不再补；缺省 = 没出现过。
  */
 export function applyClaudeRelayModelPicker(
   parsed: Record<string, unknown>,
   env: Record<string, unknown>,
   availableModels: readonly string[],
   currentModel: string,
+  fallbackSeeded = false,
 ): void {
   env.ANTHROPIC_DEFAULT_MODEL = currentModel
-  applyClaudeRelayFallbackModels(parsed, availableModels, currentModel)
+  applyClaudeRelayFallbackModels(parsed, availableModels, currentModel, fallbackSeeded)
   const picker = buildClaudeRelayModelPicker(availableModels, currentModel)
   if (!picker) return
   if (parsed.modelPicker !== undefined && !isManagedClaudeModelPicker(parsed.modelPicker)) return
@@ -118,9 +121,10 @@ function sameModelList(value: unknown, models: readonly string[]): boolean {
  * 备用型号（fallbackModel，挑法见 cli-model-defaults.ts 的 resolveClaudeFallbackModels）。和菜单一样只在
  * 「没写过」或「是本软件照这份型号清单给配置里原来那个型号写的」时改：在配置窗口换了型号，备用跟着换；客户
  * 自己写的一个字不动。一个都挑不到就不写，原来本软件写的那份收回。parsed.model 这时还是原来的型号（合并时
- * 最后才改它）。
+ * 最后才改它）。出现过、后来被删掉的（fallbackSeeded）算客户写过「不要」，同样不动。
  */
-function applyClaudeRelayFallbackModels(parsed: Record<string, unknown>, availableModels: readonly string[], currentModel: string): void {
+function applyClaudeRelayFallbackModels(parsed: Record<string, unknown>, availableModels: readonly string[], currentModel: string, fallbackSeeded: boolean): void {
+  if (parsed.fallbackModel === undefined && fallbackSeeded) return
   const previousModel = typeof parsed.model === 'string' ? parsed.model : currentModel
   if (parsed.fallbackModel !== undefined
     && !sameModelList(parsed.fallbackModel, resolveClaudeFallbackModels(availableModels, previousModel))) return
@@ -153,12 +157,14 @@ export interface ClaudeModelPickerUpdates {
  *   自己指的，或者客户用 /model 换了型号，都不跟着改，同开机换下架型号那条（#1154 第 4 条）。
  * - 本软件管的菜单（没写过也算）和新生成的对不上就换成新的。用户自己写的菜单照旧不认。
  * - 备用型号只在没写时补（老版本写的配置没有这一项）。写了的不管是谁写的都不动：分辨不出是客户自己写的，
- *   还是本软件照老清单写的；老清单里的型号下架了，Claude Code 试它回「无可用渠道」就接着试下一个。
+ *   还是本软件照老清单写的；老清单里的型号下架了，Claude Code 试它回「无可用渠道」就接着试下一个。这台电脑上
+ *   出现过、后来没了的（fallbackSeeded，见 applyClaudeRelayModelPicker）是客户删的，也不补。
  */
 export function claudeRelayModelPickerUpdates(
   parsed: Record<string, unknown>,
   availableModels: readonly string[],
   currentModel: string,
+  fallbackSeeded = false,
 ): ClaudeModelPickerUpdates {
   const env = parsed.env && typeof parsed.env === 'object' && !Array.isArray(parsed.env)
     ? parsed.env as Record<string, unknown>
@@ -166,7 +172,7 @@ export function claudeRelayModelPickerUpdates(
   const updates: ClaudeModelPickerUpdates = {}
   const defaultModel = env?.ANTHROPIC_DEFAULT_MODEL
   if (defaultModel === undefined || (typeof defaultModel === 'string' && !defaultModel.trim())) updates.defaultModel = currentModel
-  if (parsed.fallbackModel === undefined) {
+  if (parsed.fallbackModel === undefined && !fallbackSeeded) {
     const fallbackModel = resolveClaudeFallbackModels(availableModels, currentModel)
     if (fallbackModel.length) updates.fallbackModel = fallbackModel
   }
@@ -183,7 +189,8 @@ export function claudeRelayModelPickerOutdated(
   parsed: Record<string, unknown>,
   availableModels: readonly string[],
   currentModel: string,
+  fallbackSeeded = false,
 ): boolean {
-  const updates = claudeRelayModelPickerUpdates(parsed, availableModels, currentModel)
+  const updates = claudeRelayModelPickerUpdates(parsed, availableModels, currentModel, fallbackSeeded)
   return updates.defaultModel !== undefined || updates.modelPicker !== undefined || updates.fallbackModel !== undefined
 }

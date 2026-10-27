@@ -40,6 +40,12 @@ export interface BalanceAlertsOptions {
   rememberNotifiedAt(account: string, at: number): void | Promise<void>
   /** 余额用完那条「同一次只说一次」的记录（empty-balance-alert.ts）；缺省时不发这一条。 */
   emptyRecord?: EmptyBalanceRecord
+  /**
+   * 客户正看着星芒（星芒有窗口在前台）：余额用完那条先不发，下次读到余额时再看。新注册的账号余额就是 $0，
+   * 登录后新手引导、首页工具卡都已经在说「余额为零」，这时右下角再弹一条是重复的（第二轮回归第 4 条）。
+   * 缺省 = 不等。
+   */
+  holdEmptyNotice?(): boolean
 }
 
 export interface BalanceAlerts {
@@ -84,7 +90,11 @@ export function createBalanceAlerts(options: BalanceAlertsOptions): BalanceAlert
     readNotifiedAt: options.readNotifiedAt,
     rememberNotifiedAt: options.rememberNotifiedAt,
   })
-  // 钱包到了 0、又确定没有能扣的订阅：这一次用完还没说过就说一次。说了返回 true。
+  function holdingEmptyNotice(): boolean {
+    try { return options.holdEmptyNotice?.() === true } catch { return false }
+  }
+  // 钱包到了 0、又确定没有能扣的订阅：这一次用完还没说过就说一次。说了返回 true；先不说、等下次再看的
+  // 也返回 true，这一次同样不另说「不足 $5」。
   async function observeEmptyBalance(observation: BalanceAlertObservation, dollars: number): Promise<boolean> {
     const record = options.emptyRecord
     if (!record) return false
@@ -93,7 +103,10 @@ export function createBalanceAlerts(options: BalanceAlertsOptions): BalanceAlert
       await record.release(observation.scope)
       return false
     }
-    if (state === 'unknown' || !await record.claim(observation.scope, observation.at)) return false
+    if (state === 'unknown') return false
+    // 先看要不要等，再去占「说过了」：等的这一次不占，下次读到余额时还能说。
+    if (holdingEmptyNotice()) return true
+    if (!await record.claim(observation.scope, observation.at)) return false
     options.notify('balance', `balance-empty:${observation.userId}:${observation.at}`)
     return true
   }

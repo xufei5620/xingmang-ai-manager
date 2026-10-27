@@ -168,6 +168,18 @@ describe('claude model picker', () => {
       expect(none.fallbackModel).toEqual([])
     })
 
+    it('does not put fallback models back once they have been on this computer and are gone', () => {
+      const parsed: Record<string, unknown> = { model: 'claude-opus-5-5' }
+      applyClaudeRelayModelPicker(parsed, {}, models, 'claude-sonnet-5-5', true)
+      expect(parsed).not.toHaveProperty('fallbackModel')
+      expect(claudeRelayModelPickerUpdates({ model: 'claude-opus-5-5' }, models, 'claude-opus-5-5', true)).not.toHaveProperty('fallbackModel')
+      expect(claudeRelayModelPickerOutdated({ model: 'claude-opus-5-5', modelPicker: undefined, env: { ANTHROPIC_DEFAULT_MODEL: 'claude-opus-5-5' } }, ['gpt-6-astra'], 'claude-opus-5-5', true)).toBe(false)
+      // Ones still there keep following a model change made in the config dialog.
+      const kept: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: ['claude-opus-5', 'claude-sonnet-5-5'] }
+      applyClaudeRelayModelPicker(kept, {}, models, 'claude-sonnet-5-5', true)
+      expect(kept.fallbackModel).toEqual(['claude-opus-5-5'])
+    })
+
     it('takes back its own fallback models when the new model has nothing to fall back to', () => {
       const parsed: Record<string, unknown> = { model: 'claude-opus-5-5', fallbackModel: ['claude-opus-5', 'claude-sonnet-5-5'] }
       applyClaudeRelayModelPicker(parsed, {}, models, 'claude-haiku-5-5')

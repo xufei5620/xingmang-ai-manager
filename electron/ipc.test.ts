@@ -1666,6 +1666,22 @@ describe('registerIpcHandlers', () => {
     expect(groups.filter((group) => group.recommended).map((group) => group.name)).toEqual(['GPT 主力'])
   })
 
+  it('marks the image chat groups, following the published group map', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const chatCredentials = {
+      listGroups: vi.fn(async () => ['default', 'GPT', '画图', '图片模型'].map((name) => ({ name, description: '', ratio: 1 }))),
+      prepareGroup: vi.fn(),
+      resolveCredential: vi.fn(),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatCredentials } as never, {
+      accountGroupHints: async () => ({ image: ['画图'] }),
+    })
+
+    const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; image?: boolean }>
+    expect(groups.filter((group) => group.image).map((group) => group.name)).toEqual(['画图', '图片模型'])
+  })
+
   it('leaves every chat group unmarked when nothing names the Codex group', async () => {
     const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
     vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)

@@ -50,6 +50,24 @@ export type PinnedMirrorPolicy = Exclude<MirrorPolicy, 'auto'>
  */
 export type CodexChineseRuntimePatchChoice = 'enabled' | 'disabled'
 
+/**
+ * 星芒替客户往客户自己的文件里放的几样，在这台电脑上出现过的记一笔（seededToolDefaults）：
+ * - `claude:fallbackModel`：Claude Code settings.json 的备用型号（#1415）；
+ * - `codex:response-language`、`grok:response-language`：配置目录里星芒放的那份「用中文回复」（#1432）；
+ * - `vscode:login-prompt`、`cursor:login-prompt`：编辑器用户设置里关掉 Claude Code 插件登录页那一行（#1422）。
+ * 出现过以后不见了，就是客户（或客服）删的，或者恢复了一份更早的备份：那是客户的选择，不再补回（0.2.22 第二轮
+ * 回归第 2、3 条）。从没出现过的照旧补。
+ */
+export const seededToolDefaultIds = [
+  'claude:fallbackModel',
+  'codex:response-language',
+  'grok:response-language',
+  'vscode:login-prompt',
+  'cursor:login-prompt',
+] as const
+
+export type SeededToolDefault = typeof seededToolDefaultIds[number]
+
 export interface AppSettings {
   version: 2
   workspace: string
@@ -180,6 +198,8 @@ export interface AppSettings {
    * （tool-model-check.ts）。只增不减：问过一次，不管换没换都不再问（第十五批 6）。
    */
   offeredModelUpgrades?: string[]
+  /** 见 seededToolDefaultIds。只增不减，读到不认识的项就丢掉。 */
+  seededToolDefaults?: SeededToolDefault[]
   windowState?: AppWindowState
 }
 
@@ -233,6 +253,8 @@ export interface AppSettingsUpdate {
   trayHintShown?: boolean
   /** Only the host sets this; entries are added to the stored list, never removed. */
   offeredModelUpgrades?: string[]
+  /** Same as offeredModelUpgrades. */
+  seededToolDefaults?: SeededToolDefault[]
   /** null explicitly resets saved placement; absence preserves it. */
   windowState?: AppWindowState | null
 }
@@ -339,6 +361,11 @@ function parseOfferedModelUpgrades(value: unknown): string[] {
   return [...seen].slice(-MAX_OFFERED_MODEL_UPGRADES)
 }
 
+function parseSeededToolDefaults(value: unknown): SeededToolDefault[] {
+  if (!Array.isArray(value)) return []
+  return seededToolDefaultIds.filter((entry) => value.includes(entry))
+}
+
 function requireWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('settings.workspace 必须是非空字符串')
@@ -381,6 +408,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   const closeBehavior = parseCloseBehavior(value.closeBehavior)
   const windowState = parseWindowState(value.windowState)
   const offeredModelUpgrades = parseOfferedModelUpgrades(value.offeredModelUpgrades)
+  const seededToolDefaults = parseSeededToolDefaults(value.seededToolDefaults)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -416,6 +444,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
+    ...(seededToolDefaults.length > 0 ? { seededToolDefaults } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -433,11 +462,46 @@ function tryReadSettings(filePath: string): AppSettings | null {
   }
 }
 
+interface CachedSettingsRead {
+  readonly identity: string
+  readonly settings: AppSettings
+}
+
+// 主窗口每次 resize、platform/renderer-v2.ts 每次重算缩放都同步读一遍 settings.json，拖窗口时
+// 一秒几十次，每次都是 open + 三次 stat + realpath（0.2.22 性能体检第 8 条）。文件没变就直接给
+// 上次解析的结果。只认 lstat 看到的同一个普通文件：设备号、inode、大小、修改时间、变更时间都
+// 一样才算没变；不是普通文件、有第二个硬链接、读不出 stat 的一律照旧走完整校验的读。只缓存主
+// 文件读成功的结果，备份与缺省不缓存，主文件坏了下一次照旧落到备份。ctime 用户态改不了，所以
+// 同一 inode 上任何写入、改权限、换名都看得见；自己的保存走临时文件 rename，inode 必变。
+const settingsReadCache = new Map<string, CachedSettingsRead>()
+
+function settingsFileIdentity(filePath: string): string | null {
+  try {
+    const stats = fs.lstatSync(filePath, { bigint: true, throwIfNoEntry: false })
+    if (!stats || !stats.isFile() || stats.nlink !== 1n) return null
+    return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`
+  } catch {
+    return null
+  }
+}
+
+function readPrimarySettings(filePath: string): AppSettings | null {
+  const key = path.resolve(filePath)
+  // 身份要在读之前取：读完才取的话，读到一半被改掉的内容会配上改完以后的身份，下次就当没变了。
+  const identity = settingsFileIdentity(filePath)
+  const cached = identity === null ? undefined : settingsReadCache.get(key)
+  if (cached && cached.identity === identity) return structuredClone(cached.settings)
+  const settings = tryReadSettings(filePath)
+  if (settings && identity !== null) settingsReadCache.set(key, { identity, settings: structuredClone(settings) })
+  else settingsReadCache.delete(key)
+  return settings
+}
+
 export function readAppSettings(
   filePath: string,
   homeDirectory = os.homedir(),
 ): AppSettings {
-  return tryReadSettings(filePath)
+  return readPrimarySettings(filePath)
     ?? tryReadSettings(`${filePath}.bak`)
     ?? defaultAppSettings(homeDirectory)
 }
@@ -555,6 +619,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
   const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
+  const seededToolDefaults = parseSeededToolDefaults([...(base.seededToolDefaults ?? []), ...(update.seededToolDefaults ?? [])])
   return {
     version: 2,
     workspace: update.workspace ?? base.workspace,
@@ -583,6 +648,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
+    ...(seededToolDefaults.length > 0 ? { seededToolDefaults } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }

@@ -43,6 +43,7 @@ jobs:
     outputs:
       code: ${{ steps.scope.outputs.code }}
       cliVersions: ${{ steps.scope.outputs.cliVersions }}
+      macPackaging: ${{ steps.scope.outputs.macPackaging }}
     steps:
       # A merge to main used to start the whole matrix at once, and the next
       # merge a few minutes later cancelled it part way: 65 of the 104 main
@@ -548,7 +549,11 @@ jobs:
 
   macos-release-rehearsal:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # G1: only when a pull request touches what packaging is built from (the
+    # list and its reasons are in scripts/ci-change-scope.cjs), and on every
+    # push to main. macos-test still builds and starts a package on every
+    # pull request that touches code.
+    if: needs.changes.outputs.macPackaging == 'true'
     runs-on: macos-15
     # publish-release.yml 的 macos-build 挂 environment: release，PR 上从来不跑，
     # 于是整条发布路径此前唯一的验证机会就是真的发一次版，而每次都要产品所有者点
@@ -612,7 +617,8 @@ jobs:
   # 原生出包、原生启动。出包与 macos-test 是同一条命令。
   macos-intel:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    # Same trigger as macos-release-rehearsal (G1).
+    if: needs.changes.outputs.macPackaging == 'true'
     runs-on: macos-15-intel
     timeout-minutes: 45
     steps:
@@ -1026,7 +1032,14 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          // The two packaging-only macOS jobs follow their own output, which
+          // can only be true where code is. Whichever it says, they must have
+          // done exactly that: a skip where they were due is a failure.
+          const macPackaging = jobs.changes.outputs.macPackaging
+          if (!['true', 'false'].includes(macPackaging) || (macPackaging === 'true' && code !== 'true')) process.exit(1)
+          const expectedPackaging = macPackaging === 'true' ? 'success' : 'skipped'
+          if (['macos-release-rehearsal', 'macos-intel'].some(name => jobs[name].result !== expectedPackaging)) process.exit(1)
           // `test` folds the Windows shards together and applies that same
           // expectation itself, so it reports success — never "skipped" — for a
           // documentation-only change.
