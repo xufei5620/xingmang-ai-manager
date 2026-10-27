@@ -40,18 +40,19 @@ jobs:
                   n = len(re.findall(rx, data))
                   if n: hits.append((f, n))
               print('==', rx.decode(), hits)
-          def show(rx, width, limit, only=None):
+          def show(rx, width, limit, only=None, before=None):
               shown = 0
               for f in files:
                   if only and only not in f: continue
                   data = open(f, 'rb').read()
                   for m in re.finditer(rx, data):
-                      s = max(0, m.start() - width); e = min(len(data), m.end() + width)
+                      s = max(0, m.start() - (before if before is not None else width)); e = min(len(data), m.end() + width)
                       print('-----', rx.decode(), f, m.start())
                       print(data[s:e].decode('utf-8', 'replace'))
                       shown += 1
                       if shown >= limit: return
-          show(rb'model_rejected', 700, 12)
-          show(rb'VD\(', 700, 10, 'CIsKxfLj')
-          show(rb'/v1/models', 900, 10, 'CIsKxfLj')
+          show(rb'discoveryEnabled', 500, 12, 'CIsKxfLj')
+          show(rb'lastDiscovered', 500, 8, 'CIsKxfLj')
+          show(rb'for\(let t of T\(r,i\)\)', 200, 1, 'CGwXOXs_', 3000)
+          show(rb'hHr\(', 600, 3, 'CIsKxfLj')
           PY
