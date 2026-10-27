@@ -27,7 +27,6 @@ export function parseCodexDesktopPackagePath(executablePath: string): CodexDeskt
   const packageFullName = match[1]
   const name = /^OpenAI\.CodexBeta_/i.test(packageFullName) ? 'OpenAI.CodexBeta' : 'OpenAI.Codex'
   const version = match[2]
-  const architecture = match[3].toLowerCase()
   const familyPublisher = match[4]
   const installMarker = `\\WindowsApps\\${packageFullName}`
   const markerIndex = normalized.toLowerCase().indexOf(installMarker.toLowerCase())

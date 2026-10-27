@@ -1,4 +1,4 @@
-import type { AppConfigSummary, ConnectionCheckLayer, ConnectionProbeReport, ProviderId } from '../../../../electron/ipc-contract'
+import type { AppConfigSummary, ConnectionCheckLayer, ConnectionProbeReport } from '../../../../electron/ipc-contract'
 import { activeProviderIds, type ActiveProviderId } from '../../../../electron/catalog'
 import type { PageId } from '../../registry/pages'
 import { sourceFor } from './model'
