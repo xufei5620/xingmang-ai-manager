@@ -29,14 +29,21 @@ export interface CodexRemoteBootstrapOptions {
 }
 
 const elevatedMessage = '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。'
+const unconfirmedMessage = '没能确认星芒是不是以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒再试。'
 
-/** Windows 上只有确认是普通权限（same-user 且不是高完整性）才许开。 */
+/**
+ * Windows 上只有确认是普通权限才许开：same-user，并且读出了完整性标签、低于高完整性（#1407 P2-5）。
+ * 标签读不出来时 highIntegrity 是缺省，这时的 same-user 确认不了不是管理员：令牌类型 default 也包括自带
+ * Administrator、关了 UAC 的电脑；两步都探测失败时是按普通用户兜底（windows-elevation 2026-09-23 的产品决定，
+ * 为了让命令行工具照常能装能开），遥控不跟着放行。
+ */
 export function resolveCodexRemoteAvailability(
   platform: NodeJS.Platform,
   execution: { mode: WindowsCliExecutionMode; highIntegrity?: boolean },
 ): string | null {
   if (platform !== 'win32') return null
-  return execution.mode === 'same-user' && execution.highIntegrity !== true ? null : elevatedMessage
+  if (execution.mode !== 'same-user' || execution.highIntegrity === true) return elevatedMessage
+  return execution.highIntegrity === false ? null : unconfirmedMessage
 }
 
 export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRemoteService {
