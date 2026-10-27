@@ -221,10 +221,18 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   const colors = { 红色的街: '#ff0000', 绿色的门: '#00ff00', 蓝色的雨: '#0000ff' }
   for (const input of requests) await page.evaluate(([requestId, color]) => window.videoStudioPage.finishClip(requestId, color), [input.requestId, colors[input.prompt]])
   for (const index of [0, 1, 2]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
+  // 这里的缩略图地址出不来，和 Linux 上主进程取不到视频封面一样：不留裂图，镜头上照样有播放键和镜头号。
+  await page.waitForFunction(() => document.querySelectorAll('.video-studio-thumb img').length === 0)
+  for (const index of [0, 1, 2]) {
+    const thumb = page.getByTestId(`video-shot-${index}`).getByRole('button', { name: `用播放器打开第 ${index + 1} 段` })
+    assert.equal(await thumb.locator('b').textContent(), String(index + 1))
+    assert.equal(await thumb.locator('svg').count(), 1)
+  }
 
   await page.getByTestId('video-compose').click()
   // 真的在后台线程里拼三段，慢机器上要好一会儿；用和冷启动同一份的宽限，不另写一个数。
   await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  await page.waitForFunction(() => document.querySelectorAll('.video-studio-thumb img').length === 0)
   const inspected = await page.evaluate(async () => {
     const data = window.videoStudioPage.exported()
     return window.videoStudioHarness.inspect(data, {
@@ -445,6 +453,21 @@ test('retrying a clip that failed while the server may still be working picks th
 })
 
 // 提示里说到「AI 作品文件夹」，旁边就能直接打开它；主进程说打不开时按失败说一句，提示留着好再试。
+// #1406 小项：粘进看不见的控制字符，主进程会拒掉整句、报对不上原因的「想法要写 1 到 2000 个字」。发之前先去掉。
+test('drops invisible control characters pasted into the idea before asking for a storyboard', async () => {
+  const { page, errors } = await openStudio()
+  await page.getByTestId('video-idea-input').fill('一只橘猫\u000b在雨夜\u0001找回家的路\n最后到家')
+  await page.getByTestId('video-plan').click()
+  await page.getByTestId('video-plan-stop').waitFor()
+  const [plan] = await studioCalls(page, 'plan')
+  assert.equal(plan.idea, '一只橘猫在雨夜找回家的路\n最后到家')
+  await page.evaluate(() => window.videoStudioPage.failPlan('已停止写分镜'))
+  await page.getByTestId('video-plan').waitFor()
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 test('opens the AI output folder from a notice that mentions it', async () => {
   const { page, errors } = await openStudio()
   await writeStoryboard(page, '一盏灯', { title: '灯', shots: [{ prompt: '亮起来', caption: '' }] })

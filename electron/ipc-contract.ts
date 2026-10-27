@@ -688,7 +688,7 @@ export interface AiChatCancelResult {
 }
 
 /**
- * 主窗口出一段 AI 视频（video:generate），对话页和视频剪辑页共用。参考图可以是对话里选的图片
+ * 主窗口出一段 AI 视频（video:generate），现在只有视频剪辑页在用。参考图可以是对话里选的图片
  * （chat:pick-images 回的编号），它们和出的图片在同一个作品库里。不收账号、项目这类字段：账号按
  * 当前登录算，片段存进全局作品库。
  */

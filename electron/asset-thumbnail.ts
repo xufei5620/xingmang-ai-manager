@@ -1,3 +1,4 @@
+// @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 /**
