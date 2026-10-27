@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it, vi } from 'vitest'
-import { buildUpdateStateLogDetail, createUpdateStateLogFilter, updateStateLogKey } from './update-state-log'
-import { createUpdaterService, type UpdateClient, type UpdateSnapshot } from './updater'
+import { buildUpdateDownloadMeasureLog, buildUpdateStateLogDetail, createUpdateStateLogFilter, updateStateLogKey } from './update-state-log'
+import { createUpdaterService, type UpdateClient, type UpdateDownloadMeasure, type UpdateSnapshot } from './updater'
 
 class FakeUpdater extends EventEmitter implements UpdateClient {
   autoDownload = true
@@ -133,5 +133,42 @@ describe('update state log', () => {
     expect(buildUpdateStateLogDetail(snapshot())).toEqual({
       phase: 'downloaded', currentVersion: '0.2.11', availableVersion: '0.2.12', error: null,
     })
+  })
+})
+
+describe('update download measure log', () => {
+  const MB = 1024 ** 2
+  const measure = (patch: Partial<UpdateDownloadMeasure> = {}): UpdateDownloadMeasure => ({
+    version: '0.2.23',
+    packageBytes: 116 * MB,
+    receivedBytes: 12.3 * MB,
+    retried: false,
+    elapsedMs: 42_000,
+    ...patch,
+  })
+
+  it('says how much was downloaded against the full package and keeps the raw bytes', () => {
+    expect(buildUpdateDownloadMeasureLog(measure())).toEqual({
+      message: '新版本 0.2.23 下好了：这次实际下了 12.3 MB，安装包 116.0 MB（11%）',
+      detail: { version: '0.2.23', packageBytes: 116 * MB, receivedBytes: 12.3 * MB, percent: 11, retried: false, elapsedMs: 42_000 },
+    })
+  })
+
+  it('lets the share go past a hundred when the full package was downloaded after all', () => {
+    const fellBack = buildUpdateDownloadMeasureLog(measure({ receivedBytes: 118 * MB, retried: true }))
+    expect(fellBack.message).toBe('新版本 0.2.23 下好了：这次实际下了 118.0 MB，安装包 116.0 MB（102%）')
+    expect(fellBack.detail).toMatchObject({ percent: 102, retried: true })
+  })
+
+  it('leaves out what it does not know', () => {
+    const uncounted = buildUpdateDownloadMeasureLog(measure({ receivedBytes: null }))
+    expect(uncounted.message).toBe('新版本 0.2.23 下好了：安装包 116.0 MB，实际下了多少没数到')
+    expect(uncounted.detail).not.toHaveProperty('percent')
+    const unsized = buildUpdateDownloadMeasureLog(measure({ packageBytes: null }))
+    expect(unsized.message).toBe('新版本 0.2.23 下好了：这次实际下了 12.3 MB')
+    expect(unsized.detail).not.toHaveProperty('percent')
+    expect(buildUpdateDownloadMeasureLog(measure({ version: null, packageBytes: null, receivedBytes: null })).message)
+      .toBe('新版本下好了：实际下了多少没数到')
+    expect(buildUpdateDownloadMeasureLog(measure({ packageBytes: 0, receivedBytes: 0 })).detail).not.toHaveProperty('percent')
   })
 })

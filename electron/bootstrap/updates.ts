@@ -21,6 +21,7 @@ import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, 
 import { verifyUpdatePackageDigest } from '../update-package-digest'
 import { shouldVerifyUpdateSignature, verifyUpdateEntrySignature } from '../update-package-signature'
 import { createUpdateRequestGuard } from '../update-request-guard'
+import { buildUpdateDownloadMeasureLog } from '../update-state-log'
 import { installStrictUpdateCodeSignatureVerifier } from '../update-signature'
 import { createUpdaterService } from '../updater'
 import type { NetworkRoutes } from './network-routes'
@@ -191,6 +192,12 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
           fullPackage: stall.fullPackage,
           transferEnded: stall.transferEnded,
         })
+      },
+      // 每次下好记一条实际下了多少，跟整包比，看增量下载省了多少（在线热更新方案 B1）。
+      downloadReceivedBytes: () => updateRequests?.receivedBytes() ?? null,
+      downloadMeasured: (measure) => {
+        const { message, detail } = buildUpdateDownloadMeasureLog(measure)
+        runtimeLog.log('info', 'updater', 'download.measured', message, detail)
       },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
