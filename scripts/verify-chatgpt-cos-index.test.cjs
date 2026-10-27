@@ -43,6 +43,25 @@ test('all success requires four Windows and macOS entries and the two producer-v
   assert.throws(() => validateOfficialIndex(manifest, 'windows-arm64'), /许可/)
 })
 
+// An architecture waiting for OpenAI's package (package-pending) or left behind when the official
+// version moved on between the serialized jobs keeps its previous verified entry; customers still
+// install it from the bucket, and the waiting job fails by itself once that entry is a day old.
+test('a selected Windows architecture still on its previous version passes the final check', () => {
+  const { publicBaseUrl } = readCosLocation({})
+  const manifest = manifestFixture()
+  const previous = '26.929.100.0'
+  const entry = manifest.platforms['windows-arm64']
+  const key = artifactKey('windows-arm64', previous, entry.artifact.sha256)
+  const licenseKey = `chatgpt/windows-arm64/${previous}/ChatGPT-License.xml`
+  Object.assign(entry, { packageVersion: previous })
+  Object.assign(entry.artifact, { key, url: `${publicBaseUrl}/${key}` })
+  Object.assign(entry.license, { key: licenseKey, url: `${publicBaseUrl}/${licenseKey}` })
+  assert.equal(validateOfficialIndex(manifest).platforms.length, 4)
+  assert.deepEqual(validateOfficialIndex(manifest, 'windows').platforms, ['windows-x64', 'windows-arm64'])
+  manifest.windows.buildVersion = '26.929.1.0'
+  assert.throws(() => validateOfficialIndex(manifest), /Windows 包版本/)
+})
+
 test('final validation rejects foreign download URLs and producer schema changes', () => {
   const manifest = manifestFixture()
   manifest.platforms['linux-rpm-arm64'].artifact.url = 'https://evil.invalid/package'
