@@ -59,6 +59,8 @@ public static class XingmangInstallerDialog {
   static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, StringBuilder lParam);
   [DllImport("user32.dll")]
   static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+  [DllImport("user32.dll")]
+  static extern bool IsWindow(IntPtr hwnd);
 
   // A message box is a #32770 dialog owned by the thread that called it.
   public static IntPtr Find(int processId) {
@@ -89,6 +91,10 @@ public static class XingmangInstallerDialog {
   // WM_COMMAND with a button id ends a message box with that answer.
   public static void Answer(IntPtr dialog, int buttonId) {
     PostMessage(dialog, 0x0111, (IntPtr)buttonId, IntPtr.Zero);
+  }
+
+  public static bool Closed(IntPtr dialog) {
+    return !IsWindow(dialog) || !IsWindowVisible(dialog);
   }
 }
 '@
@@ -123,6 +129,16 @@ function Wait-ForDialog($process, [int]$seconds) {
   }
   Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
   throw "the installer neither finished nor asked anything within $seconds seconds"
+}
+
+# The answer is posted, not sent: until the box has handled it, looking for
+# the next dialog finds this one again.
+function Wait-ForClosed($dialog, [string]$stage) {
+  $deadline = (Get-Date).AddSeconds(30)
+  while (-not [XingmangInstallerDialog]::Closed($dialog)) {
+    if ((Get-Date) -ge $deadline) { throw "$stage did not close the dialog it answered" }
+    Start-Sleep -Milliseconds 100
+  }
 }
 
 function Wait-ForExit($process, [string]$stage) {
@@ -281,13 +297,14 @@ Invoke-Scenario 'another program holds a file open' {
   $script:lock.Dispose()
   $script:lock = $null
   [XingmangInstallerDialog]::Answer($dialog, $IDRETRY)
+  Wait-ForClosed $dialog 'retrying'
   # A second dialog here would mean the retry did not get through.
   $again = Wait-ForDialog $script:process 900
   if ($null -ne $again) {
     $text = [XingmangInstallerDialog]::Text($again)
     [XingmangInstallerDialog]::Answer($again, $IDCANCEL)
-    $null = Wait-ForExit $script:process 'retrying'
-    Check $false "retrying once the file is free finishes the upgrade (it asked again: $text)"
+    $code = Wait-ForExit $script:process 'retrying'
+    Check $false "retrying once the file is free finishes the upgrade (it asked again and exited $code after a cancel: $text)"
   }
   Check ($script:process.ExitCode -eq 0) "retrying once the file is free finishes the upgrade (got $($script:process.ExitCode))"
   Check (Test-Path -LiteralPath $held) 'the upgrade put the app back in place'
