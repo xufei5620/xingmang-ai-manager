@@ -11,10 +11,12 @@ import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client
 import { RealmAccountError } from './realm-account'
 import {
   PaymentCheckoutRejected,
+  buildPaymentQrPageCopy,
   buildPaymentWindowSize,
   buildPaymentWindowTitle,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
+  formatPaymentQrDeadline,
   isAllowedPaymentNavigationUrl,
   isPaymentWindowReady,
   paymentFollowUpDelayMs,
@@ -288,6 +290,40 @@ describe('payment window size', () => {
   })
 })
 
+describe('payment QR page copy', () => {
+  const qr = { code: 'https://qr.alipay.com/example', amount: 1, currency: 'CNY', expiresAt: null }
+
+  it('names the app that can scan the code', () => {
+    expect(buildPaymentQrPageCopy({ ...qr, code: 'weixin://wxpay/bizpayurl?pr=fake' }, true).heading).toBe('用微信扫码付款')
+    expect(buildPaymentQrPageCopy(qr, true).heading).toBe('用支付宝扫码付款')
+    expect(buildPaymentQrPageCopy({ ...qr, code: 'https://pay.example.com/qr/1' }, true).heading).toBe('用手机扫码付款')
+    // A look-alike host is not Alipay.
+    expect(buildPaymentQrPageCopy({ ...qr, code: 'https://alipay.com.example/qr' }, true).heading).toBe('用手机扫码付款')
+  })
+
+  it('writes the amount with a currency sign instead of a currency code', () => {
+    expect(buildPaymentQrPageCopy({ ...qr, amount: 10 }, true).amount).toBe('¥10.00')
+    expect(buildPaymentQrPageCopy({ ...qr, amount: 9.5, currency: 'USD' }, true).amount).toBe('$9.50')
+    expect(buildPaymentQrPageCopy({ ...qr, amount: 9.5, currency: 'HKD' }, true).amount).toBe('9.50 HKD')
+  })
+
+  it('writes the deadline in local time, adding the date only when it is not today', () => {
+    const now = new Date(2026, 9, 27, 12, 40)
+    expect(formatPaymentQrDeadline(new Date(2026, 9, 27, 13, 5).toISOString(), now)).toBe('13:05')
+    expect(formatPaymentQrDeadline(new Date(2026, 9, 28, 0, 5).toISOString(), now)).toBe('10月28日 00:05')
+    expect(formatPaymentQrDeadline('not a date', now)).toBeNull()
+  })
+
+  it('says the window closes by itself only when this order can be confirmed', () => {
+    const now = new Date(2026, 9, 27, 12, 40)
+    const expiresAt = new Date(2026, 9, 27, 13, 0).toISOString()
+    expect(buildPaymentQrPageCopy({ ...qr, expiresAt }, true, now).deadline).toBe('请在 13:00 前付完，付完这个窗口会自己关掉。')
+    expect(buildPaymentQrPageCopy({ ...qr, expiresAt }, false, now).deadline).toBe('请在 13:00 前付完。')
+    expect(buildPaymentQrPageCopy(qr, true, now).deadline).toBe('付完这个窗口会自己关掉。')
+    expect(buildPaymentQrPageCopy(qr, false, now).deadline).toBeNull()
+  })
+})
+
 describe('payment terminal-state detection', () => {
   it.each([
     ['订单已超时', 'expired'],
@@ -438,6 +474,23 @@ describe('createPaymentWindowController', () => {
     expect(harness.window.setTitle.mock.calls.every(([title]) => title === '安全支付 - 星芒AI')).toBe(true)
   })
 
+  it('draws the QR page in plain words: which app to scan with, the amount in yuan, a local deadline', async () => {
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => async () => 'pending' })
+    const expiresAt = new Date(Date.now() + 15 * 60_000)
+    await harness.controller.openQrCode({ ...qrPayment(), code: 'weixin://wxpay/bizpayurl?pr=fake', amount: 10, expiresAt: expiresAt.toISOString() })
+    const html = decodeURIComponent(String(harness.window.loadURL.mock.calls[0]![0]).replace(/^data:text\/html;charset=utf-8,/u, ''))
+
+    expect(html).toContain('<h2>用微信扫码付款</h2>')
+    expect(html).toContain('金额：<strong>¥10.00</strong>')
+    expect(html).toContain('<p>订单号：sub2-qr-1</p>')
+    expect(html).toContain(`<p>请在 ${formatPaymentQrDeadline(expiresAt.toISOString())} 前付完，付完这个窗口会自己关掉。</p>`)
+    expect(html).not.toContain('CNY')
+    expect(html).not.toContain(expiresAt.toISOString())
+    expect(html).not.toContain('有效期至')
+    // Still a static document: no script, no navigation to the weixin:// payload.
+    expect(html).not.toMatch(/<script|weixin:\/\//iu)
+  })
+
   it('closes the window and reports the matching trade number when the provider page expires', async () => {
     const harness = createHarness(undefined, '支付剩余时间\n00:00\n支付超时后，请重新创建订单')
 
@@ -581,7 +634,7 @@ describe('authenticated payment order monitoring', () => {
     const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>()
       .mockResolvedValueOnce('pending').mockResolvedValue('success')
     const createOrderStatusReader = vi.fn(() => reader)
-    const harness = createHarness(undefined, '扫码支付\n金额 1.00 CNY', { createOrderStatusReader })
+    const harness = createHarness(undefined, '用支付宝扫码付款\n金额：¥1.00', { createOrderStatusReader })
     await harness.controller.openQrCode(qrPayment())
 
     expect(createOrderStatusReader).toHaveBeenCalledWith('sub2-qr-1')

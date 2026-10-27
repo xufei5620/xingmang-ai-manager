@@ -186,6 +186,57 @@ export function validatePaymentQrCode(input: PaymentQrCodeInput): PaymentQrCodeI
   return Object.freeze({ ...input, code: parsed.href, currency: input.currency.toUpperCase() })
 }
 
+export interface PaymentQrPageCopy {
+  heading: string
+  amount: string
+  /** 「请在 13:00 前付完，付完这个窗口会自己关掉。」那一行；两样都说不了时为 null，不写这一行。 */
+  deadline: string | null
+}
+
+function paymentQrApp(code: string): string {
+  const parsed = new URL(code)
+  if (parsed.protocol === 'weixin:') return '微信'
+  if (parsed.hostname === 'alipay.com' || parsed.hostname.endsWith('.alipay.com')) return '支付宝'
+  return '手机'
+}
+
+function paymentQrAmount(amount: number, currency: string): string {
+  if (currency === 'CNY') return `¥${amount.toFixed(2)}`
+  if (currency === 'USD') return `$${amount.toFixed(2)}`
+  return `${amount.toFixed(2)} ${currency}`
+}
+
+/** 到期时间按客户电脑上的时区写：今天的只写「13:00」，别的日子写「10月28日 13:00」。 */
+export function formatPaymentQrDeadline(expiresAt: string, now: Date = new Date()): string | null {
+  const deadline = new Date(expiresAt)
+  if (Number.isNaN(deadline.getTime())) return null
+  const time = `${String(deadline.getHours()).padStart(2, '0')}:${String(deadline.getMinutes()).padStart(2, '0')}`
+  const sameDay = deadline.getFullYear() === now.getFullYear()
+    && deadline.getMonth() === now.getMonth()
+    && deadline.getDate() === now.getDate()
+  return sameDay ? time : `${deadline.getMonth() + 1}月${deadline.getDate()}日 ${time}`
+}
+
+/**
+ * 星芒自己画的扫码页（只有历史账号用微信这类扫码付款时走到）上的字。原来写「10.00 CNY」和带 T、Z 的世界时间，
+ * 也不说用什么扫。autoClose：这一单能查到账，付完窗口会自己关；查不了就不这么说。
+ */
+export function buildPaymentQrPageCopy(
+  input: Pick<PaymentQrCodeInput, 'code' | 'amount' | 'currency' | 'expiresAt'>,
+  autoClose: boolean,
+  now: Date = new Date(),
+): PaymentQrPageCopy {
+  const deadline = input.expiresAt ? formatPaymentQrDeadline(input.expiresAt, now) : null
+  const closing = autoClose ? '付完这个窗口会自己关掉。' : ''
+  return {
+    heading: `用${paymentQrApp(input.code)}扫码付款`,
+    amount: paymentQrAmount(input.amount, input.currency),
+    deadline: deadline
+      ? `请在 ${deadline} 前付完${closing ? `，${closing}` : '。'}`
+      : closing || null,
+  }
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 }
@@ -714,9 +765,10 @@ export function createPaymentWindowController(
         errorCorrectionLevel: 'M', margin: 2, width: 360,
       })
       if (requestGeneration !== openRequestGeneration) return
+      const copy = buildPaymentQrPageCopy(validated, Boolean(validated.tradeNo && options.createOrderStatusReader))
       // Static, script-free document. The QR payload is encoded into the
       // image only; the window never navigates to weixin:// or any QR URL.
-      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(validated.amount.toFixed(2))} ${escapeHtml(validated.currency)}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${validated.expiresAt ? `<p>有效期至：${escapeHtml(validated.expiresAt)}</p>` : ''}</main></body></html>`
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>${escapeHtml(copy.heading)}</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(copy.amount)}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${copy.deadline ? `<p>${escapeHtml(copy.deadline)}</p>` : ''}</main></body></html>`
       const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
       await openTarget(dataUrl, new Set([accountOrigin]), parent, undefined, validated.tradeNo, validated.expiresAt)
     },
