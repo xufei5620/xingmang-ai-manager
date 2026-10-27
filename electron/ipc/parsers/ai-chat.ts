@@ -1,6 +1,8 @@
-// 对话页 chat:start 的入参。
+// 对话页 chat:start、chat:generate-image 的入参。
+import { AI_CHAT_LIMITS } from '../../ai-chat-protocol'
+import { parseImageGenerateInput } from '../../canvas-request-parser'
 import { isRecord } from '../../input-guards'
-import type { AiChatStartInput } from '../../ipc-contract'
+import type { AiChatImageInput, AiChatStartInput } from '../../ipc-contract'
 import { requiredString } from './common'
 
 export function parseAiChatMessageImages(value: unknown, role: unknown): string[] | undefined {
@@ -49,4 +51,23 @@ export function parseAiChatStartInput(value: unknown): AiChatStartInput {
     messages,
     ...(Object.keys(parsedParameters).length ? { parameters: parsedParameters } : {}),
   }
+}
+
+// 生图的字段跟画布同一套。参考图只收主进程发过的图片编号，读的时候再按账号核一遍是谁的
+// （AiAssetStore.readOwned），渲染层给不出路径，也拿不到别人的图。
+export function parseAiChatImageInput(value: unknown): AiChatImageInput {
+  if (!isRecord(value)) throw new Error('生图请求格式错误')
+  const { sourceAssetIds, ...rest } = value
+  // 对话页从没出过「包含未知字段」这句，多余字段沿用现成的「生图请求格式错误」，上屏的字不变。
+  const input = parseImageGenerateInput(rest, { prefix: '生图', unknownFields: '生图请求格式错误' })
+  if (sourceAssetIds === undefined) return input
+  if (!Array.isArray(sourceAssetIds) || sourceAssetIds.length === 0 || sourceAssetIds.length > AI_CHAT_LIMITS.imagesPerMessage) {
+    throw new Error('生图参考图格式错误')
+  }
+  const ids = sourceAssetIds.map((assetId) => {
+    if (typeof assetId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(assetId)) throw new Error('生图参考图格式错误')
+    return assetId
+  })
+  if (new Set(ids).size !== ids.length) throw new Error('生图参考图格式错误')
+  return { ...input, sourceAssetIds: ids }
 }

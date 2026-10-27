@@ -5,7 +5,7 @@ import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-fail
 import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
-import { chatLimits, inspectModel, validateImageRequest } from './api'
+import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
 
 function readyConversation() { const conversation = createConversation(undefined, 'conversation-1'); conversation.settings.group = 'group-a'; conversation.settings.model = 'gpt-test'; return conversation }
 function turn(conversation = readyConversation()) { return planTurn(conversation, { prompt: 'first question', requestId: 'request-1', assistantId: 'assistant-1', userMessageId: 'user-1' }) }
@@ -250,7 +250,7 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': RealmAccountError: 请先登录账号"))).toBe('请先登录账号')
     expect(chatErrorMessage('请先登录星芒账号')).toBe('请先登录星芒账号')
     // 真的失效了照旧归到「请重新登录」。
-    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后准备分组')
+    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后重试')
   })
 
   it('keeps the main process quota sentences and offers the matching account page', () => {
@@ -422,13 +422,32 @@ describe('v2 chat attached images', () => {
     expect(plan.conversation.title).toBe('图片提问')
   })
 
-  it('refuses images for a model that cannot read them and for image generation', () => {
+  it('refuses images for a model that cannot read them', () => {
     const plain = readyConversation()
     expect(() => planTurn(plain, { prompt: 'x', images: [image('A')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(noImageModelMessage)
-    const drawing = visionConversation(); drawing.settings.mode = 'image'
-    expect(() => planTurn(drawing, { prompt: 'x', images: [image('A')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow('生成图片时还不能带图片')
     expect(chatErrorMessage(new Error(noImageModelMessage))).toBe(noImageModelMessage)
     expect(chatErrorMessage(new Error('this model cannot read images'))).toBe(noImageModelMessage)
+  })
+
+  it('takes images as references when generating with a model that edits, and needs words to say what to change', () => {
+    const drawing = readyConversation(); drawing.settings.mode = 'image'; drawing.settings.model = 'gpt-image-2'
+    const plan = planTurn(drawing, { prompt: '把背景换成海边', images: [image('A'), image('B')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.images).toEqual([image('A'), image('B')])
+    expect(plan.conversation.messages[0].assets).toEqual([image('A'), image('B')])
+    // A retry edits the same pictures again.
+    const retried = planTurn({ ...plan.conversation, messages: plan.conversation.messages.map((message) => ({ ...message, status: 'complete' as const })) }, { prompt: '', retryId: 'a', requestId: 'r2', assistantId: 'a2', userMessageId: 'u2' })
+    expect(retried.images).toEqual([image('A'), image('B')])
+    expect(retried.prompt).toBe('把背景换成海边')
+    expect(planTurn(drawing, { prompt: '一只猫', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).images).toEqual([])
+    expect(() => planTurn(drawing, { prompt: '', images: [image('A')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow('请先输入消息内容')
+    for (const model of ['gemini-3.1-flash-image', 'jimeng_high_aes_general_v21_L']) {
+      const other = { ...drawing, settings: { ...drawing.settings, model } }
+      expect(() => planTurn(other, { prompt: 'x', images: [image('A')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(noImageEditModelMessage)
+    }
+    expect(canEditImages('grok-imagine-image')).toBe(true)
+    expect(canEditImages('gpt-image-1.5')).toBe(false)
+    expect(canEditImages('gpt-test')).toBe(false)
+    expect(chatErrorMessage(new Error(noImageEditModelMessage))).toBe(noImageEditModelMessage)
   })
 
   it('keeps the newest images within the per-request limit and describes the rest', () => {

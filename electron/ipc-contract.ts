@@ -603,6 +603,11 @@ export interface AiImageGenerateInput {
   imageResolution?: '1K' | '2K' | '4K'
 }
 
+/** 对话页「生成图片」：带了参考图就照图改。参考图只是主进程存的图片编号（加进来的、粘贴的、对话里生成的），1–4 张。 */
+export interface AiChatImageInput extends AiImageGenerateInput {
+  sourceAssetIds?: string[]
+}
+
 export interface AiChatAsset {
   assetId: string
   localUrl: string
@@ -1284,7 +1289,7 @@ export interface XingmangInvokeContract {
   listAiChatGroups: IpcInvokeDefinition<'chat:list-groups', [], AiChatGroupSummary[]>
   prepareAiChatGroup: IpcInvokeDefinition<'chat:prepare-group', [group: string], AiChatPreparedGroup>
   startAiChat: IpcInvokeDefinition<'chat:start', [input: AiChatStartInput], { requestId: string; accepted: true }>
-  generateAiImage: IpcInvokeDefinition<'chat:generate-image', [input: AiImageGenerateInput], AiChatAsset[]>
+  generateAiImage: IpcInvokeDefinition<'chat:generate-image', [input: AiChatImageInput], AiChatAsset[]>
   cancelAiChat: IpcInvokeDefinition<'chat:cancel', [requestId: string], AiChatCancelResult>
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
