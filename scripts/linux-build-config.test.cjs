@@ -173,6 +173,9 @@ test('the deb declares what the Electron binary needs at run time', () => {
   // electron-builder's default Recommends no longer exists on current Ubuntu.
   assert.equal(deb.recommends.some((entry) => /^libappindicator3-1\b/.test(entry)), false)
   assert.ok(linux.maintainer && linux.vendor)
+  // Debian Policy 5.6.2 wants "name <email>". The field is printed in every
+  // package and shown by software centres, so a typo ships until the next release.
+  assert.match(linux.maintainer, /^\S.* <[^\s<>@]+@[^\s<>@]+\.[^\s<>@]+>$/)
 })
 
 test('the Linux build scripts produce local deb packages only', () => {

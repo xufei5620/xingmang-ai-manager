@@ -369,7 +369,7 @@ module.exports = {
     category: 'Development',
     synopsis: '星芒AI管理工具',
     description: '一键安装、配置和启动 Claude Code、Codex、Grok 等 AI 编程工具。',
-    maintainer: '绍兴星芒文化传媒有限责任公司',
+    maintainer: '绍兴星芒文化传媒有限责任公司 <xufei5620136@gmail.com>',
     vendor: '绍兴星芒文化传媒有限责任公司',
     desktop: {
       entry: {
