@@ -1166,7 +1166,7 @@ export function createUpdaterService(
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {
       patch.serviceMaintenance = maintenance
     }
-    // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就把「先这样绕过去」收起来，客户会当成已经修好了。
+    // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就收起「先这样绕过去」那句，客户会当成已经修好了。
     if (status) {
       const knownIssues = resolveKnownIssuesFor(status, runtime.currentVersion, releasePlatforms)
       if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
