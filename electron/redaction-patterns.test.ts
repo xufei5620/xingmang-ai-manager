@@ -55,6 +55,39 @@ describe('redactSecretShapes', () => {
     expect(redactSecretShapes('ghp_short github_pat_short')).toBe('ghp_short github_pat_short')
   })
 
+  // Why this is safe to widen: the rule only ever adds redaction, and the BEGIN
+  // and END lines are kept so a reader still sees that a key was there.
+  it('redacts a PEM private key block, each block on its own, and one cut off before its END line', () => {
+    const block = (label: string, body: string) => `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`
+    const text = `cat ~/.ssh/id_ed25519\n${block('OPENSSH PRIVATE KEY', 'b3BlbnNzaC1rZXktdjEAAAAA\nfake-openssh-body')}\nand ${block('RSA PRIVATE KEY', 'MIIEfake-rsa-body')}\n${block('PUBLIC KEY', 'MFkwfake-public')}`
+    expect(redactSecretShapes(text))
+      .toBe(`cat ~/.ssh/id_ed25519\n${block('OPENSSH PRIVATE KEY', '[REDACTED]')}\nand ${block('RSA PRIVATE KEY', '[REDACTED]')}\n${block('PUBLIC KEY', 'MFkwfake-public')}`)
+    expect(redactSecretShapes('-----BEGIN EC PRIVATE KEY-----\r\nfake-ec-body\r\n-----END EC PRIVATE KEY-----\r\n'))
+      .toBe('-----BEGIN EC PRIVATE KEY-----\n[REDACTED]\n-----END EC PRIVATE KEY-----\r\n')
+    expect(redactSecretShapes('-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake-pgp-body cut off here'))
+      .toBe('-----BEGIN PGP PRIVATE KEY BLOCK-----\n[REDACTED]')
+  })
+
+  // The END line of another block does not close a key that was cut off: the
+  // RSA material between the two BEGIN lines is still key material.
+  it('hides a cut-off private key to the end even when another block ends further down', () => {
+    const text = '-----BEGIN RSA PRIVATE KEY-----\nMIIEfake-rsa-cut-off\n-----BEGIN OPENSSH PRIVATE KEY-----\nfake-openssh-body\n-----END OPENSSH PRIVATE KEY-----\nafter'
+    expect(redactSecretShapes(text)).toBe('-----BEGIN RSA PRIVATE KEY-----\n[REDACTED]')
+  })
+
+  // One forward scan: the earlier regex searched for the END line again from
+  // every BEGIN line, which is quadratic once a log quotes a key file many times
+  // (20 000 cut-off BEGIN lines took it about ten seconds).
+  it('hides thousands of key blocks in one pass', () => {
+    const body = 'QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo='.repeat(12)
+    const cutOff = Array.from({ length: 20_000 }, () => `-----BEGIN RSA PRIVATE KEY-----\n${body}`).join('\n')
+    const complete = Array.from({ length: 2_000 }, (_, index) => `-----BEGIN EC PRIVATE KEY-----\n${body}\n-----END EC PRIVATE KEY-----\nline ${index}`).join('\n')
+    const started = performance.now()
+    expect(redactSecretShapes(cutOff)).toBe('-----BEGIN RSA PRIVATE KEY-----\n[REDACTED]')
+    expect(redactSecretShapes(complete)).toBe(Array.from({ length: 2_000 }, (_, index) => `-----BEGIN EC PRIVATE KEY-----\n[REDACTED]\n-----END EC PRIVATE KEY-----\nline ${index}`).join('\n'))
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('does not treat short look-alikes as keys', () => {
     expect(redactSecretShapes('AIzaShort and xai-short and desk-toolbar')).toBe('AIzaShort and xai-short and desk-toolbar')
   })
@@ -121,6 +154,28 @@ describe('redactSecretFields', () => {
     for (const text of [
       'git config credential.helper=manager',
       'credentialStore missing, cookie jar empty',
+    ]) {
+      expect(redactSecretFields(text)).toBe(text)
+    }
+  })
+
+  // `.env` and `export` lines Codex reads on request end up on the phone (YK-4).
+  // Why this is safe to widen: it only adds redaction, and a name has to carry a
+  // segment in front of `key`, so the bare `key=` the runtime log uses for an
+  // installation queue entry is untouched.
+  it('redacts .env style names that end in _KEY, and passwd=, in every spelling', () => {
+    expect(redactSecretFields('AWS_SECRET_ACCESS_KEY="plain-fake-a" PRIVATE_KEY=plain-fake-b ssh-key: plain-fake-c passwd=plain-fake-d'))
+      .toBe('AWS_SECRET_ACCESS_KEY=[REDACTED] PRIVATE_KEY=[REDACTED] ssh-key: [REDACTED] passwd=[REDACTED]')
+    expect(redactSecretFields('{"signing_key":"plain-fake-a","passwd":"plain-fake-b"}')).toBe('{"signing_key":"[REDACTED]","passwd":"[REDACTED]"}')
+    expect(redactSecretFields("{'license-key': 'plain-fake-a'}")).toBe("{'license-key': '[REDACTED]'}")
+  })
+
+  it('leaves a bare key=, camelCase names and words that merely contain key readable', () => {
+    for (const text of [
+      'install.queued key=claude',
+      '{"queueKey":"codex","primaryKey":"id"}',
+      'keyboard=us max_tokens=4096 password_hash_rounds=12 secretary: alice tokens: 12',
+      'cat /etc/passwd',
     ]) {
       expect(redactSecretFields(text)).toBe(text)
     }
@@ -214,6 +269,20 @@ describe('shared redaction table', () => {
   ])('%s hides credentials named only by their command-line flag', (_name, redact) => {
     const result = redact('npx some-server --token plain-fake-flag --key=plain-fake-assigned\nAuthorization: Basic plain-fake-basic')
     for (const secret of ['plain-fake-flag', 'plain-fake-assigned', 'plain-fake-basic']) expect(result).not.toContain(secret)
+  })
+
+  // A `.env` or `~/.ssh` file Codex reads reaches the phone through
+  // redactRemoteText, which sits on redactSecretPatterns; the logs and exports
+  // get the same text when the answer is logged.
+  it.each([
+    ['redactSecretPatterns', (value: string) => redactSecretPatterns(value)],
+    ['redactCommandText', (value: string) => redactCommandText(value)],
+    ['redactStartupSecrets', (value: string) => redactStartupSecrets(value)],
+    ['redactDiagnosticText', (value: string) => redactDiagnosticText(value)],
+    ['redactCrashText', (value: string) => redactCrashText(value, '/home/fake-user')],
+  ])('%s hides private key blocks and .env style key names', (_name, redact) => {
+    const result = redact('-----BEGIN RSA PRIVATE KEY-----\nplain-fake-pem\n-----END RSA PRIVATE KEY-----\nAWS_SECRET_ACCESS_KEY=plain-fake-env')
+    for (const secret of ['plain-fake-pem', 'plain-fake-env']) expect(result).not.toContain(secret)
   })
 
   // The crash reporter hid these two names long before the other four did.
