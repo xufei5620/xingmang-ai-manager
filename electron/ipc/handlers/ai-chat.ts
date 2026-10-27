@@ -1,11 +1,10 @@
 // 主窗口业务通道的处理器：AI 对话、生图、对话里的图片和聊天记录读写。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import type { WebContents } from 'electron'
-import { parseImageGenerateInput } from '../../canvas-request-parser'
 import { loadAccountGroupHints, markRecommendedChatGroup } from '../../managed-cli-groups'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite } from '../../ai-chat-history-store'
 import { requiredString } from '../parsers/common'
-import { parseAiChatStartInput } from '../parsers/ai-chat'
+import { parseAiChatImageInput, parseAiChatStartInput } from '../parsers/ai-chat'
 import type { IpcHandlerContext } from './context'
 
 export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
@@ -46,11 +45,12 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('chat:generate-image', (event, input: unknown) => {
     if (!options.imageService) throw new Error('生图服务未就绪')
     observeChatSender(event.sender)
-    return options.imageService.generate(event.sender.id, {
-      // 对话页从没出过「包含未知字段」这句，多余字段沿用现成的「生图请求格式错误」，上屏的字不变。
-      ...parseImageGenerateInput(input, { prefix: '生图', unknownFields: '生图请求格式错误' }),
-      expectedUserId: currentChatUserId(),
-    })
+    const { sourceAssetIds, ...parsed } = parseAiChatImageInput(input)
+    const request = { ...parsed, expectedUserId: currentChatUserId() }
+    // 带了参考图就照图改，模型能不能改图由生图服务按型号表再核一次。
+    return sourceAssetIds
+      ? options.imageService.edit(event.sender.id, { ...request, sourceAssetIds })
+      : options.imageService.generate(event.sender.id, request)
   })
   registerTrustedHandler('chat:cancel', (event, requestId: unknown) => {
     const id = requiredString(requestId, 'AI聊天请求标识', 160)

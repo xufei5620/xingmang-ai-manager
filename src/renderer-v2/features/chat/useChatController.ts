@@ -259,7 +259,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
       if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError(!prepared || prepared.phase === 'loading' ? '正在准备模型，准备好再发送' : prepared.phase === 'error' ? '模型没准备好，请先点模型菜单里的「刷新模型」再发送' : '请先选择模型'); return }
       const textInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, messages: plan.messages, parameters: plan.settings.parameters }
       const capability = inspectModel(plan.settings.model)
-      const imageInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, prompt: plan.prompt, size: plan.settings.size, quality: capability.kind === 'image' && capability.qualities.length ? plan.settings.quality : undefined, imageResolution: plan.settings.imageResolution }
+      const imageInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, prompt: plan.prompt, size: plan.settings.size, quality: capability.kind === 'image' && capability.qualities.length ? plan.settings.quality : undefined, imageResolution: plan.settings.imageResolution, ...(plan.images.length ? { sourceAssetIds: plan.images.map((image) => image.assetId) } : {}) }
       if (plan.settings.mode === 'text') validateChatRequest(textInput)
       else validateImageRequest(imageInput)
       requests.current.set(plan.requestId, { conversationId: current.id, assistantId: plan.assistantId, mode: plan.settings.mode, epoch: owner })
@@ -358,6 +358,11 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   const pickImages = () => attachImages((remaining) => api.pickImages(remaining))
   const pasteImage = () => attachImages(async () => { const asset = await api.pasteImage(); return asset ? [asset] : [] })
+  // 对话里生成的图拿来接着改：换到「生成图片」，这张图当参考图放进输入框。图已经在主进程存着，不用再读一遍。
+  const reuseImage = (asset: AiChatAsset) => {
+    if (activeConversation(stateRef.current).settings.mode !== 'image') selectMode('image')
+    return attachImages(async () => [asset])
+  }
   const removeImage = (assetId: string) => updateActive((item) => removeDraftImage(item, assetId))
   const removeConversation = (id: string) => {
     const item = stateRef.current.conversations.find((candidate) => candidate.id === id)
@@ -379,7 +384,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
   // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
   const historyUnreadable = Boolean(initial.warning)
-  return { site, attaching, pickImages, pasteImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  return { site, attaching, pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {
