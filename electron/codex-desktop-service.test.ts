@@ -15,6 +15,7 @@ import type { NativeConfigInspection } from './config-files'
 import {
   assertCodexDesktopUninstalled,
   buildCodexDesktopDarwinStatus,
+  withCodexDesktopDarwinUpdate,
   createCodexDesktopService,
   buildCodexDesktopLaunchPlan,
   buildCodexDesktopManifestSources,
@@ -91,7 +92,7 @@ import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
 import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
-import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage } from './macos-desktop-install-failure'
+import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage, macosDesktopUpdateFailedMessage } from './macos-desktop-install-failure'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 
 // The real bucket download runs; the spy only lets a test read back what this service handed it.
@@ -2457,6 +2458,118 @@ describe('Codex Desktop install on macOS', () => {
     expect(f.service.cancelCodexDesktopInstall().cancelled).toBe(false)
     release()
     await ahead
+  })
+})
+
+describe('Codex Desktop updates on macOS', () => {
+  const installed = (version: string | null, installedPath = '/Applications/ChatGPT.app', running = false): MacosCodexAppInspection => ({
+    app: { path: installedPath, version, running },
+    detectionFailed: false,
+    detectionError: null,
+  })
+
+  it('marks an older copy in Applications as installable from the bucket, which is what the home row reads', () => {
+    const status = buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: installed('26.930.31730') })
+    expect(withCodexDesktopDarwinUpdate(status, '26.1003.2', '/Users/tester')).toMatchObject({
+      latestVersion: '26.1003.2', mirrorVersion: '26.1003.2', mirrorUpdateAvailable: true,
+      updateAvailable: true, updateState: 'available', updateCheck: 'checked', updateError: null,
+    })
+    expect(withCodexDesktopDarwinUpdate(status, '26.930.31730', '/Users/tester')).toMatchObject({ updateAvailable: false, updateState: 'latest', mirrorUpdateAvailable: false })
+    // A copy Spotlight found elsewhere, or one whose version cannot be read, is not offered.
+    const elsewhere = buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: installed('26.930.31730', '/Users/tester/Downloads/ChatGPT.app') })
+    expect(withCodexDesktopDarwinUpdate(elsewhere, '26.1003.2', '/Users/tester')).toMatchObject({ updateAvailable: null, updateState: 'unknown', mirrorUpdateAvailable: false })
+    const unreadable = buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: installed(null) })
+    expect(withCodexDesktopDarwinUpdate(unreadable, '26.1003.2', '/Users/tester').updateState).toBe('unknown')
+    // Nothing read from the bucket: the status stays as detected.
+    expect(withCodexDesktopDarwinUpdate(status, null, '/Users/tester')).toBe(status)
+  })
+
+  function updateFixture(app: MacosCodexAppInspection, overrides: Partial<CodexDesktopServiceOptions> = {}) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-mac-update-'))
+    temporaryDirectories.push(directory)
+    let processes = app.app?.running ? `  777   501 ${app.app.path}/Contents/MacOS/ChatGPT\n` : ''
+    const executeCommand = vi.fn<CodexDesktopServiceOptions['executeCommand']>(async (spec) => ({
+      executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+      stdout: spec.executable === '/bin/ps' ? processes : '', stderr: '', outputBytes: 0, durationMs: 1,
+    }))
+    const installMacosDesktopApp = vi.fn<NonNullable<CodexDesktopServiceOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 Codex 桌面端 26.1003.2', percent: 40 })
+      await options.replace?.beforeReplace()
+      return { version: '26.1003.2', path: '/Applications/ChatGPT.app' }
+    })
+    const latest = vi.fn(async () => '26.1003.2')
+    const signals: Array<[number, string]> = []
+    const service = createCodexDesktopService({
+      platform: 'darwin',
+      installationQueue: new InstallationQueue(),
+      createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+      detectMacosCodexApp: async () => app,
+      executeCommand,
+      codexEnv: {},
+      store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      inspectNativeProviderConfig: vi.fn(() => relayCodexConfig(directory)),
+      spawnDetached: async () => { throw new Error('未使用') },
+      downloadFetch: vi.fn<typeof fetch>(),
+      installMacosDesktopApp,
+      userHome: '/Users/tester',
+      getuid: () => 501,
+      architecture: 'arm64',
+      latestMacosDesktopVersions: { latest },
+      quitMacosDesktopApp: { kill: (pid, signal) => { signals.push([pid, signal]); processes = '' }, wait: async () => undefined },
+      ...overrides,
+    })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    function progress(): unknown[] {
+      return target.send.mock.calls.filter(([channel]) => channel === 'desktop:codex-install-progress').map(([, event]) => event.message)
+    }
+    return { service, target, installMacosDesktopApp, latest, signals, progress }
+  }
+
+  it('reads the bucket for the scan, once per architecture lookup', async () => {
+    const f = updateFixture(installed('26.930.31730'))
+    await expect(f.service.inspectCodexDesktop()).resolves.toMatchObject({ installed: true, latestVersion: '26.1003.2', updateState: 'available', mirrorUpdateAvailable: true })
+    expect(f.latest).toHaveBeenCalledWith('codexDesktop', 'arm64')
+    // Not installed: nothing to compare, nothing read.
+    const absent = updateFixture({ app: null, detectionFailed: false, detectionError: null })
+    await expect(absent.service.inspectCodexDesktop()).resolves.toMatchObject({ installed: false, updateCheck: 'skipped' })
+    expect(absent.latest).not.toHaveBeenCalled()
+  })
+
+  it('replaces the installed copy when asked to update, and closes it only with the customer\'s consent', async () => {
+    const closed = updateFixture(installed('26.930.31730'))
+    await expect(closed.service.installCodexDesktop(closed.target, { update: true, closeRunning: false }))
+      .resolves.toEqual({ action: 'updated', previousVersion: '26.930.31730', installedVersion: '26.1003.2' })
+    expect(closed.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
+      tool: 'codexDesktop', architecture: 'arm64',
+      replace: { installedPath: '/Applications/ChatGPT.app', installedVersion: '26.930.31730', beforeReplace: expect.any(Function) },
+    }))
+    expect(closed.progress().at(-1)).toBe('Codex 桌面端已更新到 v26.1003.2')
+    expect(closed.signals).toEqual([])
+
+    const refused = updateFixture(installed('26.930.31730', '/Applications/ChatGPT.app', true))
+    const refusal = await refused.service.installCodexDesktop(refused.target, { update: true, closeRunning: false }).catch((cause: unknown) => cause)
+    expect(refusal).toBeInstanceOf(MacosDesktopInstallError)
+    expect((refusal as MacosDesktopInstallError).message).toBe(macosDesktopUpdateFailedMessage)
+    expect((refusal as MacosDesktopInstallError).detail).toContain('客户没同意关掉它')
+    expect(refused.signals).toEqual([])
+
+    const agreed = updateFixture(installed('26.930.31730', '/Applications/ChatGPT.app', true))
+    await expect(agreed.service.installCodexDesktop(agreed.target, { update: true, closeRunning: true })).resolves.toMatchObject({ action: 'updated' })
+    expect(agreed.signals).toEqual([[777, 'SIGTERM']])
+
+    // A plain install still leaves the installed copy alone.
+    const plain = updateFixture(installed('26.930.31730'))
+    await expect(plain.service.installCodexDesktop(plain.target)).resolves.toMatchObject({ action: 'unchanged' })
+    expect(plain.installMacosDesktopApp).not.toHaveBeenCalled()
+  })
+
+  it('reports an update that found nothing newer as unchanged', async () => {
+    const f = updateFixture(installed('26.930.31730'), {
+      installMacosDesktopApp: async () => ({ version: '26.930.31730', path: '/Applications/ChatGPT.app', unchanged: true }),
+    })
+    await expect(f.service.installCodexDesktop(f.target, { update: true, closeRunning: false }))
+      .resolves.toEqual({ action: 'unchanged', previousVersion: '26.930.31730', installedVersion: '26.930.31730' })
+    expect(f.progress().at(-1)).toBe('Codex 桌面端已经是最新版，不用更新')
   })
 })
 

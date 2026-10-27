@@ -19,6 +19,31 @@ export interface ExternalClientRuntimeStatus {
    * 下载页（旧行为）。只会是 externalClientOfficialDownloadUrls 里的一条。
    */
   officialDownloadUrl?: string | null
+  /**
+   * Mac 上星芒存储桶里这一家的最新版（yoyo 2026-10-27「桌面端更新改」，见 macos-desktop-app-update.ts）。
+   * 缺省 = 没查（Windows、没装、桶里没有这一家），null = 这一轮没读到。
+   */
+  latestVersion?: string | null
+  /** 装着的比 latestVersion 旧、而且在「应用程序」里，星芒换得了它：首页出「可更新到 v…」。缺省 = 不提醒（旧行为）。 */
+  updateAvailable?: boolean
+}
+
+/**
+ * 首页卡片上「可更新到 v…」那一下（Mac 上的 Claude Desktop、OpenCode、Codex 桌面端）：换掉装着的那一份。
+ * closeRunning = 客户在「还开着」那个框里点了「关掉并更新」；没点过时它开着就不换。缺省（不传）= 安装，旧行为。
+ */
+export interface DesktopAppUpdateRequest {
+  update: true
+  closeRunning: boolean
+}
+
+export function parseDesktopAppUpdateRequest(value: unknown): DesktopAppUpdateRequest | undefined {
+  if (value === undefined) return undefined
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('更新参数格式错误')
+  const request = value as Record<string, unknown>
+  if (Object.keys(request).some((key) => key !== 'update' && key !== 'closeRunning')
+    || request.update !== true || typeof request.closeRunning !== 'boolean') throw new Error('更新参数格式错误')
+  return { update: true, closeRunning: request.closeRunning }
 }
 
 /**

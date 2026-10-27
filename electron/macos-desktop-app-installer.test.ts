@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import { desktopBucketIndexUrl, desktopPackageBucketOrigin, downloadDesktopBucketPackage } from './desktop-package-bucket'
 import {
+  compareMacosDesktopVersions,
   fetchMacosDesktopResource,
   installMacosDesktopApp,
   isMacosVersionBelow,
@@ -16,12 +17,16 @@ import {
   type MacosDesktopAppProcess,
 } from './macos-desktop-app-installer'
 import {
+  isMacosDesktopAppManagementBlocked,
   isMacosDesktopInstallFailure,
   isMacosDesktopSystemTooOld,
+  isMacosDesktopUpdateFailure,
+  macosDesktopAppManagementBlockedMessage,
   macosDesktopDiskFullMessage,
   macosDesktopInstallErrorName,
   macosDesktopNameTakenMessage,
   macosDesktopNotOfficialMessage,
+  macosDesktopUpdateFailedMessage,
   macosLegacyChatgptMessage,
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
@@ -85,6 +90,8 @@ interface FakeProcessOptions {
   bundleIdentifier?: string
   /** What plutil reads from the Info.plist of an app already holding the name; unreadable when unset. */
   existingBundleIdentifier?: string
+  /** The CFBundleShortVersionString plutil reads from an app already in Applications; unreadable when unset. */
+  existingVersion?: string
   minimumSystemVersion?: string
   systemVersion?: string
   /** What `sysctl -n hw.optional.arm64` prints; unset means the key is missing and sysctl fails, as on an Intel Mac. */
@@ -121,6 +128,10 @@ function fakeProcesses(options: FakeProcessOptions = {}) {
       fs.writeFileSync(path.join(destination, bundleName, 'Contents', 'MacOS', path.basename(bundleName, '.app')), 'binary', { mode: 0o755 })
       if (options.extraTopLevelEntry) fs.writeFileSync(path.join(destination, 'README'), '')
       return result(plan)
+    }
+    if (plan.executable === '/usr/bin/plutil' && plan.argv[0] === '-extract' && plan.argv[1] === 'CFBundleShortVersionString') {
+      if (options.existingVersion === undefined) throw rejection(plan, 'Could not extract value')
+      return result(plan, `${options.existingVersion}\n`)
     }
     if (plan.executable === '/usr/bin/plutil' && plan.argv[0] === '-extract') {
       if (options.existingBundleIdentifier === undefined) throw rejection(plan, 'Could not extract value')
@@ -474,6 +485,170 @@ describe('macOS desktop app installer', () => {
     expect(isMacosDesktopSystemTooOld(error.message)).toBe(true)
     expect(isMacosDesktopInstallFailure(error.message)).toBe(false)
     expect(fs.readdirSync(f.applications)).toEqual([])
+  })
+})
+
+/** OpenCode 1.18.30 already in Applications, holding a file the update must take away with the old copy. */
+function installedOpenCode(applications: string): string {
+  const bundle = path.posix.join(applications, 'OpenCode.app')
+  fs.mkdirSync(path.join(bundle, 'Contents', 'MacOS'), { recursive: true })
+  fs.writeFileSync(path.join(bundle, 'Contents', 'MacOS', 'OpenCode'), 'old binary')
+  return bundle
+}
+
+function updateSetup(processes: FakeProcessOptions = {}, beforeReplace: () => Promise<void> = async () => undefined) {
+  const f = setup({}, processes)
+  const installedPath = installedOpenCode(f.applications)
+  const prepare = vi.fn(beforeReplace)
+  f.options.replace = { installedPath, installedVersion: '1.18.30', beforeReplace: prepare }
+  return { ...f, installedPath, prepare }
+}
+
+function installedBinary(bundle: string): string {
+  return fs.readFileSync(path.join(bundle, 'Contents', 'MacOS', 'OpenCode'), 'utf8')
+}
+
+/** fs.promises.rename, except `refuse` gets to throw for the renames it picks. */
+function renameRefusing(refuse: (from: string, to: string) => NodeJS.ErrnoException | null): void {
+  const rename = fs.promises.rename
+  vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to) => {
+    const error = refuse(String(from), String(to))
+    if (error) throw error
+    return rename(from, to)
+  })
+}
+
+function errno(code: string): NodeJS.ErrnoException {
+  return Object.assign(new Error(`${code}: operation not permitted, rename`), { code })
+}
+
+describe('macOS desktop app updates in place', () => {
+  it('compares the three-part desktop versions and gives up on anything else', () => {
+    expect(compareMacosDesktopVersions('3.6556.2', '3.6500.10')).toBe(1)
+    expect(compareMacosDesktopVersions('26.930.31730', '26.1003.2')).toBe(-1)
+    expect(compareMacosDesktopVersions('1.18.34', '1.18.34')).toBe(0)
+    expect(compareMacosDesktopVersions('1.18', '1.18.0')).toBe(0)
+    expect(compareMacosDesktopVersions('1.18.34-beta', '1.18.30')).toBeNull()
+    expect(compareMacosDesktopVersions('', '1.0')).toBeNull()
+  })
+
+  it.skipIf(process.platform === 'win32')('checks the copy in Applications is official, then swaps in the newer one only after the caller has closed the app', async () => {
+    const f = updateSetup()
+    const order: string[] = []
+    f.prepare.mockImplementation(async () => {
+      // The new copy already sits next to the old one, which is still untouched.
+      order.push('prepare')
+      expect(installedBinary(f.installedPath)).toBe('old binary')
+      expect(fs.readdirSync(f.applications).some((entry) => /^\.OpenCode\.app\.xingmang-[0-9a-f]{12}$/.test(entry))).toBe(true)
+    })
+
+    const updated = await installMacosDesktopApp(f.options)
+
+    expect(updated).toEqual({ version: '1.18.34', path: f.installedPath })
+    expect(order).toEqual(['prepare'])
+    expect(installedBinary(f.installedPath)).toBe('binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+    expect(stagingLeftovers(f.home)).toEqual([])
+    // The copy in Applications is held to the official team and identifier before anything is downloaded.
+    const [installedCheck] = f.plans
+    expect(installedCheck.executable).toBe('/usr/bin/codesign')
+    expect(installedCheck.argv.at(-1)).toBe(f.installedPath)
+    expect(installedCheck.argv).toContain('--deep')
+    expect(installedCheck.argv.find((argument) => argument.startsWith('-R='))).toContain('certificate leaf[subject.OU] = "5NZ4Q7NXJ4"')
+    expect(f.progress.at(-1)).toBe('正在放进「应用程序」')
+  })
+
+  it.skipIf(process.platform === 'win32')('leaves the installed copy alone when the download is not newer', async () => {
+    const f = updateSetup()
+    f.options.replace = { installedPath: f.installedPath, installedVersion: '1.18.34', beforeReplace: f.prepare }
+    await expect(installMacosDesktopApp(f.options)).resolves.toEqual({ version: '1.18.34', path: f.installedPath, unchanged: true })
+    expect(f.prepare).not.toHaveBeenCalled()
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('never replaces a copy that is not the official app, nor one outside Applications', async () => {
+    const unofficial = updateSetup({ rejectExecutable: '/usr/bin/codesign' })
+    const refused = await failure(installMacosDesktopApp(unofficial.options))
+    expect(refused.message).toBe(macosDesktopUpdateFailedMessage)
+    expect(refused.detail).toContain('不是 5NZ4Q7NXJ4 团队签名的官方原版')
+    expect(unofficial.requested).toEqual([])
+    expect(installedBinary(unofficial.installedPath)).toBe('old binary')
+
+    const elsewhere = updateSetup()
+    const downloads = path.posix.join(elsewhere.home, 'Downloads', 'OpenCode.app')
+    elsewhere.options.replace = { installedPath: downloads, installedVersion: '1.18.30', beforeReplace: elsewhere.prepare }
+    const outside = await failure(installMacosDesktopApp(elsewhere.options))
+    expect(outside.message).toBe(macosDesktopUpdateFailedMessage)
+    expect(elsewhere.requested).toEqual([])
+    expect(elsewhere.plans).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('says the old version is still there when anything before the swap fails', async () => {
+    const network = updateSetup()
+    network.options.fetch = (async () => { throw new TypeError('fetch failed') }) as typeof globalThis.fetch
+    const offline = await failure(installMacosDesktopApp(network.options))
+    expect(offline.message).toBe(macosDesktopUpdateFailedMessage)
+    expect(isMacosDesktopUpdateFailure(offline.message)).toBe(true)
+    // Install failures point at the install guide; an update failure does not.
+    expect(isMacosDesktopInstallFailure(offline.message)).toBe(false)
+    expect(installedBinary(network.installedPath)).toBe('old binary')
+
+    const stillOpen = updateSetup({}, async () => { throw new Error('OpenCode 请它退出以后还开着（1 个进程），这次不换') })
+    const refused = await failure(installMacosDesktopApp(stillOpen.options))
+    expect(refused.message).toBe(macosDesktopUpdateFailedMessage)
+    expect(refused.detail).toContain('请它退出以后还开着')
+    expect(installedBinary(stillOpen.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(stillOpen.applications)).toEqual(['OpenCode.app'])
+    expect(stagingLeftovers(stillOpen.home)).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('says the Mac blocked it when App Management refuses to move the old copy, which stays put', async () => {
+    const f = updateSetup()
+    renameRefusing((from) => from === f.installedPath ? errno('EPERM') : null)
+    const blocked = await failure(installMacosDesktopApp(f.options))
+    expect(blocked.message).toBe(macosDesktopAppManagementBlockedMessage)
+    expect(isMacosDesktopAppManagementBlocked(blocked.message)).toBe(true)
+    expect(blocked.detail).toContain('App 管理')
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('puts the old copy back when the new one cannot be moved in', async () => {
+    const f = updateSetup()
+    renameRefusing((from, to) => to === f.installedPath && path.posix.basename(from).startsWith('.OpenCode.app.xingmang-') && !from.includes('-old-') ? errno('EIO') : null)
+    const error = await failure(installMacosDesktopApp(f.options))
+    expect(error.message).toBe(macosDesktopUpdateFailedMessage)
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('when even the old copy cannot go back, says the install failed and restores it on the next try', async () => {
+    const f = updateSetup()
+    renameRefusing((from, to) => to === f.installedPath ? errno('EIO') : null)
+    const error = await failure(installMacosDesktopApp(f.options))
+    // The old copy is not where it was, so "the old version is still there" would be untrue.
+    expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
+    const parked = fs.readdirSync(f.applications)
+    expect(parked).toHaveLength(1)
+    expect(parked[0]).toMatch(/^\.OpenCode\.app\.xingmang-old-[0-9a-f]{12}$/)
+    vi.restoreAllMocks()
+
+    // The next install finds it before downloading anything and puts it back.
+    const again = setup({}, { existingVersion: '1.18.30' })
+    again.options.systemApplicationsDirectory = f.applications
+    await expect(installMacosDesktopApp(again.options)).resolves.toEqual({ version: '1.18.30', path: f.installedPath })
+    expect(again.requested).toEqual([])
+    expect(installedBinary(f.installedPath)).toBe('old binary')
+    expect(fs.readdirSync(f.applications)).toEqual(['OpenCode.app'])
+  })
+
+  it.skipIf(process.platform === 'win32')('clears an old copy a finished update could not delete, and nothing else', async () => {
+    const f = updateSetup()
+    fs.mkdirSync(path.join(f.applications, '.OpenCode.app.xingmang-old-0123456789ab', 'Contents'), { recursive: true })
+    fs.mkdirSync(path.join(f.applications, '.OpenCode.app.xingmang-old-mine'))
+    await installMacosDesktopApp(f.options)
+    expect(fs.readdirSync(f.applications).sort()).toEqual(['.OpenCode.app.xingmang-old-mine', 'OpenCode.app'])
   })
 })
 

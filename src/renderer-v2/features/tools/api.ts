@@ -6,6 +6,7 @@ import {
   type CliModelHints,
   type CliUninstallOptions,
   type CodexDesktopLaunchMode,
+  type DesktopAppUpdateRequest,
   type ExternalToolId,
   type InstallCancelResult,
   type ProviderConfigSummary,
@@ -179,6 +180,19 @@ export function createToolsApi(bridge: XingmangApi) {
     // 只要上次落盘的那份，主进程不起盘点；本次启动已经真检测过、或没有旧结果时是空列表（已知13）。
     readCachedExternal: () => bridge.scanExternalClients(false, { cachedOnly: true }),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
+    // Mac 上首页「可更新到 v…」那一下：换掉装着的那一份（closeRunning = 客户点过「关掉并更新」）。
+    updateMacDesktopApp: async (id: 'codexDesktop' | ExternalToolId, request: DesktopAppUpdateRequest) => {
+      if (id !== 'codexDesktop') return { kind: 'external' as const, status: await bridge.installExternalClient(id, request) }
+      const result = await bridge.installCodexDesktop(request)
+      recentSessions.invalidate()
+      return { kind: 'codexDesktop' as const, result }
+    },
+    /** 更新前现看一眼它开没开着：首页那份「运行中」可能是几分钟前的。 */
+    readMacDesktopRunning: async (id: 'codexDesktop' | ExternalToolId) => id === 'codexDesktop'
+      ? (await bridge.getCodexDesktopStatus()).running
+      : (await bridge.scanExternalClients(true)).find((status) => status.tool === id)?.running ?? false,
+    /** Mac 拦住了更新时「去打开」：系统设置里「App 管理」那一页，地址在主进程。 */
+    openAppManagementSettings: () => bridge.openAppManagementSettings(),
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     switchExternalSource: (id: ExternalToolId, target: AccountSourceTarget) => bridge.switchExternalClientSource(id, target),

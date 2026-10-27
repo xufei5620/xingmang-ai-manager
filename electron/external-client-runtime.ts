@@ -12,7 +12,10 @@ import {
   cleanCommandOutput, CommandRunnerError, runCommand, trustedCommandEnvironment,
   type CommandErrorCode, type CommandSpec, type RunCommandOptions,
 } from './command-runner'
-import { externalClientOfficialDownloadUrls, isExternalToolId, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus } from './external-client-contract'
+import {
+  externalClientOfficialDownloadUrls, isExternalToolId,
+  type DesktopAppUpdateRequest, type ExternalClientInstallProgress, type ExternalClientRuntimeStatus,
+} from './external-client-contract'
 import type { ExternalToolId } from './external-tool-config'
 import {
   InstallCancellationRegistry, InstallCancelledError, isInstallCancelledError,
@@ -21,6 +24,10 @@ import {
 import { InstallationQueue } from './installation-queue'
 import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, darwinGatekeeperAssessmentTimeoutMs } from './macos-code-signing'
 import { installMacosDesktopApp, macosDesktopAppInstallable } from './macos-desktop-app-installer'
+import {
+  buildMacosDesktopUpdateOffer, prepareMacosDesktopReplacement, withinMacosDesktopLatestVersionBudget,
+  type MacosDesktopLatestVersionLookup,
+} from './macos-desktop-app-update'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { sameLocalPathIdentity } from './path-identity'
 import { assertNoReparseComponents } from './safe-local-data'
@@ -147,6 +154,13 @@ export interface ExternalClientRuntimeOptions {
    * 只进主进程，不上屏；缺省 = 不记。
    */
   onLaunched?: (tool: ExternalToolId, clientPath: string) => void
+  /**
+   * Mac 上查星芒存储桶里这几家的最新版，首页据此提醒「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）。
+   * 缺省 = 不查、不提醒（测试与旧调用方照旧），生产由 system-service 打开。
+   */
+  latestMacosDesktopVersions?: MacosDesktopLatestVersionLookup
+  /** 测试接缝：关掉正在开着的客户端那一步怎么发信号、怎么等。缺省 process.kill、按真实时间等。 */
+  quitMacosDesktopApp?: Pick<Parameters<typeof prepareMacosDesktopReplacement>[0], 'kill' | 'wait' | 'now'>
 }
 
 /** 检测脚本读不出来的一条安装记录：记录名（或整处卸载信息的位置）和 PowerShell 给的原因。 */
@@ -851,6 +865,20 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     scanGeneration++
     cachedScan = null
   }
+  /**
+   * Mac 上装着的那几家比一比存储桶里的最新版（yoyo 2026-10-27「桌面端更新改」）。清单缓存 6 小时，
+   * 这一轮最多多等几秒：等不到先不提醒，下一轮就有了。Windows、没装的不查。
+   */
+  async function withUpdateOffers(statuses: ExternalClientRuntimeStatus[]): Promise<ExternalClientRuntimeStatus[]> {
+    const lookup = options.latestMacosDesktopVersions
+    if (platform !== 'darwin' || !lookup || (architecture !== 'arm64' && architecture !== 'x64')) return statuses
+    const macArchitecture = architecture
+    return Promise.all(statuses.map(async (entry) => {
+      if (!entry.installed || entry.detectionError || !macosDesktopAppInstallable(entry.tool, architecture)) return entry
+      const latest = await withinMacosDesktopLatestVersionBudget(lookup.latest(entry.tool, macArchitecture))
+      return { ...entry, ...buildMacosDesktopUpdateOffer(entry.tool, entry, latest, userHome) }
+    }))
+  }
   function scan(scanOptions: ExternalClientScanOptions = {}): Promise<ExternalClientRuntimeStatus[]> {
     const running = inFlightScan
     if (running && (scanOptions.force || scanOptions.fresh)) {
@@ -871,8 +899,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       return running.promise.then(after, after)
     }
     const generation = scanGeneration
-    const promise = Promise.all([inspect({ reuseSignatures: true }), resolveWinget()]).then(([inspection, winget]) => {
-      const statuses = tools.map((tool) => status(tool, inspection, winget))
+    const promise = Promise.all([inspect({ reuseSignatures: true }), resolveWinget()]).then(async ([inspection, winget]) => {
+      const statuses = await withUpdateOffers(tools.map((tool) => status(tool, inspection, winget)))
       // 检测出错的那次不缓存：老电脑上一次 PowerShell 超时不该让界面连着几分钟报错。
       if (generation === scanGeneration && statuses.every((entry) => !entry.detectionError)) cachedScan = { statuses, at: now() }
       return statuses
@@ -898,6 +926,36 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       ...(options.bucketDownloads ? { bucket: options.bucketDownloads } : {}),
       ...(options.withDownloadRoute ? { withVendorDownloadRoute: options.withDownloadRoute } : {}),
     })
+  }
+  /**
+   * Mac 上换掉装着的那一份（yoyo 2026-10-27「桌面端更新改」）：和安装同一套下载、核对，装着的那份要是官方原版，
+   * 换之前它开着就按客户的意思关掉（prepareMacosDesktopReplacement），换不成旧版原样留着。
+   */
+  async function updateOnMac(tool: ExternalToolId, current: ExternalClientRuntimeStatus, request: DesktopAppUpdateRequest, report: (phase: ExternalClientInstallProgress['phase'], message: string, percent?: number | null) => void, signal: AbortSignal): Promise<{ unchanged: boolean }> {
+    if (!current.path || !current.version) throw new Error(`${definitions[tool].name} 的版本号读不出来，没法比新旧`)
+    const clientPath = current.path
+    await options.assertDiskSpace?.(`${definitions[tool].name} 更新失败`)
+    const runProcess = (plan: { executable: string, argv: readonly string[], timeoutMs: number }) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 8 * 1024 * 1024, signal })
+    const result = await (options.installMacosDesktopApp ?? installMacosDesktopApp)({
+      tool, architecture, userHome, environment: options.env ?? process.env, fetch: options.fetch ?? fetch,
+      runProcess,
+      onProgress: (event) => report(event.phase, event.message, event.percent),
+      signal,
+      ...(options.bucketDownloads ? { bucket: options.bucketDownloads } : {}),
+      ...(options.withDownloadRoute ? { withVendorDownloadRoute: options.withDownloadRoute } : {}),
+      replace: {
+        installedPath: clientPath,
+        installedVersion: current.version,
+        // 关掉它这一步不跟取消走：已经开始关了，半路停下只会留下一个关了一半的客户端。
+        beforeReplace: () => prepareMacosDesktopReplacement({
+          bundle: clientPath, name: definitions[tool].name, closeRunning: request.closeRunning,
+          runProcess: (plan) => execute({ executable: plan.executable, argv: [...plan.argv] }, { env: environment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 8 * 1024 * 1024 }),
+          uid: options.getuid?.() ?? process.getuid?.() ?? -1,
+          ...options.quitMacosDesktopApp,
+        }),
+      },
+    })
+    return { unchanged: result.unchanged === true }
   }
   /**
    * Windows 上 Claude Desktop 的第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。
@@ -961,7 +1019,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       throw installationError(message, wingetTried ? { winget: wingetFailure, official: error } : error)
     }
   }
-  function install(tool: ExternalToolId, onProgress?: (event: ExternalClientInstallProgress) => void): Promise<ExternalClientRuntimeStatus> {
+  function install(tool: ExternalToolId, onProgress?: (event: ExternalClientInstallProgress) => void, request?: DesktopAppUpdateRequest): Promise<ExternalClientRuntimeStatus> {
     if (!isExternalToolId(tool)) return Promise.reject(new Error('未知客户端'))
     const existing = jobs.get(tool)
     if (existing) {
@@ -998,6 +1056,16 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         const [before, winget] = await Promise.all([inspect(), resolveWinget()])
         cancellation.throwIfCancelled()
         const current = status(tool, before, winget)
+        // 更新只在 Mac 上有：Windows 上点不到「可更新到 v…」，照旧当安装。
+        if (current.installed && request?.update && platform === 'darwin') {
+          const { unchanged } = await updateOnMac(tool, current, request, report, cancellation.signal)
+          report('checking', '正在验证安装结果')
+          const after = (await withUpdateOffers([status(tool, await inspect(), winget)]))[0]
+          if (!after.installed) throw new Error(after.detectionError || '安装命令已结束，但未检测到客户端，请检查安装器结果后重试检测')
+          report('completed', unchanged ? `${definitions[tool].name} 已经是最新版，不用更新`
+            : after.version ? `${definitions[tool].name} 已更新到 v${after.version}` : `${definitions[tool].name} 安装完成`, 100)
+          return after
+        }
         if (current.installed) { report('completed', '客户端已安装，无需重复安装', 100); return current }
         if (current.detectionError) throw new Error(installStateMessage(current.detectionError))
         if (!current.installSupported) throw new Error(current.installHint || '当前系统不支持一键安装')

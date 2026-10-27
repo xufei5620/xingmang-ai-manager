@@ -179,6 +179,8 @@ export interface IpcRegistrationOptions {
   /** 见 electron/proxy-bypass.ts；不传 = 不绕（测试与旧调用方）。 */
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
+  /** Mac 上打开系统设置的「App 管理」那一页（macos-desktop-app-update.ts 的固定地址）；不传 = 不是 Mac。 */
+  openAppManagementSettings?(): Promise<boolean>
   relaunchApp?(): Promise<boolean>
   /**
    * 更新页「确认重启安装」（带 askIfInstalling）前问一句有没有工具在装（已知31）：false = 客户点了

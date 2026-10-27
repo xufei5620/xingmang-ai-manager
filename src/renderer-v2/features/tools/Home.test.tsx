@@ -2168,3 +2168,74 @@ describe('renderer-v2 home v4 top cards', () => {
     expect(markup).toContain('data-testid="tool-grok-why"')
   })
 })
+
+describe('renderer-v2 home desktop app updates on macOS', () => {
+  const codexDesktop = {
+    installed: true, version: '26.930.31730', appVersion: '26.930.31730', path: '/Applications/ChatGPT.app', installDirectory: '/Applications/ChatGPT.app',
+    running: false, detectionFailed: false, detectionError: null, mirrorVersion: '26.1003.2', mirrorUpdateAvailable: true, mirrorError: null,
+    latestVersion: '26.1003.2', updateAvailable: true, updateState: 'available', updateCheck: 'checked', updateError: null,
+    uninstall: { available: false, reason: null, manualCommand: null },
+  }
+  function macSnapshot(): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return {
+      ...base,
+      platform: {
+        platform: 'macos', isMac: true, nodeRuntimeInstall: 'external', pythonRuntimeInstall: 'external',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'managed', launch: true, uninstall: false, windowsStore: false },
+      },
+      system: { ...base.system, desktopApps: { codex: codexDesktop } },
+    } as unknown as ToolboxSnapshot
+  }
+  const opencode = {
+    tool: 'opencode', installed: true, version: '1.18.30', path: '/Applications/OpenCode.app', installDirectory: '/Applications', running: false,
+    installSupported: true, launchSupported: true, detectionError: null, installHint: null,
+    configured: true, configurationReady: true, model: 'fixture-model', configurationSource: 'xingmang', configurationError: null,
+    latestVersion: '1.18.34', updateAvailable: true,
+  } as unknown as HomeProps['externalClients'][number]
+  function row(markup: string, tool: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+    expect(start, `没有渲染出 ${tool} 那一行`).toBeGreaterThan(-1)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    return markup.slice(start, next === -1 ? undefined : next)
+  }
+  const noop = () => undefined
+
+  it('offers the exact bucket version on the Codex desktop row and on a Mac client row', () => {
+    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [opencode], onUpdateDesktopApp: noop })
+    expect(row(markup, 'codexDesktop')).toContain('可更新到 v26.1003.2')
+    expect(row(markup, 'opencode')).toContain('data-testid="tool-opencode-update"')
+    expect(row(markup, 'opencode')).toContain('可更新到 v1.18.34')
+    // Without a way to update it, the client row says nothing about a newer version.
+    const offline = render({}, undefined, { snapshot: macSnapshot(), externalClients: [opencode] })
+    expect(row(offline, 'opencode')).not.toContain('可更新到')
+    const current = { ...opencode, version: '1.18.34', updateAvailable: false } as typeof opencode
+    expect(row(render({}, undefined, { snapshot: macSnapshot(), externalClients: [current], onUpdateDesktopApp: noop }), 'opencode')).not.toContain('可更新到')
+  })
+
+  it('leads the progress line with the target version while a desktop app updates', () => {
+    const jobs = {
+      opencode: { label: '正在下载 OpenCode 1.18.34', log: [], cancellable: true },
+      codexDesktop: { label: '正在下载 Codex 桌面端 26.1003.2', log: [], cancellable: true },
+    }
+    const markup = render(jobs, undefined, {
+      snapshot: macSnapshot(), externalClients: [opencode], onUpdateDesktopApp: noop,
+      desktopUpdateTargets: { opencode: '1.18.34', codexDesktop: '26.1003.2' },
+    })
+    expect(row(markup, 'opencode')).toContain('更新到 v1.18.34 · 正在下载 OpenCode 1.18.34')
+    expect(row(markup, 'codexDesktop')).toContain('更新到 v26.1003.2 · 正在下载 Codex 桌面端 26.1003.2')
+    expect(row(markup, 'opencode')).not.toContain('data-testid="tool-opencode-update"')
+  })
+
+  it('says the old version is still there after a failed update, next to the reason button', () => {
+    const markup = render({}, undefined, {
+      snapshot: macSnapshot(), externalClients: [opencode], onUpdateDesktopApp: noop,
+      desktopUpdateFailures: { opencode: {}, codexDesktop: {} }, onShowDesktopUpdateFailure: noop,
+    })
+    for (const tool of ['opencode', 'codexDesktop']) {
+      expect(row(markup, tool), tool).toContain('没更新成，旧版还在，照常能用')
+      expect(row(markup, tool), tool).toContain(`data-testid="tool-${tool}-why"`)
+    }
+  })
+})

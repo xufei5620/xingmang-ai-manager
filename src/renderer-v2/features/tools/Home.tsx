@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
+import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, ListRow, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
@@ -151,6 +152,16 @@ export interface HomeProps {
   onShowInstallFailure?(tool: ToolId): void
   /** 正在装的那一次是更新、回到推荐版本还是退回；缺省 = 只写进度。 */
   installIntents?: Partial<Record<ToolId, ToolInstallIntent>>
+  /**
+   * Mac 上 Claude Desktop、OpenCode 那一行的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）；缺省 = 不给这个链接（旧行为）。
+   * Codex 桌面端那一行照旧走 onInstall(…, 'update')。
+   */
+  onUpdateDesktopApp?(tool: ExternalToolId, version: string): void
+  /** Mac 上桌面端正在更新到哪一版：进度那一行开头写「更新到 v…」；缺省 = 只写进度。 */
+  desktopUpdateTargets?: Partial<Record<DesktopUpdateTool, string>>
+  /** Mac 上桌面端没更新成的那几个：卡片写「没更新成，旧版还在，照常能用」和「看原因」；缺省 = 没有。 */
+  desktopUpdateFailures?: Partial<Record<DesktopUpdateTool, unknown>>
+  onShowDesktopUpdateFailure?(tool: DesktopUpdateTool): void
   /** 「还差重启一次电脑」那条提醒的「现在重启」；缺省 = 首页不摆这条（旧行为：挂在页顶）。 */
   restart?: () => Promise<void>
   /**
@@ -385,6 +396,11 @@ function installIntentPrefix(intent: ToolInstallIntent | undefined): string {
   if (!intent) return ''
   const verb = intent.kind === 'update' ? '更新到' : intent.kind === 'rollback' ? '回到' : '退回'
   return `${verb} v${intent.version.replace(/^v/, '')} · `
+}
+
+/** Mac 上桌面端正在更新：进度那一行开头同命令行工具的「更新到 v… · 」。 */
+function desktopUpdatePrefix(target: string | undefined): string {
+  return target ? installIntentPrefix({ kind: 'update', version: target }) : ''
 }
 
 function versionText(version: string | null | undefined): string {
@@ -681,6 +697,7 @@ export function Home(props: HomeProps) {
     // 工具自己都读不了的文件，里面读出来的 Key、来源都不作数，排在那些判断前面先说。
     const broken = config && settled ? brokenConfigOf(config, tool.provider) : null
     const installFailure = !tool.status.installed && !installJob && !tool.error ? props.installFailures?.[tool.id] ?? null : null
+    const updateFailure = tool.id === 'codexDesktop' && tool.status.installed && !installJob && !tool.error && props.desktopUpdateFailures?.codexDesktop !== undefined
     const status = installJob ? 'installing' as const : tool.error ? 'detectionFailed' as const : !tool.status.installed ? 'missing' as const
       : configUnavailable ? 'configUnavailable' as const
       : broken ? 'configBroken' as const
@@ -734,7 +751,7 @@ export function Home(props: HomeProps) {
     const routeLabel = config && !broken && !ownershipPending ? toolRouteLabel(config, tool.source) : null
     const sourceLabel = sourceChipLabels[tool.source === 'official' || tool.source === 'manual' ? tool.source : 'account']
     return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, zeroBalance, broken, ccSwitch, foreignKey, shadowed, openable,
-      hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
+      hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, updateFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
       elevationHint, waitingForScan, waitingForAccount, primaryLabel, primary, primaryDisabled, officialLine, officialPending, routeLabel, sourceLabel,
       ownershipPending }
   }
@@ -903,9 +920,10 @@ export function Home(props: HomeProps) {
     // 中间那行：进行中的写进度；出了问题写原因；没装写一句介绍；装好写线路、模型和版本。
     const line = tool.status.installed ? versionLine(tool, state) : null
     const detail = state.switchJob ? null
-      : installJob ? `${installIntentPrefix(props.installIntents?.[tool.id])}${installJob.label}`
+      : installJob ? `${props.installIntents?.[tool.id] ? installIntentPrefix(props.installIntents[tool.id]) : desktopUpdatePrefix(tool.id === 'codexDesktop' ? props.desktopUpdateTargets?.codexDesktop : undefined)}${installJob.label}`
       : job?.label ?? tool.error
       ?? (state.installFailure ? `没装上：${state.installFailure.reason.replace(/[。.\s]+$/, '')}，已撤回`
+        : state.updateFailure ? desktopUpdateFailedLine
         : status === 'configBroken' && state.broken ? brokenConfigDetails[state.broken]
         : status === 'configChanged' ? configChangedDetail
         : status === 'codexShadowed' ? codexShadowedDetail
@@ -916,13 +934,14 @@ export function Home(props: HomeProps) {
         : status === 'ready' && state.hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail
         : !tool.status.installed ? state.elevationHint ?? homeToolBlurbs[tool.id]
         : tool.id === 'codexDesktop' ? tool.versionAdvice?.blockedReason ?? null : null)
-    const metaTone = state.installFailure || status === 'detectionFailed' || status === 'configBroken' ? 'bad' as const
+    const metaTone = state.installFailure || state.updateFailure || status === 'detectionFailed' || status === 'configBroken' ? 'bad' as const
       : ['configChanged', 'ccSwitch', 'codexShadowed', 'cliHooksStale', 'otherSiteKey', 'otherAccountKey'].includes(status) ? 'warn' as const : undefined
     const meta = detail ?? line?.text ?? ''
     // 底下左边：切换中写在做什么；正常的是来源牌；出问题的是彩色小牌；没装的是灰字「未安装」。
     const badge = state.switchJob ? <span className="v2-tool-card-busy" role="status"><Spinner />{`${state.switchJob.label}…`}</span>
       : installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : state.installFailure && props.onShowInstallFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowInstallFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>看原因</Button>
+      : state.updateFailure && props.onShowDesktopUpdateFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowDesktopUpdateFailure?.('codexDesktop')} testId={`tool-${tool.id}-why`}>看原因</Button>
       : status === 'missing' ? <span className="v2-tool-card-off">{statusText}</span>
       : (status === 'ready' && !state.zeroBalance) || status === 'official' ? sourceMenu(tool, state)
         : statusPill
@@ -972,15 +991,20 @@ export function Home(props: HomeProps) {
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : downloadUrl ? '去官网下载' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '确认连接'
     const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : downloadUrl ? props.onOpenExternalDownload?.(downloadUrl) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
     const unsupported = tool.disabled && !manualInstall && !downloadUrl
+    // Mac 上星芒换得了、存储桶里有更新的那一版：同命令行工具，卡片下面一行「可更新到 v…」。
+    const updateTarget = !job && props.onUpdateDesktopApp ? externalUpdateTarget(tool.status) : null
+    const updateFailed = !job && tool.status.installed && !tool.status.detectionError && props.desktopUpdateFailures?.[tool.id] !== undefined
     // 一键装不了（去官网下载、暂不支持）时，中间那行照旧写主进程给的那句该怎么办，不换成介绍。
-    const meta = job?.label ?? (status === 'missing' ? (downloadUrl || unsupported) && tool.status.installHint ? tool.status.installHint : homeToolBlurbs[tool.id]
+    const jobLabel = job && job === installJob ? `${desktopUpdatePrefix(props.desktopUpdateTargets?.[tool.id])}${job.label}` : job?.label
+    const meta = jobLabel ?? (updateFailed ? desktopUpdateFailedLine : status === 'missing' ? (downloadUrl || unsupported) && tool.status.installHint ? tool.status.installHint : homeToolBlurbs[tool.id]
       // 里面已经有一份别家的配置、只是没配全（Claude Desktop 的第三方推理）时，照旧写那一句，不笼统说没连上。
       : status === 'unconfigured' && tool.status.configurationSource !== 'other' && !tool.status.configurationError && !tool.status.detectionError ? unconfiguredDetail : tool.detail)
-    const metaTone = status === 'detectionFailed' || tool.status.configurationError ? 'bad' as const : undefined
+    const metaTone = status === 'detectionFailed' || tool.status.configurationError || updateFailed ? 'bad' as const : undefined
     // 只有 Claude Desktop 有两种登录可切；WorkBuddy、OpenCode 的来源牌不可点，额度从哪扣写在悬停说明里。
     const switchable = tool.id === 'claudeDesktop' && Boolean(props.onSwitchExternalSource) && !job
       && (status === 'official' || (status === 'ready' && tool.status.configurationSource === 'xingmang'))
     const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
+      : updateFailed && props.onShowDesktopUpdateFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowDesktopUpdateFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>看原因</Button>
       : status === 'missing' ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
       : switchable ? externalSourceMenu(tool, status === 'official')
       : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>{sourceChipLabels.account}</span>
@@ -990,8 +1014,10 @@ export function Home(props: HomeProps) {
       : installJob ? null
         : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || unsupported || Boolean(switchJob)} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
           icon={tool.action === 'install' && !unsupported && !manualInstall ? Download : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>
+    const link = updateTarget ? <button type="button" className="xm-tool-card-link" onClick={() => props.onUpdateDesktopApp?.(tool.id, updateTarget)} data-testid={`tool-${tool.id}-update`}>
+      <RefreshCw size={12} aria-hidden="true" /><span>{`可更新到 ${versionText(updateTarget)}`}</span></button> : undefined
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.status.detectionError} meta={meta} metaTone={metaTone} metaTitle={meta}
-      badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
+      link={link} badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处；主按钮已经是「确认连接」时菜单里不再重复，换成「打开」（还没连上也能先打开看看）。
         ...(tool.action === 'configure'

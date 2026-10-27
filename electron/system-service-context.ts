@@ -31,6 +31,7 @@ import {
 } from './command-runner'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import type { DesktopBucketOptions } from './desktop-package-bucket'
+import { createMacosDesktopLatestVersionLookup } from './macos-desktop-app-update'
 import { describeInsufficientDiskSpace, readDiskSpace, tightestDiskSpace } from './disk-space'
 import type { DownloadAccelerationLease } from './download-acceleration'
 import { ExternalClientOwnershipStore } from './external-client-ownership'
@@ -249,6 +250,15 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
   const desktopBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'desktop-bucket.fallback', '桌面端存储桶这一路没走通，改走原来的下载办法', { detail }),
   }
+  // Mac 上几个桌面端的最新版以存储桶为准（yoyo 2026-10-27「桌面端更新改」）；读不到的原因只进日志。
+  const latestMacosDesktopVersions = serviceOptions.latestMacosDesktopVersions === undefined
+    ? platform === 'darwin' && !process.env.VITEST
+      ? createMacosDesktopLatestVersionLookup({
+        fetch: downloadFetch,
+        onFailure: (detail) => runtimeLog?.log('warn', 'system', 'desktop-update.lookup-failed', '没读到存储桶里桌面端的最新版，这一轮先不提醒', { detail }),
+      })
+      : undefined
+    : serviceOptions.latestMacosDesktopVersions ?? undefined
   const grokBucketDownloads: DesktopBucketOptions = {
     onFallback: (detail) => runtimeLog?.log('warn', 'install', 'grok-bucket.fallback', 'Grok 存储桶这一路没走通，改去 xAI 下载', { detail }),
   }
@@ -678,6 +688,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     installRequestedVersions,
     nodeRuntimeInstall,
     desktopBucketDownloads,
+    latestMacosDesktopVersions,
     grokBucketDownloads,
     inspectExecutableMachine,
     inspectOfficialUsage,
