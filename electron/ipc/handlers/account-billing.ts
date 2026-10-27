@@ -8,6 +8,7 @@ import {
   validatePaymentQrCode,
   validatePaymentUrl,
 } from '../../payment-window'
+import { assertPaymentMethodShown, subscriptionPaymentType, withoutHiddenPaymentMethods } from '../../payment-methods-off'
 import { requiredString } from '../parsers/common'
 import {
   parseAccountAffiliateTransferInput,
@@ -22,12 +23,23 @@ import type { IpcHandlerContext } from './context'
 
 export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
   const { options, registerTrustedHandler, accountService } = ctx
+  // 状态文件读不到只是不藏，充值照常。
+  async function hiddenPaymentMethods(): Promise<readonly string[]> {
+    try {
+      return await options.hiddenPaymentMethods?.() ?? []
+    } catch {
+      return []
+    }
+  }
   registerTrustedHandler('account:get-balance', async () => {
     const balance = await accountService.getBalance()
     options.onAccountBalance?.(balance)
     return balance
   })
-  registerTrustedHandler('account:get-topup-info', () => accountService.getTopupInfo())
+  registerTrustedHandler('account:get-topup-info', async () => {
+    const [info, hidden] = await Promise.all([accountService.getTopupInfo(), hiddenPaymentMethods()])
+    return withoutHiddenPaymentMethods(info, hidden)
+  })
   registerTrustedHandler('account:quote-topup', (_event, input: unknown) => (
     accountService.quoteTopupAmount(parseAccountTopupAmountInput(input))
   ))
@@ -35,7 +47,10 @@ export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
     const parsed = parseAccountTopupPaymentInput(input)
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const revision = accountService.getSessionRevision?.()
-    return accountService.createTopupPayment(parsed).then(async (checkout) => {
+    return hiddenPaymentMethods().then((hidden) => {
+      assertPaymentMethodShown(parsed.paymentMethod, hidden)
+      return accountService.createTopupPayment(parsed)
+    }).then(async (checkout) => {
       if (accountService.getSessionRevision?.() !== revision) throw new Error('账号上下文已变化，请重试')
       // Validate the service result before handing it to the window and before
       // exposing the order number. This keeps the IPC result a strict,
@@ -88,7 +103,10 @@ export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('account:create-subscription-payment', (event, input: unknown) => {
     const parsed = parseAccountSubscriptionPaymentInput(input)
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
-    return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
+    return hiddenPaymentMethods().then((hidden) => {
+      assertPaymentMethodShown(subscriptionPaymentType(parsed), hidden)
+      return accountService.createSubscriptionPayment(parsed)
+    }).then(async (checkout) => {
       if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
       else if (checkout.kind === 'qrcode') {
         // 同充值那条：二维码内容先按白名单校验，再交给支付窗口。

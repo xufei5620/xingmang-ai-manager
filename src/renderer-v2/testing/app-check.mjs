@@ -5225,6 +5225,37 @@ test('a maintenance notice from the update feed reaches signed-out users, includ
   } finally { await page.close() }
 })
 
+// 已知问题提示（状态文件的 knownIssues）：跟维护提示挤同一个角落，按这一页挑一条；按钮只去软件里的固定去处。
+test('a known issue from the update feed shows on its page with its button, and the one for every page elsewhere', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-home').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'idle', currentVersion: '0.2.23', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: null, progress: null, error: null, failedStep: null, development: true, serviceMaintenance: null,
+      knownIssues: [
+        { page: 'all', message: '今晚 22 点前聊天可能慢一点。' },
+        { page: 'settings', message: '设置里的加速开关暂时点不动。', action: 'update' },
+      ],
+    }))
+    const notice = page.getByTestId('known-issue-notice')
+    await notice.getByText('我们已经知道这个问题', { exact: true }).waitFor()
+    await notice.getByText(/今晚 22 点前聊天可能慢一点。 这不是你这边的问题/).waitFor()
+    assert.equal(await notice.getByRole('button', { name: '查看更新' }).count(), 0)
+    await page.getByTestId('nav-settings').click()
+    await notice.getByText(/设置里的加速开关暂时点不动。/).waitFor()
+    await notice.getByTestId('known-issue-notice-update').click()
+    const settings = page.getByTestId('page-settings')
+    await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
+    // 关掉这一页的那条，角落换成每一页都挂的那条。
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await notice.getByText(/今晚 22 点前聊天可能慢一点。/).waitFor()
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await notice.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第 55 条：人就在「设置 › 版本更新」时，「新版本 X 可以安装」「正在下载更新」「下载更新失败」三种气泡说的是
 // 版本卡上写着的同一件事，不弹；离开那一组照旧弹。「这个版本有已知问题」那种照旧。
 test('settings › version update does not pop the bubbles that repeat what the version card already says', async () => {

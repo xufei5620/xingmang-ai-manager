@@ -10,7 +10,9 @@ const {
   applyAccountGroups,
   applyBadVersions,
   applyCliModels,
+  applyKnownIssues,
   applyMinimumVersion,
+  applyPaymentMethodsOff,
   applyRollout,
   applyStatusChanges,
   describeStatus,
@@ -203,7 +205,7 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11'), /版本号 空格 百分比/)
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
-  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '型号表：无（客户端用程序自带的）', '分组对照：无（客户端按写死的名字认）'])
+  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '型号表：无（客户端用程序自带的）', '分组对照：无（客户端按写死的名字认）', '已知问题提示：无', '充值页藏掉的付款方式：无'])
 })
 
 test('a staged rollout can hold back only some packages and lets the rest through (#1155 item 5)', () => {
@@ -318,7 +320,7 @@ test('the account group map sets only the roles it names and keeps the rest of t
     image: ['画图专线', '图片模型-中转/订阅'],
   })
   assert.deepEqual(next.badVersions, ['0.2.10'])
-  assert.equal(describeStatus(next).at(-1), '分组对照：Claude Code 用「Claude-MAX订阅」；Codex 用「GPT 主力」，没有再用「GPT-中转/订阅」；Grok 用「Grok-中转/订阅」；画图 用「画图专线」，没有再用「图片模型-中转/订阅」（只有 0.2.19 及以后的客户端认）')
+  assert.equal(describeStatus(next)[6], '分组对照：Claude Code 用「Claude-MAX订阅」；Codex 用「GPT 主力」，没有再用「GPT-中转/订阅」；Grok 用「Grok-中转/订阅」；画图 用「画图专线」，没有再用「图片模型-中转/订阅」（只有 0.2.19 及以后的客户端认）')
   assert.deepEqual(applyStatusChanges(next, {}, now).accountGroups, next.accountGroups)
 })
 
@@ -328,7 +330,7 @@ test('the account group map drops one role or the whole map on none', () => {
   assert.equal(applyAccountGroups({ codex: ['GPT 主力'] }, 'codex=none'), undefined)
   const cleared = applyStatusChanges(current, { 'account-groups': 'none' }, now)
   assert.equal('accountGroups' in cleared, false)
-  assert.equal(describeStatus(cleared).at(-1), '分组对照：无（客户端按写死的名字认）')
+  assert.equal(describeStatus(cleared)[6], '分组对照：无（客户端按写死的名字认）')
 })
 
 test('the account group map refuses anything the client would quietly skip', () => {
@@ -342,8 +344,8 @@ test('the workflow offers the account group map and hands it to the script throu
   const inputs = workflow.on.workflow_dispatch.inputs
   assert.equal(inputs.account_groups.type, 'string')
   assert.equal(inputs.account_groups.required, false)
-  // GitHub 手动运行最多 10 个输入，再加之前先合并旧的。
-  assert.ok(Object.keys(inputs).length <= 10)
+  // GitHub 手动运行最多 25 个输入（2025-12-04 起，之前是 10 个），再加之前先合并旧的。
+  assert.ok(Object.keys(inputs).length <= 25)
   const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
   assert.equal(build.env.ACCOUNT_GROUPS, '${{ inputs.account_groups }}')
   assert.match(build.run, /--account-groups "\$ACCOUNT_GROUPS"/)
@@ -358,7 +360,7 @@ test('the model table sets only the fields it names and keeps the rest of the li
     grok: { retired: ['grok-4.6', 'grok-4.5'] },
   })
   assert.deepEqual(next.badVersions, ['0.2.10'])
-  assert.equal(describeStatus(next).at(-2), '型号表：Claude Code 上一代 claude-opus-5；Codex 默认 gpt-7，上一代 gpt-6-astra，已下架 gpt-5.5；Grok 已下架 grok-4.6、grok-4.5（没写的照程序自带的，只有 0.2.20 及以后的客户端认）')
+  assert.equal(describeStatus(next)[5], '型号表：Claude Code 上一代 claude-opus-5；Codex 默认 gpt-7，上一代 gpt-6-astra，已下架 gpt-5.5；Grok 已下架 grok-4.6、grok-4.5（没写的照程序自带的，只有 0.2.20 及以后的客户端认）')
   assert.deepEqual(applyStatusChanges(next, {}, now).cliModels, next.cliModels)
 })
 
@@ -369,7 +371,7 @@ test('the model table drops a field, a tool or the whole table on none', () => {
   assert.equal(applyCliModels({ codex: { default: 'gpt-7' } }, 'codex.default=none'), undefined)
   const cleared = applyStatusChanges({ cliModels: current }, { 'cli-models': 'none' }, now)
   assert.equal('cliModels' in cleared, false)
-  assert.equal(describeStatus(cleared).at(-2), '型号表：无（客户端用程序自带的）')
+  assert.equal(describeStatus(cleared)[5], '型号表：无（客户端用程序自带的）')
 })
 
 test('the model table refuses anything the client would quietly skip or contradict', () => {
@@ -390,7 +392,7 @@ test('the workflow offers the model table and hands it to the script through the
   const inputs = workflow.on.workflow_dispatch.inputs
   assert.equal(inputs.cli_models.type, 'string')
   assert.equal(inputs.cli_models.required, false)
-  assert.ok(Object.keys(inputs).length <= 10)
+  assert.ok(Object.keys(inputs).length <= 25)
   const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
   assert.equal(build.env.CLI_MODELS, '${{ inputs.cli_models }}')
   assert.match(build.run, /--cli-models "\$CLI_MODELS"/)
@@ -525,4 +527,70 @@ test('a preview job shows the approver what will be published before the approva
   const manifests = publish.steps.find((step) => step.id === 'published')
   assert.match(manifests.run, /released=\$\(sed -n 's\/\^releaseDate:/)
   assert.match(manifests.run, /echo "dates=\$dates" >> "\$GITHUB_OUTPUT"/)
+})
+
+test('a known issue is set per page with who sees it and which button it carries', () => {
+  const current = { badVersions: ['0.2.10'], knownIssues: [{ page: 'home', message: '首页那条' }] }
+  const next = applyStatusChanges(current, { 'known-issue': 'recharge： 支付宝暂时打不开付款页，\n请先用微信付款。', 'known-issue-scope': '0.2.23|v0.2.24 @windows|mac-x64 support' }, now)
+  assert.deepEqual(next.knownIssues, [
+    { page: 'home', message: '首页那条' },
+    { page: 'recharge', message: '支付宝暂时打不开付款页， 请先用微信付款。', action: 'support', versions: ['0.2.23', '0.2.24'], platforms: ['windows', 'mac-x64'] },
+  ])
+  assert.deepEqual(next.badVersions, ['0.2.10'])
+  assert.equal(describeStatus(next)[7], '已知问题提示：首页「首页那条」；充值页「支付宝暂时打不开付款页， 请先用微信付款。」，带「找客服」按钮（只给 0.2.23、0.2.24，只给 Windows、Mac Intel 版）（只有 0.2.23 及以后的客户端认）')
+  // 同一页再写一次就换掉，范围和按钮跟着这一次走；没写到的那页照留。
+  const replaced = applyStatusChanges(next, { 'known-issue': 'recharge: 换个说法' }, now)
+  assert.deepEqual(replaced.knownIssues, [{ page: 'home', message: '首页那条' }, { page: 'recharge', message: '换个说法' }])
+  assert.deepEqual(applyStatusChanges(replaced, {}, now).knownIssues, replaced.knownIssues)
+  assert.deepEqual(applyStatusChanges(replaced, { 'known-issue': 'RECHARGE=none' }, now).knownIssues, [{ page: 'home', message: '首页那条' }])
+  const cleared = applyStatusChanges(replaced, { 'known-issue': 'none' }, now)
+  assert.equal('knownIssues' in cleared, false)
+  assert.equal(describeStatus(cleared)[7], '已知问题提示：无')
+})
+
+test('a known issue refuses what the client would not show or could not reach', () => {
+  for (const [input, scope] of [
+    ['recharge', ''], ['video: 视频页', ''], ['recharge:   ', ''], [`recharge: ${'字'.repeat(201)}`, ''],
+    ['recharge: 请到 https://pay.example.com 付款', ''], ['recharge: 请到 xm-solov.cc 充值', ''], ['recharge: 打开 www.example 看看', ''],
+    ['recharge: 一句话', '0.2.22'], ['recharge: 一句话', '0.2.23 0.2.24'], ['recharge: 一句话', '@windows-arm64'], ['recharge: 一句话', 'update support'],
+    ['recharge: 一句话', 'open'], ['', '0.2.23'], ['none', '0.2.23'], ['recharge: none', '0.2.23'],
+  ]) {
+    assert.throws(() => applyKnownIssues(undefined, input, scope), StatusInputError, `${input} / ${scope}`)
+  }
+  // 版本号里的点、型号名里的点不算网址。
+  assert.deepEqual(applyKnownIssues(undefined, 'chat: 0.2.23 的 gpt-5.5 暂时用不了，先换 Claude Code。', ''), [{ page: 'chat', message: '0.2.23 的 gpt-5.5 暂时用不了，先换 Claude Code。' }])
+})
+
+test('payment methods are hidden, put back one by one, rescoped or all put back', () => {
+  const current = { paymentMethodsOff: [{ method: 'wxpay' }] }
+  const next = applyStatusChanges(current, { 'payment-methods-off': 'Alipay@0.2.23|0.2.24@windows, stripe@mac' }, now)
+  assert.deepEqual(next.paymentMethodsOff, [
+    { method: 'wxpay' },
+    { method: 'alipay', versions: ['0.2.23', '0.2.24'], platforms: ['windows'] },
+    { method: 'stripe', platforms: ['mac'] },
+  ])
+  assert.equal(describeStatus(next)[8], '充值页藏掉的付款方式：wxpay（微信）、alipay（支付宝）（只给 0.2.23、0.2.24，只给 Windows）、stripe（Stripe）（只给 Mac）（只藏软件里的，网站不受影响；只有 0.2.23 及以后的客户端认）')
+  assert.deepEqual(applyPaymentMethodsOff(next.paymentMethodsOff, 'alipay -wxpay'), [{ method: 'stripe', platforms: ['mac'] }, { method: 'alipay' }])
+  assert.equal(applyPaymentMethodsOff(next.paymentMethodsOff, '-wxpay -alipay -stripe'), undefined)
+  const cleared = applyStatusChanges(next, { 'payment-methods-off': 'none' }, now)
+  assert.equal('paymentMethodsOff' in cleared, false)
+  assert.equal(describeStatus(cleared)[8], '充值页藏掉的付款方式：无')
+})
+
+test('payment method switches refuse what the client would skip or no client could read', () => {
+  for (const input of ['支付宝', 'alipay@0.2.22', 'alipay@0.2.23@0.2.24', 'alipay@windows@mac', 'alipay@0.2.23@windows@mac', '-alipay@windows', 'alipay@windows-arm64', 'alipay@bsd', 'ali pay!']) {
+    assert.throws(() => applyPaymentMethodsOff(undefined, input), StatusInputError, input)
+  }
+})
+
+test('the workflow offers the known issue and payment switches and hands them to the script through the environment', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  const inputs = workflow.on.workflow_dispatch.inputs
+  const build = workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file')
+  for (const [input, variable, flag] of [['known_issue', 'KNOWN_ISSUE', 'known-issue'], ['known_issue_scope', 'KNOWN_ISSUE_SCOPE', 'known-issue-scope'], ['payment_methods_off', 'PAYMENT_METHODS_OFF', 'payment-methods-off']]) {
+    assert.equal(inputs[input].type, 'string')
+    assert.equal(inputs[input].required, false)
+    assert.equal(build.env[variable], `\${{ inputs.${input} }}`)
+    assert.match(build.run, new RegExp(`--${flag} "\\$${variable}"`))
+  }
 })
