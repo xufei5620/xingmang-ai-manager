@@ -451,6 +451,49 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts()).toContain('现在没有在处理的任务。'))
   })
 
+  // 一轮一小时没任何动静就当 Codex 卡死（0.2.22 打磨 C2，yoyo 10-27「停改」）：请它停下、告诉手机，之后能开新的一轮。
+  it('stops a turn that shows no progress for an hour and tells the phone to say it again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    // Codex 还在出声：五十分钟后一条通知，计时跟着重新起算。
+    await vi.advanceTimersByTimeAsync(50 * 60_000)
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '还在看', phase: 'commentary' } })
+    await vi.advanceTimersByTimeAsync(50 * 60_000)
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
+    expect(s.logs).toContain('remote.turn-stalled')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    expect(channel.texts()).not.toContain('已停止。')
+    channel.handlers?.onInbound(text(alice, '再来一次'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+  })
+
+  it('counts a pending approval as progress: it expires on its own ten minutes later and the stall clock restarts from it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await vi.advanceTimersByTimeAsync(55 * 60_000)
+    const asked = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    // 审批十分钟没人回先按原有规则自己过期（第 65 分钟），这一轮照旧跑着、不算卡死。
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
+    await vi.waitFor(() => expect(channel.texts()).toContain('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    // 问审批算一次动静：卡死从第 55 分钟再数一小时（第 115 分钟），不是从开始数的第 60 分钟。
+    await vi.advanceTimersByTimeAsync(49 * 60_000)
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
+  })
+
   it('reports a failed turn with the redacted reason', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -638,6 +681,58 @@ describe('codex-remote-service lifecycle', () => {
     expect(channel.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  // 星芒退出前跟手机道别（0.2.22 打磨 B8）：只说一句、不停渠道，停渠道和 Codex 仍归 dispose。
+  it('says goodbye to the phone before the manager quits and leaves the channel to dispose', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.farewell()
+    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。'])
+    expect(channel.stopped).toBe(0)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
+    s.service.dispose()
+    await vi.waitFor(() => expect(channel.stopped).toBe(1))
+  })
+
+  // 主窗口 prepareToQuit 的清理预算是 2 秒（window-lifecycle），道别要在它之前放手。
+  it('does not let a stuck channel hold the quit for more than one and a half seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    channel.send = () => new Promise(() => undefined)
+    let done = false
+    const farewell = s.service.farewell().then(() => { done = true })
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await farewell
+    expect(done).toBe(true)
+  })
+
+  // 退出没退成（装更新的安装器没启动、Mac 卸载移不进废纸篓）：说过「关了」的渠道补一句「没关成」，没说过的不补。
+  it('tells the phone the remote is still on when the quit was aborted after the goodbye', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.farewell()
+    await s.service.quitAborted()
+    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。', '电脑上的星芒没关成，遥控还开着，可以接着用。'])
+    // 补过一次就清账：下一次没说「关了」的退出被撤回，不再补。
+    await s.service.quitAborted()
+    expect(channel.texts()).toHaveLength(2)
+  })
+
+  it('says nothing on an aborted quit when no goodbye went out', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.quitAborted()
+    expect(channel.texts()).toEqual([])
+  })
+
+  it('says nothing on quit when no channel is on', async () => {
+    const s = await setup()
+    await s.service.farewell()
+    expect(s.channels).toHaveLength(0)
   })
 
   it('tells the idle update install whether any channel is on, through switch-off and the four-hour close', async () => {

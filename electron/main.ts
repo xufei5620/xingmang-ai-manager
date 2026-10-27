@@ -2717,7 +2717,8 @@ if (!hasSingleInstanceLock) {
         // 日志里打开 Codex 时自动连的那一次只有「已连接」、没有「已断开」：它是重开星芒时在这里收回的，日志里却一个字都没留。
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
-        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle()])
+        // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
+        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle(), codexRemote.farewell()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
@@ -2894,7 +2895,11 @@ if (!hasSingleInstanceLock) {
         removeManagedTools: () => removeMacManagedTools(undefined, report),
         trashItem: (target) => shell.trashItem(target),
         prepareQuit: async () => { await lifecycle.prepareUpdateQuit() },
-        abortQuit: () => { lifecycle.abortUpdateQuit() },
+        abortQuit: () => {
+          lifecycle.abortUpdateQuit()
+          // 退出前已经跟手机说过「星芒关了」，没退成要补一句（打磨 B8）。
+          void codexRemote.quitAborted().catch(() => undefined)
+        },
         removeUpdaterCache: () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
         clearLoginRecords: async () => {
           // 界面的本地存储由 Chromium 开着，先让它自己清，免得退出时把刚删的写回来。
@@ -2934,7 +2939,11 @@ if (!hasSingleInstanceLock) {
           }
         })
       },
-      abort: () => { lifecycle.abortUpdateQuit() },
+      abort: () => {
+        lifecycle.abortUpdateQuit()
+        // 安装器没启动起来（Windows 提权框点了「否」、包不在了）：星芒还开着，退出前跟手机说的「星芒关了」要补一句（打磨 B8）。
+        void codexRemote.quitAborted().catch(() => undefined)
+      },
     }
     const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
     applicationTray = !trayHostAvailable ? null : createApplicationTray({
