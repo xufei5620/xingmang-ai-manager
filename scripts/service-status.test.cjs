@@ -4,6 +4,8 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { spawnSync } = require('node:child_process')
+const vm = require('node:vm')
+const ts = require('typescript')
 const YAML = require('yaml')
 const {
   StatusInputError,
@@ -18,6 +20,7 @@ const {
   describeStatus,
   describeStatusWarnings,
   escapeWorkflowCommand,
+  isNonInteractiveCliModel,
   normalizeUntil,
   parseCurrentStatus,
   parsePublishedDates,
@@ -385,6 +388,33 @@ test('the model table refuses anything the client would quietly skip or contradi
   }
   // 和线上已有的那几样合起来才矛盾，也要当场报出来。
   assert.throws(() => applyCliModels({ codex: { default: 'gpt-7' } }, 'codex.retired=gpt-7'), /同时写在下架名单里/)
+})
+
+// #1154 第 3 条：默认、上一代写成画图、向量、审查专用的型号，客户端会悄悄不认。
+test('the model table refuses a default or previous model the tool cannot chat with', () => {
+  for (const input of [
+    'codex.default=gpt-image-2', 'codex.default=codex-auto-review', 'codex.previous=gpt-6-astra|text-embedding-3-large',
+    'grok.default=grok-imagine-image', 'claude.previous=dall-e-3',
+  ]) {
+    assert.throws(() => applyCliModels({}, input), /答不了话/, input)
+  }
+  assert.deepEqual(applyCliModels({}, 'codex.retired=gpt-image-1|gpt-5.5'), { codex: { retired: ['gpt-image-1', 'gpt-5.5'] } })
+})
+
+test('the workflow recognizes the same models the client will not take as a default', () => {
+  const file = path.join(__dirname, '..', 'electron', 'cli-model-defaults.ts')
+  const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const client = { exports: {} }
+  vm.compileFunction(compiled, ['require', 'module', 'exports'], { filename: file })(require, client, client.exports)
+  for (const name of [
+    'gpt-6-astra', 'claude-opus-5-5', 'grok-4.6', 'minimax-m2', 'codex-custom', 'codex-auto-review', 'vendor/codex_auto_review',
+    'gpt-image-2', 'dall-e-3', 'grok-imagine-video-1.5', 'jimeng_high_aes_general_v21_L', 'minimax-h3-fast', 'sora-2',
+    'text-embedding-3-large', 'tts-1', 'whisper-1', 'gpt-4o-transcribe', 'omni-moderation-latest', 'gemini-3.1-flash-image', 'imagen-4',
+  ]) {
+    assert.equal(isNonInteractiveCliModel(name), client.exports.isNonInteractiveCliModel(name), name)
+  }
 })
 
 test('the workflow offers the model table and hands it to the script through the environment', () => {

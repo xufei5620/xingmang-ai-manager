@@ -1190,6 +1190,43 @@ describe('native CLI configuration files', () => {
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
   })
 
+  it('switches the Codex desktop out of ChatGPT Work when saving a relay key and gives the official account its own choice back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(snapshots.active), { recursive: true })
+    fs.writeFileSync(snapshots.active, '[desktop]\nlocaleOverride = "zh-CN"\nconversationDetailMode = "STEPS_PROSE"\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    for (const file of [snapshots.active, snapshots.relay]) {
+      expect(asRecord(TOML.parse(fs.readFileSync(file, 'utf8')))?.desktop).toEqual({
+        localeOverride: 'zh-CN',
+        conversationDetailMode: 'STEPS_COMMANDS',
+      })
+    }
+
+    // With a ChatGPT login the Work mode does work, so the official profile keeps it.
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(asRecord(asRecord(TOML.parse(fs.readFileSync(snapshots.active, 'utf8')))?.desktop)?.conversationDetailMode).toBe('STEPS_PROSE')
+  })
+
+  it('leaves the other Codex desktop modes alone and never adds a mode the customer did not pick', () => {
+    function savedDesktop(existing: string | null): unknown {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      if (existing !== null) {
+        fs.mkdirSync(path.dirname(configPath), { recursive: true })
+        fs.writeFileSync(configPath, existing, 'utf8')
+      }
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+      return asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.desktop
+    }
+
+    expect(savedDesktop('[desktop]\nconversationDetailMode = "STEPS_EXECUTION"\n')).toEqual({ conversationDetailMode: 'STEPS_EXECUTION' })
+    expect(savedDesktop('[desktop]\nlocaleOverride = "zh-CN"\n')).toEqual({ localeOverride: 'zh-CN' })
+    expect(savedDesktop(null)).toBeUndefined()
+  })
+
   it('writes no hooks at all when none are given', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -4351,6 +4388,19 @@ describe('bringing an older account config up to the current template', () => {
     writeFile(snapshots.active, renamed.replace('name = "OpenAI"', 'name = "我的中转"'))
     expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
     expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
+  })
+
+  it('leaves the Codex desktop mode the customer picked alone at startup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const picked = `${fs.readFileSync(snapshots.active, 'utf8')}\n[desktop]\nconversationDetailMode = "STEPS_PROSE"\n`
+    writeFile(snapshots.active, picked)
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
+    expect(fs.readFileSync(snapshots.active, 'utf8')).toBe(picked)
   })
 
   it('writes nothing when the config already has every template key', () => {

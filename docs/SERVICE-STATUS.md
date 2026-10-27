@@ -334,7 +334,9 @@ codex.default=gpt-7; codex.previous=gpt-6-astra; codex.retired=gpt-5.5|gpt-6-lun
 - 只写要改的那几样，写到的那一样整样换掉（比如 `codex.retired=gpt-5.5|gpt-6-luna` 是把下架名单换成这两个），
   没写到的照线上保留。`codex.retired=none` 去掉一样，`codex=none` 去掉一个工具，整个填 `none` 清空。
 - 名字要和模型列表里一字不差，只能用字母、数字和 `. _ - : / @ +`。默认型号又写进下架名单、同一个型号既是上一代
-  又是下架的，工作流直接报错，线上什么都不改。跑完看日志里「型号表：」那一行核对。
+  又是下架的，工作流直接报错，线上什么都不改。默认、上一代写成画图、视频、语音、向量或审查专用的型号
+  （`gpt-image-2`、`text-embedding-3-large`、`codex-auto-review` 这类）也直接报错，客户端同样不认（#1154）。
+  跑完看日志里「型号表：」那一行核对。
 
 **什么时候写**：站上下架型号的同时（或之后）写 `retired`；新默认型号站上**已经开好**以后再写 `default`。客户端启动时读一次、
 之后每 15 分钟再读；哪次没读到就接着用上一次读到的。读到的型号表还记在电脑上（数据目录里的 `cli-model-hints.json`），
@@ -553,7 +555,8 @@ electron-builder、不带版本，只按来源 IP 和清单的文件名对上电
   空的、超过 128 字、带控制字符的名字客户端跳过。
 - `cliModels`：型号表，键只认 `claude`、`codex`、`grok`，每个是 `{ "default": "…", "previous": […], "retired": […] }`，
   三样都可以不写；`previous` 最多 8 个、`retired` 最多 32 个。名字不是字母数字开头、带空白引号括号、超过 128 字的
-  客户端跳过那一个。
+  客户端跳过那一个；`default`、`previous` 是画图、视频、语音、向量或审查专用型号的也跳过（`cli-model-defaults.ts` 的
+  `isNonInteractiveCliModel`，工作流那边是 `scripts/service-status.cjs` 的同名函数，两边一起改）。
 - `knownIssues`：已知问题提示，最多 8 条。`page` 只认 `all`、`home`、`chat`、`recharge`、`settings`（不写算 `all`，
   写了认不出的整条不显示）；`message` 同维护提示的规矩，另外带网址的整条不显示；`action` 只认 `update`、`support`，
   认不出的只去掉按钮。`versions`、`platforms` 都可以不写；写了的话有一项读不懂整条不显示（宁可少说，不说错地方）。0.2.23 起的客户端认。
