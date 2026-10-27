@@ -5017,6 +5017,88 @@ test('a Windows account outside the administrators group is told an administrato
   } finally { await page.close() }
 })
 
+// 0.2.19 把侧栏「更多 › 更新」并进了「设置」最后一项，客户找不到在哪更新（yoyo 2026-10-27「侧栏改」）：下好了
+// 侧栏「设置」上面多一项金色的「重启并安装新版」，状态栏版本号、气泡上的「重启并安装」都直接弹确认框；
+// 侧栏那项关不掉，气泡关掉满一天再出一次；没开自动下载时气泡上直接给「下载更新」。
+test('a downloaded update is one click from the install confirmation in the sidebar, the status bar and the bubble', async () => {
+  const closedAt = new Date('2026-10-27T05:00:00Z')
+  const page = await open('', closedAt)
+  try {
+    await page.getByTestId('page-home').waitFor()
+    // 设置页和版本卡挂上时各自再读一次状态：让它读回最后推过来的那份。
+    await page.evaluate(() => {
+      const original = window.xingmang.getUpdateState
+      window.__updateState = null
+      window.xingmang.getUpdateState = async () => window.__updateState ? { ...window.__updateState } : original()
+    })
+    const emit = (patch) => page.evaluate((value) => {
+      window.__updateState = value
+      window.v2Test.emit('onUpdateState', value)
+    }, {
+      phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true, autoUpdateSupported: true, ...patch,
+    })
+    const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+    const settings = page.getByTestId('page-settings')
+    async function confirmOpensAndClose() {
+      await dialog.waitFor()
+      await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
+      await dialog.waitFor({ state: 'detached' })
+      await page.getByTestId('nav-home').click()
+      await page.getByTestId('page-home').waitFor()
+    }
+    await emit({})
+    const entry = page.getByTestId('nav-update')
+    await expect(entry).toHaveText('重启并安装新版')
+    await expect(entry).toHaveAttribute('title', '新版 v0.1.32 已经下好，点一下装上，装好自动打开')
+    await expect(page.getByTestId('nav-settings')).toHaveAttribute('aria-label', '设置，有新版本')
+    await page.getByTestId('nav-settings-update').waitFor()
+    // 侧栏那一项紧挨在「设置」上面。
+    assert.equal(await page.getByTestId('sidebar-pinned').evaluate((pinned) => [...pinned.querySelectorAll('[data-testid^="nav-"]')].map((item) => item.dataset.testid).join(',')), 'nav-update,nav-settings,nav-settings-update')
+    await entry.click()
+    await confirmOpensAndClose()
+
+    await expect(page.getByTestId('statusbar-version')).toHaveText('v0.1.31 · 新版已下好，点这里安装')
+    await page.getByTestId('statusbar-version').click()
+    await confirmOpensAndClose()
+
+    const bubble = page.locator('.v2-notification')
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+    await bubble.getByTestId('update-bubble-install').getByText('重启并安装', { exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+    await bubble.getByTestId('update-bubble-install').click()
+    await confirmOpensAndClose()
+
+    // 气泡关掉一天之内不再出，满一天再出；侧栏那一项一直在。
+    await bubble.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect.poll(() => bubble.count()).toBe(0)
+    await page.clock.setFixedTime(new Date(closedAt.getTime() + 23 * 60 * 60 * 1000))
+    await emit({})
+    await expect(entry).toHaveText('重启并安装新版')
+    assert.equal(await bubble.count(), 0)
+    await page.clock.setFixedTime(new Date(closedAt.getTime() + 24 * 60 * 60 * 1000 + 1000))
+    await emit({})
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+
+    // 没开自动下载、还没下：侧栏写新版本号、点了去版本更新卡，气泡上直接给「下载更新」。
+    await emit({ phase: 'available', autoUpdateSupported: false })
+    await expect(entry).toHaveText('有新版本 v0.1.32')
+    await expect(page.getByTestId('statusbar-version')).toHaveText('v0.1.31 · 有新版本')
+    await bubble.getByTestId('update-bubble-download').click()
+    await expect(entry).toHaveText('正在下载新版')
+    await entry.click()
+    await settings.getByTestId('page-updates').waitFor()
+    assert.equal(await dialog.count(), 0)
+
+    // 失败交给气泡和版本卡说，侧栏那一项和小点都收起来。
+    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } })
+    await expect.poll(() => entry.count()).toBe(0)
+    assert.equal(await page.getByTestId('nav-settings-update').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
 // 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、检查页和重启并安装确认框都不说
 // 会弹（已知19）。首页那段在只用 Codex 桌面端时只去掉弹窗半句，「一般不用单独点」照旧。没带管理员权限的照旧说。

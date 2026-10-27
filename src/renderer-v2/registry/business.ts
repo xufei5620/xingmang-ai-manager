@@ -285,6 +285,41 @@ export function updateStatusLabel(update: UpdateOfferState & Pick<UpdateSnapshot
 export function updateInstallActionLabel(installMethod: UpdateOfferState['installMethod']): string {
   return installMethod === 'system-installer' ? '安装新版本' : '重启并安装';
 }
+/**
+ * 侧栏「设置」上面那项金色的更新入口（yoyo 2026-10-27 回「侧栏改」的那一版，改字要先问他）。
+ * 0.2.19 把侧栏「更多 › 更新」并进了「设置」最后一项，客户找不到在哪更新；这一项有新版本、
+ * 正在下、下好了才出，没有关掉的叉，装上新版才消失。失败交给右下角气泡和版本更新卡说，退回
+ * 旧版本不是「新版本」，这两种都不出。install = 点了直接弹「重启并安装」确认框，否则去版本更新卡。
+ * title 是鼠标停上去那一句；Linux 装完不会自己重开，不说「装好自动打开」。
+ */
+export interface UpdateSidebarEntry {
+  label: string;
+  title: string;
+  install: boolean;
+}
+export function updateSidebarEntry(update: (UpdateOfferState & Pick<UpdateSnapshot, 'error' | 'progress'>) | null | undefined): UpdateSidebarEntry | null {
+  if (!update || update.error || update.rollback) return null;
+  const version = updateNewVersion(update);
+  if (update.phase === 'downloaded') {
+    const named = version ? `新版 v${version} ` : '新版';
+    const systemInstaller = update.installMethod === 'system-installer';
+    return {
+      label: systemInstaller ? '安装新版本' : '重启并安装新版',
+      title: `${named}已经下好，点一下装上${systemInstaller ? '' : '，装好自动打开'}`,
+      install: true,
+    };
+  }
+  if (update.phase === 'downloading') {
+    const percent = update.progress ? ` ${Math.floor(update.progress.percent)}%` : '';
+    const label = `正在下载新版${percent}`;
+    return { label, title: label, install: false };
+  }
+  if (update.phase === 'available' && version) {
+    const label = `有新版本 v${version}`;
+    return { label, title: label, install: false };
+  }
+  return null;
+}
 export const updateInstallNote = '装之前先保存工具里没做完的东西。有工具正在安装时，不会打断它，会先问你或者等下次再装。';
 export function withdrawnVersionAdvice(update: UpdateOfferState): string {
   const next = update.availableVersion
