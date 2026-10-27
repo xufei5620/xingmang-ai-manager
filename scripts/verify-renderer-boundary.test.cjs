@@ -23,6 +23,8 @@ const valueImportable = [
   // 「必须更新」那层提示的「打开下载页」，与主进程外链白名单共用一条网址。
   'electron/app-download-page',
   'electron/account-key-quota',
+  // 视频剪辑读回存着的工程时按片段编号重拼缩略图地址，缩略图一升版旧工程照样显示（#1406 P3-4）；文件本身什么都不 import。
+  'electron/asset-thumbnail',
   'electron/ai-chat-protocol',
   'electron/catalog',
   // 一句报错本身是不是中文（去掉引号段和路径再看），按钮操作的报错与主进程更新失败那句共用一份（第三十批 A）。

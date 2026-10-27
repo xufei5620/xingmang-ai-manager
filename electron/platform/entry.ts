@@ -1,6 +1,7 @@
 import { accelerationEntryMode } from '../acceleration-worker-entry'
+import { formatRelaunchedWithout, launchArgumentRelaunchEnvironmentKey, takeLaunchArgumentRelaunch } from '../launch-argument-relaunch'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice, type LinuxLaunchRefusal } from '../linux-launch-guard'
-import { hasDisallowedPackagedDebugSwitch } from '../security'
+import { resolvePackagedLaunchArguments, type PackagedLaunchArguments } from '../security'
 import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
 
 /**
@@ -42,11 +43,32 @@ function refuseLinuxLaunch(refusal: LinuxLaunchRefusal): void {
     })
 }
 
+/**
+ * Starts this app again with only the arguments it knows, then exits before any of
+ * the desktop loads: no lock, no window, no log. Electron's relauncher waits for this
+ * process to exit and starts the new one with this environment and token, so the
+ * marker reaches it and an elevated launch stays elevated.
+ */
+function relaunchWithKnownArguments(launch: { args: readonly string[]; dropped: readonly string[] }): void {
+  const { app } = require('electron') as typeof import('electron')
+  process.env[launchArgumentRelaunchEnvironmentKey] = formatRelaunchedWithout(launch.dropped)
+  try {
+    app.relaunch({ args: [...launch.args] })
+  } catch {
+    process.exit(1)
+  }
+  process.exit(0)
+}
+
+// Taken out of the environment on every start, so nothing this process launches
+// inherits it; non-null only in the process a relaunch below started.
+const relaunchedWithout = takeLaunchArgumentRelaunch(process.env)
 // Checked before every branch, the uninstall cleanup and helpers included: none of
 // them reaches main.ts, and a packaged launch carrying a debugger or command-launch
 // switch should run as little of this app as possible before it exits (#1065).
-const blockedSwitch = (require('electron') as typeof import('electron')).app.isPackaged
-  && hasDisallowedPackagedDebugSwitch(process.argv, process.platform)
+const launchArguments: PackagedLaunchArguments = (require('electron') as typeof import('electron')).app.isPackaged
+  ? resolvePackagedLaunchArguments(process.argv, process.platform)
+  : { action: 'start' }
 // Checked before every remaining mode: no helper started by a normal launch is ever root,
 // and nothing this process could go on to do is something root should do here.
 const launchRefusal = linuxLaunchRefusal({
@@ -58,8 +80,12 @@ const launchRefusal = linuxLaunchRefusal({
 // windows, renderer IPC, the single-instance lock, or the normal quit handlers.
 const cleanupMode = uninstallCleanupEntryMode(process.argv, process.platform)
 const mode = accelerationEntryMode(process.argv, typeof process.send === 'function' && process.connected, process.platform)
-if (blockedSwitch) {
+if (launchArguments.action === 'exit' || (launchArguments.action === 'relaunch' && relaunchedWithout !== null)) {
+  // A relaunch that still carries a switch it should not means something keeps
+  // adding it; stopping beats starting over and over.
   process.exit(1)
+} else if (launchArguments.action === 'relaunch') {
+  relaunchWithKnownArguments(launchArguments)
 } else if (launchRefusal) {
   refuseLinuxLaunch(launchRefusal)
 } else if (cleanupMode === 'cleanup') {

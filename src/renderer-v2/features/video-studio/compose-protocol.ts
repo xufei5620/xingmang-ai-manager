@@ -14,6 +14,7 @@ import {
 // 以后导入本地长视频留的余量，又不至于让一个窗口吃掉几 GB 内存。
 export const maxVideoStudioClipBytes = 512 * 1024 * 1024
 export const maxVideoStudioTotalBytes = 1024 * 1024 * 1024
+const videoStudioTotalTooLargeMessage = '片段加起来超过 1 GB 了，少放几段再拼'
 
 export interface VideoStudioComposeClip {
   /** 片段文件的全部字节（MP4 / MOV / WebM）。交给后台线程时会被转移走，调用方之后不能再用。 */
@@ -108,13 +109,23 @@ export function parseVideoStudioComposeRequest(value: unknown): VideoStudioCompo
       caption: clip.caption,
     }
   })
-  if (totalBytes > maxVideoStudioTotalBytes) throw new VideoStudioError('片段加起来超过 1 GB 了，少放几段再拼')
+  if (totalBytes > maxVideoStudioTotalBytes) throw new VideoStudioError(videoStudioTotalTooLargeMessage)
   let encoding: VideoStudioEncodingPreference | undefined
   if (value.encoding !== undefined) {
     if (!isRecord(value.encoding)) throw new VideoStudioError('指定的编码器不对')
     encoding = { video: parseCodecList(value.encoding.video, isVideoStudioVideoCodec), audio: parseCodecList(value.encoding.audio, isVideoStudioAudioCodec) }
   }
   return { clips, options: { aspect, resolution, fit, frameRate }, encoding }
+}
+
+/**
+ * 页面读片段时边读边加（useVideoStudio.ts）：加起来超过拼片线程收得下的总量就停在这一段，报和线程同一句话，
+ * 不把剩下的也读进来、全攒在内存里再被线程拒掉。回加上这一段以后的总数。
+ */
+export function addVideoStudioClipBytes(totalBytes: number, clipBytes: number): number {
+  const next = totalBytes + clipBytes
+  if (next > maxVideoStudioTotalBytes) throw new VideoStudioError(videoStudioTotalTooLargeMessage)
+  return next
 }
 
 export function parseVideoStudioWorkerMessage(value: unknown): VideoStudioWorkerMessage {

@@ -7,12 +7,14 @@ import {
   hasDisallowedPackagedDebugSwitch,
   isTrustedIpcSenderUrl,
   resolvePackagedApplicationFile,
+  resolvePackagedLaunchArguments,
   type ApplicationUrlPolicy,
 } from './security'
 import { supportServiceUrl } from './relay-sites'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
 import { loginLaunchArgument } from './login-launch'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { buildUnexpectedExitRelaunchArgs } from './unexpected-exit'
 
 const windowsPolicy: ApplicationUrlPolicy = {
   rendererRoot: 'C:\\Program Files\\XingMang API\\resources\\app\\dist',
@@ -322,6 +324,88 @@ describe('packaged debug switch security', () => {
   })
 })
 
+describe('packaged Windows launch allowlist', () => {
+  const executable = 'C:\\Program Files\\星芒AI管理工具\\星芒AI管理工具.exe'
+
+  it('starts with every argument something we know of launches the app with', () => {
+    for (const args of [
+      [],
+      [loginLaunchArgument],
+      ['--updated'],
+      [uninstallCleanupArgument],
+      [uninstallCleanupArgument, uninstallClearLoginArgument],
+      [accelerationWorkerArgument, '--user-data-dir=C:\\Users\\tester\\AppData\\Local\\Temp\\xingmang-acceleration-abc'],
+      ['--user-data-dir=C:\\Users\\tester\\AppData\\Local\\Temp\\xingmang-packaged-smoke-abc\\user-data'],
+      ['-Embedding'],
+      ['/Embedding'],
+      ['-ToastActivated'],
+      ['xingmang://open'],
+      ['xingmang://account/login?next=/wallet'],
+      ['C:\\Users\\tester\\Documents\\remote-debugging-port'],
+    ]) {
+      expect(resolvePackagedLaunchArguments([executable, ...args], 'win32'), args.join(' ')).toEqual({ action: 'start' })
+    }
+  })
+
+  it('starts with the arguments an unexpected-exit relaunch passes', () => {
+    for (const visible of [true, false]) {
+      const args = buildUnexpectedExitRelaunchArgs([loginLaunchArgument], visible)
+      expect(resolvePackagedLaunchArguments([executable, ...args], 'win32')).toEqual({ action: 'start' })
+    }
+  })
+
+  it('reads allowed names the way Chromium does', () => {
+    expect(resolvePackagedLaunchArguments([executable, '/LAUNCHED-AT-LOGIN', ' -updated'], 'win32')).toEqual({ action: 'start' })
+  })
+
+  it('relaunches without the switches it does not know, keeping the rest in order', () => {
+    expect(resolvePackagedLaunchArguments([
+      executable,
+      '--disable-gpu',
+      'xingmang://open',
+      '/c',
+      loginLaunchArgument,
+      '--Enable-Logging',
+      '--log-file=C:\\Windows\\x.log',
+    ], 'win32')).toEqual({
+      action: 'relaunch',
+      args: ['xingmang://open', loginLaunchArgument],
+      dropped: ['disable-gpu', 'c', 'enable-logging', 'log-file'],
+    })
+  })
+
+  it('drops a bare switch terminator and every switch after it', () => {
+    expect(resolvePackagedLaunchArguments([executable, '--', '--lang=en', 'xingmang://open'], 'win32')).toEqual({
+      action: 'relaunch',
+      args: ['xingmang://open'],
+      dropped: ['', 'lang'],
+    })
+  })
+
+  it('never relaunches into another relaunch', () => {
+    const first = resolvePackagedLaunchArguments([executable, '--proxy-server=127.0.0.1:8080', 'xingmang://open', '-Embedding'], 'win32')
+    expect(first.action).toBe('relaunch')
+    if (first.action !== 'relaunch') return
+    expect(resolvePackagedLaunchArguments([executable, ...first.args], 'win32')).toEqual({ action: 'start' })
+  })
+
+  it('exits on a blocked switch rather than relaunching around it', () => {
+    expect(resolvePackagedLaunchArguments([executable, '--disable-gpu', '/gpu-launcher=calc.exe'], 'win32')).toEqual({ action: 'exit' })
+  })
+
+  it('exits a helper launch that carries anything else', () => {
+    expect(resolvePackagedLaunchArguments([executable, uninstallCleanupArgument, '--lang=en'], 'win32')).toEqual({ action: 'exit' })
+    expect(resolvePackagedLaunchArguments([executable, accelerationWorkerArgument, '--user-data-dir=C:\\p', '--lang=en'], 'win32')).toEqual({ action: 'exit' })
+  })
+
+  it('keeps macOS and Linux on the blocklist alone', () => {
+    for (const platform of ['darwin', 'linux'] as const) {
+      expect(resolvePackagedLaunchArguments(['app', '--disable-gpu', '-psn_0_12345'], platform)).toEqual({ action: 'start' })
+      expect(resolvePackagedLaunchArguments(['app', '--gpu-launcher=sh'], platform)).toEqual({ action: 'exit' })
+    }
+  })
+})
+
 describe('packaged launch arguments from the Windows installer', () => {
   const repository = path.join(__dirname, '..')
   const windowsExecutable = 'C:\\Program Files\\星芒AI管理工具\\星芒AI管理工具.exe'
@@ -341,7 +425,7 @@ describe('packaged launch arguments from the Windows installer', () => {
         .map((token) => token.replace(/^\$\{(\w+)\}$/, (_whole, name: string) => defines.get(name) ?? token))
       expect(args.length, line).toBeGreaterThan(0)
       for (const argument of args) expect(argument, line).not.toContain('${')
-      expect(hasDisallowedPackagedDebugSwitch([windowsExecutable, ...args], 'win32'), line).toBe(false)
+      expect(resolvePackagedLaunchArguments([windowsExecutable, ...args], 'win32'), line).toEqual({ action: 'start' })
     }
   })
 
@@ -358,7 +442,7 @@ describe('packaged launch arguments from the Windows installer', () => {
     expect(values).toContain('--updated')
     for (const value of values) {
       const args = value.split(/\s+/).filter(Boolean)
-      expect(hasDisallowedPackagedDebugSwitch([windowsExecutable, ...args], 'win32'), value).toBe(false)
+      expect(resolvePackagedLaunchArguments([windowsExecutable, ...args], 'win32'), value).toEqual({ action: 'start' })
     }
   })
 })

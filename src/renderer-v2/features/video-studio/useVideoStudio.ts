@@ -9,7 +9,7 @@ import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { composeInVideoStudioWorker } from './compose-client'
-import type { VideoStudioComposeProgress, VideoStudioComposeRequest, VideoStudioComposeResult } from './compose-protocol'
+import { addVideoStudioClipBytes, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
 import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from './errors'
 import {
   addVideoStudioShot,
@@ -28,6 +28,7 @@ import {
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
   videoStudioStorageKey,
@@ -88,6 +89,20 @@ function settleShot(shot: VideoStudioShot, error?: string): VideoStudioShot {
   return { ...rest, status: rest.clip ? 'done' : 'idle' }
 }
 
+/**
+ * 排队时不动请求号：失败的那一镜还记着上一单，轮到它时先拿去接回（runShot），不能在排队这一步就丢掉。
+ * 排着队被停下，有请求号的回到「失败」（原来那句报错还在），没有的同 settleShot。
+ */
+function unqueueShot(shot: VideoStudioShot): VideoStudioShot {
+  return shot.requestId ? { ...shot, status: 'failed' } : settleShot(shot)
+}
+
+/**
+ * 点了停下以后，主进程那边这一单是什么情况：billed 是已经交给服务端（钱扣了、停不下来，cancel 报错时也按这个算，
+ * 宁可多等一会儿也不让客户再付一次）；stopped 是还没交出去就停住了；finished 是停下时它已经自己结束了，按它自己的结果收尾。
+ */
+type StopOutcome = 'billed' | 'stopped' | 'finished'
+
 export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: ChatSite, enabled: boolean, options: VideoStudioOptions = {}) {
   const [storage] = useState(() => options.storage === undefined ? defaultStorage() : options.storage)
   const [project, setProjectState] = useState(() => loadProject(storage, scope))
@@ -105,9 +120,13 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const [storageWarning, setStorageWarning] = useState('')
   const owner = useLatestRequest()
   const catalogAttempt = useLatestRequest()
+  // 每点一次「停止生成」翻一页：之前排定的「接不回来就重新提交」都不再提交。
+  const stops = useLatestRequest()
   const queue = useRef<string[]>([])
   const running = useRef(new Map<string, string>())
-  const canceled = useRef(new Set<string>())
+  const canceled = useRef(new Map<string, Promise<StopOutcome>>())
+  // 在接回的那几单：只查不提交，停了也省不下钱，「停止生成」不去碰它们，免得这一镜又变回「还没生成」。
+  const billed = useRef(new Set<string>())
   const composeAbort = useRef<AbortController | null>(null)
 
   const commit = (change: (current: VideoStudioProject) => VideoStudioProject) => {
@@ -194,13 +213,14 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     if (!enabled) return
     for (const shot of projectRef.current.shots) {
       const { requestId } = shot
-      if (shot.status === 'generating' && requestId) void awaitClip(shot.id, requestId, () => bridge.resumeAiVideo(requestId))
+      if (shot.status === 'generating' && requestId) resumeClip(shot.id, requestId)
     }
   }, [enabled])
 
   const writePlan = async () => {
     const { settings } = projectRef.current
-    if (!settings.idea.trim()) { setError('先写一句想拍什么'); return }
+    const idea = videoStudioPlainText(settings.idea)
+    if (!idea) { setError('先写一句想拍什么'); return }
     if (!settings.textModel || !settings.textGroup) { setError('还没有能写分镜的文字模型，点「刷新模型」再试'); return }
     // 拼片读的是现在这份分镜，写新分镜会把它换掉，两件事不能同时做。
     if (planning || running.current.size || queue.current.length || composeAbort.current) return
@@ -208,7 +228,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     setPlanning(requestId); setError(''); setNotice('')
     try {
       const plan = await bridge.planVideoStudio({
-        requestId, group: settings.textGroup, model: settings.textModel, idea: settings.idea.trim(),
+        requestId, group: settings.textGroup, model: settings.textModel, idea,
         shotCount: settings.shotCount, secondsPerShot: settings.secondsPerShot, aspect: settings.aspect, captions: settings.captions,
       })
       if (!alive()) return
@@ -227,35 +247,80 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     try { await bridge.cancelAiVideo(planning) } catch { /* 停不下来就等它自己写完，写完照样能用。 */ }
   }
 
-  /** 等一段片段回来：新发的（generateAiVideo）和重开页面接回来的（resumeAiVideo）走同一套收尾。接回来是 null 就是没有这一单。 */
-  async function awaitClip(shotId: string, requestId: string, request: () => Promise<AiVideoClip | null>) {
+  /**
+   * 等一段片段回来：新发的（generateAiVideo）和接回来的（resumeAiVideo）走同一套收尾。接回来是 null 就是主进程没有这一单，
+   * 缺省回到「还没生成」，给了 onMissing 就交给它。停下时已经交给服务端的那一单，不收尾，接着拿请求号去接回。
+   */
+  async function awaitClip(shotId: string, requestId: string, request: () => Promise<AiVideoClip | null>, onMissing?: () => void) {
     const alive = owner.capture()
     running.current.set(shotId, requestId)
+    // 腾出这个位置以后接着做的事：这一镜还占着位置，不能先让排队的顶上来。
+    let next: (() => void) | undefined
     try {
       const clip = await request()
       if (!alive()) return
+      if (!clip && onMissing) { next = onMissing; return }
       commit((current) => {
-        const next = updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId ? settleShot(clip ? { ...item, clip } : item) : item)
-        return clip ? { ...next, exported: undefined } : next
+        const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId ? settleShot(clip ? { ...item, clip } : item) : item)
+        return clip ? { ...updated, exported: undefined } : updated
       })
     } catch (reason) {
       if (!alive()) return
-      const stopped = canceled.current.has(requestId)
+      const message = videoStudioErrorMessage(reason, '这一段没生成出来，请稍后重新生成')
+      const stop = canceled.current.get(requestId)
+      const outcome = stop ? await stop : 'finished'
+      if (!alive()) return
+      if (outcome === 'billed') {
+        // 主进程说这一单可能照样出、照样扣费：钱已经花了，接着等它回来挂回这一镜。主进程那边没有这一单
+        // （提交到一半就停了，拿不到结果）时，按刚才那句报错算失败，不让它悄悄变回「还没生成」。
+        next = () => resumeClip(shotId, requestId, () => commit((current) => updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId ? settleShot(item, message) : item)))
+        return
+      }
       commit((current) => updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId
-        ? settleShot(item, stopped ? undefined : videoStudioErrorMessage(reason, '这一段没生成出来，请稍后重新生成'))
+        ? settleShot(item, outcome === 'stopped' ? undefined : message)
         : item))
     } finally {
       canceled.current.delete(requestId)
       if (running.current.get(shotId) === requestId) running.current.delete(shotId)
-      if (alive()) pump()
+      if (next) next()
+      else if (alive()) pump()
     }
   }
-  const runShot = (shotId: string) => {
+  /** 接回已经交给服务端的那一单：只查不提交，那一单的钱已经付过了。停下不碰它。 */
+  function resumeClip(shotId: string, requestId: string, onMissing?: () => void) {
+    billed.current.add(requestId)
+    void awaitClip(shotId, requestId, () => bridge.resumeAiVideo(requestId), onMissing).finally(() => {
+      if (running.current.get(shotId) !== requestId) billed.current.delete(requestId)
+    })
+  }
+  /** 新提交一单：这一步开始花钱。 */
+  function submitShot(shotId: string) {
     const shot = projectRef.current.shots.find((item) => item.id === shotId)
     if (!shot) return
     const requestId = createVideoStudioId()
     commit((current) => updateVideoStudioShot(current, shotId, (item) => ({ ...settleShot(item), status: 'generating', requestId })))
     void awaitClip(shotId, requestId, () => bridge.generateAiVideo(buildVideoStudioClipRequest(projectRef.current.settings, shot, requestId)))
+  }
+  /**
+   * 轮到这一镜。上一单没等到结果就失败了的（「暂时查不到进度」这类，服务端多半还在出），先拿记着的请求号接回：
+   * 接得回来就不用再付一次钱；主进程那边确实没有这一单，才重新提交。
+   */
+  function runShot(shotId: string) {
+    const shot = projectRef.current.shots.find((item) => item.id === shotId)
+    if (!shot) return
+    const { requestId: previous } = shot
+    if (!previous) { submitShot(shotId); return }
+    commit((current) => updateVideoStudioShot(current, shotId, (item) => {
+      const { error: _error, ...rest } = item
+      return { ...rest, status: 'generating' }
+    }))
+    // 接回期间点了「停止生成」，主进程又说没有这一单：停下以后不再花钱，回到没在生成的样子。
+    const going = stops.capture()
+    resumeClip(shotId, previous, () => {
+      if (projectRef.current.shots.find((item) => item.id === shotId)?.requestId !== previous) return
+      if (going()) submitShot(shotId)
+      else commit((current) => updateVideoStudioShot(current, shotId, (item) => item.requestId === previous ? settleShot(item) : item))
+    })
   }
   function pump() {
     while (running.current.size < maxParallelClips && queue.current.length) {
@@ -265,6 +330,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   }
   /** 生成这几个镜头的片段（已经有片段的就是重新生成）。先检查每一镜都写好了，有一处没写好就一段都不发。 */
   const generate = (shotIds: readonly string[]) => {
+    // 写分镜会把镜头整个换掉，付了钱的片段回来时就找不到镜头；拼片读的是现在这几段。这两件事做着时不出片，
+    // 同 writePlan 那边（按钮这时也是灰的，这里兜住以后别的入口）。
+    if (planning || composeAbort.current) return
     const { shots, settings } = projectRef.current
     if (!settings.videoModel || !settings.videoGroup) { setError('还没有能出视频的模型，点「刷新模型」再试'); return }
     const chosen = shots.filter((shot) => shotIds.includes(shot.id) && !isVideoStudioShotBusy(shot))
@@ -274,25 +342,29 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     }
     setError(''); setNotice('')
     queue.current.push(...chosen.map((shot) => shot.id))
-    commit((current) => chosen.reduce((next, shot) => updateVideoStudioShot(next, shot.id, (item) => ({ ...settleShot(item), status: 'queued' })), current))
+    commit((current) => chosen.reduce((next, shot) => updateVideoStudioShot(next, shot.id, (item) => ({ ...item, status: 'queued' })), current))
     pump()
   }
-  /** 全部停下。已经交给服务端的照样生成、照样扣费，好了会放进作品库，只是这里不再等它。 */
+  /**
+   * 全部停下：排着队的和还没交给服务端的不再发。已经交给服务端的停不下来、钱已经扣了，接着等它回来挂回原来的镜头，
+   * 不能让它变回「还没生成」——那样「生成剩下的」一点就是同一段再付一次钱。
+   */
   const stopGenerating = async () => {
+    stops.invalidate()
     const queued = queue.current.splice(0)
-    commit((current) => queued.reduce((next, id) => updateVideoStudioShot(next, id, (shot) => shot.status === 'queued' ? settleShot(shot) : shot), current))
+    commit((current) => queued.reduce((next, id) => updateVideoStudioShot(next, id, (shot) => shot.status === 'queued' ? unqueueShot(shot) : shot), current))
     const requests = [...running.current.values()]
     let stillRunning = 0
     await Promise.all(requests.map(async (requestId) => {
-      canceled.current.add(requestId)
-      try {
-        const result = await bridge.cancelAiVideo(requestId)
-        if (result.mayStillComplete) stillRunning += 1
-      } catch {
-        stillRunning += 1
-      }
+      if (billed.current.has(requestId)) { stillRunning += 1; return }
+      const stop: Promise<StopOutcome> = bridge.cancelAiVideo(requestId).then(
+        (result) => !result.canceled ? 'finished' : result.mayStillComplete ? 'billed' : 'stopped',
+        () => 'billed',
+      )
+      canceled.current.set(requestId, stop)
+      if (await stop === 'billed') stillRunning += 1
     }))
-    if (stillRunning) setNotice(`已经停下。其中 ${stillRunning} 段已经交给服务端，会照样生成、照样扣费，好了会存进 AI 作品文件夹，这里不会自动换上。`)
+    if (stillRunning) setNotice(`已经停下。其中 ${stillRunning} 段已经交给服务端，钱已经扣了，停不下来；这里会接着等它生成好，好了自动放回对应的镜头。`)
   }
 
   const compose = async () => {
@@ -305,6 +377,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     const inputs = videoStudioComposeKey(current)
     try {
       const clips: VideoStudioComposeRequest['clips'] = []
+      let totalBytes = 0
       for (const [index, shot] of current.shots.entries()) {
         setComposeState({ phase: 'reading', done: index, total: current.shots.length })
         let bytes: Uint8Array
@@ -315,6 +388,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
           throw new Error(/不存在|无权访问/.test(message) ? `第 ${index + 1} 段片段在作品库里找不到了，重新生成这一段再拼` : videoStudioErrorMessage(reason, `第 ${index + 1} 段片段读不出来，请稍后再试`))
         }
         if (controller.signal.aborted || !alive()) return
+        totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
         // 交给后台线程时字节是转移过去的，要一份自己独占的 ArrayBuffer。
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
         clips.push({ data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer, ...(captions[index] ? { caption: captions[index] } : {}) })

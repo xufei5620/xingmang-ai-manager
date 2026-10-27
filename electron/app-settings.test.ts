@@ -6,6 +6,7 @@ import {
   defaultAppSettings,
   mergeAppSettings,
   normalizeAppSettings,
+  offeredModelUpgradeKey,
   readAppSettings,
   setOfficialProvider,
   updateAppSettings,
@@ -719,6 +720,23 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath).offeredModelUpgrades).toEqual(['claude:claude-opus-5-5'])
     fs.writeFileSync(filePath, JSON.stringify({ ...settings(), offeredModelUpgrades: 'claude:claude-opus-5-5' }), 'utf8')
     expect(readAppSettings(filePath)).not.toHaveProperty('offeredModelUpgrades')
+  })
+
+  // #1154 第 2 条：远端默认型号能带 : / @ +、最长 128 个字，照原样记的话读回来被丢掉，每次开机都再问。
+  it('keeps the offered upgrade record for a remote default the record cannot spell out', async () => {
+    expect(offeredModelUpgradeKey('claude', 'claude-opus-5-5')).toBe('claude:claude-opus-5-5')
+    expect(offeredModelUpgradeKey('codex', 'gpt-6.1_sol')).toBe('codex:gpt-6.1_sol')
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    const awkward = ['anthropic/claude-opus-6', 'vendor:gpt-7', 'model@2026+fast', `m${'x'.repeat(127)}`]
+    const keys = awkward.map((model) => offeredModelUpgradeKey('claude', model))
+    for (const key of keys) {
+      expect(key).toMatch(/^claude:sha256-[0-9a-f]{64}$/)
+      await updateAppSettings(filePath, { version: 2, offeredModelUpgrades: [key] })
+    }
+    expect(new Set(keys).size).toBe(awkward.length)
+    expect(readAppSettings(filePath).offeredModelUpgrades).toEqual(keys)
+    expect(offeredModelUpgradeKey('codex', 'anthropic/claude-opus-6')).not.toBe(keys[0])
   })
 
   it('only ever adds to the seeded tool defaults and drops entries it does not know', async () => {

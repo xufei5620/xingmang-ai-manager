@@ -1,3 +1,4 @@
+import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import type { AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
@@ -188,16 +189,25 @@ export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
   return shot.status === 'queued' || shot.status === 'generating'
 }
 
+// 想法和画面描述是多行输入框里打的字，粘贴时可能带进看不见的控制字符（垂直制表、退格这类）。主进程见到就整句拒掉，
+// 报的是对不上原因的「想法要写 1 到 2000 个字」；发之前先去掉，换行和制表照留（同主进程那条规矩，canvas-request-parser.ts）。
+const invisibleControls = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
+
+/** 交给主进程的那句话：去掉看不见的控制字符和首尾空白。 */
+export function videoStudioPlainText(value: string): string {
+  return value.replace(invisibleControls, '').trim()
+}
+
 /** 这一镜交给视频模型之前要先改好的地方；没问题是 null。 */
 export function videoStudioShotProblem(shot: VideoStudioShot, index: number): string | null {
-  if (!shot.prompt.trim()) return `第 ${index + 1} 个镜头还没写画面描述`
+  if (!videoStudioPlainText(shot.prompt)) return `第 ${index + 1} 个镜头还没写画面描述`
   if (shot.prompt.length > videoStudioPlanLimits.maximumPromptLength) return `第 ${index + 1} 个镜头的画面描述太长了，删到 ${videoStudioPlanLimits.maximumPromptLength} 个字以内`
   return null
 }
 
 /** 出一段片段的请求。视频模型按它自己那家的写法给画面比例。 */
 export function buildVideoStudioClipRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiVideoGenerateInput {
-  const base = { requestId, group: settings.videoGroup, model: settings.videoModel, prompt: shot.prompt.trim(), seconds: String(settings.secondsPerShot) }
+  const base = { requestId, group: settings.videoGroup, model: settings.videoModel, prompt: videoStudioPlainText(shot.prompt), seconds: String(settings.secondsPerShot) }
   let provider = ''
   try {
     const capability = inspectModel(settings.videoModel)
@@ -251,11 +261,12 @@ function readPositive(value: unknown): number | undefined {
 
 function readClip(value: unknown): AiVideoClip | undefined {
   if (!isRecord(value) || typeof value.assetId !== 'string' || !assetIdPattern.test(value.assetId)) return undefined
-  // 缩略图地址只收主进程给的那种（electron/asset-thumbnail.ts），而且要是同一段视频的。
+  // 缩略图地址只收主进程给的那种（electron/asset-thumbnail.ts），而且要是同一段视频的。存着的地址带着当时的版本号，
+  // 缩略图一升版主进程就不认旧的了（回 404，镜头上全是裂图），所以按编号换成现在的版本再用。
   if (typeof value.thumbnailUrl !== 'string' || !/^xingmang-asset:\/\/thumb\/v[0-9]{1,4}\/video\/[A-Za-z0-9_-]{43}$/.test(value.thumbnailUrl) || !value.thumbnailUrl.endsWith(`/${value.assetId}`)) return undefined
   const width = readPositive(value.width), height = readPositive(value.height), durationSeconds = readPositive(value.durationSeconds)
   return {
-    assetId: value.assetId, thumbnailUrl: value.thumbnailUrl,
+    assetId: value.assetId, thumbnailUrl: assetThumbnailUrl(value.assetId, 'video'),
     ...(width ? { width } : {}), ...(height ? { height } : {}), ...(durationSeconds ? { durationSeconds } : {}),
   }
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
 import type { CodexPayloadNotice, ToolRouteRestartHint } from './running-tools'
@@ -196,8 +196,8 @@ export interface AppSettings {
    */
   trayHintShown?: boolean
   /**
-   * 打开工具前已经问过「要不要换成新一代默认型号」的记录，形如 `claude:claude-opus-5-5`
-   * （tool-model-check.ts）。只增不减：问过一次，不管换没换都不再问（第十五批 6）。
+   * 打开工具前已经问过「要不要换成新一代默认型号」的记录，形如 `claude:claude-opus-5-5`，写法见
+   * offeredModelUpgradeKey（tool-model-check.ts）。只增不减：问过一次，不管换没换都不再问（第十五批 6）。
    */
   offeredModelUpgrades?: string[]
   /** 见 seededToolDefaultIds。只增不减，读到不认识的项就丢掉。 */
@@ -352,12 +352,24 @@ function parseOfficialProviders(value: unknown): ProviderId[] | undefined {
 }
 
 const MAX_OFFERED_MODEL_UPGRADES = 32
+const offeredModelUpgradePattern = /^[a-z]+:[A-Za-z0-9._[\]-]{1,120}$/
+
+/**
+ * 「问过换新型号」那条记录怎么写。型号名放得进记录的照原样（老版本记的就是这样，读出来照样对得上）；放不下的记成
+ * 名字的哈希。远端型号表的默认型号可以带 : / @ +、最长 128 个字，以前照原样写进去、读回来被丢掉，拒绝过的客户
+ * 每次开机都再被问一次（#1154 第 2 条）。记录只拿来比对问没问过，哈希一样认得出，读法不用放宽。
+ */
+export function offeredModelUpgradeKey(provider: ProviderId, model: string): string {
+  const plain = `${provider}:${model}`
+  if (offeredModelUpgradePattern.test(plain)) return plain
+  return `${provider}:sha256-${createHash('sha256').update(model, 'utf8').digest('hex')}`
+}
 
 function parseOfferedModelUpgrades(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   const seen = new Set<string>()
   for (const entry of value) {
-    if (typeof entry !== 'string' || !/^[a-z]+:[A-Za-z0-9._[\]-]{1,120}$/.test(entry)) continue
+    if (typeof entry !== 'string' || !offeredModelUpgradePattern.test(entry)) continue
     seen.add(entry)
   }
   return [...seen].slice(-MAX_OFFERED_MODEL_UPGRADES)

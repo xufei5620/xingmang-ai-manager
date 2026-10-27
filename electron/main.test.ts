@@ -330,6 +330,17 @@ describe('main process quit cleanup', () => {
   })
 })
 
+describe('main process application protocol', () => {
+  it('attaches the security policy to every xingmang:// file, worker scripts included', () => {
+    // 页面的 <meta> 到不了后台线程，只有协议回包里的头才管得到拼片线程（app-protocol.ts）。
+    const { source } = mainSource()
+    const body = moduleFunction(source, 'registerApplicationProtocol').getText(source)
+    expect(body).toContain("registerFileProtocol('xingmang'")
+    expect(body).toContain('callback({ path: target, headers: applicationSecurityResponseHeaders() })')
+    expect(body).not.toMatch(/callback\(\{ path: target \}\)/)
+  })
+})
+
 describe('main process startup order', () => {
   it('starts the subsystems in the order they depend on each other', () => {
     // 启动回调里直接跑的语句按源码先后执行（中间的 await 也是一句等完再走下一句），所以这里的先后就是启动时的先后。

@@ -1,6 +1,6 @@
 ## 开发
 
-- 视频剪辑第 1 期 PR2：主窗口新增出视频的通用通道（对话页和视频剪辑页共用）。`video:generate` 出一段视频、
+- 视频剪辑第 1 期 PR2：主窗口新增出视频的通用通道（现在只有视频剪辑页在用）。`video:generate` 出一段视频、
   存进全局作品库，只回编号、缩略图、宽高和时长，途中的进度经 `video:progress` 推给发起的窗口；参考图可以是
   对话里选的图片。另有 `video:cancel`、`video:read-clip`（读字节给页面拼片）、`video:open`（用电脑默认的
   播放器打开，Windows 上经资源管理器转交）、`video:save-as`，以及剪辑页的 `video-studio:plan`（文字型号把一句

@@ -16,6 +16,7 @@ import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
 import type { AiVideoTaskStore, FinishedAiVideoAsset, StoredAiVideoTask } from './ai-video-task-store'
+import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
 import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
@@ -326,6 +327,11 @@ export function createAiVideoService(options: {
   requestTimeoutMs?: number
   dnsLookup?: AiVideoDnsLookup
   now?: () => Date
+  /**
+   * 交给服务端的那一单等完了（出好、失败、停下）就提醒主窗口刷新余额，同聊天、生图（account-usage-tracker.ts）。
+   * 没交出去的没扣钱，不提醒；开机续取、页面接回的那一单等完也提醒。
+   */
+  onRequestStarted?: AiOperationStartedObserver
 }) {
   const baseUrl = new URL(options.baseUrl)
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password) throw new Error('视频服务地址必须使用 HTTPS')
@@ -669,6 +675,7 @@ export function createAiVideoService(options: {
     }
     let reservationId: string | undefined
     active.set(key, operation)
+    const settled = observeAiOperation(options.onRequestStarted)
     try {
       const credential = await options.credentials.resolveCredential(input.group)
       operation.userId = credential.userId
@@ -816,6 +823,7 @@ export function createAiVideoService(options: {
         await options.tasks.releaseReservation(operation.userId, reservationId).catch(() => undefined)
       }
       if (active.get(key) === operation) active.delete(key)
+      if (operation.dispatched) settled()
     }
   }
 
@@ -850,10 +858,12 @@ export function createAiVideoService(options: {
         controller: new AbortController(), dispatched: true,
       }
       active.set(key, operation)
+      const settled = observeAiOperation(options.onRequestStarted)
       try {
         return await raceAbort(finishOnce(task, () => finishExisting(task, operation.controller.signal)), operation.controller.signal)
       } finally {
         if (active.get(key) === operation) active.delete(key)
+        settled()
       }
     }))
     return results.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
@@ -880,6 +890,7 @@ export function createAiVideoService(options: {
       senderId, requestId, userId, taskId: task.taskId, controller: new AbortController(), dispatched: true,
     }
     active.set(key, operation)
+    const settled = observeAiOperation(options.onRequestStarted)
     try {
       await progress?.onStage('processing')
       return await raceAbort(finishOnce(task, () => finishExisting(task, operation.controller.signal, progress)), operation.controller.signal)
@@ -888,6 +899,7 @@ export function createAiVideoService(options: {
       throw error
     } finally {
       if (active.get(key) === operation) active.delete(key)
+      settled()
     }
   }
 
@@ -914,10 +926,12 @@ export function createAiVideoService(options: {
       dispatched: true,
     }
     active.set(key, operation)
+    const settled = observeAiOperation(options.onRequestStarted)
     try {
       return await finishExisting(task, operation.controller.signal)
     } finally {
       if (active.get(key) === operation) active.delete(key)
+      settled()
     }
   }
 

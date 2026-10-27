@@ -123,6 +123,7 @@ function serviceStub(): SystemService {
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
     onInstallationQueueChange: vi.fn(() => () => undefined),
+    enqueueCodexRemoteLaunch: vi.fn() as never,
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
@@ -1316,6 +1317,76 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId)).resolves.toEqual({ saved: true })
       expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
+      dispose()
+    })
+
+    it('caps paid clip submissions per window the way the canvas does, without holding up another window', async () => {
+      const videoService = videoServiceStub()
+      const finish: Array<() => void> = []
+      videoService.generate.mockImplementation(() => new Promise<typeof storedClip>((resolve) => { finish.push(() => resolve(storedClip)) }))
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService })
+      const generate = electronMocks.handlers.get('video:generate')!
+      const input = (requestId: string) => ({ requestId, group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6' })
+      const event = trustedEvent(undefined, 17)
+
+      const running = Array.from({ length: 20 }, (_, index) => generate(event, input(`video-${index}`)))
+      await vi.waitFor(() => expect(videoService.generate).toHaveBeenCalledTimes(20))
+      await expect(generate(event, input('video-20'))).rejects.toThrow('当前生成任务过多，请等待已有任务完成')
+      expect(videoService.generate).toHaveBeenCalledTimes(20)
+
+      const elsewhere = generate(trustedEvent(undefined, 18), input('video-elsewhere'))
+      await vi.waitFor(() => expect(videoService.generate).toHaveBeenCalledTimes(21))
+
+      for (const resolve of finish.splice(0)) resolve()
+      await expect(Promise.all([...running, elsewhere])).resolves.toHaveLength(21)
+      const again = generate(event, input('video-again'))
+      await vi.waitFor(() => expect(videoService.generate).toHaveBeenCalledTimes(22))
+      for (const resolve of finish.splice(0)) resolve()
+      await expect(again).resolves.toEqual(clip)
+      dispose()
+    })
+
+    it('moves whole clips in and out one at a time per window and turns a flood away instead of holding every copy', async () => {
+      const reads: Array<() => void> = []
+      const videoAssets = {
+        readOwned: vi.fn(() => new Promise<{ asset: typeof storedClip, bytes: Buffer }>((resolve) => {
+          reads.push(() => resolve({ asset: storedClip, bytes: Buffer.from('ftyp-bytes') }))
+        })),
+        storeComposed: vi.fn(async () => ({ ...storedClip, taskId: undefined })),
+        resolveOwnedFilePath: vi.fn(async () => '/unused'),
+        saveAs: vi.fn(async () => true),
+      }
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoAssets })
+      const readClip = electronMocks.handlers.get('video:read-clip')!
+      const storeExport = electronMocks.handlers.get('video-studio:store-export')!
+      const event = trustedEvent(undefined, 17)
+
+      const first = readClip(event, clipId)
+      const second = readClip(event, clipId)
+      await vi.waitFor(() => expect(videoAssets.readOwned).toHaveBeenCalledOnce())
+      const elsewhere = readClip(trustedEvent(undefined, 18), clipId)
+      await vi.waitFor(() => expect(videoAssets.readOwned).toHaveBeenCalledTimes(2))
+
+      reads[0]!()
+      await expect(first).resolves.toEqual(Buffer.from('ftyp-bytes'))
+      await vi.waitFor(() => expect(videoAssets.readOwned).toHaveBeenCalledTimes(3))
+
+      const queued = Array.from({ length: 12 }, () => readClip(event, clipId))
+      await expect(readClip(event, clipId)).rejects.toThrow('操作队列已满，请稍后重试')
+      await expect(storeExport(event, new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112]))).rejects.toThrow('操作队列已满，请稍后重试')
+      expect(videoAssets.readOwned).toHaveBeenCalledTimes(3)
+      expect(videoAssets.storeComposed).not.toHaveBeenCalled()
+
+      // Closing the window drops everything still waiting in its line.
+      const destroyed = vi.mocked(event.sender.once).mock.calls.find(([name]) => name === 'destroyed')?.[1]
+      ;(destroyed as () => void)()
+      await expect(second).rejects.toThrow('操作队列已关闭')
+      await expect(Promise.allSettled(queued)).resolves.toEqual(queued.map(() => expect.objectContaining({ status: 'rejected' })))
+      expect(videoAssets.readOwned).toHaveBeenCalledTimes(3)
+
+      reads[1]!()
+      await expect(elsewhere).resolves.toEqual(Buffer.from('ftyp-bytes'))
+      reads[2]!()
       dispose()
     })
   })
