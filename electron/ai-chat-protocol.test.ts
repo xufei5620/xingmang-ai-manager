@@ -6,7 +6,9 @@ import {
   buildImageGenerationRequest,
   buildVideoGenerationRequest,
   getKnownImageModelPresets,
+  isImageChatGroup,
   isImageModel,
+  markImageChatGroups,
   resolveAiModelCapability,
   selectAiChatModelsForGroup,
   supportsChatImageInput,
@@ -192,6 +194,20 @@ describe('AI model capabilities', () => {
     expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
     expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(models)
     expect(selectAiChatModelsForGroup('视频模型', models)).toEqual(models)
+  })
+
+  it('marks image groups by the built-in names and by the published group map', () => {
+    expect(isImageChatGroup('图片模型')).toBe(true)
+    expect(isImageChatGroup(' 生图分组 ')).toBe(true)
+    expect(isImageChatGroup('画图')).toBe(false)
+    expect(isImageChatGroup('画图', ['画图'])).toBe(true)
+    const groups = [{ name: 'GPT', recommended: true as const }, { name: '画图' }, { name: '图片模型' }]
+    expect(markImageChatGroups(groups, ['画图'])).toEqual([
+      { name: 'GPT', recommended: true },
+      { name: '画图', image: true },
+      { name: '图片模型', image: true },
+    ])
+    expect(markImageChatGroups(groups).filter((group) => group.image).map((group) => group.name)).toEqual(['图片模型'])
   })
 
   it('curates groups the service status group map lists for images', () => {

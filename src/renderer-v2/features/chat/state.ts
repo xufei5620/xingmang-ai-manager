@@ -135,15 +135,17 @@ function groupRatio(value: number | string | undefined): number {
 const imageGroupNames = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
 /**
  * 同一个模型好几个分组都有时，按哪个分组计费（yoyo 10-25 定的次序）：这段对话正在用的分组 → 出图挑图片分组、
- * 聊天挑推荐分组 → 价格倍率低的 → 后台列的先后。candidates 已经按后台列的先后排好。
+ * 聊天挑推荐分组 → 价格倍率低的 → 后台列的先后。candidates 已经按后台列的先后排好。图片分组认主进程在分组列表上
+ * 标的（含服务状态文件分组对照里改过的本名），写死的名字照认。
  */
-export interface ChatGroupContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio'>>)[]; site?: ChatSite }
+export interface ChatGroupContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio' | 'image'>>)[]; site?: ChatSite }
 export function pickChatGroup(candidates: readonly string[], context: ChatGroupContext & { current: string; mode: ChatMode }): string {
   if (!candidates.length) return ''
   if (context.current && candidates.includes(context.current)) return context.current
   const recommended = recommendedChatGroup(context.groups, context.site)
+  const imageGroup = (name: string) => imageGroupNames.has(name) || context.groups.some((group) => group.name === name && group.image === true)
   const preferred = context.mode === 'image'
-    ? candidates.find((name) => imageGroupNames.has(name))
+    ? candidates.find(imageGroup)
     : candidates.find((name) => name === recommended)
   if (preferred) return preferred
   const ratioOf = (name: string) => groupRatio(context.groups.find((group) => group.name === name)?.ratio)

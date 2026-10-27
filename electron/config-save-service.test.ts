@@ -147,6 +147,27 @@ describe('turning off the Claude Code sign-in screen in VS Code and Cursor', () 
     expect(fs.existsSync(vscode.settingsPath)).toBe(false)
   })
 
+  it('does not put the setting back on a later save or startup after the customer removed it', async () => {
+    const { root, store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    const { vscode } = editors(userHome)
+    fs.mkdirSync(vscode.userDirectory, { recursive: true })
+    await service.saveConfig(claude, false, undefined, account)
+    expect(loginPromptSetting(vscode.settingsPath)).toBe(true)
+    expect(store.read().seededToolDefaults).toContain('vscode:login-prompt')
+
+    // 客户自己删掉这一行：再保存一次、模板升了版本再开机，都不再补回来。
+    fs.writeFileSync(vscode.settingsPath, '{\n    "editor.fontSize": 16\n}\n')
+    await service.saveConfig(claude, false, undefined, account)
+    const ownerDirectory = path.join(root, 'tool-config-ownership')
+    const ownerFile = path.join(ownerDirectory, fs.readdirSync(ownerDirectory)[0])
+    const record = JSON.parse(fs.readFileSync(ownerFile, 'utf8')) as Record<string, unknown>
+    delete record.templateRevision
+    fs.writeFileSync(ownerFile, JSON.stringify(record), 'utf8')
+    await service.fillToolTemplateDefaultsThenSyncPickers(() => undefined)
+
+    expect(loginPromptSetting(vscode.settingsPath)).toBeUndefined()
+  })
+
   it('does not add the setting at startup for a Claude Code config the customer entered by hand', async () => {
     const { userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
     await service.saveConfig(claude, false)
@@ -156,5 +177,37 @@ describe('turning off the Claude Code sign-in screen in VS Code and Cursor', () 
     await service.fillToolTemplateDefaultsThenSyncPickers(() => undefined)
 
     expect(fs.existsSync(vscode.settingsPath)).toBe(false)
+  })
+})
+
+describe('the reply-in-Chinese AGENTS.md Xingmang places for Codex', () => {
+  const codex = { provider: 'codex' as const, apiKey: 'sk-fixture', model: 'gpt-fixture', mode: 'merge' as const }
+
+  it('does not place it again after the customer deleted it', async () => {
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'gpt-fixture' }] }))
+    const { root, store, service } = createService({ relayFetch })
+    const agents = path.join(root, 'codex', 'AGENTS.md')
+
+    await service.saveConfig(codex, false)
+    expect(fs.existsSync(agents)).toBe(true)
+    expect(store.read().seededToolDefaults).toContain('codex:response-language')
+
+    fs.rmSync(agents)
+    await service.saveConfig(codex, false)
+
+    expect(fs.existsSync(agents)).toBe(false)
+  })
+
+  it('does not count an AGENTS.md the customer wrote as one Xingmang placed', async () => {
+    const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'gpt-fixture' }] }))
+    const { root, store, service } = createService({ relayFetch })
+    const agents = path.join(root, 'codex', 'AGENTS.md')
+    fs.mkdirSync(path.dirname(agents), { recursive: true })
+    fs.writeFileSync(agents, '# 我自己的规矩\n', 'utf8')
+
+    await service.saveConfig(codex, false)
+
+    expect(fs.readFileSync(agents, 'utf8')).toBe('# 我自己的规矩\n')
+    expect(store.read().seededToolDefaults ?? []).not.toContain('codex:response-language')
   })
 })

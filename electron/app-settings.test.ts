@@ -721,6 +721,20 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('offeredModelUpgrades')
   })
 
+  it('only ever adds to the seeded tool defaults and drops entries it does not know', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('seededToolDefaults')
+    await updateAppSettings(filePath, { version: 2, seededToolDefaults: ['codex:response-language'] })
+    await updateAppSettings(filePath, { version: 2, seededToolDefaults: ['claude:fallbackModel', 'codex:response-language'] })
+    await updateAppSettings(filePath, { version: 2, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath).seededToolDefaults).toEqual(['claude:fallbackModel', 'codex:response-language'])
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), seededToolDefaults: ['vscode:login-prompt', 'gemini:anything', 42] }), 'utf8')
+    expect(readAppSettings(filePath).seededToolDefaults).toEqual(['vscode:login-prompt'])
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), seededToolDefaults: 'claude:fallbackModel' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('seededToolDefaults')
+  })
+
   it('keeps the crash reporting notice marker once set without touching the reporting switch', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())

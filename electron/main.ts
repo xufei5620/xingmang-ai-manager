@@ -1685,6 +1685,9 @@ if (!hasSingleInstanceLock) {
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
       if (!scope || !acceleration) return false
+      // 加速在等上一个星芒交出网络设置时读状态要陪着等最多半分钟：这里只问开没开（绕不绕代理、导出诊断），
+      // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。
+      if (acceleration.awaitingPreviousOwner()) return true
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
@@ -1776,6 +1779,8 @@ if (!hasSingleInstanceLock) {
       }),
       ...createSpendSpikeRecordStore(managerDataDirectory),
       emptyRecord: createEmptyBalanceRecordStore(managerDataDirectory),
+      // 客户正看着星芒（新手引导、首页都在说余额为零，付款窗口开着也算）时余额用完那条先不弹，等窗口不在前台时读到余额再说。
+      holdEmptyNotice: () => BrowserWindow.getFocusedWindow() !== null,
     })
     // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
@@ -2497,6 +2502,8 @@ if (!hasSingleInstanceLock) {
       )),
       // 视频剪辑的拼片在界面里跑，主进程看不到，跟对话出字、开着的对话框一起由界面报忙闲（#1411）。
       rendererBusy: () => mainRendererRelease?.rendererBusy === true,
+      // 跳框时会把主窗口叫到最前面，点了「现在安装」付款页跟着关掉；付款窗口开着就先不问（同托盘省内存那条）。
+      paymentWindowOpen: () => paymentWindow.isOpen(),
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'
