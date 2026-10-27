@@ -11,6 +11,36 @@ const REDACTED = '[REDACTED]'
 // trailing `\b` would stop short of a key ending in `-` and leak its tail.
 const KEY_TAIL = '(?![A-Za-z0-9_-])'
 
+// `RSA`, `EC`, `OPENSSH`, `ENCRYPTED`, and PGP's `PRIVATE KEY BLOCK`.
+const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?)-----/g
+
+/**
+ * Hides the body of every PEM private key block. The END line has to carry the
+ * same label as the BEGIN line, so two blocks in one text are hidden one by one
+ * rather than everything between the first and the last. A BEGIN line with no
+ * END line of its own label after it means the text was cut off inside the key,
+ * so everything from there on is key material, including any other block's END
+ * line further down. One forward scan: a regex that searched for the END line
+ * from every BEGIN line again would reread the rest of the text once per BEGIN
+ * line, and a log that quotes a key file a few hundred times is not rare.
+ */
+function redactPrivateKeyBlocks(value: string): string {
+  let output = ''
+  let cursor = 0
+  for (const begin of value.matchAll(PRIVATE_KEY_BEGIN)) {
+    // A BEGIN line inside a body that is already hidden.
+    if (begin.index < cursor) continue
+    const bodyStart = begin.index + begin[0].length
+    output += `${value.slice(cursor, bodyStart)}\n${REDACTED}`
+    const end = `-----END ${begin[1]}-----`
+    const endIndex = value.indexOf(end, bodyStart)
+    if (endIndex === -1) return output
+    output += `\n${end}`
+    cursor = endIndex + end.length
+  }
+  return cursor === 0 ? value : output + value.slice(cursor)
+}
+
 /**
  * Values recognised by their own shape, wherever they appear:
  * - `Bearer …` authorization values
@@ -23,9 +53,13 @@ const KEY_TAIL = '(?![A-Za-z0-9_-])'
  *   `https://user:token@host/repo` (#537). Any userinfo on http(s) is a
  *   credential; other schemes only lose it when a password is present, so
  *   `ssh://git@host` stays readable.
+ * - PEM private key blocks (`-----BEGIN … PRIVATE KEY-----` through the
+ *   matching END line, or to the end of the text when the END line was cut
+ *   off): Codex reads `~/.ssh` or a `.pem` on request and its answer goes to
+ *   the phone (YK-4). The BEGIN/END lines stay so the reader knows what it was.
  */
 export function redactSecretShapes(value: string): string {
-  return value
+  return redactPrivateKeyBlocks(value)
     .replace(/\b(https?:\/\/)[^\s/?#@]+@/gi, `$1${REDACTED}@`)
     .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:]*:[^\s/?#@]*@/gi, `$1${REDACTED}@`)
     .replace(new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}${KEY_TAIL}`, 'g'), REDACTED)
@@ -50,6 +84,22 @@ const CREDENTIAL_FLAG_IN_TEXT = new RegExp(
   `((?:^|[\\s"'])${CREDENTIAL_FLAG}(?:=|\\s+(?!-)))(?:"[^"]*"|'[^']*'|[^\\s"']+)`,
   'gi',
 )
+
+// The names a value is recognised by (the crash reporter builds its own rule
+// from this list, with a wider value alphabet). None is anchored at the start of the
+// name, so `flow_token`, `MY_APP_SECRET` and `x-api-key` all match. A name that
+// ends in `key` needs at least one segment in front of it
+// (`AWS_SECRET_ACCESS_KEY`, `PRIVATE_KEY`, `ssh-key`, as `.env` files spell
+// them): a bare `key=` names an installation queue entry in the runtime log and
+// has to stay readable, and `keyboard`, `max_tokens`, `password_hash_rounds`
+// never end on the word. The lookbehind lets that alternative start only where
+// a name starts: without it a long run of letters (a base64 blob, an 8 KB
+// filler value in a log detail) is rescanned from every position in it, which
+// is quadratic and timed out the runtime log's oversized-detail test.
+export const SECRET_FIELD_NAME = '(?:api[_-]?key|(?<![a-z0-9_-])(?:[a-z0-9]+[_-])+key|authorization|token|secret|password|passwd|cookies?|credentials?)'
+const DOUBLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}"\\s*[:=]\\s*)"[^"]*"`, 'gi')
+const SINGLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}'\\s*[:=]\\s*)'[^']*'`, 'gi')
+const SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;]+)`, 'gi')
 
 /**
  * Values recognised by the name in front of them. `api[_-]?key` also covers the
@@ -81,9 +131,9 @@ export function redactSecretFields(value: string): string {
     // that closes the key name, so any CLI writing JSON to stderr leaked its
     // secrets verbatim into the runtime log and the feedback export. Redacting
     // between the existing quotes also keeps a JSON body parseable.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookies?|credentials?)"\s*[:=]\s*)"[^"]*"/gi, `$1"${REDACTED}"`)
-    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookies?|credentials?)'\s*[:=]\s*)'[^']*'/gi, `$1'${REDACTED}'`)
-    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookies?|credentials?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, `$1${REDACTED}`)
+    .replace(DOUBLE_QUOTED_SECRET_FIELD, `$1"${REDACTED}"`)
+    .replace(SINGLE_QUOTED_SECRET_FIELD, `$1'${REDACTED}'`)
+    .replace(SECRET_FIELD, `$1${REDACTED}`)
 }
 
 /**
