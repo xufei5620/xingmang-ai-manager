@@ -111,6 +111,7 @@ import { attachPrivacyChangeListener } from './platform/privacy-change-bridge'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
 import { networkSettingsTarget } from './proxy-bypass'
+import { macosAppManagementSettingsUrl } from './macos-desktop-app-update'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
@@ -2274,6 +2275,14 @@ if (!hasSingleInstanceLock) {
         await shell.openExternal(target)
         return true
       },
+      ...(process.platform === 'darwin'
+        ? {
+            openAppManagementSettings: async () => {
+              await shell.openExternal(macosAppManagementSettingsUrl)
+              return true
+            },
+          }
+        : {}),
       onSettingsChanged: (update) => {
         if (update.hardwareAcceleration !== undefined) {
           // 用户对显示方式做了选择（设置页开关，或兼容提示里的两颗按钮）：之前的崩溃

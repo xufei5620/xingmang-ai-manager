@@ -20,11 +20,13 @@ import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, dar
 import {
   macosDesktopDiskFullMessage,
   macosDesktopDownloadFailedMessage,
+  macosDesktopAppManagementBlockedMessage,
   macosDesktopInstallErrorName,
   macosDesktopInstallFailedMessage,
   macosDesktopNameTakenMessage,
   macosDesktopNotOfficialMessage,
   macosDesktopSystemTooOldMessage,
+  macosDesktopUpdateFailedMessage,
   macosLegacyChatgptMessage,
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
@@ -157,11 +159,32 @@ export interface InstallMacosDesktopAppOptions {
    * 调用方别再把整个安装包进线路：那样存储桶那一路也会走加速。
    */
   withVendorDownloadRoute?<T>(operation: () => Promise<T>): Promise<T>
+  /**
+   * 更新：换掉「应用程序」里已经装着的那一份（yoyo 2026-10-27「桌面端更新改」）。缺省 = 只装新的，
+   * 名字被占着就停（旧行为）。
+   */
+  replace?: MacosDesktopAppReplacement
+}
+
+/**
+ * 装着的那一份先核对是官方原版（签名团队和 bundle id）才动它。新版照装的那一套下好、核过，先放到旧版
+ * 旁边一个隐藏名字下，再调 beforeReplace，然后把旧版挪开、新版换上；哪一步没成都把旧版挪回原处，
+ * 客户手里一直有一份能用的。
+ */
+export interface MacosDesktopAppReplacement {
+  /** 检测认出来的那一份：只能是 /Applications 或 ~/Applications 里这个应用本身。 */
+  installedPath: string
+  /** 它的版本号（CFBundleShortVersionString）；下下来的不比它新就不换。 */
+  installedVersion: string
+  /** 新版已经放在旧版旁边、动手换之前调：调用方在这里确认它关着（要关就在这里关）。抛错就不换。 */
+  beforeReplace(): Promise<void>
 }
 
 export interface MacosDesktopAppInstallResult {
   version: string
   path: string
+  /** 更新时下下来的不比装着的新，什么都没换。缺省 = 装上了或换上了。 */
+  unchanged?: boolean
 }
 
 /**
@@ -178,6 +201,12 @@ export class MacosDesktopInstallError extends Error {
     this.detail = detail
   }
 }
+
+/**
+ * 更新时已经是最终说法、不再换成「没更新成，旧版还在」的那两种：Mac 拦住不让挪旧版（旧版没动），
+ * 和新版没换上、旧版也没挪回去（这时旧版不在原处，那句话就不对了）。
+ */
+class MacosDesktopReplaceError extends MacosDesktopInstallError {}
 
 const feedTimeoutMs = 30_000
 const maximumFeedBytes = 512 * 1024
@@ -492,6 +521,39 @@ export function isMacosVersionBelow(current: string, minimum: string): boolean {
   return false
 }
 
+function appVersionParts(value: string): number[] | null {
+  const text = value.trim()
+  if (!/^\d{1,9}(?:\.\d{1,9}){0,3}$/.test(text)) return null
+  return text.split('.').map(Number)
+}
+
+/**
+ * 比桌面端的版本号（几家都是三段数字，如 3.6556.2、26.930.31730、1.18.34）：左边新返回 1，一样 0，
+ * 旧 -1；有一边不是纯数字点分就比不了，返回 null，调用方当作不知道、不提醒也不换。
+ */
+export function compareMacosDesktopVersions(left: string, right: string): -1 | 0 | 1 | null {
+  const a = appVersionParts(left)
+  const b = appVersionParts(right)
+  if (!a || !b) return null
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0)
+    if (difference !== 0) return difference > 0 ? 1 : -1
+  }
+  return 0
+}
+
+/**
+ * 这一份能不能由星芒来更新：一键安装认得的客户端，并且就在两个「应用程序」目录之一（星芒装的就放在
+ * 这两处）。Spotlight 在下载文件夹之类别处找到的那份不换：换了也不是客户从启动台点开的那个。
+ */
+export function macosDesktopAppReplaceable(tool: MacosDesktopAppId, installedPath: string, userHome: string, systemDirectory = '/Applications'): boolean {
+  const source = sources[tool]
+  if (!source) return false
+  const bundleName = `${source.applicationName}.app`
+  return installedPath === path.posix.join(systemDirectory, bundleName)
+    || installedPath === path.posix.join(userHome, 'Applications', bundleName)
+}
+
 /**
  * 工具箱的 x64 版在 Apple 芯片上靠 Rosetta 也能跑，这时 process.arch 是 x64，这台 Mac 却是
  * Apple 芯片（codex-desktop-service.ts 的 resolveMacosInstallArchitecture 是同一个判断）。
@@ -626,6 +688,145 @@ async function placeBundle(
   }
 }
 
+/** 更新时旧版先挪到这个隐藏名字下（后面接 12 位十六进制），新版换上以后再删掉它。 */
+function backupNamePrefix(destination: string): string {
+  return `.${path.posix.basename(destination)}.xingmang-old-`
+}
+
+/**
+ * 上次更新换到一半就被关掉（关机、强退）：旧版挪开了、新版还没换上，「应用程序」里那个应用不见了。
+ * 这时把挪开的旧版放回原处，返回 true；应用好好在那儿时只删掉挪开后没删成的旧版。只认 replaceBundle
+ * 自己起的那种名字，客户的东西碰不到。
+ */
+async function recoverInterruptedReplacement(destination: string): Promise<boolean> {
+  const directory = path.posix.dirname(destination)
+  const prefix = backupNamePrefix(destination)
+  let entries: string[]
+  try {
+    entries = await fs.promises.readdir(directory)
+  } catch {
+    return false
+  }
+  const backups = entries.filter((entry) => entry.startsWith(prefix) && /^[0-9a-f]{12}$/.test(entry.slice(prefix.length)))
+  let restored = false
+  if (backups.length > 0 && !await lstatOrNull(destination)) {
+    await fs.promises.rename(path.posix.join(directory, backups.shift()!), destination)
+    restored = true
+  }
+  for (const entry of backups) await fs.promises.rm(path.posix.join(directory, entry), { recursive: true, force: true }).catch(() => undefined)
+  return restored
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+/**
+ * 更新时换上新版。新版先放到旧版旁边的隐藏名字下（同一块盘直接改名，跨盘先整个拷过来，同 placeBundle），
+ * 调 beforeReplace 之后才动旧版：旧版改名挪开、新版改名换上，两步都只是改名，一眨眼的事。新版没换上就把
+ * 旧版挪回去。macOS 13 起「App 管理」没允许星芒时，挪旧版那一步系统回 EPERM，旧版没动。
+ */
+async function replaceBundle(
+  source: MacosDesktopAppSource,
+  bundle: string,
+  destination: string,
+  runProcess: InstallMacosDesktopAppOptions['runProcess'],
+  beforeReplace: () => Promise<void>,
+): Promise<void> {
+  const directory = path.posix.dirname(destination)
+  const incoming = path.posix.join(directory, `${copyNamePrefix(destination)}${randomBytes(6).toString('hex')}`)
+  try {
+    try {
+      await fs.promises.rename(bundle, incoming)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error
+      await runProcess({ executable: '/usr/bin/ditto', argv: [bundle, incoming], timeoutMs: copyTimeoutMs })
+    }
+    await beforeReplace()
+    const backup = path.posix.join(directory, `${backupNamePrefix(destination)}${randomBytes(6).toString('hex')}`)
+    try {
+      await fs.promises.rename(destination, backup)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'EPERM') {
+        throw new MacosDesktopReplaceError(macosDesktopAppManagementBlockedMessage, `挪不动 ${destination}（EPERM），多半是系统设置里的「App 管理」没有允许星芒`, error)
+      }
+      throw error
+    }
+    try {
+      await fs.promises.rename(incoming, destination)
+    } catch (error) {
+      try {
+        await fs.promises.rename(backup, destination)
+      } catch (restoreError) {
+        // 下次点「安装」或「可更新到」时 recoverInterruptedReplacement 会先把它放回去。
+        throw new MacosDesktopReplaceError(
+          macosDesktopInstallFailedMessage(source.name),
+          `新版没换上（${errorText(error)}），旧版也没挪回去（${errorText(restoreError)}），暂时在 ${backup}`,
+          error,
+        )
+      }
+      throw error
+    }
+    // 删不掉（比如「App 管理」只拦删除）不影响已经换上的新版；下次更新前 recoverInterruptedReplacement 再删。
+    await fs.promises.rm(backup, { recursive: true, force: true }).catch(() => undefined)
+  } finally {
+    await fs.promises.rm(incoming, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+/** 更新前核对装着的那一份：普通目录（不是链接），签名是这个客户端官方团队的 Developer ID、bundle id 对得上。 */
+async function verifyInstalledBundle(
+  source: MacosDesktopAppSource,
+  bundle: string,
+  runProcess: InstallMacosDesktopAppOptions['runProcess'],
+): Promise<void> {
+  const stats = await lstatOrNull(bundle)
+  if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+    throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, `${bundle} 不在了或不是普通目录`)
+  }
+  try {
+    await runProcess({
+      executable: '/usr/bin/codesign',
+      argv: darwinDeveloperIdVerificationArgv(source.teamIdentifier, bundle, { deep: true, bundleIdentifier: source.bundleIdentifier }),
+      timeoutMs: darwinDeepVerificationTimeoutMs,
+    })
+  } catch (error) {
+    if (rejectedByCheck(error)) {
+      throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, `装着的 ${bundle} 不是 ${source.teamIdentifier} 团队签名的官方原版，不替换它`, error)
+    }
+    throw error
+  }
+}
+
+/** 更新时装着的那一份在哪个「应用程序」目录；不在这两处（Spotlight 在别处找到的）就不动它。 */
+function installedApplicationsDirectory(
+  source: MacosDesktopAppSource,
+  installedPath: string,
+  userHome: string,
+  systemDirectory: string,
+): string {
+  const bundleName = `${source.applicationName}.app`
+  for (const directory of [systemDirectory, path.posix.join(userHome, 'Applications')]) {
+    if (installedPath === path.posix.join(directory, bundleName)) return directory
+  }
+  throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, `${installedPath} 不在「应用程序」里，星芒不替换它`)
+}
+
+/** 放回来的那一份是什么版本；读不出来就 null。 */
+async function readBundleVersion(bundle: string, runProcess: InstallMacosDesktopAppOptions['runProcess']): Promise<string | null> {
+  try {
+    const result = await runProcess({
+      executable: '/usr/bin/plutil',
+      argv: ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-', path.posix.join(bundle, 'Contents', 'Info.plist')],
+      timeoutMs: probeTimeoutMs,
+    })
+    const version = result.stdout.trim()
+    return appVersionParts(version) ? version : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * 名字被同名应用占着时的那句话：认得出是旧版官方应用就照实说；调用方的检测没做完、那份又自称
  * 就是这个应用、也不是检测确定不过关的那几份，说检测没做完；其余一律当认不出来的那份。
@@ -667,7 +868,7 @@ function runDirectly<T>(operation: () => Promise<T>): Promise<T> {
  * 存储桶里有这台 Mac 能用的那个官方包时，它在桶里叫什么。Codex 按芯片各一个 zip，Claude 是通用 PKG，
  * OpenCode 按芯片各一个 GitHub 上那个 .app.tar.gz。
  */
-function bucketPackageId(tool: MacosDesktopAppId, architecture: MacosDesktopArchitecture): DesktopBucketPackageId | null {
+export function macosDesktopBucketPackageId(tool: MacosDesktopAppId, architecture: MacosDesktopArchitecture): DesktopBucketPackageId | null {
   if (tool === 'codexDesktop') return architecture === 'arm64' ? 'codex-macos-arm64' : 'codex-macos-x64'
   if (tool === 'claudeDesktop') return 'claude-macos-universal'
   if (tool === 'opencode') return architecture === 'arm64' ? 'opencode-macos-arm64' : 'opencode-macos-x64'
@@ -782,7 +983,7 @@ async function unpackFromBucket(
   report: (phase: MacosDesktopAppInstallProgress['phase'], message: string, percent?: number | null) => void,
 ): Promise<{ version: string, bundle: string } | null> {
   const bucket = options.bucket
-  const id = bucketPackageId(options.tool, architecture)
+  const id = macosDesktopBucketPackageId(options.tool, architecture)
   if (!bucket || !id) return null
   const bundleName = `${source.applicationName}.app`
   const workDirectory = path.posix.join(staging, 'bucket')
@@ -919,11 +1120,24 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
     const bundle = await verifyExtractedBundle(source, extractDirectory, bundleName, options.runProcess, readSystemVersion)
     return { version: release.version, bundle }
   }
+  const replace = options.replace
   try {
-    const applications = await resolveApplicationsDirectory(options.userHome, options.systemApplicationsDirectory ?? '/Applications')
+    const systemApplications = options.systemApplicationsDirectory ?? '/Applications'
+    const applications = replace
+      ? installedApplicationsDirectory(source, replace.installedPath, options.userHome, systemApplications)
+      : await resolveApplicationsDirectory(options.userHome, systemApplications)
     const destination = path.posix.join(applications, bundleName)
-    // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来、或者没来得及核对的那份。
-    if (await lstatOrNull(destination)) throw await nameTakenError(source, destination, options.runProcess, options.detectionUnfinished)
+    // 上次更新换到一半被打断、应用不见了的，先把旧版放回去：装的时候这就算装好了，不用再下一遍。
+    if (await recoverInterruptedReplacement(destination) && !replace) {
+      const version = await readBundleVersion(destination, options.runProcess)
+      if (version) return { version, path: destination }
+    }
+    if (replace) {
+      await verifyInstalledBundle(source, destination, options.runProcess)
+    } else if (await lstatOrNull(destination)) {
+      // 首页认得出的那份早就让安装提前结束了；走到这里还占着名字的，是认不出来、或者没来得及核对的那份。
+      throw await nameTakenError(source, destination, options.runProcess, options.detectionUnfinished)
+    }
     await removeInterruptedCopies(destination)
     staging = await createStagingDirectory(options.environment)
 
@@ -942,12 +1156,26 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
 
     options.signal?.throwIfAborted()
     stage = 'place'
+    if (replace) {
+      // 官方那一路给的不比装着的新（桶里那版已经被它自己升级追上了）：什么都不动。
+      if (compareMacosDesktopVersions(unpacked.version, replace.installedVersion) !== 1) {
+        return { version: replace.installedVersion, path: destination, unchanged: true }
+      }
+      report('installing', '正在放进「应用程序」')
+      await replaceBundle(source, unpacked.bundle, destination, options.runProcess, replace.beforeReplace)
+      return { version: unpacked.version, path: destination }
+    }
     report('installing', '正在放进「应用程序」')
     await placeBundle(source, unpacked.bundle, destination, options.runProcess)
     return { version: unpacked.version, path: destination }
   } catch (error) {
     // 取消不是装失败：原样交回去，让调用方说「已取消」而不是「没下载下来」。
     if (options.signal?.aborted) throw error
+    // 更新没成：除了那两种另有说法的，旧版都原样在，一律说同一句，原因进 detail。
+    if (replace) {
+      if (error instanceof MacosDesktopReplaceError) throw error
+      throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, error instanceof MacosDesktopInstallError ? error.detail : errorText(error), error)
+    }
     if (error instanceof MacosDesktopInstallError) throw error
     const detail = error instanceof Error ? error.message : String(error)
     // 盘满了就照直说：「检查网络」「再点一次」都救不了一块写满的磁盘。

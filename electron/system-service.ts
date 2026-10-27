@@ -127,8 +127,9 @@ import {
   type ExternalToolConfigOptions,
   type ExternalToolId,
 } from './external-tool-config'
-import { type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
+import { type DesktopAppUpdateRequest, type ExternalClientConfigResult, type ExternalClientSourceSwitchResult, type ExternalClientStatus, type ExternalClientRuntimeStatus } from './external-client-contract'
 import { createExternalClientRuntime } from './external-client-runtime'
+import type { MacosDesktopLatestVersionLookup } from './macos-desktop-app-update'
 import { type ExternalClientCheckResult } from './external-client-connection'
 import {
   buildDarwinTrustedVerificationRunner,
@@ -476,7 +477,8 @@ export interface SystemService {
   /** 「帮我清理」：只删这个工具上次卸载时记下的那几个文件，删前再核对一遍（已知48）。 */
   cleanUninstallLeftovers(provider: ProviderId): Promise<CliLeftoverCleanupResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
-  installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
+  /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */
+  installCodexDesktop(target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<CodexDesktopInstallResult>
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   resetCodexDesktop(): Promise<void>
@@ -547,7 +549,8 @@ export interface SystemService {
     tool: ExternalToolId,
     knownStatus?: ExternalClientRuntimeStatus | null,
   ): Promise<ExternalClientCheckResult>
-  installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
+  /** request 只有 Mac 上首页「可更新到 v…」那一下才传（见 DesktopAppUpdateRequest）。 */
+  installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus>
   cancelExternalClientInstall(tool: ExternalToolId): InstallCancellationOutcome
   launchExternalClient(tool: ExternalToolId): Promise<void>
   /** 首页 Claude Desktop 卡上的一键切换：只改它登录页那个选择，星芒那份配置留着。 */
@@ -615,6 +618,11 @@ export interface SystemServiceOptions {
   inspectClaudeDesktopStoreVirtualization?: typeof inspectClaudeDesktopStoreVirtualization
   assertClaudeDesktopUnmanaged?: () => Promise<void>
   externalClientRuntime?: ReturnType<typeof createExternalClientRuntime>
+  /**
+   * Mac 上查星芒存储桶里几个桌面端的最新版，首页提醒「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）。
+   * 缺省 = 生产照查（测试里不查，免得单测真的去连存储桶）；null = 不查。
+   */
+  latestMacosDesktopVersions?: MacosDesktopLatestVersionLookup | null
   /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
   getRelaySiteId?: () => string
   /** Preferences freeze at startup; under "auto" the line itself may move during the run (relay-route-controller.ts). */
@@ -1005,7 +1013,7 @@ export function createSystemService(
     codexEnv, relayRouting, inspectNativeProviderConfig,
     executeCommand, detectMacosCodexApp,
     downloadFetch,
-    withDownloadAcceleration, desktopBucketDownloads,
+    withDownloadAcceleration, desktopBucketDownloads, latestMacosDesktopVersions,
     installationQueue,
     createInstallTemporaryDirectory, assertInstallDiskSpace,
     fetchAvailableModels,
@@ -1061,6 +1069,7 @@ export function createSystemService(
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
     userHome: providerRoots.userHome,
+    ...(latestMacosDesktopVersions ? { latestMacosDesktopVersions } : {}),
     // 中文增强没开起来时，启动那边改走普通启动，只往控制台打一句，打包版不留控制台；原错误（连同 PowerShell 那层）记在这一条里。
     activateCodexDesktopWithCdp: withCodexDesktopCdpFailureReport(activateCodexDesktopWithCdp, (error) => runtimeLog?.log(
       'warn', 'system', 'codex-desktop.chinese-launch.failed', 'Codex 桌面端中文增强启动没成，改走普通启动', { error },
@@ -1205,12 +1214,12 @@ export function createSystemService(
     return reloadNetworkProxyConfiguration(reload)
   }
 
-  async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
+  async function installCodexDesktop(target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<CodexDesktopInstallResult> {
     let result: CodexDesktopInstallResult
     try {
       result = await installCodexDesktopOperation(withCodexDesktopProgressLog(target, (progress) => runtimeLog?.log(
         'info', 'install', 'codex-desktop.install.progress', progress.message, { phase: progress.phase },
-      )))
+      )), request)
     } finally {
       // 桌面端换了一批，自带的 Codex 也跟着换了：读不进型号名单的话开不了新对话。
       await takeBackUnreadableCodexModelCatalog('desktop-installed')

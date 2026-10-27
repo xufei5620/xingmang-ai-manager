@@ -1454,6 +1454,81 @@ describe('macOS external desktop lifecycle', () => {
     const failing = macInstallFixture({ installMacosDesktopApp: async () => { throw failure } })
     await expect(failing.runtime.install('opencode')).rejects.toBe(failure)
   })
+  /** OpenCode 1.18.30 装在「应用程序」里，存储桶里有 1.18.34。 */
+  function macUpdateFixture(extra: ExternalClientRuntimeOptions = {}) {
+    let installedVersion = '1.18.30'
+    let running = ''
+    const execute = vi.fn<typeof runCommand>(async (spec) => {
+      if (spec.executable === '/usr/bin/plutil') return commandResult(spec, JSON.stringify({ CFBundleIdentifier: 'ai.opencode.desktop', CFBundleShortVersionString: installedVersion }))
+      if (spec.executable === '/bin/ps') return commandResult(spec, running)
+      return commandResult(spec)
+    })
+    const verifyPath = vi.fn(async (candidate: string) => {
+      if (candidate.startsWith('/Applications/OpenCode.app')) return candidate
+      throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+    })
+    const latest = vi.fn(async () => '1.18.34')
+    const installMacosDesktopApp = vi.fn<NonNullable<ExternalClientRuntimeOptions['installMacosDesktopApp']>>(async (options) => {
+      options.onProgress?.({ phase: 'downloading', message: '正在下载 OpenCode 1.18.34', percent: 40 })
+      await options.replace?.beforeReplace()
+      installedVersion = '1.18.34'
+      return { version: '1.18.34', path: '/Applications/OpenCode.app' }
+    })
+    const runtime = createExternalClientRuntime({
+      platform: 'darwin', architecture: 'arm64', userHome: '/Users/tester', runCommand: execute, verifyPath, getuid: () => 501,
+      installMacosDesktopApp, assertDiskSpace: async () => undefined, fetch: vi.fn<typeof fetch>(),
+      latestMacosDesktopVersions: { latest },
+      quitMacosDesktopApp: { kill: () => { running = '' }, wait: async () => undefined },
+      ...extra,
+    })
+    return { execute, runtime, installMacosDesktopApp, latest, open: () => { running = '  4242   501 /Applications/OpenCode.app/Contents/MacOS/OpenCode\n' } }
+  }
+  it('offers the bucket version on an installed Mac client only, and not at all without the lookup', async () => {
+    const f = macUpdateFixture()
+    const statuses = await f.runtime.scan()
+    expect(statuses.find((status) => status.tool === 'opencode')).toMatchObject({ installed: true, version: '1.18.30', latestVersion: '1.18.34', updateAvailable: true })
+    // Claude Desktop and WorkBuddy are not installed here: nothing to compare.
+    expect(statuses.filter((status) => status.tool !== 'opencode').every((status) => status.latestVersion === undefined)).toBe(true)
+    expect(f.latest).toHaveBeenCalledTimes(1)
+    expect(f.latest).toHaveBeenCalledWith('opencode', 'arm64')
+
+    const off = macUpdateFixture({ latestMacosDesktopVersions: undefined })
+    const opencode = (await off.runtime.scan()).find((status) => status.tool === 'opencode')
+    expect(opencode?.latestVersion).toBeUndefined()
+    expect(opencode?.updateAvailable).toBeUndefined()
+  })
+  it('replaces the installed client when asked to update, and installs nothing when only asked to install', async () => {
+    const f = macUpdateFixture()
+    await expect(f.runtime.install('opencode')).resolves.toMatchObject({ installed: true, version: '1.18.30' })
+    expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
+
+    const progress: string[] = []
+    const status = await f.runtime.install('opencode', (event) => progress.push(event.message), { update: true, closeRunning: false })
+    expect(status).toMatchObject({ installed: true, version: '1.18.34', latestVersion: '1.18.34', updateAvailable: false })
+    expect(f.installMacosDesktopApp).toHaveBeenCalledWith(expect.objectContaining({
+      tool: 'opencode', architecture: 'arm64',
+      replace: { installedPath: '/Applications/OpenCode.app', installedVersion: '1.18.30', beforeReplace: expect.any(Function) },
+    }))
+    expect(progress.at(-1)).toBe('OpenCode 已更新到 v1.18.34')
+  })
+  it('closes a running client only when the customer agreed to, and through the plain process list', async () => {
+    const refused = macUpdateFixture()
+    refused.open()
+    await expect(refused.runtime.install('opencode', undefined, { update: true, closeRunning: false })).rejects.toThrow('客户没同意关掉它')
+
+    const agreed = macUpdateFixture()
+    agreed.open()
+    await expect(agreed.runtime.install('opencode', undefined, { update: true, closeRunning: true })).resolves.toMatchObject({ version: '1.18.34' })
+    const listing = agreed.execute.mock.calls.find(([spec]) => spec.executable === '/bin/ps' && spec.argv.includes('pid=,uid=,comm='))
+    expect(listing?.[0]).toEqual({ executable: '/bin/ps', argv: ['-axo', 'pid=,uid=,comm='] })
+    expect(listing?.[1]?.trustedOnly).toBe(false)
+  })
+  it('says so when the update found nothing newer to put in', async () => {
+    const progress: string[] = []
+    const f = macUpdateFixture({ installMacosDesktopApp: async () => ({ version: '1.18.30', path: '/Applications/OpenCode.app', unchanged: true }) })
+    await f.runtime.install('opencode', (event) => progress.push(event.message), { update: true, closeRunning: false })
+    expect(progress.at(-1)).toBe('OpenCode 已经是最新版，不用更新')
+  })
   it('validates installed bundles with Gatekeeper and the verified WorkBuddy team, then launches through open', async () => {
     const f = macFixture()
     expect((await f.runtime.scan())[0]).toMatchObject({ installed: true, version: '5.5.6', running: true, installSupported: false, launchSupported: true })

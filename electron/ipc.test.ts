@@ -3353,6 +3353,34 @@ describe('registerIpcHandlers', () => {
     expect(service.switchExternalClientSource).toHaveBeenCalledOnce()
   })
 
+  it('passes only a well-formed Mac update request on to the desktop installs', async () => {
+    const service = serviceStub()
+    register(service)
+    const event = trustedEvent()
+    const request = { update: true, closeRunning: true }
+    await electronMocks.handlers.get('external-clients:install')!(event, 'opencode', request)
+    expect(service.installExternalClient).toHaveBeenLastCalledWith('opencode', event.sender, request)
+    await electronMocks.handlers.get('desktop:install-codex')!(event, { update: true, closeRunning: false })
+    expect(service.installCodexDesktop).toHaveBeenLastCalledWith(event.sender, { update: true, closeRunning: false })
+    const malformed = [null, 'update', ['update'], {}, { update: false, closeRunning: true }, { update: true }, { update: true, closeRunning: 'yes' }, { update: true, closeRunning: true, path: '/Applications/Other.app' }]
+    for (const input of malformed) {
+      expect(() => electronMocks.handlers.get('external-clients:install')!(event, 'opencode', input)).toThrow('更新参数格式错误')
+      expect(() => electronMocks.handlers.get('desktop:install-codex')!(event, input)).toThrow('更新参数格式错误')
+    }
+    expect(service.installExternalClient).toHaveBeenCalledOnce()
+    expect(service.installCodexDesktop).toHaveBeenCalledOnce()
+  })
+
+  it('opens the App Management settings only where the host knows how', async () => {
+    register()
+    await expect(electronMocks.handlers.get('desktop:open-app-management-settings')!(trustedEvent())).resolves.toBe(false)
+    const openAppManagementSettings = vi.fn(async () => true)
+    register(undefined, undefined, undefined, undefined, undefined, undefined, {}, { openAppManagementSettings })
+    await expect(electronMocks.handlers.get('desktop:open-app-management-settings')!(trustedEvent())).resolves.toBe(true)
+    expect(openAppManagementSettings).toHaveBeenCalledOnce()
+    expect(() => electronMocks.handlers.get('desktop:open-app-management-settings')!(trustedEvent('https://untrusted.example/'))).toThrow('已拒绝')
+  })
+
   it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {
     const service = serviceStub()
     register(service)

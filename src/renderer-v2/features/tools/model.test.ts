@@ -498,6 +498,11 @@ describe('renderer update offer for the start guide', () => {
     expect(toolUpdateOffer(row({ id: 'codexDesktop', versionAdvice: null, updateAvailable: false }))).toBeNull()
   })
 
+  it('names the version on a Mac, where the desktop app updates to exactly the bucket build', () => {
+    expect(toolUpdateOffer({ ...row({ id: 'codexDesktop', versionAdvice: null, latestVersion: '26.1003.2' }), updateTargetExact: true }))
+      .toEqual({ version: null, target: '26.1003.2', newer: true, knownIssue: false, manualHint: null })
+  })
+
   it('flags a known-problem version even when the recommended one is older', () => {
     const blocked = { ...pinnedOld, blockedReason: '每次请求都 400', pinned: false, recommendedIsNewer: undefined }
     expect(toolUpdateOffer(row({ versionAdvice: blocked }))).toEqual({ version: '2.1.277', target: '2.1.277', newer: false, knownIssue: true, manualHint: null })

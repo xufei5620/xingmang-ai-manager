@@ -56,8 +56,22 @@ import {
   noCodexDesktopStartupRoute,
   type CodexDesktopStartupRoute,
 } from './codex-desktop-startup-route'
-import { installMacosDesktopApp, MacosDesktopInstallError, type MacosDesktopArchitecture } from './macos-desktop-app-installer'
-import { macosDesktopInstallFailedMessage } from './macos-desktop-install-failure'
+import type { DesktopAppUpdateRequest } from './external-client-contract'
+import {
+  buildMacosDesktopUpdateOffer,
+  type MacosDesktopLatestVersionLookup,
+  type MacosDesktopReplacementOptions,
+  prepareMacosDesktopReplacement,
+  withinMacosDesktopLatestVersionBudget,
+} from './macos-desktop-app-update'
+import {
+  compareMacosDesktopVersions,
+  installMacosDesktopApp,
+  MacosDesktopInstallError,
+  type MacosDesktopAppProcess,
+  type MacosDesktopArchitecture,
+} from './macos-desktop-app-installer'
+import { macosDesktopInstallFailedMessage, macosDesktopUpdateFailedMessage } from './macos-desktop-install-failure'
 import { resolveSystemWingetExecutable, type SystemWingetResolution } from './node-runtime'
 import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
@@ -87,6 +101,7 @@ import type {
   ToolUninstallResult,
   UpdateCheckStatus,
   UpdateSource,
+  UpdateState,
   VersionUpdateStatus,
 } from './system-service'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -2505,6 +2520,32 @@ export function buildCodexDesktopDarwinStatus(
 }
 
 /**
+ * Mac 上把星芒存储桶里的最新版接到 Codex 桌面端那一行（yoyo 2026-10-27「桌面端更新改」）。首页按
+ * updateState 'available' + mirrorUpdateAvailable true 出「可更新到 v…」（codexDesktopUpdateKind 的
+ * installable），所以只有星芒换得了的那份才标 available：比桶里新或一样标 latest，其余（不在「应用程序」里、
+ * 版本读不出、比不了）照旧当不知道，不提醒。
+ */
+export function withCodexDesktopDarwinUpdate(status: DesktopAppStatus, latestVersion: string | null, userHome: string): DesktopAppStatus {
+  if (!status.installed || !latestVersion) return status
+  const offer = buildMacosDesktopUpdateOffer('codexDesktop', { path: status.path, version: status.version }, latestVersion, userHome)
+  const comparison = status.version ? compareMacosDesktopVersions(latestVersion, status.version) : null
+  const updateState: UpdateState = offer.updateAvailable ? 'available' : comparison === 0 || comparison === -1 ? 'latest' : 'unknown'
+  return {
+    ...status,
+    mirrorVersion: latestVersion,
+    mirrorUpdateAvailable: offer.updateAvailable,
+    latestVersion,
+    updateAvailable: updateState === 'unknown' ? null : offer.updateAvailable,
+    // 桶里那份是同步作业从官方更新源拉下来、核过签名的，版本就是官方那一版。
+    updateSource: 'official-manifest',
+    updateCheck: 'checked',
+    updateState,
+    updateCheckedAt: new Date().toISOString(),
+    updateError: null,
+  }
+}
+
+/**
  * 从星芒打开 Codex 后没换成中文时右下角那一句（中文通道没开起来，或开了没核对上）。以前把
  * 底层原话拼在中间（「…未找到可注入的页面：The operation was aborted due to timeout」），客户
  * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
@@ -2587,6 +2628,10 @@ export interface CodexDesktopServiceOptions {
   getuid?: () => number
   /** Mac 上按哪种芯片挑安装包；缺省 = process.arch，测试换成假的。 */
   architecture?: NodeJS.Architecture
+  /** Mac 上读存储桶里的最新版，给首页「可更新到 v…」用。缺省 = 不查（Windows、测试与旧调用方照旧）。 */
+  latestMacosDesktopVersions?: MacosDesktopLatestVersionLookup
+  /** Mac 上更新前请开着的 Codex 退出那一段的测试接缝；缺省按真实进程和时间。 */
+  quitMacosDesktopApp?: Pick<MacosDesktopReplacementOptions, 'kill' | 'wait' | 'now'>
   /**
    * Optional seams used by tests; production uses the constrained CDP module,
    * with the CDP activation wrapped only to log why it failed.
@@ -2615,7 +2660,8 @@ export interface CodexDesktopLaunchOptions {
 export interface CodexDesktopService {
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
-  installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
+  /** request 只有 Mac 上首页「可更新到 v…」那一下才传：换掉装着的那一份。缺省 = 安装（旧行为）。 */
+  installCodexDesktop(target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<CodexDesktopInstallResult>
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall(): InstallCancellationOutcome
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
@@ -2682,6 +2728,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     userHome = os.homedir(),
     getuid = () => process.getuid?.() ?? -1,
     architecture: processArchitecture = process.arch,
+    latestMacosDesktopVersions,
+    quitMacosDesktopApp,
     resolveStoreInstaller = resolveSystemWingetExecutable,
     bucketDownloads,
     inspectStoreAvailability = (signal?: AbortSignal) => inspectWindowsStoreAvailability(signal ? { signal } : {}),
@@ -2691,6 +2739,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     injectCodexDesktopChineseLocale = injectCodexDesktopChineseLocaleDefault,
   } = options
   let codexDesktopInstalling = false
+  let macosInstallArchitecture: Promise<MacosDesktopArchitecture> | null = null
   const installCancellations = new InstallCancellationRegistry()
   let codexDesktopManifestCache: {
     expiresAt: number
@@ -2802,7 +2851,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // scan, but it also must not silently read as "not installed" — see
       // buildCodexDesktopDarwinStatus.
       const [result] = await Promise.allSettled([detectMacosCodexApp()])
-      return buildCodexDesktopDarwinStatus(result)
+      const status = buildCodexDesktopDarwinStatus(result)
+      if (!status.installed || !latestMacosDesktopVersions) return status
+      const lookup = latestMacosDesktopVersions
+      const latestVersion = await withinMacosDesktopLatestVersionBudget(resolveMacosInstallArchitecture()
+        .then((architecture) => lookup.latest('codexDesktop', architecture)))
+      return withCodexDesktopDarwinUpdate(status, latestVersion, userHome)
     }
     if (platform !== 'win32') {
       // Linux 上本来就没有 Codex 桌面端，不查是常态、不是出错。以前这里带着一句
@@ -3225,10 +3279,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   async function installCodexDesktopOperation(
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
+    request?: DesktopAppUpdateRequest,
   ): Promise<CodexDesktopInstallResult> {
     const attempt: CodexDesktopInstallAttempt = { storeFailure: null, storeExitCode: null, updating: false }
     try {
-      return await installCodexDesktopFromSources(target, attempt, cancellation)
+      return await installCodexDesktopFromSources(target, attempt, cancellation, request)
     } catch (error) {
       if (isInstallCancelledError(error) || cancellation?.cancelled === true) throw error
       if (platform === 'darwin') throw toCodexDesktopMacInstallFailure(error)
@@ -3241,6 +3296,15 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
    * arm64 那个包：那才是给这台机器的（x64 那个还声明了 LSRequiresNativeExecution）。
    */
   async function resolveMacosInstallArchitecture(): Promise<MacosDesktopArchitecture> {
+    // 芯片不会变：首页每轮检测都要按它查桶里的最新版，只问一次 sysctl。
+    if (!macosInstallArchitecture) {
+      macosInstallArchitecture = probeMacosInstallArchitecture()
+      macosInstallArchitecture.catch(() => { macosInstallArchitecture = null })
+    }
+    return macosInstallArchitecture
+  }
+
+  async function probeMacosInstallArchitecture(): Promise<MacosDesktopArchitecture> {
     if (processArchitecture === 'arm64') return 'arm64'
     if (processArchitecture !== 'x64') {
       throw new MacosDesktopInstallError(macosDesktopInstallFailedMessage('Codex 桌面端'), `不认识的处理器架构 ${processArchitecture}`)
@@ -3261,6 +3325,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   async function installCodexDesktopOnMac(
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
+    request?: DesktopAppUpdateRequest,
   ): Promise<CodexDesktopInstallResult> {
     let current = await detectMacosCodexApp().catch(() => null)
     // 检测没做完（深度核对签名超时、某条命令没起来，或者检测本身出错）不等于没装。照「没装」往下走的话，
@@ -3273,6 +3338,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       cancellation?.throwIfCancelled()
       current = await detectMacosCodexApp().catch(() => null)
     }
+    if (current?.app && request?.update) return updateCodexDesktopOnMac(target, current.app, request, cancellation)
     if (current?.app) {
       sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经装好了，不用重复安装' })
       return { action: 'unchanged', previousVersion: current.app.version, installedVersion: current.app.version }
@@ -3321,16 +3387,80 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     return { action: 'installed', previousVersion: null, installedVersion: installed.version }
   }
 
+  /**
+   * 首页「可更新到 v…」：从桶里（桶不行走官方）下新版、核签名，核过装着的是官方原版，再换掉它。开着的
+   * 那份只有客户点过「关掉并更新」才请它退出（prepareMacosDesktopReplacement）。重新打开交给界面：
+   * 星芒关掉的才帮它开，走首页同一个「打开」。
+   */
+  async function updateCodexDesktopOnMac(
+    target: RendererMessageTarget,
+    app: { path: string; version: string | null },
+    request: DesktopAppUpdateRequest,
+    cancellation?: InstallCancellationHandle,
+  ): Promise<CodexDesktopInstallResult> {
+    if (getuid() === 0) throw new MacosDesktopInstallError(codexDesktopMacRootMessage, '工具箱以 root 身份运行')
+    if (!app.version) throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, `读不出 ${app.path} 的版本号`)
+    const installedVersion = app.version
+    const architecture = await resolveMacosInstallArchitecture()
+    cancellation?.throwIfCancelled()
+    const signal = cancellation?.signal
+    function runProcess(plan: MacosDesktopAppProcess) {
+      return executeCommand({ executable: plan.executable, argv: [...plan.argv] }, {
+        env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: plan.timeoutMs, maxOutputBytes: 2 * 1024 * 1024,
+        ...(signal ? { signal } : {}),
+      })
+    }
+    const updated = await installMacosApp({
+      tool: 'codexDesktop',
+      architecture,
+      userHome,
+      environment: process.env,
+      fetch: downloadFetch,
+      runProcess,
+      onProgress: (event) => sendCodexDesktopInstallProgress(target, {
+        phase: event.phase === 'checking' ? 'validating' : event.phase,
+        percent: event.percent,
+        message: event.message,
+      }),
+      ...(signal ? { signal } : {}),
+      ...(bucketDownloads ? { bucket: bucketDownloads } : {}),
+      withVendorDownloadRoute: withDownloadRoute,
+      replace: {
+        installedPath: app.path,
+        installedVersion,
+        beforeReplace: () => prepareMacosDesktopReplacement({
+          bundle: app.path,
+          name: 'Codex 桌面端',
+          closeRunning: request.closeRunning,
+          runProcess,
+          uid: getuid(),
+          ...quitMacosDesktopApp,
+        }),
+      },
+    }).catch((error: unknown) => {
+      // 安装模块已经把更新没成说成「旧版还在」那几句；别的（没从它那儿出来的）同样没动旧版，不说成「没装好」。
+      if (error instanceof MacosDesktopInstallError || isInstallCancelledError(error) || cancellation?.cancelled === true) throw error
+      throw new MacosDesktopInstallError(macosDesktopUpdateFailedMessage, error instanceof Error ? error.message : String(error), error)
+    })
+    if (updated.unchanged) {
+      sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: 'Codex 桌面端已经是最新版，不用更新' })
+      return { action: 'unchanged', previousVersion: installedVersion, installedVersion }
+    }
+    sendCodexDesktopInstallProgress(target, { phase: 'completed', percent: 100, message: `Codex 桌面端已更新到 v${updated.version}` })
+    return { action: 'updated', previousVersion: installedVersion, installedVersion: updated.version }
+  }
+
   async function installCodexDesktopFromSources(
     target: RendererMessageTarget,
     attempt: CodexDesktopInstallAttempt,
     cancellation?: InstallCancellationHandle,
+    request?: DesktopAppUpdateRequest,
   ): Promise<CodexDesktopInstallResult> {
     // 排队等待期间点的取消在这里生效：一个字节都不用下。
     cancellation?.throwIfCancelled()
     // 安装包有几百兆，磁盘快满时下到一半才失败最难受；读不到空间照常放行。
     await assertInstallDiskSpace?.('Codex 桌面端安装失败')
-    if (platform === 'darwin') return installCodexDesktopOnMac(target, cancellation)
+    if (platform === 'darwin') return installCodexDesktopOnMac(target, cancellation, request)
     if (platform !== 'win32') throw new Error('Codex 桌面端安装目前仅支持 Windows')
     const architecture = process.arch === 'x64' || process.arch === 'arm64'
       ? process.arch
@@ -3591,11 +3721,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   async function installCodexDesktopOperationWithProgress(
     target: RendererMessageTarget,
     cancellation?: InstallCancellationHandle,
+    request?: DesktopAppUpdateRequest,
   ): Promise<CodexDesktopInstallResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装或更新，请勿重复操作')
     codexDesktopInstalling = true
     try {
-      return await installCodexDesktopOperation(target, cancellation)
+      return await installCodexDesktopOperation(target, cancellation, request)
     } catch (error) {
       // 取消是用户自己按的，不是安装失败：换成统一的中文文案，免得界面像出了故障。
       if (isInstallCancelledError(error) || cancellation?.cancelled === true) {
@@ -3613,13 +3744,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   function installCodexDesktop(
     target: RendererMessageTarget,
+    request?: DesktopAppUpdateRequest,
   ): Promise<CodexDesktopInstallResult> {
     // 重复点击复用队列里的同一个 Promise，所以这里也不能再开一个取消句柄：
     // 后点的那次会把前一次的句柄挤掉，取消按钮就再也找不到正在跑的安装。
     if (installCancellations.has(codexDesktopInstallKey)) {
       return installationQueue.enqueue(
         codexDesktopInstallKey,
-        () => installCodexDesktopOperationWithProgress(target),
+        () => installCodexDesktopOperationWithProgress(target, undefined, request),
       )
     }
     // 句柄在入队之前登记：排在别的安装后面等待时也要能取消。
@@ -3629,7 +3761,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       codexDesktopInstallKey,
       () => {
         started = true
-        return installCodexDesktopOperationWithProgress(target, cancellation)
+        return installCodexDesktopOperationWithProgress(target, cancellation, request)
       },
       { signal: cancellation.signal },
     ).catch((error: unknown) => {

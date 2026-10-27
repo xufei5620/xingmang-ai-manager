@@ -1,9 +1,11 @@
+import type { ExternalClientStatus, ExternalToolId } from '../../../../electron/ipc-contract'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
+import { externalUpdateTarget } from './desktop-update'
 import { updatesOutsideApp, type ToolId, type ToolPresentation } from './model'
 
-/** 一个待更新的工具，以及这次要更到的版本。 */
+/** 一个待更新的工具（Mac 上还有 Claude Desktop、OpenCode），以及这次要更到的版本。 */
 export interface ToolUpdateEntry {
-  id: ToolId
+  id: ToolId | ExternalToolId
   /** 目标版本；这次没探到版本号时是 unknown。 */
   version: string
 }
@@ -33,6 +35,17 @@ export function pendingToolUpdates(tools: readonly ToolPresentation[]): ToolUpda
  */
 export function inAppToolUpdates(tools: readonly ToolPresentation[]): ToolUpdateEntry[] {
   return pendingToolUpdates(tools.filter((tool) => !updatesOutsideApp(tool.id, tool.status)))
+}
+
+/**
+ * Mac 上 Claude Desktop、OpenCode 那一行出了「可更新到 v…」的（yoyo 2026-10-27「桌面端更新改」）：「N 个有更新」和
+ * 「工具有新版本」通知都算上它们，同命令行工具。只有星芒换得了的才会出那一行，所以两处都算。
+ */
+export function pendingExternalUpdates(clients: readonly ExternalClientStatus[]): ToolUpdateEntry[] {
+  return clients.flatMap((client) => {
+    const version = externalUpdateTarget(client)
+    return version ? [{ id: client.tool, version }] : []
+  })
 }
 
 /**

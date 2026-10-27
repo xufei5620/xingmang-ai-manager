@@ -6,6 +6,7 @@ import { presentTools, type ToolboxSnapshot } from './model'
 import type { ToolsApi } from './api'
 import {
   inAppToolUpdates,
+  pendingExternalUpdates,
   pendingToolUpdates,
   readAnnouncedToolUpdates,
   rememberAnnouncedToolUpdates,
@@ -191,5 +192,26 @@ describe('renderer-v2 CLI update reminder suppression', () => {
     storage.setItem('xingmang-v2-cli-update-notice', '{not json')
     globalWithStorage.localStorage = storage
     expect(readAnnouncedToolUpdates()).toEqual({})
+  })
+})
+
+describe('renderer-v2 pending Mac desktop client updates', () => {
+  const client = {
+    tool: 'claudeDesktop', installed: true, version: '3.6500.0', path: '/Applications/Claude.app', installDirectory: '/Applications', running: false,
+    installSupported: true, launchSupported: true, detectionError: null, installHint: null,
+    configured: true, model: null, configurationSource: 'xingmang', configurationError: null,
+    latestVersion: '3.6556.2', updateAvailable: true,
+  } as HomeProps['externalClients'][number]
+
+  it('counts a client only when the main process says Xingmang can update it', () => {
+    expect(pendingExternalUpdates([client])).toEqual([{ id: 'claudeDesktop', version: '3.6556.2' }])
+    expect(pendingExternalUpdates([{ ...client, updateAvailable: false }])).toEqual([])
+    expect(pendingExternalUpdates([{ ...client, updateAvailable: undefined }])).toEqual([])
+    expect(pendingExternalUpdates([{ ...client, installed: false }])).toEqual([])
+    expect(pendingExternalUpdates([{ ...client, latestVersion: null }])).toEqual([])
+  })
+
+  it('keys the reminder by client and version like the command-line tools', () => {
+    expect(updateNoticeKey(pendingExternalUpdates([client]))).toBe('cli-update:claudeDesktop.3.6556.2')
   })
 })

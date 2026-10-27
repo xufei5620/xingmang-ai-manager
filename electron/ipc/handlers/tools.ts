@@ -1,6 +1,7 @@
 // 主窗口业务通道的处理器：Node.js、Python、Git 和命令行工具、Codex 桌面端的安装、卸载、更新与状态。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { cliCatalog, isActiveProviderId } from '../../catalog'
+import { parseDesktopAppUpdateRequest } from '../../external-client-contract'
 import { isInstallCancelledError } from '../../install-cancellation'
 import { parseNodeRuntimeInstallRequest } from '../parsers/system'
 import { parseCliInstallVersion, parseCliUninstallOptions, parseCodexDesktopLocale } from '../parsers/tools'
@@ -126,7 +127,11 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
     return service.inspectCliUpdate(provider, true)
   })
   registerTrustedHandler('setup:codex-status', () => service.inspectCodexSetupStatus())
-  registerTrustedHandler('desktop:install-codex', (event) => service.installCodexDesktop(event.sender))
+  registerTrustedHandler('desktop:install-codex', (event, request: unknown) => {
+    const update = parseDesktopAppUpdateRequest(request)
+    return update ? service.installCodexDesktop(event.sender, update) : service.installCodexDesktop(event.sender)
+  })
+  registerTrustedHandler('desktop:open-app-management-settings', async () => await options.openAppManagementSettings?.() ?? false)
   registerTrustedHandler('desktop:cancel-install-codex', () => {
     const outcome = service.cancelCodexDesktopInstall()
     options.runtimeLog.log('info', 'maintenance', 'desktop.codex.install.cancel-requested', '收到取消 Codex 桌面端安装的请求', {

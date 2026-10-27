@@ -13,7 +13,9 @@ import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { type ExternalClientCheckResult, runExternalClientCheck } from './external-client-connection'
 import {
+  type DesktopAppUpdateRequest,
   type ExternalClientConfigResult,
+  type ExternalClientInstallProgress,
   externalClientNames,
   type ExternalClientRuntimeStatus,
   type ExternalClientSourceSwitchResult,
@@ -102,7 +104,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   const {
     serviceOptions, windowsExecutionMode, platform, providerRoots, runtimeLog, externalOwnership, relayRouting,
     activeRelaySite, inspectNativeProviderConfig, executeCommand, downloadFetch, installationQueue,
-    desktopBucketDownloads, assertInstallDiskSpace, withDownloadAcceleration, credentialFailureReason, toolRouteNow,
+    desktopBucketDownloads, latestMacosDesktopVersions, assertInstallDiskSpace, withDownloadAcceleration, credentialFailureReason, toolRouteNow,
     scheduleToolRouteTimer,
   } = context
   const {
@@ -117,6 +119,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     fetch: downloadFetch,
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
+    ...(latestMacosDesktopVersions ? { latestMacosDesktopVersions } : {}),
     assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
     // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
@@ -287,12 +290,13 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   function getLastExternalClients(): ExternalClientStatus[] | null {
     return latestExternalClients
   }
-  async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus> {
-    const status = await externalClientRuntime.install(tool, (event) => {
+  async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus> {
+    function forward(event: ExternalClientInstallProgress) {
       if (!target.isDestroyed()) {
         try { target.send('external-clients:install-progress', event) } catch { /* Installation continues if the renderer exits. */ }
       }
-    })
+    }
+    const status = await (request ? externalClientRuntime.install(tool, forward, request) : externalClientRuntime.install(tool, forward))
     const described = await describeExternalClient(status)
     // 就地替换而不是追加：这份快照的顺序就是反馈报告与界面读到的顺序。
     latestExternalClients = latestExternalClients?.some((entry) => entry.tool === tool)

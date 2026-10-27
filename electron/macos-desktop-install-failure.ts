@@ -69,3 +69,23 @@ export function isMacosDesktopInstallFailure(message: string): boolean {
     || message.includes(macosLegacyChatgptMessage)
     || message.includes('没装好，请再点一次「安装」')
 }
+
+/**
+ * 更新没成时的那句话（yoyo 2026-10-27「桌面端更新改」）。只在旧版确实原样留在「应用程序」里时说：
+ * 下载、核对、关掉它、换上去哪一步没过，旧版都没动或者已经挪回原处。原因原话挂在 detail 上。
+ */
+export const macosDesktopUpdateFailedMessage = '没更新成，旧版还在，照常能用。'
+
+/**
+ * macOS 13 起的「App 管理」权限拦住了星芒去换别家的应用（挪不动旧版，系统回 EPERM）。界面认出这一句，
+ * 换成那个带「去打开」的框（同上，yoyo 2026-10-27 批的字）。
+ */
+export const macosDesktopAppManagementBlockedMessage = 'Mac 的安全设置拦住了这次更新，旧版还在，照常能用。'
+
+export function isMacosDesktopAppManagementBlocked(message: string): boolean {
+  return message.includes(macosDesktopAppManagementBlockedMessage)
+}
+
+export function isMacosDesktopUpdateFailure(message: string): boolean {
+  return message.includes(macosDesktopUpdateFailedMessage)
+}

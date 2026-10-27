@@ -87,6 +87,8 @@ import { usePageRestore, useRendererActivityReport } from './features/app/useRen
 import { useBackgroundWork } from './background-work'
 import { useToolAccountActions } from './features/tools/useToolAccountActions'
 import { useToolLaunch } from './features/tools/useToolLaunch'
+import { useDesktopAppUpdate } from './features/tools/useDesktopAppUpdate'
+import { isMacDesktopUpdate } from './features/tools/desktop-update'
 import { useToolInstall } from './features/tools/useToolInstall'
 import { jobToolName } from './features/tools/tool-jobs'
 import { resolveToolKeySyncFailure } from './features/tools/key-sync-failure'
@@ -281,6 +283,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     app, toolsApi, toolbox, toast, perform, platform, session, scope, latestScope, offline, offlineNow, mounted, accountEpoch,
     runAccountBootstrap, refreshRecent, navigate, setAuth, setConfirmation, setOperationError, setExternalClient,
   })
+  // Mac 上桌面端的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）：星芒关掉的那一份更新完走首页同一个「打开」。
+  const { desktopUpdateTargets, desktopUpdateFailures, requestDesktopUpdate, showDesktopUpdateFailure } = useDesktopAppUpdate({
+    toolsApi, toolbox, toast, offline, mounted, accountEpoch, setConfirmation, setOperationError,
+    reopen: (tool) => { if (tool === 'codexDesktop') requestLaunch('codexDesktop'); else void perform('打开客户端', () => launchExternal(tool)) },
+  })
   const { openCodexDesktopStore, runOperationAction, runGuideFailureAction } = useFailureActions({
     app, toolsApi, toast, perform, navigate, operationError, setOperationError, rewriteAccountKeys, install, snapshot: toolbox.snapshot,
     setConfirmation, setNodeReplace, setAuth, setHelp,
@@ -308,7 +315,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     runtimeAutoPrepare: platform?.nodeRuntimeInstall === 'managed',
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
     officialLoginRequired: guideOfficialLoginRequired(tool.provider, guideSource(tool.source), toolbox.snapshot!.config.providers[tool.provider]),
-    update: toolUpdateOffer(tool),
+    // Mac 上 Codex 桌面端的更新要先看开没开着、换完再帮它打开，引导里那颗「更新」走不了这一套：只在首页卡片上给。
+    update: tool.id === 'codexDesktop' && toolbox.snapshot!.platform.isMac ? null : toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
@@ -316,7 +324,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // 装完自动写密钥没写成：引导第 3 步说首页横幅那句、给「重新同步」，不叫客户自己去配（主路卡点 F14）。
     keySyncFailure: resolveToolKeySyncFailure(accountBootstrap?.scope === scope ? accountBootstrap : null, tool.provider, tool.id) ?? undefined,
   })) : []
-  const toolUpdates = useToolUpdateNotice(toolbox.snapshot)
+  // Mac 上客户端那一轮真检测回来之前（还没有、或只有开机先摆的上次结果），「工具有新版本」先不发。
+  const shownUpdateClients = visibleExternalClients(os, toolbox.externalClients)
+  const externalUpdatesPending = toolbox.snapshot?.platform.isMac === true && !toolbox.externalError
+    && (shownUpdateClients.length === 0 || shownUpdateClients.some((client) => client.cachedAt !== undefined))
+  const toolUpdates = useToolUpdateNotice(toolbox.snapshot, shownUpdateClients, externalUpdatesPending)
   const { balanceAmount, runway, accountSummary } = useBalanceWatch({ toolsApi, session, scope, balanceState, subscription })
   // 顶部搜索的「工具」组，按首页卡片的顺序；还没检测完时不列。
   const presentedTools = toolbox.snapshot ? presentTools(toolbox.snapshot) : []
@@ -447,7 +459,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               onScan={() => {
                 setRescanBefore(rescanFingerprint(toolbox.snapshot, toolbox.externalClients))
                 refreshRecent(); void toolbox.refresh(true, { recheckRoutes: true }).catch(() => undefined); void toolbox.refreshExternal(true).catch(() => undefined)
-              }} onInstall={installFromHome} installIntents={installIntents} installFailures={installFailures}
+              }} onInstall={(id, version, intent) => {
+                if (isMacDesktopUpdate(toolbox.snapshot, id, intent) && version) { void requestDesktopUpdate(id, version); return }
+                installFromHome(id, version, intent)
+              }} installIntents={installIntents} installFailures={installFailures}
+              onUpdateDesktopApp={(id, version) => void requestDesktopUpdate(id, version)} desktopUpdateTargets={desktopUpdateTargets}
+              desktopUpdateFailures={desktopUpdateFailures} onShowDesktopUpdateFailure={showDesktopUpdateFailure}
               onShowInstallFailure={(id) => { const failure = installFailures[id]?.failure; if (failure) setOperationError(failure) }}
               restart={toolsApi.restartWindows} onNoticeSlot={setHomeNoticeSlot} onNoticeRoom={setHomeNoticeRoom}
               onCancelInstall={(id) => void perform('取消安装', () => cancelHomeInstall(id))} onLaunch={requestLaunch} onLaunchInNewFolder={(id, firstOpen) => requestLaunch(id, undefined, 'new', firstOpen ? 'firstOpen' : 'create')} onConfigure={openToolConfig} onUninstall={requestUninstall} onRevert={requestRevert}
@@ -633,7 +650,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
     {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}
     {managedSwitch && <Confirm {...managedSwitchConfirmation(managedSwitch.version)} testId="managed-switch-confirm" onOk={() => managedSwitch.answer(true)} onClose={() => managedSwitch.answer(false)} />}
-    {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => runConfirmed(confirmation)} />}
+    {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} cancelLabel={confirmation.cancelLabel} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => runConfirmed(confirmation)} />}
   </BalanceTierProvider></OnlineStatusContext.Provider></AccountBalanceContext.Provider>
 }
 
