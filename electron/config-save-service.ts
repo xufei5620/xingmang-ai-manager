@@ -7,7 +7,7 @@
 // 这里只 import system-service.ts 的类型。
 import fs from 'node:fs'
 import os from 'node:os'
-import type { SeededToolDefault } from './app-settings'
+import { offeredModelUpgradeKey, type SeededToolDefault } from './app-settings'
 import { activeProviderIds, type ProviderId, providerIds } from './catalog'
 import { type CcSwitchLeftover, inspectCcSwitchInstalled, resolveCcSwitchLeftover } from './cc-switch-leftover'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
@@ -1086,9 +1086,9 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     refreshPicker: (provider, model, assertCurrent) => refreshToolPicker(provider, model, assertCurrent),
     replaceModel: (provider, from, to, assertCurrent) => replaceToolModel(provider, from, to, assertCurrent),
     ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
-    upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
+    upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(offeredModelUpgradeKey(provider, model)),
     markUpgradeOffered: async (provider, model) => {
-      await store.update({ version: 2, offeredModelUpgrades: [`${provider}:${model}`] })
+      await store.update({ version: 2, offeredModelUpgrades: [offeredModelUpgradeKey(provider, model)] })
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })
