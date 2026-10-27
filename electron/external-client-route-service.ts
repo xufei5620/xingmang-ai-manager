@@ -93,10 +93,10 @@ function sameRouteUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
 }
 
-/** 外部客户端要用、但归别处管的那一样，由 createSystemService 传进来。 */
-// 保存 Claude Desktop 配置时试一个型号最多等多久。试的那几个不通只是菜单里少一个，不值得让保存卡上二十秒。
+// 保存 Claude Desktop 配置时试一个型号最多等多久。试的那几个不通只是菜单里少一个，不值得照自检默认的 20 秒等。
 const claudeDesktopModelProbeTimeoutMs = 8_000
 
+/** 外部客户端要用、但归别处管的那一样，由 createSystemService 传进来。 */
 export interface ExternalClientRouteServiceDependencies {
   /** 查这把密钥在当前站能用哪些型号（带缓存；保存配置前要绕过缓存现查）。 */
   fetchAvailableModels: (
