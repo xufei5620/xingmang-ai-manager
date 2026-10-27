@@ -262,6 +262,30 @@ function canWriteAsCurrentUser(target: string): boolean {
   }
 }
 
+/** 同一种装法多久不重算一次「装的时候弹不弹窗口」。 */
+export const UNATTENDED_INSTALL_MEMO_MS = 60 * 1_000
+
+/**
+ * 跳框器每两秒问一次能不能闲时装（update-install-prompt.ts），每问一次都要解一次符号链接、试两处
+ * 能不能写，全是同步读盘（0.2.22 性能体检）。程序包的位置和权限一次运行里几乎不变，所以同一种装法
+ * 一分钟内只算一次；装法是下载完才知道的，换了就重算。
+ */
+export function memoizeUnattendedInstall(
+  compute: (installMethod: UpdateInstallMethod | null | undefined) => boolean,
+  options: { now?: () => number; ttlMs?: number } = {},
+): (installMethod: UpdateInstallMethod | null | undefined) => boolean {
+  const now = options.now ?? Date.now
+  const ttlMs = options.ttlMs ?? UNATTENDED_INSTALL_MEMO_MS
+  let memo: { installMethod: UpdateInstallMethod | null | undefined; value: boolean; at: number } | null = null
+  return (installMethod) => {
+    const at = now()
+    if (memo && memo.installMethod === installMethod && at - memo.at < ttlMs) return memo.value
+    const value = compute(installMethod)
+    memo = { installMethod, value, at }
+    return value
+  }
+}
+
 /**
  * 这次启动是不是后台装新版后、安装器把它重新拉起的那一次。是的话照开机自启那样待在后台，
  * 装之前它就待在后台。Mac 的安装器装没装成都会重新拉起（ShipIt-main.m：Launch regardless

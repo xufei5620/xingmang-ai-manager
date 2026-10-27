@@ -97,7 +97,7 @@ describe('balance alerts', () => {
 })
 
 describe('empty balance notice', () => {
-  function emptyFixture(claimed = new Set<string>()) {
+  function emptyFixture(claimed = new Set<string>(), looking = { value: false }) {
     const notify = vi.fn()
     const emptyRecord: EmptyBalanceRecord = {
       async claim(account) {
@@ -113,6 +113,7 @@ describe('empty balance notice', () => {
       readNotifiedAt: () => null,
       rememberNotifiedAt: () => undefined,
       emptyRecord,
+      holdEmptyNotice: () => looking.value,
     })
     let at = 1_000_000_000
     async function see(balance: number, overrides: Partial<BalanceAlertObservation> = {}) {
@@ -185,6 +186,45 @@ describe('empty balance notice', () => {
     await h.see(0)
     await h.see(0, { scope: 'solov:8', userId: 8 })
     expect(h.notify.mock.calls.map(([, key]) => key)).toEqual([`balance-empty:7:${h.now() - minute}`, `balance-empty:8:${h.now()}`])
+  })
+
+  it('holds the empty notice while the customer is looking at 星芒 and sends it on a later reading', async () => {
+    const looking = { value: true }
+    const h = emptyFixture(new Set(), looking)
+    // A new account is empty from the start; the guide and the home page already say so on screen.
+    await h.see(0)
+    await h.see(0)
+    expect(h.notify).not.toHaveBeenCalled()
+    expect(h.claimed.has('solov:7')).toBe(false)
+    looking.value = false
+    await h.see(0)
+    expect(h.notify.mock.calls).toEqual([['balance', `balance-empty:7:${h.now()}`]])
+  })
+
+  it('does not fall back to the low-balance notice while the empty notice is held', async () => {
+    const looking = { value: false }
+    const h = emptyFixture(new Set(), looking)
+    await h.see(6)
+    looking.value = true
+    await h.see(0)
+    expect(h.notify).not.toHaveBeenCalled()
+    looking.value = false
+    await h.see(0)
+    expect(h.notify.mock.calls).toEqual([['balance', `balance-empty:7:${h.now()}`]])
+  })
+
+  it('sends the empty notice when it cannot tell whether the customer is looking', async () => {
+    const notify = vi.fn()
+    const alerts = createBalanceAlerts({
+      notify,
+      readBaseline: vi.fn(async () => ({ hourQuota: 0, weekQuota: 0 })),
+      readNotifiedAt: () => null,
+      rememberNotifiedAt: () => undefined,
+      emptyRecord: { claim: async () => true, release: async () => undefined },
+      holdEmptyNotice: () => { throw new Error('window state unavailable') },
+    })
+    await alerts.observe({ scope: 'solov:7', userId: 7, quota: 0, quotaPerUnit: unit, at: 5, supportsUsage: false, subscribed: false })
+    expect(notify.mock.calls).toEqual([['balance', 'balance-empty:7:5']])
   })
 
   it('keeps the old behaviour when no record is wired', async () => {
