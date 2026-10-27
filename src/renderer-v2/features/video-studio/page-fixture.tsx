@@ -24,6 +24,8 @@ const plans = new Map<string, { resolve: (plan: VideoStudioPlan) => void, reject
 const clips = new Map<string, { input: AiVideoGenerateInput, resolve: (clip: AiVideoClip) => void, reject: (reason: Error) => void }>()
 // 重开页面后回来接的请求。开发版 StrictMode 会把发起接回的 effect 跑两遍，主进程对同一个请求号回的是同一份，这里同样一起应答。
 const resumes = new Map<string, Array<(clip: AiVideoClip | null) => void>>()
+// 还没交给服务端的请求：停下时主进程回「不会照样出」。没列在这里的，停下时都当已经交出去、钱扣了。
+const unsent = new Set<string>()
 const library = new Map<string, ArrayBuffer>()
 let exported: ArrayBuffer | null = null
 let assetCounter = 0
@@ -49,7 +51,9 @@ const bridge: VideoStudioBridge = {
     const plan = plans.get(requestId)
     if (plan) { plans.delete(requestId); plan.reject(new Error("Error invoking remote method 'video-studio:plan': Error: 已停止写分镜")); return { canceled: true, mayStillComplete: false } }
     const clip = clips.get(requestId)
-    if (clip) { clips.delete(requestId); clip.reject(new Error("Error invoking remote method 'video:generate': Error: 已取消")); return { canceled: true, mayStillComplete: true } }
+    if (clip && unsent.has(requestId)) { clips.delete(requestId); clip.reject(new Error("Error invoking remote method 'video:generate': Error: 已取消视频请求")); return { canceled: true, mayStillComplete: false } }
+    // 主进程的原话（electron/ai-video-service.ts）：交出去了、还没拿到任务号时是「提交结果不明确」，拿到了是「已停止等待」。
+    if (clip) { clips.delete(requestId); clip.reject(new Error("Error invoking remote method 'video:generate': Error: 视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交")); return { canceled: true, mayStillComplete: true } }
     return { canceled: false, mayStillComplete: false }
   },
   onAiVideoProgress: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
@@ -82,10 +86,10 @@ async function finishResume(requestId: string, color: string) {
   return assetId
 }
 
-async function finishClip(requestId: string, color: string) {
+async function finishClip(requestId: string, color: string, sound = false) {
   const clip = clips.get(requestId)
   if (!clip) throw new Error(`no clip request ${requestId}`)
-  const data = await window.videoStudioHarness!.makeClip({ width: 320, height: 240, frameRate: 24, seconds: 1, color })
+  const data = await window.videoStudioHarness!.makeClip({ width: 320, height: 240, frameRate: 24, seconds: 1, color, ...(sound ? { tone: { frequency: 440, channels: 2 } } : {}) })
   const assetId = nextAssetId()
   library.set(assetId, data)
   clips.delete(requestId)
@@ -103,8 +107,9 @@ declare global {
       dropResume(requestId: string): void
       finishPlan(plan: VideoStudioPlan): void
       failPlan(message: string): void
-      finishClip(requestId: string, color: string): Promise<string>
+      finishClip(requestId: string, color: string, sound?: boolean): Promise<string>
       failClip(requestId: string, message: string): void
+      unsent(requestId: string): void
       progress(event: AiVideoProgressEvent): void
       exported(): ArrayBuffer | null
       forget(assetId: string): void
@@ -123,6 +128,7 @@ window.videoStudioPage = {
   failPlan: (message) => { for (const [id, entry] of plans) { plans.delete(id); entry.reject(new Error(`Error invoking remote method 'video-studio:plan': Error: ${message}`)) } },
   finishClip,
   failClip: (requestId, message) => { const clip = clips.get(requestId); clips.delete(requestId); clip?.reject(new Error(`Error invoking remote method 'video:generate': Error: ${message}`)) },
+  unsent: (requestId) => { unsent.add(requestId) },
   progress: (event) => { for (const listener of listeners) listener(event) },
   exported: () => exported,
   forget: (assetId) => { library.delete(assetId) },
