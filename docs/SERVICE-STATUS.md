@@ -431,7 +431,7 @@ electron-builder、不带版本，只按来源 IP 和清单的文件名对上电
 
 ### 每天打卡（匿名使用统计）怎么看
 
-同一次 update-feed-stats 运行，Summary 页最后一节「每天打卡（匿名使用统计）」。0.2.22 起的星芒开着设置「隐私数据」里的
+同一次 update-feed-stats 运行，Summary 页最后一节「每天打卡（匿名使用统计）」。0.2.23 起的星芒开着设置「隐私数据」里的
 「匿名使用统计」（默认开，亲手关过的保持关）时，每天最多发成一条，内容整个写在地址里，发到这个更新目录下面的
 `stats/v1/…`（那里什么都没放，回 404 也照样被 Cloudflare 记下）。客户端在 `electron/usage-stats.ts`，工作流的解码在
 `scripts/update-feed-stats.cjs`，两边的缩写表要一起改，共用的样例是 `scripts/fixtures/usage-stats-path.txt`。
