@@ -1035,8 +1035,8 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         expected: '充值或调高额度后，工具里重发一次就恢复正常，不用重装，也不用重写密钥。',
         extra: [
           { title: '「用户额度不足」或「Insufficient account balance」', detail: '当前账号余额用完了。Claude Code 这时会显示「Please run /login · API Error: 403 用户额度不足」，Codex 显示「unexpected status 403 Forbidden: 用户额度不足」，Grok CLI 也会带上这几个字。不要输入 /login，到个人中心充值，到账后重发。' },
-          { title: '「token quota is not enough」「API key 额度已用完」或「Quota exceeded」', detail: '这把密钥设置的额度上限用完了，或者剩下的不够这一次。Claude Code 同样会叫你 /login，不要照做。到「个人中心 → 密钥管理」调高上限后重发：软件自动配的工具，在「每个工具的额度上限」里改；自己建的密钥，在下面列表里点「…」→「编辑」改。' },
-          { title: '「401 无效的令牌」或「Authentication required … Run /login」', detail: '密钥失效了，或者这把密钥的额度上限已经用到 0（这两种情况报的是同一句）。Claude Code 会先自己重试约 3 分钟才显示。先到「个人中心 → 密钥管理」看这把密钥还剩多少额度（软件自动配的工具看上方「每个工具的额度上限」），用完了就调高；不是额度的问题，再到「检查」页点「重新写入密钥」。' },
+          { title: '「token quota is not enough」「API key 额度已用完」或「Quota exceeded」', detail: '这把密钥设置的额度上限用完了，或者剩下的不够这一次。Claude Code 同样会叫你 /login，不要照做。到「个人中心 › 密钥管理」调高上限后重发：软件自动配的工具，在「每个工具的额度上限」里改；自己建的密钥，在下面列表里点「…」→「编辑」改。' },
+          { title: '「401 无效的令牌」或「Authentication required … Run /login」', detail: '密钥失效了，或者这把密钥的额度上限已经用到 0（这两种情况报的是同一句）。Claude Code 会先自己重试约 3 分钟才显示。先到「个人中心 › 密钥管理」看这把密钥还剩多少额度（软件自动配的工具看上方「每个工具的额度上限」），用完了就调高；不是额度的问题，再到「检查」页点「重新写入密钥」。' },
         ],
         action: '查看余额与额度',
         page: 'account',

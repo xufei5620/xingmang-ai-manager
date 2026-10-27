@@ -245,6 +245,7 @@ function updaterStub(): UpdaterService {
     setServiceStatus: vi.fn(),
     setLaunchInstallNotice: vi.fn(),
     setInstallNeedsAdminPassword: vi.fn(),
+    setIdleInstall: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
   }
@@ -3538,7 +3539,7 @@ describe('registerIpcHandlers', () => {
     register(service)
     const handler = electronMocks.handlers.get('models:list-configured')!
 
-    expect(() => handler(trustedEvent(), 'grok')).toThrow('未读取到已保存的 API Key')
+    expect(() => handler(trustedEvent(), 'grok')).toThrow('未读取到已保存的密钥')
     expect(service.fetchAvailableModels).not.toHaveBeenCalled()
   })
 
@@ -6233,8 +6234,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('account:list-keys')!
 
-      expect(() => handler(trustedEvent(), 'nope')).toThrow('Key 查询参数格式错误')
-      expect(() => handler(trustedEvent(), null)).toThrow('Key 查询参数格式错误')
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('密钥查询参数格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('密钥查询参数格式错误')
     })
 
     it('rejects a non-integer or out-of-range page', () => {
@@ -6953,12 +6954,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
-      await expect(handler(trustedEvent(), 'nope')).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), 1.5)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), 0)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), -1)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), null)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), undefined)).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), 'nope')).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), 1.5)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), 0)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), -1)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), null)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), undefined)).rejects.toThrow('密钥 ID 格式错误')
     })
 
     it('never reaches the account service -- and never the real production client -- when validation fails', async () => {
@@ -7880,7 +7881,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('account:copy-key')!
 
       for (const value of ['42', 0, -1, 1.5, null, undefined]) {
-        await expect(handler(trustedEvent(), value)).rejects.toThrow('Key ID 格式错误')
+        await expect(handler(trustedEvent(), value)).rejects.toThrow('密钥 ID 格式错误')
       }
       expect(accountService.revealKey).not.toHaveBeenCalled()
       expect(electronMocks.writeText).not.toHaveBeenCalled()
@@ -7896,7 +7897,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
       const handler = electronMocks.handlers.get('account:reveal-key')!
 
-      await expect(handler(trustedEvent(), '77')).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), '77')).rejects.toThrow('密钥 ID 格式错误')
       expect(managedCliKeys.read).not.toHaveBeenCalled()
       expect(accountService.revealKey).not.toHaveBeenCalled()
     })
@@ -8012,7 +8013,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         provider: 'codex', keyId: 88, model: 'gpt-5.6-sol', mode: 'merge',
-      })).rejects.toThrow('所选 Key 当前不支持该模型')
+      })).rejects.toThrow('所选密钥当前不支持该模型')
       for (const input of [
         { provider: 'unknown', keyId: 88, model: 'm', mode: 'merge' },
         { provider: 'codex', keyId: '88', model: 'm', mode: 'merge' },

@@ -157,6 +157,11 @@ describe('renderer-v2 v4 sidebar', () => {
     const low = renderShell({ account: { signedIn: true, displayName: '星芒用户', runway: { usableUsd: 3, days: 2, low: true } } })
     expect(low).toContain('aria-label="充值，余额低"')
     expect(low).toContain('data-testid="nav-recharge-low">余额低</small>')
+    // 钱包已经是 $0 的不再说「低」，首页顶上那条已经说了是 $0。
+    const empty = renderShell({ account: { signedIn: true, displayName: '星芒用户', runway: { usableUsd: 0, days: 0, low: true, empty: true } } })
+    expect(empty).toContain('aria-label="充值，余额为零"')
+    expect(empty).toContain('data-testid="nav-recharge-low">余额为零</small>')
+    expect(empty).toContain('余额已经用完，充值后才能用')
     const recharge = renderShell({ activePage: 'account', accountTab: 'recharge' })
     expect(recharge).toMatch(/class="v2-nav-item is-active"[^>]*data-testid="nav-recharge"/)
     expect(recharge).not.toContain('v2-account-entry is-active')

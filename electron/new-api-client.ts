@@ -3621,7 +3621,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   })
 
   const revealKey = (id: number): Promise<string> => withSession(async (current) => {
-    if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
+    if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
     const raw = await performRequest(
       ctx,
       tokenKeyPath(id),
@@ -3640,7 +3640,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // callable directly by other main-process code and its own tests, so
       // the guard belongs here too rather than solely at the IPC boundary
       // (I5) -- id goes straight into a URL path segment below.
-      if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
+      if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
       const raw = await performRequest(
         ctx,
         tokenIdPath(id),
@@ -3656,8 +3656,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // 50 is AddToken/UpdateToken's own server-side name cap (rc.24).
   function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): { name: string; group: string } {
     const name = input.name.trim()
-    if (!name) throw new Error('请输入 Key 名称')
-    if (name.length > 50) throw new Error('Key 名称不能超过 50 个字符')
+    if (!name) throw new Error('请输入密钥名称')
+    if (name.length > 50) throw new Error('密钥名称不能超过 50 个字符')
     const group = input.group.trim()
     if (!group || group.length > 128) throw new Error('请选择有效分组')
     if (!input.unlimitedQuota && (!Number.isInteger(input.remainQuota) || input.remainQuota < 0)) {
@@ -3697,7 +3697,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const updateKey = (input: NewApiAccountKeyUpdateInput): Promise<void> => (
     withSession(async (current) => {
-      if (!Number.isInteger(input.id) || input.id <= 0) throw new Error('Key ID 格式错误')
+      if (!Number.isInteger(input.id) || input.id <= 0) throw new Error('密钥 ID 格式错误')
       const { name, group } = validateKeyEditorInput(input)
       await assertUsableGroup(current, group)
       // UpdateToken 是整体覆盖(见 NewApiClientService.updateKey 的注释):
@@ -3887,7 +3887,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         : buildAccountKeyName(current.profile.username, group))) || requested
       const names = name === requested || chat ? [requested] : [requested, name]
       if (group) {
-        if (group.length > 128) throw new Error('CLI Key 分组格式错误')
+        if (group.length > 128) throw new Error('CLI 密钥分组格式错误')
         await assertUsableGroup(current, group)
         const records = await listAllTokenRecords(current)
         // 两边只复用自己这一边签过的：对话认对话的名字；工具认它以前的固定名、「用户名-分组」，

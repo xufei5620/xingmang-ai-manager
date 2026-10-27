@@ -47,6 +47,15 @@ describe('balance runway', () => {
     expect(balanceRunwayText({ usableUsd: 4, days: null, low: true })).toBeNull()
   })
 
+  it('says the money is gone, not "less than a day", once the wallet is at zero with no subscription', () => {
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: null, weekUsageUsd: 7 })).toEqual({ usableUsd: 0, days: 0, low: true, empty: true })
+    expect(balanceRunwayText({ usableUsd: 0, days: 0, low: true, empty: true })).toBe('余额已经用完，充值后才能用')
+    // 订阅客户的钱包常是 0、扣的却是订阅，不算用完；还剩一点钱、按用量撑不到一天的照旧说「不到 1 天」。
+    expect(buildBalanceRunway({ walletUsd: 0, subscription: plan({ remainingUsd: 20 }), weekUsageUsd: 7 })?.empty).toBeUndefined()
+    expect(buildBalanceRunway({ walletUsd: 0.2, subscription: null, weekUsageUsd: 7 })?.empty).toBeUndefined()
+    expect(balanceRunwayText({ usableUsd: 0, days: null, low: true, empty: true })).toBeNull()
+  })
+
   it('fills the meter over thirty days and keeps a sliver when almost empty', () => {
     expect(balanceRunwayMeter(15)).toBe(50)
     expect(balanceRunwayMeter(0)).toBe(6)

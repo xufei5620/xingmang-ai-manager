@@ -120,7 +120,7 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     return { state: 'pass', summary: '已连到当前账号', details }
   }
   if (!inspection.exists) return { state: 'warn', summary: '还没有连接设置', details }
-  if (!inspection.hasApiKey) return { state: 'fail', summary: '连接设置里没有 Key', details }
+  if (!inspection.hasApiKey) return { state: 'fail', summary: '连接设置里没有密钥', details }
   return { state: 'fail', summary: '连接地址不是当前账号的', details }
 }
 

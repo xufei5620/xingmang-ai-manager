@@ -2218,7 +2218,7 @@ describe('createSystemService', () => {
     const relayFetch = vi.fn<typeof fetch>()
     const service = createService({ providerRoots, getRelaySiteId: () => 'solov-api', relayFetch })
     await expect(service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false))
-      .rejects.toThrow('已保存的 Key 属于其他账号')
+      .rejects.toThrow('已保存的密钥属于其他账号')
     expect(relayFetch).not.toHaveBeenCalled()
   })
 
@@ -2364,7 +2364,7 @@ describe('createSystemService', () => {
       apiKey: 'sk-model-check',
       model: 'gpt-unsupported',
       mode: 'reset',
-    }, true)).rejects.toThrow('当前 API Key 不支持模型 gpt-unsupported')
+    }, true)).rejects.toThrow('当前密钥不支持模型 gpt-unsupported')
 
     await expect(service.saveConfig({
       provider: 'codex',

@@ -10,7 +10,7 @@ import { isActiveProviderId } from '../../../../electron/catalog'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { accountSources } from '../auth/state'
 import { useSharedAccountBalance } from '../app/balance-context'
-import type { BalanceRunway } from '../app/balance-runway'
+import { balanceRunwayEmpty, type BalanceRunway } from '../app/balance-runway'
 import { balanceStatusText } from '../shell/balance-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import {
@@ -188,7 +188,7 @@ export function AccountOverview({
             <p className="v2-acct-note">另有{usable.name} {dollars(usable.remainingUsd)}，{subscriptionEndDate(usable.endsAt)}到期</p>
           )}
           {runway?.days !== null && runway?.days !== undefined && (
-            <p className={`v2-acct-days${runway.low ? ' is-low' : ''}`}>{runwayDaysText(runway.days)}</p>
+            <p className={`v2-acct-days${runway.low ? ' is-low' : ''}`}>{balanceRunwayEmpty(runway) ? '余额已经用完' : runwayDaysText(runway.days)}</p>
           )}
           <WeekSpend days={trends ? week.data ?? null : null} totalUsd={trends ? null : summary?.weekUsageUsd ?? null} />
         </section>

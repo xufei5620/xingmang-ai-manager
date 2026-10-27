@@ -75,7 +75,7 @@ describe('config save service', () => {
     const { dependencies, service } = createService()
 
     await expect(service.saveConfig({ provider: 'claude', apiKey: 'sk-fixture', model: 'claude-missing', mode: 'merge' }, false))
-      .rejects.toThrow('当前 API Key 不支持模型 claude-missing')
+      .rejects.toThrow('当前密钥不支持模型 claude-missing')
     expect(dependencies.moveOfficialCredentialsAside).not.toHaveBeenCalled()
     expect(dependencies.followManagedKeysNow).not.toHaveBeenCalled()
   })

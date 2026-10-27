@@ -16,7 +16,7 @@ import {
 } from './remote-view'
 
 /** 卡片最上面那段。只说客户关心的：在哪儿用、花谁的额度、命令要谁点头、什么时候断开。 */
-export const codexRemoteIntro = '在手机上私聊你自己的机器人，就能让这台电脑上的 Codex 干活，用的是星芒的线路和额度。只认配对过的那一个人；Codex 要跑命令、改文件夹外面的文件，都先在聊天里问你，你回「同意」才动手。'
+export const codexRemoteIntro = '在手机上私聊你自己的机器人，就能让这台电脑上的 Codex 干活，用的是星芒的线路和额度。只认配对过的那一个人；Codex 要改文件、跑会改东西的命令，都先在聊天里问你，你回「同意」才动手；只是看文件不问。'
 
 /** 凭据存不到下次打开时卡上那条（Linux 没有系统钥匙串时只记在内存里，见 codex-remote-store.ts）。 */
 export const codexRemotePersistenceNotices = {

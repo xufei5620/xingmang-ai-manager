@@ -157,6 +157,11 @@ export interface UpdateSnapshot {
    * 「会自动装上」。主进程问出来是这样才有这一项；可选＝不是、没问出来或旧快照，界面照旧。
    */
   installNeedsAdminPassword?: boolean
+  /**
+   * Mac 上装的时候不弹窗口，下好的版本会趁电脑闲着自己装（update-install-prompt.ts 的闲时装）。界面和
+   * 系统通知据此在「下好了」那句后面多说一句。主进程算出来是这样才有这一项；可选＝不是或旧快照。
+   */
+  idleInstall?: boolean
 }
 
 export interface LaunchInstallNotice {
@@ -256,6 +261,8 @@ export interface UpdaterService {
   setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
   /** 主进程问出了这个 Windows 账号不在管理员组（见 UpdateSnapshot.installNeedsAdminPassword）。 */
   setInstallNeedsAdminPassword(value: boolean): void
+  /** 主进程算出了这台 Mac 装的时候不弹窗口、会闲时装（见 UpdateSnapshot.idleInstall）。 */
+  setIdleInstall(value: boolean): void
   subscribe(listener: (snapshot: UpdateSnapshot) => void): () => void
   dispose(): void
 }
@@ -1997,6 +2004,10 @@ export function createUpdaterService(
     setInstallNeedsAdminPassword(value) {
       if (disposed || value === (snapshot.installNeedsAdminPassword === true)) return
       emit({ installNeedsAdminPassword: value })
+    },
+    setIdleInstall(value) {
+      if (disposed || value === (snapshot.idleInstall === true)) return
+      emit({ idleInstall: value })
     },
     subscribe(listener) {
       listeners.add(listener)

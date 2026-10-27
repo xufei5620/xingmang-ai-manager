@@ -17,7 +17,7 @@ const scope = 'https://example.invalid#7'
 
 describe('isNetworkFailureText', () => {
   it('recognises the Chinese sentence the main process already wrote', () => {
-    expect(isNetworkFailureText(`CLI Key 初始化失败：${offline}`)).toBe(true)
+    expect(isNetworkFailureText(`CLI 密钥初始化失败：${offline}`)).toBe(true)
   })
 
   it('recognises raw chromium and node spellings', () => {
@@ -46,7 +46,7 @@ describe('networkBlockedFailures', () => {
 
 describe('isCertificateFailureText', () => {
   it('recognises a swapped certificate in the main process sentence and in raw node codes', () => {
-    expect(isCertificateFailureText(`CLI Key 初始化失败：${networkFailureMessages.tls}`)).toBe(true)
+    expect(isCertificateFailureText(`CLI 密钥初始化失败：${networkFailureMessages.tls}`)).toBe(true)
     expect(isCertificateFailureText('request failed: SELF_SIGNED_CERT_IN_CHAIN')).toBe(true)
   })
 

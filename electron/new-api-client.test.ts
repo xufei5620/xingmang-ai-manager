@@ -2753,9 +2753,9 @@ describe('revokeKey', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
 
-    await expect(client.revokeKey(1.5)).rejects.toThrow('Key ID 格式错误')
-    await expect(client.revokeKey(0)).rejects.toThrow('Key ID 格式错误')
-    await expect(client.revokeKey(-1)).rejects.toThrow('Key ID 格式错误')
+    await expect(client.revokeKey(1.5)).rejects.toThrow('密钥 ID 格式错误')
+    await expect(client.revokeKey(0)).rejects.toThrow('密钥 ID 格式错误')
+    await expect(client.revokeKey(-1)).rejects.toThrow('密钥 ID 格式错误')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -2827,7 +2827,7 @@ describe('createKey', () => {
       unlimitedQuota: true,
       expiredTime: -1,
     }))
-      .rejects.toThrow('Key 名称不能超过 50 个字符')
+      .rejects.toThrow('密钥名称不能超过 50 个字符')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -3041,7 +3041,7 @@ describe('updateKey', () => {
       unlimitedQuota: true,
       expiredTime: -1,
     }))
-      .rejects.toThrow('Key ID 格式错误')
+      .rejects.toThrow('密钥 ID 格式错误')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })

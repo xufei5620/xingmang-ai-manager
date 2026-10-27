@@ -1035,7 +1035,7 @@ test('the first read of the history shows the page-loading block instead of a bl
     await page.goto(`${base}/src/renderer-v2/features/chat/browser-fixture.html?historyReadHold=1`)
     const loading = page.getByTestId('page-chat').getByTestId('route-loading')
     await loading.waitFor()
-    assert.equal(await loading.textContent(), '正在加载页面...')
+    assert.equal(await loading.textContent(), '正在加载页面…')
     assert.equal(await page.getByTestId('page-chat').getAttribute('aria-busy'), 'true')
     assert.equal(await page.getByTestId('chat-composer-input').count(), 0, 'nothing can be typed over a record that is still being read')
     await page.evaluate(() => window.chatHarness.releaseHistoryReads())

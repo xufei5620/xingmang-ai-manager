@@ -27,7 +27,7 @@ import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { toolRouteHijackShownMs, toolRouteHomeTexts, toolRouteLabel, type RelayToolRouteStatus } from './route-label'
-import { buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
+import { balanceRunwayEmpty, buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
 import { useRestartPending } from './restart-reminder'
 import { RuntimeRestartDialog } from './RuntimeRestartDialog'
 import { OfficialQuotaDialog } from './OfficialQuotaDialog'
@@ -1165,7 +1165,8 @@ export function Home(props: HomeProps) {
 
   // 余额卡：金额、订阅、按最近用量还能用几天、近 7 天花费。
   const runwayLine = props.supportsUsage === false ? '请在官方网站查看消费记录。'
-    : usageError || (runway?.days != null ? `按最近用量${runwayDaysText(runway.days)}`
+    : usageError || (balanceRunwayEmpty(runway) ? '余额已经用完'
+      : runway?.days != null ? `按最近用量${runwayDaysText(runway.days)}`
       : runway && runway.usableUsd === null ? null
       : usage ? balance ? '最近 7 天暂无用量' : '读到余额后显示还能用多久'
       : account ? '正在读取用量' : props.accountRestoring ? '登录恢复后自动显示用量' : '登录后查看用量')

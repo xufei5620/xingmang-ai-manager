@@ -221,7 +221,7 @@ export class ChatKeyStore {
 
   removeByKeyId(userId: number, keyId: number): Promise<void> {
     this.assertUserId(userId)
-    if (!Number.isInteger(keyId) || keyId <= 0) throw new Error('AI 聊天 Key ID 格式错误')
+    if (!Number.isInteger(keyId) || keyId <= 0) throw new Error('AI 聊天密钥 ID 格式错误')
     const scope = this.keyScope(userId, keyId)
     const revision = this.nextRevision()
     this.invalidatedKeys.set(scope, revision)

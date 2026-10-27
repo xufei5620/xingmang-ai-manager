@@ -3809,6 +3809,26 @@ describe('Windows account outside the administrators group', () => {
   })
 })
 
+describe('Mac that installs while idle', () => {
+  it('leaves the field out until the host says so, then keeps it across checks', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const seen: Array<boolean | undefined> = []
+    service.subscribe((state) => { seen.push(state.idleInstall) })
+    expect('idleInstall' in service.getState()).toBe(false)
+    service.setIdleInstall(false)
+    expect(seen).toEqual([])
+
+    service.setIdleInstall(true)
+    service.setIdleInstall(true)
+    expect(seen).toEqual([true])
+    client.emit('checking-for-update')
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', idleInstall: true })
+    service.dispose()
+  })
+})
+
 describe('system installer channel (Linux .deb)', () => {
   const debFile = '/home/tester/.cache/xingmang-ai-manager-updater/pending/XingMang-AI-Manager-1.1.0-linux-amd64.deb'
   const debInfo = (version = '1.1.0') => ({

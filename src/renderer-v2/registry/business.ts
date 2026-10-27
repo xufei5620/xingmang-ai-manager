@@ -193,16 +193,19 @@ export const standardAccountUpdateNotice = {
   body: '让有管理员账号的人点一次「重启并安装」，或者找客服。',
 } as const;
 export const standardAccountUpdateText = `${standardAccountUpdateNotice.title}。${standardAccountUpdateNotice.body}`;
+// Mac 上能趁电脑闲着自己装的（update.idleInstall）：「下好了」那个气泡多说这一句。主进程 desktop-notifications.ts 的
+// idleInstallNoticeTail 是同一句，两边字面量要一致。
+export const idleInstallBubbleTail = '你不用电脑时星芒也会自己装好。';
 // 提示气泡的正文。自动更新开着时直接告诉用户接下来会怎样，不用他再点进「版本更新」。
 // 交给系统安装器的版本（Linux）从不自己装，下好了就请他点一下。
-export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean): string {
+export function autoUpdateBubbleBody(phase: UpdateOfferState['phase'], autoUpdate: boolean, installMethod?: UpdateOfferState['installMethod'], installNeedsAdminPassword?: boolean, idleInstall?: boolean): string {
   if (installMethod === 'system-installer') {
     if (phase === 'downloaded') return '已经下好了，到「设置 › 版本更新」点「安装新版本」就能装上。';
     return autoUpdate ? '正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。' : '查看更新内容和安装状态。';
   }
   if (phase === 'downloaded' && installNeedsAdminPassword) return standardAccountUpdateText;
   if (!autoUpdate) return '查看更新内容和安装状态。';
-  if (phase === 'downloaded') return '已经下好了，关掉软件或下次打开时自动装上，不打断你现在用。';
+  if (phase === 'downloaded') return `已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。${idleInstall ? idleInstallBubbleTail : ''}`;
   if (installNeedsAdminPassword) return '正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。';
   return '正在后台下载，下好后关掉软件或下次打开时自动装上。';
 }

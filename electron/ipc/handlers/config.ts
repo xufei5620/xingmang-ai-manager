@@ -234,10 +234,10 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (options.realmAccounts && !service.getConfig(options.previewOnboarding).providers[provider].matchesRelay) {
-      throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
+      throw new Error('已保存的密钥属于其他账号，请使用当前账号重新配置')
     }
     const apiKey = service.revealApiKey(provider, options.previewOnboarding)
-    if (!apiKey) throw new Error('未读取到已保存的 API Key')
+    if (!apiKey) throw new Error('未读取到已保存的密钥')
     return service.fetchAvailableModels(apiKey)
   })
   return () => {

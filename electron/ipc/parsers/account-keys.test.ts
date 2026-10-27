@@ -13,7 +13,7 @@ describe('parseAccountRevokeKeyId', () => {
 
   it('rejects anything that could change the request path', () => {
     for (const id of ['42', '../42', 0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, null]) {
-      expect(() => parseAccountRevokeKeyId(id)).toThrow('Key ID 格式错误')
+      expect(() => parseAccountRevokeKeyId(id)).toThrow('密钥 ID 格式错误')
     }
   })
 })
@@ -26,9 +26,9 @@ describe('parseAccountKeyCliConfigurationInput', () => {
 
   it('rejects a retired tool, a string key id and an unknown mode', () => {
     expect(() => parseAccountKeyCliConfigurationInput({ provider: 'gemini', keyId: 7, model: 'm', mode: 'merge' })).toThrow('未知的 CLI 类型')
-    expect(() => parseAccountKeyCliConfigurationInput({ provider: 'codex', keyId: '7', model: 'm', mode: 'merge' })).toThrow('Key ID 格式错误')
+    expect(() => parseAccountKeyCliConfigurationInput({ provider: 'codex', keyId: '7', model: 'm', mode: 'merge' })).toThrow('密钥 ID 格式错误')
     expect(() => parseAccountKeyCliConfigurationInput({ provider: 'codex', keyId: 7, model: 'm', mode: 'replace' })).toThrow('未知的配置写入模式')
-    expect(() => parseAccountKeyCliConfigurationInput(null)).toThrow('账号 Key 配置信息格式错误')
+    expect(() => parseAccountKeyCliConfigurationInput(null)).toThrow('账号密钥配置信息格式错误')
   })
 })
 
@@ -44,7 +44,7 @@ describe('parseAccountKeyCreateInput', () => {
 
   it('applies the xm site name limit unless the key is for the legacy account site', () => {
     const name = 'n'.repeat(51)
-    expect(() => parseAccountKeyCreateInput({ ...valid, name })).toThrow('Key 名称格式错误')
+    expect(() => parseAccountKeyCreateInput({ ...valid, name })).toThrow('密钥名称格式错误')
     expect(parseAccountKeyCreateInput({ ...valid, name }, true).name).toBe(name)
   })
 
