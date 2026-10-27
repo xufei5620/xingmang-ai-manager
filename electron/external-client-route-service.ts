@@ -151,6 +151,9 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   let newestExternalScanSaved = 0
   // 这次运行里替客户端换成过几回 Key（#1113、已知37）：保存配置后台那一眼换成了，界面要重读。
   let externalKeysFollowed = 0
+  // 保存配置后台那一眼正在跑的那一轮，和跑着时又有人叫过（见 followManagedKeysNow）。
+  let followingManagedKeys: Promise<void> | null = null
+  let followManagedKeysAgain = false
   // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
@@ -610,12 +613,31 @@ export function createExternalClientRouteService(context: ServiceContext, depend
    * 星芒刚替某个工具换了 Key（保存配置那一下）：马上看一眼外部客户端要不要跟上，不等下次检测。先只看缓存和工具配置，
    * 没有要跟的不为它盘点一遍本机客户端。这一轮是后台做的，界面手上还是换之前那份（换账号时首页在同步工具之前就读过
    * 客户端），换成了叫一声让它重读。
+   *
+   * 换账号时同步到 Claude Code、Codex 是连着保存两家，各叫一次这里。以前两轮各跑各的：后一轮在前一轮换完之前就记下
+   * 了计数，两轮都看到「变了」，界面重读两次（#1413 的用例在 Mac CI 上偶发红）。现在一轮跑着时再叫，只记一笔「跑完
+   * 再看一遍」，后一家刚写的 Key 照样跟上，从头到尾只叫一次。
    */
   async function followManagedKeysNow(): Promise<void> {
-    if (!await managedKeyFollowTarget()) return
+    if (followingManagedKeys) {
+      followManagedKeysAgain = true
+      return followingManagedKeys
+    }
+    followingManagedKeys = followManagedKeyRounds()
+    return followingManagedKeys
+  }
+  async function followManagedKeyRounds(): Promise<void> {
     const before = externalKeysFollowed
-    await scanExternalClients()
-    if (externalKeysFollowed !== before) serviceOptions.onToolRouteFollowed?.()
+    try {
+      do {
+        followManagedKeysAgain = false
+        if (await managedKeyFollowTarget()) await scanExternalClients()
+      } while (followManagedKeysAgain)
+    } finally {
+      // 最后一次看完和这里之间没有 await：之后再叫的另起一轮，不会挂在一个已经不再回头看的轮次上。
+      followingManagedKeys = null
+      if (externalKeysFollowed !== before) serviceOptions.onToolRouteFollowed?.()
+    }
   }
   /**
    * 把客户端那份换成借的那个工具现在的 Key（#1113），只换 Key，地址、型号和别的设置都不动。全都对上才换：
