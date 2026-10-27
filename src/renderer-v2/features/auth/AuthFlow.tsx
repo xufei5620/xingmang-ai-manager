@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
-import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info, KeyRound, LogIn, Mail, RefreshCw, UserPlus } from 'lucide-react'
+import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info, KeyRound, LogIn, Mail, RefreshCw, RotateCcw, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { sessionOnlyLoginNotice } from '../app/remembered-login'
+import { currentWindowOs } from '../app/window-os'
 import { useLatestRequest } from '../../latest-request'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
@@ -46,6 +47,8 @@ export interface AuthFlowProps {
   onAuthenticated: (result: AccountLoginResult, options?: { rememberError?: string; notice?: string }) => void
   onClose: () => void
   onHelp?: () => void
+  /** 重开星芒。Mac 钥匙串这次没放行时红字下面给「重新打开星芒」：重开后系统会再问一次。 */
+  onRelaunch?: () => void
   /** Local connection settings remain reachable before the first successful login. */
   connectionSettings?: (onBusyChange: (busy: boolean) => void) => ReactNode
   /** 服务正在维护时的提示。登录框是模态的，会盖住角落里那条，所以在框里再放一份。 */
@@ -54,7 +57,7 @@ export interface AuthFlowProps {
   sessionOnly?: boolean
 }
 
-export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, connectionSettings, notice, sessionOnly = false }: AuthFlowProps) {
+export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, onRelaunch, connectionSettings, notice, sessionOnly = false }: AuthFlowProps) {
   const [api] = useState(() => providedApi ?? getAuthApi())
   const [mode, setMode] = useState<AuthMode>(initialMode)
   const [siteId, setSiteId] = useState<AccountSiteId>(initialMode === 'register' ? 'solov' : initialSiteId)
@@ -217,7 +220,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     epoch.invalidate(); setPassword(''); clearRecoveredPassword(); leaveTwoFactor(); onClose()
   }
   const showFailure = (reason: unknown, action: string) => {
-    const result = authFailure(reason, action, navigator.onLine)
+    const result = authFailure(reason, action, navigator.onLine, currentWindowOs())
     setError(result.message); setFailure({ action, kind: result.kind, message: result.message }); setBrowserAuthentication(requiresBrowserAuthentication(reason))
   }
   const run = async (action: string, work: (isCurrent: () => boolean) => Promise<void>) => {
@@ -471,6 +474,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     failure.kind === 'code' && mode === 'register' && status?.emailVerificationEnabled && <Button key="code" size="xs" icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} onClick={sendVerification} testId="auth-exit-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重新获取` : '重新获取验证码'}</Button>,
     failure.kind === 'taken' && mode === 'register' && <Button key="login" size="xs" icon={LogIn} disabled={busy} onClick={() => changeMode('login', normalizeEmail(registration.email))} testId="auth-exit-login">用这个邮箱去登录</Button>,
     failure.kind === 'taken' && mode === 'register' && <Button key="forgot" size="xs" icon={KeyRound} disabled={busy} onClick={() => goRecovery(normalizeEmail(registration.email))} testId="auth-exit-forgot">找回密码</Button>,
+    failure.kind === 'keychain' && onRelaunch && <Button key="relaunch" size="xs" icon={RotateCcw} disabled={busy} onClick={onRelaunch} testId="auth-exit-relaunch">重新打开星芒</Button>,
     onHelp && <Button key="help" size="xs" variant="ghost" icon={Headset} disabled={busy} onClick={onHelp} testId="auth-exit-help">找客服</Button>,
   ].filter(Boolean) : []
 

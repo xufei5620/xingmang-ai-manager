@@ -959,6 +959,32 @@ test('a network failure on login names proxy software and offers retry and suppo
   } finally { await page.close() }
 })
 
+// Mac 钥匙串弹框被拒：红字教怎么点，给「重新打开星芒」；Windows 上同一个错照旧是原来那句、没有这颗按钮。
+test('a refused Mac keychain explains the prompt and offers to reopen the app', async () => {
+  const page = await open('keychainRefused=1&os=mac')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: 'Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
+    await page.getByTestId('auth-exit-help').waitFor()
+    await page.getByTestId('auth-exit-relaunch').filter({ hasText: '重新打开星芒' }).click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'relaunch'])
+  } finally { await page.close() }
+  const windows = await open('keychainRefused=1&os=win')
+  try {
+    await windows.getByTestId('login-account').fill('fixture-member')
+    await windows.getByTestId('login-password').fill('fixture-password')
+    await windows.getByTestId('auth-agree').check()
+    await windows.getByTestId('login-submit').click()
+    await windows.getByTestId('auth-error').filter({ hasText: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。' }).waitFor()
+    assert.equal(await windows.getByTestId('auth-exit-relaunch').count(), 0)
+    await windows.getByTestId('auth-exit-help').waitFor()
+  } finally { await windows.close() }
+})
+
 test('a login without network waits for the network and then says to try again', async () => {
   const page = await open('loginFail=offline')
   try {

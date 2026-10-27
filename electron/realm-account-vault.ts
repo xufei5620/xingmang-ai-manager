@@ -25,9 +25,22 @@ export interface RealmVaultStorage {
 export type RealmVaultFailureStage = 'availability' | 'read' | 'decode' | 'decrypt' | 'validate'
   | 'encrypt' | 'verify' | 'write' | 'recover'
 
+// The OS key store itself refused, as opposed to the file being unreadable. On
+// macOS this is a denied or dismissed keychain prompt: Chromium keeps the key
+// missing for the rest of the run and asks again on the next launch, so the
+// login box tells the customer to relaunch and click "Always Allow". A lost key
+// with a working keychain fails at 'decrypt' and is recovered on login instead.
+const keyStoreRefusedStages: readonly RealmVaultFailureStage[] = ['availability', 'encrypt', 'verify']
+// 渲染层 features/auth/state.ts 按「系统加密服务没有放行」认这句：这个模块带 node:crypto，
+// 那边值导入不了，只能按字面认（有意重复）。前半句照旧是 STORAGE 那句，认不出的地方仍按存储不可用处理。
+export const realmVaultKeyStoreRefusedMessage = '账号安全存储不可用：系统加密服务没有放行，原记录未修改'
+
 /** Stage only: native errors/JSON parse failures can contain credential material. */
 export class RealmVaultStorageError extends RealmAccountError {
-  constructor(readonly stage: RealmVaultFailureStage) { super('STORAGE') }
+  constructor(readonly stage: RealmVaultFailureStage) {
+    super('STORAGE')
+    if (keyStoreRefusedStages.includes(stage)) this.message = realmVaultKeyStoreRefusedMessage
+  }
 }
 
 interface VaultDocument {
