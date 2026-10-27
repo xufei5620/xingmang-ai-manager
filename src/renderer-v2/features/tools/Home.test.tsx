@@ -675,6 +675,39 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).not.toContain('分组')
     // Re-syncing cannot enable a tool on the account, so the banner offers no button for it.
     expect(markup).not.toContain('>重新同步<')
+    // Without onHelp the card keeps the old primary and the banner offers nothing (0.2.22 打磨 B5 缺省 = 旧行为).
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*确认连接</)
+    expect(markup).not.toContain('找客服')
+  })
+
+  // 账号没开通的只有客服能开（主路卡点 F5）：横幅给「找客服」，卡片主按钮也换成它，「确认连接」点进去的配置框帮不上忙。
+  it('offers support instead of the configuration dialog for a tool the account has not enabled', () => {
+    const failure = { provider: 'grok' as const, message: '分组不存在、不可用或名称重复，请确认账号可用分组' }
+    const markup = render({}, undefined, {
+      snapshot: keylessSnapshot('grok'),
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [failure] }),
+      },
+      onBootstrapRetry: () => undefined,
+      onHelp: () => undefined,
+    })
+    expect(markup).toContain('data-testid="home-bootstrap-support"')
+    expect(markup).not.toContain('>重新同步<')
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*找客服</)
+    expect(markup).not.toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*确认连接</)
+    // A tool whose failure can be retried keeps both: resync for it, support for the one the account lacks.
+    const mixed = render({}, undefined, {
+      snapshot: keylessSnapshot('grok'),
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [failure, { provider: 'claude', message: '当前分组未返回可用模型' }] }),
+      },
+      onBootstrapRetry: () => undefined,
+      onHelp: () => undefined,
+    })
+    expect(mixed).toContain('>重新同步<')
+    expect(mixed).toContain('data-testid="home-bootstrap-support"')
   })
 
   it('keeps the original wording when the failure is not a network one', () => {

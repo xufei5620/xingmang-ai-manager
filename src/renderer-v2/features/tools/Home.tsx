@@ -140,6 +140,11 @@ export interface HomeProps {
    */
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string; quiet?: boolean }) | null
   onBootstrapRetry?(): void
+  /**
+   * 「账号未开通」只有客服能开（主路卡点 F5）：横幅加「找客服」，卡片主按钮也换成它，都打开帮助框里的客服二维码；
+   * 缺省 = 不给那颗按钮、主按钮照旧「确认连接」（旧行为）。
+   */
+  onHelp?(): void
   /** 首页点「安装」没装上的工具和原因（App 记的，重新检测或再装一次就清掉）；缺省 = 没有。 */
   installFailures?: Partial<Record<ToolId, { reason: string }>>
   /** 卡片上的「看原因」：把那次的错误框再打开；缺省 = 不给这颗按钮。 */
@@ -715,9 +720,10 @@ export function Home(props: HomeProps) {
     const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? installFailure ? '重试' : manualInstall ? '安装指南' : '安装'
-      : openable ? '打开' : '确认连接'
+      : openable ? '打开' : status === 'notEnabled' && props.onHelp ? '找客服' : '确认连接'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
-      : !openable ? props.onConfigure(tool.id)
+      // 账号没开通的，「确认连接」点进去是配置框，帮不上忙：换成去找客服（主路卡点 F5）。
+      : !openable ? status === 'notEnabled' && props.onHelp ? props.onHelp() : props.onConfigure(tool.id)
       : startsFresh ? props.onLaunchInNewFolder?.(tool.id, true) : props.onLaunch(tool.id, lastWorkspace?.path)
     const primaryDisabled = Boolean(switchJob || repairJob) || waitingForScan || waitingForAccount || launchBusy || (bootstrapBusy && !tool.configured && !configUnavailable)
     // 文件坏了时读出来的来源不作数（见 brokenConfigOf），不说成官方账号。
@@ -1096,11 +1102,16 @@ export function Home(props: HomeProps) {
   const bootstrapNeedsAction = Boolean(bootstrapResult && (bootstrapFailed.length || bootstrapWarnings.length || bootstrapResult.networkBlocked))
   if (bootstrapResult && bootstrapNoticeWanted && bootstrapNeedsAction) {
     const configuredText = bootstrapResult.configured.length ? `${configuredKeysText(keyTargetsLabel(bootstrapResult.configured))}。` : ''
+    // 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
+    // 没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。
+    const retryWanted = Boolean(props.onBootstrapRetry) && (bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate))
+    // 账号没开通的只有客服能开（主路卡点 F5）：那句后面给「找客服」，开帮助框里的客服二维码；两种失败都有就两颗都给。
+    const supportWanted = Boolean(props.onHelp) && bootstrapFailed.some((entry) => isAccountNotEnabledFailure(entry.message))
     alerts.push(<HomeNotice key="bootstrap-result" tone="warn" role="status" testId="home-bootstrap-result" icon={<TriangleAlert size={15} aria-hidden="true" />}
-      // 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
-      // 没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。
-      action={(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate)) && props.onBootstrapRetry
-        ? <Button size="xs" variant="secondary" onClick={props.onBootstrapRetry}>重新同步</Button> : undefined}>
+      action={retryWanted || supportWanted ? <>
+        {retryWanted && <Button size="xs" variant="secondary" onClick={props.onBootstrapRetry}>重新同步</Button>}
+        {supportWanted && <Button size="xs" variant="secondary" onClick={props.onHelp} testId="home-bootstrap-support">找客服</Button>}
+      </> : undefined}>
       {bootstrapResult.networkBlocked ? networkBlockedNotice(bootstrapResult) : [configuredText, bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；'), bootstrapWarnings.join('；')].filter(Boolean).join(' ')}
     </HomeNotice>)
   }
