@@ -51,7 +51,7 @@ export type PinnedMirrorPolicy = Exclude<MirrorPolicy, 'auto'>
 export type CodexChineseRuntimePatchChoice = 'enabled' | 'disabled'
 
 /**
- * 星芒替客户往他自己的文件里放的几样，在这台电脑上出现过的记一笔（seededToolDefaults）：
+ * 星芒替客户往客户自己的文件里放的几样，在这台电脑上出现过的记一笔（seededToolDefaults）：
  * - `claude:fallbackModel`：Claude Code settings.json 的备用型号（#1415）；
  * - `codex:response-language`、`grok:response-language`：配置目录里星芒放的那份「用中文回复」（#1432）；
  * - `vscode:login-prompt`、`cursor:login-prompt`：编辑器用户设置里关掉 Claude Code 插件登录页那一行（#1422）。

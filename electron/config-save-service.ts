@@ -787,7 +787,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 星芒替客户往他自己的文件里放的几样，这台电脑上出现过哪些（app-settings.ts 的 seededToolDefaults）。出现过、
+   * 星芒替客户往客户自己的文件里放的几样，这台电脑上出现过哪些（app-settings.ts 的 seededToolDefaults）。出现过、
    * 现在没有的是客户删的，或者恢复了一份更早的备份，不再补回（0.2.22 第二轮回归第 2、3 条）。
    */
   function seededToolDefaults(): readonly SeededToolDefault[] {
