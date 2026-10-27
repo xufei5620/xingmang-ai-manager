@@ -120,6 +120,8 @@ export function createAccountClientFactory(options: AccountClientFactoryOptions)
     // 客户端认的一直是默认线路的地址（登录记录、凭据都按它记），这会儿走哪条线路由请求这一层换。
     client = createNewApiClient({ baseUrl: requireRelaySite(siteId).accountBaseUrl, fetchImpl: routedAccountFetch,
       retryOffProxy: (failure) => recoverAccountRequestOffProxy(siteId, failure),
+      // 续期没等到回话、补续，和服务器不认这次登录：反馈报告里看得出客户为什么被退出来。
+      log: (level, event, message, detail) => runtimeLog.log(level, 'account', event, message, { siteId, ...detail }),
       onCredentialRotation: async (persisted) => {
         const revision = client.getSessionRevision()
         const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
