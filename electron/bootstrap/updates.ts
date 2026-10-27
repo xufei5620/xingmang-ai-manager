@@ -15,7 +15,7 @@ import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMetho
 import type { ReleaseGuardStore } from '../release-guard-store'
 import type { RelayEndpointId } from '../relay-sites'
 import type { RuntimeLogStore } from '../runtime-log'
-import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus } from '../service-status'
+import { createServiceStatusMonitor, locateServiceStatusUrl, readServiceStatus, resolveHiddenPaymentMethodsFor, resolveReleasePlatforms } from '../service-status'
 import type { SystemService } from '../system-service'
 import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from '../update-feed-route'
 import { verifyUpdatePackageDigest } from '../update-package-digest'
@@ -277,6 +277,18 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       })
       : null
     serviceStatusMonitor?.start()
+    // 充值方式开关跟分组对照一样搭启动那次读的便车，这次没读到就用上一次读成功的那份：一次定时读失败
+    // 不该把刚藏掉的那种付款方式又放出来。版本和平台按更新服务的同一套写法去对。
+    const releasePlatforms = resolveReleasePlatforms({
+      platform: process.platform,
+      arch: process.arch,
+      ...(process.platform === 'darwin' ? { macRunsArm64: process.arch === 'arm64' || app.runningUnderARM64Translation } : {}),
+    })
+    async function hiddenPaymentMethods(): Promise<string[]> {
+      if (!serviceStatusMonitor) return []
+      await serviceStatusMonitor.settled()
+      return resolveHiddenPaymentMethodsFor(serviceStatusMonitor.lastKnown(), app.getVersion(), releasePlatforms)
+    }
     // 在线换节点（acceleration-online-nodes.ts）：节点文件跟状态文件放在一起，读法也一样，只有能加速的平台读。
     // 一律读包里那份更新目录：直连那份只放行白名单里的文件。日志里只有发布时间和线路条数，不写节点内容（I13）。
     const accelerationNodes = serviceStatusUrl && platformCapabilitiesFor(process.platform).acceleration
@@ -321,7 +333,7 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
         '本机为未签名更新通道，安装包签名未校验；下载后强制校验安装包 SHA-512，是否自动下载与安装跟随「自动更新」开关',
       )
     }
-    return { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch }
+    return { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch, hiddenPaymentMethods }
   }
   return { createUpdater }
 }

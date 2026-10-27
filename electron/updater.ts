@@ -2,7 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import { isOlderReleaseGuard, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
@@ -126,6 +126,11 @@ export interface UpdateSnapshot {
    * 它本来就来自更新目录，而渲染层从启动那一刻起就订阅着这份快照——没登录也收得到。
    */
   serviceMaintenance?: ServiceMaintenance | null
+  /**
+   * 状态文件里给这一版、这种安装包的已知问题提示（service-status.ts 的 knownIssues，版本和平台已经筛过），
+   * 界面按页挑着摆在右上角。跟维护提示一样放在更新快照里：没登录也收得到。可选＝没有或旧快照。
+   */
+  knownIssues?: readonly KnownIssue[]
   /**
    * 发布者在状态文件里撤回了本机正在用的这个版本。界面据此说「这个版本有已知问题」，
    * 更新器据此允许装一个更低的版本号（退回上一个好版本）。
@@ -939,6 +944,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     diskShortfall: snapshot.diskShortfall ? { ...snapshot.diskShortfall } : null,
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
+    ...(snapshot.knownIssues ? { knownIssues: snapshot.knownIssues.map((issue) => ({ ...issue })) } : {}),
     launchInstallNotice: snapshot.launchInstallNotice ? { ...snapshot.launchInstallNotice } : null,
   }
 }
@@ -1159,6 +1165,11 @@ export function createUpdaterService(
     const patch: Partial<UpdateSnapshot> = {}
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {
       patch.serviceMaintenance = maintenance
+    }
+    // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就把「先这样绕过去」收起来，客户会当成已经修好了。
+    if (status) {
+      const knownIssues = resolveKnownIssuesFor(status, runtime.currentVersion, releasePlatforms)
+      if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
