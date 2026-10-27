@@ -1,0 +1,57 @@
+# 临时：核对 Claude Desktop 官方安装包怎么决定模型菜单（inferenceModels / 自动获取 / 启动检查挑哪个型号），核完就删，不进 main。
+name: tmp-claude-desktop-models
+on:
+  push:
+    branches: [claude/project-thread-38vamz]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Download and unpack official MSIX
+        run: |
+          set -euo pipefail
+          mkdir -p work && cd work
+          curl -sS -o /dev/null -w '%{redirect_url}\n' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect | tee url.txt
+          curl -sSfL --retry 3 -o claude.msix https://claude.ai/api/desktop/win32/x64/msix/latest/redirect
+          ls -l claude.msix
+          mkdir msix && (cd msix && unzip -q ../claude.msix || true)
+          grep -o 'Version="[^"]*"' msix/AppxManifest.xml | head -2
+          ASAR=$(find msix -name app.asar | head -1)
+          npx --yes @electron/asar@3.2.10 extract "$ASAR" asar || echo "asar extract partial"
+          find asar/.vite/build -name '*.js' | wc -l
+          find msix/app/resources/ion-dist -name '*.js' | wc -l
+      - name: Search model picker logic
+        run: |
+          cd work
+          python3 - <<'PY'
+          import glob, re
+          files = glob.glob('asar/.vite/build/**/*.js', recursive=True) + glob.glob('msix/app/resources/ion-dist/**/*.js', recursive=True)
+          patterns = [rb'inferenceModels', rb'modelDiscoveryEnabled', rb'rejected the configured credential', rb'/v1/models', rb'anthropicFamilyTier', rb'isFamilyDefault', rb'ANTHROPIC_DEFAULT_HAIKU_MODEL', rb'ANTHROPIC_SMALL_FAST_MODEL']
+          for rx in patterns:
+              hits = []
+              for f in files:
+                  data = open(f, 'rb').read()
+                  n = len(re.findall(rx, data))
+                  if n: hits.append((f, n))
+              print('==', rx.decode(), hits)
+          def show(rx, width, limit, only=None):
+              shown = 0
+              for f in files:
+                  if only and only not in f: continue
+                  data = open(f, 'rb').read()
+                  for m in re.finditer(rx, data):
+                      s = max(0, m.start() - width); e = min(len(data), m.end() + width)
+                      print('-----', rx.decode(), f, m.start())
+                      print(data[s:e].decode('utf-8', 'replace'))
+                      shown += 1
+                      if shown >= limit: return
+          show(rb'rejected the configured credential', 3000, 2)
+          show(rb'modelDiscoveryEnabled', 1500, 6, 'asar/')
+          show(rb'/v1/models', 1500, 4, 'asar/')
+          PY
