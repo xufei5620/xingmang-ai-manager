@@ -86,6 +86,51 @@ async function stopProcess(child) {
   }
 }
 
+// 去掉不认识的开关后重新打开的那个进程不是这里起的子进程，只能按命令行里独有的临时
+// 目录找到它。值经环境变量交给 PowerShell，不拼进脚本。
+function findWindowsProcessesByCommandLine(fragment) {
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+  const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+  const script = 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($env:XINGMANG_SMOKE_COMMAND_LINE) } | ForEach-Object { $_.ProcessId }'
+  const result = spawnSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', script], {
+    env: { ...process.env, XINGMANG_SMOKE_COMMAND_LINE: fragment },
+    encoding: 'utf8',
+    timeout: 60_000,
+    windowsHide: true,
+  })
+  if (result.error || result.status !== 0) {
+    throw new Error(`查不到测试进程：${result.error?.message || result.stderr?.trim() || `exit ${result.status}`}`)
+  }
+  return result.stdout.split(/\r?\n/).map(Number).filter((pid) => Number.isSafeInteger(pid) && pid > 0 && pid !== process.pid)
+}
+
+async function stopWindowsProcessesByCommandLine(fragment) {
+  const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+  const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe')
+  const deadline = Date.now() + 20_000
+  for (;;) {
+    const pids = findWindowsProcessesByCommandLine(fragment)
+    if (pids.length === 0) return
+    if (Date.now() > deadline) throw new Error(`无法结束测试进程 ${pids.join(', ')}`)
+    // Already gone between the query and this call is fine; the next query decides.
+    for (const pid of pids) spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], { windowsHide: true })
+    await delay(500)
+  }
+}
+
+async function waitForLog(logPath, ready, description, timeoutMilliseconds = 40_000) {
+  const deadline = Date.now() + timeoutMilliseconds
+  while (Date.now() < deadline) {
+    try {
+      if (ready(await fs.readFile(logPath, 'utf8'))) return
+    } catch (error) {
+      if (error?.code !== 'ENOENT') throw error
+    }
+    await delay(250)
+  }
+  throw new Error(`等待${description}超时`)
+}
+
 async function verifyFirstMigration() {
   const entries = await fs.readdir(codexHome)
   for (const name of configNames) {
@@ -116,6 +161,14 @@ async function cleanUpPackagedFixture(child) {
       await stopProcess(child)
     } catch (error) {
       // 进程可能仍持有临时目录里的文件，此时不清理，保留现场供排查。
+      problems.push(`${error?.message ?? error}，已保留临时目录`)
+      return problems
+    }
+  }
+  if (process.platform === 'win32') {
+    try {
+      await stopWindowsProcessesByCommandLine(temporaryRoot)
+    } catch (error) {
       problems.push(`${error?.message ?? error}，已保留临时目录`)
       return problems
     }
@@ -182,6 +235,44 @@ try {
     if (debugExitCode === 0) throw new Error(`生产程序拒绝远程调试参数 ${spelling} 时返回了成功退出码`)
     application = null
   }
+
+  // Windows 打包版只认已知的启动参数：带了不认识的开关，去掉它重新打开一次，而不是
+  // 打不开；重新打开的进程要是还带着，就直接退出，不会一直重开（#1065）。
+  if (process.platform === 'win32') {
+    const unknownSwitch = '--xingmang-smoke-unknown-switch'
+    const relaunchDirectory = path.join(temporaryRoot, 'user-data-relaunch')
+    application = spawn(executablePath, [`--user-data-dir=${relaunchDirectory}`, unknownSwitch], {
+      stdio: 'ignore',
+      windowsHide: true,
+      env: childEnvironment,
+    })
+    const firstExitCode = await waitForExit(application, 15_000)
+    if (firstExitCode === null) throw new Error('生产程序遇到不认识的启动参数时没有重新打开自己')
+    if (firstExitCode !== 0) throw new Error(`生产程序遇到不认识的启动参数时退出码是 ${firstExitCode}，应当重新打开自己`)
+    application = null
+    // The relaunched process keeps --user-data-dir, so its log lands in this directory.
+    await waitForLog(path.join(relaunchDirectory, 'logs', 'runtime.jsonl'), (log) => (
+      log.includes('"event":"launch-arguments.relaunched"')
+      && log.includes(`"${unknownSwitch.slice(2)}"`)
+      && (log.includes('"source":"renderer","event":"page.loaded"') || log.includes('"source":"system","event":"scan.completed"'))
+    ), '重新打开的生产程序渲染页就绪并记下去掉的开关')
+    await stopWindowsProcessesByCommandLine(relaunchDirectory)
+
+    const loopDirectory = path.join(temporaryRoot, 'user-data-relaunch-loop')
+    application = spawn(executablePath, [`--user-data-dir=${loopDirectory}`, unknownSwitch], {
+      stdio: 'ignore',
+      windowsHide: true,
+      // electron/launch-argument-relaunch.ts 的 launchArgumentRelaunchEnvironmentKey：
+      // 假装这已经是重新打开的那一次。
+      env: { ...childEnvironment, XINGMANG_RELAUNCHED_WITHOUT_SWITCHES: unknownSwitch.slice(2) },
+    })
+    const loopExitCode = await waitForExit(application, 15_000)
+    if (loopExitCode === null) throw new Error('重新打开的进程还带着不认识的启动参数，却没有退出')
+    if (loopExitCode === 0) throw new Error('重新打开的进程还带着不认识的启动参数，却又重新打开了一次')
+    application = null
+    await delay(3_000)
+    await assert.rejects(fs.access(path.join(loopDirectory, 'logs', 'runtime.jsonl')), '重新打开的进程还带着不认识的启动参数，却打开了桌面')
+  }
 } catch (error) {
   failure = error
 }
@@ -191,4 +282,4 @@ for (const problem of cleanupProblems) console.error(`生产程序启动校验�
 if (failure) throw failure
 if (cleanupProblems.length > 0) throw new Error(cleanupProblems.join('；'))
 
-console.log('生产程序启动校验通过：渲染页与 IPC 正常，配置仅首次迁移并保留备份，远程调试参数已拒绝')
+console.log(`生产程序启动校验通过：渲染页与 IPC 正常，配置仅首次迁移并保留备份，远程调试参数已拒绝${process.platform === 'win32' ? '，不认识的启动参数去掉后重新打开' : ''}`)
