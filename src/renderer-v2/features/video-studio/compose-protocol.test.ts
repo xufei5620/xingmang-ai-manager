@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
+  addVideoStudioClipBytes,
   maxVideoStudioClipBytes,
+  maxVideoStudioTotalBytes,
   parseVideoStudioComposeRequest,
   parseVideoStudioWorkerMessage,
   parseVideoStudioWorkerReply,
@@ -49,6 +51,12 @@ describe('video studio compose protocol', () => {
     const half = { byteLength: maxVideoStudioClipBytes }
     Object.setPrototypeOf(half, ArrayBuffer.prototype)
     expect(() => parseVideoStudioComposeRequest({ clips: [{ data: half }, { data: half }, clip()], options })).toThrow('片段加起来超过 1 GB 了，少放几段再拼')
+  })
+
+  it('stops the page reading clips at the same total, with the same words, as the worker', () => {
+    expect(addVideoStudioClipBytes(0, maxVideoStudioClipBytes)).toBe(maxVideoStudioClipBytes)
+    expect(addVideoStudioClipBytes(maxVideoStudioClipBytes, maxVideoStudioClipBytes)).toBe(maxVideoStudioTotalBytes)
+    expect(() => addVideoStudioClipBytes(maxVideoStudioTotalBytes, 1)).toThrow('片段加起来超过 1 GB 了，少放几段再拼')
   })
 
   it('accepts only compose messages in the worker', () => {

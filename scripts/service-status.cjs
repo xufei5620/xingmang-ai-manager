@@ -25,6 +25,13 @@ const CLI_MODEL_FIELDS = ['default', 'previous', 'retired']
 const CLI_MODEL_NAME = /^[A-Za-z0-9][\w.:/@+-]{0,127}$/
 const MAX_PREVIOUS_CLI_MODELS = 8
 const MAX_RETIRED_CLI_MODELS = 32
+// 不能拿来对话、改代码的型号（生图、视频、语音、向量、服务端审查），与客户端 cli-model-defaults.ts 的
+// isNonInteractiveCliModel 一致：客户端遇到写成默认、上一代的会悄悄不认，发布者得当场知道（#1154 第 3 条）。
+const NON_INTERACTIVE_CLI_MODELS = [
+  /(?:^|\/)codex[-_]auto[-_]review(?:$|[-_:/])/i,
+  /(?:^|\/)minimax-h\d/i,
+  /(?:^|[-_./:])(?:image|imagen|imagine|dall-e|jimeng|seedream|video|sora|veo|kling|vidu|seedance|hailuo|embeddings?|tts|whisper|transcribe|moderation)(?:$|[-_./:\d])/i,
+]
 // #1114：最低版本指着出来还不满一天的包时提醒批准的人。0.2.19 发出去 12 分钟就被设成最低版本。
 const FRESH_RELEASE_MS = 24 * 60 * 60 * 1000
 // 撤回、放量、最低版本只对哪几种安装包生效（#1155 第 5 条），写法与客户端 electron/service-status.ts 的
@@ -494,6 +501,10 @@ function applyAccountGroups(current, input) {
   return Object.keys(next).length ? next : undefined
 }
 
+function isNonInteractiveCliModel(name) {
+  return NON_INTERACTIVE_CLI_MODELS.some((pattern) => pattern.test(name))
+}
+
 function cliModelName(tool, value) {
   const name = value.trim()
   if (!name) throw new StatusInputError(`${tool} 那一项里有空的型号名字（两个 | 挨着了？）`)
@@ -544,6 +555,8 @@ function applyCliModels(current, input) {
       continue
     }
     const names = [...new Set(value.split(/[|｜]/).map((name) => cliModelName(tool, name)))]
+    const unusable = field === 'retired' ? [] : names.filter((name) => isNonInteractiveCliModel(name))
+    if (unusable.length) throw new StatusInputError(`${tool}.${field} 写的 ${unusable.join('、')} 是画图、视频、语音、向量或审查专用的型号，${CLI_MODEL_TOOL_LABELS[tool]} 拿它答不了话，客户端也不认`)
     if (field === 'default') {
       if (names.length !== 1) throw new StatusInputError(`${tool}.default 只能写一个型号：${value}`)
       entry.default = names[0]
@@ -819,4 +832,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }
+module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, isNonInteractiveCliModel, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }

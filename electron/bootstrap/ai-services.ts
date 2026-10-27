@@ -55,7 +55,7 @@ import { assetMenuFailureDialog, type AssetMenuMediaType } from '../window-prese
  * new dependencies, which is why generation is serialized behind a queue.
  */
 /**
- * 主窗口（对话页、视频剪辑页）出的视频存进全局作品库，和对话里出的图片同一处。没有 prepareProject：
+ * 主窗口（视频剪辑页）出的视频存进全局作品库，和对话里出的图片同一处。没有 prepareProject：
  * 它不属于哪个画布项目，画布那份没选项目就停下的检查不该拦它。参考图按编号先找全局、再找各个项目，
  * 对话里选的图片也在全局里。
  */
@@ -499,6 +499,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       rootDirectory: roots.canvasVideoTasksDirectory,
     })
     const videoService = createAiVideoService({
+      onRequestStarted: onAiRequestStarted,
       fetchImpl: routedRelayFetch,
       baseUrl: definition.aiBaseUrl,
       credentials: chatCredentials,
@@ -511,9 +512,10 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
       },
     })
-    // 主窗口（对话页、视频剪辑页）出的视频不属于哪个画布项目，存进全局作品库，和对话里出的图片同一处。
+    // 主窗口（视频剪辑页）出的视频不属于哪个画布项目，存进全局作品库，和对话里出的图片同一处。
     // 画布那份按项目存、没选项目就在扣费前停下，所以另起一份；任务记录也分开放，开机续查时两份各认各的。
     const chatVideoService = createAiVideoService({
+      onRequestStarted: onAiRequestStarted,
       fetchImpl: routedRelayFetch,
       baseUrl: definition.aiBaseUrl,
       credentials: chatCredentials,

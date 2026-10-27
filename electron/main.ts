@@ -82,6 +82,7 @@ import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
+import { applicationSecurityResponseHeaders } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
@@ -314,7 +315,7 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
       callback({ error: -6 })
       return
     }
-    callback({ path: target })
+    callback({ path: target, headers: applicationSecurityResponseHeaders() })
   })
 }
 
@@ -1762,7 +1763,7 @@ if (!hasSingleInstanceLock) {
           }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
           if (siteId === 'solov') {
             void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
-            // 对话页、视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
+            // 视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
             void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
           }
         }
@@ -2525,7 +2526,7 @@ if (!hasSingleInstanceLock) {
       accelerationActive: () => acceleration?.hasPossibleSession() === true,
       // 遥控开着就不在闲时重启：重开以后不会自己连回去，人在外面也开不了（YK-2）。
       remoteControlActive: () => codexRemote.hasEnabledChannel(),
-      // 对话页、视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
+      // 视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
       videoWorking: () => [...businesses.values()].some((business) => (
         business.videoService.hasActiveRequests() || business.chatVideoService.hasActiveRequests()
       )),
