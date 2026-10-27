@@ -54,6 +54,7 @@ import { canReplaceNode } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
 import { updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
 import { RequiredUpdateGate } from './features/app/RequiredUpdateGate'
+import { KnownIssueNotice, useKnownIssue } from './features/app/KnownIssueNotice'
 import { MaintenanceNotice } from './features/app/MaintenanceNotice'
 import { LaunchInstallNotice } from './features/app/LaunchInstallNotice'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
@@ -356,6 +357,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, offerInstall, offerDownload, openInstallConfirm, downloadUpdate, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
     native, update, setUpdate, settings, page, settingsGroup, perform, navigate,
   })
+  // 状态文件里的已知问题提示（service-status.ts 的 knownIssues）：跟维护提示挤同一个角落，按这一页挑一条。
+  const knownIssue = useKnownIssue(update, { page, accountTab: page === 'account' ? shownAccountTab : undefined })
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
   // 窗口缩到托盘久了主进程会关掉界面省内存（useRendererRelease.ts）：装工具、同步密钥时不关；
   // 重新加载的那一次回到原来那一页，工具检测回来了再告诉主进程准备好了（托盘「打开工具」要用它）。
@@ -509,6 +512,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
       onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
+      onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })}
       connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
@@ -561,6 +565,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       leading={[
         ...(launchInstall ? [<LaunchInstallNotice key={`launch-install-${launchInstall.installAt}`} notice={launchInstall} />] : []),
         ...(maintenance && !maintenanceDismissed ? [<MaintenanceNotice key="maintenance" maintenance={maintenance} onDismiss={dismissMaintenance} />] : []),
+        ...(knownIssue.issue ? [<KnownIssueNotice key="known-issue" issue={knownIssue.issue} onDismiss={knownIssue.dismiss}
+          onAction={(action) => { if (action === 'update') navigate('updates'); else setHelp(true) }} />] : []),
       ]}
       onOpen={(id, action) => {
         if ('supportFailure' in action) {

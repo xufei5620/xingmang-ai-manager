@@ -7298,6 +7298,48 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })).rejects.toThrow(/^支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。$/)
     })
 
+    it('hides switched-off payment methods from the recharge page and refuses them if the page still shows one', async () => {
+      const accountService = accountServiceStub()
+      const hiddenPaymentMethods = vi.fn(async () => ['alipay', 'stripe'])
+      const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { hiddenPaymentMethods })
+      vi.mocked(accountService.getTopupInfo).mockResolvedValue({
+        onlineTopupEnabled: true, stripeTopupEnabled: true, creemTopupEnabled: false, waffoPancakeTopupEnabled: false,
+        redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null,
+        paymentMethods: [
+          { name: '支付宝', type: 'AliPay', provider: 'epay', color: null, icon: null, minTopup: 0 },
+          { name: '微信', type: 'wxpay', provider: 'epay', color: null, icon: null, minTopup: 0 },
+        ],
+        minTopup: 1, amountOptions: [10], discounts: {}, topupLink: null,
+      })
+
+      await expect(electronMocks.handlers.get('account:get-topup-info')!(trustedEvent())).resolves.toMatchObject({
+        paymentMethods: [{ name: '微信', type: 'wxpay' }],
+      })
+      // 页面是开关打开之前读的，还摆着支付宝：点下去在这里拦住，不走进那条坏掉的路。
+      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+        amount: 10, paymentMethod: 'alipay',
+      })).rejects.toThrow(/^这种付款方式暂时停用了，请换一种付款方式。$/)
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).rejects.toThrow(/^这种付款方式暂时停用了，请换一种付款方式。$/)
+      expect(accountService.createTopupPayment).not.toHaveBeenCalled()
+      expect(accountService.createSubscriptionPayment).not.toHaveBeenCalled()
+      expect(paymentWindow.open).not.toHaveBeenCalled()
+      expect(paymentWindow.openUrl).not.toHaveBeenCalled()
+
+      // 状态文件读不到只是不藏，充值照常。
+      hiddenPaymentMethods.mockRejectedValue(new Error('status file unreadable'))
+      vi.mocked(accountService.createTopupPayment).mockResolvedValue({
+        action: 'https://pay.example.com/submit', allowedOrigin: 'https://pay.example.com', method: 'POST', fields: [{ name: 'sign', value: 'signed' }], tradeNo: 'trade-3',
+      })
+      await expect(electronMocks.handlers.get('account:get-topup-info')!(trustedEvent())).resolves.toMatchObject({
+        paymentMethods: [{ type: 'AliPay' }, { type: 'wxpay' }],
+      })
+      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+        amount: 10, paymentMethod: 'alipay',
+      })).resolves.toEqual({ opened: true, tradeNo: 'trade-3' })
+    })
+
     it('rejects malformed subscription payment inputs before dispatch', async () => {
       const accountService = accountServiceStub()
       const { paymentWindow } = register(serviceStub(), 'C:\app-data\logs', undefined, accountService)

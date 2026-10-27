@@ -1,4 +1,4 @@
-import type { UpdateSnapshot } from './updater'
+import type { UpdateDownloadMeasure, UpdateSnapshot } from './updater'
 
 /**
  * 主程序更新状态那条日志（main.ts 的 broadcastUpdate）什么时候记。
@@ -50,5 +50,35 @@ export function createUpdateStateLogFilter(): (snapshot: UpdateSnapshot) => bool
     if (key === lastKey) return false
     lastKey = key
     return true
+  }
+}
+
+function formatMegabytes(bytes: number): string {
+  return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+}
+
+/**
+ * 一个版本下好时那条日志（download.measured）。明细里留原始字节数；percent 是实际下的占整包
+ * 多少，不封顶：增量没成、改下整包时会比 100 多出两份块表那一点，停住重下过的还会更多。
+ */
+export function buildUpdateDownloadMeasureLog(measure: UpdateDownloadMeasure): { message: string; detail: Record<string, unknown> } {
+  const { version, packageBytes, receivedBytes } = measure
+  const percent = packageBytes !== null && packageBytes > 0 && receivedBytes !== null
+    ? Math.round(receivedBytes / packageBytes * 100)
+    : null
+  const parts: string[] = []
+  if (receivedBytes !== null) parts.push(`这次实际下了 ${formatMegabytes(receivedBytes)}`)
+  if (packageBytes !== null) parts.push(`安装包 ${formatMegabytes(packageBytes)}${percent === null ? '' : `（${percent}%）`}`)
+  if (receivedBytes === null) parts.push('实际下了多少没数到')
+  return {
+    message: `新版本${version ? ` ${version} ` : ''}下好了：${parts.join('，')}`,
+    detail: {
+      version,
+      packageBytes,
+      receivedBytes,
+      ...(percent === null ? {} : { percent }),
+      retried: measure.retried,
+      elapsedMs: measure.elapsedMs,
+    },
   }
 }

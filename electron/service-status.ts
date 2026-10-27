@@ -83,11 +83,52 @@ export interface ServiceStatus {
    */
   cliModels?: CliModelHints
   /**
+   * 已知问题提示：出了事还没发版修好之前，在某一页（或每一页）的右上角说一句「先这样绕过去」。
+   * 只能多说一句话、带一颗去软件里固定去处的按钮，不能带链接（同维护提示的规矩）。没写、写错的那一条
+   * 不显示。0.2.23 起的客户端认。
+   */
+  knownIssues?: readonly ServiceKnownIssue[]
+  /**
+   * 充值方式开关：在软件的充值页藏掉某几种付款方式（只藏软件里的，网站不受影响）。只能少给、不能多给：
+   * 站上没开的付款方式，这里写了也不会出来。没写、写错的那一条不藏。0.2.23 起的客户端认。
+   */
+  paymentMethodsOff?: readonly ServicePaymentMethodOff[]
+  /**
    * 发布者改这份文件的时间（GitHub 按钮写的 `updatedAt`），ISO 格式。只拿来比撤回名单和放量哪份更新：
    * 某条线路、某个 CDN 节点给了一份旧的，不让它盖掉本机记着的新的（#1157 第 10 条）。没写、写错、比本机
    * 时钟晚一天以上都当没写。
    */
   updatedAt?: string
+}
+
+/**
+ * 已知问题提示挂在哪：all 是每一页都出，其余各是一页（recharge 是个人中心的充值页签）。
+ * 只列出事后最先要止血的几处；要加一处得先发一版，界面认得它才有用。
+ */
+export const knownIssuePages = ['all', 'home', 'chat', 'recharge', 'settings'] as const
+export type KnownIssuePage = typeof knownIssuePages[number]
+/** 提示上那颗按钮去哪：update 去版本更新，support 打开帮助与客服。只有软件里的固定去处，没有网址。 */
+export const knownIssueActions = ['update', 'support'] as const
+export type KnownIssueAction = typeof knownIssueActions[number]
+
+/** 这台电脑该看到的一条已知问题（版本、平台已经筛过）。 */
+export interface KnownIssue {
+  page: KnownIssuePage
+  message: string
+  action?: KnownIssueAction
+}
+
+/** 只给哪几版、哪几种安装包：没写就是所有认这一项的版本、所有平台。 */
+export interface ServiceSwitchScope {
+  versions?: readonly string[]
+  platforms?: readonly string[]
+}
+
+export interface ServiceKnownIssue extends KnownIssue, ServiceSwitchScope {}
+
+export interface ServicePaymentMethodOff extends ServiceSwitchScope {
+  /** 站上付款方式的 type（alipay、wxpay、stripe…），比较时不分大小写。 */
+  method: string
 }
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
@@ -414,6 +455,101 @@ export function parseCliModelHints(value: unknown): CliModelHints | null {
   return readCliModels(value)
 }
 
+// 同时挂着的提示和开关用不了几条；上限只防一份写坏的文件塞进一长串。
+const maxKnownIssues = 8
+const maxPaymentMethodsOff = 16
+const maxSwitchVersions = 20
+// 付款方式的 type 原样来自站上（new-api-client.ts 的 parseTopupInfo 也截在 64 个字）。
+const paymentMethodPattern = /^[A-Za-z0-9_.-]{1,64}$/
+
+// 只给哪几版、哪几种安装包。版本表或平台表里有一项读不懂就整条作废：提示和开关管到不该管的电脑上，
+// 比少管几台更糟。撤回名单反过来（读不懂就对所有平台撤），因为它宁可多拦。
+function readSwitchScope(value: Record<string, unknown>): ServiceSwitchScope | null {
+  const scope: ServiceSwitchScope = {}
+  if (value.versions !== undefined) {
+    if (!Array.isArray(value.versions) || value.versions.length === 0 || value.versions.length > maxSwitchVersions) return null
+    const versions: string[] = []
+    for (const entry of value.versions) {
+      const version = readVersion(entry)
+      if (!version) return null
+      if (!versions.includes(version)) versions.push(version)
+    }
+    scope.versions = versions
+  }
+  if (value.platforms !== undefined) {
+    const platforms = readReleasePlatforms(value.platforms)
+    if (!platforms) return null
+    scope.platforms = platforms
+  }
+  return scope
+}
+
+function readKnownIssuePage(value: unknown): KnownIssuePage | null {
+  if (value === undefined) return 'all'
+  const name = typeof value === 'string' ? value.trim().toLowerCase() : ''
+  return knownIssuePages.find((page) => page === name) ?? null
+}
+
+// 提示里不许带网址（发布脚本 scripts/service-status.cjs 的 LINK_LIKE 同一个写法）：界面照纯文字摆、点不开，
+// 而这份文件没有签名，带网址的「已知问题」正是有人改了它以后最想塞给客户的东西（比如「请到某某网址充值」）。
+const linkLike = /[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9-]+\.(?:com|cn|cc|net|org|top|xyz|fun|io|me|vip|shop|site|link|info|biz)\b/i
+
+// 认不出的页（以后的版本才有的那一页）整条不显示：这台电脑上没有那一页，挂到别处只会说错地方。
+// 认不出的按钮只去掉按钮，那句话照样说。带网址的整条不显示。
+function readKnownIssues(value: unknown): ServiceKnownIssue[] | null {
+  if (!Array.isArray(value)) return null
+  const issues: ServiceKnownIssue[] = []
+  for (const entry of value.slice(0, maxKnownIssues)) {
+    if (!isRecord(entry)) continue
+    const message = readMessage(entry.message)
+    const page = readKnownIssuePage(entry.page)
+    const scope = readSwitchScope(entry)
+    if (!message || linkLike.test(message) || !page || !scope) continue
+    const action = knownIssueActions.find((name) => name === entry.action)
+    issues.push({ page, message, ...(action ? { action } : {}), ...scope })
+  }
+  return issues.length ? issues : null
+}
+
+function readPaymentMethodsOff(value: unknown): ServicePaymentMethodOff[] | null {
+  if (!Array.isArray(value)) return null
+  const switches: ServicePaymentMethodOff[] = []
+  for (const entry of value.slice(0, maxPaymentMethodsOff)) {
+    if (!isRecord(entry)) continue
+    const method = typeof entry.method === 'string' ? entry.method.trim().toLowerCase() : ''
+    const scope = readSwitchScope(entry)
+    if (!paymentMethodPattern.test(method) || !scope) continue
+    switches.push({ method, ...scope })
+  }
+  return switches.length ? switches : null
+}
+
+function switchApplies(scope: ServiceSwitchScope, version: string, here: readonly string[]): boolean {
+  if (scope.versions && !scope.versions.includes(version.trim().replace(/^v/i, ''))) return false
+  return appliesTo(scope.platforms, here)
+}
+
+/** 这台电脑（这一版、这种安装包）该看到的已知问题，按文件里的先后排。 */
+export function resolveKnownIssuesFor(
+  status: Pick<ServiceStatus, 'knownIssues'> | null | undefined,
+  version: string,
+  here: readonly string[],
+): KnownIssue[] {
+  return (status?.knownIssues ?? [])
+    .filter((issue) => switchApplies(issue, version, here))
+    .map((issue) => ({ page: issue.page, message: issue.message, ...(issue.action ? { action: issue.action } : {}) }))
+}
+
+/** 这台电脑的充值页要藏掉的付款方式（小写的 type）。 */
+export function resolveHiddenPaymentMethodsFor(
+  status: Pick<ServiceStatus, 'paymentMethodsOff'> | null | undefined,
+  version: string,
+  here: readonly string[],
+): string[] {
+  const methods = (status?.paymentMethodsOff ?? []).filter((entry) => switchApplies(entry, version, here)).map((entry) => entry.method)
+  return [...new Set(methods)]
+}
+
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
 export function parseServiceStatus(text: string, now: Date): ServiceStatus {
   return parseServiceStatusDocument(text, now) ?? emptyServiceStatus
@@ -438,6 +574,8 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
   const badVersionPlatforms = readBadVersionPlatforms(parsed.badVersionPlatforms, badVersions)
   const minimumVersion = readMinimumVersion(parsed.minimumVersion)
   const minimumVersionPlatforms = minimumVersion ? readReleasePlatforms(parsed.minimumVersionPlatforms) : null
+  const knownIssues = readKnownIssues(parsed.knownIssues)
+  const paymentMethodsOff = readPaymentMethodsOff(parsed.paymentMethodsOff)
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions,
@@ -448,6 +586,8 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
     ...(parsed.toolRouteRewrite === 'merge' ? { toolRouteRewrite: 'merge' as const } : {}),
     ...(accountGroups ? { accountGroups } : {}),
     ...(cliModels ? { cliModels } : {}),
+    ...(knownIssues ? { knownIssues } : {}),
+    ...(paymentMethodsOff ? { paymentMethodsOff } : {}),
     ...(updatedAt ? { updatedAt } : {}),
   }
 }

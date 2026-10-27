@@ -797,6 +797,10 @@ describe('ProviderSessionsService', () => {
     } finally {
       opened.mockRestore()
     }
+    // The re-probe rewrites the cache after the page is back. Ending before
+    // that write lands lets the cleanup's rmSync race its temporary file and
+    // fail with ENOTEMPTY, so wait for the new title to reach the cache.
+    await vi.waitFor(() => expect(fs.readFileSync(cacheFile, 'utf8')).toContain('改过的标题'), probeCacheWrite)
   })
 
   it('drops the cached probe of a session file that was deleted', async () => {

@@ -78,6 +78,13 @@ const maxFileLines = 20
 const seenMessageLimit = 512
 const secretsTtlMs = 60_000
 const shutdownSendTimeoutMs = 1500
+/**
+ * 星芒退出前跟手机道别最多等这么久（打磨 B8）：退出不能被一条消息拖住。要比主窗口 prepareToQuit 那 2 秒的
+ * 清理预算（window-lifecycle 的 quitCleanupBudgetMs）短，不然道别还没放手，退出那边先记一条「清理超时」。
+ */
+const farewellTimeoutMs = shutdownSendTimeoutMs
+/** 一轮多久没任何动静就当它卡死（打磨 C2，yoyo 10-27「停改」）：Codex 不出声这一轮永远不结束，手机上发什么都是「上一件还没做完」。 */
+const turnStallMs = 60 * 60_000
 /** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
 const maxApprovalNumber = 9999
 
@@ -258,6 +265,8 @@ interface TurnState {
   lastMessage: string | null
   error: string | null
   stoppedByUser: boolean
+  /** 上一次有动静起算的「卡死」计时；每条通知、每次问审批都重新起算（noteTurnProgress）。 */
+  stallTimer: NodeJS.Timeout | null
 }
 
 interface ChannelRuntime {
@@ -319,6 +328,8 @@ export class CodexRemoteService {
   private codexStarting: Promise<CodexAppServerClient> | null = null
   private secrets: readonly string[] = []
   private secretsReadAt = 0
+  /** farewell() 已经说过「星芒关了」的渠道：退出没退成时要补一句（quitAborted）。 */
+  private readonly farewellSaid = new Set<RemoteChannelId>()
   private disposed = false
 
   constructor(private readonly options: CodexRemoteServiceOptions) {
@@ -505,8 +516,42 @@ export class CodexRemoteService {
   }
 
   /**
+   * 星芒要退出了（主窗口的 prepareToQuit，排在 dispose 前面）：开着遥控、绑着人的渠道各发一句「星芒关了」，
+   * 最多等 1.5 秒（打磨 B8）。dispose 在 will-quit 里同步调、来不及等网络，所以道别只能放在这一步；发不出去就算了，
+   * 退出不等它。Windows 关机那条路不经过这里，关机不为一条消息推迟。
+   */
+  async farewell(): Promise<void> {
+    if (this.disposed) return
+    const sends = remoteChannelIds.map((id) => this.runtimes[id]).filter((runtime) => runtime.enabled && runtime.adapter).map(async (runtime) => {
+      const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
+      if (!peer) return
+      await this.sendText(runtime, remoteMessages.quitting, peer)
+      this.farewellSaid.add(runtime.id)
+    })
+    if (!sends.length) return
+    await Promise.race([Promise.all(sends), new Promise((resolve) => setTimeout(resolve, farewellTimeoutMs).unref?.())])
+  }
+
+  /**
+   * 退出没退成（装更新的安装器没启动起来——Windows 上在系统提权框点了「否」、Mac 卸载移不进废纸篓）：
+   * farewell() 已经跟手机说过「星芒关了」，可星芒还开着、遥控照常收消息，得补一句，不然手机那头
+   * 以为遥控停了。只补给说过「关了」的渠道，退出真走掉了这里不会被调。
+   */
+  async quitAborted(): Promise<void> {
+    if (this.disposed) return
+    const ids = [...this.farewellSaid]
+    this.farewellSaid.clear()
+    await Promise.all(ids.map(async (id) => {
+      const runtime = this.runtimes[id]
+      if (!runtime.enabled || !runtime.adapter) return
+      const peer = runtime.peer ?? (await this.boundPeer(id))
+      if (peer) await this.sendText(runtime, remoteMessages.quitAborted, peer)
+    }))
+  }
+
+  /**
    * 星芒退出（will-quit 里同步调）：等你同意的一律拒绝，停掉定时器、渠道连接和 Codex 进程。
-   * 退出时来不及等网络，不跟手机道别；下次手机上发消息不会有人理，直到在电脑上重新打开。
+   * 这里来不及等网络，道别那句在 farewell() 里已经发过；下次手机上发消息不会有人理，直到在电脑上重新打开。
    */
   dispose(): void {
     if (this.disposed) return
@@ -516,7 +561,7 @@ export class CodexRemoteService {
       const runtime = this.runtimes[id]
       runtime.enabled = false
       this.clearPairing(runtime)
-      runtime.turn = null
+      this.clearTurn(runtime)
       if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
       runtime.idleTimer = null
       const adapter = runtime.adapter
@@ -627,12 +672,40 @@ export class CodexRemoteService {
     const turn = runtime.turn
     if (!turn) return
     turn.stoppedByUser = true
-    runtime.turn = null
+    this.clearTurn(runtime)
     if (turn.id && runtime.threadId && this.codex?.running) {
       await this.codex.request('turn/interrupt', { threadId: runtime.threadId, turnId: turn.id }, 10_000).catch(() => {
         this.options.log('warn', 'remote.interrupt-failed', { channel: runtime.id })
       })
     }
+  }
+
+  /** 这一轮结束了（做完、停掉、Codex 没了、星芒退出）：连它的「卡死」计时一起收掉。 */
+  private clearTurn(runtime: ChannelRuntime): void {
+    const turn = runtime.turn
+    if (turn?.stallTimer) clearTimeout(turn.stallTimer)
+    if (turn) turn.stallTimer = null
+    runtime.turn = null
+  }
+
+  /**
+   * 这一轮刚有动静（开始、Codex 发来通知、问审批）：「卡死」计时重新起算。一小时没再动，就当 Codex 卡死了：
+   * 等你同意的一律拒绝、请 Codex 停下，告诉手机一句，之后再发消息就能开新的一轮（打磨 C2）。
+   */
+  private noteTurnProgress(runtime: ChannelRuntime): void {
+    const turn = runtime.turn
+    if (!turn) return
+    if (turn.stallTimer) clearTimeout(turn.stallTimer)
+    turn.stallTimer = setTimeout(() => {
+      turn.stallTimer = null
+      if (runtime.turn !== turn || this.disposed) return
+      this.options.log('warn', 'remote.turn-stalled', { channel: runtime.id })
+      void this.abandonTurn(runtime)
+        .then(() => this.sendText(runtime, remoteMessages.stalled))
+        .then(() => { this.touch(runtime); this.emitSoon() })
+        .catch(() => undefined)
+    }, turnStallMs)
+    turn.stallTimer.unref?.()
   }
 
   private touch(runtime: ChannelRuntime, delayMs = idleTimeoutMs): void {
@@ -867,8 +940,9 @@ export class CodexRemoteService {
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       return
     }
-    const turn: TurnState = { id: null, finalAnswer: null, lastMessage: null, error: null, stoppedByUser: false }
+    const turn: TurnState = { id: null, finalAnswer: null, lastMessage: null, error: null, stoppedByUser: false, stallTimer: null }
     runtime.turn = turn
+    this.noteTurnProgress(runtime)
     this.emitSoon()
     await this.sendText(runtime, remoteMessages.received)
     let client: CodexAppServerClient
@@ -876,7 +950,7 @@ export class CodexRemoteService {
       client = await this.ensureCodex()
     } catch (error) {
       this.options.log('error', 'remote.codex-start-failed', { reason: error instanceof Error ? error.name : 'unknown' })
-      if (runtime.turn === turn) runtime.turn = null
+      if (runtime.turn === turn) this.clearTurn(runtime)
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       this.emitSoon()
       return
@@ -902,7 +976,7 @@ export class CodexRemoteService {
       this.emitSoon()
     } catch (error) {
       if (runtime.turn !== turn) return
-      runtime.turn = null
+      this.clearTurn(runtime)
       runtime.threadId = null
       this.options.log('warn', 'remote.turn-start-failed', { channel: runtime.id })
       await this.sendText(runtime, turnFailedMessage(truncateRemoteText(errorMessage(error, ''), maxReasonLength)))
@@ -960,7 +1034,7 @@ export class CodexRemoteService {
       for (const entry of this.pendingFor(id)) entry.settle('decline')
       runtime.threadId = null
       if (runtime.turn) {
-        runtime.turn = null
+        this.clearTurn(runtime)
         void this.sendText(runtime, turnFailedMessage('电脑上的 Codex 意外退出了，再发一次试试。'))
       }
     }
@@ -975,6 +1049,8 @@ export class CodexRemoteService {
   private onNotification(method: string, params: unknown): void {
     if (!isRecord(params)) return
     const runtime = this.runtimeByThread(params.threadId)
+    // 这一轮的任何通知都算有动静（item/agentMessage/delta 这类不另处理的也算）。
+    if (runtime?.turn) this.noteTurnProgress(runtime)
     if (method === 'item/started' || method === 'item/completed') {
       const item = isRecord(params.item) ? params.item : null
       if (!item) return
@@ -1005,7 +1081,7 @@ export class CodexRemoteService {
     if (!turn) return
     const turnId = stringField(turnPayload.id)
     if (turn.id && turnId && turn.id !== turnId) return
-    runtime.turn = null
+    this.clearTurn(runtime)
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     let reply: string | null
     if (turnPayload.status === 'completed') reply = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
@@ -1077,6 +1153,7 @@ export class CodexRemoteService {
     const peer = runtime?.peer
     if (!runtime || !threadId || !peer || !runtime.turn || runtime.turn.stoppedByUser || !runtime.adapter) return 'decline'
     const turn = runtime.turn
+    this.noteTurnProgress(runtime)
     await this.refreshSecrets()
     const id = await this.allocateApprovalId()
     // 读密钥、记编号的这一会儿，这一轮可能已经被停掉、渠道已经关了：不再问人。
