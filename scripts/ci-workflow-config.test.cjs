@@ -210,8 +210,13 @@ test('the Linux jobs bound and retry the apt install of Chromium system librarie
   const attempts = installer.match(/CI_APT_ATTEMPT_SECONDS:-([\d ]+)\}/)[1].trim().split(/\s+/).map(Number)
   const lockWait = Number(installer.match(/CI_APT_LOCK_WAIT_SECONDS:-(\d+)\}/)[1])
   const killGrace = Number(installer.match(/timeout --kill-after=(\d+)s/)[1])
-  assert.equal(attempts.length, 2, 'one retry, matching the project rule of at most one re-run')
-  const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait
+  // A retry is not a re-run of the same failure: apt keeps the .deb files an
+  // attempt finished and the next one carries on from them (the second attempt
+  // of run 40407332094 needed 14.8 of its 25.9 MB). The third is there for a
+  // cache miss on a mirror serving ~40 KB/s, as on 2026-10-26.
+  assert.ok(attempts.length >= 2 && attempts.length <= 3, 'a wedged apt gets a retry, a slow one a little more time')
+  // The lock wait only runs between attempts, never after the last one.
+  const worstCaseSeconds = attempts.reduce((sum, limit) => sum + limit + killGrace, 0) + lockWait * (attempts.length - 1)
 
   // Both Linux browser jobs install the libraries, so both carry the bound.
   for (const [jobName, firstBrowserCommand] of [
@@ -232,12 +237,73 @@ test('the Linux jobs bound and retry the apt install of Chromium system librarie
 
     const depsStep = steps[depsIndex]
     assert.equal(typeof depsStep['timeout-minutes'], 'number', `${jobName}: the apt step must carry its own bound`)
-    assert.ok(depsStep['timeout-minutes'] <= 13, `${jobName}: a wedged mirror must not eat the time the tests need`)
+    assert.ok(depsStep['timeout-minutes'] <= 18, `${jobName}: a wedged mirror must not eat the time the tests need`)
     assert.ok(depsStep['timeout-minutes'] < job['timeout-minutes'])
     assert.match(String(depsStep.run), /Acquire::https?::Timeout/)
     assert.ok(worstCaseSeconds + 60 < depsStep['timeout-minutes'] * 60,
       `${jobName}: the installer's ${worstCaseSeconds}s worst case must fit inside the step bound with a minute to spare`)
   }
+})
+
+// On 2026-10-26 the Azure Ubuntu mirror served some runners at ~40 KB/s and
+// five pull requests went red before a test ran. The .deb files are cached:
+// both Linux browser jobs read the cache, and only linux-test writes it, on
+// main, like the Electron download.
+test('the Linux jobs cache the .deb files of Chromium system libraries', () => {
+  const cachePath = '~/.cache/ci-apt-archives'
+  function isAptCache(step, action) {
+    return String(step.uses || '').startsWith(`actions/cache/${action}@`) && step.with?.path === cachePath
+  }
+
+  const keys = []
+  for (const jobName of ['linux-test', 'linux-renderer-v2-browser']) {
+    const steps = workflow.jobs[jobName].steps
+    const depsIndex = steps.findIndex((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
+    const restoreIndex = steps.findIndex((step) => isAptCache(step, 'restore'))
+    assert.notEqual(restoreIndex, -1, `${jobName} must restore the apt download cache`)
+    assert.ok(restoreIndex < depsIndex, `${jobName}: the cache must be restored before apt runs`)
+
+    // The runner image decides what is installed already and Playwright decides
+    // the package list, so the key moves with both; a miss falls back to the
+    // newest entry for the same Ubuntu release, and apt fetches only what changed.
+    const restore = steps[restoreIndex]
+    const imageStep = steps.find((step) => step.id === 'apt-image')
+    assert.ok(imageStep && steps.indexOf(imageStep) < restoreIndex, `${jobName} must name the runner image first`)
+    assert.match(String(imageStep.run), /os=\$\{ImageOS[:}]/)
+    assert.match(String(imageStep.run), /version=\$\{ImageVersion[:}]/)
+    assert.match(restore.with.key, /steps\.apt-image\.outputs\.os\b.*steps\.apt-image\.outputs\.version\b/)
+    assert.match(restore.with.key, /hashFiles\('node_modules\/playwright-core\/package\.json'\)/)
+    assert.match(restore.with['restore-keys'], /steps\.apt-image\.outputs\.os\b/)
+    assert.ok(restore.with.key.startsWith(restore.with['restore-keys']), `${jobName}: the fallback must be a prefix of the key`)
+    keys.push(restore.with.key)
+
+    const depsRun = String(steps[depsIndex].run)
+    assert.match(depsRun, /CI_APT_DEB_CACHE_DIR="\$HOME\/\.cache\/ci-apt-archives" bash scripts\/ci-install-chromium-deps\.sh/,
+      `${jobName}: the installer must seed apt from, and keep its downloads in, the folder the cache restores`)
+    assert.match(depsRun, /APT::Keep-Downloaded-Packages "true"/,
+      `${jobName}: apt must leave the downloaded files behind for the cache`)
+  }
+  assert.equal(keys[0], keys[1], 'both jobs must read the entry linux-test writes')
+
+  const savers = Object.entries(workflow.jobs).flatMap(([jobName, job]) => (
+    (job.steps || []).filter((step) => isAptCache(step, 'save')).map((step) => ({ jobName, step }))
+  ))
+  assert.deepEqual(savers.map((entry) => entry.jobName), ['linux-test'], 'one job writes the apt cache')
+  const steps = workflow.jobs['linux-test'].steps
+  const save = savers[0].step
+  const saveIndex = steps.indexOf(save)
+  const depsStep = steps.find((step) => /scripts\/ci-install-chromium-deps\.sh/.test(String(step.run || '')))
+  assert.ok(steps.indexOf(depsStep) < saveIndex && saveIndex < steps.findIndex((step) => step.run === 'npm run typecheck'),
+    'saved right after apt, so a run cancelled during the tests still leaves it behind')
+  assert.equal(save.with.key, '${{ steps.apt-cache.outputs.cache-primary-key }}')
+  assert.equal(steps.find((step) => step.id === 'apt-cache').with.path, cachePath)
+  // A pull request's entry would serve that pull request alone. An empty entry
+  // would count as a hit from then on and never be replaced, so the installer
+  // has to say it kept something.
+  assert.match(save.if, /github\.event_name == 'push'/)
+  assert.match(save.if, /steps\.apt-cache\.outputs\.cache-hit != 'true'/)
+  assert.equal(depsStep.id, 'chromium-deps')
+  assert.match(save.if, /steps\.chromium-deps\.outputs\.cache-ready == 'true'/)
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
@@ -334,8 +400,8 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:3'], 'npm run test:vitest -- --shard=3/4')
   assert.equal(scripts['test:vitest:4'], 'npm run test:vitest -- --shard=4/4')
 
-  // quality.yml runs test:v2:browser whole nowhere (the release gates still run
-  // test:v2 whole). The two suites that bring a Vite cacheDir of their own get a
+  // quality.yml runs test:v2:browser whole nowhere (the release gates run it
+  // whole after npm test). The two suites that bring a Vite cacheDir of their own get a
   // runner of their own; the configFile:false browser-checks are
   // test:v2:browser:fixture, which Windows and Linux each cut into numbered
   // shares of their own below.
@@ -538,7 +604,7 @@ test('dealing a file across the fixture shares runs each of its tests exactly on
   }
   assert.deepEqual(deal(undefined), names, 'an unsharded run must register every test')
   // Unsharded, a file gets node:test's own test, so local runs and the release
-  // gates' whole test:v2 still report each test at its own line rather than at
+  // gates' whole test:v2:browser still report each test at its own line rather than at
   // the wrapper.
   assert.equal(shard.test === test, !process.env.XINGMANG_TEST_SHARD, 'only a named shard may wrap test')
   for (const total of [1, 2, 3]) {
@@ -688,6 +754,13 @@ test('each platform runs every vitest file once, through npm test or its shards'
   for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
     assert.equal(commands.includes(repeat), false, `${repeat} repeats files test:vitest already runs on every platform`)
   }
+  // Nor may the Windows release build, which runs `npm test` whole first. It
+  // ran test:v2 and test:canvas after it until the same was found there.
+  const gate = windowsReleaseGateCommands()
+  for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
+    assert.equal(gate.includes(repeat), false, `${repeat} repeats files the release build's npm test already runs`)
+  }
+  assert.ok(gate.includes('npm run test:v2:browser'), 'the release build must still run the half of test:v2 npm test does not')
 })
 
 test('the legacy rollback UI suites are verified on exactly one platform', () => {
@@ -785,7 +858,7 @@ test('the supported macOS runner runs the real isolated free-distribution build 
   assert.equal(macJob.steps.some((step) => String(step.uses || '').includes('upload-artifact')), false)
 })
 
-test('the release path itself is rehearsed on every pull request, not only when a release is cut', () => {
+test('the release path itself is rehearsed before a merge, not only when a release is cut', () => {
   const job = workflow.jobs['macos-release-rehearsal']
   const commands = runSteps('macos-release-rehearsal')
 
@@ -1071,9 +1144,15 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['windows-test', 'windows-package', 'macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
+  }
+  // Their output is never true where code is false, so they skip on every
+  // documentation-only change too.
+  for (const job of ['macos-release-rehearsal', 'macos-intel']) {
+    assert.equal(workflow.jobs[job].needs, 'changes')
+    assert.equal(workflow.jobs[job].if, "needs.changes.outputs.macPackaging == 'true'")
   }
 })
 
@@ -1121,8 +1200,8 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     try { vm.runInNewContext(source, { process: { env: { JOB_RESULTS: JSON.stringify(jobs) }, exit: () => { throw new Error('failed') } } }) } catch { failed = true }
     return !failed
   }
-  const verify = (code, changeResult, results) => {
-    const jobs = { changes: { outputs: { code }, result: changeResult } }
+  const verify = (code, changeResult, results, macPackaging = code === 'true' ? 'true' : 'false') => {
+    const jobs = { changes: { outputs: { code, macPackaging }, result: changeResult } }
     for (const name of ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit']) {
       jobs[name] = { result: results[name] || 'success' }
     }
@@ -1158,6 +1237,25 @@ test('the required aggregate fails for incomplete checks and accepts documentati
     ['macos-test', 'macos-release-rehearsal', 'macos-intel', 'linux-test', 'linux-renderer-v2-browser', 'linux-package', 'audit'].map(name => [name, 'skipped']),
   )
   assert.equal(verify('false', 'success', documentationOnly), true)
+  // G1: a pull request that leaves the packaging inputs alone skips the two
+  // packaging-only macOS jobs, and everything else still has to pass.
+  const packagingSkipped = { 'macos-release-rehearsal': 'skipped', 'macos-intel': 'skipped' }
+  assert.equal(verify('true', 'success', packagingSkipped, 'false'), true)
+  assert.equal(verify('true', 'success', { ...packagingSkipped, 'macos-test': 'skipped' }, 'false'), false)
+  assert.equal(verify('true', 'success', { ...packagingSkipped, 'linux-package': 'failure' }, 'false'), false)
+  assert.equal(verify('true', 'success', { ...packagingSkipped, test: 'failure' }, 'false'), false)
+  // Due and skipped is a failure, like every other job here.
+  assert.equal(verify('true', 'success', { 'macos-intel': 'skipped' }, 'true'), false)
+  assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'skipped' }, 'true'), false)
+  assert.equal(verify('true', 'success', { 'macos-intel': 'cancelled' }, 'true'), false)
+  // Not due means they cannot have run; anything else is a mismatch.
+  assert.equal(verify('true', 'success', { 'macos-intel': 'skipped' }, 'false'), false)
+  assert.equal(verify('true', 'success', { 'macos-release-rehearsal': 'failure', 'macos-intel': 'skipped' }, 'false'), false)
+  // A missing output reaches the gate as '', and one that contradicts code is
+  // just as unusable.
+  assert.equal(verify('true', 'success', {}, ''), false)
+  assert.equal(verify('true', 'success', {}, null), false)
+  assert.equal(verify('false', 'success', documentationOnly, 'true'), false)
   // The relay probe runs only when the verified-version list moves, so its
   // skip is a pass; a red one is the whole reason it exists and must block.
   assert.equal(verify('true', 'success', { 'cli-relay-probe': 'success' }), true)
@@ -1301,6 +1399,127 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY, '${{ secrets.XINGMANG_CLI_PATROL_KEY }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
+})
+
+test('the packaging-only macOS jobs run when a pull request moves a packaging input, and on every push to main', () => {
+  const { touchesMacPackaging, requiresMacPackagingChecksForEvent } = require('./ci-change-scope.cjs')
+  for (const file of [
+    'package.json',
+    'package-lock.json',
+    'electron-builder.config.cjs',
+    'build/entitlements.mac.plist',
+    'build/entitlements.mac.adhoc.inherit.plist',
+    'native/macos-system-proxy.swift',
+    'bundled-acceleration/profile.yaml',
+    'scripts/run-macos-free-build.cjs',
+    'scripts/macos-release-keychain-rehearsal.sh',
+    'scripts/stage-acceleration-bundle.cjs',
+    'e2e/macos-launch-smoke.mjs',
+    'electron/safe-local-data.ts',
+    '.github/workflows/quality.yml',
+    '.github/workflows/publish-release.yml',
+    'scripts/ci-change-scope.cjs',
+  ]) {
+    assert.equal(touchesMacPackaging(['README.md', file]), true, file)
+  }
+  for (const file of [
+    'electron/ipc.ts',
+    'src/renderer-v2/ui/brand.tsx',
+    'build/installer.nsh',
+    'build/linux/after-install.tpl',
+    // Claude Desktop's Mac download source, not this app's packaging.
+    'scripts/claude-mac-update-source.cjs',
+    '.github/workflows/package-for-testing.yml',
+    // Near misses.
+    'electron/safe-local-data.test.ts',
+    'e2e/macos-launch-smoke.test.mjs',
+  ]) {
+    assert.equal(touchesMacPackaging(['README.md', file]), false, file)
+  }
+
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', ['electron/ipc.ts']), false)
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', ['electron/ipc.ts', 'package.json']), true)
+  // Never where the code checks themselves are skipped.
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', ['docs/guide.md']), false)
+  // main stands in for every merge since its last finished run, so it runs
+  // them whatever the last merge touched; an unknown range runs everything.
+  assert.equal(requiresMacPackagingChecksForEvent('push', ['docs/guide.md']), true)
+  assert.equal(requiresMacPackagingChecksForEvent('push', ['electron/ipc.ts']), true)
+  assert.equal(requiresMacPackagingChecksForEvent('pull_request', null), true)
+
+  const scopeSource = fs.readFileSync(path.join(root, 'scripts', 'ci-change-scope.cjs'), 'utf8')
+  assert.match(scopeSource, /macPackaging=\$\{macPackaging\}/, 'the scope script must publish the packaging output')
+  assert.match(scopeSource, /const macPackaging = requiresMacPackagingChecksForEvent\(process\.env\.GITHUB_EVENT_NAME, files\)/)
+  assert.equal(workflow.jobs.changes.outputs.macPackaging, '${{ steps.scope.outputs.macPackaging }}')
+})
+
+// The packaging input list is only as good as its coverage of what those two
+// jobs actually run. This follows their commands to the scripts they start and
+// every local file those load, and requires each one to be on the list, so a
+// new import cannot quietly fall outside it.
+test('the packaging input list covers every local file the packaging-only macOS jobs load', () => {
+  const { touchesMacPackaging } = require('./ci-change-scope.cjs')
+  const entries = new Set()
+  function addCommand(command) {
+    for (const match of command.matchAll(/\bnpm run ([\w:-]+)/g)) {
+      // macos-test runs the same compile on every pull request that touches
+      // code (test:mac:dev-origin), so it is not something these two add.
+      if (match[1] === 'compile') continue
+      addCommand(packageJson.scripts[match[1]])
+    }
+    for (const match of command.matchAll(/\b(?:node|bash) ((?:scripts|e2e)\/[\w.-]+)/g)) entries.add(match[1])
+  }
+  for (const job of ['macos-intel', 'macos-release-rehearsal']) {
+    for (const command of runSteps(job)) addCommand(command)
+  }
+  // electron-builder reads its configuration, and the configuration names two
+  // scripts by path rather than by require.
+  entries.add('electron-builder.config.cjs')
+  const builderConfig = fs.readFileSync(path.join(root, 'electron-builder.config.cjs'), 'utf8')
+  for (const script of ['scripts/build-macos-system-proxy.cjs', 'scripts/macos-ephemeral-signing.cjs']) {
+    assert.ok(builderConfig.includes(script), script)
+    entries.add(script)
+  }
+  for (const entry of ['scripts/run-macos-free-build.cjs', 'e2e/macos-launch-smoke.mjs', 'scripts/prepare-acceleration-bundle.cjs', 'scripts/macos-release-keychain-rehearsal.sh']) {
+    assert.ok(entries.has(entry), `${entry} must still be reached from the job commands`)
+  }
+
+  function resolveLocal(from, specifier) {
+    let target = path.posix.normalize(path.posix.join(path.posix.dirname(from), specifier))
+    // The staging tool loads compiled main-process modules.
+    const compiled = /^dist-electron\/(.+)\.js$/.exec(target)
+    if (compiled) target = `electron/${compiled[1]}.ts`
+    const candidate = [target, `${target}.ts`, `${target}.cjs`, `${target}.js`, `${target}.mjs`, `${target}/index.ts`]
+      .find((file) => fs.existsSync(path.join(root, file)) && fs.statSync(path.join(root, file)).isFile())
+    assert.ok(candidate, `${from} loads ${specifier}, which does not resolve`)
+    return candidate
+  }
+  const reached = new Set()
+  const queue = [...entries]
+  while (queue.length > 0) {
+    const file = queue.shift()
+    if (reached.has(file)) continue
+    reached.add(file)
+    const source = fs.readFileSync(path.join(root, file), 'utf8')
+    if (file.endsWith('.sh')) {
+      // A shell script runs from the repository root, so its paths already are.
+      for (const match of source.matchAll(/\bnode ((?:scripts|e2e)\/[\w.-]+)/g)) queue.push(match[1])
+      continue
+    }
+    const specifiers = [
+      ...source.matchAll(/\brequire\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g),
+      ...source.matchAll(/\bimport\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g),
+      // Type-only imports vanish at compile time and load nothing.
+      ...source.matchAll(/^\s*(?:import|export)\s+(?!type\b)[^'";]*?\sfrom\s+['"](\.{1,2}\/[^'"]+)['"]/gm),
+      ...source.matchAll(/^\s*import\s+['"](\.{1,2}\/[^'"]+)['"]/gm),
+    ].map((match) => match[1])
+    for (const specifier of specifiers) queue.push(resolveLocal(file, specifier))
+  }
+  // Sanity: the walk reached the main-process modules behind the staging tool.
+  assert.ok(reached.has('electron/safe-local-data.ts'))
+  assert.ok(reached.has('electron/relocated-folders.ts'))
+  const uncovered = [...reached].filter((file) => !touchesMacPackaging([file])).sort()
+  assert.deepEqual(uncovered, [], 'add these to macPackagingFiles in scripts/ci-change-scope.cjs')
 })
 
 test('every change, documentation included, is scanned for leaked keys before it can merge', () => {

@@ -286,8 +286,12 @@ test('the Linux debs go through their own release gate, one native runner per ar
   assert.doesNotMatch(YAML.stringify(linuxBuildJob), /acceleration/i)
   // release:build:unsigned 里会跑的那几套测试，Linux 在 linux-checks 里跑一遍。
   const checks = linuxChecksJob.steps.map((step) => String(step.run || '').trim())
-  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2', 'npm run test:canvas', 'npm run test:ui']) {
+  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2:browser', 'npm run test:ui']) {
     assert.ok(checks.includes(command), `linux-checks must run ${command}`)
+  }
+  // 出货渲染层和画布的单测 npm test 已经跑过（ci-workflow-config.test.cjs 钉住），再跑就是第二遍。
+  for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
+    assert.equal(checks.includes(repeat), false, `linux-checks must not run ${repeat} after npm test`)
   }
 })
 
@@ -821,12 +825,30 @@ test('the tag is reserved whenever the publish job could run', posixOnly, () => 
 test('a release is only dispatched from main, for the version package.json declares', posixOnly, () => {
   // release 环境只放行 main：从别处触发，Mac 出包和上传都会被环境拒掉，tag 却已经占在
   // 一个发不出去的提交上了。从这一版自己的 tag 触发也一样不行。
-  for (const ref of ['refs/heads/claude/fix', 'refs/tags/v0.2.14', 'refs/tags/v0.2.15']) {
+  // 热修分支只认 hotfix/<这次的版本号>：别的版本号的热修分支、名字多一截的都不行。
+  for (const ref of [
+    'refs/heads/claude/fix',
+    'refs/tags/v0.2.14',
+    'refs/tags/v0.2.15',
+    'refs/heads/hotfix/0.2.14',
+    'refs/heads/hotfix/0.2.15-extra',
+    'refs/heads/hotfix/v0.2.15',
+    'refs/heads/main-hotfix/0.2.15',
+  ]) {
     const run = runPlanStep({ ref, tagSha: SHIPPED })
     assert.notEqual(run.status, 0, ref)
-    assert.ok(run.output.includes(`::error::正式发布只能从 main 触发，这次是 ${ref}`), run.output)
+    assert.ok(run.output.includes(`::error::正式发布只能从 main（或热修分支 hotfix/0.2.15）触发，这次是 ${ref}`), run.output)
     assert.equal(run.log, '', ref)
   }
+  // 产品所有者把 hotfix/<版本号> 加进 release 环境以后，从它触发和从 main 触发走同一套判断。
+  const hotfix = runPlanStep({ ref: 'refs/heads/hotfix/0.2.15' })
+  assert.equal(hotfix.status, 0, hotfix.output)
+  assert.deepEqual(hotfix.outputs, { tag: 'v0.2.15', action: 'create' })
+  // 填错版本号时，对得上分支名也不放行。
+  const hotfixMismatch = runPlanStep({ ref: 'refs/heads/hotfix/0.2.16', confirm: '0.2.16' })
+  assert.notEqual(hotfixMismatch.status, 0)
+  assert.match(hotfixMismatch.output, /::error::版本不一致：package\.json 是 0\.2\.15，本次触发填的是 0\.2\.16/)
+  assert.equal(hotfixMismatch.log, '')
 
   const mismatch = runPlanStep({ confirm: '0.2.16' })
   assert.notEqual(mismatch.status, 0)
@@ -1496,12 +1518,74 @@ test('the Windows manifest is signed before anything is checked or uploaded, and
   const step = publishJob.steps[sign]
   assert.equal(step.if, "${{ needs.windows-build.result == 'success' }}")
   assert.match(String(step.run), /--manifest release-artifacts\/latest\.yml$/)
-  // 只签 Windows：macOS 由 Squirrel.Mac 按钉住的发布证书验签。
+  // macOS 不签：由 Squirrel.Mac 按钉住的发布证书验签。
   assert.doesNotMatch(String(step.run), /latest-mac/)
   assert.deepEqual(Object.keys(step.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
-  // 签名私钥只给这一步，别的步骤一个都不许读到。
+  // 签名私钥只给 Windows 和 Linux 这两步签名，别的步骤一个都不许读到。
+  const linuxSign = publishJob.steps[stepIndex(publishJob, /Sign the Linux update manifests/)]
   const readers = publishJob.steps.filter((item) => /XINGMANG_UPDATE_SIGNING_KEY/.test(YAML.stringify(item)))
-  assert.deepEqual(readers, [step])
+  assert.deepEqual(readers, [step, linuxSign])
+})
+
+test('both Linux manifests are signed before anything is checked or uploaded, and re-verified live', () => {
+  // Linux 客户端从第一次对外发的那一版起缺签名就拒装（electron/bootstrap/updates.ts），
+  // 线上绝不能出现一份没签名的 Linux 清单。
+  const sign = stepIndex(publishJob, /Sign the Linux update manifests/)
+  const download = publishJob.steps.findIndex((step) => step.id === 'linux-artifacts')
+  const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)
+  const firstUpload = publishJob.steps.findIndex((step) => /aws s3 cp/.test(String(step.run || '')))
+  const manifest = stepIndex(publishJob, /Publish the update manifests/)
+  const live = stepIndex(publishJob, /Re-verify the publisher signature on the live Linux manifests/)
+  assert.ok(download >= 0 && sign > download, 'Linux 的包下载进来之后才签')
+  assert.ok(sign < guard && sign < firstUpload, '签名必须排在同版本检查与第一次上传之前')
+  assert.ok(live > manifest, '线上清单的签名复核必须排在清单发布之后')
+  const step = publishJob.steps[sign]
+  // 跟着「Linux 的包有没有下载进来」走：开关关着时不下载，也就没有要签的。
+  assert.equal(step.if, "${{ steps.linux-artifacts.outcome == 'success' }}")
+  assert.deepEqual(Object.keys(step.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
+  const script = String(step.run)
+  assert.match(script, /for manifest in latest-linux\.yml latest-linux-arm64\.yml; do/)
+  assert.match(script, /update-manifest-signature\.cjs sign --manifest "release-artifacts\/\$manifest"/)
+  assert.doesNotMatch(script, /latest-mac/)
+  const check = publishJob.steps[live]
+  assert.equal(check.if, "${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}")
+  assert.match(String(check.run), /for manifest in latest-linux\.yml latest-linux-arm64\.yml; do/)
+  assert.match(String(check.run), /update-manifest-signature\.cjs verify --manifest "\$RUNNER_TEMP\/live-signed-\$manifest"/)
+})
+
+test('the Linux signing step signs whichever Linux manifests arrived and leaves the pair check to the guard', posixOnly, () => {
+  const step = publishJob.steps.find((entry) => /Sign the Linux update manifests/.test(entry.name || ''))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-sign-'))
+  const scripts = path.join(workspace, 'scripts')
+  const artifacts = path.join(workspace, 'release-artifacts')
+  fs.mkdirSync(scripts)
+  fs.mkdirSync(artifacts)
+  const log = path.join(workspace, 'sign.log')
+  // 签名本身由 update-manifest-signature.test.cjs 测；这里只看这一步把哪几份交给它。
+  fs.writeFileSync(path.join(scripts, 'update-manifest-signature.cjs'), `require('node:fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n')\n`)
+  function run() {
+    fs.rmSync(log, { force: true })
+    const result = spawnSync(SHELL_PATH, ['-c', step.run], {
+      cwd: workspace,
+      encoding: 'utf8',
+      env: { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: workspace },
+    })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    return fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []
+  }
+  try {
+    fs.writeFileSync(path.join(artifacts, 'latest.yml'), 'windows')
+    fs.writeFileSync(path.join(artifacts, 'latest-linux.yml'), 'x64')
+    fs.writeFileSync(path.join(artifacts, 'latest-linux-arm64.yml'), 'arm64')
+    assert.deepEqual(run(), [
+      'sign --manifest release-artifacts/latest-linux.yml',
+      'sign --manifest release-artifacts/latest-linux-arm64.yml',
+    ])
+    fs.rmSync(path.join(artifacts, 'latest-linux-arm64.yml'))
+    assert.deepEqual(run(), ['sign --manifest release-artifacts/latest-linux.yml'])
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true })
+  }
 })
 
 test('the publish guard allows a first release, an upgrade and a rerun of the same build only', () => {
