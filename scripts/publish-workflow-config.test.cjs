@@ -1535,7 +1535,7 @@ test('both Linux manifests are signed before anything is checked or uploaded, an
   assert.match(String(check.run), /update-manifest-signature\.cjs verify --manifest "\$RUNNER_TEMP\/live-signed-\$manifest"/)
 })
 
-test('the Linux signing step signs whichever Linux manifests arrived and leaves the pair check to the guard', () => {
+test('the Linux signing step signs whichever Linux manifests arrived and leaves the pair check to the guard', posixOnly, () => {
   const step = publishJob.steps.find((entry) => /Sign the Linux update manifests/.test(entry.name || ''))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-sign-'))
   const scripts = path.join(workspace, 'scripts')
@@ -1547,7 +1547,7 @@ test('the Linux signing step signs whichever Linux manifests arrived and leaves 
   fs.writeFileSync(path.join(scripts, 'update-manifest-signature.cjs'), `require('node:fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n')\n`)
   function run() {
     fs.rmSync(log, { force: true })
-    const result = spawnSync('/bin/bash', ['-c', step.run], {
+    const result = spawnSync(SHELL_PATH, ['-c', step.run], {
       cwd: workspace,
       encoding: 'utf8',
       env: { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: workspace },
