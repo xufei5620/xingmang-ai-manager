@@ -177,6 +177,7 @@ export function remainingCooldown(deadline: number, now = Date.now()): number {
  * - offline：这台电脑没网 → 网络回来自动提示，再试一次；
  * - unreachable / network：连不上账号服务、当前网络有问题 → 再试一次；
  * - support：封号、关了注册这类，重试没用 → 只给找客服；
+ * - keychain：Mac 钥匙串这次没放行，重开星芒系统会再问 → 重新打开星芒 / 找客服；
  * - wait：试得太频繁，要等一会儿，马上再点没用；
  * - final：重试也没用、又不是客服能解的（本机存储满、需要去浏览器验证）；
  * - unknown：说不清的兜底 → 再试一次。
