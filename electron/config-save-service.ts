@@ -904,11 +904,11 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
-      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
+      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的密钥属于其他账号，请使用当前账号重新配置')
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
-      if (!apiKey) throw new Error('请先填写 API Key')
+      if (!apiKey) throw new Error('请先填写密钥')
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
-      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
+      if (!availableModels.includes(model)) throw new Error(`当前密钥不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
       const cliHook = await resolveCliHookInvocation()
@@ -931,7 +931,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         try {
           result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog, seededFor(payload.provider))
         } catch (error) {
-          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方密钥暂时收在一边，切回官方账号时会放回')
           throw error
         }
       } catch (error) {
@@ -1010,10 +1010,10 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       const before = inspectNativeProviderConfig(provider)
       if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
       const apiKey = before.apiKey?.trim() ?? ''
-      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的密钥属于其他账号，已保留原配置')
       const activeSite = providerRelaySite(provider, before)
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
-      if (!availableModels.includes(to)) throw new Error(`当前 API Key 不支持模型 ${to}`)
+      if (!availableModels.includes(to)) throw new Error(`当前密钥不支持模型 ${to}`)
       // 要问一遍 Codex 命令行是哪一版，放在「校验没变」之前，同 saveConfig。
       const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, to) : undefined
       assertOwner()
@@ -1043,10 +1043,10 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       const before = inspectNativeProviderConfig(provider)
       if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
       const apiKey = before.apiKey?.trim() ?? ''
-      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的密钥属于其他账号，已保留原配置')
       const activeSite = providerRelaySite(provider, before)
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
-      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}`)
+      if (!availableModels.includes(model)) throw new Error(`当前密钥不支持模型 ${model}`)
       const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
       assertOwner()
       if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不刷新')

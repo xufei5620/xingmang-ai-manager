@@ -176,7 +176,7 @@ export function createIpcHandlerContext(
         // 分不清原来有没有上限：自动签发一律停下说清楚；用户看过密钥页、亲手再点一次，
         // 才清掉坏记录照常签，免得以后每次都卡在这里。
         if (!explicit) {
-          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「个人中心 → 密钥管理」确认一下它的额度，再点「重新写入密钥」就会换上。')
+          throw new Error('没读到这个工具原来的额度设置，这次没有自动签新密钥。到「个人中心 › 密钥管理」确认一下它的额度，再点「重新写入密钥」就会换上。')
         }
         await keyReplacements.reset().catch(() => undefined)
         pending = null

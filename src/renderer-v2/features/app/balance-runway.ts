@@ -12,6 +12,8 @@ export interface BalanceRunway {
   /** 约还能用几天；订阅不限额、最近 7 天没用量或用量还没读到时为 null。 */
   days: number | null
   low: boolean
+  /** 钱包是 $0、也没有订阅（和首页 homeWalletEmpty 同一个判断）：几处不再说「不到 1 天就会用完」，改说用完了。缺省 = 不是。 */
+  empty?: boolean
 }
 
 /** 按最近用量不够这么多天就算余额低。 */
@@ -37,12 +39,18 @@ export function buildBalanceRunway({ walletUsd, subscription, weekUsageUsd }: {
     ? Math.max(0, Math.floor(usableUsd / (weekUsageUsd / 7)))
     : null
   const low = days !== null ? days < lowRunwayDays : usableUsd !== null && usableUsd < lowBalanceFallbackUsd
-  return { usableUsd, days, low }
+  return { usableUsd, days, low, ...(!subscription && walletUsd <= 0 ? { empty: true as const } : {}) }
+}
+
+/** 钱包是 $0、没订阅、按最近用量算出来「0 天」：这时说「不到 1 天就会用完」是错的，钱已经没了。 */
+export function balanceRunwayEmpty(runway: BalanceRunway | null): runway is BalanceRunway & { days: number } {
+  return runway?.empty === true && runway.days !== null && runway.days < 1
 }
 
 /** 账号卡上那行小字；天数算不出来时为 null，那一行留给别的说明。 */
 export function balanceRunwayText(runway: BalanceRunway | null): string | null {
   if (!runway || runway.days === null) return null
+  if (balanceRunwayEmpty(runway)) return '余额已经用完，充值后才能用'
   const lead = runway.low ? '余额不多了，' : '按最近用量，'
   if (runway.days > 365) return `${lead}够用一年以上`
   if (runway.days < 1) return `${lead}不到 1 天就会用完`

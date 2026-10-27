@@ -91,7 +91,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
             onChange={(event) => studio.changeSettings({ shotCount: Number(event.target.value) })} testId="video-shot-count" />
           <Select label="每段时长" value={String(settings.secondsPerShot)} disabled={studio.busy} options={secondsOptions(settings.videoModel, settings.secondsPerShot)}
             onChange={(event) => studio.changeSettings({ secondsPerShot: Number(event.target.value) })} testId="video-seconds" />
-          <div className="video-studio-switch"><Switch label="烧字幕" description="每个镜头配一句字幕，拼片时烧在画面上" checked={settings.captions} disabled={studio.planning || composing} onChange={(captions) => studio.changeSettings({ captions })} testId="video-captions" /></div>
+          <div className="video-studio-switch"><Switch label="加字幕" description="每个镜头配一句字幕，直接印在画面上" checked={settings.captions} disabled={studio.planning || composing} onChange={(captions) => studio.changeSettings({ captions })} testId="video-captions" /></div>
         </div>
         <div className="video-studio-models">
           <ModelPicker studio={studio} kind="text" />

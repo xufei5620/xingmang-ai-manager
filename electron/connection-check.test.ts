@@ -188,7 +188,7 @@ describe('buildConnectionProbe', () => {
     expect(build.kind).toBe('blocked')
     if (build.kind !== 'blocked') return
     expect(build.outcome.layer).toBe('unconfigured')
-    expect(build.outcome.summary).toContain('API Key')
+    expect(build.outcome.summary).toContain('还没有密钥')
   })
 
   it('keeps a config that exists but points elsewhere on the config layer, not the unconfigured one', () => {

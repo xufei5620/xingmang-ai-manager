@@ -340,7 +340,11 @@ describe('renderer-v2 update bubble on the updates page', () => {
 
 describe('renderer-v2 auto-update bubble wording', () => {
   it('tells the user what happens next when auto-update is on', () => {
-    expect(autoUpdateBubbleBody('downloaded', true)).toContain('关掉软件或下次打开时自动装上');
+    expect(autoUpdateBubbleBody('downloaded', true)).toBe('已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。');
+    // 能闲时装的 Mac 多说一句；没下好、关了自动更新的都不说。
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, undefined, true)).toBe('已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。你不用电脑时星芒也会自己装好。');
+    expect(autoUpdateBubbleBody('downloading', true, undefined, undefined, true)).not.toContain('自己装好');
+    expect(autoUpdateBubbleBody('downloaded', false, undefined, undefined, true)).toBe('查看更新内容和安装状态。');
     expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
     expect(autoUpdateBubbleBody('downloaded', false)).toBe('查看更新内容和安装状态。');
   });

@@ -13,7 +13,7 @@ export const remoteMessages = {
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   unsupported: '暂时只支持文字消息。',
-  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、帮助。\nCodex 要运行命令时会先问你，回「同意」或「拒绝」。',
+  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
   idleClosed: '4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',

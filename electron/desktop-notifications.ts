@@ -63,6 +63,11 @@ export interface DesktopNotificationController {
  * 渲染层 registry/business.ts 的 standardAccountUpdateNotice 是同一句，两边字面量要一致。
  */
 export const standardAccountUpdateNotice = '这台电脑的账号不是管理员，装更新时要输入管理员密码。让有管理员账号的人点一次「重启并安装」，或者找客服。'
+/**
+ * Mac 上装的时候不弹窗口、下好的版本会趁电脑闲着自己装（update-install-prompt.ts）：「下好了」那条通知
+ * 多说这一句。渲染层 registry/business.ts 的 idleInstallBubbleTail 是同一句，两边字面量要一致。
+ */
+export const idleInstallNoticeTail = '你不用电脑时星芒也会自己装好。'
 
 export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate = false): { key: string; version: string; stage: 'available' | 'downloaded' | 'disk'; title: string; body: string } | null {
   if ((snapshot.phase !== 'available' && snapshot.phase !== 'downloaded') || snapshot.error) return null
@@ -113,7 +118,7 @@ export function updateDesktopNotification(snapshot: UpdateSnapshot, autoUpdate =
     // 重启并安装」就是在让用户去点一个用不着点的按钮。
     body: autoUpdate
       ? snapshot.phase === 'downloaded'
-        ? `新版 ${version} 已经下好，关掉软件或下次打开时自动装上，不打断你现在用。`
+        ? `新版 ${version} 已经下好，可以现在装，也可以关掉软件或下次打开时再装。${snapshot.idleInstall ? idleInstallNoticeTail : ''}`
         : snapshot.installNeedsAdminPassword
           ? `新版 ${version} 正在后台下载；这台电脑装更新时要输入管理员密码，下好后不会自动装上。`
           : `新版 ${version} 正在后台下载，下好后关掉软件时自动装上。`

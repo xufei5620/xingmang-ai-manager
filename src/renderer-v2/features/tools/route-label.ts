@@ -60,7 +60,7 @@ export function toolRouteHomeTexts(status: RelayToolRouteStatus | undefined, now
   const hijackAge = status.hijack ? now - status.hijack.id : -1
   return {
     ...(status.serverSwitching ? { quiet: toolRouteServerSwitchingText } : {}),
-    ...(status.outage ? { outage: `${status.outage.appReachable ? '星芒管理工具能连上，但 AI 工具会连不上。' : ''}${outageTexts[status.outage.reason]}` } : {}),
+    ...(status.outage ? { outage: `${status.outage.appReachable ? '星芒管理工具本身能连上。' : ''}${outageTexts[status.outage.reason]}` } : {}),
     ...(status.hijack && hijackAge >= 0 && hijackAge < toolRouteHijackShownMs ? { hijack: hijackTexts[status.hijack.line ?? 'direct'] } : {}),
   }
 }

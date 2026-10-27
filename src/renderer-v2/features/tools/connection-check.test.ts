@@ -105,7 +105,7 @@ describe('connectionCheckView', () => {
   it('offers nothing to fix when the service itself is down', () => {
     // 盲点 1：维护期间用户这边没有能做的事，「去处理」与「重新写入密钥」都只会
     // 把人送去改没坏的东西。
-    const view = connectionCheckView(result({ layer: 'service', summary: '服务暂时不可用（HTTP 503），多半在维护或线路繁忙', nextStep: '你这边不用做任何改动，Key 和配置都不用动，稍后再自检一次就行', status: 503 }), { canRewriteKey: true })
+    const view = connectionCheckView(result({ layer: 'service', summary: '服务暂时不可用（HTTP 503），多半在维护或线路繁忙', nextStep: '你这边不用做任何改动，密钥和配置都不用动，稍后再自检一次就行', status: 503 }), { canRewriteKey: true })
     expect(view.target).toBeNull()
     expect(view.action).toBeNull()
     expect(view.tone).toBe('warn')
@@ -119,7 +119,7 @@ describe('connectionCheckView', () => {
       provider: 'grok',
       layer: 'unconfigured',
       summary: '还没有给 Grok CLI 写入星芒配置',
-      nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检',
+      nextStep: '在首页给这个工具写入星芒密钥，写完再回来自检',
       endpoint: null,
       detail: '不该出现',
     }))

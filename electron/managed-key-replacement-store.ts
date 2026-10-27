@@ -47,7 +47,7 @@ export class ManagedKeyReplacementUnreadableError extends Error {
 }
 
 /** 撤销时记录读坏了：「稍后再试」没用，得先让用户亲手重新写入一次 Key 把坏记录清掉。 */
-export const managedKeyReplacementUnreadableRevokeMessage = '之前记下的密钥额度设置读不出来，这次先没撤销。到「个人中心 → 密钥管理」确认一下各工具的额度，点一次「重新写入密钥」，再回来撤销。'
+export const managedKeyReplacementUnreadableRevokeMessage = '之前记下的密钥额度设置读不出来，这次先没撤销。到「个人中心 › 密钥管理」确认一下各工具的额度，点一次「重新写入密钥」，再回来撤销。'
 
 interface StoredReplacements {
   version: 1

@@ -519,7 +519,7 @@ describe('configureManagedClis', () => {
     it('still writes the managed key for the other tools of the round and reports a kept one it could not save', async () => {
       const fetchAvailableModels = vi.fn(async () => ['codex-preferred'])
       const saveConfig = vi.fn(async (payload: Parameters<ConfigurationService['saveConfig']>[0]) => {
-        if (payload.provider === 'claude') throw new Error('当前 API Key 不支持模型 kept-model，请重新检测并选择可用模型')
+        if (payload.provider === 'claude') throw new Error('当前密钥不支持模型 kept-model，请重新检测并选择可用模型')
         return { provider: payload.provider }
       })
 
@@ -536,7 +536,7 @@ describe('configureManagedClis', () => {
       )
 
       expect(result).toEqual({ configured: ['codex'], failed: [
-        { provider: 'claude', message: '当前 API Key 不支持模型 kept-model，请重新检测并选择可用模型' },
+        { provider: 'claude', message: '当前密钥不支持模型 kept-model，请重新检测并选择可用模型' },
       ] })
       expect(saveConfig.mock.calls.map(([payload]) => payload)).toEqual([
         { provider: 'claude', apiKey: '', model: 'kept-model', mode: 'merge' },

@@ -466,7 +466,7 @@ async function resolveManagedCliKeys(
         failed.push(carryRequestDiagnostics(error, {
           provider,
           group,
-          message: error instanceof Error ? error.message : 'CLI Key 初始化失败',
+          message: error instanceof Error ? error.message : 'CLI 密钥初始化失败',
           ...(isServiceUnavailableError(error) ? { serviceUnavailable: true } : {}),
         }))
       }
@@ -615,7 +615,7 @@ export async function configureManagedClis(
       const syncFailure = syncFailures.get(provider)
       outcome.failed.push(carryRequestDiagnostics(syncFailure, {
         provider,
-        message: syncFailure?.message ?? '对应分组 Key 未就绪',
+        message: syncFailure?.message ?? '对应分组密钥未就绪',
         ...(syncFailure?.serviceUnavailable ? { serviceUnavailable: true } : {}),
       }))
       continue

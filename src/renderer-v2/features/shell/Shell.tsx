@@ -272,6 +272,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const runway = account.signedIn ? account.runway ?? null : null
   const runwayLine = balanceRunwayText(runway)
   const lowBalance = Boolean(runway?.low)
+  const emptyBalance = runway?.empty === true
   const balanceFailed = account.signedIn && Boolean(account.balanceError) && !account.balanceLoading
   const accountLabel = account.signedIn
     ? `个人中心：${accountName}${account.sourceTag ? `（${account.sourceTag}）` : ''}${account.balance ? `，余额 ${account.balance}` : ''}`
@@ -408,13 +409,14 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     </button>
     return railTip(label, button, id)
   }
-  // 「充值」不是一页，是个人中心的充值页签；余额按最近用量不够 7 天时后面挂「余额低」。
+  // 「充值」不是一页，是个人中心的充值页签；余额按最近用量不够 7 天时后面挂「余额低」，钱包已经是 $0 的挂「余额为零」。
   function rechargeButton() {
-    const label = lowBalance ? '充值，余额低' : '充值'
+    const tag = emptyBalance ? '余额为零' : '余额低'
+    const label = lowBalance ? `充值，${tag}` : '充值'
     const button = <button type="button" className={`v2-nav-item${rechargeActive ? ' is-active' : ''}`} key="recharge"
       aria-label={label} aria-current={rechargeActive ? 'page' : undefined} data-testid="nav-recharge" onClick={adapter.topUp}>
       <CreditCard size={16} strokeWidth={1.9} aria-hidden="true" /><span>充值</span>
-      {lowBalance && <small className="v2-nav-tag" data-testid="nav-recharge-low">余额低</small>}
+      {lowBalance && <small className="v2-nav-tag" data-testid="nav-recharge-low">{tag}</small>}
     </button>
     return railTip(label, button, 'recharge')
   }

@@ -544,7 +544,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     options: { bypassCache?: boolean; site?: RelaySite; routed?: boolean } = {},
   ): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
-    if (!apiKey) throw new Error('请先填写 API Key')
+    if (!apiKey) throw new Error('请先填写密钥')
     // Reject any C0/C1 control character, not just CR/LF. A relay API key is a
     // single opaque bearer token with no legitimate embedded control byte; an
     // embedded NUL otherwise reaches undici's fetch below, which throws with

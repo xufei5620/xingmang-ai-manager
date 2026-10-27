@@ -32,7 +32,7 @@ export type RelayQuotaFailure = 'balance' | 'keyLimit' | 'keyInvalid'
 
 export const relayQuotaFailureMessages: Readonly<Record<RelayQuotaFailure, string>> = {
   balance: '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写密钥',
-  keyLimit: '这把密钥设置的额度上限用完了，到「个人中心 → 密钥管理」调高上限后再试',
+  keyLimit: '这把密钥设置的额度上限用完了，到「个人中心 › 密钥管理」调高上限后再试',
   keyInvalid: '当前账号的密钥已失效，再发一次就会自动换一把新的',
 }
 

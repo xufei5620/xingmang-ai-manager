@@ -148,7 +148,7 @@ describe('renderer-v2 home tool line status', () => {
     const markup = render({}, undefined, { toolRouteStatus: { serverSwitching: true, outage: { id: 1, reason: 'reset', appReachable: true } } })
     expect(markup).toContain('data-testid="home-route-server-switching"')
     expect(markup).toContain('服务端正在切换线路，稍等几分钟')
-    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒管理工具能连上，但 AI 工具会连不上。.*重新检测/)
+    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒管理工具本身能连上。.*重新检测/)
   })
 
   it('says once that the Cloudflare line is in use after a hijack', () => {

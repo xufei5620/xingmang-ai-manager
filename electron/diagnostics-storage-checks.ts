@@ -316,9 +316,9 @@ export function buildStorageChecks(context: DiagnosticsContext): CheckDefinition
           state: 'fail',
           summary: elevated
             ? `${described.join('；')}${hint}。软件现在是用管理员身份运行的，为了安全不往被搬过的文件夹里写东西，`
-              + '所以写入 Key、保存设置、记录日志都可能失败。关掉软件，直接双击打开（不要选「以管理员身份运行」）就能恢复'
+              + '所以写入密钥、保存设置、记录日志都可能失败。关掉软件，直接双击打开（不要选「以管理员身份运行」）就能恢复'
             : `${described.join('；')}${hint}。为了安全，软件不往被搬过的文件夹里写东西，`
-              + '所以写入 Key、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
+              + '所以写入密钥、保存设置、记录日志都可能失败。把文件夹搬回原来的位置就能恢复；'
               + '搬不回来请在「反馈与客服」页导出报告发给客服',
           details,
         }

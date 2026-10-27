@@ -200,7 +200,7 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
     assertAccountSessionUser(userId)
     const models = await service.fetchAvailableModels(apiKey)
     assertAccountSessionUser(userId)
-    if (!models.includes(parsed.model)) throw new Error('所选 Key 当前不支持该模型，请重新检测')
+    if (!models.includes(parsed.model)) throw new Error('所选密钥当前不支持该模型，请重新检测')
     if (parsed.mode === 'reset') await backupBeforeReset(parsed.provider)
     const result = await service.saveConfig({
       provider: parsed.provider,

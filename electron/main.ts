@@ -2157,6 +2157,12 @@ if (!hasSingleInstanceLock) {
       onChange: () => applicationTray?.updateSnapshot(),
     })
     // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
+    // 「下好了」的系统通知和首页气泡在能闲时装的 Mac 上多说一句「你不用电脑时星芒也会自己装好」：看的是程序包能不能
+    // 免密码换（一次运行里不变）和遥控开没开——遥控开着闲时不装（YK-2，update-install-prompt 的 idleInstallHeldByRemote），
+    // 这句就不能说；遥控开关每变一次重算。遥控开着时不去探程序包，省得每条遥控消息都跟着试一次能不能写。
+    const refreshIdleInstall = () => {
+      updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && installUnattended(updaterService.getState().installMethod))
+    }
     const codexRemote = createCodexRemote({
       managerDataDirectory,
       runtimeLog,
@@ -2169,6 +2175,7 @@ if (!hasSingleInstanceLock) {
       onStateChanged: (snapshot) => {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
+        refreshIdleInstall()
       },
     })
     const unregisterIpcHandlers = registerIpcHandlers({
@@ -2550,6 +2557,8 @@ if (!hasSingleInstanceLock) {
       },
       log: (level, event, message, detail) => runtimeLog.log(level, 'updater', event, message, detail),
     })
+    // 「下好了」那句要不要带「你不用电脑时星芒也会自己装好」（见 refreshIdleInstall）：开机算一次，之后跟着遥控开关变。
+    refreshIdleInstall()
     const unsubscribeUpdateInstallPrompt = updaterService.subscribe((state) => updateInstallPrompter.observe(state))
     updateInstallPrompter.observe(updaterService.getState())
     // 账号是不是管理员问出来之前不跳框，问出来再看一遍。
@@ -2575,7 +2584,7 @@ if (!hasSingleInstanceLock) {
           buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
-          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 → 启动关闭」里改）',
+          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 › 启动关闭」里改）',
           checkboxChecked: false,
         })
         const decision = trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
