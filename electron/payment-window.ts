@@ -116,6 +116,10 @@ export class PaymentCheckoutRejected extends Error {}
 
 export const paymentCheckoutRejectedMessage = '支付通道暂时异常，没有扣款，请联系客服。'
 
+// 走到这句时订单已经下了、付款页没打开，客户付不了钱。账号服务没有给用户取消充值单的接口，
+// 「我的订单」里会多出一笔待支付，所以顺口告诉客户没扣钱、那笔放着就行（#1458）。
+export const paymentPageOpenFailedMessage = '支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。'
+
 export function toCustomerPaymentError(error: unknown): unknown {
   return error instanceof PaymentCheckoutRejected ? new Error(paymentCheckoutRejectedMessage, { cause: error }) : error
 }
@@ -302,6 +306,21 @@ export function isAllowedPaymentNavigationUrl(
   } catch {
     return false
   }
+}
+
+// 收银台在手机上用这几种地址拉起支付宝、微信 App。有的收银台在电脑上画完二维码也照跳一次（乐风码付，#1458）。
+// 支付窗口照旧拦下它（放行规则不变），这里只用来认出它：日志里不再当成可疑跳转报警，客服看了不会被带偏。
+const paymentAppLaunchSchemes: ReadonlySet<string> = new Set(['alipays:', 'alipay:', 'weixin:'])
+
+/** 被拦下的地址是拉起支付宝、微信 App 的，返回协议名（不带冒号、不带后面的内容）；别的地址返回 null。 */
+export function resolvePaymentAppLaunchScheme(value: string): string | null {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+  return paymentAppLaunchSchemes.has(parsed.protocol) ? parsed.protocol.slice(0, -1) : null
 }
 
 /**
@@ -617,7 +636,7 @@ export function createPaymentWindowController(
       // 运行日志会记下 cause。Electron 加载失败的原错误把整个付款地址写在 message 和 url 上，
       // 订单号、签名都在里面（二维码那一页连付款码图片也在），而付款这边的日志一向只记 origin。
       // 所以原因只留错误码：证书、解析、被重置照样分得清，ipc 记失败时的 networkFailure 也还认得出。
-      throw new Error('支付页面打开失败，请稍后重试', { cause: { code: networkFailureCode(error) } })
+      throw new Error(paymentPageOpenFailedMessage, { cause: { code: networkFailureCode(error) } })
     }
   }
 
