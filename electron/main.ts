@@ -1974,6 +1974,7 @@ if (!hasSingleInstanceLock) {
     canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
     const paymentWindow = createPaymentWindowController({
       iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
+      resolveWorkArea: (window) => screen.getDisplayMatching(window.getBounds()).workArea,
       createOrderStatusReader: (tradeNo) => createPaymentOrderStatusReader({
         client: accountService,
         getSiteId: accounts.getSiteId,

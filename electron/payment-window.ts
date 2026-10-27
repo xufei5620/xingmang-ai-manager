@@ -32,6 +32,12 @@ const paymentFollowUpFastIntervalMs = 5_000
 const paymentFollowUpFastWindowMs = 2 * 60_000
 const paymentFollowUpSlowIntervalMs = 30_000
 export const paymentFollowUpMaxMs = 15 * 60_000
+// 支付窗口想开多大、最小能拖到多小。1366×768 的老笔记本、1080p 开了 150% 缩放的屏幕，能用的高度
+// 只有 680～730，照 820 开就有一截压到任务栏下面或者出屏，二维码、付款按钮看不全。所以按窗口所在
+// 那块屏幕能用的大小收一收，四周各留一点边。
+export const paymentWindowPreferredSize = Object.freeze({ width: 760, height: 820 })
+export const paymentWindowMinimumSize = Object.freeze({ width: 560, height: 640 })
+const paymentWindowScreenMargin = 16
 
 export type PaymentWindowTerminalStatus = 'success' | 'expired' | 'failed' | 'closed' | 'unconfirmed'
 
@@ -81,6 +87,41 @@ export interface PaymentWindowControllerOptions {
   onBlockedNavigation?: (url: string) => void
   onTerminalState?: (event: PaymentWindowTerminalEvent, context: PaymentWindowTerminalContext) => void
   createOrderStatusReader?: (tradeNo: string) => PaymentOrderStatusReader | undefined
+  /** 刚建好的支付窗口落在哪块屏幕、那块屏幕能用的大小；缺省 = 不按屏幕收（旧行为）。 */
+  resolveWorkArea?: (window: BrowserWindow) => PaymentWindowWorkArea | null
+}
+
+export interface PaymentWindowWorkArea {
+  width: number
+  height: number
+}
+
+export interface PaymentWindowSize {
+  width: number
+  height: number
+  minWidth: number
+  minHeight: number
+}
+
+/** 按屏幕能用的大小算支付窗口开多大；屏幕够大就是原来的 760×820，读不到屏幕也照原来的开。 */
+export function buildPaymentWindowSize(workArea: PaymentWindowWorkArea | null | undefined): PaymentWindowSize {
+  function fit(preferred: number, available: number): number {
+    // 屏幕小到留不出边时（实际不会有）贴边开，不倒扣成负数。
+    const room = available > paymentWindowScreenMargin * 4 ? available - paymentWindowScreenMargin * 2 : available
+    return Math.floor(Math.min(preferred, room))
+  }
+  const usable = workArea
+    && Number.isFinite(workArea.width) && Number.isFinite(workArea.height)
+    && workArea.width >= 1 && workArea.height >= 1
+  const width = usable ? fit(paymentWindowPreferredSize.width, workArea.width) : paymentWindowPreferredSize.width
+  const height = usable ? fit(paymentWindowPreferredSize.height, workArea.height) : paymentWindowPreferredSize.height
+  return {
+    width,
+    height,
+    // 最小尺寸比收完的窗口还大，窗口就会被撑回去，所以跟着一起收。
+    minWidth: Math.min(paymentWindowMinimumSize.width, width),
+    minHeight: Math.min(paymentWindowMinimumSize.height, height),
+  }
 }
 
 export interface PaymentWindowController {
@@ -482,10 +523,10 @@ export function createPaymentWindowController(
       // 贴在主窗口顶上、没有关闭按钮的面板。付款页卡住时客户关不掉它，主窗口里「关闭支付窗口」也点不到，
       // 看上去就是星芒卡死了。
       parent,
-      width: 760,
-      height: 820,
-      minWidth: 560,
-      minHeight: 640,
+      width: paymentWindowPreferredSize.width,
+      height: paymentWindowPreferredSize.height,
+      minWidth: paymentWindowMinimumSize.width,
+      minHeight: paymentWindowMinimumSize.height,
       show: false,
       autoHideMenuBar: true,
       backgroundColor: '#f5f6f7',
@@ -507,6 +548,15 @@ export function createPaymentWindowController(
     })
     paymentWindow = window
     activeOrder = tradeNo && orderStatusReader ? { window, tradeNo, reader: orderStatusReader } : null
+    // 窗口建好以后才知道它落在哪块屏幕上（多屏时不一定是主窗口那块），按那块收一收；
+    // 还没显示，客户看不到这一下。下面 reveal 的 center() 照旧在同一块屏幕上居中。
+    if (options.resolveWorkArea) {
+      const size = buildPaymentWindowSize(options.resolveWorkArea(window))
+      if (size.width !== paymentWindowPreferredSize.width || size.height !== paymentWindowPreferredSize.height) {
+        window.setMinimumSize(size.minWidth, size.minHeight)
+        window.setSize(size.width, size.height)
+      }
+    }
     const isCurrent = () => !window.isDestroyed() && paymentWindow === window && monitorGeneration === generation
 
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))

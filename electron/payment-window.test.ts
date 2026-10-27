@@ -11,6 +11,7 @@ import type { NewApiPaymentForm, NewApiTopupOrderStatus } from './new-api-client
 import { RealmAccountError } from './realm-account'
 import {
   PaymentCheckoutRejected,
+  buildPaymentWindowSize,
   buildPaymentWindowTitle,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
@@ -20,6 +21,8 @@ import {
   paymentFollowUpMaxMs,
   paymentFormLimits,
   paymentPageOpenTimeoutMs,
+  paymentWindowMinimumSize,
+  paymentWindowPreferredSize,
   paymentWindowShowFallbackMs,
   resolvePaymentAppLaunchScheme,
   validatePaymentForm,
@@ -47,7 +50,7 @@ function paymentForm(overrides: Partial<NewApiPaymentForm> = {}): NewApiPaymentF
 const alipayAppLaunchUrl = 'alipays://platformapi/startapp?saId=10000007&clientVersion=3.7.0.0718&qrcode=https%3A%2F%2Fqr.alipay.com%2Ffake'
 const weixinAppLaunchUrl = 'weixin://wxpay/bizpayurl?pr=fake'
 
-function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader' | 'iconPath'> = {}) {
+function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader' | 'iconPath' | 'resolveWorkArea'> = {}) {
   const windowEvents = new Map<string, (...args: any[]) => void>()
   const webContentsEvents = new Map<string, (...args: any[]) => void>()
   const sessionEvents = new Map<string, (...args: any[]) => void>()
@@ -90,6 +93,8 @@ function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<P
       windowEvents.get('closed')?.()
     }),
     setTitle: vi.fn(),
+    setMinimumSize: vi.fn(),
+    setSize: vi.fn(),
   }
   const createWindow = vi.fn(() => window as never)
   const onBlockedNavigation = vi.fn()
@@ -248,6 +253,41 @@ describe('payment window title', () => {
   })
 })
 
+describe('payment window size', () => {
+  const regular = {
+    width: paymentWindowPreferredSize.width,
+    height: paymentWindowPreferredSize.height,
+    minWidth: paymentWindowMinimumSize.width,
+    minHeight: paymentWindowMinimumSize.height,
+  }
+
+  it('keeps the regular size on a screen with room for it, and when the screen is unknown', () => {
+    expect(buildPaymentWindowSize({ width: 1920, height: 1040 })).toEqual(regular)
+    expect(buildPaymentWindowSize({ width: 1440, height: 875 })).toEqual(regular)
+    expect(buildPaymentWindowSize(null)).toEqual(regular)
+    expect(buildPaymentWindowSize(undefined)).toEqual(regular)
+    expect(buildPaymentWindowSize({ width: Number.NaN, height: 700 })).toEqual(regular)
+    expect(buildPaymentWindowSize({ width: 0, height: 0 })).toEqual(regular)
+  })
+
+  it('shrinks to the usable height of a small laptop screen, leaving a margin', () => {
+    // 1366×768 with the taskbar; 1920×1080 at 150% scaling with the taskbar.
+    expect(buildPaymentWindowSize({ width: 1366, height: 728 })).toEqual({ ...regular, height: 696 })
+    expect(buildPaymentWindowSize({ width: 1280, height: 680 })).toEqual({ ...regular, height: 648 })
+  })
+
+  it('lowers the minimum size along with the window so it cannot be pushed back off screen', () => {
+    // 1280×720 at 125% scaling with the taskbar.
+    expect(buildPaymentWindowSize({ width: 1024, height: 548 })).toEqual({ ...regular, height: 516, minHeight: 516 })
+    expect(buildPaymentWindowSize({ width: 600, height: 548 })).toEqual({ width: 568, height: 516, minWidth: 560, minHeight: 516 })
+    expect(buildPaymentWindowSize({ width: 540.5, height: 548 })).toEqual({ width: 508, height: 516, minWidth: 508, minHeight: 516 })
+  })
+
+  it('never turns a tiny screen into a negative size', () => {
+    expect(buildPaymentWindowSize({ width: 40, height: 30 })).toEqual({ width: 40, height: 30, minWidth: 40, minHeight: 30 })
+  })
+})
+
 describe('payment terminal-state detection', () => {
   it.each([
     ['订单已超时', 'expired'],
@@ -339,6 +379,32 @@ describe('createPaymentWindowController', () => {
     expect(pageTitleEvent.preventDefault).toHaveBeenCalledOnce()
     expect(harness.window.setTitle).toHaveBeenCalledWith('安全支付 - 星芒AI（当前网页：pay.example.com）')
     expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('fits the window to the screen it lands on before showing it', async () => {
+    const resolveWorkArea = vi.fn(() => ({ width: 1366, height: 728 }))
+    const harness = createHarness(undefined, '', { resolveWorkArea })
+
+    await harness.controller.openUrl('https://checkout.example.com/session')
+
+    expect(resolveWorkArea).toHaveBeenCalledWith(harness.window)
+    expect(harness.window.setMinimumSize).toHaveBeenCalledWith(560, 640)
+    expect(harness.window.setSize).toHaveBeenCalledWith(760, 696)
+    // Shrunk while still hidden, then centred and shown.
+    expect(harness.window.setSize.mock.invocationCallOrder[0]).toBeLessThan(harness.window.show.mock.invocationCallOrder[0]!)
+    expect(harness.window.center).toHaveBeenCalledOnce()
+  })
+
+  it('leaves the regular size alone on a large screen or without screen information', async () => {
+    const large = createHarness(undefined, '', { resolveWorkArea: () => ({ width: 1920, height: 1040 }) })
+    await large.controller.openUrl('https://checkout.example.com/session')
+    expect(large.window.setSize).not.toHaveBeenCalled()
+    expect(large.window.setMinimumSize).not.toHaveBeenCalled()
+
+    const unknown = createHarness()
+    await unknown.controller.openUrl('https://checkout.example.com/session')
+    expect(unknown.createWindow).toHaveBeenCalledWith(expect.objectContaining({ width: 760, height: 820, minWidth: 560, minHeight: 640 }))
+    expect(unknown.window.setSize).not.toHaveBeenCalled()
   })
 
   it('retitles the window with the committed host after every navigation and keeps page titles out', async () => {
