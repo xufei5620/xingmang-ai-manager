@@ -53,7 +53,7 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 
 安装通过现有队列执行，重复点击不会启动多个安装任务。过程显示“排队 / 检测 / 下载 / 安装 / 验证”状态；只有安装后重新检测到客户端才显示完成。检测 OpenCode Desktop 不会把已安装的 OpenCode CLI 误当桌面版。
 
-2026-10-13 起，Windows 上 WorkBuddy 改成客户自己到腾讯官网下载安装，星芒只管识别和写配置。首页那一行说明「到腾讯官网下载安装，装好后回来重新检测」，按钮「去官网下载」；装好后点「重新检测」，识别仍按卸载记录登记的位置、`WorkBuddy.exe` 与腾讯 Authenticode 签名判断，跟谁装的、装在哪个盘无关。原来的 winget 安装与固定 5.5.6 腾讯安装包兜底（`workbuddy-installer.ts`，两枚 SHA-256）一并删除；那段历史见 `docs/IMPLEMENTATION-PROGRESS-2026-09-17.md`。其他客户端的 winget 网络失败仍显示中文原因和错误码。
+2026-10-13 起，Windows 上 WorkBuddy 改成客户自己到腾讯官网下载安装，星芒只管识别和写配置。首页那一行说明「到腾讯官网下载安装，装好后回来重新检测」，按钮「去官网下载」；装好后点「重新检测」，识别仍按卸载记录登记的位置、`WorkBuddy.exe` 与腾讯 Authenticode 签名判断，跟谁装的、装在哪个盘无关。原来的 winget 安装与固定 5.5.6 腾讯安装包兜底（`workbuddy-installer.ts`，两枚 SHA-256）一并删除；那段历史见 `docs/archive/IMPLEMENTATION-PROGRESS-2026-09-17.md`。其他客户端的 winget 网络失败仍显示中文原因和错误码。
 
 2026-09-19 本机只读识别的 Claude 商店版为 2.2553.1.0（9 月 17 日为 2.110.1.0），AUMID 为 `Claude_pzs8sxrjxfjjc!Claude`；本工具此次没有安装或更新 Claude。OpenCode 桌面端仍未安装，也没有在 macOS 上执行安装或启动验收。一键安装路径和启动动作由主进程处理，渲染层不传入任意命令或可执行路径。实际安装包来源、hash、签名证据及读取限制见 [官方安装来源记录](../artifacts/external-client-install-sources.md)。
 
