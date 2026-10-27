@@ -1,16 +1,6 @@
 import { useEffect, useState } from 'react';
 import { BriefcaseBusiness, CircleHelp } from 'lucide-react';
-import OpenCodeIcon from '@lobehub/icons/es/OpenCode/components/Mono';
-import ClaudeIcon from '@lobehub/icons/es/Claude/components/Color';
-import OpenAIIcon from '@lobehub/icons/es/OpenAI/components/Mono';
-import GeminiIcon from '@lobehub/icons/es/Gemini/components/Color';
-import GrokIcon from '@lobehub/icons/es/Grok/components/Mono';
-import DeepSeekIcon from '@lobehub/icons/es/DeepSeek/components/Color';
-import QwenIcon from '@lobehub/icons/es/Qwen/components/Color';
-import ChatGLMIcon from '@lobehub/icons/es/ChatGLM/components/Color';
-import MoonshotIcon from '@lobehub/icons/es/Moonshot/components/Mono';
-import MiniMaxIcon from '@lobehub/icons/es/Minimax/components/Color';
-import ZhipuIcon from '@lobehub/icons/es/Zhipu/components/Color';
+import { ChatGLMIcon, ClaudeIcon, DeepSeekIcon, GeminiIcon, GrokIcon, MiniMaxIcon, MoonshotIcon, OpenAIIcon, OpenCodeIcon, QwenIcon, ZhipuIcon } from './vendor-icons';
 import { siAlipay, siGit, siNodedotjs, siNpm, siPython, siStripe, siWechat } from 'simple-icons';
 import microLight from '../../../assets/brand/v3/micro32-standard.svg';
 import microDark from '../../../assets/brand/v3/micro32-dark.svg';
