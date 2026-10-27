@@ -25,6 +25,8 @@ declare global {
     rerenderFixture: () => void
     // 后台把充值活动撤了：之后读到的充值信息不带折扣，试算按原价。
     endTopupPromotion: () => void
+    // 后台把「20」那一档的活动加码了：8 折改成 75 折，之后的试算和充值信息都按新的。
+    raiseTopupPromotion: () => void
     // 外壳切走 / 切回个人中心（App.tsx 的 active）；不调就不传，同旧夹具。
     setPageActive: (active: boolean) => void
     // 停在充值页时从首页活动卡片又点了一档（App.tsx 的 accountRechargeAmount + accountTabRequest）。
@@ -82,13 +84,16 @@ const empty = query.has('empty')
 let logsCleared = false
 
 // 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
-let topupPromotionEnded = false
-window.endTopupPromotion = () => { topupPromotionEnded = true }
-function topupPromotionRunning(): boolean {
-  return query.has('topupBonus') && !topupPromotionEnded
+let topupPromotion: 'running' | 'raised' | 'ended' = 'running'
+window.endTopupPromotion = () => { topupPromotion = 'ended' }
+window.raiseTopupPromotion = () => { topupPromotion = 'raised' }
+function topupDiscountFor20(): number | null {
+  if (!query.has('topupBonus') || topupPromotion === 'ended') return null
+  return topupPromotion === 'raised' ? 0.75 : 0.8
 }
 function fixtureTopupDiscounts(): Record<string, number> {
-  return topupPromotionRunning() ? { 20: 0.8 } : {}
+  const discount = topupDiscountFor20()
+  return discount === null ? {} : { 20: discount }
 }
 let holdNextTopupQuote = false
 let heldTopupQuote: { release: () => void; fail: (message: string) => void } | null = null
@@ -966,7 +971,7 @@ const apiMethods = {
     }
     return {
       amount: input.amount,
-      payableAmount: topupPromotionRunning() && input.amount === 20 ? 16 : input.amount,
+      payableAmount: input.amount === 20 ? 20 * (topupDiscountFor20() ?? 1) : input.amount,
     }
   },
   createAccountTopupPayment: async (

@@ -19,6 +19,7 @@ import {
   redeemSuccessText,
   topupCreditedUsd,
   topupGift,
+  topupQuoteMatchesSummary,
 } from './recharge'
 import { creditedMoney } from './topup-tier'
 
@@ -55,6 +56,18 @@ describe('recharge', () => {
     // 倍数不到 1（一块钱买不到一美元）不是赠送。
     expect(topupGift(100, { creditMultiplier: 0.14 })).toBeNull()
     expect(topupGift(0, { creditMultiplier: 1.2 })).toBeNull()
+  })
+
+  it('opens the payment window straight away only when the asked price is the one the summary shows', () => {
+    const shown = { paid: '¥16.00', credited: 20, gift: { bonus: 4, percent: 25 } }
+    expect(topupQuoteMatchesSummary(shown, { paid: '¥16.00', credited: 20, gift: { bonus: 4, percent: 25 } })).toBe(true)
+    expect(topupQuoteMatchesSummary({ paid: '¥10.00', credited: 10, gift: null }, { paid: '¥10.00', credited: 10, gift: null })).toBe(true)
+    // 活动刚撤：应付变了、赠送没了。
+    expect(topupQuoteMatchesSummary(shown, { paid: '¥20.00', credited: 20, gift: null })).toBe(false)
+    // 应付没变、赠送比例变了（历史账号的倍数改了）也要再确认一次。
+    expect(topupQuoteMatchesSummary(shown, { paid: '¥16.00', credited: 22, gift: { bonus: 6, percent: 37 } })).toBe(false)
+    // 右边还没算出实付。
+    expect(topupQuoteMatchesSummary({ ...shown, paid: null }, { paid: '¥16.00', credited: 20, gift: { bonus: 4, percent: 25 } })).toBe(false)
   })
 
   it('writes plan prices with their currency and drops the decimals of whole amounts', () => {

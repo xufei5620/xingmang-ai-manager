@@ -75,6 +75,7 @@ import {
   topupAmountError,
   topupCreditedUsd,
   topupGift,
+  topupQuoteMatchesSummary,
   validateTopupAmount,
   type PaymentKind,
 } from './recharge'
@@ -259,8 +260,10 @@ export function AccountRecharge({
   const [codeError, setCodeError] = useState('')
   // 报价连同同一时刻读到的优惠一起记：确认框里的「其中活动赠送」和应付金额出自同一次询问。
   // offer 为 null = 这次没读到充值信息，确认框不写赠送，不报一个可能已经没有的赠送。
+  // changed = 跟右边「本次充值」摆着的价对不上，框里多说一句价格刚更新过。
   const [quote, setQuote] = useState<(AccountTopupAmountQuote & {
     offer: Pick<AccountTopupInfo, 'discounts' | 'creditMultiplier'> | null
+    changed: boolean
   }) | null>(null)
   // 每问一次价开一轮，换档位、金额、渠道就把手上那轮作废：问价途中金额被换掉（停在这页时从活动卡片
   // 又点了一档），回来的那次报价按的是旧金额，不认它，不然确认框和付款都照旧金额走。
@@ -410,14 +413,36 @@ export function AccountRecharge({
   })
   const quoteCredited = quote ? topupCreditedUsd(quote.amount, quote.offer?.creditMultiplier ?? multiplier) : null
   const quoteGift = quote?.offer ? topupGift(quote.amount, quote.offer) : null
+  // 按这次报价下单、打开支付窗口：确认框里点「打开支付窗口」，和点「充值」时价格对得上直接打开，走的都是这里。
+  async function openTopupPayment(accepted: AccountTopupAmountQuote, credited: number, method: PaymentMethod) {
+    const opened: Omit<PendingPayment, 'tradeNo'> = {
+      kind: 'topup',
+      expiresAt: null,
+      amount: `${payableSymbol(method.provider)}${accepted.payableAmount.toFixed(2)}`,
+      detail: creditedMoney(credited),
+      method: paymentMethodLabel(method),
+      planName: null,
+    }
+    openingPayment.current = []
+    try {
+      const result = await api.createAccountTopupPayment({
+        amount: accepted.amount,
+        paymentMethod: method.type,
+      })
+      paymentOpened({ ...opened, tradeNo: result.tradeNo })
+    } finally { openingPayment.current = null }
+  }
   const quoteTopup = () => {
     const request = quoteRequest.begin()
+    // 点下去那一刻右边「本次充值」摆着的价：问回来的跟它对得上就不再弹框。
+    const shown = { paid: chosenTier?.paid ?? null, credited: chosenCredited, gift: chosenGift }
     void operation.execute(
       'quote',
       async () => {
         if (offline) throw new Error(offlineActionMessage)
         const value = validateTopupAmount(Number(amountText), topupMinimum)
-        if (!paymentMethod) throw new Error('暂时没有可用的支付渠道。')
+        const method = paymentMethod
+        if (!method) throw new Error('暂时没有可用的支付渠道。')
         // 页面可能摆了很久，活动早就撤了或改了：充值信息和报价一起重新问，确认框写的赠送、
         // 卡片上的档位都按这一刻的来。充值信息这次没读到就不写赠送，不报一个可能已经没有的赠送。
         const [fresh, next] = await Promise.all([
@@ -427,32 +452,32 @@ export function AccountRecharge({
         if (fresh && !sameTopupInfo(info.data, fresh)) info.setData(fresh)
         // 金额在问价途中换了：不弹确认框，按钮回到「充值」，客户照新金额再点一次。
         if (!request()) return
-        setQuote({ ...next, offer: fresh ? { discounts: fresh.discounts, creditMultiplier: fresh.creditMultiplier } : null })
+        const offer = fresh ? { discounts: fresh.discounts, creditMultiplier: fresh.creditMultiplier } : null
+        const credited = topupCreditedUsd(next.amount, offer?.creditMultiplier ?? multiplier)
+        const asked = {
+          paid: `${payableSymbol(method.provider)}${next.payableAmount.toFixed(2)}`,
+          credited,
+          gift: offer ? topupGift(next.amount, offer) : null,
+        }
+        // 充值信息这次没读到，赠送核不了：照旧弹框让客户看一眼，但不说价格变了。
+        const matches = topupQuoteMatchesSummary(shown, asked)
+        if (offer && matches) {
+          await openTopupPayment(next, credited, method)
+          return
+        }
+        setQuote({ ...next, offer, changed: shown.paid !== null && !matches })
       },
       '',
     )
   }
   const pay = () => {
     if (!quote || !paymentMethod) return
-    const opened: Omit<PendingPayment, 'tradeNo'> = {
-      kind: 'topup',
-      expiresAt: null,
-      amount: `${payableSymbol(paymentMethod.provider)}${quote.payableAmount.toFixed(2)}`,
-      detail: creditedMoney(quoteCredited ?? quote.amount),
-      method: paymentMethodLabel(paymentMethod),
-      planName: null,
-    }
+    const accepted = quote
+    const method = paymentMethod
     void operation.execute(
       'payment',
       async () => {
-        openingPayment.current = []
-        try {
-          const result = await api.createAccountTopupPayment({
-            amount: quote.amount,
-            paymentMethod: paymentMethod.type,
-          })
-          paymentOpened({ ...opened, tradeNo: result.tradeNo })
-        } finally { openingPayment.current = null }
+        await openTopupPayment(accepted, quoteCredited ?? accepted.amount, method)
         setQuote(null)
       },
       '已打开支付窗口',
@@ -808,7 +833,7 @@ export function AccountRecharge({
               onClick={quoteTopup}
               testId="account-recharge-submit"
             >
-              {operation.busy === 'quote' ? '正在确认价格…' : '充值'}
+              {operation.busy === 'quote' ? '正在打开支付窗口…' : '充值'}
             </Button>
             {info.data?.redemptionEnabled !== false && (
               <button type="button" className="v2-acct-more v2-recharge-redeem-link" onClick={openRedeem} data-testid="account-recharge-redeem-open">
@@ -925,6 +950,9 @@ export function AccountRecharge({
           </>
         }
       >
+        {quote?.changed && (
+          <p className="v2-acct-note" data-testid="account-recharge-quote-changed">价格刚更新过，请按下面的金额确认。</p>
+        )}
         {quote && (
           <div className="v2-recharge-quote">
             <Row label="到账"><b>{creditedMoney(quoteCredited ?? quote.amount)}</b></Row>

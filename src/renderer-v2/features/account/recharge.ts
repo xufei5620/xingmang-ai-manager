@@ -222,6 +222,21 @@ export function topupGift(amount: number, offer: { discounts?: Record<string, nu
   return percent > 0 && bonus > 0 ? { bonus, percent } : null
 }
 
+/**
+ * 点「充值」那一刻问到的价，跟右边「本次充值」摆着的是不是一回事。应付、到账、赠送都对得上，就直接打开支付窗口，
+ * 不再弹「确认充值报价」让客户把右边看过的再看一遍；有一样变了（活动刚撤、刚改价）才弹框。
+ * 右边还没算出实付（shown.paid 为 null）时对不上，照旧弹框。
+ */
+export function topupQuoteMatchesSummary(
+  shown: { paid: string | null; credited: number | null; gift: TopupBonus | null },
+  asked: { paid: string; credited: number; gift: TopupBonus | null },
+): boolean {
+  return shown.paid === asked.paid
+    && shown.credited === asked.credited
+    && (shown.gift?.bonus ?? null) === (asked.gift?.bonus ?? null)
+    && (shown.gift?.percent ?? null) === (asked.gift?.percent ?? null)
+}
+
 /** 套餐价：美元写「$」，人民币写「¥」，别的币种照写代码；整数不带小数。 */
 export function planPriceText(plan: Pick<AccountSubscriptionPlan, 'priceAmount' | 'currency'>): string {
   const currency = (plan.currency || 'USD').toUpperCase()

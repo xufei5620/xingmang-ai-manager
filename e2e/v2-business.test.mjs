@@ -2857,7 +2857,7 @@ test('the payment terminal listener survives re-renders and still resolves a pen
 // 「本次充值」那张卡上几行合成一句比对：到账的大字在卡上，下面是实付、赠送和充值后余额。
 const flat = async (locator) => (await locator.innerText()).replace(/\s+/g, ' ').trim()
 
-test('recharge presets show credited, paid and bonus, and the quote dialog spells the bonus out', async () => {
+test('recharge presets show credited, paid and bonus, and a price that changed is spelled out in the quote dialog', async () => {
   const page = await fixture('page=account&topupBonus=1')
   try {
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
@@ -2881,11 +2881,15 @@ test('recharge presets show credited, paid and bonus, and the quote dialog spell
     assert.equal(await plain.getAttribute('aria-pressed'), 'true')
     assert.equal(await page.getByText('无赠送', { exact: true }).count(), 0)
     await bonus.click()
+    // 点「充值」前后台把这一档的活动加码了：跟右边摆着的价对不上，不直接付，弹框把新的价和赠送写清楚。
+    await page.evaluate(() => window.raiseTopupPromotion())
     await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
     await quote.waitFor()
-    assert.equal(await flat(quote.getByTestId('account-recharge-quote-bonus')), '其中活动赠送 $4（多送 25%）')
-    assert.match(await flat(quote), /到账 \$20 其中活动赠送 \$4（多送 25%） 应付金额 16\.00 支付方式 Stripe/)
+    assert.equal(await flat(quote.getByTestId('account-recharge-quote-changed')), '价格刚更新过，请按下面的金额确认。')
+    assert.equal(await flat(quote.getByTestId('account-recharge-quote-bonus')), '其中活动赠送 $5（多送 33%）')
+    assert.match(await flat(quote), /到账 \$20 其中活动赠送 \$5（多送 33%） 应付金额 15\.00 支付方式 Stripe/)
+    assert.equal((await calls(page)).filter((call) => call.name === 'create-topup-payment').length, 0)
   } finally {
     await page.close()
   }
@@ -2901,6 +2905,7 @@ test('the quote dialog asks for the current promotion instead of the one the pag
     await quote.getByText('20.00', { exact: true }).waitFor()
     assert.match(await flat(quote), /应付金额 20\.00/)
     assert.equal(await quote.getByTestId('account-recharge-quote-bonus').count(), 0)
+    assert.equal(await quote.getByTestId('account-recharge-quote-changed').count(), 1)
     // 卡片也跟着这次读到的换掉，不再挂「送 25%」。
     await page.getByRole('button', { name: '到账 $20，实付 20.00', exact: true }).waitFor()
     assert.equal(await page.getByText('送 25%', { exact: true }).count(), 0)
@@ -2999,14 +3004,18 @@ test('a default amount below the minimum says why recharging is unavailable', as
 })
 
 test('changing the recharge channel invalidates the previous quote', async () => {
-  const page = await fixture('page=account&multiPayment=1')
+  const page = await fixture('page=account&multiPayment=1&topupBonus=1')
   try {
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     await page.getByRole('radio', { name: 'Stripe', exact: true }).check()
+    // 价格对不上才会留下一份报价（弹框）：先让 20 那一档的价变一下。
+    await page.getByRole('button', { name: /^到账 \$20/ }).click()
+    await page.evaluate(() => window.raiseTopupPromotion())
     await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
     await quote.waitFor()
     await quote.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: /^到账 \$10/ }).click()
     await page.getByRole('radio', { name: '支付宝', exact: true }).check()
     assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
     // 支付宝最低 20：金额跟着挪到 20 那一档。
@@ -3017,7 +3026,7 @@ test('changing the recharge channel invalidates the previous quote', async () =>
   }
 })
 
-// 「正在确认价格…」那一段：试算挂着，等测试放开。
+// 「正在打开支付窗口…」里问价那一段：试算挂着，等测试放开。
 async function holdTopupQuote(page) {
   await page.evaluate(() => window.topupQuoteHarness.holdNext())
   await page.getByTestId('account-recharge-submit').click()
@@ -3041,12 +3050,10 @@ test('the recharge form is locked while the price is being confirmed, so the quo
     await ten.click({ force: true })
     assert.equal(await twenty.getAttribute('aria-pressed'), 'true')
 
+    // 问回来的价跟右边摆着的一样：不弹确认框，直接按 20 打开支付窗口。
     await page.evaluate(() => window.topupQuoteHarness.release())
-    const quote = page.getByRole('dialog', { name: '确认充值报价' })
-    await quote.waitFor()
-    assert.match(await flat(quote), /到账 \$20 其中活动赠送 \$4（多送 25%） 应付金额 16\.00/)
-    await quote.getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
     assert.deepEqual(await topupPaymentAmounts(page), [20])
   } finally {
     await page.close()
@@ -3063,17 +3070,14 @@ test('a tier picked on the home activity card while the price is being confirmed
     await page.evaluate(() => window.pickRechargeTier(10))
     await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true, pressed: true }).waitFor()
 
-    // 按 20 问回来的那次不认：不弹确认框，按钮回到「充值」。
+    // 按 20 问回来的那次不认：不弹确认框、不下单，按钮回到「充值」。
     await page.evaluate(() => window.topupQuoteHarness.release())
     await page.locator('[data-testid="account-recharge-submit"]:not([aria-busy])').waitFor()
     assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
+    assert.deepEqual(await topupPaymentAmounts(page), [])
 
-    // 照新档位再点一次：确认框和付款都按 10。
+    // 照新档位再点一次：按 10 下单。
     await page.getByTestId('account-recharge-submit').click()
-    const quote = page.getByRole('dialog', { name: '确认充值报价' })
-    await quote.waitFor()
-    assert.match(await flat(quote), /到账 \$10 应付金额 10\.00/)
-    await quote.getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     assert.deepEqual(await topupPaymentAmounts(page), [10])
   } finally {
@@ -3133,8 +3137,9 @@ test('confirmed topup completion refreshes balance and cached orders and clears 
       await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
       await page.getByTestId('account-orders-section').getByText('TEST-ORDER').waitFor()
       const ordersBefore = (await calls(page)).filter((call) => call.name === 'query-orders').length
+      // 右边「本次充值」的实付算出来以后再点：点「充值」问回来的价跟它一样才直接打开支付窗口。
+      await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
       await page.getByTestId('account-recharge-submit').click()
-      await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
       if (!fast) {
         await page.getByText('等待支付结果', { exact: true }).waitFor()
         // An unrelated order or a result without correlation must not finish this payment.
@@ -3147,6 +3152,8 @@ test('confirmed topup completion refreshes balance and cached orders and clears 
       }
       await page.getByText('充值成功', { exact: true }).waitFor()
       await page.getByText('当前余额 $14.00', { exact: true }).waitFor()
+      // 价格跟右边摆着的一样：一直没弹过确认框。
+      assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
       assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
       assert.equal(await page.getByRole('button', { name: '关闭支付窗口', exact: true }).count(), 0)
       assert.equal(await page.getByText('支付窗口已打开，到账状态请查询订单', { exact: true }).count(), 0)
@@ -3161,8 +3168,8 @@ test('a payment window closed before settlement keeps confirming and points to t
   const page = await fixture('page=account')
   try {
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
     await page.getByTestId('account-recharge-submit').click()
-    await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true }))
     const notice = page.getByTestId('account-payment-notice')
@@ -3184,8 +3191,8 @@ test('the recharge page close button keeps confirming a paid order like the wind
   const page = await fixture('page=account')
   try {
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
     await page.getByTestId('account-recharge-submit').click()
-    await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.getByRole('button', { name: '关闭支付窗口', exact: true }).click()
     const notice = page.getByTestId('account-payment-notice')
@@ -3203,8 +3210,8 @@ test('an unconfirmed payment opens my orders with its order number', async () =>
   const page = await fixture('page=account')
   try {
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    await page.getByRole('button', { name: '到账 $10，实付 10.00', exact: true }).waitFor()
     await page.getByTestId('account-recharge-submit').click()
-    await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
     await page.getByText('等待支付结果', { exact: true }).waitFor()
     await page.evaluate(() => {
       window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-TOPUP', confirming: true })
