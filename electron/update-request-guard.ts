@@ -20,6 +20,10 @@
  * requests the way a network error does: an 'error' on the request, then abort()
  * to cancel the transfer and release the connection.
  *
+ * The same bytes are also counted, so the host can log how much one update download
+ * actually pulled over the network (blockmaps and every differential range included)
+ * next to the size of the full package.
+ *
  * Only electron-updater's own executor is wrapped. Requests made elsewhere on the
  * updater session (the service-status fetch) are not touched.
  */
@@ -27,6 +31,8 @@
 export interface UpdateRequestGuard {
   /** 最近一次有更新请求收到响应头或数据的时间（毫秒）；一次都还没有为 null。 */
   lastReceivedAt(): number | null
+  /** 包上以来更新请求一共收到了多少字节的响应体（只增不减，调用方自己记起点相减）。 */
+  receivedBytes(): number
   /** 让还开着的更新请求都以 reason 失败、断开连接；返回断开了几个。 */
   abortAll(reason: Error): number
 }
@@ -46,6 +52,14 @@ interface TrackedRequest extends EventSource {
 
 interface Response extends EventSource {
   listenerCount(event: string): number
+}
+
+// Electron hands a response's body over as Buffers; a string only shows up if someone
+// called setEncoding, which electron-updater never does on these responses.
+function chunkBytes(chunk: unknown): number {
+  if (chunk instanceof Uint8Array) return chunk.byteLength
+  if (typeof chunk === 'string') return Buffer.byteLength(chunk)
+  return 0
 }
 
 function isEventSource(value: unknown): value is EventSource {
@@ -77,6 +91,7 @@ export function createUpdateRequestGuard(executor: unknown, now: () => number = 
   if (!isRequestExecutor(executor)) return null
   const open = new Set<TrackedRequest>()
   let receivedAt: number | null = null
+  let receivedBytes = 0
   const received = () => { receivedAt = now() }
   const track = (request: TrackedRequest) => {
     open.add(request)
@@ -101,7 +116,10 @@ export function createUpdateRequestGuard(executor: unknown, now: () => number = 
         forget()
         return
       }
-      response.on('data', received)
+      response.on('data', (chunk: unknown) => {
+        received()
+        receivedBytes += chunkBytes(chunk)
+      })
       response.on('end', forget)
       response.on('close', forget)
     })
@@ -114,6 +132,7 @@ export function createUpdateRequestGuard(executor: unknown, now: () => number = 
   }
   return {
     lastReceivedAt: () => receivedAt,
+    receivedBytes: () => receivedBytes,
     abortAll(reason) {
       const requests = [...open]
       open.clear()

@@ -2,7 +2,7 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import { isOlderReleaseGuard, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
@@ -127,6 +127,11 @@ export interface UpdateSnapshot {
    */
   serviceMaintenance?: ServiceMaintenance | null
   /**
+   * 状态文件里给这一版、这种安装包的已知问题提示（service-status.ts 的 knownIssues，版本和平台已经筛过），
+   * 界面按页挑着摆在右上角。跟维护提示一样放在更新快照里：没登录也收得到。可选＝没有或旧快照。
+   */
+  knownIssues?: readonly KnownIssue[]
+  /**
    * 发布者在状态文件里撤回了本机正在用的这个版本。界面据此说「这个版本有已知问题」，
    * 更新器据此允许装一个更低的版本号（退回上一个好版本）。
    */
@@ -215,6 +220,26 @@ export interface UpdateDownloadStall {
   transferEnded: boolean
   transferred: number
   total: number
+}
+
+/**
+ * 一个版本下好时交给宿主记日志的东西：这一次实际从网上下了多少，跟整个安装包比一比，
+ * 才知道增量下载（只下改了的那几段）到底省了多少（在线热更新方案 B1）。
+ */
+export interface UpdateDownloadMeasure {
+  version: string | null
+  /** 清单里下好的那个安装包有多大；认不出下的是清单里哪一项时为 null。*/
+  packageBytes: number | null
+  /**
+   * 从开始下载到下好，更新请求一共收到的字节：增量下载的两份块表、改了的那几段，增量没成时
+   * electron-updater 自己改下的整包，看门狗停住后的重下，全算在内。安装包已在本地缓存时接近 0。
+   * 宿主数不了时为 null。
+   */
+  receivedBytes: number | null
+  /** 头一次没下成（停住了，或者代理连不上）、换直连自动重下了一次。停住后的那次重下只下整个安装包。*/
+  retried: boolean
+  /** 从开始下载到下好用了多少毫秒，含停住和重下的时间。*/
+  elapsedMs: number
 }
 
 export interface UpdateClient {
@@ -423,6 +448,14 @@ export interface UpdaterRuntime {
   abortDownloadRequests?: (reason: Error) => void
   /** 看门狗停掉了一次下载。宿主拿去记一条日志。*/
   downloadStalled?: (stall: UpdateDownloadStall) => void
+  /**
+   * electron-updater 的请求到这会儿一共收到了多少字节（宿主的请求包装 update-request-guard.ts
+   * 数的，只增不减）。下载开始、下好时各读一次，相减就是这一次实际下了多少。不传或返回 null＝
+   * 数不了，下好时照样交 downloadMeasured，receivedBytes 为 null。
+   */
+  downloadReceivedBytes?: () => number | null
+  /** 一个版本下好了（不论随后核对过没过）。宿主拿去记一条日志，见 UpdateDownloadMeasure。*/
+  downloadMeasured?: (measure: UpdateDownloadMeasure) => void
   /** 见 UpdateInstallMethod。不传＝安装器接手退出（Windows、Mac 的旧行为）。 */
   installMethod?: UpdateInstallMethod
   /**
@@ -791,6 +824,18 @@ function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string
   return legacy || null
 }
 
+/**
+ * 清单里写的下好的那个安装包有多大（files[].size）。认不出是哪一项、或者没写大小时为 null。
+ * 跟 resolveUpdatePackageBytes 不同：Mac 的清单里 zip 和 dmg 都有，那边取大的估磁盘，这边只要
+ * 真正下的那个。
+ */
+export function resolveDownloadedPackageBytes(info: UpdateInfo, downloadedFile: unknown): number | null {
+  const file = typeof downloadedFile === 'string' ? downloadedFile.trim() : ''
+  if (!file) return null
+  const size = Number(manifestPackageEntry(info, file)?.size)
+  return Number.isFinite(size) && size > 0 ? Math.floor(size) : null
+}
+
 // Same substring MacUpdater.filterFilesForArch looks for, so both sides agree
 // on which manifest entries are arm64 packages.
 function isArm64Package(url: unknown): boolean {
@@ -939,6 +984,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     diskShortfall: snapshot.diskShortfall ? { ...snapshot.diskShortfall } : null,
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
+    ...(snapshot.knownIssues ? { knownIssues: snapshot.knownIssues.map((issue) => ({ ...issue })) } : {}),
     launchInstallNotice: snapshot.launchInstallNotice ? { ...snapshot.launchInstallNotice } : null,
   }
 }
@@ -999,6 +1045,9 @@ export function createUpdaterService(
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
   let offeredPackageBytes: number | null = null
+  // 最近一次 update-downloaded 说下好的那个安装包在清单里有多大，下好时的日志要拿它跟实际
+  // 下了多少比。每次 download() 开始时清掉。
+  let downloadedPackageBytes: number | null = null
   // 状态文件定的最低版本、而本机低于它时的那个版本。快照里的 requiredVersion 由它和
   // 当前提议一起算（resolveGatedRequiredVersion），分批放量的豁免则只看它。
   let minimumRequired: string | null = null
@@ -1159,6 +1208,11 @@ export function createUpdaterService(
     const patch: Partial<UpdateSnapshot> = {}
     if (JSON.stringify(maintenance) !== JSON.stringify(snapshot.serviceMaintenance ?? null)) {
       patch.serviceMaintenance = maintenance
+    }
+    // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就收起「先这样绕过去」那句，客户会当成已经修好了。
+    if (status) {
+      const knownIssues = resolveKnownIssuesFor(status, runtime.currentVersion, releasePlatforms)
+      if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
@@ -1424,6 +1478,7 @@ export function createUpdaterService(
     },
     'update-downloaded': (event: DownloadedUpdateEvent) => {
       if (disposed) return
+      downloadedPackageBytes = resolveDownloadedPackageBytes(intelMac ? buildIntelMacUpdateInfo(event) : event, event.downloadedFile)
       if (!verifyPackageDigest && !verifyPackageSignature) {
         acceptDownloadedUpdate(event)
         return
@@ -1742,6 +1797,32 @@ export function createUpdaterService(
     }
   }
 
+  // 宿主数的字节读不到就当数不了，不能让一次记日志挡住下载。
+  const readReceivedBytes = (): number | null => {
+    try {
+      const bytes = runtime.downloadReceivedBytes?.()
+      return typeof bytes === 'number' && Number.isFinite(bytes) && bytes >= 0 ? bytes : null
+    } catch {
+      return null
+    }
+  }
+
+  const noteDownloadMeasured = (startedAt: number, receivedAtStart: number | null, retried: boolean) => {
+    if (!runtime.downloadMeasured) return
+    const receivedAtEnd = receivedAtStart === null ? null : readReceivedBytes()
+    try {
+      runtime.downloadMeasured({
+        version: snapshot.availableVersion,
+        packageBytes: downloadedPackageBytes,
+        receivedBytes: receivedAtStart === null || receivedAtEnd === null ? null : Math.max(0, receivedAtEnd - receivedAtStart),
+        retried,
+        elapsedMs: Math.max(0, Date.now() - startedAt),
+      })
+    } catch {
+      // 记日志失败不影响下好的这个版本。
+    }
+  }
+
   // 停住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多
   // 一句新话；code 另记，日志里分得清是看门狗停的。
   const downloadFailure = (error: unknown) => error instanceof UpdateDownloadStalled
@@ -1873,9 +1954,13 @@ export function createUpdaterService(
     }
     progressSamples = []
     verifiedPackagePath = null
+    downloadedPackageBytes = null
+    const startedAt = Date.now()
+    const receivedAtStart = readReceivedBytes()
     emit({ phase: 'downloading', progress: null, error: null })
     try {
       await downloadWatched(false)
+      noteDownloadMeasured(startedAt, receivedAtStart, false)
     } catch (error) {
       const stall = error instanceof UpdateDownloadStalled ? error : null
       // 自动再下只有一次，再不行就照实报下载失败，重下的按钮界面上都有。停住的那次多半是
@@ -1894,6 +1979,7 @@ export function createUpdaterService(
             emit({ phase: 'downloading', error: null, progress: null })
             await downloadWatched(stall !== null, updateDownloadRetryStallMs)
           })
+          noteDownloadMeasured(startedAt, receivedAtStart, true)
         } catch (retryError) {
           if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)
           emit({ phase: 'error', error: downloadFailure(retryError), failedStep: 'download', progress: null })

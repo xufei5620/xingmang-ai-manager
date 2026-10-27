@@ -45,6 +45,21 @@ const RELEASE_PLATFORM_LABELS = {
 const MAX_RELEASE_PLATFORMS = 9
 // 第一个认平台的客户端版本：更早的不认，带平台的条目在它们那里照旧对所有平台生效。
 const PLATFORM_AWARE_CLIENT = '0.2.20'
+// 已知问题提示和充值方式开关（客户端 electron/service-status.ts 的 knownIssues / paymentMethodsOff）从这一版起认。
+const REMOTE_SWITCH_CLIENT = '0.2.23'
+// 挂在哪一页、按钮去哪，与客户端 knownIssuePages / knownIssueActions 一致；条数上限与它的 maxKnownIssues 等一致。
+const KNOWN_ISSUE_PAGES = ['all', 'home', 'chat', 'recharge', 'settings']
+const KNOWN_ISSUE_PAGE_LABELS = { all: '每一页', home: '首页', chat: '聊天', recharge: '充值页', settings: '设置' }
+const KNOWN_ISSUE_ACTIONS = ['update', 'support']
+const KNOWN_ISSUE_ACTION_LABELS = { update: '「查看更新」', support: '「找客服」' }
+const MAX_KNOWN_ISSUES = 8
+const MAX_PAYMENT_METHODS_OFF = 16
+const MAX_SWITCH_VERSIONS = 20
+const PAYMENT_METHOD = /^[A-Za-z0-9_.-]{1,64}$/
+const PAYMENT_METHOD_LABELS = { alipay: '支付宝', wxpay: '微信', qqpay: 'QQ 钱包', stripe: 'Stripe' }
+// 提示里不许带链接（docs/SERVICE-STATUS.md）：客户端照纯文字摆，点不开；状态文件没有签名，带网址的提示
+// 正是被人改了文件以后最想塞进来的东西。客户端用同一个写法，碰到就整条不显示。
+const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9-]+\.(?:com|cn|cc|net|org|top|xyz|fun|io|me|vip|shop|site|link|info|biz)\b/i
 
 class StatusInputError extends Error {}
 
@@ -280,6 +295,163 @@ function applyMinimumVersion(current, input, publishedVersions = []) {
   return version
 }
 
+/** 「0.2.23|0.2.24」这样的版本表：只能写认这一项的版本，写早了等于这一条谁也管不到。 */
+function switchVersions(value, context) {
+  const versions = [...new Set(String(value ?? '').split(/[|｜]/).map((entry) => plainVersion(entry)))]
+  if (versions.length > MAX_SWITCH_VERSIONS) throw new StatusInputError(`版本最多写 ${MAX_SWITCH_VERSIONS} 个：${context}`)
+  const early = versions.filter((version) => compareReleaseVersions(version, REMOTE_SWITCH_CLIENT) < 0)
+  if (early.length) throw new StatusInputError(`${early.join('、')} 比 ${REMOTE_SWITCH_CLIENT} 早，这些版本的客户端不认这一项，写了也不起作用：${context}`)
+  return versions
+}
+
+// 线上那份里读得懂的版本表、平台表，照客户端 readSwitchScope 的读法：有一项读不懂，客户端就整条不认。
+function readSwitchScope(entry) {
+  const scope = {}
+  if (entry.versions !== undefined) {
+    if (!Array.isArray(entry.versions) || entry.versions.length === 0 || entry.versions.length > MAX_SWITCH_VERSIONS) return null
+    const versions = entry.versions.map((version) => clientVersion(version))
+    if (versions.some((version) => !version)) return null
+    scope.versions = [...new Set(versions)]
+  }
+  if (entry.platforms !== undefined) {
+    const platforms = validReleasePlatforms(entry.platforms)
+    if (!platforms) return null
+    scope.platforms = platforms
+  }
+  return scope
+}
+
+function describeSwitchScope(entry) {
+  const parts = []
+  if (Array.isArray(entry.versions)) parts.push(`只给 ${entry.versions.join('、')}`)
+  if (Array.isArray(entry.platforms)) parts.push(`只给 ${describePlatforms(entry.platforms)}`)
+  return parts.length ? `（${parts.join('，')}）` : ''
+}
+
+function knownIssueMessage(value, context) {
+  const message = normalizeMessage(value)
+  if (!message) throw new StatusInputError(`冒号后面要写给用户看的那句话：${context}`)
+  if (LINK_LIKE.test(message)) throw new StatusInputError(`已知问题的提示里不能带网址，客户端会整条不显示：${context}`)
+  return message
+}
+
+// 线上那份里客户端认得的已知问题，按页去重（后写的那条算）；认不得的丢掉，免得预览说的跟客户端看到的不一样。
+function readKnownIssues(current) {
+  const issues = new Map()
+  for (const entry of Array.isArray(current) ? current.slice(0, MAX_KNOWN_ISSUES) : []) {
+    if (!isRecord(entry) || typeof entry.message !== 'string') continue
+    const page = entry.page === undefined ? 'all' : String(entry.page).trim().toLowerCase()
+    const scope = readSwitchScope(entry)
+    if (!KNOWN_ISSUE_PAGES.includes(page) || !scope || !entry.message.trim()) continue
+    const action = KNOWN_ISSUE_ACTIONS.includes(entry.action) ? entry.action : null
+    issues.set(page, { page, message: entry.message, ...(action ? { action } : {}), ...scope })
+  }
+  return issues
+}
+
+/**
+ * 「0.2.23|0.2.24 @windows support」：这一条只给哪几版、哪几种安装包，带哪颗按钮。几样之间用空格隔开，
+ * 版本用 | 隔开，平台前加 @，按钮写 update（「查看更新」）或 support（「找客服」）。留空就是所有认这一项的
+ * 版本和平台、不带按钮。
+ */
+function knownIssueScope(input) {
+  const raw = String(input ?? '').trim()
+  const scope = {}
+  for (const token of raw.split(/\s+/).filter(Boolean)) {
+    const lower = token.toLowerCase()
+    if (KNOWN_ISSUE_ACTIONS.includes(lower)) {
+      if (scope.action) throw new StatusInputError(`按钮只能带一颗：${raw}`)
+      scope.action = lower
+    } else if (/^[@＠]/.test(token)) {
+      if (scope.platforms) throw new StatusInputError(`平台只写一处，几种之间用 | 隔开：${raw}`)
+      scope.platforms = releasePlatforms(token.slice(1), raw)
+    } else {
+      if (scope.versions) throw new StatusInputError(`版本只写一处，几个之间用 | 隔开：${raw}`)
+      scope.versions = switchVersions(token, raw)
+    }
+  }
+  return scope
+}
+
+/**
+ * 已知问题提示：「recharge: 支付宝暂时打不开付款页，请先用微信付款。」给充值页加一条，同一页再写一次就换掉；
+ * 「recharge: none」去掉那一页的，整个写 none 全部清空。只给谁看、带不带按钮写在另一格（knownIssueScope）。
+ * 没写到的那几页照线上保留。
+ */
+function applyKnownIssues(current, input, scopeInput) {
+  const raw = String(input ?? '').trim()
+  const scopeRaw = String(scopeInput ?? '').trim()
+  if (!raw) {
+    if (scopeRaw) throw new StatusInputError('只有写了已知问题的那句话，才能填它给谁看、带什么按钮')
+    return current
+  }
+  if (raw.toLowerCase() === 'none') {
+    if (scopeRaw) throw new StatusInputError('清空已知问题时不用填给谁看')
+    return undefined
+  }
+  const match = raw.match(/^([A-Za-z]+)\s*[:：=＝]\s*([\s\S]*)$/)
+  if (!match) throw new StatusInputError(`已知问题要写成「recharge: 给用户看的一句话」，页可以是 ${KNOWN_ISSUE_PAGES.join(' / ')}：${raw}`)
+  const page = match[1].toLowerCase()
+  if (!KNOWN_ISSUE_PAGES.includes(page)) throw new StatusInputError(`已知问题只能挂在 ${KNOWN_ISSUE_PAGES.join(' / ')}：${match[1]}`)
+  const issues = readKnownIssues(current)
+  if (match[2].trim().toLowerCase() === 'none') {
+    if (scopeRaw) throw new StatusInputError('去掉一页的已知问题时不用填给谁看')
+    issues.delete(page)
+  } else {
+    const message = knownIssueMessage(match[2], raw)
+    const { action, ...scope } = knownIssueScope(scopeRaw)
+    issues.delete(page)
+    issues.set(page, { page, message, ...(action ? { action } : {}), ...scope })
+    if (issues.size > MAX_KNOWN_ISSUES) throw new StatusInputError(`已知问题最多同时挂 ${MAX_KNOWN_ISSUES} 条`)
+  }
+  return issues.size ? [...issues.values()] : undefined
+}
+
+function readPaymentMethodsOff(current) {
+  const switches = new Map()
+  for (const entry of Array.isArray(current) ? current.slice(0, MAX_PAYMENT_METHODS_OFF) : []) {
+    if (!isRecord(entry) || typeof entry.method !== 'string') continue
+    const method = entry.method.trim().toLowerCase()
+    const scope = readSwitchScope(entry)
+    if (!PAYMENT_METHOD.test(method) || !scope) continue
+    switches.set(method, { method, ...scope })
+  }
+  return switches
+}
+
+/**
+ * 充值方式开关：「alipay」在软件的充值页藏掉支付宝，「-alipay」放回来，none 全部放回。后面接
+ * 「@0.2.23|0.2.24」「@windows」只藏这几版、这几种安装包，两样都要就写两个 @。同一种再写一次就换掉它的范围。
+ * 名字是站上付款方式的 type（alipay 支付宝、wxpay 微信…），客户端比较时不分大小写。
+ */
+function applyPaymentMethodsOff(current, input) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return undefined
+  const switches = readPaymentMethodsOff(current)
+  for (const token of raw.split(/[\s,，]+/).filter(Boolean)) {
+    const [head, ...segments] = token.split(/[@＠]/)
+    if (head.startsWith('-')) {
+      if (segments.length) throw new StatusInputError(`放回来时只写名字，不带 @：${token}`)
+      switches.delete(head.slice(1).trim().toLowerCase())
+      continue
+    }
+    const method = head.trim().toLowerCase()
+    if (!PAYMENT_METHOD.test(method)) throw new StatusInputError(`付款方式要写站上的 type，只能用字母、数字和 _ . -，比如 alipay、wxpay：${token}`)
+    if (segments.length > 2) throw new StatusInputError(`一种付款方式最多带两个 @（版本一个、平台一个）：${token}`)
+    const scope = {}
+    for (const segment of segments) {
+      const kind = /^[\d.|｜v\s-]+$/i.test(segment) ? 'versions' : 'platforms'
+      if (scope[kind]) throw new StatusInputError(`版本和平台各写一个 @：${token}`)
+      scope[kind] = kind === 'versions' ? switchVersions(segment, token) : releasePlatforms(segment, token)
+    }
+    switches.delete(method)
+    switches.set(method, { method, ...scope })
+  }
+  if (switches.size > MAX_PAYMENT_METHODS_OFF) throw new StatusInputError(`最多同时藏 ${MAX_PAYMENT_METHODS_OFF} 种付款方式`)
+  return switches.size ? [...switches.values()] : undefined
+}
+
 function groupName(role, value) {
   const name = value.trim()
   if (!name) throw new StatusInputError(`${role} 那一项里有空的分组名字（两个 | 挨着了？）`)
@@ -451,6 +623,12 @@ function applyStatusChanges(current, changes, now = new Date()) {
   const cliModels = applyCliModels(next.cliModels, changes['cli-models'])
   if (cliModels === undefined) delete next.cliModels
   else next.cliModels = cliModels
+  const knownIssues = applyKnownIssues(next.knownIssues, changes['known-issue'], changes['known-issue-scope'])
+  if (knownIssues === undefined) delete next.knownIssues
+  else next.knownIssues = knownIssues
+  const paymentMethodsOff = applyPaymentMethodsOff(next.paymentMethodsOff, changes['payment-methods-off'])
+  if (paymentMethodsOff === undefined) delete next.paymentMethodsOff
+  else next.paymentMethodsOff = paymentMethodsOff
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -513,6 +691,20 @@ function describeCliModels(models) {
   return `型号表：${parts.join('；')}（没写的照程序自带的，只有 0.2.20 及以后的客户端认）`
 }
 
+function describeKnownIssues(current) {
+  const issues = [...readKnownIssues(current).values()]
+  if (issues.length === 0) return '已知问题提示：无'
+  const parts = issues.map((issue) => `${KNOWN_ISSUE_PAGE_LABELS[issue.page]}「${issue.message}」${issue.action ? `，带${KNOWN_ISSUE_ACTION_LABELS[issue.action]}按钮` : ''}${describeSwitchScope(issue)}`)
+  return `已知问题提示：${parts.join('；')}（只有 ${REMOTE_SWITCH_CLIENT} 及以后的客户端认）`
+}
+
+function describePaymentMethodsOff(current) {
+  const switches = [...readPaymentMethodsOff(current).values()]
+  if (switches.length === 0) return '充值页藏掉的付款方式：无'
+  const parts = switches.map((entry) => `${entry.method}${PAYMENT_METHOD_LABELS[entry.method] ? `（${PAYMENT_METHOD_LABELS[entry.method]}）` : ''}${describeSwitchScope(entry)}`)
+  return `充值页藏掉的付款方式：${parts.join('、')}（只藏软件里的，网站不受影响；只有 ${REMOTE_SWITCH_CLIENT} 及以后的客户端认）`
+}
+
 function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
@@ -523,6 +715,8 @@ function describeStatus(status) {
   lines.push(status.toolRouteRewrite === 'merge' ? '换线路时：整份重写工具配置（老办法，只有 0.2.18 及以后的客户端认）' : '换线路时：只改工具配置里的地址')
   lines.push(describeCliModels(status.cliModels))
   lines.push(describeAccountGroups(status.accountGroups))
+  lines.push(describeKnownIssues(status.knownIssues))
+  lines.push(describePaymentMethodsOff(status.paymentMethodsOff))
   return lines
 }
 
@@ -602,7 +796,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--published-dates …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …] [--summary <file>]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--published-dates …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …] [--known-issue …] [--known-issue-scope …] [--payment-methods-off …] [--summary <file>]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const now = new Date()
@@ -625,4 +819,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyMinimumVersion, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }
+module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }
