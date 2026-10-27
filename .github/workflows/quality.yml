@@ -321,6 +321,15 @@ jobs:
           if (-not (Test-Path -LiteralPath 'dist/renderer-v2.flag' -PathType Leaf)) {
             throw 'npm run compile did not produce dist/renderer-v2.flag'
           }
+      # The canvas boundary gates also read dist-canvas, but every job that
+      # runs `npm test` does so before any build, so that half skips there.
+      # Check the canvas this job just built, which the smokes below load, and
+      # treat a missing build as a failure rather than a skip (#1393).
+      - name: Verify the built canvas carries no credentials or network calls of its own
+        timeout-minutes: 3
+        env:
+          XINGMANG_REQUIRE_CANVAS_DIST: '1'
+        run: node --test scripts/verify-canvas-renderer-boundary.test.cjs scripts/verify-canvas-network-boundary.test.cjs
       - name: Run isolated signed-out startup smoke test
         # Same three-layer bound as the smoke below: the script budgets itself
         # to 3 minutes, this is the backstop if it somehow outlives that.

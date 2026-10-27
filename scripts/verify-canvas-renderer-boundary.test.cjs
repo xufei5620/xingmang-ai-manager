@@ -23,15 +23,25 @@ function sourceFiles(directory) {
   return result
 }
 
+// canvas-v2/shared/ comes with the xingmang-canvas kernel (#1393) and is
+// canvas renderer source like canvas-v2/src/.
+const sourceRoots = ['src', 'shared']
+  .map((name) => path.join(projectRoot, 'canvas-v2', name))
+  .filter((root) => fs.existsSync(root))
+
 test('keeps the canvas renderer source free of credential-bearing request paths', () => {
-  const files = sourceFiles(path.join(projectRoot, 'canvas-v2', 'src'))
+  const files = sourceRoots.flatMap((root) => sourceFiles(root))
+  assert.ok(files.length > 0, 'canvas-v2/src must contain source files')
   for (const file of files) {
     const content = fs.readFileSync(file, 'utf8')
     for (const pattern of forbidden) assert.doesNotMatch(content, pattern, `${path.relative(projectRoot, file)} violates the renderer boundary`)
   }
 })
 
-test('keeps the built canvas renderer free of credential-bearing request paths', { skip: !fs.existsSync(path.join(projectRoot, 'dist-canvas')) }, () => {
+// CI sets this after building, so a missing build fails instead of skipping.
+const distRequired = process.env.XINGMANG_REQUIRE_CANVAS_DIST === '1'
+
+test('keeps the built canvas renderer free of credential-bearing request paths', { skip: !distRequired && !fs.existsSync(path.join(projectRoot, 'dist-canvas')) }, () => {
   const files = sourceFiles(path.join(projectRoot, 'dist-canvas'))
   assert.ok(files.length > 0, 'dist-canvas must contain executable assets')
   for (const file of files) {

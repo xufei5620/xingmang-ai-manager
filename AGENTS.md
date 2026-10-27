@@ -198,7 +198,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 
 另一半同样容易踩错：**`canvas-v2/` 里没有任何出网代码**。渲染层的执行器（`canvas-v2/src/engine/executors.ts`）只是把请求交给宿主桥，真正的 HTTP、凭据解析、产物落盘全在主进程（`ai-image-service.ts` / `ai-chat-service.ts` / `chat-credential-coordinator.ts`）。想加一种新的生成能力，**主进程那侧才是要动的地方**；在渲染层直接 `fetch` relay 会绕开 I15 的全部边界，PR #85 已经把那条老路径删掉了，不要重新长出来。
 
-这条边界有自动门禁兜底：`scripts/verify-canvas-renderer-boundary.test.cjs` 扫描画布渲染层源码，出现 `Authorization:` / `Bearer ${` / `.apiKey` / `getAuthToken` 等模式即失败；`verify-canvas-provenance.test.cjs` 守第三方来源清单。两者都在 `npm test` 里。
+这条边界有自动门禁兜底：`scripts/verify-canvas-renderer-boundary.test.cjs` 扫描画布渲染层源码，出现 `Authorization:` / `Bearer ${` / `.apiKey` / `getAuthToken` 等模式即失败；`verify-canvas-network-boundary.test.cjs` 不许画布源码和产物出现 `/api/`，`fetch` / `XMLHttpRequest` / `WebSocket` 等只许出现在它登记过的地方；`verify-canvas-provenance.test.cjs` 守第三方来源清单。三者都在 `npm test` 里，前两道的产物那一半由 Windows 打包作业构建完再跑。
 
 **T14. 改渲染层 → legacy 树已冻结，只接受安全修复。**
 yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三选一里的 b），不定退役日期，也不重排 #30。
