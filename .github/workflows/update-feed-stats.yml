@@ -5,9 +5,15 @@
 #
 # 只读：令牌是仓库 Secrets 里的 CLOUDFLARE_ANALYTICS_TOKEN（只有 Zone Analytics 和 Zone 两项读权限，
 # 限 shenfengwl.fun），不用 release 环境，所以不用批准，也碰不到发布凭据和更新目录。
+#
+# 每天北京时间早上 6:17（UTC 22:17，避开整点那一波排队）自动数一次最近 1 天：Cloudflare 只留最近一段，
+# 没人点的那几天过了就再也数不到；1 天的窗口抽样也最少。结果和手动跑一样在那次运行的摘要页上，
+# 日志里也有同样的一份。手动跑照旧，天数自己填。
 name: update-feed-stats
 
 on:
+  schedule:
+    - cron: '17 22 * * *'
   workflow_dispatch:
     inputs:
       days:
@@ -20,6 +26,8 @@ permissions:
 
 jobs:
   stats:
+    # fork 里没有这个令牌，定时跑了也只会红。
+    if: ${{ github.event_name != 'schedule' || github.repository == 'xufei5620/xingmang-ai-manager' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -34,7 +42,8 @@ jobs:
       - name: Count clients per version from the status file requests
         env:
           CLOUDFLARE_ANALYTICS_TOKEN: ${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}
-          DAYS: ${{ inputs.days }}
+          # 定时运行没有 inputs，固定数 1 天；手动跑用填的天数。
+          DAYS: ${{ github.event_name == 'schedule' && '1' || inputs.days }}
         run: |
           set -euo pipefail
           node scripts/update-feed-stats.cjs --days "$DAYS" | tee -a "$GITHUB_STEP_SUMMARY"
