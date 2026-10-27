@@ -893,6 +893,23 @@ function disableCodexRelayAnalytics(parsed: Record<string, unknown>): void {
   if (analytics.enabled === undefined) analytics.enabled = false
 }
 
+// Codex 桌面端左上角选成「ChatGPT Work」，config.toml 的 [desktop] 里记的是
+// conversationDetailMode = "STEPS_PROSE"。这个模式开着内置浏览器、又没登录 ChatGPT 账号时，开新对话
+// 就在本机报「Work browser access requires an authenticated account」，消息根本没发出去；用密钥接入的
+// 客户全都没登录。客户端要先从 OpenAI 的开关服务读到账号的工作模式策略才查这一项，读没读到看网络，
+// 所以客户看到的是时好时坏（#1353，按 Windows 版 26.1013.4894 的程序核对）。只把这一个值换回 Codex
+// 模式的缺省 STEPS_COMMANDS：没写这个键、写的是另一档 Codex 模式（STEPS_EXECUTION）都不动，
+// 官方账号那份不经过这里。
+//
+// 只在保存配置时换，不进开机补设置（fillCodexRelayTemplateDefaults）：这是客户自己选的值，
+// 开机补完那句提示说的是「自己改过的设置都没动」。
+function leaveCodexDesktopChatGptWorkMode(parsed: Record<string, unknown>): void {
+  const desktop = parsed.desktop
+  if (isJsonRecord(desktop) && desktop.conversationDetailMode === 'STEPS_PROSE') {
+    desktop.conversationDetailMode = 'STEPS_COMMANDS'
+  }
+}
+
 /** 切回 ChatGPT 时只收回本软件写的那一份：整张表恰好就是 `enabled = false`。 */
 function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
   const analytics = parsed.analytics
@@ -1007,6 +1024,7 @@ function applyCodexRelayConfig(
   parsed.check_for_update_on_startup = false
   disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
+  leaveCodexDesktopChatGptWorkMode(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   // Before base_url is overwritten: only a table that already points at our relay is ours to rename.
   renameLegacyCodexRelayDisplayName(providerEntry, siteBaseUrl)
