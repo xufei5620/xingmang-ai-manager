@@ -8,7 +8,9 @@ import type { WindowOs } from '../app/window-os'
 import { accountKeyChangeInProgress } from './account-bootstrap'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './chinese-runtime-choice'
 import { offersCodexDesktopRestartOnOpen } from './codex-desktop-open'
+import { resolveToolKeySyncFailure } from './key-sync-failure'
 import { launchWaitLabel, launchWarning } from './launch-notice'
+import { waitWhileAccountConnectionPending } from './launch-wait'
 import { codexNeedsRepair, presentTools, providerFor, readyOnceRepaired, type ToolId, type ToolSource } from './model'
 import { modelSwapOffer, type ModelSwapChoice, type ModelSwapOffer } from './model-check'
 import { isMissingWorkspace, launchWorkspaces, type CliLaunchChoice } from './recent-workspaces'
@@ -54,7 +56,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   const pendingModelSwap = useRef<((choice: ModelSwapChoice) => void) | null>(null)
   /** 还在准备（主进程那边还没开始打开）的「打开中」，按工具记着怎么放掉；见 holdLaunch。 */
   const preparingLaunches = useRef(new Map<ToolId, () => void>())
-  const launchRequest = useRef<{ epoch: () => boolean } | null>(null)
+  const launchRequest = useRef<{ id: ToolId; epoch: () => boolean } | null>(null)
   const cancelPendingLaunchDialogs = useCallback(() => {
     // 上一个账号点的「打开」后面每一步都会自己停下（launchIsCurrent），卡片上的「打开中」不陪它
     // 等完读配置、核对模型，新账号点「打开」也不被它挡住。主进程已经在打开的不放，照旧等它做完。
@@ -75,10 +77,33 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     const latest = accountBootstrapRef.current
     return accountKeyChangeInProgress(latest?.scope === scope ? latest : null, provider)
   }
-  function waitForAccountConnection(tool: { source: ToolSource; provider: ProviderId }): boolean {
-    if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return false
-    toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral')
-    return true
+  /**
+   * 这个工具点下去的「打开」是不是停在等账号那一轮（waitForAccountConnection，最长 3 分钟）。
+   * 停在那里的那次只占自己那张卡的「打开中」：首页 launchWaitingForAccount 看的是同一件事，把它从
+   * launchBusy 里去掉；requestLaunch 也放别的工具过，不让一个工具等账号把全部工具都按住。
+   */
+  function launchParkedOnAccount(id: ToolId): boolean {
+    const snapshot = toolbox.snapshot
+    const tool = snapshot ? presentTools(snapshot).find((entry) => entry.id === id) : undefined
+    return tool?.source === 'account' && accountConnectionPending(tool.provider)
+  }
+  /**
+   * 账号这一轮还在给这个工具换密钥时点了「打开」（主路卡点 F7）：以前只弹一句「请稍后再打开」就停下，
+   * 好了也不自己打开。现在弹「好了会自动打开」，等那一轮写完再接着往下走。那一轮没给这个工具写成的，
+   * 首页横幅已经在说原因，这里把同一句弹一下、不打开；等太久就放手，说回原来那句。
+   * 等的这段仍挂在自己那张卡的「打开中」上（holdLaunch），别的工具不受连累（launchParkedOnAccount）。
+   * 'ready' = 没什么要等的；'waited' = 等完了、密钥刚换过，调用方要重读配置；'stop' = 这次不开。
+   */
+  async function waitForAccountConnection(tool: { id: ToolId; source: ToolSource; provider: ProviderId }, epoch: () => boolean): Promise<'ready' | 'waited' | 'stop'> {
+    if (tool.source !== 'account' || !accountConnectionPending(tool.provider)) return 'ready'
+    toast.show('正在连接账号，好了会自动打开。', 'neutral')
+    const outcome = await waitWhileAccountConnectionPending({ pending: () => accountConnectionPending(tool.provider), current: () => launchIsCurrent(epoch) })
+    if (outcome === 'stopped') return 'stop'
+    if (outcome === 'timeout') { toast.show('正在同步这个工具的账号连接，请稍后再打开。', 'neutral'); return 'stop' }
+    const latest = accountBootstrapRef.current
+    const failure = resolveToolKeySyncFailure(latest?.scope === scope ? latest : null, tool.provider, tool.id)
+    if (failure) { toast.show(failure.text, 'warn'); return 'stop' }
+    return 'waited'
   }
   /**
    * 真打开之前那几道关：检测出没出错、装没装、Codex 老配置先修、没连好账号先去连、核对默认模型。
@@ -91,7 +116,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       if (!launchIsCurrent(epoch)) return null
       const current = toolbox.snapshot
       if (!current) throw new Error('请先完成工具检测')
-      const config = await toolsApi.readConfig()
+      let config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
       if (!tool) throw new Error('当前平台暂不支持打开这个工具')
@@ -99,7 +124,14 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
       // Shortcuts, tray actions and the records page share this entry, including
       // after the scan finishes but account configuration is still waiting on the backend.
-      if (waitForAccountConnection(tool)) return null
+      const waited = await waitForAccountConnection(tool, epoch)
+      if (waited === 'stop') return null
+      if (waited === 'waited') {
+        // 那一轮刚写进去的密钥要读进来，接下去修配置、核对模型看的才是新的那份。
+        config = await toolsApi.readConfig()
+        if (!launchIsCurrent(epoch)) return null
+        tool = presentTools({ ...current, config }).find((entry) => entry.id === id) ?? tool
+      }
       // Codex 老配置写在它不认的名字下，照原样打开必然报 Key 无效。修完就能用的，
       // 先替用户修（和「修好它」同一条路：备份、写入、自检，失败会恢复原样）再打开。
       if (!tool.configured && readyOnceRepaired(config.providers[tool.provider], tool.provider)) {
@@ -200,7 +232,8 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       workspace = selectedWorkspace
     }
     if (!launchIsCurrent(epoch)) return false
-    if (waitForAccountConnection(tool)) return false
+    // 选文件夹那一会儿账号又开了一轮（跟线路悄悄改配置的那种）：照样等它写完，主进程打开时自己读配置。
+    if (await waitForAccountConnection(tool, epoch) === 'stop') return false
     // 从这里起是主进程在打开，换了账号也要等它做完，「打开中」不再提前放掉。
     preparingLaunches.current.delete(id)
     const result = await toolsApi.launch(id, workspace, mode)
@@ -251,9 +284,11 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     }
   }
   function requestLaunch(id: ToolId, remembered?: string, mode: CliLaunchChoice = 'new', folder: LaunchFolder = 'choose') {
-    const request = { epoch: accountEpoch.capture() }
-    // 同一个账号点下去的上一次还没走完：这一下不再叠一次。
-    if (launchRequest.current?.epoch()) return
+    const request = { id, epoch: accountEpoch.capture() }
+    // 同一个账号点下去的上一次还没走完：这一下不再叠一次。上一次是停在等账号那一轮的，只拦它自己
+    // 再点（那张卡本来就按不动），别的工具照常开，不陪它等那最长 3 分钟。
+    const inFlight = launchRequest.current
+    if (inFlight?.epoch() && (inFlight.id === id || !launchParkedOnAccount(inFlight.id))) return
     launchRequest.current = request
     void perform('打开工具', async () => {
       try {
