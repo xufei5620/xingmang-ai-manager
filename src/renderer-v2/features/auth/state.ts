@@ -1,3 +1,4 @@
+import type { AccountLoginResult, AccountSessionState, AccountSiteId } from '../../../../electron/ipc-contract'
 import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import { matchAccountError } from './account-errors'
 import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
@@ -285,6 +286,24 @@ export function authFailure(error: unknown, action: string, online = true): Auth
 
 export function authErrorMessage(error: unknown, action: string): string {
   return authFailure(error, action).message
+}
+
+/**
+ * 主进程此刻登着的，是不是刚登上的这个账号。登录结果只说明「刚才登上了」：之后服务端可能
+ * 已经把这次登录结束了（2026-10-27 找回密码时改密码撞上服务端的空当，登录被作废，界面却照着
+ * 登录结果摆成已登录）。进软件、记密码之前都先问这一句。
+ */
+export function sessionMatchesLogin(live: AccountSessionState | null, result: AccountLoginResult, siteId: AccountSiteId): boolean {
+  return Boolean(live?.authenticated && live.account && live.account.userId === result.account.userId && (live.siteId ?? 'solov') === siteId)
+}
+
+/**
+ * 改密码这次失败，能不能说明新密码没设上。服务端明说不改的（试得太频繁、要先去官网验证这类）能；
+ * 没等到回话、连不上、说不清是什么错的不能：服务端可能已经改好了，只是回话没到，或者这次登录
+ * 在改的半路被结束了。
+ */
+export function passwordChangeOutcomeUnknown(kind: AuthFailureKind): boolean {
+  return kind === 'offline' || kind === 'unreachable' || kind === 'network' || kind === 'unknown'
 }
 
 /**

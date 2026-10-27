@@ -1,7 +1,7 @@
 import { bridge as getBridge } from '../../bridge'
 import type { AccountChangePasswordInput, AccountLoginInput, AccountRegisterInput, AccountResetPasswordInput, LegalDocumentKind, RememberedAccountLogin, XingmangApi } from '../../../../electron/ipc-contract'
 
-export type AuthBridge = Pick<XingmangApi, 'getAccountStatus' | 'getRememberedAccountLogin' | 'setRememberedAccountLogin' | 'loginAccount' | 'submitTwoFactorCode' | 'registerAccount' | 'sendVerificationCode' | 'sendPasswordResetCode' | 'resetPassword' | 'changeAccountPassword' | 'getLegalDocument' | 'openExternal' | 'copyResetPassword'>
+export type AuthBridge = Pick<XingmangApi, 'getAccountStatus' | 'getAccountSession' | 'getRememberedAccountLogin' | 'setRememberedAccountLogin' | 'loginAccount' | 'submitTwoFactorCode' | 'registerAccount' | 'sendVerificationCode' | 'sendPasswordResetCode' | 'resetPassword' | 'changeAccountPassword' | 'getLegalDocument' | 'openExternal' | 'copyResetPassword'>
 export type AccountSiteId = 'solov' | 'solov-api'
 /** 打开登录框时预先选好的来源和账号，给「重新登录这个账号」用（#480）。 */
 export interface LoginTarget {
@@ -15,6 +15,8 @@ export function createAuthApi(bridge: AuthBridge) {
     getRemembered: (siteId: AccountSiteId) => bridge.getRememberedAccountLogin(siteId),
     setRemembered: (login: RememberedAccountLogin | null, siteId?: AccountSiteId) => bridge.setRememberedAccountLogin(login, siteId),
     login: (input: AccountLoginInput) => bridge.loginAccount(input),
+    // 主进程此刻登着谁。登录结果说的是「刚才登上了」，进软件前要的是「现在还登着」。
+    session: () => bridge.getAccountSession(),
     submitTwoFactor: (code: string) => bridge.submitTwoFactorCode(code),
     register: (input: AccountRegisterInput) => bridge.registerAccount(input),
     sendVerification: (email: string) => bridge.sendVerificationCode(email),

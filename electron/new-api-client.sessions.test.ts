@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createNewApiClient, NewApiSessionChangedError, type NewApiClientOptions, type NewApiFetch } from './new-api-client'
+import { createNewApiClient, createSessionRequestGate, NewApiSessionChangedError, type NewApiClientOptions, type NewApiFetch } from './new-api-client'
 
 function response(data: unknown, options: { status?: number; success?: boolean; cookies?: string[]; message?: string } = {}): Response {
   const result = new Response(JSON.stringify({ success: options.success ?? true, message: options.message ?? '', data }), { status: options.status ?? 200, headers: { 'Content-Type': 'application/json' } })
@@ -38,6 +38,16 @@ function harness(timeoutMs = 1000, options: Pick<NewApiClientOptions, 'onCredent
 }
 const target = (userId: number) => ({ userId, cookies: [`refresh_token=cookie-${userId}`] })
 const userHeader = (init: RequestInit) => (init.headers as Record<string, string>)['New-Api-User']
+function requestsTo(fetchImpl: ReturnType<typeof harness>['fetchImpl'], pathname: string, method?: string) {
+  return fetchImpl.mock.calls.filter(([url, init]) => new URL(url).pathname === pathname && (method === undefined || (init?.method ?? 'GET') === method))
+}
+function authorization(call: Parameters<NewApiFetch> | undefined): string | undefined {
+  return (call?.[1]?.headers as Record<string, string> | undefined)?.Authorization
+}
+// Several macrotask turns: long enough for a request the client is free to send to reach fetch.
+async function settle(): Promise<void> {
+  for (let turn = 0; turn < 5; turn += 1) await new Promise((resolve) => { setTimeout(resolve, 0) })
+}
 
 describe('saved session switching', () => {
   it('persists candidate cookies before /self fails while retaining the active account', async () => {
@@ -277,7 +287,10 @@ describe('session ownership of asynchronous responses', () => {
     expect(h.onSessionChange).toHaveBeenCalledTimes(2)
   })
 
-  it('does not replace a newer password-change token with an older refresh response', async () => {
+  // A refresh that is already on the wire finishes before the change starts
+  // (createSessionRequestGate), so an older refresh answer can no longer land
+  // on top of the token the change hands back.
+  it('lets a refresh already on the wire finish before changing the password, and keeps the change token', async () => {
     const h = harness()
     await h.login(1)
     const refresh = deferred<Response>()
@@ -286,12 +299,15 @@ describe('session ownership of asynchronous responses', () => {
       if (pathname === '/api/user/self' && init.method === 'PUT') return response({ access_token: 'new-password-token', access_expires_at: null })
     })
     const refreshing = h.client.refreshAccessToken()
-    await h.client.changePassword({ originalPassword: 'old', newPassword: 'new' })
+    const changing = h.client.changePassword({ originalPassword: 'old', newPassword: 'new' })
+    await settle()
+    expect(requestsTo(h.fetchImpl, '/api/verify')).toHaveLength(0)
     refresh.resolve(refreshResponse(1))
     await refreshing
+    await changing
+    expect(authorization(requestsTo(h.fetchImpl, '/api/verify')[0])).toBe('Bearer refreshed-1')
     await h.client.getBalance()
-    const lastSelf = h.fetchImpl.mock.calls.filter(([url, init]) => new URL(url).pathname === '/api/user/self' && init?.method === 'GET').at(-1)
-    expect((lastSelf?.[1]?.headers as Record<string, string>).Authorization).toBe('Bearer new-password-token')
+    expect(authorization(requestsTo(h.fetchImpl, '/api/user/self', 'GET').at(-1))).toBe('Bearer new-password-token')
   })
 
   it('does not commit a stale password rotation into the new account', async () => {
@@ -358,5 +374,128 @@ describe('session ownership of asynchronous responses', () => {
     listing.resolve(response([{ id: 1, name: 'fixture-key', group: 'fixture', status: 1, unlimited_quota: true, expired_time: -1 }]))
     await rejected
     expect(h.fetchImpl.mock.calls.some(([url]) => new URL(url).pathname.endsWith('/key'))).toBe(false)
+  })
+})
+
+// 2026-10-27：找回密码第 3 步刚用临时密码登上就改密码，界面同时在读余额。服务端改完密码、
+// 给账号发完提醒邮件之后才把这台电脑的登录升到新版本；中间到的请求被拒，续期时整个登录被作废。
+describe('password change runs alone on the login', () => {
+  it('waits for an account read already on the wire before proving the password', async () => {
+    const h = harness()
+    await h.login(1)
+    const self = deferred<Response>()
+    h.setHandler((pathname, init) => pathname === '/api/user/self' && init.method !== 'PUT' ? self.promise : undefined)
+    const balance = h.client.getBalance()
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/self', 'GET')).toHaveLength(1))
+    const changing = h.client.changePassword({ originalPassword: 'old', newPassword: 'new' })
+    await settle()
+    expect(requestsTo(h.fetchImpl, '/api/verify')).toHaveLength(0)
+    self.resolve(response(user(1)))
+    await balance
+    await expect(changing).resolves.toEqual({ changed: true })
+    const order = h.fetchImpl.mock.calls.map(([url, init]) => `${init?.method ?? 'GET'} ${new URL(url).pathname}`).filter((entry) => !entry.endsWith('/api/status'))
+    expect(order).toEqual(['POST /api/user/login', 'GET /api/user/self', 'POST /api/verify', 'PUT /api/user/self'])
+  })
+
+  it('holds account reads that start during the change until it is answered, then sends them with the token it handed back', async () => {
+    const h = harness()
+    await h.login(1)
+    const changed = deferred<Response>()
+    h.setHandler((pathname, init) => pathname === '/api/user/self' && init.method === 'PUT' ? changed.promise : undefined)
+    const changing = h.client.changePassword({ originalPassword: 'old', newPassword: 'new' })
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(1))
+    const balance = h.client.getBalance()
+    const profile = h.client.getProfile()
+    await settle()
+    expect(requestsTo(h.fetchImpl, '/api/user/self', 'GET')).toHaveLength(0)
+    changed.resolve(response({ access_token: 'new-password-token', access_expires_at: null }))
+    await changing
+    await balance
+    await profile
+    const reads = requestsTo(h.fetchImpl, '/api/user/self', 'GET')
+    expect(reads).toHaveLength(2)
+    expect(reads.map(authorization)).toEqual(['Bearer new-password-token', 'Bearer new-password-token'])
+    expect(requestsTo(h.fetchImpl, '/api/user/auth/refresh')).toHaveLength(0)
+    expect(h.client.getSessionState().authenticated).toBe(true)
+  })
+
+  it('lets the held reads through once a failed change is answered', async () => {
+    const h = harness()
+    await h.login(1)
+    const changed = deferred<Response>()
+    h.setHandler((pathname, init) => pathname === '/api/user/self' && init.method === 'PUT' ? changed.promise : undefined)
+    const changing = h.client.changePassword({ originalPassword: 'old', newPassword: 'new' })
+    await vi.waitFor(() => expect(requestsTo(h.fetchImpl, '/api/user/self', 'PUT')).toHaveLength(1))
+    const balance = h.client.getBalance()
+    changed.resolve(response(null, { success: false, message: '服务器开小差了' }))
+    await expect(changing).rejects.toThrow()
+    await expect(balance).resolves.toMatchObject({ quota: 100 })
+    expect(authorization(requestsTo(h.fetchImpl, '/api/user/self', 'GET')[0])).toBe('Bearer access-1')
+  })
+})
+
+describe('createSessionRequestGate', () => {
+  it('runs shared work side by side', async () => {
+    const gate = createSessionRequestGate()
+    const first = deferred<string>()
+    const second = deferred<string>()
+    const started: string[] = []
+    const a = gate.shared(() => { started.push('a'); return first.promise })
+    const b = gate.shared(() => { started.push('b'); return second.promise })
+    await settle()
+    expect(started).toEqual(['a', 'b'])
+    first.resolve('a'); second.resolve('b')
+    await expect(Promise.all([a, b])).resolves.toEqual(['a', 'b'])
+  })
+
+  it('starts exclusive work only after the shared work already running has settled', async () => {
+    const gate = createSessionRequestGate()
+    const running = deferred<void>()
+    const events: string[] = []
+    const shared = gate.shared(async () => { await running.promise; events.push('shared done') })
+    const exclusive = gate.exclusive(async () => { events.push('exclusive') })
+    await settle()
+    expect(events).toEqual([])
+    running.resolve()
+    await Promise.all([shared, exclusive])
+    expect(events).toEqual(['shared done', 'exclusive'])
+  })
+
+  it('holds shared work that arrives while exclusive work is waiting or running', async () => {
+    const gate = createSessionRequestGate()
+    const running = deferred<void>()
+    const holding = deferred<void>()
+    const events: string[] = []
+    const first = gate.shared(async () => { await running.promise; events.push('first shared') })
+    const exclusive = gate.exclusive(async () => { events.push('exclusive start'); await holding.promise; events.push('exclusive end') })
+    const waitingBehind = gate.shared(async () => { events.push('queued while draining') })
+    running.resolve()
+    await vi.waitFor(() => expect(events).toContain('exclusive start'))
+    const lateArrival = gate.shared(async () => { events.push('queued while running') })
+    await settle()
+    expect(events).toEqual(['first shared', 'exclusive start'])
+    holding.resolve()
+    await Promise.all([first, exclusive, waitingBehind, lateArrival])
+    expect(events.slice(0, 3)).toEqual(['first shared', 'exclusive start', 'exclusive end'])
+    expect(events.slice(3).sort()).toEqual(['queued while draining', 'queued while running'])
+  })
+
+  it('runs two exclusive pieces one after the other', async () => {
+    const gate = createSessionRequestGate()
+    const holding = deferred<void>()
+    const events: string[] = []
+    const first = gate.exclusive(async () => { events.push('first start'); await holding.promise; events.push('first end') })
+    const second = gate.exclusive(async () => { events.push('second') })
+    await settle()
+    expect(events).toEqual(['first start'])
+    holding.resolve()
+    await Promise.all([first, second])
+    expect(events).toEqual(['first start', 'first end', 'second'])
+  })
+
+  it('opens again after exclusive work fails', async () => {
+    const gate = createSessionRequestGate()
+    await expect(gate.exclusive(async () => { throw new Error('change failed') })).rejects.toThrow('change failed')
+    await expect(gate.shared(async () => 'read')).resolves.toBe('read')
   })
 })

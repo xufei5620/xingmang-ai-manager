@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
+import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -355,6 +355,29 @@ describe('recovery new password', () => {
     expect(validateNewPassword('my-own-password', 'my-own-passwor').confirm).toBe('两次密码不一致')
     // Passwords are forwarded exactly as typed, so surrounding spaces count toward the length.
     expect(validateNewPassword(' 1234567', ' 1234567')).toEqual({})
+  })
+})
+
+describe('recovery password change outcome', () => {
+  const login = { account: { userId: 7, username: 'sleet', group: 'default', role: 1, quota: 0, usedQuota: 0 }, accessExpiresAt: null, siteId: 'solov' as const }
+  it('counts only the very account just signed in, on the same source, as still signed in', () => {
+    expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov' }, login, 'solov')).toBe(true)
+    expect(sessionMatchesLogin({ authenticated: true, account: login.account }, login, 'solov')).toBe(true)
+    expect(sessionMatchesLogin({ authenticated: false, account: null, siteId: 'solov' }, login, 'solov')).toBe(false)
+    expect(sessionMatchesLogin(null, login, 'solov')).toBe(false)
+    expect(sessionMatchesLogin({ authenticated: true, account: { ...login.account, userId: 8 }, siteId: 'solov' }, login, 'solov')).toBe(false)
+    expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov-api' }, login, 'solov')).toBe(false)
+  })
+  it('does not take a change that lost its login halfway or got no answer as proof the new password was not set', () => {
+    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试")
+    const unanswered = new Error(`Error invoking remote method 'account:change-password': Error: ${networkFailureMessages.timeout}（修改密码请求失败）`)
+    expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
+    expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)
+    expect(passwordChangeOutcomeUnknown(authFailure(new Error('x'), '设新密码', false).kind)).toBe(true)
+  })
+  it('trusts a refusal the server spelled out', () => {
+    expect(passwordChangeOutcomeUnknown(authFailure(new Error('HTTP 429 Too Many Requests'), '设新密码').kind)).toBe(false)
+    expect(passwordChangeOutcomeUnknown(authFailure(new Error('此账号需要两步验证'), '设新密码').kind)).toBe(false)
   })
 })
 
