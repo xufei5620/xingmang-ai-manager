@@ -329,8 +329,10 @@ describe('packaged launch arguments from the Windows installer', () => {
   it('lets every command line the uninstall hooks start this app with through', () => {
     const installer = fs.readFileSync(path.join(repository, 'build', 'installer.nsh'), 'utf8')
     const defines = new Map([...installer.matchAll(/^!define (\w+) "([^"]*)"$/gm)].map((match) => [match[1], match[2]]))
+    // taskkill only names the app as the image to close; it never starts it.
     const launches = installer.split('\n')
       .filter((line) => /\bExec\w*\b/.test(line) && line.includes('${APP_EXECUTABLE_FILENAME}'))
+      .filter((line) => !/\bExec\w*\s+`"\$SYSDIR\\taskkill\.exe" /.test(line))
     expect(launches.length).toBeGreaterThan(0)
     for (const line of launches) {
       const tail = line.match(/\$\{APP_EXECUTABLE_FILENAME\}"([^']*)'/)
