@@ -7275,10 +7275,10 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })).rejects.toThrow(/^支付通道暂时异常，没有扣款，请联系客服。$/)
 
       // 网络打不开支付页、账号中途变了，各有各的下一步，不能一起吞成「联系客服」。
-      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试'))
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。'))
       await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
         planId: 3, provider: 'stripe',
-      })).rejects.toThrow(/^支付页面打开失败，请稍后重试$/)
+      })).rejects.toThrow(/^支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。$/)
     })
 
     it('rejects malformed subscription payment inputs before dispatch', async () => {

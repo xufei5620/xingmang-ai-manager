@@ -116,6 +116,10 @@ export class PaymentCheckoutRejected extends Error {}
 
 export const paymentCheckoutRejectedMessage = '支付通道暂时异常，没有扣款，请联系客服。'
 
+// 走到这句时订单已经下了、付款页没打开，客户付不了钱。账号服务没有给用户取消充值单的接口，
+// 「我的订单」里会多出一笔待支付，所以顺口告诉客户没扣钱、那笔放着就行（#1458）。
+export const paymentPageOpenFailedMessage = '支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。'
+
 export function toCustomerPaymentError(error: unknown): unknown {
   return error instanceof PaymentCheckoutRejected ? new Error(paymentCheckoutRejectedMessage, { cause: error }) : error
 }
@@ -632,7 +636,7 @@ export function createPaymentWindowController(
       // 运行日志会记下 cause。Electron 加载失败的原错误把整个付款地址写在 message 和 url 上，
       // 订单号、签名都在里面（二维码那一页连付款码图片也在），而付款这边的日志一向只记 origin。
       // 所以原因只留错误码：证书、解析、被重置照样分得清，ipc 记失败时的 networkFailure 也还认得出。
-      throw new Error('支付页面打开失败，请稍后重试', { cause: { code: networkFailureCode(error) } })
+      throw new Error(paymentPageOpenFailedMessage, { cause: { code: networkFailureCode(error) } })
     }
   }
 
