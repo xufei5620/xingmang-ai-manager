@@ -404,6 +404,70 @@ test('refuses to record a COS fingerprint that changed after the verified full G
   assert.equal(fixture.pointers.length, 0)
 })
 
+// The workflow runs one platform per job (max-parallel 1). x64 often finishes a new
+// Windows version long before the slower ARM64 upload does, or the ARM64 job fails.
+test('a new Windows version on one architecture keeps the other architecture on its last verified package', async function () {
+  const fixture = createFixture()
+  await fixture.run()
+  const previous = clone(fixture.latest)
+  fixture.metadata.buildVersion = '26.931.1.0'
+  const x64 = await fixture.run(['windows-x64'])
+  assert.equal(x64.manifest.windows.buildVersion, '26.931.1.0')
+  assert.equal(x64.manifest.platforms['windows-x64'].packageVersion, '26.931.1.0')
+  assert.equal(x64.manifest.platforms['windows-x64'].artifact.key, 'chatgpt/windows-x64/26.931.1.0/ChatGPT-x64.msix')
+  assert.deepEqual(x64.manifest.platforms['windows-arm64'], previous.platforms['windows-arm64'])
+  assert.deepEqual(validatePreviousManifest(clone(fixture.latest)), fixture.latest)
+
+  const downloads = fixture.downloads.length
+  const arm64 = await fixture.run(['windows-arm64'])
+  assert.equal(fixture.downloads.filter(function (item) { return item.url === SOURCES['windows-arm64'].url }).length, 2)
+  assert.equal(fixture.downloads.length, downloads + 2)
+  assert.equal(arm64.manifest.platforms['windows-arm64'].packageVersion, '26.931.1.0')
+  assert.equal(arm64.manifest.platforms['windows-arm64'].license.key, 'chatgpt/windows-arm64/26.931.1.0/ChatGPT-License.xml')
+  assert.deepEqual(arm64.manifest.platforms['windows-x64'], x64.manifest.platforms['windows-x64'])
+})
+
+test('a failed ARM64 job after x64 moved on leaves the previous ARM64 package in the index', async function () {
+  const fixture = createFixture()
+  await fixture.run()
+  const previousArm64 = clone(fixture.latest.platforms['windows-arm64'])
+  fixture.metadata.buildVersion = '26.931.1.0'
+  await fixture.run(['windows-x64'])
+  fixture.publicationError = true
+  await assert.rejects(fixture.run(['windows-arm64']), /COS verification/)
+  assert.equal(fixture.latest.windows.buildVersion, '26.931.1.0')
+  assert.deepEqual(fixture.latest.platforms['windows-arm64'], previousArm64)
+  assert.equal(fixture.latest.platforms['windows-x64'].packageVersion, '26.931.1.0')
+})
+
+// x64's package moved on, ARM64's official MSIX still carries the previous version (#1404).
+// The ARM64 entry kept from before is what lets that job wait instead of failing; without it
+// the job had nothing in the bucket to wait on and reported package-version-behind.
+test('an ARM64 job waiting for its package after x64 moved on keeps the previous ARM64 entry', async function () {
+  const fixture = createFixture()
+  await fixture.run('windows')
+  const previousArm64 = clone(fixture.latest.platforms['windows-arm64'])
+  fixture.metadata.buildVersion = '26.1013.4894.0'
+  await fixture.run('windows-x64')
+  fixture.packageVersion = '26.930.2377.0'
+  const result = await synchronizeOfficialChatgpt({ store: fixture.store, dependencies: fixture.dependencies, platforms: 'windows-arm64', now: function () { return '2026-10-03T06:00:00.000Z' } })
+  assert.deepEqual(result.pending, ['windows-arm64'])
+  assert.equal(result.changed, false)
+  assert.equal(fixture.latest.windows.buildVersion, '26.1013.4894.0')
+  assert.equal(fixture.latest.platforms['windows-x64'].packageVersion, '26.1013.4894.0')
+  assert.deepEqual(fixture.latest.platforms['windows-arm64'], previousArm64)
+  assert.deepEqual(validatePreviousManifest(clone(fixture.latest)), fixture.latest)
+})
+
+test('the index refuses a Windows package newer than the official version it was published under', async function () {
+  const fixture = createFixture()
+  await fixture.run(['windows-x64', 'windows-arm64'])
+  const manifest = clone(fixture.latest)
+  assert.deepEqual(validatePreviousManifest(clone(manifest)), manifest)
+  manifest.windows.buildVersion = '26.930.2376.0'
+  assert.throws(function () { validatePreviousManifest(manifest) }, /Windows 包版本/)
+})
+
 test('rejects Windows downgrade before downloading or publishing', async function () {
   const fixture = createFixture()
   await fixture.run()

@@ -36,7 +36,8 @@
 # true（包括没建这个变量）时，publish 作业不下载 Linux 的包，客户看不到任何 Linux
 # 的东西，Linux 两个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
 # 点头、先在真机上过一遍，这个变量由他自己在仓库设置里打开（docs/LINUX.md）。Linux
-# 不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准。
+# 出包不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准；两份 Linux
+# 清单和 Windows 那份一样，在 publish 作业里上传之前加发布者签名。
 #
 # ## 上传顺序
 #
@@ -811,12 +812,26 @@ jobs:
       # 放在同版本检查之前：重跑同一次发布时签出的字节一模一样（Ed25519 是确定性的），
       # 检查照样认得出是同一批文件。脚本会先确认这把私钥对得上客户端内置的公钥。
       # macOS 不签：Squirrel.Mac 已经按钉住的发布证书验苹果签名，理由见脚本开头。
-      # Linux 的两份清单也还不签：客户端只在 Windows 上验签（main.ts），Linux 还没对外发。
       - name: Sign the Windows update manifest
         if: ${{ needs.windows-build.result == 'success' }}
         env:
           XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
         run: node scripts/update-manifest-signature.cjs sign --manifest release-artifacts/latest.yml
+
+      # Linux 的两份清单同理：deb 由系统安装程序以 root 装，dpkg 自己不验签，清单又和 deb
+      # 同放在 R2。客户端从第一次对外发的那一版起就缺签名拒装（bootstrap/updates.ts），所以
+      # 只要 Linux 的包下载进来了就必须签。只到一份时不在这里报错，交给下面同版本检查那一步
+      # 的「x64 与 arm64 必须一起发」，说得更清楚。
+      - name: Sign the Linux update manifests
+        if: ${{ steps.linux-artifacts.outcome == 'success' }}
+        env:
+          XINGMANG_UPDATE_SIGNING_KEY: ${{ secrets.XINGMANG_UPDATE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          for manifest in latest-linux.yml latest-linux-arm64.yml; do
+            [ -f "release-artifacts/$manifest" ] || continue
+            node scripts/update-manifest-signature.cjs sign --manifest "release-artifacts/$manifest"
+          done
 
       - name: List what is about to be published
         run: |
@@ -1059,6 +1074,18 @@ jobs:
         # 半发布的清单要等他们点更新才暴露。
         if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
         run: npm run update:verify-feed -- --platform=linux
+
+      - name: Re-verify the publisher signature on the live Linux manifests
+        # 和 Windows 那一步一样：线上少了签名，所有 Linux 客户端都会拒装这一版。
+        if: ${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}
+        env:
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+        run: |
+          set -euo pipefail
+          for manifest in latest-linux.yml latest-linux-arm64.yml; do
+            curl --fail --silent --show-error --max-time 60 --output "$RUNNER_TEMP/live-signed-$manifest" "$PUBLIC_BASE/$manifest"
+            node scripts/update-manifest-signature.cjs verify --manifest "$RUNNER_TEMP/live-signed-$manifest"
+          done
 
       - name: Tag the commit that shipped and create the GitHub Release
         env:

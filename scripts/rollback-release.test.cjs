@@ -9,7 +9,7 @@ const { createHash, generateKeyPairSync } = require('node:crypto')
 const YAML = require('yaml')
 const { spawnSync } = require('node:child_process')
 const { RollbackInputError, inspectBackup, manifestVersion, planPlatform, requirePlainVersion, verifyBackup } = require('./rollback-release.cjs')
-const { verifyManifestText } = require('./update-manifest-signature.cjs')
+const { signManifestText, verifyManifestText } = require('./update-manifest-signature.cjs')
 
 const root = path.resolve(__dirname, '..')
 
@@ -173,7 +173,7 @@ test('a platform already on the target version is skipped instead of blocking th
   assert.throws(() => planPlatform('0.2.10', '../0.2.9'), RollbackInputError)
 })
 
-function runPlanStep({ live, backups, releaseAssets }) {
+function runPlanStep({ live, backups, releaseAssets, signedBackups = false }) {
   const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'rollback-release.yml'), 'utf8'))
   const step = workflow.jobs.rollback.steps.find((entry) => /Check the backups/.test(String(entry.name)))
   const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rollback-plan-'))
@@ -184,18 +184,18 @@ function runPlanStep({ live, backups, releaseAssets }) {
   const assets = path.join(workspace, 'assets')
   for (const directory of [bin, scripts, feed, electron, assets]) fs.mkdirSync(directory)
   fs.symlinkSync(path.join(root, 'node_modules'), path.join(workspace, 'node_modules'))
-  // Windows 那份清单在 verify 之后要过更新包签名：真脚本照原样用，只把它读公钥的那个
-  // 客户端源码换成一份只钉着本次临时公钥的，私钥经 secret 同名的环境变量交给它。
+  // Windows 和 Linux 的清单在 verify 之后要过更新包签名：真脚本照原样用，只把它读公钥的
+  // 那个客户端源码换成一份只钉着本次临时公钥的，私钥经 secret 同名的环境变量交给它。
   for (const name of ['update-manifest-signature.cjs', 'update-release-utils.cjs', 'macos-artifact-names.cjs', 'linux-artifact-names.cjs']) {
     fs.copyFileSync(path.join(root, 'scripts', name), path.join(scripts, name))
   }
   const { privateKey, publicKey } = generateKeyPairSync('ed25519')
   const pinned = publicKey.export({ format: 'der', type: 'spki' }).toString('base64')
   fs.writeFileSync(path.join(electron, 'update-package-signature.ts'), `// update-signing-keys:begin\nexport const keys = [\n  '${pinned}',\n]\n// update-signing-keys:end\n`)
-  // GitHub Release 上的安装包：缺省就是每个 Windows 备份引用的那个安装包本身。
+  // GitHub Release 上的安装包：缺省就是每个 Windows / Linux 备份引用的那个安装包本身。
   const published = releaseAssets ?? Object.fromEntries(Object.entries(backups)
-    .filter(([name]) => name === 'latest.yml')
-    .map(([, version]) => [`XingMang-AI-Manager-${version}-Setup.exe`, version]))
+    .filter(([name]) => name !== 'latest-mac.yml')
+    .map(([name, version]) => [FIXTURE_INSTALLERS[name](version), version]))
   for (const [name, content] of Object.entries(published)) fs.writeFileSync(path.join(assets, name), content)
   const gh = path.join(bin, 'gh')
   fs.writeFileSync(gh, `#!/bin/bash
@@ -221,7 +221,10 @@ process.exit(result.status ?? 1)
   for (const [name, version] of Object.entries(live)) fs.writeFileSync(path.join(feed, name), fs.readFileSync(writeManifestFile(workspace, version, name)))
   for (const [name, version] of Object.entries(backups)) {
     fs.mkdirSync(path.join(feed, 'manifests', version), { recursive: true })
-    fs.writeFileSync(path.join(feed, 'manifests', version, name), fs.readFileSync(writeManifestFile(workspace, version, name)))
+    const text = fs.readFileSync(writeManifestFile(workspace, version, name), 'utf8')
+    // 接上签名以后发的版本，备份里存的就是发布时签过名的那一份。
+    const stored = signedBackups && name !== 'latest-mac.yml' ? signManifestText(text, privateKey, [pinned], name) : text
+    fs.writeFileSync(path.join(feed, 'manifests', version, name), stored)
   }
   // 最后一个参数是地址，去掉更新目录前缀后在 feed 里找，没有就是 404。
   const curl = path.join(bin, 'curl')
@@ -250,10 +253,13 @@ if [ -f "$file" ]; then cp "$file" "$output"; printf 200; else printf 404; fi
     },
   })
   const outputs = fs.existsSync(path.join(workspace, 'output')) ? fs.readFileSync(path.join(workspace, 'output'), 'utf8') : ''
-  const restoredPath = path.join(workspace, 'restore', 'latest.yml')
-  const restored = fs.existsSync(restoredPath) ? fs.readFileSync(restoredPath, 'utf8') : null
+  const restoredFiles = {}
+  for (const name of Object.keys(FIXTURE_INSTALLERS)) {
+    const restoredPath = path.join(workspace, 'restore', name)
+    if (fs.existsSync(restoredPath)) restoredFiles[name] = fs.readFileSync(restoredPath, 'utf8')
+  }
   fs.rmSync(workspace, { recursive: true, force: true })
-  return { status: result.status, log: result.stdout + result.stderr, outputs, restored, pinned }
+  return { status: result.status, log: result.stdout + result.stderr, outputs, restored: restoredFiles['latest.yml'] ?? null, restoredFiles, pinned }
 }
 
 const FIXTURE_INSTALLERS = {
@@ -372,6 +378,42 @@ test('a Windows rollback to a pre-signature version is re-signed once GitHub Rel
   assert.match(run.outputs, /^platforms= latest\.yml$/m)
   // 写回去的正是补过签名、客户端内置公钥认得的那一份。
   assert.equal(verifyManifestText(run.restored, [run.pinned]), 1)
+})
+
+test('a Linux rollback only verifies backups that already carry the publisher signature', posixOnly, () => {
+  const run = runPlanStep({
+    live: { 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest-linux.yml': '0.2.10', 'latest-linux-arm64.yml': '0.2.10' },
+    releaseAssets: {},
+    signedBackups: true,
+  })
+  assert.equal(run.status, 0, run.log)
+  assert.equal(run.log.match(/备份本来就带签名，校验通过/g).length, 2)
+  assert.match(run.outputs, /^platforms= latest-linux\.yml latest-linux-arm64\.yml$/m)
+  for (const name of ['latest-linux.yml', 'latest-linux-arm64.yml']) {
+    assert.equal(verifyManifestText(run.restoredFiles[name], [run.pinned], name), 1)
+  }
+})
+
+test('a Linux rollback re-signs an unsigned backup only against the same deb on GitHub Release', posixOnly, () => {
+  const run = runPlanStep({
+    live: { 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest-linux.yml': '0.2.10', 'latest-linux-arm64.yml': '0.2.10' },
+  })
+  assert.equal(run.status, 0, run.log)
+  assert.equal(run.log.match(/老版本备份已核对 GitHub Release 并补签/g).length, 2)
+  // 认签名的 Linux 客户端拿到的必须是补过签名的那一份。
+  for (const name of ['latest-linux.yml', 'latest-linux-arm64.yml']) {
+    assert.equal(verifyManifestText(run.restoredFiles[name], [run.pinned], name), 1)
+  }
+  const swapped = runPlanStep({
+    live: { 'latest-linux.yml': '0.2.11', 'latest-linux-arm64.yml': '0.2.11' },
+    backups: { 'latest-linux.yml': '0.2.10', 'latest-linux-arm64.yml': '0.2.10' },
+    releaseAssets: { 'xingmang-ai-manager_0.2.10_amd64.deb': 'the genuine deb', 'xingmang-ai-manager_0.2.10_arm64.deb': '0.2.10' },
+  })
+  assert.notEqual(swapped.status, 0)
+  assert.match(swapped.log, /xingmang-ai-manager_0\.2\.10_amd64\.deb 和 GitHub Release 上同名文件的 SHA-512 不一致/)
+  assert.equal(swapped.outputs, '')
 })
 
 test('a Windows rollback stops when GitHub Release holds a different installer, and goes ahead unsigned when it holds none', posixOnly, () => {

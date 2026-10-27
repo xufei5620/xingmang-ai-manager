@@ -133,11 +133,11 @@ Complete 的 HTTP 200 可能只是开始合并。代码等待有界完整正文�
 
 若运行已经写入部分不可变包、最后一个平台失败，先核对失败阶段和远端对象状态。可选精确标识（例如 `macos-arm64`）定位恢复，再运行 `all` 完成验收。单项同步会保留已有索引中的其它平台和许可；首次没有索引时，单项成功仅代表该平台已入库，不能当成四个 Windows/macOS 平台全部成功。
 
-每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此四项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台，新 Windows 共享版本会按既有规则移除尚未刷新到新版本的另一架构，直到它自己的作业成功。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含四个 Windows/macOS 平台及配对的两份 Windows 许可，因长时间版本切换缺项时仍失败并保留部分索引，按精确平台恢复，不把四项曾经各自成功当作最终索引完整。
+每个平台验证和完整公共回读成功后才累计发布它自己的索引条目，因此四项不是同一个原子版本快照。首轮运行途中可暂时只有部分平台；后续失败保留已确认的其它平台。两个 Windows 架构各带自己的包版本：x64 先同步到新版时，ARM64 那条保留它上一次核过的包和许可，直到它自己的作业成功再换成新版（以前是直接删掉，ARM64 那次传不完时 ARM 客户在桶里一份都没有，#1061 第 8 条）；任何一条都不能比清单顶上的 `windows.buildVersion` 新。两个 Windows 许可各随对应平台单独校验保存；其它平台的验证标签不升级为尚未完成的原生签名验证。所选作业全成功后，还会通过不带凭据的固定 HTTPS 公共读取与生产者 schema 验收最终索引；`all` 必须包含四个 Windows/macOS 平台及配对的两份 Windows 许可，缺项时失败并保留部分索引，按精确平台恢复，不把四项曾经各自成功当作最终索引完整。选中的 Windows 平台留在上一版不算没同步完：要么它在等官方换包（见下文「等包」，等过一天它自己的作业就报错），要么串行作业之间官方又出了新版，下一次定时同步会补上。
 
 安全错误分类区分响应头超时、正文超时、HTTP 状态、断流、ETag/大小/摘要不一致，以及 PUT 与公共完整回读的各自原因。`latestState: write-unconfirmed` 表示最新索引写入结果未知，需要先读取远端状态；`published-and-read-back` 表示索引已发布并回读确认，即使随后临时目录清理失败。清理失败不会盖掉此前的主错误。
 
-OpenAI 的 Windows 更新清单有时先换成新版，过十几个小时才换可下载的 MSIX（2026-10-17 第 51 次、10-24 第 78 次运行都是：清单写新版，包还是上一版，签名照常）。这时包的身份、架构、发布者和签名都对、只是版本比清单旧，而且桶里这一架构还有一条 24 小时内核过的上一版（看它的 `checkedAt`，同客户端认桶的期限），就算「等包」：这一架构不入桶、不写清单、不刷 `checkedAt`，作业照样成功，日志打一行 `package-pending`（清单版本、包版本、桶里的版本和上次核对时间），运行页上有一条「等官方换包」提示；同一次运行里的其它平台照常同步。因为等包时不刷 `checkedAt`，从上一次同步成功算起超过 24 小时还是旧包，或者桶里本来就没有这一架构，就照旧失败，`failure.code` 是 `package-version-behind`，`failure.observed` 里是两边的版本，连着两次照常开报警 issue。签名坏了、身份不对、包比清单还新，不管版本落后没有都照旧报各自的错。
+OpenAI 的 Windows 更新清单有时先换成新版，过十几个小时才换可下载的 MSIX（2026-10-17 第 51 次、10-24 第 78 次运行都是：清单写新版，包还是上一版，签名照常）。这时包的身份、架构、发布者和签名都对、只是版本比清单旧，而且桶里这一架构还有一条 24 小时内核过的上一版（看它的 `checkedAt`，同客户端认桶的期限），就算「等包」：这一架构不入桶、不写清单、不刷 `checkedAt`，作业照样成功，日志打一行 `package-pending`（清单版本、包版本、桶里的版本和上次核对时间），运行页上有一条「等官方换包」提示；同一次运行里的其它平台照常同步。另一架构先换了新版时，这一架构在桶里的上一版照样留着，也能这样等。因为等包时不刷 `checkedAt`，从上一次同步成功算起超过 24 小时还是旧包，或者桶里本来就没有这一架构，就照旧失败，`failure.code` 是 `package-version-behind`，`failure.observed` 里是两边的版本，连着两次照常开报警 issue。签名坏了、身份不对、包比清单还新，不管版本落后没有都照旧报各自的错。
 
 期限仍为 GET/HEAD 响应头 30 秒、GET 正文与普通 PUT 响应头 20 分钟、原生 Windows 检查 120 秒、整个作业 150 分钟；分块预算见上文，断网时的等待与重试见下文「网络不稳时」，日志计时使用单调时钟。最终切换索引前重新核对所选官方源的指纹及 Windows/Mac 元数据，避免长时间同步后将已经变化的 `latest` 源快照继续公布。重试不调整上传身份的权限。
 
@@ -258,7 +258,7 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 星芒在 Windows、Mac 上一键安装或更新 Codex 桌面端、Claude Desktop 时，先读 `chatgpt/latest.json` 或 `xingmang/offline/claude/latest.json`，从这个桶下同一个官方包；没走通才照旧走原来的路（Windows：Codex 是微软商店、OpenAI 官网、国内镜像，Claude 是系统自带的安装组件、Claude 官网；Mac：问官方的更新信息）。代码在 `electron/desktop-package-bucket.ts`。
 
 - 桶的地址写死在代码里，设置、环境变量、清单内容都改不了它。清单只指对象路径：路径必须和同步脚本写的样子一模一样，下载地址必须正好是桶地址加这个路径，跳转一律不跟。
-- 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG：先用 `pkgutil --check-signature` 核安装包签名是 Anthropic 的 Developer ID Installer，再用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、`windows.buildVersion` 等于包版本。
+- 客户端认的对象：Codex 是 `platforms` 下的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-arm64`、`macos-x64`（完整应用 ZIP）；Claude 是 `files` 里的 `windows-x64`、`windows-arm64`（MSIX）和 `macos-pkg-universal`（通用 PKG：先用 `pkgutil --check-signature` 核安装包签名是 Anthropic 的 Developer ID Installer，再用 `pkgutil --expand-full` 只展开、不安装；DMG 不用）。每条要核的字段：路径、地址、大小、SHA-256、`contentType`/`type`、`verification`、版本号格式；Codex Windows 还要求 `windows.packageIdentity` 为 `OpenAI.Codex`、包版本不比 `windows.buildVersion` 新（另一架构先同步到新版时，这一架构还是上一版，照样从桶里装；0.2.21 及以前的客户端要求两者相等，这时不认这一条，改走原来的路）。
 - 下载按清单的大小和 SHA-256 核对，下完再照官方那一路核包身份、发布者、签名（Windows 另要求包版本和清单一致；Mac 照旧核 bundle id、最低系统、Team ID 签名和 Gatekeeper）。
 - 读不到清单、清单对不上、下得太慢（照当时的速度还要 10 分钟以上）、包对不上或核不过，都悄悄换回原来的路，客户看不出换了路，原因只写进运行日志（`desktop-bucket.fallback`）。下好、核过的包交给 Windows 却没装上时，也照旧走后面几路：商店、系统自带的安装组件和它不一定是同一种装法。客户点取消就停；取消了授权、Mac 上盘写满了照直说。
 - 桶那一路国内直连，不接下载加速线路；只有退回官方那几路时才照旧接。

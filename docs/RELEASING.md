@@ -186,7 +186,7 @@ npm view electron time --json --registry=https://registry.npmjs.org/ | Select-St
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留更新能力但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
-- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。2026-09-25 起这条通道也跟着「自动更新」开关走（`electron/main.ts` 的 `unsignedAutoUpdate: true`，yoyo 同意）：开着时查到新版本就在后台下，关着时只提示、用户点了才下；下好以后都不当场装，什么时候装见第 6 节。每次下完都按更新清单的 SHA-512 重新校验安装包，Windows 再核发布者签名（第 5 节「更新包签名」），校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
+- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。2026-09-25 起这条通道也跟着「自动更新」开关走（`electron/main.ts` 的 `unsignedAutoUpdate: true`，yoyo 同意）：开着时查到新版本就在后台下，关着时只提示、用户点了才下；下好以后都不当场装，什么时候装见第 6 节。每次下完都按更新清单的 SHA-512 重新校验安装包，Windows 和 Linux 再核发布者签名（第 5 节「更新包签名」），校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
 - 记下本次出包的 commit（`git rev-parse HEAD`）。发布完成后要用它打 `v<版本号>` 的附注 tag，见第 5 节。
 - 0.2.19 起每一版都分批放量：触发发布**之前**先用 service-status 把「分批放量」设成 `<版本号> 20`，发出去观察一天，没问题再全部放开。步骤见第 5 节「分批放量（0.2.19 起每次都做）」。这一版要配合服务端做旧版本不认的改动（删分组、改名这类）时，先后顺序另有规矩，见第 5 节「服务端要做旧版本不认的改动时」。
 
@@ -393,7 +393,7 @@ git push origin v0.2.6
 | `R2_BUCKET` | 桶名 | 上传 |
 | `R2_ACCESS_KEY_ID` | R2 凭据 | 上传 |
 | `R2_SECRET_ACCESS_KEY` | R2 凭据 | 上传 |
-| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名 |
+| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 和 Linux 的清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名 |
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
@@ -406,14 +406,14 @@ R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整�
 
 #### 更新包签名
 
-Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一个 R2 桶里：只凭清单里的 SHA-512，拿到 R2 上传密钥的人把安装包和清单一起换掉，校验照样通过。所以发布时再加一道我们自己的签名：
+Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一个 R2 桶里：只凭清单里的 SHA-512，拿到 R2 上传密钥的人把安装包和清单一起换掉，校验照样通过。Linux 一样：deb 交给系统安装程序以 root 装，dpkg 自己不验签（Debian、Ubuntu 默认 `no-debsig`），`latest-linux.yml`、`latest-linux-arm64.yml` 也和 deb 同放一个桶。所以发布时再加一道我们自己的签名：
 
-- `publish` 作业在上传之前用 `XINGMANG_UPDATE_SIGNING_KEY` 给 `latest.yml` 的每个文件签名（`scripts/update-manifest-signature.cjs sign`），签的是「版本号 + 文件地址 + SHA-512」，签名写在该文件那一项的 `xingmangSignature` 字段里。签之前先确认这把私钥对应的公钥在客户端内置名单里（`electron/update-package-signature.ts` 的 `updateSigningPublicKeys`），对不上直接失败，免得发出一版全体新客户端都拒装的包。
-- 客户端（接上验签的那一版起）下载完先核 SHA-512，再核这个签名；缺签名、签名不对、本机没配公钥，一律拒装。老客户端不认这个字段，照旧能升上来。
+- `publish` 作业在上传之前用 `XINGMANG_UPDATE_SIGNING_KEY` 给 `latest.yml` 和 Linux 两份清单的每个文件签名（`scripts/update-manifest-signature.cjs sign`），签的是「版本号 + 文件地址 + SHA-512」，签名写在该文件那一项的 `xingmangSignature` 字段里。签之前先确认这把私钥对应的公钥在客户端内置名单里（`electron/update-package-signature.ts` 的 `updateSigningPublicKeys`），对不上直接失败，免得发出一版全体新客户端都拒装的包。
+- 客户端（Windows 从接上验签的 0.2.18 起，Linux 从第一次对外发的那一版起）下载完先核 SHA-512，再核这个签名；缺签名、签名不对、本机没配公钥，一律拒装。老客户端不认这个字段，照旧能升上来。线上的清单发完后各自再下载验一次签。
 - 私钥只在 release 环境的 secret 里，从不进桶。所以就算 R2 上传密钥泄露，别人传上去的包也签不出客户端认的签名。
 - macOS 不签：Squirrel.Mac 已经按已装应用钉住的发布证书验苹果签名，那张证书的私钥同样只在 release 环境里，再加一道挡的是同一件事。
-- Linux 的两份清单（`latest-linux.yml`、`latest-linux-arm64.yml`）还不签，客户端也只在 Windows 上验签（`electron/main.ts`）。Linux 的 deb 同样没有代码签名，第一次对外发之前要把它也接上。
-- 回退（`rollback-release`）时，备份清单本来就带签名的只验签；加签名之前发的老版本备份没有签名，要和 GitHub Release 上同版本的安装包逐字节对上才补签。GitHub Release 上找不到那个安装包时原样退回并给一条黄色提示：老客户端照样退得回去，认签名的新客户端停在被撤回的版本上。
+- Linux 的 deb 本身不另签：dpkg 装包时不看包内签名，签了也没人核；更新这条路由上面的清单签名挡住，客户第一次从教程站下载的 deb 和 Windows 安装包一样，没有发布者签名可核。客户端认不认签名由 `update-package-signature.ts` 的 `shouldVerifyUpdateSignature` 决定。
+- 回退（`rollback-release`）时，Windows 和 Linux 的备份清单本来就带签名的只验签；加签名之前发的老版本备份没有签名，要和 GitHub Release 上同版本的安装包（`*Setup.exe` / `*.deb`）逐字节对上才补签。Linux 从第一次对外发起就带签名，正常只走验签。GitHub Release 上找不到那个安装包时原样退回并给一条黄色提示：老客户端照样退得回去，认签名的新客户端停在被撤回的版本上。
 
 **生成密钥（只做一次，在产品所有者自己的电脑上做）。** 私钥绝不能出现在聊天、工单、邮件或仓库里。
 
