@@ -1590,6 +1590,28 @@ describe('external clients follow the tool into the account the customer switche
     expect(JSON.stringify(f.runtimeLog.log.mock.calls)).not.toMatch(/sk-claude-code|solov\.cc/)
   })
 
+  it('asks the window to reload once when both synced tools follow at the same time', async () => {
+    const f = fixture({ managedKeys: true })
+    await connectFirstAccount(f)
+    // 保存 Claude Code 后台那一眼停在盘点客户端，Codex 也保存完、也叫过那一眼才放行：两轮一定撞上
+    // （上面那条在 Mac CI 上是碰巧撞上，#1413）。
+    let release = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    vi.mocked(f.runtime.scan).mockImplementation(async () => {
+      await held
+      return structuredClone(f.runtimeStatuses)
+    })
+
+    expect((await switchToSecond(f)).failed).toEqual([])
+    release()
+    await followed(f)
+    await vi.waitFor(() => expect(f.routeFollowed).toHaveBeenCalled(), { timeout: 10_000 })
+    // 再检测一次：排在后台那几轮后面，它们都跑完了才回来。
+    await f.service.scanExternalClients()
+    expect(f.routeFollowed).toHaveBeenCalledTimes(1)
+    expect(keyLogs(f).filter(([, , event]) => event === 'external-client.key.followed')).toHaveLength(1)
+  })
+
   it('moves Claude Desktop back when the customer switches back and syncs Claude Code again', async () => {
     const f = fixture({ managedKeys: true })
     const { file, before } = await connectFirstAccount(f)
