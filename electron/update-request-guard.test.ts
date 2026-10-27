@@ -65,6 +65,32 @@ describe('update request guard', () => {
     expect(guard?.lastReceivedAt()).toBe(3_500)
   })
 
+  it('counts the body bytes of every response electron-updater reads', () => {
+    const executor = new FakeExecutor()
+    const guard = createUpdateRequestGuard(executor)
+    expect(guard?.receivedBytes()).toBe(0)
+
+    const blockmap = libraryRequest(executor)
+    const blockmapResponse = new EventEmitter()
+    blockmap.request.emit('response', blockmapResponse)
+    blockmapResponse.emit('data', Buffer.alloc(300))
+    blockmapResponse.emit('data', new Uint8Array(200))
+    blockmapResponse.emit('end')
+    const range = libraryRequest(executor)
+    const rangeResponse = new EventEmitter()
+    range.request.emit('response', rangeResponse)
+    rangeResponse.emit('data', '星芒')
+    rangeResponse.emit('data', undefined)
+    expect(guard?.receivedBytes()).toBe(506)
+
+    // 没读的响应体不会从网上下来，也就不算。
+    const turnedDown = libraryRequest(executor, false)
+    const unread = new Readable({ read() {} })
+    turnedDown.request.emit('response', unread)
+    expect(unread.listenerCount('data')).toBe(0)
+    expect(guard?.receivedBytes()).toBe(506)
+  })
+
   it('keeps a response that fails mid-body from throwing for want of a listener', () => {
     const executor = new FakeExecutor()
     createUpdateRequestGuard(executor)
