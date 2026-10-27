@@ -348,7 +348,9 @@ codex.default=gpt-7; codex.previous=gpt-6-astra; codex.retired=gpt-5.5|gpt-6-lun
 ## 看各版本有多少人在用
 
 Actions → **update-feed-stats** → **Run workflow**，「统计最近几天」默认 7，点 Run workflow。不用批准，一两分钟跑完。
-点进那条运行，结果在 Summary 页上：各版本占全部电脑的比例（Windows、Mac、Linux 分开列）、这次统计的口径、
+另外每天北京时间早上 6:17（UTC 22:17）自动跑一次，统计最近 1 天，不用点：运行列表里触发方式是 `schedule` 的那几条，
+一天一份，Cloudflare 那边删了也还能翻（运行记录按仓库设置留，默认 90 天）。GitHub 忙的时候定时运行会晚一阵才开始。
+点进那条运行，结果在 Summary 页上（日志里那一步也有同样的一份）：各版本占全部电脑的比例（Windows、Mac、Linux 分开列）、这次统计的口径、
 下过最新两版安装包的电脑后来怎样、还停在旧版本的电脑下过新版没有，最后附一张按请求算的对照表。
 
 **怎么数的**：0.2.10 起的客户端打开时、开着时每 15 分钟读一次这份 service-status.json，请求里带着自己的版本号

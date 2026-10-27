@@ -832,11 +832,14 @@ test('the check-in section says plainly when there is nothing to read or no way 
   assert.equal(grouped.some((payload) => payload.variables.filter.clientRequestPath_like === USAGE_FILTER), false)
 })
 
-test('the stats workflow only reads, on demand, with the read-only analytics token', () => {
+test('the stats workflow only reads, on demand or once a day, with the read-only analytics token', () => {
   const workflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'update-feed-stats.yml'), 'utf8'))
-  assert.deepEqual(Object.keys(workflow.on), ['workflow_dispatch'])
+  assert.deepEqual(Object.keys(workflow.on).sort(), ['schedule', 'workflow_dispatch'])
+  // 北京时间早上 6:17，赶在 7 点的日汇总之前跑完。
+  assert.deepEqual(workflow.on.schedule, [{ cron: '17 22 * * *' }])
   assert.deepEqual(workflow.permissions, { contents: 'read' })
   const [job] = Object.values(workflow.jobs)
+  assert.equal(job.if, "${{ github.event_name != 'schedule' || github.repository == 'xufei5620/xingmang-ai-manager' }}")
   // 只读统计，不碰 release 环境：不用等人批准，也拿不到发布凭据。
   assert.equal(job.environment, undefined)
   assert.ok(job['timeout-minutes'] <= 15)
@@ -844,7 +847,8 @@ test('the stats workflow only reads, on demand, with the read-only analytics tok
   assert.doesNotMatch(source, /aws s3|R2_|XINGMANG_UPDATE_SIGNING_KEY/)
   const run = job.steps.find((step) => String(step.run || '').includes('scripts/update-feed-stats.cjs'))
   assert.equal(run.env.CLOUDFLARE_ANALYTICS_TOKEN, '${{ secrets.CLOUDFLARE_ANALYTICS_TOKEN }}')
-  assert.equal(run.env.DAYS, '${{ inputs.days }}')
+  // 定时运行数 1 天（没有 inputs），手动跑照填的天数。
+  assert.equal(run.env.DAYS, "${{ github.event_name == 'schedule' && '1' || inputs.days }}")
   assert.match(run.run, /--days "\$DAYS"/)
   assert.match(run.run, /GITHUB_STEP_SUMMARY/)
 })
