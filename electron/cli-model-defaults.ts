@@ -140,6 +140,14 @@ function claudeTier(model: string): number {
   return Math.max(...claudeTiers.map((tier, index) => parts.includes(tier) ? index : -1))
 }
 
+/**
+ * Claude 型号按版本新到旧排，版本一样时 Opus > Sonnet > Haiku，再一样照原来的先后。Claude Desktop 的型号
+ * 菜单放哪几个、怎么排用它（claude-desktop-models.ts）：分组里型号多到放不下时，先舍掉老的。
+ */
+export function sortClaudeModelsNewestFirst(models: readonly string[]): string[] {
+  return [...models].sort((left, right) => compareNewerFirst(left, right) || claudeTier(right) - claudeTier(left))
+}
+
 function knownCliModel(table: CliModelTable, offered: readonly string[]): string | undefined {
   return [table.default, ...table.previous].find((model) => offered.includes(model))
 }
