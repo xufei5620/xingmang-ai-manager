@@ -1,3 +1,9 @@
+## 用户
+
+- 编辑器里的 Claude Code 插件不用先登录了：VS Code、
+  Cursor 里的 Claude Code 插件不再一打开就要你登录 Anthropic 账号，直接用当前账号；
+  你自己改过这一项的，星芒不动。
+
 ## 开发
 
 - 写 Claude Code 配置时（保存、登录后自动写入）顺手在 VS Code、Cursor 的用户设置里补
