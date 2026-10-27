@@ -5,7 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { relayRoutePreferenceAllowed, relayRouteSiteIds, relaySites, type RelayRouteLine, type RelayRouteLines, type RelayRoutePreferences } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
-import type { ToolRouteRestartHint } from './running-tools'
+import type { CodexPayloadNotice, ToolRouteRestartHint } from './running-tools'
 import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
   assertSafeDataFile,
@@ -110,6 +110,8 @@ export interface AppSettings {
   toolRouteRestartHints?: boolean
   /** IPC runtime snapshot only: 连接线路因为连不上换了以后，要客户重开的工具（running-tools.ts）。 */
   readonly toolRouteRestartHint?: ToolRouteRestartHint
+  /** IPC runtime snapshot only: Codex 有个对话太大、要客户新开对话（codex-payload-limit.ts）。 */
+  readonly codexPayloadNotice?: CodexPayloadNotice
   /** IPC runtime snapshot only: R6 切回了整份写入的老路；缺省 = 主进程定点改写。 */
   readonly toolRouteRewrite?: 'merge'
   /**

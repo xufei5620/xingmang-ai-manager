@@ -62,6 +62,7 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
   // 那段时间工具配置照样跟着当前生效的线路走（(f)）。和整份写入排同一个 serializeConfigWrite 队。
   let toolRouteAccount: ToolRouteAccountHooks | null = null
   let toolRouteRestartHint: ToolRouteRestartHint | null = null
+  let toolRouteRestartHintAt = 0
   // 暂时性失败已经连着失败了几次；换线或重启从头算。
   const toolRouteFailures = new Map<ProviderId, number>()
   let cancelToolRouteRetry: (() => void) | null = null
@@ -209,9 +210,12 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
   /**
    * 因为连不上换的线路，开着的工具要重开才走新线路（C10）。同一个工具 24 小时最多弹一次，之后、或者
    * 客户关了提示，只在首页标「需重开生效」。Claude Code 每次请求都重读配置，不提。
+   * cause = payload-too-large：Codex 有个对话在线路 1 上太大、换到了线路 2（codex-payload-limit.ts），只说 Codex，
+   * 不管 24 小时一次、也不管提示关没关：不说的话客户不知道那个对话为什么一直发不出去。
    */
-  async function noteToolRouteRestart(rewritten: readonly ProviderId[]): Promise<boolean> {
-    const candidates = rewritten.filter((provider) => provider !== 'claude')
+  async function noteToolRouteRestart(rewritten: readonly ProviderId[], cause?: 'payload-too-large'): Promise<boolean> {
+    const payload = cause === 'payload-too-large'
+    const candidates = rewritten.filter((provider) => payload ? provider === 'codex' : provider !== 'claude')
     if (!candidates.length) return false
     let report: RunningToolsReport
     try {
@@ -223,18 +227,37 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
     const tools = (['codex', 'gemini', 'grok'] as const).filter((provider) => needs[provider] !== undefined)
     if (!tools.length) return false
     const now = toolRouteNow()
-    const enabled = store.read().toolRouteRestartHints !== false
+    const enabled = payload || store.read().toolRouteRestartHints !== false
     const records = toolRouteFollow.read().providers
-    const hinted = tools.filter((provider) => enabled && toolRouteHintDue(records[provider], now))
+    const hinted = tools.filter((provider) => enabled && (payload || toolRouteHintDue(records[provider], now)))
     for (const provider of tools) if (!hinted.includes(provider)) toolRouteRestartPending.add(provider)
     if (!hinted.length) return true
-    const hint: ToolRouteRestartHint = { id: now }
+    // 渲染层按 id 只弹一次：紧跟着上一条出的也要分得开。
+    const hint: ToolRouteRestartHint = { id: Math.max(now, (toolRouteRestartHint?.id ?? 0) + 1), ...(payload ? { cause } : {}) }
     if (hinted.includes('codex')) hint.codex = needs.codex
     if (hinted.includes('gemini')) hint.gemini = needs.gemini
     if (hinted.includes('grok')) hint.grok = needs.grok
     toolRouteRestartHint = hint
+    toolRouteRestartHintAt = now
     for (const provider of hinted) await writeToolRouteRecord(provider, (current) => ({ ...current, hintAt: now }))
-    runtimeLog?.log('info', 'config', 'route.restart-hint', '连接线路因为连不上换了，提示客户重开工具', { providers: hinted, tagged: tools.filter((provider) => !hinted.includes(provider)) })
+    runtimeLog?.log('info', 'config', 'route.restart-hint', payload ? 'Codex 有个对话太大、换到了线路2，提示客户重开 Codex' : '连接线路因为连不上换了，提示客户重开工具', {
+      providers: hinted, tagged: tools.filter((provider) => !hinted.includes(provider)), ...(payload ? { cause } : {}),
+    })
+    return true
+  }
+
+  /**
+   * Codex 有个对话在线路 1 上太大、换到（或者本来就在）线路 2 以后（codex-payload-limit.ts）：Codex 的配置真在线路 2
+   * 上才提示「重开 Codex 接着聊」；不在（客户自己管的配置、切回了官方账号）返回 false，由那边改说「新开对话」。
+   */
+  async function noteCodexPayloadRestart(): Promise<boolean> {
+    if (store.read().officialProviders?.includes('codex')) return false
+    const site = activeRelaySite()
+    const current = inspectNativeProviderConfig('codex')
+    if (!current.actualBaseUrl || relaySiteExactEndpointIdForBaseUrl(site.id, 'codex', current.actualBaseUrl) !== 'direct') return false
+    if (!await noteToolRouteRestart(['codex'], 'payload-too-large')) return false
+    serviceOptions.onToolRouteFollowed?.()
+    serviceOptions.onCodexPayloadRestart?.()
     return true
   }
 
@@ -245,16 +268,23 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
   const accountRouteFollowed = new Map<ProviderId, string | null>()
 
   /**
-   * 整份写入跟过去的这条线路，是不是半小时内「自动」因为连不上换过来的那条。按换线时刻算、不按这次运行：上次
-   * 运行刚换完线就退出、这次开机才跟过去的也算；更早的、写死线路的、切回先走那条的不算。
+   * 整份写入跟过去的这条线路，是不是半小时内「自动」换过来的那条、为什么换的：fault = 连不上；payload = Codex 有个
+   * 对话在线路 1 上太大（codex-payload-limit.ts）。按换线时刻算、不按这次运行：上次运行刚换完线就退出、这次开机才
+   * 跟过去的也算；更早的、写死线路的、切回先走那条的不算。
    */
-  function accountRouteFaultFollowed(siteId: string, line: RelayEndpointId): boolean {
+  function accountRouteFollowCause(siteId: string, line: RelayEndpointId): 'fault' | 'payload' | null {
     // 星芒账号由 followToolRoutes 自己提示（R6 切回整份写入时它的工具线路也不在应用线路这里）。
-    if (siteId !== 'solov-api') return false
+    if (siteId !== 'solov-api') return null
     const change = serviceOptions.relayRouteLastChange?.(siteId)
-    if (!change || change.to !== line || (change.reason !== 'health-failed' && change.reason !== 'line-down')) return false
+    if (!change || change.to !== line) return null
+    const cause = change.reason === 'health-failed' || change.reason === 'line-down' ? 'fault' as const
+      : change.reason === 'payload-too-large' ? 'payload' as const : null
     const age = toolRouteNow() - change.at
-    return age >= 0 && age < toolRouteHintTtlMs
+    return cause && age >= 0 && age < toolRouteHintTtlMs ? cause : null
+  }
+
+  function accountRouteFaultFollowed(siteId: string, line: RelayEndpointId): boolean {
+    return accountRouteFollowCause(siteId, line) !== null
   }
 
   async function noteRouteFollowRestart(written: readonly ProviderId[]): Promise<void> {
@@ -262,9 +292,16 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
     const followed = written.filter((provider) => accountRouteFollowed.has(provider) && accountRouteFollowed.get(provider) === owner)
     for (const provider of written) accountRouteFollowed.delete(provider)
     if (!followed.length) return
+    // 记进 accountRouteFollowed 的都跟的是最近那次换线（config-save-service.ts 按 accountRouteFaultFollowed 记）。
+    const siteId = activeRelaySite().id
+    const change = siteId === 'solov-api' ? serviceOptions.relayRouteLastChange?.(siteId) : null
+    const payload = change ? accountRouteFollowCause(siteId, change.to) === 'payload' : false
     // 配置已经写好了：提示没出成只进日志，不能把这一轮写入算成失败。
     try {
-      if (await noteToolRouteRestart(followed)) serviceOptions.onToolRouteFollowed?.()
+      // Codex 对话太大换的线路只说 Codex（别的工具在线路 1 上本来就能用），Codex 这一轮没跟过去就不说。
+      if (payload) {
+        if (followed.includes('codex')) await noteCodexPayloadRestart()
+      } else if (await noteToolRouteRestart(followed)) serviceOptions.onToolRouteFollowed?.()
     } catch (error) {
       runtimeLog?.log('warn', 'config', 'route.restart-hint-failed', '换线路的重开提示这次没出成，不影响工具使用', { providers: followed, reason: credentialFailureReason(error) })
     }
@@ -356,13 +393,14 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
   /** 设置快照里给界面的那条重开提示；过了半小时不再给。 */
   function currentToolRouteRestartHint(): ToolRouteRestartHint | undefined {
     if (!toolRouteRestartHint) return undefined
-    const age = toolRouteNow() - toolRouteRestartHint.id
+    const age = toolRouteNow() - toolRouteRestartHintAt
     return age >= 0 && age < toolRouteHintTtlMs ? toolRouteRestartHint : undefined
   }
 
   return {
     followToolRoutes,
     noteRouteFollowRestart,
+    noteCodexPayloadRestart,
     accountRouteFollowed,
     accountRouteFaultFollowed,
     writeToolRouteRecord,

@@ -298,7 +298,9 @@ export function startToolRouteFollowing(
     const lineChanged = snapshot.line !== toolRouteLine
     if (lineChanged) {
       toolRouteLine = snapshot.line
-      void systemService.followToolRoutes?.({ reason: 'route-changed', fault: snapshot.lastChange?.reason !== 'recovered' })
+      // Codex 对话太大换的线路由 codex-payload-limit.ts 那边自己提示重开，只说 Codex，这里不说「连不上换了」。
+      const reason = snapshot.lastChange?.reason
+      void systemService.followToolRoutes?.({ reason: 'route-changed', fault: reason !== 'recovered' && reason !== 'payload-too-large' })
     }
     if (lineChanged || readAccountSiteId() === 'solov') notifyRelayRouteChanged()
   })

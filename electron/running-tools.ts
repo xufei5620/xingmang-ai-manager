@@ -126,6 +126,11 @@ export function offersCodexDesktopRestart(report: RunningToolsReport | null | un
 export interface ToolRouteRestartHint {
   /** 这条提示是什么时候出的（毫秒）；渲染层按它只弹一次。 */
   id: number
+  /**
+   * 为什么换的线路。缺省 = 连不上（旧行为）；payload-too-large = Codex 有个对话在线路 1 上太大、发不出去，换到了
+   * 线路 2（codex-payload-limit.ts），这时只说 Codex。
+   */
+  cause?: 'payload-too-large'
   codex?: {
     /** Codex 命令行确认开着。 */
     cli: boolean
@@ -140,6 +145,21 @@ export interface ToolRouteRestartHint {
 }
 
 export const toolRouteRestartHintTitle = '刚才那条连接线路连不上，已经换到另一条。'
+export const codexPayloadRestartHintTitle = 'Codex 里这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2，请重开 Codex 后继续。'
+
+/**
+ * Codex 有个对话太大、发不出去，又没换成线路（codex-payload-limit.ts），要客户新开对话：locked = 设置里选了只用
+ * 线路 1；unreachable = 线路 2 这会儿也连不上；unfollowed = Codex 的配置星芒没法替客户改到线路 2；too-large = 在线路 2
+ * 上也超了上限；nearing = 线路 1 上有个对话快到上限了（提前说一次）。
+ */
+export type CodexPayloadNoticeKind = 'locked' | 'unreachable' | 'unfollowed' | 'too-large' | 'nearing'
+
+/** IPC runtime snapshot only：要客户新开 Codex 对话的那条提示。 */
+export interface CodexPayloadNotice {
+  /** 这条提示是什么时候出的（毫秒）；渲染层按它只弹一次。 */
+  id: number
+  kind: CodexPayloadNoticeKind
+}
 
 /** 提示正文，一样一句。编辑器插件看不出开没开，换了 Codex 就一律提一句「如果…」。 */
 export function describeToolRouteRestartHint(hint: ToolRouteRestartHint): string[] {

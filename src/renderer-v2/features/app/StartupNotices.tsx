@@ -22,6 +22,8 @@ const startupNoticeRank: Record<StartupCheckId, number> = {
   'unexpected-exit': 1,
   'vault-recovered': 1,
   'settings-save': 1,
+  // Codex 有个对话一直发不出去：客户这会儿正卡着，先说。
+  'codex-payload': 1,
   diagnostics: 2,
   update: 2,
   appearance: 2,
