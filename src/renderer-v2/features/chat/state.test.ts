@@ -250,7 +250,7 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': RealmAccountError: 请先登录账号"))).toBe('请先登录账号')
     expect(chatErrorMessage('请先登录星芒账号')).toBe('请先登录星芒账号')
     // 真的失效了照旧归到「请重新登录」。
-    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后准备分组')
+    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后重试')
   })
 
   it('keeps the main process quota sentences and offers the matching account page', () => {

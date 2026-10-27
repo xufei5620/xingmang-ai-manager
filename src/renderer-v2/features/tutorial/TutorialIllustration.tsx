@@ -14,7 +14,7 @@ const illustrationDescriptions: Record<TutorialIllustrationId, { title: string; 
   install: { title: '找到工具，点击安装', description: '在首页找到想使用的工具，点击卡片右下角的安装。缺的 Node.js 会自动准备好，首页「运行环境」那张卡里能看到装好了没有。', hint: '先装一个需要的工具，不必一次全部安装。' },
   config: { title: '确认来源、密钥和模型', description: '配置窗口内选择当前账号，确认访问密钥与默认模型，然后点击保存配置；其他自定义设置会保留。', hint: '点「保存配置」即可，其他自定义设置会保留。' },
   launch: { title: '在自己的文件夹里开始', description: '点击工具卡片上的打开，按提示选择工作文件夹。工具会在这个文件夹打开，随后在工具窗口中输入自己的任务。', hint: '先用测试文件夹练习，再让 AI 处理正式项目。' },
-  chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框底部选择文本对话、分组和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认分组和模型，再描述你希望完成的事。' },
+  chat: { title: '不打开终端，也能直接提问', description: '左侧选择聊天，在输入框底部选择文本对话和模型，输入具体问题，再点击输入框右侧的发送消息。', hint: '先确认模型，再描述你希望完成的事。' },
   canvas: { title: '把提示词连到图像节点', description: '在画布中添加提示词和图像节点，连接两个节点，检查生成配置，再运行此节点。图中未执行生成。', hint: '连接节点后再运行；保存工作流不等于生成图片。' },
   acceleration: { title: '选线路，再开启加速', description: '在「设置 › 网络加速」的网络加速卡上选线路，可以选「自动选择」，再点「开启加速」；加速只改这台电脑的系统代理，连接后要换线路须先停止加速。不使用时点击停止加速。', hint: '连接后才计时；用完点击「停止加速」。' },
   extensions: { title: '先选工具，再添加能力', description: '在外接工具页面先选择要配置的 AI 工具，再点自定义连接。技能和插件分别在自己的页面管理。', hint: '扩展按工具分别管理，先确认当前选中的是哪个工具。' },
@@ -124,7 +124,7 @@ function Diagram({ kind }: { kind: TutorialIllustrationId }) {
     case 'chat':
       return <div className="tutorial-illustration-chat">
         <div className="tutorial-illustration-row"><MessageSquare size={18} /><strong>聊天</strong><span className="tutorial-illustration-muted">先从一个具体问题开始</span></div>
-        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>文本对话</Control><Control>分组<ChevronDown size={14} /></Control><Control>模型<ChevronDown size={14} /></Control></div>
+        <div className="tutorial-illustration-options"><Marker>1</Marker><Control primary>文本对话</Control><Control>模型<ChevronDown size={14} /></Control></div>
         <div className="tutorial-illustration-compose"><p>请帮我把这段工作笔记整理成一份清晰的待办清单。</p><span><Marker>2</Marker><Control primary>发送消息<ArrowUpRight size={15} /></Control></span></div>
       </div>
     case 'canvas':

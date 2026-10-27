@@ -361,8 +361,8 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 本来就是说给客户听的话原样上屏，必须排在下面按字面猜的几条前面：从没登录过时主进程说
   // 「请先登录星芒账号」，里面有「登录」两个字，以前被 /登录|密钥/ 改成「已失效，请重新登录」。
   if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^生成图片时还不能带图片/.test(message)) return message
-  if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
-  if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'
+  if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值后重试'
+  if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后重试'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
   if (/model.*unavailable|model.*permission|模型.*权限|模型.*不可用/i.test(message)) return '当前模型不可用，请选择其他模型后重试'
   if (/timeout|timed.?out|超时|network|连接|ECONN/i.test(message)) return '请求未完成，请检查网络后重试'
