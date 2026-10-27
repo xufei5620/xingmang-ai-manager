@@ -249,3 +249,88 @@ test('the lock is compiled into the per-machine installer only, never into the u
   const { nsis } = loadNsisConfig()
   assert.equal(nsis.perMachine, true)
 })
+
+// 升级时模板先跑旧版本的卸载程序，它挪不开某一项就以 2 放弃，模板只弹一句英文就退出
+// （客户截图：「Failed to uninstall old application files. Please try running the installer again.: 2」）。
+test('entries the manifest names but the install no longer has are dropped before the old uninstaller runs', () => {
+  const contents = readCustomInclude()
+  const init = bodyOf(contents, '!macro customInit', '!macroend')
+  // .onInit 里、模板执行旧卸载程序之前；系统版本不够时已经 Quit，轮不到这里。
+  assert.match(init, /^\s*Call xingmangForgetMissingInstalledEntries$/m)
+  assert.ok(init.indexOf('xingmangForgetMissingInstalledEntries') > init.lastIndexOf('Quit'))
+
+  const forget = bodyOf(contents, 'Function xingmangForgetMissingInstalledEntries', 'FunctionEnd')
+  // 看的是旧卸载程序将要拿到的那个目录。
+  assert.match(forget, /ReadRegStr \$R0 SHELL_CONTEXT "\$\{INSTALL_REGISTRY_KEY\}" InstallLocation/)
+  assert.match(forget, /ReadRegDWORD \$R1 SHELL_CONTEXT "\$\{XINGMANG_INSTALLED_ENTRIES_KEY\}" "Count"/)
+  assert.match(forget, /\$\{AndIfNot\} \$\{FileExists\} "\$R0\\\$R3"\n\s*DeleteRegValue SHELL_CONTEXT "\$\{XINGMANG_INSTALLED_ENTRIES_KEY\}" "\$R2"/)
+  // 只删记录，不碰文件；Count 不动，卸载程序读到空项本来就跳过。
+  for (const forbidden of [/\bDelete\b(?!RegValue)/, /\bRMDir\b/, /\bRename\b/, /\bExec/, /WriteReg/, /DeleteRegKey/]) {
+    assert.doesNotMatch(forget, forbidden)
+  }
+  const remove = bodyOf(contents, 'Function un.xingmangRemoveInstalledFiles', 'FunctionEnd')
+  assert.match(remove, /\$\{If\} \$\{Errors\}\n\s*\$\{OrIf\} \$R6 == ""\n\s*Goto xingmangRemoveNext/)
+  // $R0～$R3 原样还给 .onInit。
+  assert.match(forget, /^Function xingmangForgetMissingInstalledEntries\n\s*Push \$R0\n\s*Push \$R1\n\s*Push \$R2\n\s*Push \$R3\n/)
+  assert.match(forget, /Pop \$R3\n\s*Pop \$R2\n\s*Pop \$R1\n\s*Pop \$R0\n\s*$/)
+})
+
+test('the uninstaller counts an entry that is already gone as moved aside', () => {
+  const move = bodyOf(readCustomInclude(), 'Function un.xingmangMoveAside', 'FunctionEnd')
+  // 先看在不在，不在就是 0；否则 Rename 一个不存在的文件必然失败，被当成「挪不动」。
+  assert.match(move, /\$\{IfNot\} \$\{FileExists\} "\$INSTDIR\$R0"\n\s*StrCpy \$R1 0\n\s*\$\{ElseIf\} \$\{FileExists\} "\$INSTDIR\$R0\\\*\.\*"/)
+  assert.ok(move.indexOf('${IfNot} ${FileExists}') < move.indexOf('Rename'))
+})
+
+test('an old uninstaller that gives up gets a Chinese retry dialog instead of the template\'s English one', () => {
+  const contents = readCustomInclude()
+  // 定义了 customUnInstallCheck，模板 handleUninstallResult 里那句英文 MessageBox 就整段跳过。
+  const check = bodyOf(contents, '!macro customUnInstallCheck', '!macroend')
+  assert.match(check, /^\s*Call xingmangHandleOldUninstallResult$/m)
+  const position = contents.indexOf('!macro customUnInstallCheck')
+  const before = contents.slice(0, position)
+  assert.equal((before.match(/^\s*!if(n?def)?\b/gm) ?? []).length, (before.match(/^\s*!endif\b/gm) ?? []).length,
+    'customUnInstallCheck must be a top-level macro')
+
+  const handle = bodyOf(contents, 'Function xingmangHandleOldUninstallResult', 'FunctionEnd')
+  // 旧卸载程序根本没起来：跟模板一样照常装下去，先于看退出码。
+  const launchFailed = handle.indexOf('${If} ${Errors}')
+  assert.notEqual(launchFailed, -1)
+  assert.ok(launchFailed < handle.indexOf('${If} $R0 == 0'))
+  assert.match(handle.slice(launchFailed, handle.indexOf('${EndIf}', launchFailed)), /^\s*Return$/m)
+
+  const box = handle.match(/MessageBox ([^ ]+) "([^"]+)" (.*)\n/)
+  assert.ok(box, 'no message box')
+  assert.match(box[1], /^MB_RETRYCANCEL\|/)
+  assert.doesNotMatch(box[2], /[A-Za-z]{4,}/, 'the dialog speaks English')
+  assert.match(box[2], /重试/)
+  // 不带 /SD：更新器拉起的静默升级里，这个框是客户唯一能看到的东西。
+  assert.equal(box[3], 'IDRETRY xingmangOldUninstallRetry')
+  // 取消：跟模板一样以 2 退出。
+  const cancel = handle.slice(handle.indexOf(box[0]) + box[0].length, handle.indexOf('xingmangOldUninstallRetry:'))
+  assert.match(cancel, /^\s*SetErrorLevel 2\n\s*Quit\n\s*$/)
+})
+
+test('retrying force-closes the app by absolute path, leaves its terminal windows alone and runs the old uninstaller again', () => {
+  const handle = bodyOf(readCustomInclude(), 'Function xingmangHandleOldUninstallResult', 'FunctionEnd')
+  const retry = handle.slice(handle.indexOf('xingmangOldUninstallRetry:'))
+  const kill = retry.match(/nsExec::Exec `([^`]+)`/)
+  assert.ok(kill, 'the retry does not close the app')
+  // 系统目录里的绝对路径，不查 PATH（I14）；参数全是编译期常量（I1）。
+  assert.equal(kill[1], '"$SYSDIR\\taskkill.exe" /F /IM "${APP_EXECUTABLE_FILENAME}"')
+  // /T 会连星芒打开的命令行窗口一起关掉，那是客户正在用的。
+  assert.doesNotMatch(kill[1], /\/T\b/)
+  assert.match(retry, /Push "SHELL_CONTEXT"\n\s*Call uninstallOldVersion\n\s*Goto xingmangOldUninstallCheck\n/)
+  // 走回开头再看一遍结果：没起来照常装、成功就往下装、又失败再问。
+  assert.ok(handle.indexOf('xingmangOldUninstallCheck:') < handle.indexOf('${If} ${Errors}'))
+})
+
+test('the upgrade helpers live in the installer half only', () => {
+  const contents = readCustomInclude()
+  const header = bodyOf(contents, '!macro customHeader', '!macroend')
+  const installerHalf = header.slice(header.indexOf('!ifndef BUILD_UNINSTALLER'), header.indexOf('!ifdef BUILD_UNINSTALLER'))
+  // 模板只在安装程序里带 installUtil.nsh（uninstallOldVersion、handleUninstallResult 在那里）；
+  // 放进卸载程序那一半就是没人调用的函数，-WX 下打包当场失败。
+  assert.ok(installerHalf.includes('Function xingmangForgetMissingInstalledEntries'))
+  assert.ok(installerHalf.includes('Function xingmangHandleOldUninstallResult'))
+})
