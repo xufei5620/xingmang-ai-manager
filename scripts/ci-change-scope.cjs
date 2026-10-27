@@ -20,6 +20,70 @@ function touchesCliVersionList(files) {
   return files.some((file) => cliVersionListFiles.has(file))
 }
 
+// macos-test builds both architectures and starts the Apple silicon package on
+// every pull request that touches code. The other two macOS jobs answer
+// questions only the packaging inputs can change: macos-intel starts the Intel
+// package on an Intel Mac, and macos-release-rehearsal walks the release path
+// (the identity found by name, one build per architecture merged into one, the
+// private acceleration bundles). Each holds one of the few macOS runners the
+// account gets at a time, so with two pull requests in flight the next one
+// queued: from 2026-10-24 to 10-26 the slowest quarter of pull request runs
+// took 41.9 minutes, against 14.0 for everything but the macOS jobs (G1). A
+// pull request now runs those two only when it touches one of the inputs below,
+// and every push to main still runs them.
+//
+// The files are what those jobs build and run with: the build configuration,
+// the scripts they start and everything those load, the main-process modules
+// the acceleration staging tool loads from dist-electron, and the jobs
+// themselves. ci-workflow-config.test.cjs walks those imports and fails when a
+// file they reach is missing here.
+const macPackagingFiles = new Set([
+  'package.json',
+  'package-lock.json',
+  '.nvmrc',
+  'electron-builder.config.cjs',
+  'e2e/macos-launch-smoke.mjs',
+  'scripts/update-release-utils.cjs',
+  'scripts/linux-artifact-names.cjs',
+  'scripts/electron-fuse-hardening.cjs',
+  'scripts/prepare-acceleration-bundle.cjs',
+  'scripts/stage-acceleration-bundle.cjs',
+  'electron/acceleration-binary.ts',
+  'electron/acceleration-clash-config.ts',
+  'electron/bounded-file.ts',
+  'electron/darwin-path-trust.ts',
+  'electron/input-guards.ts',
+  'electron/linux-path-trust.ts',
+  'electron/path-identity.ts',
+  'electron/relocated-folders.ts',
+  'electron/safe-local-data.ts',
+  // A change to the jobs, to the release job the rehearsal mirrors, or to
+  // this very decision has to be seen running before it merges.
+  '.github/workflows/quality.yml',
+  '.github/workflows/publish-release.yml',
+  'scripts/ci-change-scope.cjs',
+])
+
+const macPackagingPatterns = [
+  // Every macOS build, signing, keychain and artifact script.
+  /^scripts\/[^/]*macos[^/]*$/,
+  /^build\/entitlements\.mac/,
+  // The system proxy helper, compiled once per architecture.
+  /^native\//,
+  /^bundled-acceleration\//,
+]
+
+function touchesMacPackaging(files) {
+  return files.some((file) => macPackagingFiles.has(file) || macPackagingPatterns.some((pattern) => pattern.test(file)))
+}
+
+// main runs them on every push for the reason requiresCodeChecksForEvent gives
+// below, and an unknown range runs everything.
+function requiresMacPackagingChecksForEvent(eventName, files) {
+  if (!requiresCodeChecksForEvent(eventName, files)) return false
+  return eventName === 'push' || files === null || touchesMacPackaging(files)
+}
+
 function changedFiles(event, eventName, git = execFileSync) {
   const base = eventName === 'pull_request' ? event.pull_request?.base?.sha : event.before
   const head = eventName === 'pull_request' ? event.pull_request?.head?.sha : event.after
@@ -62,9 +126,18 @@ if (require.main === module) {
   // Both default to true when the revision range is unknown: a check that
   // cannot tell what changed has to assume the worst, not skip itself.
   const cliVersions = files === null || touchesCliVersionList(files)
-  fs.appendFileSync(process.env.GITHUB_OUTPUT, `code=${code}\ncliVersions=${cliVersions}\n`, 'utf8')
+  const macPackaging = requiresMacPackagingChecksForEvent(process.env.GITHUB_EVENT_NAME, files)
+  fs.appendFileSync(process.env.GITHUB_OUTPUT, `code=${code}\ncliVersions=${cliVersions}\nmacPackaging=${macPackaging}\n`, 'utf8')
   console.log(code ? 'Code checks required' : 'Documentation-only change; build jobs will report skipped')
   console.log(cliVersions ? 'Verified-version list touched; the relay probe will run' : 'Verified-version list untouched; the relay probe will report skipped')
+  console.log(macPackaging ? 'macOS packaging checks required; macos-intel and macos-release-rehearsal will run' : 'macOS packaging inputs untouched; macos-intel and macos-release-rehearsal will report skipped')
 }
 
-module.exports = { requiresCodeChecks, requiresCodeChecksForEvent, touchesCliVersionList, changedFiles }
+module.exports = {
+  requiresCodeChecks,
+  requiresCodeChecksForEvent,
+  touchesCliVersionList,
+  touchesMacPackaging,
+  requiresMacPackagingChecksForEvent,
+  changedFiles,
+}
