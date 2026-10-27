@@ -51,7 +51,7 @@ jobs:
                       print(data[s:e].decode('utf-8', 'replace'))
                       shown += 1
                       if shown >= limit: return
-          show(rb'rejected the configured credential', 3000, 2)
-          show(rb'modelDiscoveryEnabled', 1500, 6, 'asar/')
-          show(rb'/v1/models', 1500, 4, 'asar/')
+          show(rb'model_rejected', 700, 12)
+          show(rb'VD\(', 700, 10, 'CIsKxfLj')
+          show(rb'/v1/models', 900, 10, 'CIsKxfLj')
           PY
