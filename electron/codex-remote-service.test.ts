@@ -791,7 +791,8 @@ describe('codex-remote-service permission approvals', () => {
     const out = path.join(s.workspace, 'out')
     const answer = codex.ask('item/permissions/requestApproval', permissionRequest(codexPermissions(null, [out], true)))
     await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
-    expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'other', summary: '联网\n写：~/projects/demo/out' })
+    // The workspace is a real folder here, so its separators are this machine's.
+    expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'other', summary: `联网\n写：${path.join('~', 'projects', 'demo', 'out')}` })
     channel.handlers?.onInbound(text(alice, '同意'))
     expect((await answer).result).toEqual({
       permissions: { network: { enabled: true }, fileSystem: { read: null, write: [out] } },
