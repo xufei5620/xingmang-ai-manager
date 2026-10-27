@@ -39,6 +39,8 @@ import { createRealmBusinesses } from './bootstrap/ai-services'
 import { createDiagnostics } from './bootstrap/diagnostics'
 import { createQuitCleanup } from './bootstrap/lifecycle'
 import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/network-routes'
+import { startCodexPayloadWatch } from './bootstrap/codex-payload-watch'
+import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
@@ -108,7 +110,7 @@ import { guardProcessOutputStreams } from './process-stream-errors'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
-import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
+import { hiddenWindowNotification, hostNotificationMessage, type PlatformHostNotification } from './platform/notifications'
 import { attachPrivacyChangeListener } from './platform/privacy-change-bridge'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
@@ -1164,6 +1166,18 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    // Codex 有个对话太大、要客户新开对话的那条提示（codex-payload-limit.ts）：系统服务放进设置快照，下面开始盯会话记录。
+    const codexPayloadNotices = createCodexPayloadNoticeBoard()
+    // 客户正看着星芒时角落那张卡就够了，不另弹系统通知（同付款到账那条）。主窗口建得比这里晚，用到时才读。
+    function notifyCodexPayload(event: PlatformHostNotification, eventKey: string): void {
+      try {
+        const main = managedMainWindow
+        const watching = Boolean(main && !main.isDestroyed() && main.isVisible() && !main.isMinimized() && main.isFocused())
+        if (!watching) hostNotifier()({ event, eventKey })
+      } catch (cause) {
+        runtimeLog.exception('network', 'codex-payload.notify-failed', cause)
+      }
+    }
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
@@ -1209,6 +1223,8 @@ if (!hasSingleInstanceLock) {
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
+      onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
+      codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
       sweepInstallLeftovers,
@@ -1270,6 +1286,19 @@ if (!hasSingleInstanceLock) {
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
       systemService,
       readAccountSiteId: () => readAccountSiteId(),
+    })
+    const codexPayloadWatch = startCodexPayloadWatch({
+      managerDataDirectory,
+      codexHome: codexContext.codexHome,
+      runtimeLog,
+      readAccountSiteId: () => readAccountSiteId(),
+      routes: networkRoutes,
+      systemService,
+      notices: codexPayloadNotices,
+      notifyHost: (kind, eventKey) => notifyCodexPayload(
+        kind === 'nearing' ? 'codexPayloadNearing' : kind === 'too-large' ? 'codexPayloadLineTwoTooLarge' : 'codexPayloadTooLarge',
+        eventKey,
+      ),
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -2365,6 +2394,7 @@ if (!hasSingleInstanceLock) {
       codexRemoteKeepAwake.dispose()
     })
     quitCleanup.add('routes', () => {
+      codexPayloadWatch.dispose()
       unsubscribeRelayRoute()
       unsubscribeToolRoutes()
       systemService.disposeToolRoutes?.()

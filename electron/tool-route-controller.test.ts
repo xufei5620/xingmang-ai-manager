@@ -599,6 +599,86 @@ describe('tool route controller', () => {
     const proxied = status({ lines: { direct: { target: 'cf', proxied: true, healthy: true, legit_ips: [] } } })
     expect(toolRouteLegitimateAddresses('direct', proxied)).toEqual({ cloudflare: true })
   })
+
+  describe('moving to Los Angeles for a Codex conversation too large for CF', () => {
+    it('switches on one passing check without waiting out the cooldown and records no failure for CF', async () => {
+      const lastFailure = startedAt - 20 * 60_000
+      const run = harness({ stored: { line: 'primary', failures: { direct: [startedAt - 2 * dayMs, lastFailure] }, notices: {} } })
+      run.controller.start()
+      await settle()
+      run.probes.length = 0
+      expect(await run.controller.holdDirect('payload-too-large')).toBe('switched')
+      await settle()
+      expect(run.probes).toEqual(['direct'])
+      expect(run.controller.line()).toBe('direct')
+      expect(run.controller.snapshot().lastChange).toEqual({
+        from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large', at: startedAt,
+      })
+      expect(run.snapshots.at(-1)?.line).toBe('direct')
+      expect(run.writes.at(-1)?.failures.primary).toBeUndefined()
+      expect(run.events('relay.route.changed').at(-1)).toMatchObject({ from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large' })
+      expect(run.events('relay.route.changed').at(-1)).not.toHaveProperty('failures7d')
+      // 洛杉矶上照旧定时查：自己连不上还按原来的规矩退回 CF。
+      expect(run.pendingDelays()).toEqual([toolRouteRecheckIntervalMs])
+    })
+
+    it('does not wait five minutes after the previous switch', async () => {
+      const run = harness()
+      await failDirectThreeRounds(run)
+      expect(run.controller.line()).toBe('primary')
+      run.results.direct = pass()
+      expect(await run.controller.holdDirect('payload-too-large')).toBe('switched')
+      expect(run.controller.line()).toBe('direct')
+    })
+
+    it('still falls back to CF when Los Angeles itself goes down afterwards', async () => {
+      const run = harness({ stored: { line: 'primary', failures: { direct: [startedAt - 2 * dayMs, startedAt - 20 * 60_000] }, notices: {} } })
+      await run.controller.holdDirect('payload-too-large')
+      run.controller.start()
+      await settle()
+      run.results.direct = fail('timeout')
+      run.advance(toolRouteMinSwitchGapMs)
+      run.controller.reportFailure('ERR_CONNECTION_RESET')
+      await settle()
+      await run.fireUntil(() => run.controller.line() === 'primary')
+      expect(run.controller.snapshot().lastChange).toMatchObject({ from: 'direct', to: 'primary', reason: 'failed' })
+    })
+
+    it('reports Los Angeles as already in use, unreachable, or the line as fixed without switching', async () => {
+      const already = harness()
+      expect(await already.controller.holdDirect('payload-too-large')).toBe('already')
+      expect(already.probes).toEqual([])
+
+      const down = harness({ stored: { line: 'primary', failures: {}, notices: {} } })
+      down.results.direct = fail('reset')
+      expect(await down.controller.holdDirect('payload-too-large')).toBe('unreachable')
+      await settle()
+      expect(down.controller.line()).toBe('primary')
+      expect(down.writes).toEqual([])
+
+      for (const preference of ['primary', 'direct'] as const) {
+        const fixed = harness({ preference, stored: { line: 'primary', failures: {}, notices: {} } })
+        expect(await fixed.controller.holdDirect('payload-too-large')).toBe('fixed')
+        expect(fixed.probes).toEqual([])
+      }
+      const quit = harness({ stored: { line: 'primary', failures: {}, notices: {} } })
+      quit.controller.dispose()
+      expect(await quit.controller.holdDirect('payload-too-large')).toBe('fixed')
+    })
+
+    it('records a trigger that is not a plain code under a fixed name', async () => {
+      const run = harness({ stored: { line: 'primary', failures: {}, notices: {} } })
+      await run.controller.holdDirect('C:\\Users\\someone')
+      expect(run.controller.snapshot().lastChange?.trigger).toBe('payload')
+    })
+
+    it('keeps the reason through the state file and an older version drops only that last change', () => {
+      const lastChange = { from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large', at: startedAt } as const
+      expect(parseToolRouteState(JSON.stringify({ version: 1, line: 'direct', failures: {}, notices: {}, lastChange }))).toEqual({
+        line: 'direct', failures: {}, notices: {}, lastChange,
+      })
+    })
+  })
 })
 
 describe('tool route state store', () => {

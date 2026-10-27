@@ -132,12 +132,17 @@ describe('tool route following', () => {
     expect(followToolRoutes).not.toHaveBeenCalled()
     emit({ line: 'primary', lastChange: { reason: 'unreachable' } })
     emit({ line: 'direct', lastChange: { reason: 'recovered' } })
+    emit({ line: 'primary', lastChange: { reason: 'failed' } })
+    // Codex 对话太大换的线路由那边只提示 Codex 重开，这里不说「连不上换了」。
+    emit({ line: 'direct', lastChange: { reason: 'payload-too-large' } })
     expect(followToolRoutes.mock.calls).toEqual([
       [{ reason: 'route-changed', fault: true }],
       [{ reason: 'route-changed', fault: false }],
+      [{ reason: 'route-changed', fault: true }],
+      [{ reason: 'route-changed', fault: false }],
     ])
-    expect(routes.toolRouteStatusBoard.update).toHaveBeenCalledTimes(3)
-    expect(routes.notifyRelayRouteChanged).toHaveBeenCalledTimes(3)
+    expect(routes.toolRouteStatusBoard.update).toHaveBeenCalledTimes(5)
+    expect(routes.notifyRelayRouteChanged).toHaveBeenCalledTimes(5)
   })
 
   it('leaves the renderer alone for a history account unless the line changed', () => {

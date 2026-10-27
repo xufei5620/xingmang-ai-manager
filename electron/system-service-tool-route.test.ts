@@ -54,6 +54,7 @@ async function fixture(options: {
   const clock = { now: 1_000_000_000_000 }
   const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
   const followed = vi.fn()
+  const payloadRestart = vi.fn()
   const report = options.report ?? { running: [], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
   const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
     managerDataDirectory: root,
@@ -72,6 +73,7 @@ async function fixture(options: {
     inspectRunningToolsForRouteHint: async () => report,
     getToolRouteRewriteMode: () => options.mode ?? 'targeted',
     onToolRouteFollowed: followed,
+    onCodexPayloadRestart: payloadRestart,
     scheduleToolRoute: (callback, delayMs) => {
       const timer = { callback, delayMs }
       timers.push(timer)
@@ -91,7 +93,11 @@ async function fixture(options: {
   function overwrite(content: string, provider: ProviderId = 'codex') {
     fs.writeFileSync(providerConfigPaths(provider, roots)[provider === 'gemini' ? 1 : 0], content)
   }
-  return { root, roots, service, follow, read, overwrite, ownership, line, timers, clock, relayFetch, followed, toolStatus }
+  function notePayloadRestart() {
+    if (!service.noteCodexPayloadRestart) throw new Error('noteCodexPayloadRestart missing')
+    return service.noteCodexPayloadRestart()
+  }
+  return { root, roots, service, follow, read, overwrite, ownership, line, timers, clock, relayFetch, followed, payloadRestart, notePayloadRestart, toolStatus }
 }
 
 describe('tool route follow', () => {
@@ -245,6 +251,52 @@ describe('tool route follow', () => {
   })
 })
 
+// Codex 有个对话在线路 1 上太大、换到线路 2 以后（codex-payload-limit.ts）：Codex 的配置真跟到线路 2 才提示重开。
+describe('codex restart hint after a conversation too large for line 1', () => {
+  const codexRunning: RunningToolsReport = { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
+
+  it('asks to restart Codex only, once its config is on line 2, even when hints are off or Codex was asked today', async () => {
+    const f = await fixture({ providers: ['codex', 'grok'], report: { ...codexRunning, running: ['codex', 'grok'] } })
+    await f.service.updateStoredConfig({ version: 2, toolRouteRestartHints: false })
+    expect(await f.follow({ reason: 'payload', providers: ['codex'] })).toEqual({ rewritten: ['codex'] })
+    // 跟过去这一下不是因为连不上，不出一般的重开提示。
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    expect(await f.notePayloadRestart()).toBe(true)
+    const desktop = process.platform === 'win32' || process.platform === 'darwin' ? process.platform : null
+    const hint = { id: f.clock.now, cause: 'payload-too-large', codex: { cli: true, desktop, canRestartDesktop: true } }
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual(hint)
+    expect(f.payloadRestart).toHaveBeenCalledTimes(1)
+    expect(f.followed).toHaveBeenCalled()
+
+    // 同一毫秒里又一个对话：id 分得开，提示照样在。
+    expect(await f.notePayloadRestart()).toBe(true)
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({ ...hint, id: f.clock.now + 1 })
+    f.clock.now += 30 * 60 * 1000
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+  })
+
+  it('does not ask when Codex is still on line 1, managed elsewhere or on its official account', async () => {
+    const onLineOne = await fixture({ report: codexRunning })
+    onLineOne.line.current = 'primary'
+    await onLineOne.follow({ reason: 'payload', providers: ['codex'] })
+    expect(await onLineOne.notePayloadRestart()).toBe(false)
+
+    const notOurs = await fixture({ owned: false, report: codexRunning })
+    expect(await notOurs.follow({ reason: 'payload', providers: ['codex'] })).toEqual({ rewritten: [] })
+    expect(await notOurs.notePayloadRestart()).toBe(false)
+
+    const official = await fixture({ report: codexRunning })
+    await official.follow({ reason: 'payload', providers: ['codex'] })
+    await official.service.updateStoredConfig({ version: 2, officialProviders: ['codex'] })
+    expect(await official.notePayloadRestart()).toBe(false)
+
+    for (const f of [onLineOne, notOurs, official]) {
+      expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+      expect(f.payloadRestart).not.toHaveBeenCalled()
+    }
+  })
+})
+
 // xm 三线路：工具配置跟工具线路，设置快照里 relayRouteLines 照旧是管理工具自己那条。
 describe('tool line separate from the app line', () => {
   it('moves the tools to the tool line while the app stays on its own line', async () => {
@@ -307,6 +359,7 @@ describe('legacy account restart hint after a whole rewrite', () => {
       : options.change
     const lastChange = vi.fn((_siteId: string) => change)
     const followed = vi.fn()
+    const payloadRestart = vi.fn()
     const report = options.report ?? { running: ['codex', 'grok'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false }
     const inspectRunning = vi.fn(async (_providers: readonly ProviderId[]) => report)
     const service = createSystemService(new AppSettingsStore(path.join(root, 'settings.json'), root), {
@@ -322,6 +375,7 @@ describe('legacy account restart hint after a whole rewrite', () => {
       inspectRunningToolsForRouteHint: inspectRunning,
       getToolRouteRewriteMode: () => 'merge',
       onToolRouteFollowed: followed,
+      onCodexPayloadRestart: payloadRestart,
       toolRouteNow: () => clock.now,
     })
     async function rewrite(provider: ProviderId) {
@@ -332,7 +386,7 @@ describe('legacy account restart hint after a whole rewrite', () => {
       if (!service.noteRouteFollowRestart) throw new Error('noteRouteFollowRestart missing')
       await service.noteRouteFollowRestart(written)
     }
-    return { service, rewrite, finish, clock, account, lastChange, followed, inspectRunning }
+    return { service, rewrite, finish, clock, account, lastChange, followed, payloadRestart, inspectRunning }
   }
 
   it('asks open tools to restart once the round after a fault switch is written, in one hint', async () => {
@@ -377,6 +431,34 @@ describe('legacy account restart hint after a whole rewrite', () => {
     await f.rewrite('codex')
     await f.finish(['codex'])
     expect(f.service.readStoredConfig().toolRouteRestartHint?.codex).toEqual({ cli: true, desktop: null, canRestartDesktop: false })
+  })
+
+  it('asks to restart Codex only after a switch for a conversation too large for line 1', async () => {
+    const f = await legacyFixture({
+      providers: ['codex', 'grok'],
+      change: { from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large', at: 1_000_000_000_000 - 60_000 },
+    })
+    await f.rewrite('codex')
+    await f.rewrite('grok')
+    await f.finish(['codex', 'grok'])
+    // Grok 在线路 1 上本来就能用，不叫它重开。
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toEqual({
+      id: f.clock.now, cause: 'payload-too-large', codex: { cli: true, desktop: null, canRestartDesktop: false },
+    })
+    expect(f.inspectRunning).toHaveBeenCalledWith(['codex'])
+    expect(f.payloadRestart).toHaveBeenCalledTimes(1)
+  })
+
+  it('says nothing after a switch for a large conversation when Codex was not part of the round', async () => {
+    const f = await legacyFixture({
+      providers: ['grok'],
+      change: { from: 'primary', to: 'direct', reason: 'payload-too-large', at: 1_000_000_000_000 - 60_000 },
+    })
+    await f.rewrite('grok')
+    await f.finish(['grok'])
+    expect(f.service.readStoredConfig().toolRouteRestartHint).toBeUndefined()
+    expect(f.inspectRunning).not.toHaveBeenCalled()
+    expect(f.payloadRestart).not.toHaveBeenCalled()
   })
 
   it('leaves the xm account to followToolRoutes even on the old whole-rewrite path', async () => {

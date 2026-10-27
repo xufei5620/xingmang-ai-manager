@@ -197,6 +197,7 @@ describe('main process quit cleanup', () => {
         'codexRemoteKeepAwake.dispose()',
       ],
       routes: [
+        'codexPayloadWatch.dispose()',
         'unsubscribeRelayRoute()',
         'unsubscribeToolRoutes()',
         'systemService.disposeToolRoutes?.()',
