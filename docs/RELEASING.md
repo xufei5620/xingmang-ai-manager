@@ -317,7 +317,7 @@ git push origin v0.2.6
 - 上一次触发占了 tag、没发出去就取消了（补进来重出包），合进修复后从 main 重新触发：tag 会挪到新的 commit 上。挪之前同样要确认那一版没有 Release、线上清单都比它旧。
 - `changes/unreleased/` 里还有没汇总的分片：直接停下，不查 tag、不出包，怎么补收见第 3 节。只选 `linux` 而 Linux 开关没开时不查：main 上平时总有分片，只出包给自己装的那种运行不该被挡。
 - 这一步报「GitHub 不让在 … 上建 …」：触发之后、轮到它之前，main 又合进了改工作流的提交。什么都还没发，从最新的 main 重新触发就好。
-- 正式发布要从 main 触发，从别的分支或 tag 触发直接拒绝，免得 tag 占在一个发不出去的 commit 上。只选 `linux` 而 Linux 开关没开时不占 tag。
+- 正式发布要从 main 触发，从别的分支或 tag 触发直接拒绝，免得 tag 占在一个发不出去的 commit 上。唯一的例外是热修分支 `hotfix/<这次的版本号>`，见下面「热修版本」。只选 `linux` 而 Linux 开关没开时不占 tag。
 - 出包期间有人把 tag 删了：上传前那道关检查都过了以后先补建，再往线上传；补建不了就停下，线上什么都不改。
 - 取消之后改了版本号再发，旧版本号的 tag 会留在仓库里，指向一个没发出去的 commit。它不影响发布；要清理就在仓库的 Tags 页面手动删掉。
 
@@ -328,6 +328,16 @@ git push origin v0.2.6
 **一次发布要批准两次。** 读 `.p12` 的 macOS 出包作业和上传的 publish 作业都挂 `environment: release`，运行会各停一次等你按 Approve。第一次批准之后什么都还没有对外发生，产物只躺在 Actions artifact 里——把包下下来装机验收，过了再批第二次。这两下就是本节开头说的「明确发布授权」。
 
 **上传那一段和回滚、维护开关排队。** publish 作业与 `rollback-release`、`service-status`、`acceleration-nodes` 共用 `update-feed` 并发组（#492）：三者都是先读线上清单或状态、再写回去，同时跑会互相盖掉。所以批第二次之前如果它显示 Pending，是另一条正在写更新目录，等它跑完就轮到这里。出包那两段不在组里，不会被挡。
+
+#### 热修版本（上一版加一两个提交单独发）
+
+2026-10-27 定（0.2.22：0.2.21 加上 #1405，修支付宝充值时支付窗口打不开）。main 上已经合了一批还没在真机上验过的改动，又有一个客户正卡着的问题要马上发时用。
+
+1. 从上一版的 tag 切 `hotfix/<新版本号>`，只 cherry-pick 要带的提交；版本号改成新版本号，加一条 `000-` 分片（怎么装更新，照抄上一版那条），`changelog:collect` 汇总、把两个标题改成新版本号。
+2. **把 main 的 `.github/workflows/` 整个照搬过来**，一字不差：工作流用的令牌建不了「工作流文件和 main 对不上」的提交上的 tag（见上面「触发时就占 tag」），对不上的话 `release-tag` 那一步就停。照搬以后到 `release-tag` 跑完之前，main 不要合改工作流的 PR；别的 PR 照常合，main 不用冻结。
+3. 产品所有者亲手把 `hotfix/<新版本号>` 加进 **Settings → Environments → release → Deployment branches and tags**（Add deployment branch or tag rule，Ref type 选 Branch，填分支全名）。这是临时放宽「只有 main 的代码拿得到发布凭据」那道限制，所以要他亲手加、发完亲手删。`cos-sync` 环境不用加：发布作业里同步 COS 那一步会被它拒掉、显示红色，不影响更新源；发完从 main 跑一次 `sync-published-manager-cos`，「标签」填 `v<新版本号>`，补上教程页的下载。
+4. 照常先设分批放量，再从 `hotfix/<新版本号>` 分支点 Run workflow（Use workflow from 选这个分支），版本号填新版本号，两次批准照旧。
+5. 发完：删掉第 3 步加的那条规则；往 main 提一个 PR，把这一版的 `release-notes.md`、`CHANGELOG.md` 两节并进去，删掉 main 上已经随这一版发出去的那几个分片。main 下一次定版用再下一个版本号。
 
 #### 分批放量（0.2.19 起每次都做）
 

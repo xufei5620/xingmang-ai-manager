@@ -825,12 +825,30 @@ test('the tag is reserved whenever the publish job could run', posixOnly, () => 
 test('a release is only dispatched from main, for the version package.json declares', posixOnly, () => {
   // release 环境只放行 main：从别处触发，Mac 出包和上传都会被环境拒掉，tag 却已经占在
   // 一个发不出去的提交上了。从这一版自己的 tag 触发也一样不行。
-  for (const ref of ['refs/heads/claude/fix', 'refs/tags/v0.2.14', 'refs/tags/v0.2.15']) {
+  // 热修分支只认 hotfix/<这次的版本号>：别的版本号的热修分支、名字多一截的都不行。
+  for (const ref of [
+    'refs/heads/claude/fix',
+    'refs/tags/v0.2.14',
+    'refs/tags/v0.2.15',
+    'refs/heads/hotfix/0.2.14',
+    'refs/heads/hotfix/0.2.15-extra',
+    'refs/heads/hotfix/v0.2.15',
+    'refs/heads/main-hotfix/0.2.15',
+  ]) {
     const run = runPlanStep({ ref, tagSha: SHIPPED })
     assert.notEqual(run.status, 0, ref)
-    assert.ok(run.output.includes(`::error::正式发布只能从 main 触发，这次是 ${ref}`), run.output)
+    assert.ok(run.output.includes(`::error::正式发布只能从 main（或热修分支 hotfix/0.2.15）触发，这次是 ${ref}`), run.output)
     assert.equal(run.log, '', ref)
   }
+  // 产品所有者把 hotfix/<版本号> 加进 release 环境以后，从它触发和从 main 触发走同一套判断。
+  const hotfix = runPlanStep({ ref: 'refs/heads/hotfix/0.2.15' })
+  assert.equal(hotfix.status, 0, hotfix.output)
+  assert.deepEqual(hotfix.outputs, { tag: 'v0.2.15', action: 'create' })
+  // 填错版本号时，对得上分支名也不放行。
+  const hotfixMismatch = runPlanStep({ ref: 'refs/heads/hotfix/0.2.16', confirm: '0.2.16' })
+  assert.notEqual(hotfixMismatch.status, 0)
+  assert.match(hotfixMismatch.output, /::error::版本不一致：package\.json 是 0\.2\.15，本次触发填的是 0\.2\.16/)
+  assert.equal(hotfixMismatch.log, '')
 
   const mismatch = runPlanStep({ confirm: '0.2.16' })
   assert.notEqual(mismatch.status, 0)
