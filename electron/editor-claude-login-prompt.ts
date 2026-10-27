@@ -17,6 +17,8 @@ import { assertNoReparseComponents, readSafeUtf8FileSync } from './safe-local-da
  * 必须恰好只多了这一个键，对不上就不写；编辑器从没打开过（用户设置那层目录都没有）就不建。
  * 切回官方账号不收回：这一项是不是星芒补的认不出来，客户自己写的不能删。官方账号在星芒里是命令行登录过的，
  * 插件跟命令行共用那份登录，这一项对它不起作用。
+ * 这台电脑上出现过这一项（星芒补的，或者客户自己写的）的编辑器，之后不再看也不再补：现在没有就是客户删的
+ * （0.2.22 第二轮回归第 3 条，记在 app-settings.ts 的 seededToolDefaults）。
  */
 
 export const editorClaudeLoginPromptSetting = 'claudeCode.disableLoginPrompt'
@@ -121,9 +123,10 @@ export function buildEditorSettingsWithLoginPromptDisabled(existing: string | nu
   return { kind: 'add', content: `${bom}${content}` }
 }
 
+/** seeded = 这台电脑上出现过这一项，这次没看也没动。 */
 export type EditorLoginPromptResult =
   | { editor: EditorId; outcome: 'added'; backups: string[] }
-  | { editor: EditorId; outcome: 'present' | 'absent' | 'unreadable' }
+  | { editor: EditorId; outcome: 'present' | 'absent' | 'unreadable' | 'seeded' }
   | { editor: EditorId; outcome: 'failed'; error: unknown }
 
 function userDirectoryExists(userDirectory: string): boolean {
@@ -156,13 +159,16 @@ function ensureOne(location: EditorSettingsLocation, hooks: NativeConfigWriteHoo
 
 /**
  * 给这台电脑上用过的 VS Code、Cursor 各补一次。一家出错（设置文件是链接、被占用……）不影响另一家，
- * 结果逐家交回，调用方记日志；这一项补不上不算 Claude Code 配置没写成。
+ * 结果逐家交回，调用方记日志；这一项补不上不算 Claude Code 配置没写成。seeded 里的编辑器出现过这一项，
+ * 不再看也不再补。
  */
 export function ensureEditorClaudeLoginPromptDisabled(
   options: EditorSettingsLocationOptions,
   hooks: NativeConfigWriteHooks = {},
+  seeded: readonly EditorId[] = [],
 ): EditorLoginPromptResult[] {
   return resolveEditorSettingsLocations(options).map((location) => {
+    if (seeded.includes(location.editor)) return { editor: location.editor, outcome: 'seeded' }
     try {
       return ensureOne(location, hooks)
     } catch (error) {

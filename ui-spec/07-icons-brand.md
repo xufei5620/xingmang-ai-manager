@@ -7,7 +7,7 @@ v3.0。星芒品牌引用应用内的 [brand](../assets/brand/v3/README.md) 素�
 | 用途 | 来源 |
 |---|---|
 | 星芒品牌 | 原品牌 SVG/PNG，按对应母版使用 |
-| AI 厂商与模型 | 既有厂商品牌；后续可接入 @lobehub/icons，包版本及导出先查实际仓库 |
+| AI 厂商与模型 | 既有厂商品牌：`src/renderer-v2/ui/vendor-icons.tsx`，SVG 原样抄自 @lobehub/icons 5.18.0（MIT）；不安装这个包，新增厂商照样从它的源码抄 |
 | 运行时、支付、浏览器、系统标识 | 既有品牌资源；Simple Icons 仅在资源与许可核对后作为接入来源 |
 | 动作与导航 | 本轮 53 个 Lucide 符号，currentColor，同一含义复用 |
 

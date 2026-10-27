@@ -566,9 +566,23 @@ const IMAGE_GROUP_MODEL_ORDER = [
 ] as const
 
 /**
- * imageGroups：服务状态文件分组对照里「画图」那一项列的名字。站上以后再改图片分组的本名，
- * 发布者改对照就认得出，不用等发版；缺省 = 只认上面写死的名字。
+ * 这个分组是不是图片分组。imageGroups：服务状态文件分组对照里「画图」那一项列的名字。站上以后再改图片分组的
+ * 本名，发布者改对照就认得出，不用等发版；缺省 = 只认上面写死的名字。
  */
+export function isImageChatGroup(group: string, imageGroups: readonly string[] = []): boolean {
+  const name = group.trim()
+  return IMAGE_GROUP_NAMES.has(name) || imageGroups.includes(name)
+}
+
+/**
+ * 分组列表上把图片分组标出来（认法同 isImageChatGroup）：渲染层出图时照这个标记优先挑图片分组，
+ * 不再只认写死的名字（0.2.22 第一轮回归第 11 条）。
+ */
+export function markImageChatGroups<T extends { name: string }>(groups: readonly T[], imageGroups: readonly string[] = []): Array<T & { image?: true }> {
+  return groups.map((group) => isImageChatGroup(group.name, imageGroups) ? { ...group, image: true as const } : group)
+}
+
+/** imageGroups 见 isImageChatGroup。 */
 export function selectAiChatModelsForGroup(
   group: string,
   models: readonly string[],
@@ -582,8 +596,7 @@ export function selectAiChatModelsForGroup(
       return false
     }
   })
-  const name = group.trim()
-  if (!IMAGE_GROUP_NAMES.has(name) && !imageGroups.includes(name)) return visible
+  if (!isImageChatGroup(group, imageGroups)) return visible
 
   const available = new Set(visible)
   const ordered: string[] = IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))

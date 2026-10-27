@@ -117,7 +117,7 @@ npm run dist:mac:free -- \
 
 开启后 runner 分两次调用 electron-builder（先 `--arm64` 后 `--x64`），因为 Mac 资源目录是按架构准备的，一次双架构构建必然在其中一个架构上被 `beforePack` 的架构核对拒绝。两次构建各自输出到 `release-free-<版本号>/arch-arm64` 与 `arch-x64`，随后合并到发布目录：六个产物文件移入根目录，`latest-mac.yml` 由两份单架构清单合并而成（以 arm64 那份为底，只替换文件列表，其余字段原样保留），两个分架构子目录连同解包的 `.app` 一并删除。合并之后的库存与校验要求与不带线路时完全一致。
 
-必须两个架构同时提供：只给一个架构会被直接拒绝，因为自动更新清单必须精确引用两份 ZIP，缺一个架构的版本无法通过产物校验。CI 也覆盖带线路的构建路径：2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥，`package-for-testing` 出的 Mac 测试包和 PR 上的 `macos-release-rehearsal` 排练都在 runner 上现场准备资源、带线路出包（见 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）。它们用一次性身份签名，只能自用验收，不能发给客户；正式包仍用发布身份出。
+必须两个架构同时提供：只给一个架构会被直接拒绝，因为自动更新清单必须精确引用两份 ZIP，缺一个架构的版本无法通过产物校验。CI 也覆盖带线路的构建路径：2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥，`package-for-testing` 出的 Mac 测试包和 `quality` 的 `macos-release-rehearsal` 排练（每次合进 `main` 都跑，PR 上只在动了打包相关文件时跑）都在 runner 上现场准备资源、带线路出包（见 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）。它们用一次性身份签名，只能自用验收，不能发给客户；正式包仍用发布身份出。
 
 ### 发布到更新服务器
 

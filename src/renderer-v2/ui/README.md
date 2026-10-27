@@ -8,7 +8,7 @@
 - Tabs 默认手动激活：左右/Home/End 移焦，Enter/Space 切换；本地设置面板可显式 activation=automatic。Segment 使用 group/aria-pressed 并自动激活。
 - Dialog/Drawer 使用原生 showModal 约束背景与焦点，dirty 时遮罩不关闭，Esc/关闭按钮显示保留草稿的放弃确认。业务异步期间必须传入 busy。主动保存成功仍由业务关闭。
 - Menu/Popover 使用原生 manual popover，保留所属 Dialog DOM 和焦点链，支持 Esc、外部关闭与触发器焦点返回。
-- Logo 使用 Vite 静态资源；模型品牌按需导入 lobehub，运行环境使用 simple-icons，功能图标使用 Lucide。
+- Logo 使用 Vite 静态资源；模型品牌用 `vendor-icons.tsx`（SVG 原样抄自 @lobehub/icons 5.18.0，MIT，不安装这个包：它的 peer 依赖会带进四百多个包），运行环境使用 simple-icons，功能图标使用 Lucide。要加新厂商，照样从那个包的源码抄一份进 `vendor-icons.tsx`。
 - Toast 最多 3 条，使用递增 ID，卸载清理计时器。时长按字数算（`toastDurationMs`：2.4 秒起、超过 12 个字每字加 0.2 秒、最长 10 秒），鼠标放上去暂停；`warn` / `bad` 不自动消失，带 × 手动关。重要错误仍应留在当前页面。
 - 根应用调用 useReducedMotion() 以同步系统减少动画；也支持 data-reduce-motion=1。
 

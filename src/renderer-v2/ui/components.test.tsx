@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { Search } from 'lucide-react';
 import { Button, Card, Chips, ChoiceMenu, Input, Menu, Notice, Pill, Progress, Segment, Slider, Switch, Tabs, Toast, ToolRow, toastDurationMs } from './components';
 import { BrandIcon } from './brand';
+import { GeminiIcon } from './vendor-icons';
 
 describe('renderer-v2 component contract', () => {
   it('keeps short toasts at 2.4s and gives longer ones more time up to 10s', () => {
@@ -103,5 +104,28 @@ describe('renderer-v2 component contract', () => {
       expect(html, model).not.toContain('circle-help');
       expect(html, model).not.toContain('其他工具');
     }
+  });
+  it('draws each vendor mark from the copy kept in the repository', () => {
+    const marks: Array<[{ tool?: string; model?: string }, string]> = [
+      [{ tool: 'claude' }, 'Claude'], [{ tool: 'codex' }, 'OpenAI'], [{ tool: 'grok' }, 'Grok'], [{ tool: 'opencode' }, 'opencode'],
+      [{ model: 'gemini-3-pro' }, 'Gemini'], [{ model: 'deepseek-v4-flash' }, 'DeepSeek'], [{ model: 'qwen3-max' }, 'Qwen'], [{ model: 'glm-5' }, 'ChatGLM'],
+      [{ model: 'kimi-k2' }, 'MoonshotAI'], [{ model: 'minimax-m2' }, 'Minimax'], [{ model: 'zhipu-x' }, 'Zhipu'],
+    ];
+    for (const [props, title] of marks) {
+      const html = renderToStaticMarkup(<BrandIcon {...props} size={20} />);
+      expect(html, title).toContain('<title>' + title + '</title>');
+      expect(html, title).toContain('viewBox="0 0 24 24"');
+      expect(html, title).toContain('style="flex:none;line-height:1"');
+    }
+    expect(renderToStaticMarkup(<BrandIcon tool="claude" />)).toContain('fill="#D97757"');
+    expect(renderToStaticMarkup(<BrandIcon tool="codex" />)).toContain('fill="currentColor"');
+  });
+  it('gives every copy of a gradient mark its own gradient ids', () => {
+    const html = renderToStaticMarkup(<div><GeminiIcon size={16} /><GeminiIcon size={16} /></div>);
+    const defined = [...html.matchAll(/ id="([^"]+)"/g)].map(match => match[1]);
+    const used = [...html.matchAll(/fill="url\(#([^)]+)\)"/g)].map(match => match[1]);
+    expect(defined).toHaveLength(6);
+    expect(new Set(defined).size).toBe(6);
+    expect(used.sort()).toEqual([...defined].sort());
   });
 });

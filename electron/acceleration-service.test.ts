@@ -34,6 +34,21 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('acceleration-service', () => {
+  it('passes on whether the helper is waiting for the previous instance without touching it', () => {
+    let waiting = true
+    const backend = { ...createBackend(), awaitingPreviousOwner: () => waiting }
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    expect(service.awaitingPreviousOwner()).toBe(true)
+    waiting = false
+    expect(service.awaitingPreviousOwner()).toBe(false)
+    expect(backend.getAccelerationState).not.toHaveBeenCalled()
+    // No helper, a helper that does not report it, or one that throws: nothing to wait for.
+    expect(createAccelerationService({ getAccountScope: () => scope }).awaitingPreviousOwner()).toBe(false)
+    expect(createAccelerationService({ getAccountScope: () => scope, backend: createBackend() }).awaitingPreviousOwner()).toBe(false)
+    const broken = { ...createBackend(), awaitingPreviousOwner: (): boolean => { throw new Error('gone') } }
+    expect(createAccelerationService({ getAccountScope: () => scope, backend: broken }).awaitingPreviousOwner()).toBe(false)
+  })
+
   it('redeems only for the current account and projects a credential-free fixed bonus result', async () => {
     const backend = createBackend()
     const raw = { status: 'redeemed' as const, addedSeconds: accelerationBonusSeconds,
