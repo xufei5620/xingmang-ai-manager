@@ -260,11 +260,11 @@ export function readRequestedPermissions(permissions: unknown): RequestedPermiss
     if (!isRecord(fileSystem) || !hasOnlyKeys(fileSystem, ['read', 'write', 'entries'])) return null
     const readList = readPathList(fileSystem.read)
     const writeList = readPathList(fileSystem.write)
-    if (!readList || !writeList || !entriesMirrorPaths(fileSystem.entries, readList, writeList)) return null
+    if (!readList || !writeList || readList.length + writeList.length > maxFileLines) return null
+    if (!entriesMirrorPaths(fileSystem.entries, readList, writeList)) return null
     read = [...readList]
     write = [...writeList]
   }
-  if (read.length + write.length > maxFileLines) return null
   if (!network && read.length === 0 && write.length === 0) return null
   return { network, read, write }
 }
@@ -1235,7 +1235,7 @@ export class CodexRemoteService {
     if (kind === 'other' && !permissionsShowInFull(params.permissions, display)) {
       // 手机上显示不全的权限申请不问人：问了，客户点的「同意」也不是对着他看到的那些点的。
       this.options.log('info', 'remote.permissions-refused', { channel: runtime.id })
-      void this.sendText(runtime, remoteMessages.permissionsRefused)
+      if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
       return 'decline'
     }
     const id = await this.allocateApprovalId()
