@@ -28,7 +28,7 @@ import { guideJobProgress, useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog } from './features/tools/ManualUninstall'
 import { operationFailureFrom, dollars, userFacingErrorMessage } from './business-common'
 import { rewriteKeyAction, operationTargetOf } from './operation-error'
-import { autoUpdateBubbleBody, settingsItemAvailable, updateBubbleTitle, updateFailureLabel, updatesTutorialTopic, type SettingsItem } from './registry/business'
+import { autoUpdateBubbleBody, settingsItemAvailable, updateBubbleTitle, updateFailureLabel, updateInstallActionLabel, updateSidebarEntry, updatesTutorialTopic, type SettingsItem } from './registry/business'
 import { homeToolOrder, tools } from './registry/tools'
 import { activeProviderIds } from '../../electron/catalog'
 import { clientConnections } from './registry/clients'
@@ -353,7 +353,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
   }, [workspaceVisible, page, scope])
-  const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
+  const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, offerInstall, offerDownload, openInstallConfirm, downloadUpdate, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
     native, update, setUpdate, settings, page, settingsGroup, perform, navigate,
   })
   const accountBootstrapBusy = Boolean(accountBootstrap?.scope === scope && !accountBootstrap.result && !accountBootstrap.error)
@@ -386,6 +386,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             plan: session.authenticated && !restoring && balanceAmount !== null ? subscription ? subscription.name ?? undefined : '按量付费' : undefined, runway }} platform={os}
           accountTab={page === 'account' ? shownAccountTab : undefined} theme={settings?.theme} announcementOpen={announcementOpen}
           update={update && !update.error ? update.phase === 'downloaded' ? 'ready' : update.phase === 'available' || update.phase === 'downloading' ? 'available' : undefined : undefined}
+          updateEntry={updateSidebarEntry(update)}
           accelerationLine={acceleration.snapshot.state?.phase === 'active' ? acceleration.snapshot.state.line?.name : undefined}
           remoteActive={remoteActive}
           tourOpen={tourOpen} onTourClose={() => { rememberTourSeen(scope); setTourOpen(false) }}
@@ -401,6 +402,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             body={update.error ? userFacingErrorMessage(update.error) : updateDiskText ?? autoUpdateBubbleBody(update.phase, autoUpdateOn, update.installMethod, update.installNeedsAdminPassword, update.idleInstall)} progress={update.progress?.percent} onDismiss={dismissUpdate}
             actions={<>{update.error && !updateNeedsManualReinstall(update) && <Button size="sm" variant="primary" testId="update-bubble-retry" loading={updateRetrying} onClick={retryUpdate}>{updateFailureLabel(update.failedStep).retry}</Button>}
               {updateOffersDownloadPage(update) && <Button size="sm" variant={updateNeedsManualReinstall(update) ? 'primary' : 'secondary'} onClick={() => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl))}>打开下载页</Button>}
+              {offerInstall && <Button size="sm" variant="primary" testId="update-bubble-install" onClick={openInstallConfirm}>{updateInstallActionLabel(update.installMethod)}</Button>}
+              {offerDownload && <Button size="sm" variant="primary" testId="update-bubble-download" loading={updateRetrying} onClick={downloadUpdate}>下载更新</Button>}
               {updateDiskText && <Button size="sm" onClick={() => navigate('tutorial', updatesTutorialTopic)}>怎么清理</Button>}<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>
               {autoUpdateToggle && <Switch testId="update-auto-toggle" label="自动更新" checked={autoUpdateOn} onChange={(autoUpdate) => void perform('保存自动更新', async () => setSettings(await app.savePreferences({ version: 2, autoUpdate })))} />}</>} />}
           adapter={{ navigate, searchTutorial, accountTabVisible: (tab) => !session.authenticated || visibleAccountTab(tab, session), pageVisible: (id) => id === 'video' ? signedInSiteId(session) !== 'solov-api' : id !== 'acceleration' || accelerationAvailable,
@@ -428,7 +431,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
               const client = clientConnections.find((tool) => tool.id === id)
               if (client) setExternalClient(client.id)
             },
-            openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
+            openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), installUpdate: openInstallConfirm, openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
             logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),

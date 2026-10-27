@@ -31,6 +31,9 @@
   :root:is(.hc, [data-contrast="high"]) .xm-switch.is-on i { background: var(--accent-fg); }
   :root:is(.hc, [data-contrast="high"]) .xm-switch:disabled::before { border-style: dashed; }
   :root:is(.hc, [data-contrast="high"]) .xm-progress-bar.xm-tone-accent { background: var(--accent); box-shadow: none; }
+  /* The sidebar's gold update entry paints like the primary button. */
+  :root:is(.hc, [data-contrast="high"]) .v2-nav-update { background: var(--accent); color: var(--accent-fg); box-shadow: none; }
+  :root:is(.hc, [data-contrast="high"]) .v2-nav-update:hover { filter: none; background: var(--accent-2); }
   /* Selected states that were only a faint tint get a solid marker as well. */
   :root:is(.hc, [data-contrast="high"]) .v2-nav-item.is-active { box-shadow: inset 3px 0 0 var(--accent), inset 0 0 0 1px var(--accent); }
   :root:is(.hc, [data-contrast="high"]) .xm-segment button.is-active { box-shadow: inset 0 0 0 2px var(--text); }
@@ -61,6 +64,9 @@
   :root :is(.v2-nav-item.is-active, .xm-segment button.is-active, .v2-business-subnav button.is-active, .v2-command-results [aria-selected='true'], .v2-tutorial-group button[aria-current='page']) { forced-color-adjust: none; background: Highlight; color: HighlightText; border-color: Highlight; box-shadow: none; }
   :root :is(.v2-nav-item.is-active, .xm-segment button.is-active, .v2-business-subnav button.is-active, .v2-command-results [aria-selected='true'], .v2-tutorial-group button[aria-current='page']) * { color: inherit; }
   :root .v2-nav-badge { forced-color-adjust: auto; border: 1px solid CanvasText; }
+  /* The update entry's gold fill and the update dot are both dropped. */
+  :root .v2-nav-update { border: 2px solid ButtonText; }
+  :root .v2-nav-dot { forced-color-adjust: none; background: Highlight; }
   /* Every tab would otherwise show the same forced bottom border. */
   :root .xm-tabs button { border-bottom-color: Canvas; }
   :root .xm-tabs button.is-active { border-image: none; border-bottom-color: Highlight; }

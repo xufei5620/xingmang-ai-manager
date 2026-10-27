@@ -3,7 +3,7 @@ import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
-import { accountTabs, type SettingsItem } from '../../registry/business'
+import { accountTabs, type SettingsItem, type UpdateSidebarEntry } from '../../registry/business'
 import '../../styles/shell.css'
 import { errorMessage } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
@@ -62,6 +62,8 @@ interface Adapter {
   /** 搜索里的「开始检查」：去检查页并重新查一遍；缺省 = 只去检查页。 */
   startCheck?(): void
   openUpdates?(): void
+  /** 新版本下好以后，侧栏的更新入口和状态栏的版本号点了做的事：弹「重启并安装」确认框；缺省 = 同 openUpdates。 */
+  installUpdate?(): void
   /** 顶栏的深浅色键；缺省 = 不放这颗键，搜索里也没有「切换到浅色 / 深色」。 */
   toggleTheme?(): void
   setSidebarCollapsed?(collapsed: boolean): void
@@ -84,8 +86,10 @@ interface ShellProps {
   environment?: EnvironmentStatus
   balance?: string
   version?: string
-  /** 星芒有新版本：available = 还没装（「有新版本」），ready = 下好了（「重启后更新」）。 */
+  /** 星芒有新版本：available = 还没装（「有新版本」），ready = 下好了（「新版已下好，点这里安装」）；侧栏「设置」跟着挂小点。 */
   update?: 'available' | 'ready'
+  /** 侧栏「设置」上面那项金色的更新入口（registry/business.ts 的 updateSidebarEntry）；缺省 = 不出。 */
+  updateEntry?: UpdateSidebarEntry | null
   /** Observed network location, refreshed after a connection change. */
   network?: SystemSnapshot['network']
   networkRefreshing?: boolean
@@ -134,7 +138,7 @@ function useNarrowWindow() {
   return narrow
 }
 
-export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, network, networkRefreshing = false, accelerationLine, remoteActive = false, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
+export function Shell({ activePage, accountTab, account, platform, adapter, theme, environment, balance, version, update, updateEntry, network, networkRefreshing = false, accelerationLine, remoteActive = false, installedCount, updatableCount = 0, unread, announcementOpen = false, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const { offline } = useOnlineStatus()
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
@@ -400,14 +404,26 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
     // 让没打开首页的人也知道有几个工具能更新了。
     const badge = id === 'home' && updatableCount > 0 ? updatableCount : 0
     const issues = id === 'health' ? environment?.issues ?? 0 : 0
-    const label = badge ? `${definition.label}，${badge} 个工具可更新` : issues ? `${definition.label}，${issues} 项需要处理` : definition.label
+    // 星芒有新版本时「设置」后面挂个小点（v4 原型），和设置里「版本更新」那一项的点是同一件事。
+    const updateDot = id === 'settings' && Boolean(update)
+    const label = badge ? `${definition.label}，${badge} 个工具可更新` : issues ? `${definition.label}，${issues} 项需要处理` : updateDot ? `${definition.label}，有新版本` : definition.label
     const button = <button type="button" className={`v2-nav-item${activePage === id ? ' is-active' : ''}`} key={id}
       aria-label={label} aria-current={activePage === id ? 'page' : undefined} data-testid={`nav-${id}`} data-navigation-id={id} onClick={() => adapter.navigate?.(id)}>
       <Icon size={16} strokeWidth={1.9} aria-hidden="true" /><span>{definition.label}</span>{definition.external && <ArrowUpRight className="v2-nav-external" size={13} aria-hidden="true" />}
       {badge > 0 && <small className="v2-nav-badge" data-testid="nav-home-updates">{badge}</small>}
       {issues > 0 && <small className="v2-nav-badge is-warn" data-testid="nav-health-issues">{issues}</small>}
+      {updateDot && <i className="v2-nav-dot" title="有新版本" aria-hidden="true" data-testid="nav-settings-update" />}
     </button>
     return railTip(label, button, id)
+  }
+  // 侧栏「设置」上面那项金色的更新入口（「侧栏改」）：下好了点它直接弹确认框，别的时候去版本更新卡。
+  function updateButton(entry: UpdateSidebarEntry) {
+    const open = entry.install ? adapter.installUpdate ?? adapter.openUpdates : adapter.openUpdates
+    const button = <button type="button" className="v2-nav-item v2-nav-update" key="update" aria-label={entry.label} title={rail || entry.title === entry.label ? undefined : entry.title}
+      data-testid="nav-update" data-update-install={entry.install || undefined} onClick={open}>
+      <RefreshCw size={16} strokeWidth={2.1} aria-hidden="true" /><span>{entry.label}</span>
+    </button>
+    return railTip(entry.title, button, 'update')
   }
   // 「充值」不是一页，是个人中心的充值页签；余额按最近用量不够 7 天时后面挂「余额低」，钱包已经是 $0 的挂「余额为零」。
   function rechargeButton() {
@@ -426,7 +442,8 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
   const environmentDot = offline ? ' is-bad' : environment?.tone === 'ok' ? ' is-ok' : environment?.tone === 'warn' ? ' is-warn' : ''
   // 历史账号没有用户名时是邮箱，状态栏放不下会省略，悬停看全文（#1133 第 3 条）。
   const userLine = account.signedIn ? `已登录 ${account.displayName}` : account.displayName ?? '未登录'
-  const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 重启后更新' : ''}` : '版本读取中'
+  // 下好了不写「重启后更新」：缩在托盘的人关掉窗口不算重启，照着做了也装不上（「侧栏改」第 3 条）。
+  const versionLabel = version ? `v${version}${update === 'available' ? ' · 有新版本' : update === 'ready' ? ' · 新版已下好，点这里安装' : ''}` : '版本读取中'
   const tour = shellTour[tourStep]
   return <div className="v2-root" data-os={platform} data-testid="app-frame">
     <div className={`v2-shell${rail ? ' sidebar-collapsed' : ''}${floating ? ' sidebar-floating' : ''}`} data-narrow={narrow || undefined}>
@@ -445,6 +462,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
           {/* 「设置」不跟着滚：屏幕矮时上面那段先收缩，它始终露在外面。「更多」里的几页在 v4 各有了去处
               （游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），「更多」跟着去掉了（第 10 批）。 */}
           <div className="v2-sidebar-pinned" data-testid="sidebar-pinned">
+            {updateEntry && updateButton(updateEntry)}
             {navButton('settings')}
           </div>
         </nav>
@@ -504,7 +522,7 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
           {remoteActive && <button type="button" className="v2-status-remote" onClick={() => adapter.navigate?.('settings', 'codex-remote')} disabled={!adapter.navigate} title="手机遥控 Codex 开着，点击查看或关闭" data-testid="statusbar-remote"><i className="v2-dot is-accent" />手机遥控中</button>}
           <span className="v2-status-spacer" />
           {installedCount !== undefined && <button type="button" onClick={() => adapter.navigate?.('home')} data-testid="statusbar-tools">已装 {installedCount} 个工具</button>}
-          <button type="button" className={`v2-status-version${update ? ' has-update' : ''}`} onClick={adapter.openUpdates} data-testid="statusbar-version">{versionLabel}</button>
+          <button type="button" className={`v2-status-version${update ? ' has-update' : ''}`} onClick={update === 'ready' ? adapter.installUpdate ?? adapter.openUpdates : adapter.openUpdates} data-testid="statusbar-version">{versionLabel}</button>
         </footer>
         {notification && <div className="v2-notification">{notification}</div>}
       </div>
