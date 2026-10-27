@@ -113,6 +113,22 @@ describe('tutorial wording that follows the current app', () => {
     expect(text).not.toContain('区分两种更新入口');
   });
 
+  // 0.2.22 起下好会跳框问装不装（update-install-prompt.ts 的两颗按钮），不再是「不打断你」悄悄等关软件。
+  it('describes the install prompt that pops up once the update is downloaded', () => {
+    const update = step('safety', '打开版本更新');
+    expect(update.detail).toContain('「现在安装」');
+    expect(update.detail).toContain('「稍后再说」');
+    expect(update.detail).not.toContain('不打断');
+  });
+
+  // #1399 起聊天只选厂商和模型，分组由星芒挑；教程不能再叫客户去找已经没有的「分组」按钮。
+  it('never asks the chat reader to pick a group', () => {
+    const chat = tutorialTopics.find((topic) => topic.id === 'chat');
+    const text = JSON.stringify(chat?.steps);
+    expect(text).not.toMatch(/选好分组|「分组」|选可用分组|换用可用分组|分组和模型已选中/);
+    expect(text).toContain('「刷新模型」');
+  });
+
   it('never teaches the acceleration mode switch that is not open to customers', () => {
     expect(JSON.stringify(tutorialTopics)).not.toMatch(/TUN/i);
   });
