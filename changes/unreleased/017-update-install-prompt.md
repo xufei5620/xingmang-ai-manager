@@ -13,3 +13,6 @@
   或锁屏、星芒窗口都缩着（含最小化）、没在装工具、CLI 没在干活、加速没开，点过「稍后再说」的再等 10 分钟，照开机后台装那样先记
   `attemptedVersion` 和 `backgroundInstall` 再装，装好照旧待在菜单栏，每版只试一次。框开着而人走开了（10 分钟没人碰或锁屏）
   用 `signal` 收掉框再闲时装；下好时就没人在的不问直接等。Windows 不做闲时装（每次装都要点授权窗口）。
+- 上面两处后来改了，以后面的分片为准：「打开时就已下好的不问」见 `update-install-prompt-launch-held.md`（#1439，只排除自动装
+  已经接手的那一版）；「下好时就没人在的不问直接等」见 `update-install-prompt-away-window-open.md`（#1444，窗口开着时等人回来再问）
+  和 `idle-install-waits-remote-video.md`（#1438，手机遥控开着时也等人回来再问）。

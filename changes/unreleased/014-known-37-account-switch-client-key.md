@@ -1,7 +1,8 @@
 ## 用户
 
-- 切换账号时勾了「同步到工具」，借 Claude Code、Codex 密钥的 Claude Desktop、WorkBuddy、OpenCode 也跟着换成新账号的密钥，
-  不再留着上一个账号的。
+- 换账号时三个桌面客户端也跟着换成新账号：换账号时在「同步到工具」里勾了 Claude Code 或 Codex 的，
+  借它们密钥的 Claude Desktop、WorkBuddy、OpenCode 也一起换成新账号的密钥，
+  不会再接着扣上一个账号的余额。
 
 ## 开发
 
@@ -18,3 +19,5 @@
   `scanExternalClients`）换成了会叫界面重读（`onToolRouteFollowed`）：换账号时首页在同步工具之前就读过客户端，
   不叫的话要等下次检测才显示已换好。#1113 撤销、重签那条路也一起受益。
 - 只看缓存就能定的先定：这台电脑上没换过托管 Key、也没有别的账号时，跟以前一样一个工具配置都不读。
+- 「切换账号」框「同步到工具」下那句跟着改准：以前说三家客户端「不会跟着换」，现在说借工具密钥的勾上那个工具就跟着换、
+  星芒账号和历史账号互切时不换、自己填的不换（`SavedAccounts.tsx` 的 `accountSwitchDesktopClientsHint`）。
