@@ -337,7 +337,7 @@ git push origin v0.2.6
 2. **把 main 的 `.github/workflows/` 整个照搬过来**，一字不差：工作流用的令牌建不了「工作流文件和 main 对不上」的提交上的 tag（见上面「触发时就占 tag」），对不上的话 `release-tag` 那一步就停。照搬以后到 `release-tag` 跑完之前，main 不要合改工作流的 PR；别的 PR 照常合，main 不用冻结。
 3. 产品所有者亲手把 `hotfix/<新版本号>` 加进 **Settings → Environments → release → Deployment branches and tags**（Add deployment branch or tag rule，Ref type 选 Branch，填分支全名）。这是临时放宽「只有 main 的代码拿得到发布凭据」那道限制，所以要他亲手加、发完亲手删。`cos-sync` 环境不用加：发布作业里同步 COS 那一步会被它拒掉、显示红色，不影响更新源；发完从 main 跑一次 `sync-published-manager-cos`，「标签」填 `v<新版本号>`，补上教程页的下载。
 4. 照常先设分批放量，再从 `hotfix/<新版本号>` 分支点 Run workflow（Use workflow from 选这个分支），版本号填新版本号，两次批准照旧。
-5. 发完：删掉第 3 步加的那条规则；往 main 提一个 PR，把这一版的 `release-notes.md`、`CHANGELOG.md` 两节并进去，删掉 main 上已经随这一版发出去的那几个分片。main 下一次定版用再下一个版本号。
+5. 发完：删掉第 3 步加的那条规则；往 main 提一个 PR，把这一版的 `CHANGELOG.md` 那一节并进去，删掉 main 上已经随这一版发出去的那几个分片。`release-notes.md` 那一节这时并不进去：门禁要它的第一节是「未发布」或 `package.json` 的版本号，main 还停在上一版的版本号上。留到 main 下一次定版，`changelog:collect` 汇总出新的一节以后，把 `git show v<热修版本号>:release-notes.md` 里那一节原样插在新一节和上一版之间。main 下一次定版用再下一个版本号。
 
 #### 分批放量（0.2.19 起每次都做）
 
