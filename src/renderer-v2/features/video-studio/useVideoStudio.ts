@@ -359,7 +359,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       canceled.current.set(requestId, stop)
       if (await stop === 'billed') stillRunning += 1
     }))
-    if (stillRunning) setNotice(`已经停下。其中 ${stillRunning} 段已经交给服务端，会照样生成、照样扣费，好了会存进 AI 作品文件夹，这里不会自动换上。`)
+    if (stillRunning) setNotice(`已经停下。其中 ${stillRunning} 段已经交给服务端，钱已经扣了，停不下来；这里会接着等它生成好，好了自动放回对应的镜头。`)
   }
 
   const compose = async () => {

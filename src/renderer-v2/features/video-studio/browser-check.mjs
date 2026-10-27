@@ -341,7 +341,9 @@ test('stops a storyboard and the clips not yet sent, and keeps waiting for the o
   await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
 
   await page.getByTestId('video-generate-stop').click()
-  await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端/).waitFor()
+  await page.getByTestId('video-notice').getByText('已经停下。其中 1 段已经交给服务端，钱已经扣了，停不下来；这里会接着等它生成好，好了自动放回对应的镜头。').waitFor()
+  // 提示里没说作品文件夹，旁边就不挂「打开文件夹」。
+  assert.equal(await page.getByTestId('video-notice-folder').count(), 0)
   assert.deepEqual((await studioCalls(page, 'cancel')).slice(1).sort(), [second.requestId, third.requestId].sort())
   // 已经交出去的那段拿原来的请求号接着等，镜头上还是「生成中」，卡片上也没有「生成剩下的」。
   await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
