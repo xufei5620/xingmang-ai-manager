@@ -91,4 +91,39 @@ describe('account clients', () => {
     await expect(solov.endSavedSession?.(record)).resolves.toBeUndefined()
     expect(fetchImpl).not.toHaveBeenCalled()
   })
+
+  it('writes why the 星芒 account login ended to the runtime log, with the site', async () => {
+    function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+      return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } })
+    }
+    const fetchImpl = vi.fn(async (url: string | URL) => {
+      const pathname = new URL(String(url)).pathname
+      if (pathname === '/api/user/login') {
+        return json({ success: true, message: '', data: { access_token: 'fixture-access', access_expires_at: null,
+          user: { id: 7, username: 'fixture', group: 'default', role: 1, quota: 0, used_quota: 0 } } }, 200,
+        { 'set-cookie': 'refresh_token=fixture-cookie; Path=/; HttpOnly' })
+      }
+      if (pathname === '/api/status') return json({ success: true, message: '', data: { quota_per_unit: 500000, quota_display_type: 'USD', usd_exchange_rate: 1 } })
+      if (pathname === '/api/user/self') return json({ success: false, code: 'AUTH_TOKEN_EXPIRED', message: 'Unauthorized' }, 401)
+      if (pathname === '/api/user/auth/refresh') return json({ success: false, code: 'AUTH_SESSION_REVOKED', message: 'Unauthorized' }, 401)
+      throw new TypeError(`unexpected request in tests: ${pathname}`)
+    })
+    const log = runtimeLog()
+    const createClient = createAccountClientFactory({
+      vault: {} as RealmAccountVault,
+      routes: { relayRouting: {}, proxyBypass: {}, routedAccountRelayFetch: fetchImpl, routedAccountFetch: fetchImpl } as unknown as AccountClientFactoryOptions['routes'],
+      runtimeLog: log as unknown as RuntimeLogStore,
+    })
+    const solov = createClient('solov', vi.fn())
+    await solov.client.login({ username: 'fixture', password: 'fixture-password' })
+
+    await expect(solov.client.getBalance()).rejects.toThrow()
+
+    expect(solov.client.getSessionState().authenticated).toBe(false)
+    expect(log.log).toHaveBeenCalledWith('warn', 'account', 'session.ended', expect.any(String), expect.objectContaining({
+      siteId: 'solov',
+      refusedBy: '登录状态续期',
+      code: 'AUTH_SESSION_REVOKED',
+    }))
+  })
 })
