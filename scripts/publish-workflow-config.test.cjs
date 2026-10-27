@@ -1500,12 +1500,74 @@ test('the Windows manifest is signed before anything is checked or uploaded, and
   const step = publishJob.steps[sign]
   assert.equal(step.if, "${{ needs.windows-build.result == 'success' }}")
   assert.match(String(step.run), /--manifest release-artifacts\/latest\.yml$/)
-  // 只签 Windows：macOS 由 Squirrel.Mac 按钉住的发布证书验签。
+  // macOS 不签：由 Squirrel.Mac 按钉住的发布证书验签。
   assert.doesNotMatch(String(step.run), /latest-mac/)
   assert.deepEqual(Object.keys(step.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
-  // 签名私钥只给这一步，别的步骤一个都不许读到。
+  // 签名私钥只给 Windows 和 Linux 这两步签名，别的步骤一个都不许读到。
+  const linuxSign = publishJob.steps[stepIndex(publishJob, /Sign the Linux update manifests/)]
   const readers = publishJob.steps.filter((item) => /XINGMANG_UPDATE_SIGNING_KEY/.test(YAML.stringify(item)))
-  assert.deepEqual(readers, [step])
+  assert.deepEqual(readers, [step, linuxSign])
+})
+
+test('both Linux manifests are signed before anything is checked or uploaded, and re-verified live', () => {
+  // Linux 客户端从第一次对外发的那一版起缺签名就拒装（electron/bootstrap/updates.ts），
+  // 线上绝不能出现一份没签名的 Linux 清单。
+  const sign = stepIndex(publishJob, /Sign the Linux update manifests/)
+  const download = publishJob.steps.findIndex((step) => step.id === 'linux-artifacts')
+  const guard = stepIndex(publishJob, /Refuse to overwrite a version that already shipped/)
+  const firstUpload = publishJob.steps.findIndex((step) => /aws s3 cp/.test(String(step.run || '')))
+  const manifest = stepIndex(publishJob, /Publish the update manifests/)
+  const live = stepIndex(publishJob, /Re-verify the publisher signature on the live Linux manifests/)
+  assert.ok(download >= 0 && sign > download, 'Linux 的包下载进来之后才签')
+  assert.ok(sign < guard && sign < firstUpload, '签名必须排在同版本检查与第一次上传之前')
+  assert.ok(live > manifest, '线上清单的签名复核必须排在清单发布之后')
+  const step = publishJob.steps[sign]
+  // 跟着「Linux 的包有没有下载进来」走：开关关着时不下载，也就没有要签的。
+  assert.equal(step.if, "${{ steps.linux-artifacts.outcome == 'success' }}")
+  assert.deepEqual(Object.keys(step.env), ['XINGMANG_UPDATE_SIGNING_KEY'])
+  const script = String(step.run)
+  assert.match(script, /for manifest in latest-linux\.yml latest-linux-arm64\.yml; do/)
+  assert.match(script, /update-manifest-signature\.cjs sign --manifest "release-artifacts\/\$manifest"/)
+  assert.doesNotMatch(script, /latest-mac/)
+  const check = publishJob.steps[live]
+  assert.equal(check.if, "${{ vars.XINGMANG_PUBLISH_LINUX == 'true' && needs.linux-build.result == 'success' }}")
+  assert.match(String(check.run), /for manifest in latest-linux\.yml latest-linux-arm64\.yml; do/)
+  assert.match(String(check.run), /update-manifest-signature\.cjs verify --manifest "\$RUNNER_TEMP\/live-signed-\$manifest"/)
+})
+
+test('the Linux signing step signs whichever Linux manifests arrived and leaves the pair check to the guard', () => {
+  const step = publishJob.steps.find((entry) => /Sign the Linux update manifests/.test(entry.name || ''))
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-sign-'))
+  const scripts = path.join(workspace, 'scripts')
+  const artifacts = path.join(workspace, 'release-artifacts')
+  fs.mkdirSync(scripts)
+  fs.mkdirSync(artifacts)
+  const log = path.join(workspace, 'sign.log')
+  // 签名本身由 update-manifest-signature.test.cjs 测；这里只看这一步把哪几份交给它。
+  fs.writeFileSync(path.join(scripts, 'update-manifest-signature.cjs'), `require('node:fs').appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n')\n`)
+  function run() {
+    fs.rmSync(log, { force: true })
+    const result = spawnSync('/bin/bash', ['-c', step.run], {
+      cwd: workspace,
+      encoding: 'utf8',
+      env: { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: workspace },
+    })
+    assert.equal(result.status, 0, result.stdout + result.stderr)
+    return fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []
+  }
+  try {
+    fs.writeFileSync(path.join(artifacts, 'latest.yml'), 'windows')
+    fs.writeFileSync(path.join(artifacts, 'latest-linux.yml'), 'x64')
+    fs.writeFileSync(path.join(artifacts, 'latest-linux-arm64.yml'), 'arm64')
+    assert.deepEqual(run(), [
+      'sign --manifest release-artifacts/latest-linux.yml',
+      'sign --manifest release-artifacts/latest-linux-arm64.yml',
+    ])
+    fs.rmSync(path.join(artifacts, 'latest-linux-arm64.yml'))
+    assert.deepEqual(run(), ['sign --manifest release-artifacts/latest-linux.yml'])
+  } finally {
+    fs.rmSync(workspace, { recursive: true, force: true })
+  }
 })
 
 test('the publish guard allows a first release, an upgrade and a rerun of the same build only', () => {
