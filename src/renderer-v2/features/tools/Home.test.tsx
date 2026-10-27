@@ -502,6 +502,19 @@ describe('renderer-v2 home before the startup scan finishes', () => {
     expect(disabled(markup, 'tool-codex-primary')).toBe(false)
   })
 
+  // 停在等账号那一轮的那次「打开」只占自己那张卡（0.2.22 打磨 B4），别的工具不陪它等；
+  // 正常在开的那次照旧把别人按住。
+  it('lets the other tools open while one launch waits on the account round after the scan', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const bootstrap = { phase: 'configuring' as const, label: '正在更新连接', percent: 65, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const waiting = render({ 'launch:claude': { label: '正在打开工具', log: [] } }, undefined, { snapshot: base, loading: false, account, bootstrap })
+    expect(disabled(waiting, 'tool-claude-primary')).toBe(true)
+    expect(disabled(waiting, 'tool-codex-primary')).toBe(false)
+    expect(disabled(waiting, 'tool-grok-primary')).toBe(false)
+    const opening = render({ 'launch:codex': { label: '正在打开工具', log: [] } }, undefined, { snapshot: base, loading: false, account, bootstrap })
+    expect(disabled(opening, 'tool-grok-primary')).toBe(true)
+  })
+
   it.each(['official', 'manual'] as const)('keeps an existing %s connection openable during another account sync after the scan', (source) => {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project', providers: {

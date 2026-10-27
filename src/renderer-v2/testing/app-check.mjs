@@ -3426,8 +3426,9 @@ test('a tool whose account key changes this startup keeps waiting for the scan w
 })
 
 // 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
-// 问完了、谁都不用换，检测没跑完也能打开。
-test('an applied route migration blocks home and native launch after scanning until configuration finishes', async () => {
+// 问完了、谁都不用换，检测没跑完也能打开。托盘、快捷键这时点的「打开」等那一轮写完就自己接着开，
+// 不再只说一句「请稍后再打开」（0.2.22 打磨 B4）。
+test('an applied route migration holds home and native launch after scanning, then opens by itself once configuration finishes', async () => {
   const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1&mergeRoute=1')
   try {
     await page.getByTestId('home-cached-scan').waitFor()
@@ -3438,20 +3439,53 @@ test('an applied route migration blocks home and native launch after scanning un
     await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
     await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
     await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
-    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    await waitForToast(page, '正在连接账号，好了会自动打开。')
     const shortcutNumber = await page.evaluate(async () => {
       const { tools } = await import('/src/renderer-v2/registry/tools.ts')
       return tools.filter((entry) => !entry.hidden?.('win')).findIndex((entry) => entry.id === 'claude') + 1
     })
     await page.keyboard.press(`Control+${shortcutNumber}`)
-    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    // Claude 停在等账号那一轮，别的工具不陪它等：Codex 这时照常能开，开完 Claude 还在等。
+    await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli' && entry.args[0] === 'codex'))
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli' && entry.args[0] === 'claude').length), 0)
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
     await page.evaluate(() => window.v2Test.releaseConfigSave())
+    // 那一轮写完，托盘点的那次自己接着打开；快捷键按的那下叠在它上面，不再开一次、也不再说一遍。
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli' && entry.args[0] === 'claude'))
+    await assertNoToast(page, '正在连接账号，好了会自动打开。')
+    await assertNoToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
     await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
     const configured = await page.evaluate(async () => (await window.xingmang.getConfig()).providers.claude)
     assert.equal(configured.actualBaseUrl, configured.baseUrl)
     await page.getByTestId('tool-claude-primary').click()
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli' && entry.args[0] === 'claude').length)).toBe(2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 等着的那一轮没写成：首页横幅说原因，等着的那次「打开」把同一句弹一下、不带着旧密钥打开（0.2.22 打磨 B4）。
+test('a native launch waiting on the account round stays closed and repeats the failure when the round fails', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1&mergeRoute=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    await page.evaluate(() => { window.v2Test.holdNextConfigSave(); window.v2Test.releaseScan() })
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].providers.includes('claude')))
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '正在连接账号，好了会自动打开。')
+    await page.evaluate(() => window.v2Test.releaseConfigSave('密钥没写进配置文件'))
+    await page.getByTestId('home-bootstrap-error').waitFor()
+    await page.waitForFunction(() => window.__v2Toasts.entries.some((entry) => entry.text.startsWith('密钥没写好：')))
+    const bannerText = await page.getByTestId('home-bootstrap-error').textContent()
+    const toastText = await page.evaluate(() => window.__v2Toasts.entries.find((entry) => entry.text.startsWith('密钥没写好：')).text)
+    assert.ok(bannerText.startsWith(toastText), `提示「${toastText}」要和横幅「${bannerText}」说同一句`)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
     await clean(page)
   } finally { await page.close() }
 })
@@ -3708,7 +3742,7 @@ test('tools switched to a saved account open right away instead of waiting for a
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     await page.getByTestId('tool-claude-primary').click()
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)).toBe(2)
-    assert.equal(await page.getByText('正在同步这个工具的账号连接，请稍后再打开。').count(), 0)
+    await assertNoToast(page, '正在连接账号，好了会自动打开。')
     await clean(page)
   } finally { await page.close() }
 })
