@@ -13,7 +13,6 @@ import {
   findExecutable,
   isUserWritablePath,
   runCommand,
-  type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
 import {
