@@ -315,7 +315,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 | 了解产品背景与优先级 | `docs/ROADMAP.md`、`README.md` |
 | 已确认问题与修复计划 | `docs/IMPROVEMENT-PLAN.md` |
 
-`HANDOFF.md` 是会话间交接快照，**时效性文档**：与本文件或代码冲突时以代码为准。任务索引在 GitHub Issue [#27](https://github.com/xufei5620/xingmang-ai-manager/issues/27)。
+`docs/archive/` 里是某一天的快照和停更的旧文档（含 2026-09-18 停更的交接快照 `HANDOFF.md`、0.2.9 及更早的变更记录），**只当历史看**：与本文件或代码冲突时以代码为准。待办以 GitHub 上开着的 issue 为准。
 
 ---
 

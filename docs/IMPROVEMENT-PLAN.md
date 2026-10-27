@@ -38,7 +38,7 @@ Mac 适配分支会立刻撞上这批问题，不先修则无法区分"新改动
 
 ### 0.3 CI 增加非 Windows 平台的 job
 
-`.github/workflows/quality.yml:12` 的 test job 只 `runs-on: windows-latest`，ubuntu job 只跑 `npm run audit:*`。所以跨平台破坏永远不会在 CI 暴露。而 `MAC_SOURCE_README.md:23-28` 明确要求 macOS 用户执行 `npm ci` / `npm run typecheck` / `npm test` 验证源码包。
+`.github/workflows/quality.yml:12` 的 test job 只 `runs-on: windows-latest`，ubuntu job 只跑 `npm run audit:*`。所以跨平台破坏永远不会在 CI 暴露。而 `docs/archive/MAC_SOURCE_README.md:23-28` 明确要求 macOS 用户执行 `npm ci` / `npm run typecheck` / `npm test` 验证源码包。
 
 **做法**：新增 ubuntu-latest（Mac 版上线后可加 macos-latest）的 job，跑 typecheck + test。
 

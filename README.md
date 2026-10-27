@@ -1,8 +1,8 @@
 # 星芒AI管理工具
 
-面向 Windows 与 macOS 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新；内置星芒账号体系（注册/登录/个人中心/充值外链）与无限画布窗口。
+面向 Windows 与 macOS 的 Electron 桌面管理工具（Linux 版已能出 deb，还没对外发布，见 [Linux 版](docs/LINUX.md)），用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新；内置星芒账号体系（注册/登录/个人中心/充值，付款页在应用自己的独立窗口里打开）与无限画布窗口。
 
-当前 Windows 对外发布固定走无签名模式（`npm run release:build:unsigned`），不需要代码签名证书；无签名包保留自动更新，跟着「自动更新」开关走：下载完成后按更新清单的 SHA-512 重新校验安装包，再核发布者签名，缺失或不一致一律拒绝安装。普通 `npm run build` 仍是关闭自动更新的本机调试构建，不能通过发布门禁。详见 [发布手册](docs/RELEASING.md)；CA 证书到手后要恢复的签名流程归档在 [签名发布流程](docs/archive/RELEASING-signed.md)。
+当前 Windows 对外发布固定走无签名模式，不需要代码签名证书；正式发版走 GitHub Actions 的 `publish-release` 工作流（出包和上传各要产品所有者批准一次），本机的 `npm run release:build:unsigned` 是同一套门禁的手工入口，只出包不上传。无签名包保留自动更新，跟着「自动更新」开关走：下载完成后按更新清单的 SHA-512 重新校验安装包，再核发布者签名，缺失或不一致一律拒绝安装。普通 `npm run build` 仍是关闭自动更新的本机调试构建，不能通过发布门禁。详见 [发布手册](docs/RELEASING.md)；CA 证书到手后要恢复的签名流程归档在 [签名发布流程](docs/archive/RELEASING-signed.md)。
 
 ## 开发运行
 
@@ -34,7 +34,7 @@ npm run audit:production
 
 按当前约定，调试阶段不运行 `npm run build`，避免提前生成 NSIS 安装包。
 
-需要真机测试安装包时不必本机打包：GitHub Actions 的 `test-build` 工作流（仓库 Actions 页手动触发）会在云端生成未签名的 Windows NSIS 测试安装包，以 artifact 形式保留 7 天，安装时需在 SmartScreen 中选择“仍要运行”。该工作流始终 `--publish never`，与正式发布链路完全隔离，永不接触线上更新目录；云端产物不含无限画布（构建环境没有兄弟仓产物），画布验证请使用本机 `npm run dev`。
+需要真机测试安装包时不必本机打包：GitHub Actions 的 `package-for-testing` 工作流（仓库 Actions 页手动触发）走和正式发布同一套完整门禁，Windows 与 macOS 各出一份能装的包（选 linux 时另出 x64 / arm64 的 deb），以 artifact 形式保留 14 天，步骤和限制见 [在 GitHub 上出包](docs/CI-PACKAGING.md)；其中 macOS 那份由 runner 现场生成的一次性身份签名，和正式版之间不能互相自动更新，绝不能发给客户。`test-build` 工作流只出一份一道门禁都不跑、自动更新关着的 Windows 快包，只适合看界面，保留 7 天。Windows 包安装时需在 SmartScreen 中选择“仍要运行”。两条都只把包挂在 Actions 页上，与正式发布链路隔离，永不接触线上更新目录；无限画布随主仓 `canvas-v2` 一起打进包里。
 
 ## macOS 开发与打包
 
@@ -48,9 +48,9 @@ Codex Desktop 的安装检测独立于配置文件，兼容 Apple Silicon 上的
 npm run build:mac:dir
 ```
 
-`npm run build:mac` 会生成 arm64 与 x64 的 DMG/ZIP 候选产物，并且始终 `--publish never`。这些仅带 ad-hoc 签名的候选只供开发验证，不能分发；正式 macOS 发布需要 Developer ID、hardened runtime 与 Apple notarization，且上传更新文件不在本仓库命令的范围内。
+`npm run build:mac` 会生成 arm64 与 x64 的 DMG/ZIP 候选产物，并且始终 `--publish never`。这些仅带 ad-hoc 签名的候选只供开发验证，不能分发。
 
-另有免费自签发布路线：它使用长期复用的证书生成可自动更新的 arm64/x64 包，但用户首次打开仍需在 macOS 中手动确认。用户首次打开、从 ad-hoc 旧包迁移和发布者构建步骤见 [macOS 免费自签版分发手册](docs/MACOS_FREE_DISTRIBUTION.md)。
+对外发布的 macOS 版走免费自签路线：用长期复用的同一张证书签 arm64/x64 包，可以自动更新，但没有 Developer ID 公证，用户首次打开仍需在 macOS 中手动确认一次；正式出包和上传由 `publish-release` 工作流完成。用户首次打开、从 ad-hoc 旧包迁移和发布者构建步骤见 [macOS 免费自签版分发手册](docs/MACOS_FREE_DISTRIBUTION.md)，将来拿到 Developer ID 后要改的地方见 [发布手册](docs/RELEASING.md) 第 2.1 节。
 
 ## 数据边界
 
@@ -63,20 +63,18 @@ npm run build:mac:dir
 
 ## 主程序更新
 
-打包版本使用 `electron-updater` 的 generic provider。默认更新目录：
-
-更新源按客户端版本分桶：
+打包版本使用 `electron-updater` 的 generic provider。默认更新目录按客户端版本分桶：
 
 - `0.1.2` 及更早版本：`https://updates.shenfengwl.fun/xingmang-manager/`
 - `0.1.3` 及更新版本：`https://updatesnew.shenfengwl.fun/xingmang-manager/`（R2 桶 `xingmang-updates-new`）
 
-正式发布必须通过单独的 fail-fast 流程，普通 `npm run build` 只能作为本地调试打包，不能对外发布。当前固定使用无签名发布入口：
+正式发布走 GitHub Actions 的 `publish-release` 工作流：它跑和本机发布入口同一套门禁出包，然后停下等产品所有者批准两次（一次放行用真证书出包，一次放行上传到更新源），两次都批了才上传、替换 `latest.yml`、打 tag 并建 GitHub Release，步骤见 [发布手册](docs/RELEASING.md) 的「CI 发布」。普通 `npm run build` 只能作为本地调试打包，不能对外发布。本机的无签名发布入口仍然可用，它只出包、不上传：
 
 ```powershell
 npm run release:build:unsigned
 ```
 
-发布入口使用 `electron-builder --publish never`，只在本机生成并校验候选产物，不会上传文件或修改线上 `latest.yml`。构建完成不等于获得发布授权；上传安装程序、上传 `.blockmap`、替换 `latest.yml` 或操作 Cloudflare R2，必须由产品所有者针对当前版本明确下达发布指令，不能从“打包”“继续”或一次历史授权中推断。
+本机入口使用 `electron-builder --publish never`，只在本机生成并校验候选产物，不会上传文件或修改线上 `latest.yml`。构建完成不等于获得发布授权；上传安装程序、上传 `.blockmap`、替换 `latest.yml` 或操作 Cloudflare R2，必须由产品所有者针对当前版本明确下达发布指令，不能从“打包”“继续”或一次历史授权中推断。
 
 按产品要求，无签名模式（`XINGMANG_UNSIGNED_RELEASE=1` 或 `npm run release:build:unsigned`）会保留自动更新，但不写入发布者签名校验；客户端改为在下载完成后按更新清单的 SHA-512 复核安装包。该模式只能在确认更新桶和网络链路可信时使用，普通 `npm run build` 仍保持本地构建隔离，不会自动更新。
 
@@ -130,16 +128,16 @@ Codex CLI 与 Codex 桌面端共用 `%USERPROFILE%\.codex` 配置。已有配置
 | Claude Desktop | 开启开发模式，保存并激活原生第三方推理 `configLibrary` 配置；备份已有文件，检测系统策略冲突；重启客户端生效 | 本机 Claude 2.2553.1.0 源码和官方文档核实保存契约；隔离文件、服务接线和界面测试通过，真实加载与生产推理尚未验证 |
 | OpenCode | 合并全局 JSON/JSONC 配置、选择 SDK、设置默认模型；保留注释、其他模型与配置备份 | 真实 CLI 1.18.31 在本地 mock 上通过两种协议的流式响应和工具回传；未验证星芒生产上游、桌面 UI 或其他版本 |
 
-此前客户端接入完成 468 项定向单测、另 24 项服务集成测试，以及 v2 全 App 浏览器测试 78/78。Claude 本地配置改造的最新验证范围见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)。真实运行时证据见 [Codex 隔离报告](artifacts/codex-non-gpt-client-audit-report.md)、[OpenCode 四场景报告](artifacts/opencode-client-audit-report.md)和 [WorkBuddy 历史 lite 两场景报告及纠正](artifacts/workbuddy-client-audit-report.md)。配置保存成功不代表生产模型调用已经接通。
+此前客户端接入完成 468 项定向单测、另 24 项服务集成测试，以及 v2 全 App 浏览器测试 78/78。Claude 本地配置改造的最新验证范围见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)。真实运行时证据（Codex 隔离报告、OpenCode 四场景报告、WorkBuddy 历史 lite 两场景报告及纠正）当时写在本机的 `artifacts/` 目录，没有提交进仓库。配置保存成功不代表生产模型调用已经接通。
 
-此前 WorkBuddy 写入 `.codebuddy/models.json` 是桌面未加载配置的直接原因，原 `vendor: "OpenAI"` 和对象根格式本身并非无效。保存后重新进入 WorkBuddy 模型设置页确认，必要时自行重启客户端；工具不会自动结束会话。源码证据见 [WorkBuddy 5.5.6 桌面配置契约](artifacts/workbuddy-model-contract-2026-09-18/report.md)。
+此前 WorkBuddy 写入 `.codebuddy/models.json` 是桌面未加载配置的直接原因，原 `vendor: "OpenAI"` 和对象根格式本身并非无效。保存后重新进入 WorkBuddy 模型设置页确认，必要时自行重启客户端；工具不会自动结束会话。源码证据（WorkBuddy 5.5.6 桌面配置契约）同样只在当时的本机 `artifacts/` 里。
 
-Windows 上三个外部桌面客户端各走各的：WorkBuddy 由客户自己去腾讯官网下载（2026-10-13 起），装好回来重新检测；Claude Desktop 和 OpenCode 用系统 winget 的精确包 `Anthropic.Claude`、`SST.OpenCodeDesktop` 一键安装，Claude Desktop 没有受信任的 winget 时改从官网下离线 MSIX（`claude-desktop-msix-installer.ts`），OpenCode 没有 winget 时给官网下载链接；两者支持 x64 与 arm64。macOS 上 Claude Desktop 和 OpenCode 可一键安装（只装核对过 Team ID、签名与公证的官方包，`macos-desktop-app-installer.ts`），WorkBuddy 需先从官网下载并放入 Applications。安装源、签名和本机检测证据见 [官方安装来源记录](artifacts/external-client-install-sources.md)；本轮未实际安装这三个客户端。
+Windows 上三个外部桌面客户端各走各的：WorkBuddy 由客户自己去腾讯官网下载（2026-10-13 起），装好回来重新检测；Claude Desktop 和 OpenCode 用系统 winget 的精确包 `Anthropic.Claude`、`SST.OpenCodeDesktop` 一键安装，Claude Desktop 没有受信任的 winget 时改从官网下离线 MSIX（`claude-desktop-msix-installer.ts`），OpenCode 没有 winget 时给官网下载链接；两者支持 x64 与 arm64。macOS 上 Claude Desktop 和 OpenCode 可一键安装（只装核对过 Team ID、签名与公证的官方包，`macos-desktop-app-installer.ts`），WorkBuddy 需先从官网下载并放入 Applications。安装源、签名和本机检测证据当时记在本机 `artifacts/`（没入库）；本轮未实际安装这三个客户端。
 
-使用步骤与配置细节见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)和 [Codex 账号与模型配置](docs/CODEX-ACCOUNT-CONFIG.md)，实施记录见 [进度记录](docs/IMPLEMENTATION-PROGRESS-2026-09-17.md)。
+使用步骤与配置细节见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)和 [Codex 账号与模型配置](docs/CODEX-ACCOUNT-CONFIG.md)，实施记录见 [进度记录](docs/archive/IMPLEMENTATION-PROGRESS-2026-09-17.md)。
 
 ## 启动性能状态
 
-聊天、业务页和加速页改为首次访问时加载。同条件生产构建首屏 JavaScript 从 832,414 字节降至 668,193 字节，减少 **19.7%**；生产 fixture 验证首屏没有加载三个页面 chunk，导航保活与账号隔离正常，见 [首屏加载报告](artifacts/startup-audit-report.md)。
+聊天、业务页和加速页改为首次访问时加载。同条件生产构建首屏 JavaScript 从 832,414 字节降至 668,193 字节，减少 **19.7%**；生产 fixture 验证首屏没有加载三个页面 chunk，导航保活与账号隔离正常，首屏加载报告当时留在本机 `artifacts/`，没入库。
 
 启动链路还将迁移的异步收尾与 Windows 权限探测重叠，并延迟构造未使用账号域的业务实例。窗口创建仍等待权限探测与资源检查，v2 工作台仍等待账号恢复；没有同条件 Electron 冷/热启动的完整前后计时，首屏代码减少不代表整体启动耗时减少相同比例。

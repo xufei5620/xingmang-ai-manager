@@ -98,7 +98,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ### PR 正文
 
-使用 `.github/pull_request_template.md`，必填「提交来源」与「验证方式」。
+按 `.github/pull_request_template.md` 写：第一行写哪边做的，然后 Before / After 各一段、一句说明、How；自查把每道检查结尾的汇总行原样贴上。修 issue 写 `Fixes #N`。
 
 ### 提交粒度
 
