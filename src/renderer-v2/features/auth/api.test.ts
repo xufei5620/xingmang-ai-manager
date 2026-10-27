@@ -43,6 +43,12 @@ describe('v2 auth IPC adapter', () => {
     await expect(api.changePassword({ originalPassword: 'generated-by-server', newPassword: 'my-own-password' })).resolves.toEqual({ changed: true })
     expect(changeAccountPassword).toHaveBeenCalledExactlyOnceWith({ originalPassword: 'generated-by-server', newPassword: 'my-own-password' })
   })
+  it('asks the main process who is signed in now instead of trusting the last login result', async () => {
+    const getAccountSession = vi.fn().mockResolvedValue({ authenticated: false, account: null })
+    const api = createAuthApi({ getAccountSession } as unknown as AuthBridge)
+    await expect(api.session()).resolves.toEqual({ authenticated: false, account: null })
+    expect(getAccountSession).toHaveBeenCalledExactlyOnceWith()
+  })
   it('binds recovery mail to the selected account source', async () => {
     const sendPasswordResetCode = vi.fn().mockResolvedValue(undefined)
     const api = createAuthApi({ sendPasswordResetCode } as unknown as AuthBridge)
