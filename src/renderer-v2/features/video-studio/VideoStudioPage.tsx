@@ -138,7 +138,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       </div>
       {exported && !composing && <div className="video-studio-result" data-testid="video-result">
         <button type="button" className="video-studio-thumb" onClick={() => void studio.openClip(exported.assetId)} aria-label="用播放器打开成片" title="用播放器打开">
-          <img src={exported.thumbnailUrl} alt="" /><Play size={20} aria-hidden="true" />
+          <ClipThumbnail src={exported.thumbnailUrl} /><Play size={20} aria-hidden="true" />
         </button>
         <div className="video-studio-result-copy">
           <strong>{project.title || '成片'}</strong>
@@ -203,6 +203,12 @@ function ModelPicker({ studio, kind }: { studio: VideoStudioController, kind: 't
   </div>
 }
 
+/** 缩略图出不来（Linux 上取不到视频封面、片段在作品库里被删了）就不放裂图，留底色、播放键和镜头号。 */
+function ClipThumbnail({ src }: { src: string }) {
+  const [failed, setFailed] = useState('')
+  return failed === src ? null : <img src={src} alt="" onError={() => setFailed(src)} />
+}
+
 const stageNames: Record<NonNullable<VideoStudioShot['stage']>, string> = { processing: '生成中', downloading: '正在下载', saving: '正在保存' }
 
 function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemove, onGenerate, onOpen }: {
@@ -216,7 +222,7 @@ function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemov
     : shot.clip ? <Pill tone="ok">已生成</Pill> : <Pill tone="neutral">还没生成</Pill>
   return <li className="video-studio-shot" data-status={shot.status} data-testid={`video-shot-${index}`}>
     {shot.clip
-      ? <button type="button" className="video-studio-thumb" onClick={onOpen} aria-label={`用播放器打开第 ${index + 1} 段`} title="用播放器打开"><img src={shot.clip.thumbnailUrl} alt="" /><Play size={18} aria-hidden="true" /><b>{index + 1}</b></button>
+      ? <button type="button" className="video-studio-thumb" onClick={onOpen} aria-label={`用播放器打开第 ${index + 1} 段`} title="用播放器打开"><ClipThumbnail src={shot.clip.thumbnailUrl} /><Play size={18} aria-hidden="true" /><b>{index + 1}</b></button>
       : <div className="video-studio-thumb is-empty" aria-hidden="true"><b>{index + 1}</b></div>}
     <div className="video-studio-shot-body">
       <Textarea label={`第 ${index + 1} 个镜头 · 画面`} value={shot.prompt} rows={3} maxLength={videoStudioPlanLimits.maximumPromptLength} disabled={busy || locked}

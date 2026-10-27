@@ -1,8 +1,10 @@
-// 主窗口业务通道的处理器：出视频片段（对话页和视频剪辑页共用），视频剪辑页的分镜和成片。
+// 主窗口业务通道的处理器：视频剪辑页出视频片段、写分镜、存成片。
 // 片段和成片都放进全局作品库，和对话里出的图片同一处。界面只拿编号、缩略图、宽高和时长；
 // 文件路径不出主进程，打开、另存都由这边按编号找文件。
 import type { WebContents } from 'electron'
 import { assetThumbnailUrl } from '../../asset-thumbnail'
+import { BoundedOperationQueue } from '../../bounded-operation-queue'
+import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent } from '../../ipc-contract'
@@ -18,6 +20,9 @@ import type { IpcHandlerContext } from './context'
 
 // 分镜要有点变化：同一句想法再写一次，或者第一次没按格式答、再问一次时，回答不该一模一样。
 const planTemperature = 0.7
+// 读片段、存成片一次搬一整段视频（最多 512 MB）。页面本来就一段一段读、拼完才存一次，主进程这边再按窗口排成
+// 一队、一次只搬一段：页面出错或被投毒时连发，也撑不爆主进程内存。排队的再多就直接拒，正常用碰不到。
+const maximumQueuedClipTransfers = 12
 
 export function toAiVideoClip(asset: Pick<AiStoredVideoAsset, 'assetId' | 'width' | 'height' | 'durationSeconds'>): AiVideoClip {
   return {
@@ -55,6 +60,10 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
   const { options, registerTrustedHandler, accountService, externalShell } = ctx
   // 正在写的分镜，按「窗口:请求」记；停下、关窗都从这里找。
   const plans = new Map<string, AbortController>()
+  // 页面自己最多同时出三段（useVideoStudio.ts）；主进程照画布那套（canvas-window.ts）按窗口再兜一层，
+  // 页面出错或被投毒时不能借这条通道连发付费视频。正常用碰不到这两个上限。
+  const generation = new CanvasGenerationAdmission()
+  const transfers = new Map<number, BoundedOperationQueue>()
   const observedSenders = new WeakSet<WebContents>()
   const observeSender = (sender: WebContents): void => {
     if (observedSenders.has(sender)) return
@@ -64,7 +73,19 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
       for (const [key, controller] of plans) {
         if (key.startsWith(`${sender.id}:`)) controller.abort()
       }
+      generation.releaseOwner(sender.id)
+      transfers.get(sender.id)?.shutdown()
+      transfers.delete(sender.id)
     })
+  }
+  const transferClip = <T>(sender: WebContents, operation: () => Promise<T>): Promise<T> => {
+    observeSender(sender)
+    let queue = transfers.get(sender.id)
+    if (!queue) {
+      queue = new BoundedOperationQueue({ maxActive: 1, maxQueued: maximumQueuedClipTransfers })
+      transfers.set(sender.id, queue)
+    }
+    return queue.enqueue(operation).promise
   }
   const currentUserId = (): number => {
     const session = accountService.getSessionState()
@@ -119,11 +140,11 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     const parsed = parseAiVideoGenerateInput(input)
     const expectedUserId = currentUserId()
     observeSender(event.sender)
-    const asset = await videoService.generate(
+    const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,
       { ...parsed, expectedUserId },
       createAiVideoProgressForwarder(event.sender, parsed.requestId),
-    )
+    ))
     return toAiVideoClip(asset)
   })
 
@@ -151,14 +172,20 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     return options.videoService?.cancel(event.sender.id, id, userId) ?? { canceled: false, mayStillComplete: false }
   })
 
-  registerTrustedHandler('video:read-clip', async (_event, assetId: unknown) => {
-    const owned = await videoAssets().readOwned(currentUserId(), parseAiVideoAssetId(assetId))
-    return owned.bytes
+  registerTrustedHandler('video:read-clip', async (event, assetId: unknown) => {
+    const id = parseAiVideoAssetId(assetId)
+    const store = videoAssets()
+    currentUserId()
+    // 排到了再认一次账号：排队时换了号，不能把前一个号的片段读给新号的页面。
+    return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
   })
 
-  registerTrustedHandler('video-studio:store-export', async (_event, bytes: unknown) => {
+  registerTrustedHandler('video-studio:store-export', async (event, bytes: unknown) => {
     const parsed = parseVideoStudioExportBytes(bytes)
-    return toAiVideoClip(await videoAssets().storeComposed(currentUserId(), parsed))
+    const store = videoAssets()
+    // 存进拼它的那个账号：排队时换了号，也不能存进新号的作品库。
+    const userId = currentUserId()
+    return transferClip(event.sender, async () => toAiVideoClip(await store.storeComposed(userId, parsed)))
   })
 
   // 交给系统按 .mp4 的默认程序打开（Windows 上经资源管理器转交，不从本进程直接起，system-shell.ts）。
