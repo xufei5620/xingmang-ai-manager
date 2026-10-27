@@ -831,3 +831,65 @@ describe('startup settings normalization', () => {
     expect((await normalizeAppSettings(filePath)).written).toBe(false)
   })
 })
+
+describe('settings read cache (0.2.22 性能体检第 8 条)', () => {
+  it('serves repeated reads of an unchanged file without reopening it', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'dark', uiSkin: 'aurora' })), 'utf8')
+    const first = readAppSettings(filePath)
+    expect(first).toMatchObject({ theme: 'dark', uiSkin: 'aurora' })
+
+    const opened = vi.spyOn(fs, 'openSync')
+    const second = readAppSettings(filePath)
+    expect(opened).not.toHaveBeenCalled()
+    expect(second).toEqual(first)
+    // 给出去的是副本：调用方改了拿到的对象，不能改到缓存里。
+    expect(second).not.toBe(first)
+    second.theme = 'light'
+    expect(readAppSettings(filePath).theme).toBe('dark')
+  })
+
+  it('reads the file again after it is rewritten in place', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'dark' })), 'utf8')
+    expect(readAppSettings(filePath).theme).toBe('dark')
+
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'light', largeText: true })), 'utf8')
+    expect(readAppSettings(filePath)).toMatchObject({ theme: 'light', largeText: true })
+  })
+
+  it('reads again after an atomic rewrite that keeps the same byte length', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ uiSkin: 'mist' }))
+    expect(readAppSettings(filePath).uiSkin).toBe('mist')
+
+    // 「mist」和「dawn」一样长：大小和路径都没变，靠换了 inode 认出来。
+    await writeAppSettings(filePath, settings({ uiSkin: 'dawn' }))
+    expect(readAppSettings(filePath).uiSkin).toBe('dawn')
+  })
+
+  it('does not hide a damaged primary behind the cache', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark', uiSkin: 'obsidian' }))
+    await writeAppSettings(filePath, settings({ theme: 'light', uiSkin: 'aurora' }))
+    expect(readAppSettings(filePath)).toMatchObject({ theme: 'light', uiSkin: 'aurora' })
+
+    fs.writeFileSync(filePath, '{ broken', 'utf8')
+    expect(readAppSettings(filePath)).toMatchObject({ theme: 'dark', uiSkin: 'obsidian' })
+  })
+
+  // Why this is safe: the cache only ever holds content that passed the full
+  // safe read once, and it is keyed on the lstat identity of a plain, singly
+  // linked file. Swapping the file for a symbolic link (or any other kind of
+  // entry) changes that identity, so the next read goes through the full
+  // validation again and rejects the link exactly as it did before the cache.
+  it.runIf(process.platform !== 'win32')('stops serving the cache once the file becomes a symbolic link', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'dark' })), 'utf8')
+    expect(readAppSettings(filePath, 'D:\\Workspace').theme).toBe('dark')
+
+    fs.renameSync(filePath, `${filePath}.moved`)
+    fs.symlinkSync(`${filePath}.moved`, filePath)
+    expect(readAppSettings(filePath, 'D:\\Workspace')).toEqual(defaultAppSettings('D:\\Workspace'))
+  })
+})
