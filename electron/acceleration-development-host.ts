@@ -35,6 +35,11 @@ export interface AccelerationDevelopmentHost extends AccelerationApi {
    */
   suspend(): Promise<void>
   resume(): Promise<void>
+  /**
+   * 正在等上一个星芒交出网络设置（见 accelerationPreviousOwnerRetryAtMs），这期间的请求最多要跟着等半分钟。
+   * 只想知道加速开没开的地方（要不要绕开系统代理、导出诊断）不陪着等，直接当「可能开着」，同以前当场报错时的结论。
+   */
+  awaitingPreviousOwner(): boolean
   dispose(): Promise<void>
 }
 
@@ -221,6 +226,7 @@ export function createAccelerationDevelopmentHost(options: {
   // 拉起辅助进程、上一个星芒还占着网络设置时就等它的那一整段：这期间来的请求都跟着它，不另拉。
   let launching: Promise<void> | null = null
   let previousOwnerPoll: { timer: ReturnType<typeof setTimeout>; resolve(): void } | null = null
+  let waitingForPreviousOwner = false
 
   function failPending() {
     for (const request of pending.values()) {
@@ -356,6 +362,15 @@ export function createAccelerationDevelopmentHost(options: {
 
   /** 见 accelerationPreviousOwnerRetryAtMs。只在初始化报 proxy-owned 之后进来。 */
   async function waitForPreviousOwner(failure: unknown): Promise<void> {
+    waitingForPreviousOwner = true
+    try {
+      await waitForPreviousOwnerRelease(failure)
+    } finally {
+      waitingForPreviousOwner = false
+    }
+  }
+
+  async function waitForPreviousOwnerRelease(failure: unknown): Promise<void> {
     const retryAt = accelerationPreviousOwnerRetryAtMs
     let last = failure
     let waitedMs = 0
@@ -637,6 +652,7 @@ export function createAccelerationDevelopmentHost(options: {
       await ready
       await rpc('resume')
     },
+    awaitingPreviousOwner: () => waitingForPreviousOwner,
     dispose() {
       if (disposal) return disposal
       disposed = true

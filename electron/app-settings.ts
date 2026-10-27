@@ -50,6 +50,24 @@ export type PinnedMirrorPolicy = Exclude<MirrorPolicy, 'auto'>
  */
 export type CodexChineseRuntimePatchChoice = 'enabled' | 'disabled'
 
+/**
+ * 星芒替客户往他自己的文件里放的几样，在这台电脑上出现过的记一笔（seededToolDefaults）：
+ * - `claude:fallbackModel`：Claude Code settings.json 的备用型号（#1415）；
+ * - `codex:response-language`、`grok:response-language`：配置目录里星芒放的那份「用中文回复」（#1432）；
+ * - `vscode:login-prompt`、`cursor:login-prompt`：编辑器用户设置里关掉 Claude Code 插件登录页那一行（#1422）。
+ * 出现过以后不见了，就是客户（或客服）删的，或者恢复了一份更早的备份：那是客户的选择，不再补回（0.2.22 第二轮
+ * 回归第 2、3 条）。从没出现过的照旧补。
+ */
+export const seededToolDefaultIds = [
+  'claude:fallbackModel',
+  'codex:response-language',
+  'grok:response-language',
+  'vscode:login-prompt',
+  'cursor:login-prompt',
+] as const
+
+export type SeededToolDefault = typeof seededToolDefaultIds[number]
+
 export interface AppSettings {
   version: 2
   workspace: string
@@ -180,6 +198,8 @@ export interface AppSettings {
    * （tool-model-check.ts）。只增不减：问过一次，不管换没换都不再问（第十五批 6）。
    */
   offeredModelUpgrades?: string[]
+  /** 见 seededToolDefaultIds。只增不减，读到不认识的项就丢掉。 */
+  seededToolDefaults?: SeededToolDefault[]
   windowState?: AppWindowState
 }
 
@@ -233,6 +253,8 @@ export interface AppSettingsUpdate {
   trayHintShown?: boolean
   /** Only the host sets this; entries are added to the stored list, never removed. */
   offeredModelUpgrades?: string[]
+  /** Same as offeredModelUpgrades. */
+  seededToolDefaults?: SeededToolDefault[]
   /** null explicitly resets saved placement; absence preserves it. */
   windowState?: AppWindowState | null
 }
@@ -339,6 +361,11 @@ function parseOfferedModelUpgrades(value: unknown): string[] {
   return [...seen].slice(-MAX_OFFERED_MODEL_UPGRADES)
 }
 
+function parseSeededToolDefaults(value: unknown): SeededToolDefault[] {
+  if (!Array.isArray(value)) return []
+  return seededToolDefaultIds.filter((entry) => value.includes(entry))
+}
+
 function requireWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('settings.workspace 必须是非空字符串')
@@ -381,6 +408,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   const closeBehavior = parseCloseBehavior(value.closeBehavior)
   const windowState = parseWindowState(value.windowState)
   const offeredModelUpgrades = parseOfferedModelUpgrades(value.offeredModelUpgrades)
+  const seededToolDefaults = parseSeededToolDefaults(value.seededToolDefaults)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -416,6 +444,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
+    ...(seededToolDefaults.length > 0 ? { seededToolDefaults } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -555,6 +584,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
   const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
+  const seededToolDefaults = parseSeededToolDefaults([...(base.seededToolDefaults ?? []), ...(update.seededToolDefaults ?? [])])
   return {
     version: 2,
     workspace: update.workspace ?? base.workspace,
@@ -583,6 +613,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
+    ...(seededToolDefaults.length > 0 ? { seededToolDefaults } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }

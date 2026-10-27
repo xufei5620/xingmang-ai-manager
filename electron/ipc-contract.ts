@@ -558,6 +558,8 @@ export interface AiChatGroupSummary {
   ratio: number | string
   /** 没选过分组时默认用这个（主进程按 Codex 那把 Key 的认法挑的，站上改了本名也跟得上）；缺省 = 不是。 */
   recommended?: boolean
+  /** 图片分组：出图时优先用它（主进程按写死的名字和分组对照里「画图」那一项认的）；缺省 = 不是。 */
+  image?: boolean
 }
 
 export interface AiChatPreparedGroup {

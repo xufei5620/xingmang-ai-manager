@@ -66,6 +66,14 @@ describe('v2 chat request transitions', () => {
     expect(pickChatGroup([], { current: 'GPT', mode: 'text', groups })).toBe('')
   })
 
+  it('prefers the image group the main process marks once the image group is renamed', () => {
+    const groups = [{ name: 'default', ratio: 1 }, { name: 'GPT', ratio: 1 }, { name: '画图', ratio: 2, image: true }]
+    expect(pickChatGroup(['default', 'GPT', '画图'], { current: '', mode: 'image', groups })).toBe('画图')
+    expect(pickChatGroup(['default', 'GPT', '画图'], { current: '', mode: 'text', groups })).toBe('GPT')
+    // Without the mark a renamed image group is only one more group, billed by ratio.
+    expect(pickChatGroup(['default', '画图'], { current: '', mode: 'image', groups: groups.map(({ image: _image, ...group }) => group) })).toBe('default')
+  })
+
   it('follows the group the main process recommends once the managed GPT group is renamed', () => {
     const renamed = [{ name: 'default' }, { name: 'GPT 主力', recommended: true as const }, { name: 'GPT-官方API直连' }, { name: 'GPT' }]
     const candidates = renamed.map((group) => group.name)
