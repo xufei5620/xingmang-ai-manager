@@ -294,6 +294,13 @@ test('picks shots that were still generating back up after the page reopens, wit
   await page.evaluate((requestId) => window.videoStudioPage.progress({ requestId, stage: 'processing', value: 70 }), requests[0])
   await page.getByTestId('video-shot-0').getByText('生成中 70%').waitFor()
 
+  // 这两单钱已经扣了，点「停止生成」也拿不回来：不去停，接着等，镜头不变回「还没生成」。
+  await page.getByTestId('video-generate-stop').click()
+  await page.getByTestId('video-notice').getByText(/其中 2 段已经交给服务端/).waitFor()
+  assert.deepEqual(await studioCalls(page, 'cancel'), [])
+  for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('生成中').waitFor()
+  assert.equal(await page.getByTestId('video-generate-all').count(), 0)
+
   await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#ff0000'), requests[0])
   await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
   // 主进程那边没有这一单（没交出去，或者服务端说失败了）：回到「还没生成」，可以再点生成。
@@ -312,7 +319,8 @@ test('picks shots that were still generating back up after the page reopens, wit
   await page.close()
 })
 
-test('stops a storyboard and the clips still running, and says which ones may still be billed', async () => {
+// #1406 P1-1：点了「停止生成」，钱已经扣了的那几段不能变回「还没生成」，不然「生成剩下的」一点就是同一段付两次钱。
+test('stops a storyboard and the clips not yet sent, and keeps waiting for the ones already billed', async () => {
   const { page, errors } = await openStudio()
   await page.getByTestId('video-idea-input').fill('海边日落')
   await page.getByTestId('video-plan').click()
@@ -321,18 +329,133 @@ test('stops a storyboard and the clips still running, and says which ones may st
   assert.equal((await studioCalls(page, 'cancel')).length, 1)
   assert.equal(await page.getByTestId('video-error').count(), 0, 'stopping on purpose is not an error')
 
-  await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }, { prompt: '夕阳' }] })
+  await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }, { prompt: '夕阳' }, { prompt: '礁石' }] })
   await page.getByTestId('video-generate-all').click()
   await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
-  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
-  const [first] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  const [first, second, third] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  // 第三段还没交给服务端：停下就不花钱。
+  await page.evaluate((requestId) => window.videoStudioPage.unsent(requestId), third.requestId)
   await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), first.requestId)
   await page.getByTestId('video-shot-0').getByText('这次的描述没通过安全审核，换个说法再试').waitFor()
   await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
 
   await page.getByTestId('video-generate-stop').click()
-  await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端，会照样生成、照样扣费/).waitFor()
-  // 提示说好了会存进 AI 作品文件夹，旁边就能直接打开它；主进程说打不开时按失败说一句。
+  await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端/).waitFor()
+  assert.deepEqual((await studioCalls(page, 'cancel')).slice(1).sort(), [second.requestId, third.requestId].sort())
+  // 已经交出去的那段拿原来的请求号接着等，镜头上还是「生成中」，卡片上也没有「生成剩下的」。
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
+  assert.deepEqual(await studioCalls(page, 'resume'), [second.requestId])
+  await page.getByTestId('video-shot-1').getByText('生成中').waitFor()
+  await page.getByTestId('video-shot-2').getByText('还没生成').waitFor()
+  assert.equal(await page.getByTestId('video-shot-2').getByRole('alert').count(), 0, 'a clip stopped on purpose shows no error')
+  assert.equal(await page.getByTestId('video-generate-all').count(), 0, 'nothing to pay for again while the billed clip is still coming')
+
+  // 再点一次停止：接着等的那段停不下来，不再去停它。
+  await page.getByTestId('video-notice').getByRole('button', { name: '关闭' }).click()
+  await page.getByTestId('video-generate-stop').click()
+  await page.getByTestId('video-notice').getByText(/其中 1 段已经交给服务端/).waitFor()
+  assert.equal((await studioCalls(page, 'cancel')).length, 3)
+
+  await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#ff8800'), second.requestId)
+  await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
+  assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成剩下的 2 段')
+  assert.equal((await studioCalls(page, 'generate')).length, 3)
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+
+  // 一镜没写描述就一段都不发。
+  await page.getByTestId('video-shot-prompt-2').fill('  ')
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.getByTestId('video-error').getByText('第 3 个镜头还没写画面描述').waitFor()
+  assert.equal((await studioCalls(page, 'generate')).length, 3)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// #1406 P1-1：停下时刚交出去、主进程拿不到结果的那一段，按主进程那句报错算失败，不悄悄变回「还没生成」。
+test('marks a clip stopped mid-submission as failed when nothing comes back', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '山间小路', { title: '小路', shots: [{ prompt: '晨雾' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [clip] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.getByTestId('video-generate-stop').click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
+  await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), clip.requestId)
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText('视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交').waitFor()
+  assert.equal((await studioCalls(page, 'generate')).length, 1)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 审查清单 严重-1 后半：「暂时查不到进度」这类失败时服务端多半还在出，点重新生成先拿原来的请求号接回，接不回来才再花钱。
+test('retrying a clip that failed while the server may still be working picks the old one up before paying again', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const [first, second] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), first.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), second.requestId)
+  for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('没生成出来').waitFor()
+
+  // 第一镜：服务端其实出好了，接回来就是，不再提交。
+  await page.getByTestId('video-shot-generate-0').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
+  assert.deepEqual(await studioCalls(page, 'resume'), [first.requestId])
+  await page.getByTestId('video-shot-0').getByText('生成中').waitFor()
+  assert.equal(await page.getByTestId('video-shot-0').getByRole('alert').count(), 0, 'the old error goes away while it is being picked up')
+  await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#884400'), first.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  assert.equal((await studioCalls(page, 'generate')).length, 2)
+
+  // 第二镜：主进程那边没有这一单（提交时就被拒了），这才重新提交。
+  await page.getByTestId('video-shot-generate-1').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction((requestId) => window.videoStudioPage.pendingResumes().includes(requestId), second.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), second.requestId)
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [third] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  assert.notEqual(third.requestId, second.requestId)
+  assert.equal(third.prompt, '窗外')
+  assert.equal((await studioCalls(page, 'generate')).length, 3)
+
+  // 这一单又没等到结果；再点重新生成，接回的时候点了停止，主进程又说没有这一单：停下了就不再花钱。
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_3）。'), third.requestId)
+  await page.getByTestId('video-shot-1').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-generate-1').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction((requestId) => window.videoStudioPage.pendingResumes().includes(requestId), third.requestId)
+  await page.getByTestId('video-generate-stop').click()
+  await page.getByTestId('video-notice').waitFor()
+  assert.equal((await studioCalls(page, 'cancel')).length, 0)
+  await page.evaluate((requestId) => window.videoStudioPage.dropResume(requestId), third.requestId)
+  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
+  assert.equal((await studioCalls(page, 'generate')).length, 3)
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 提示里说到「AI 作品文件夹」，旁边就能直接打开它；主进程说打不开时按失败说一句，提示留着好再试。
+test('opens the AI output folder from a notice that mentions it', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '一盏灯', { title: '灯', shots: [{ prompt: '亮起来', caption: '' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [clip] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#ffffff', true), clip.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  await page.getByTestId('video-notice').getByText('拼好了，成片已经存进 AI 作品文件夹。').waitFor()
+
   await page.getByTestId('video-notice-folder').click()
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
   assert.deepEqual(await studioCalls(page, 'folder'), ['ai-output'])
@@ -341,16 +464,6 @@ test('stops a storyboard and the clips still running, and says which ones may st
   await page.getByTestId('video-notice-folder').click()
   await page.getByTestId('video-error').getByText('这个文件夹现在打不开，重新打开本软件后再试一次。').waitFor()
   assert.equal(await page.getByTestId('video-notice-folder').count(), 1, 'the notice stays so the folder can be tried again')
-  await page.getByTestId('video-shot-1').getByText('还没生成').waitFor()
-  assert.equal(await page.getByTestId('video-shot-1').getByRole('alert').count(), 0, 'a clip stopped on purpose shows no error')
-  assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成全部 2 段')
-
-  // 一镜没写描述就一段都不发。
-  await page.getByTestId('video-shot-prompt-1').fill('  ')
-  await page.getByTestId('video-generate-all').click()
-  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
-  await page.getByTestId('video-error').getByText('第 2 个镜头还没写画面描述').waitFor()
-  assert.equal((await studioCalls(page, 'generate')).length, 2)
   assert.deepEqual(errors, [])
   await page.close()
 })
