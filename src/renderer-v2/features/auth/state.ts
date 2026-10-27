@@ -1,6 +1,7 @@
 import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import { matchAccountError } from './account-errors'
 import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
+import type { WindowOs } from '../app/window-os'
 
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
 export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
@@ -180,7 +181,7 @@ export function remainingCooldown(deadline: number, now = Date.now()): number {
  * - final：重试也没用、又不是客服能解的（本机存储满、需要去浏览器验证）；
  * - unknown：说不清的兜底 → 再试一次。
  */
-export type AuthFailureKind = 'credentials' | 'code' | 'taken' | 'offline' | 'unreachable' | 'network' | 'support' | 'wait' | 'final' | 'unknown'
+export type AuthFailureKind = 'credentials' | 'code' | 'taken' | 'offline' | 'unreachable' | 'network' | 'support' | 'keychain' | 'wait' | 'final' | 'unknown'
 
 export interface AuthFailure {
   message: string
@@ -232,13 +233,24 @@ function verificationMailFailure(message: string): AuthFailure | null {
   return null
 }
 
-export function authFailure(error: unknown, action: string, online = true): AuthFailure {
+/**
+ * Mac 上星芒每换一版，第一次读本机登录信息系统都会弹钥匙串密码框（registry/tutorials.ts 的
+ * macKeychainTutorialDetail）。客户点了拒绝或把框关了，这次运行里就一直读不到，重开星芒系统会再问一次。
+ * 以前这里只说「完全退出软件后重试」，客户不知道重开以后那个框要怎么点。
+ */
+export const macKeychainRefusedMessage = 'Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。'
+
+/** os 只用来认 Mac 的钥匙串那一种；缺省按不是 Mac 处理。 */
+export function authFailure(error: unknown, action: string, online = true, os?: WindowOs): AuthFailure {
   // 通道名和类名不参与下面的判断：account:change-password、account:reset-password 里的 password
   // 会被「用户名|密码」那条认走，重置、设新密码认不出的失败一律成了「账号或密码不正确」（#1236）。
   const message = stripIpcErrorPrefix(errorText(error))
   // 本机账号库存满（全面检测 Q40）。放在「安全存储」之前：以前满了也报存储不可用，
   // 用户被叫去重启软件。文案与主进程 realm-account.ts 那句一致（electron 不 import src，有意重复）。
   if (/保存的账号已满/.test(message)) return { message: '这台电脑上保存的账号已满（最多 16 个）。先在「切换账号」里移除一个不用的，再登录。', kind: 'final' }
+  // 主进程分得出是系统钥匙串没放行（realm-account-vault.ts 的 realmVaultKeyStoreRefusedMessage，那边带
+  // node:crypto 值导入不了，有意重复）。Windows 上同一句、文件读不出来那些，照旧走下面那句。
+  if (os === 'mac' && /系统加密服务没有放行/.test(message)) return { message: macKeychainRefusedMessage, kind: 'keychain' }
   if (/账号安全存储不可用|本地账号存储/.test(message)) return { message: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。', kind: 'support' }
   // 两步验证第二步的几句已经是给用户看的话，原样上屏；不然会被下面「验证码」「频繁」两条宽正则改写。
   const twoFactor = twoFactorMessages.find((text) => message.includes(text))

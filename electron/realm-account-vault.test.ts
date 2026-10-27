@@ -5,7 +5,10 @@ import {
   parseRealmSavedAccount, realmAccountSummary, realmForExplicitSite, realmOwnerKey, RealmAccountError,
   type AccountRealmId, type RealmSavedAccount,
 } from './realm-account'
-import { createRealmAccountVault, createSessionRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, type RealmVaultStorage } from './realm-account-vault'
+import {
+  createRealmAccountVault, createSessionRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, realmVaultKeyStoreRefusedMessage,
+  type RealmVaultStorage,
+} from './realm-account-vault'
 
 function account(realmId: AccountRealmId = 'xm-account', userId = '7'): RealmSavedAccount {
   return parseRealmSavedAccount({ version: 2, realmId, userId, username: `user-${userId}`,
@@ -43,6 +46,8 @@ function storageFixture() {
 }
 
 function hasCode(code: string) { return (error: unknown) => error instanceof RealmAccountError && error.code === code }
+function keyStoreRefused(error: unknown) { return hasCode('STORAGE')(error) && error instanceof Error && error.message === realmVaultKeyStoreRefusedMessage }
+function fileUnreadable(error: unknown) { return hasCode('STORAGE')(error) && !keyStoreRefused(error) }
 
 describe('realm account contracts and encrypted vault', () => {
   for (const site of ['solov', 'sub2api']) it(`keeps historical ${site} on xm`, () => assert.equal(realmForExplicitSite(site), 'xm-account'))
@@ -100,6 +105,35 @@ describe('realm account contracts and encrypted vault', () => {
     const example = storageFixture(); example.setAvailable(false)
     await assert.rejects(example.vault.activate(account()), hasCode('STORAGE'))
     assert.equal(example.writes(), 0)
+  })
+  // 登录框只在系统加解密本身不干时叫 Mac 客户重开星芒、点「始终允许」；文件坏了、写不进去照旧是存储不可用那句。
+  it('tells a refused OS key store apart from an unreadable or unwritable file', async () => {
+    const unavailable = storageFixture(); unavailable.setAvailable(false)
+    await assert.rejects(unavailable.vault.list(), keyStoreRefused)
+
+    // The keychain can also refuse only when the key is actually used.
+    const encryptRefused = storageFixture()
+    encryptRefused.storage.encryptString = () => { throw new Error('keychain denied') }
+    await assert.rejects(encryptRefused.vault.activate(account()), keyStoreRefused)
+    assert.equal(encryptRefused.writes(), 0)
+
+    const probeRefused = storageFixture()
+    await probeRefused.vault.activate(account())
+    const kept = probeRefused.content()
+    probeRefused.storage.decryptString = () => { throw new Error('keychain denied') }
+    probeRefused.storage.encryptString = () => { throw new Error('keychain denied') }
+    probeRefused.storage.recoverAtomic = async () => { throw new Error('must not replace while the keychain refuses') }
+    await assert.rejects(probeRefused.vault.recoverUnreadable(), keyStoreRefused)
+    assert.equal(probeRefused.content(), kept)
+
+    const unwritable = storageFixture(); unwritable.setFail(true)
+    await assert.rejects(unwritable.vault.activate(account()), fileUnreadable)
+    const corrupt = storageFixture(); corrupt.corrupt('not-base64!')
+    await assert.rejects(corrupt.vault.list(), fileUnreadable)
+    const rekeyed = storageFixture()
+    await rekeyed.vault.activate(account())
+    rekeyed.storage.decryptString = () => { throw new Error('authentication tag mismatch') }
+    await assert.rejects(rekeyed.vault.list(), fileUnreadable)
   })
   for (const corrupt of ['not-base64!', 'Zg==', 'a'.repeat(600000)]) {
     it(`does not overwrite corrupt ciphertext of length ${corrupt.length}`, async () => {

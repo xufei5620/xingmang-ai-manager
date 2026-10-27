@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createRealmAccountService, type RealmAccountServiceOptions, type RealmAccountSiteId } from './realm-account-service'
-import { createRealmAccountVault, createSessionRealmAccountVault, type RealmVaultStorage } from './realm-account-vault'
+import { createRealmAccountVault, createSessionRealmAccountVault, realmVaultKeyStoreRefusedMessage, type RealmVaultStorage } from './realm-account-vault'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import type { NewApiLoginInput, NewApiSessionState } from './new-api-client'
@@ -412,7 +412,8 @@ describe('realm account service', () => {
   it('does not fall back to plaintext or temporary logged-in state without encryption', async () => {
     const f = fixture()
     f.available(false)
-    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    // 登录框认这句换成 Mac 上「重新打开星芒、点始终允许」那段话。
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE', message: realmVaultKeyStoreRefusedMessage })
     expect(f.service.client.getSessionState().authenticated).toBe(false)
     expect(f.content()).toBeNull()
     expect(f.clients).toHaveLength(1)
@@ -875,7 +876,10 @@ describe('explicit login vault recovery', () => {
     f.corrupt()
     const unreadable = f.content()
     f.fail(true)
-    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    // 钥匙串好好的、是文件写不进去：不能叫客户去点「始终允许」。
+    const failed = await f.service.login(login).then(() => null, (error: unknown) => error)
+    expect(failed).toMatchObject({ code: 'STORAGE' })
+    expect(failed).not.toMatchObject({ message: realmVaultKeyStoreRefusedMessage })
     expect(f.content()).toBe(unreadable)
     expect(f.backup()).toBeNull()
     expect(f.clients).toHaveLength(1)
