@@ -606,14 +606,15 @@ export function Home(props: HomeProps) {
     return () => window.clearTimeout(timer)
   }, [hijackUntil])
   const routeTexts = toolRouteHomeTexts(props.toolRouteStatus, routeClock)
-  // 命令行工具和 Codex 桌面端的「打开」一次只放一个（App.tsx 的 launchRequest）。外接客户端的打开不算：
-  // 主进程里它们和别人互不等待（I11 的登记例外），那一行只看自己那家的打开（#1085）。
-  const launchBusy = toolRegistry.some((tool) => jobs[`launch:${tool.id}`])
   const launchWaitingForAccount = useCallback((provider: ProviderId): boolean => {
     const tool = tools.find((entry) => entry.provider === provider)
     if (!tool || tool.source === 'official' || tool.source === 'manual') return false
     return accountKeyChangeInProgress(props.bootstrap ?? null, provider)
   }, [props.bootstrap, tools])
+  // 命令行工具和 Codex 桌面端的「打开」一次只放一个（useToolLaunch 的 launchRequest）。外接客户端的打开不算：
+  // 主进程里它们和别人互不等待（I11 的登记例外），那一行只看自己那家的打开（#1085）。停在等账号那一轮的
+  // 那次「打开」也不算（最长 3 分钟，0.2.22 打磨 B4）：它只占自己那张卡，别的工具照常能开。
+  const launchBusy = toolRegistry.some((tool) => jobs[`launch:${tool.id}`] && !launchWaitingForAccount(providerFor(tool.id)))
   // 开机先摆的是上次的检测结果（cachedAt），真结果还在路上。这时只放开「打开」这一类：
   // 点下去配置现读、工具由主进程现找、目录现查，用不上这份旧结果。「安装」「重新配置」
   // 「确认连接」照旧等真结果；账号这一轮要换 Key 的那一家也等，免得带着旧 Key 打开。
