@@ -41,6 +41,7 @@ import { createQuitCleanup } from './bootstrap/lifecycle'
 import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/network-routes'
 import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
+import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
@@ -982,6 +983,12 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       arch: process.arch,
     })
+    const relaunchedWithout = launchArgumentsRelaunchedWithout()
+    if (relaunchedWithout) {
+      // 正常的启动方式都列在 security.ts 的白名单里。客户日志里出现这一条，说明有一种
+      // 没想到的启动方式：是正常的就补进白名单，不是的话多半是有人改过快捷方式。
+      runtimeLog.log('warn', 'main', 'launch-arguments.relaunched', '启动参数里有不认识的开关，已去掉后重新打开', { switches: relaunchedWithout })
+    }
     logDisplayCrash = (details, recordError) => {
       runtimeLog.log('error', 'display', 'gpu.gone', '显卡进程异常退出', { reason: details.reason, exitCode: details.exitCode })
       if (recordError) runtimeLog.exception('display', 'gpu.record.failed', recordError)
