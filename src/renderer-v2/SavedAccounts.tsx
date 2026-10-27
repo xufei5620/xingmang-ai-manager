@@ -308,12 +308,12 @@ export function SavedAccounts({
 }
 
 /**
- * 「同步到工具」只管命令行工具（account-switch-sync.ts 跳过桌面客户端），Claude Desktop、WorkBuddy、
- * OpenCode 切完还用着原来账号的 Key，首页照样给「打开」（已知37）。先把出路说清楚；Linux 上首页不列
- * 这几个客户端，就不提。
+ * 「同步到工具」只列命令行工具（account-switch-sync.ts 跳过桌面客户端）。Claude Desktop、WorkBuddy、
+ * OpenCode 借的是某个工具的密钥时，主进程在那个工具换成新账号那把以后跟着换（#1413，已知37）；
+ * 自己填的、换到另一个站的不跟，这里把出路说清楚。Linux 上首页不列这几个客户端，就不提。
  */
 export function accountSwitchDesktopClientsHint(os: WindowOs): string | null {
-  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 不会跟着换。切完要换的话，到首页它的卡片上点「…」里的「配置…」，再点「保存并检测」。'
+  return os === 'linux' ? null : 'Claude Desktop、WorkBuddy、OpenCode 借的是某个工具的密钥时，勾上那个工具就跟着换（星芒账号和历史账号互切时不换）；自己填的密钥不会换，切完要换的话，到首页它的卡片上点「…」里的「配置…」，再点「保存并检测」。'
 }
 
 type SyncProvider = AccountSyncCandidate['provider']
