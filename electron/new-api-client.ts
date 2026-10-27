@@ -2686,6 +2686,70 @@ export function parseCliKeySecret(payload: unknown): string | null {
   return trimmed.startsWith('sk-') ? trimmed : `sk-${trimmed}`
 }
 
+/**
+ * Lets one piece of work hold a client's login alone. changePassword is the
+ * only exclusive user; every other authenticated request is shared.
+ */
+export interface SessionRequestGate {
+  /** Waits while an exclusive piece of work is queued or running, then runs alongside the other shared ones. */
+  shared<T>(work: () => Promise<T>): Promise<T>
+  /** Holds new shared work back at once, waits for the shared work already running, then runs alone. */
+  exclusive<T>(work: () => Promise<T>): Promise<T>
+}
+
+// Why a password change must run alone (rc.44 controller/user.go UpdateSelf):
+// the server changes the password and bumps the user's auth version, then
+// sends the security notification mail synchronously, and only after that
+// advances this login to the new version. Any request carrying this login's
+// credential in between answers 401; the silent refresh that follows finds
+// the version mismatch and revokes the whole login (service/auth_session.go
+// RefreshLoginSession -> user_security_changed). The password has still
+// changed, but the change request itself then fails because its login is
+// gone. 2026-10-27 a customer resetting their password lost the login this
+// way: the balance read the app starts right after signing in landed in that
+// gap, and the app went on to remember the temporary password.
+//
+// Writer-preferring on purpose: once a change is queued, new shared work
+// waits behind it, so a steady trickle of reads can neither keep the change
+// from starting nor slip in while it runs, and when that work does start it
+// reads the access token the change handed back instead of 401-ing on the
+// superseded one and spending a refresh. Shared work never nests inside other
+// shared work in this client (helpers such as loadUsableGroups take the
+// session they are given), which is what keeps the drain from waiting on
+// itself.
+export function createSessionRequestGate(): SessionRequestGate {
+  let running = 0
+  let drained: Array<() => void> = []
+  let held: Promise<void> | null = null
+  async function shared<T>(work: () => Promise<T>): Promise<T> {
+    while (held) await held
+    running += 1
+    try { return await work() }
+    finally {
+      running -= 1
+      if (running === 0) {
+        const waiting = drained
+        drained = []
+        for (const resolve of waiting) resolve()
+      }
+    }
+  }
+  async function exclusive<T>(work: () => Promise<T>): Promise<T> {
+    while (held) await held
+    let release = (): void => undefined
+    const hold = new Promise<void>((resolve) => { release = resolve })
+    held = hold
+    try {
+      if (running > 0) await new Promise<void>((resolve) => { drained.push(resolve) })
+      return await work()
+    } finally {
+      if (held === hold) held = null
+      release()
+    }
+  }
+  return { shared, exclusive }
+}
+
 // new-api (this module) is the first relay backend and, per AGENTS.md's
 // multi-backend plan, currently the only one -- so every flag is true. See
 // relay-backend.ts's RelayBackendCapabilities for what a future backend
@@ -2774,6 +2838,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   let authAttemptGeneration = 0
   const sessionOwners = new WeakMap<InternalSession, number>()
   let refreshInFlight: { current: InternalSession; promise: Promise<InternalSession> } | null = null
+  // Every request that carries this login's credential goes through here; see
+  // createSessionRequestGate for why a password change has to run alone.
+  const requestGate = createSessionRequestGate()
   // 这次登录最近一次续期没等到回话、也没补续成：哪一刻发的、怎么失败的、补续发没发。登录结束那一行日志
   // 带上它，看得出是不是旧凭据过了 30 秒才又拿去用。续期成功、换了登录都清掉。
   let lostRefresh: { sentAt: number; failure: string; retried: boolean } | null = null
@@ -3011,7 +3078,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
   }
 
-  const withSession = async <T>(
+  // Ungated body of withSession. Only changePassword calls it directly, from
+  // inside its own exclusive hold.
+  const runWithSession = async <T>(
     run: (current: InternalSession) => Promise<T>,
     allowSessionClear = false,
     keepSessionOnRefusal = false,
@@ -3027,6 +3096,14 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       return await retryAfterSilentRefresh(current, run, error, allowSessionClear, keepSessionOnRefusal)
     }
   }
+
+  // The session is read after the gate opens, not before: work that waited
+  // out a password change must use the access token the change handed back.
+  const withSession = <T>(
+    run: (current: InternalSession) => Promise<T>,
+    allowSessionClear = false,
+    keepSessionOnRefusal = false,
+  ): Promise<T> => requestGate.shared(() => runWithSession(run, allowSessionClear, keepSessionOnRefusal))
 
   // getUsage, getDashboard, getTasks and listKeys: a 401 that survives a
   // successful refresh fails only that read (retryAfterSilentRefresh).
@@ -3865,8 +3942,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
-  const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => (
-    withSession(async (current) => {
+  // Runs alone on this login (createSessionRequestGate): nothing else may
+  // reach the server between the change and the server moving this login to
+  // the new auth version.
+  const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => requestGate.exclusive(() => (
+    runWithSession(async (current) => {
       const originalPassword = input.originalPassword
       const newPassword = input.newPassword
       // Not trimmed: both must be forwarded exactly as typed, same reasoning
@@ -3908,7 +3988,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       if (bundle && session === current) setSession({ ...current, accessToken: bundle.accessToken }, false)
       return { changed: true }
     })
-  )
+  ))
 
   const listLoginSessions = (): Promise<NewApiLoginSession[]> => (
     withSession(async (current) => {
@@ -4059,7 +4139,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // comment. Mirrors withSession's original clear-only-on-401 semantics: a
   // transient network/timeout error here must not spuriously log the user
   // out, only a definitive "this credential is dead" from the server should.
-  const refreshAccessToken = async (): Promise<void> => {
+  const refreshAccessToken = (): Promise<void> => requestGate.shared(async () => {
     const current = requireSession()
     try {
       await refreshCurrentSession(current)
@@ -4071,7 +4151,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       }
       throw error
     }
-  }
+  })
 
   const getPersistableSession = (): NewApiPersistableSession | null => (
     session ? { userId: session.userId, cookies: [...session.cookies] } : null
@@ -4141,7 +4221,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // 续一次再试；续过还是 401，就是那个服务自己拒了，照普通失败抛，不走 withSession 那条「再 401 就清掉
   // 登录」的路：代取服务坏了，只该让 Codex 退回加速，不能连带把客户登出。续期本身被 new-api 拒了照旧
   // 抛登录失效，但这里也不清登录，留给下一次账号请求按老规矩处理。
-  const issueCodexStartupTicket = async (): Promise<NewApiCodexStartupTicket> => {
+  const issueCodexStartupTicket = (): Promise<NewApiCodexStartupTicket> => requestGate.shared(async () => {
     const label = 'Codex 中文启动凭证'
     const request = (current: InternalSession): Promise<NewApiRawResponse> => performRequest(
       ctx,
@@ -4160,7 +4240,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
     if (raw.status === 401) throw new Error(`${label}被拒绝`)
     return parseCodexStartupTicket(unwrapEnvelope(raw, label, [current.accessToken]))
-  }
+  })
 
   const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
     if (session) return true
