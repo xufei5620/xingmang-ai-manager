@@ -96,6 +96,9 @@ public static class XingmangInstallerDialog {
 $IDOK = 1
 $IDCANCEL = 2
 $IDRETRY = 4
+# "Retry" as the dialog spells it, written as code points so the script stays
+# ASCII whatever encoding the shell assumes.
+$retryWord = [string][char]0x91CD + [char]0x8BD5
 
 function Get-AppExe([string]$dir) {
   return Get-ChildItem -LiteralPath $dir -Filter '*.exe' | Where-Object { $_.Name -notlike 'Uninstall *' } | Select-Object -First 1
@@ -265,7 +268,7 @@ Invoke-Scenario 'another program holds a file open' {
   $missing = @($before | Where-Object { -not (Test-Path -LiteralPath (Join-Path $dir $_)) })
   Check ($missing.Count -eq 0) "the old version is still all there while it asks (missing: $($missing -join ', '))"
   Check ($text -notmatch 'Failed to uninstall') 'the dialog is not the English one from the template'
-  Check ($text -match '重试') 'the dialog offers to retry'
+  Check ($text.Contains($retryWord)) 'the dialog offers to retry'
   [XingmangInstallerDialog]::Answer($dialog, $IDCANCEL)
   $code = Wait-ForExit $script:process 'cancelling'
   Check ($code -eq 2) "cancelling exits 2 like the template did (got $code)"
