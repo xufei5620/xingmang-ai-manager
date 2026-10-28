@@ -20,4 +20,4 @@ jobs:
   probe:
     uses: ./.github/workflows/upgrade-smoke.yml
     with:
-      platforms: macos
+      platforms: both
