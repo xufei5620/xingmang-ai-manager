@@ -109,9 +109,9 @@ npm run typecheck
 npm test
 npm run compile
 npm run audit:production
-npm run test:canvas:visual
+node e2e/canvas-kernel-smoke.mjs
 node --test scripts/verify-canvas-provenance.test.cjs scripts/verify-canvas-renderer-boundary.test.cjs
 git diff --check
 ```
 
-`test:canvas:visual` 使用真实 Electron renderer 加载构建产物，覆盖 960x620、1366x768、1590x875 和 4K，检查暗色首帧、页面溢出、控件裁切、面板可见性、非空像素及零外网请求。发布前还要手工检查项目导入导出、资产右键和取消运行。
+四视口视觉门禁 `test:canvas:visual` 点的是换内核之前的界面，随 #1393 退役；现在由 `e2e/canvas-kernel-smoke.mjs`（只在 Windows 上跑，Windows CI 每次都跑）用真的 Electron 和 mock 账号后端，把桌面画布从新建项目、出图、自动保存关窗、复制、跨项目撤销到打开旧工程整条点一遍，画布零出网。发布前还要手工检查项目导入导出、资产右键和取消运行。

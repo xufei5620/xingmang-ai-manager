@@ -1747,6 +1747,8 @@ const playwrightElectronSmokes = [
   'e2e/realm-account-smoke.mjs',
   'e2e/renderer-v2-native.mjs',
   'e2e/renderer-v2-native-close-race.mjs',
+  // D-PR3 (#1393): the canvas kernel driven inside the real desktop host.
+  'e2e/canvas-kernel-smoke.mjs',
 ]
 
 test('a Playwright Electron smoke can never consume a whole job again', () => {
@@ -1859,6 +1861,9 @@ const fixtureReadinessConsumers = [
   // D-12: the dual-site account smoke waits on the same cold Electron start
   // the Windows runner takes ~16s over, three times per run.
   'e2e/realm-account-smoke.mjs',
+  // The same cold start, then a canvas window that is itself opened cold three
+  // times over.
+  'e2e/canvas-kernel-smoke.mjs',
   // The chat fixture was left off this list when #164 built it, because nothing
   // checked the list against the suites that exist. Its open() waited on the
   // element under test with the 30s default, so a cold Windows start was
@@ -1890,10 +1895,9 @@ const fixtureReadinessConsumers = [
 // fails rather than waiting for a Windows runner to report it as a broken
 // feature.
 const fixtureReadinessUnbudgeted = [
-  // The canvas is frozen to its owner's own rework, so this one is left where
-  // the scan can still see it rather than touched. Everything else the scan
-  // found has since been budgeted.
-  'e2e/canvas-group-refresh.mjs',
+  // Empty since the last entry, e2e/canvas-group-refresh.mjs, was retired with
+  // the canvas it drove (#1393). An entry here is a debt, not a place to park a
+  // new suite.
 ]
 
 // The roots whose .mjs suites run under `npm test` / `npm run test:v2`, which is
@@ -2360,9 +2364,9 @@ const fixtureServerSuites = [
   'src/renderer-v2/features/shell/announcement-persistence.browser-check.mjs',
 ]
 
-// The canvas is frozen to its owner's own rework, so it keeps its own
-// createServer call rather than being touched for this.
-const fixtureServerExempt = ['e2e/canvas-group-refresh.mjs']
+// Empty since e2e/canvas-group-refresh.mjs was retired with the canvas it
+// drove (#1393); it was the one suite left on its own createServer call.
+const fixtureServerExempt = []
 
 // macos-dev-origin also asserts that the *public* dev server refuses an
 // occupied port, which only the repository's own vite.config can answer, so it
@@ -2467,7 +2471,7 @@ test('the window close smoke survives a transient Windows filesystem error', () 
 // 验收证据里写死的 `true` 会在部分失败时照样打印出来，看起来像"这条也过了"。
 const evidenceProducers = [
   'e2e/onboarding-smoke.mjs',
-  'e2e/canvas-group-refresh.mjs',
+  'e2e/canvas-kernel-smoke.mjs',
   'e2e/acceleration-profile-isolation-smoke.mjs',
   'e2e/renderer-v2-native.mjs',
   // T-G8 的最后一处：这条冒烟的证据文件里还躺着 `actualNetworkRequests: 0` 和
@@ -2502,4 +2506,14 @@ test('acceptance evidence reports what the run observed, not literals', () => {
     'both constants T-G8 named had no counter behind them')
   assert.match(realmSmoke, /assert\.deepEqual\(\[\.\.\.passedAssertions\]\.sort\(\), \[\.\.\.expectedAssertions\]\.sort\(\)\)/,
     'a run that stopped reaching a step must fail rather than ship a shorter list')
+
+  // The canvas kernel smoke builds its payload the same way: the recorded list
+  // beside lists and counts read back out of the fixture.
+  const canvasSmoke = fs.readFileSync(path.join(root, 'e2e/canvas-kernel-smoke.mjs'), 'utf8')
+  const canvasPayload = canvasSmoke.match(/const result = \{[\s\S]*?\n {4}\}\n/)
+
+  assert.ok(canvasPayload, 'the canvas kernel smoke must build its evidence payload in one place')
+  assert.doesNotMatch(canvasPayload[0], /:\s*(?:true|false)\b/, 'no field in the canvas kernel evidence may be a literal verdict')
+  assert.match(canvasSmoke, /assert\.deepEqual\(\[\.\.\.passedAssertions\]\.sort\(\), \[\.\.\.expectedAssertions\]\.sort\(\)\)/,
+    'a canvas run that stopped reaching a step must fail rather than ship a shorter list')
 })

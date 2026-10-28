@@ -244,7 +244,7 @@ npm run canvas:prepare      # 含画布 tsc
 npm run typecheck           # 三段
 npm run test:canvas
 npm test                    # 失败集合必须与基线逐条一致
-npm run test:canvas:visual  # 四视口 + 125%/150%
+node e2e/canvas-kernel-smoke.mjs  # 2026-10-28 起替代四视口门禁 test:canvas:visual（只在 Windows 上跑）
 node --test scripts/verify-canvas-provenance.test.cjs scripts/verify-canvas-renderer-boundary.test.cjs
 git diff --check
 ```
