@@ -14,7 +14,8 @@ const linuxChecksJob = workflow.jobs['linux-checks']
 const linuxJob = workflow.jobs['linux-package']
 
 function allSteps() {
-  return Object.values(workflow.jobs).flatMap((job) => job.steps)
+  // Jobs that call a reusable workflow have no steps of their own.
+  return Object.values(workflow.jobs).flatMap((job) => job.steps || [])
 }
 
 test('the test-package build reads no secrets at all', () => {
@@ -220,4 +221,31 @@ test('the Intel test package is launched through Rosetta before it is uploaded',
   assert.ok(intelIndex < uploadIndex, 'Intel 版的启动冒烟也必须在上传产物之前')
   assert.ok(macosJob.steps[intelIndex]['timeout-minutes'] > 0)
   assert.ok(macosJob.steps[rosettaIndex]['timeout-minutes'] > 0)
+})
+
+// G13：交出去装的那两份包，要先被客户手上的旧版本用自己的自动更新升上来一次。
+// 调用的必须是刚上传的那一份（artifact 名与上传那一步逐字对上），而不是让被调用的
+// 工作流自己另出一份：那样测过的和交出去的就不是同一份字节了。
+test('the packages handed out are the ones the upgrade smoke installs over the old versions', () => {
+  const upgradeWindows = workflow.jobs['upgrade-windows']
+  const upgradeMacos = workflow.jobs['upgrade-macos']
+  assert.equal(upgradeWindows.uses, './.github/workflows/upgrade-smoke.yml')
+  assert.equal(upgradeMacos.uses, './.github/workflows/upgrade-smoke.yml')
+  assert.equal(upgradeWindows.needs, 'windows-package')
+  assert.equal(upgradeMacos.needs, 'macos-package')
+  assert.equal(upgradeWindows.secrets, undefined)
+  assert.equal(upgradeMacos.secrets, undefined)
+  assert.deepEqual(upgradeWindows.with, {
+    platforms: 'windows',
+    windows_artifact: 'windows-unsigned-${{ needs.windows-package.outputs.version }}',
+  })
+  assert.deepEqual(upgradeMacos.with, {
+    platforms: 'macos',
+    macos_artifact: 'macos-CI-SIGNED-DO-NOT-PUBLISH-${{ needs.macos-package.outputs.version }}',
+  })
+  const uploadName = (job) => job.steps.find((step) => String(step.uses || '').includes('upload-artifact')).with.name
+  assert.equal(uploadName(windowsJob), 'windows-unsigned-${{ steps.metadata.outputs.version }}')
+  assert.equal(uploadName(macosJob), 'macos-CI-SIGNED-DO-NOT-PUBLISH-${{ steps.metadata.outputs.version }}')
+  assert.equal(windowsJob.outputs.version, '${{ steps.metadata.outputs.version }}')
+  assert.equal(macosJob.outputs.version, '${{ steps.metadata.outputs.version }}')
 })

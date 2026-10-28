@@ -60,6 +60,8 @@ jobs:
     # release:build:unsigned 在 Windows 上要跑完类型检查、四套测试、编译、三个
     # 冒烟和产物校验，实测接近一小时。这是卡死的兜底，不是预期时长。
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -137,6 +139,8 @@ jobs:
     if: ${{ inputs.platforms == 'both' || inputs.platforms == 'macos' }}
     runs-on: macos-15
     timeout-minutes: 120
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -233,6 +237,23 @@ jobs:
           path: release-free-ci-${{ steps.metadata.outputs.version }}/*
           retention-days: 14
           if-no-files-found: error
+
+  # 交出去装的这两份包，先让客户手上的旧版本（0.2.19 和最新正式版）各自用自己的自动更新
+  # 升上来一次（G13，upgrade-smoke.yml）：下载、核对、安装、重开、数据和设置都还在。
+  # 包已经上传了，这一步红了不收回，但它说明这一版的更新链路有问题，不能发。
+  upgrade-windows:
+    needs: windows-package
+    uses: ./.github/workflows/upgrade-smoke.yml
+    with:
+      platforms: windows
+      windows_artifact: windows-unsigned-${{ needs.windows-package.outputs.version }}
+
+  upgrade-macos:
+    needs: macos-package
+    uses: ./.github/workflows/upgrade-smoke.yml
+    with:
+      platforms: macos
+      macos_artifact: macos-CI-SIGNED-DO-NOT-PUBLISH-${{ needs.macos-package.outputs.version }}
 
   # Linux 包的门禁。两个架构共用一份源码，类型检查和测试跑一遍就够，所以单独成
   # 一个作业放在 x64 上，两个出包作业等它过了再开始。与 macOS 一样，这个工作流
