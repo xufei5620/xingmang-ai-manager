@@ -35,6 +35,29 @@ export function isCanvasNodeCacheEligible(kind: CanvasRunNodeKind): boolean {
   return !nonCacheableCanvasNodeKinds.has(kind)
 }
 
+// 生成类节点把画布上正在用的那张图放在 adoptedAssetId 里交过来，但指纹有意不含它
+// （canvas-fingerprint.ts），同一指纹的缓存又只留最新一条；指纹还含项目编号，复制出来的
+// 项目永远查不到原项目的缓存。于是切回旧候选后下游拿到的是最新那张，副本里一运行就整批
+// 重新付费，而画布确认框写的是「复用」（O04、O06）。这几类节点先认画布上那张图。
+function reusesAdoptedAsset(kind: CanvasRunNodeKind): boolean {
+  return kind === 'image'
+    || kind === 'video'
+    || kind === 'image-generate'
+    || kind === 'image-edit'
+    || kind === 'video-generate'
+}
+
+/**
+ * One earlier attempt that produced or reused an asset: the fingerprint that
+ * attempt ran under, and the project that fingerprint was computed for.
+ */
+export interface CanvasRunAssetOrigin {
+  fingerprint: string
+  projectId?: string
+  candidate: CanvasRunCandidate
+  outputText?: string
+}
+
 export interface CanvasNodeInputs {
   text?: string
   image?: CanvasRunAsset
@@ -101,6 +124,10 @@ export interface CanvasRunEngineOptions {
   randomUUID?: () => string
   resolveCache?: (fingerprint: string, node: CanvasRunGraphNode) => Promise<CanvasRunCacheEntry | null>
   storeCache?: (entry: CanvasRunCacheEntry) => Promise<void>
+  resolveAssetOrigin?: (
+    assetId: string,
+    matches: (origin: CanvasRunAssetOrigin) => boolean,
+  ) => Promise<CanvasRunAssetOrigin | null>
   admitRecord?: (record: CanvasRunRecord) => Promise<void>
   persistRecord?: (record: CanvasRunRecord) => Promise<void>
   onEvent?: (event: CanvasRunEvent, record: CanvasRunRecord) => void | Promise<void>
@@ -592,6 +619,68 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       .map((edge) => settled.get(edge.source) ?? Promise.resolve())
   }
 
+  const projectFingerprints = new Map<string, string>()
+
+  // The fingerprint a node would have had in another project, given the inputs
+  // it receives in this run. A duplicated project keeps node ids and results
+  // but gets a new project id, so none of its fingerprints meet the original's.
+  // Recomputing the chain under the origin's project id lets an adopted result
+  // prove it came from these exact inputs without changing any stored
+  // fingerprint (changing one re-runs and re-charges every cache on upgrade).
+  // Only settled upstream nodes have outputs, so a memoized value never changes.
+  function fingerprintInProject(nodeId: string, projectId: string | undefined): string {
+    const memoKey = (id: string) => JSON.stringify([projectId ?? null, id])
+    const needed = new Set<string>()
+    const pending = [nodeId]
+    while (pending.length > 0) {
+      const current = pending.pop() as string
+      if (needed.has(current) || projectFingerprints.has(memoKey(current))) continue
+      needed.add(current)
+      for (const edge of index.incoming.get(current) ?? []) {
+        if (outputs.has(edge.source)) pending.push(edge.source)
+      }
+    }
+    for (const current of index.topological) {
+      if (!needed.has(current)) continue
+      const { fingerprintInputs } = collectInputs(current, index, outputs)
+      projectFingerprints.set(memoKey(current), computeCanvasNodeFingerprint({
+        projectId,
+        node: index.nodesById.get(current)!,
+        upstream: fingerprintInputs.map((entry) => ({
+          ...entry,
+          fingerprint: projectFingerprints.get(memoKey(entry.sourceNodeId))!,
+        })),
+      }))
+    }
+    return projectFingerprints.get(memoKey(nodeId))!
+  }
+
+  // The asset the canvas shows on this node, as a cache entry for the current
+  // fingerprint — but only when an earlier attempt produced it from the same
+  // inputs. Anything else (inputs edited, history evicted) is not reused here
+  // and falls back to the ordinary cache, exactly as before.
+  async function resolveAdoptedEntry(node: CanvasRunGraphNode, fingerprint: string): Promise<CanvasRunCacheEntry | null> {
+    const assetId = node.data.adoptedAssetId
+    if (!assetId || !options.resolveAssetOrigin) return null
+    const found = await raceWithAbort(options.resolveAssetOrigin(assetId, (origin) => (
+      origin.candidate.asset.assetId === assetId
+      && origin.fingerprint === (origin.projectId === options.projectId
+        ? fingerprint
+        : fingerprintInProject(node.id, origin.projectId))
+    )), options.signal)
+    if (!found) return null
+    const usedAt = now().toISOString()
+    return {
+      version: canvasRunContractVersion,
+      fingerprint,
+      nodeKind: node.kind,
+      candidate: structuredClone(found.candidate),
+      ...(found.outputText !== undefined ? { outputText: found.outputText } : {}),
+      createdAt: usedAt,
+      lastUsedAt: usedAt,
+    }
+  }
+
   for (const nodeId of admitted) {
     const node = index.nodesById.get(nodeId)!
     const task = (async () => {
@@ -629,10 +718,10 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       const fingerprint = computeCanvasNodeFingerprint({ projectId: options.projectId, node, upstream: collected.fingerprintInputs })
       await updateStage(nodeId, 'resolving-cache')
       let cached: CanvasRunCacheEntry | null | undefined
+      // 「运行到此」点在哪个节点，那个节点就必须真的跑一遍。上游已固定的
+      // 产物仍走缓存，否则下游单独运行会把前面的图再付费生成一次。
+      const bypassCache = options.scope.kind === 'to-node' && options.scope.nodeId === nodeId
       try {
-        // 「运行到此」点在哪个节点，那个节点就必须真的跑一遍。上游已固定的
-        // 产物仍走缓存，否则下游单独运行会把前面的图再付费生成一次。
-        const bypassCache = options.scope.kind === 'to-node' && options.scope.nodeId === nodeId
         cached = !bypassCache && isCanvasNodeCacheEligible(node.kind) && options.resolveCache
           ? await raceWithAbort(options.resolveCache(fingerprint, node), options.signal)
           : undefined
@@ -644,6 +733,23 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         // Cache is an optimization. A damaged or temporarily unavailable
         // cache must not abort an explicitly requested run; proceed as a miss.
         cached = null
+      }
+      let reusedAdopted = false
+      const adoptedAssetId = reusesAdoptedAsset(node.kind) ? node.data.adoptedAssetId : undefined
+      if (!bypassCache && adoptedAssetId && cached?.candidate?.asset.assetId !== adoptedAssetId) {
+        try {
+          const adopted = await resolveAdoptedEntry(node, fingerprint)
+          if (adopted) {
+            cached = adopted
+            reusedAdopted = true
+          }
+        } catch {
+          if (options.signal.aborted) {
+            await updateNode(nodeId, 'cancelled')
+            return
+          }
+          // Like the cache: a failed lookup keeps whatever the cache answered.
+        }
       }
       if (cached && (cached.outputText !== undefined || cached.candidate)) {
         const completedAt = now()
@@ -668,6 +774,15 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(cached.outputText !== undefined ? { text: cached.outputText } : {}),
           ...(cached.candidate ? { asset: cached.candidate.asset } : {}),
         })
+        if (reusedAdopted) {
+          try {
+            // The next run then hits the ordinary cache, even after the run
+            // history that proved this adoption has been evicted.
+            await options.storeCache?.(cached)
+          } catch {
+            // Reuse already happened; the cache only saves a lookup next time.
+          }
+        }
         await updateNode(nodeId, 'cached', {
           attemptId: attempt.attemptId,
           fingerprint,

@@ -2407,6 +2407,31 @@ describe('getDashboard', () => {
     expect(data).toMatchObject({ quota: 13, count: 4, tokens: 10, discardedCount: 0 })
   })
 
+  it('aggregates model names that collide with object built-ins without touching shared prototypes', () => {
+    const data = parseAccountDashboardData([
+      { created_at: 3_601, model_name: '__proto__', token_used: 1, count: 1, quota: 2 },
+      { created_at: 3_602, model_name: '__proto__', token_used: 1, count: 1, quota: 3 },
+      { created_at: 3_603, model_name: 'constructor', token_used: 2, count: 1, quota: 4 },
+      { created_at: 3_604, model_name: 'toString', token_used: 3, count: 1, quota: 5 },
+    ], { startTimestamp: 0, endTimestamp: 24 * 60 * 60 })
+    expect(Object.prototype).not.toHaveProperty('quota')
+    expect(Object).not.toHaveProperty('quota')
+    expect(Object.prototype.toString).not.toHaveProperty('quota')
+    const [bucket] = data.buckets
+    expect(Object.keys(bucket.models).sort()).toEqual(['__proto__', 'constructor', 'toString'])
+    expect(Object.getOwnPropertyDescriptor(bucket.models, '__proto__')?.value).toEqual({ quota: 5, count: 2, tokens: 2 })
+    expect(Object.getOwnPropertyDescriptor(bucket.models, 'constructor')?.value).toEqual({ quota: 4, count: 1, tokens: 2 })
+    expect(Object.getOwnPropertyDescriptor(bucket.models, 'toString')?.value).toEqual({ quota: 5, count: 1, tokens: 3 })
+    expect(data.models).toEqual([
+      { model: '__proto__', quota: 5, count: 2, tokens: 2 },
+      { model: 'toString', quota: 5, count: 1, tokens: 3 },
+      { model: 'constructor', quota: 4, count: 1, tokens: 2 },
+    ])
+    expect(JSON.parse(JSON.stringify(bucket.models))).toEqual(JSON.parse(
+      '{"__proto__":{"quota":5,"count":2,"tokens":2},"constructor":{"quota":4,"count":1,"tokens":2},"toString":{"quota":5,"count":1,"tokens":3}}',
+    ))
+  })
+
   it('keeps hourly buckets when the 24 hour range starts at the whole hour before a day ago', () => {
     const start = 1_760_738_400
     const data = parseAccountDashboardData([
