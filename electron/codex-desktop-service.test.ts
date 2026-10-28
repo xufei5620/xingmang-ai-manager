@@ -67,6 +67,8 @@ import {
   shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
   describeCodexDesktopProbeProcessFailure,
+  inspectCodexDesktopBeforeInstall,
+  codexDesktopPackageProbeError,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
@@ -1703,7 +1705,8 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
   })
 
   it('treats a whole-script failure as inconclusive, not as "not installed"', () => {
-    const timedOut = buildCodexDesktopCombinedProbeFailure(new Error('spawn powershell.exe ETIMEDOUT'))
+    const spawnError = new Error('spawn powershell.exe ETIMEDOUT')
+    const timedOut = buildCodexDesktopCombinedProbeFailure(spawnError)
 
     expect(timedOut).toEqual({
       match: null,
@@ -1713,6 +1716,7 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
         error: 'spawn powershell.exe ETIMEDOUT',
         source: null,
         confirmedAbsent: false,
+        cause: spawnError,
       },
     })
     expect(buildCodexDesktopCombinedProbeFailure(null).packageProbe.error)
@@ -1726,6 +1730,51 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     )
     expect(probes.detectionFailed).toBe(true)
     expect(probes.detectionError).toContain('ETIMEDOUT')
+  })
+})
+
+describe('inspectCodexDesktopBeforeInstall', () => {
+  it('asks about the store only after the combined probe has answered', async () => {
+    const combinedProbe = buildCodexDesktopCombinedProbeFailure(null)
+    let answer: (probe: typeof combinedProbe) => void = () => {}
+    const storeAvailability = vi.fn(async () => true)
+    const pending = inspectCodexDesktopBeforeInstall({
+      combined: () => new Promise((resolve) => { answer = resolve }),
+      storeAvailability,
+    })
+
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(storeAvailability).not.toHaveBeenCalled()
+    answer(combinedProbe)
+
+    const result = await pending
+    expect(result.combined).toBe(combinedProbe)
+    expect(result.storeAvailable).toBe(true)
+    expect(storeAvailability).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats a store probe that throws as not knowing, so the store route stays first', async () => {
+    const combinedProbe = buildCodexDesktopCombinedProbeFailure(null)
+
+    const result = await inspectCodexDesktopBeforeInstall({
+      combined: async () => combinedProbe,
+      storeAvailability: async () => { throw new Error('store probe exploded') },
+    })
+
+    expect(result.storeAvailable).toBeNull()
+  })
+
+  it('keeps the PowerShell failure as the cause of the error the install throws', () => {
+    const processError = Object.assign(
+      new Error('Command failed: powershell.exe -NoLogo -NoProfile -NonInteractive -Command $OutputEncoding = ...'),
+      { killed: true, signal: 'SIGTERM', code: null },
+    )
+    const failed = buildCodexDesktopCombinedProbeFailure(processError)
+    const thrown = codexDesktopPackageProbeError(failed.packageProbe.error ?? '', failed.packageProbe)
+
+    expect(thrown.message).toBe('Codex desktop status probe: PowerShell gave no answer within 24 s and was stopped')
+    expect(thrown.cause).toBe(processError)
   })
 })
 

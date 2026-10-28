@@ -2019,12 +2019,14 @@ export function buildCodexDesktopCombinedProbeFailure(
   reason: unknown,
   timeoutMs: number = codexDesktopCombinedProbeTimeoutMs,
 ): CodexDesktopCombinedProbe {
+  const packageProbe = failedCodexDesktopPackageProbe(
+    describeCodexDesktopProbeProcessFailure('Codex desktop status probe', reason, timeoutMs),
+  )
   return {
     match: null,
     processes: [],
-    packageProbe: failedCodexDesktopPackageProbe(
-      describeCodexDesktopProbeProcessFailure('Codex desktop status probe', reason, timeoutMs),
-    ),
+    // 更新前查版本也走这条，原始错误要跟查包那条一样挂成 cause 进日志。
+    packageProbe: reason === null || reason === undefined ? packageProbe : { ...packageProbe, cause: reason },
   }
 }
 
@@ -2054,6 +2056,28 @@ async function runCodexDesktopCombinedProbe(): Promise<CodexDesktopCombinedProbe
   } catch (error) {
     return buildCodexDesktopCombinedProbeFailure(error)
   }
+}
+
+export interface CodexDesktopPreInstallProbes {
+  combined: () => Promise<CodexDesktopCombinedProbe>
+  storeAvailability: () => Promise<boolean | null>
+}
+
+/**
+ * 装或更新之前要知道：装着哪一版、开始菜单和进程里有没有它、这台电脑有没有微软商店。
+ *
+ * 前三样用首页检测那条合并脚本一次查完，不再各起一条 PowerShell。10-28 一位客户的电脑上
+ * 点「更新」每次都失败在查版本这一步：四条同时起，查包那条 8 秒没答完，整步 10.2 秒，跟同时
+ * 起的商店那条的 10 秒时限对得上；而首页那条合并脚本在同一台电脑上答得出来，「更新」按钮就是
+ * 它查完才有的。商店那条也要查 Appx，等合并那条答完再起，不跟它抢。
+ */
+export async function inspectCodexDesktopBeforeInstall(
+  probes: CodexDesktopPreInstallProbes,
+): Promise<{ combined: CodexDesktopCombinedProbe; storeAvailable: boolean | null }> {
+  const combined = await probes.combined()
+  // 探测自己吞掉错误；这里再兜一层，查不出来就当不知道，照旧先走商店。
+  const storeAvailable = await probes.storeAvailability().catch(() => null)
+  return { combined, storeAvailable }
 }
 
 export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageProbe> {
@@ -3535,21 +3559,19 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       : null
     if (!architecture) throw new Error(`Codex 桌面端不支持当前处理器架构 ${process.arch}`)
 
-    const [currentProbe, startApp, runningProcesses, storeAvailable] = await Promise.all([
-      inspectCodexDesktopPackage(),
-      findCodexDesktopStartApp(),
-      listCodexDesktopProcesses(),
-      // 探测自己吞掉错误；这里再兜一层，查不出来就当不知道，照旧先走商店。
-      inspectStoreAvailability(cancellation?.signal).catch(() => null),
-    ])
+    const { combined, storeAvailable } = await inspectCodexDesktopBeforeInstall({
+      combined: runCodexDesktopCombinedProbe,
+      storeAvailability: () => inspectStoreAvailability(cancellation?.signal),
+    })
     cancellation?.throwIfCancelled()
     attempt.storeUnavailable = storeAvailable === false
+    const currentProbe = combined.packageProbe
     if (currentProbe.error) throw codexDesktopPackageProbeError(currentProbe.error, currentProbe)
     const currentPackage = currentProbe.value
     const firstInstall = canAttemptCodexDesktopFirstInstallFallback(
       currentPackage,
-      startApp,
-      runningProcesses,
+      combined.match,
+      combined.processes,
       currentProbe.confirmedAbsent === true,
     )
     if (!firstInstall && !currentPackage) {
