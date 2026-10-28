@@ -148,6 +148,63 @@ test('machines that downloaded the new version but could not install it stop the
   assert.equal(assess([...machines(40, {}), ...machines(70, { app: '0.2.23', update: 'ff~0.2.23' })]).verdict, 'open')
 })
 
+test('a platform where no machine got the new version installed is stopped, not averaged away by the others (R29-05)', () => {
+  const windows = [...machines(200, {}), ...machines(100, { app: '0.2.23' })]
+  const result = assess([...windows, ...machines(30, { app: '0.2.23', os: 'm15', update: 'ff~0.2.24' })])
+  assert.equal(result.verdict, 'stop')
+  assert.match(result.headline, /^建议停住 0\.2\.24：Mac 上升新版没装上：下好了新版、试着装过的电脑全都还停在旧版，一台都没升上去。$/)
+  // Mac 一条新版打卡都没有，照样单列一格，表里看得到它装不上。
+  assert.deepEqual(result.table.map((scope) => [scope.label, scope.installShare]), [['合计', 30 / 230], ['Windows', 0], ['Mac', 1]])
+  assert.match(renderRolloutHealth(result, hoursLater(30)), /升新版没装上\*\*.*：合计 13\.0%、Windows 0\.0%、Mac 100\.0%/)
+
+  // 全没装上的不用攒够 20 台·天，3 台·天就停住，发出去头几个小时也一样。
+  assert.equal(assess([...windows, ...machines(3, { app: '0.2.23', os: 'm15', update: 'ff~0.2.24' })], 3).verdict, 'stop')
+  // 还有人升上去的，照旧要试过的够 20 台·天才拿比例判停。
+  const mixed = assess([...windows, ...machines(3, { os: 'm15' }), ...machines(6, { app: '0.2.23', os: 'm15', update: 'ff~0.2.24' })])
+  assert.equal(mixed.verdict, 'wait')
+})
+
+test('too few tries on a platform waits instead of letting the other platforms vouch for it (R29-05)', () => {
+  const windows = [...machines(200, {}), ...machines(100, { app: '0.2.23' })]
+  const failedOnly = [...windows, ...machines(2, { app: '0.2.23', os: 'm15', update: 'ff~0.2.24' })]
+  const waiting = assess(failedOnly)
+  assert.equal(waiting.verdict, 'wait')
+  assert.match(waiting.headline, /^再等等，0\.2\.24 先不放开：Mac 上有电脑下好了新版没装上，试着装过的还不到 20 台·天，看不出是个别电脑的问题还是都装不上。$/)
+  // 一台都没升上去的，等多久都不拿 Windows 升得好来放开。
+  assert.equal(assess(failedOnly, LONG_OBSERVATION_HOURS + 24).verdict, 'wait')
+
+  // 有升上去的，满 44 小时照「样本少」那样放开，写明是哪个平台只能粗看。
+  const someInstalled = [...windows, ...machines(5, { os: 'm15' }), ...machines(1, { app: '0.2.23', os: 'm15', update: 'ff~0.2.24' })]
+  assert.equal(assess(someInstalled).verdict, 'wait')
+  const later = assess(someInstalled, LONG_OBSERVATION_HOURS)
+  assert.equal(later.verdict, 'open')
+  assert.match(later.headline, /（Mac 上试着装新版的还少，装不装得上只能粗看）。$/)
+
+  // 没人试着装过、也没装不上的平台照旧：正常的各平台统计不受影响。
+  assert.equal(assess([...windows, ...machines(5, { os: 'm15' }), ...machines(40, { app: '0.2.23', os: 'm15' })]).verdict, 'open')
+})
+
+test('a rollout held to some platforms is judged on those platforms, not on the ones already fully released (R29-05)', () => {
+  const macOnly = { version: '0.2.24', percent: 20, platforms: ['mac-arm64'] }
+  function assessMac(records, hours = 30) {
+    return assessRolloutHealth({ rollout: macOnly, releasedAt: released, records, now: hoursLater(hours) })
+  }
+  const windows = [...machines(200, {}), ...machines(100, { app: '0.2.23' })]
+  const thin = assessMac([...windows, ...machines(5, { os: 'm15' }), ...machines(60, { app: '0.2.23', os: 'm15' })])
+  assert.equal(thin.verdict, 'wait')
+  assert.match(thin.headline, /Mac 上新版的打卡还不到 20 台·天/)
+  assert.deepEqual(thin.table.map((scope) => scope.label), ['合计', 'Windows', 'Mac'])
+  assert.match(assessMac([...windows, ...machines(5, { os: 'm15' })], LONG_OBSERVATION_HOURS).headline, /（Mac 上样本少，只能粗看）。$/)
+
+  // 管着的平台一条新版打卡都没有：表里照样有这一格，两天后说看不出，不拿 Windows 顶。
+  const silent = assessMac(windows, LONG_OBSERVATION_HOURS + 1)
+  assert.equal(silent.verdict, 'unknown')
+  assert.match(silent.headline, /Mac 上新版一条打卡都没收到/)
+  assert.deepEqual(silent.table.map((scope) => scope.label), ['合计', 'Windows', 'Mac'])
+
+  assert.equal(assessMac([...windows, ...machines(25, { os: 'm15' }), ...machines(60, { app: '0.2.23', os: 'm15' })]).verdict, 'open')
+})
+
 test('two days without a single check-in from the new version says it cannot tell', () => {
   const result = assess(machines(80, { app: '0.2.23' }), LONG_OBSERVATION_HOURS + 1)
   assert.equal(result.verdict, 'unknown')
