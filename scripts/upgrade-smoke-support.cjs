@@ -457,10 +457,13 @@ function findVersionUpdatedEntry(entries, { from, to }) {
     && isRecord(entry.detail) && entry.detail.from === from && entry.detail.to === to) || null
 }
 
+function describeLogEntry(entry) {
+  const detail = isRecord(entry.detail) ? ` ${JSON.stringify(entry.detail)}` : ''
+  return `${entry.timestamp || ''} [${entry.level || ''}] ${entry.source || ''}/${entry.event || ''} ${entry.message || ''}${detail}`
+}
+
 function describeUpdaterEntries(entries) {
-  return entries
-    .filter((entry) => entry.source === 'updater')
-    .map((entry) => `${entry.timestamp || ''} [${entry.level || ''}] ${entry.event || ''} ${entry.message || ''}${isRecord(entry.detail) ? ` ${JSON.stringify(entry.detail)}` : ''}`)
+  return entries.filter((entry) => entry.source === 'updater').map(describeLogEntry)
 }
 
 /**
@@ -516,6 +519,7 @@ module.exports = {
   asarFileIntegrity,
   asarHeaderHash,
   createFeedServer,
+  describeLogEntry,
   describeUpdaterEntries,
   extractNetworkTargets,
   findLostSettings,

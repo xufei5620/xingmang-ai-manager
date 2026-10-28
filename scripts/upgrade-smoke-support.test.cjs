@@ -16,6 +16,7 @@ const {
   asarFileIntegrity,
   asarHeaderHash,
   createFeedServer,
+  describeLogEntry,
   describeUpdaterEntries,
   extractNetworkTargets,
   findLostSettings,
@@ -303,6 +304,7 @@ test('findVersionUpdatedEntry finds the first start after the update in a log cu
   assert.equal(findVersionUpdatedEntry(entries, { from: '0.2.19', to: '0.2.23' }).id, '3')
   assert.equal(findVersionUpdatedEntry(entries, { from: '0.2.22', to: '0.2.23' }), null)
   assert.deepEqual(describeUpdaterEntries(entries).map((line) => line.split(' ')[0]), ['t1', 't3'])
+  assert.equal(describeLogEntry(entries[2]), 't4 [info] main/app.ready ')
 })
 
 test('findLostSettings reports the customer choices and working folder the new version dropped', () => {

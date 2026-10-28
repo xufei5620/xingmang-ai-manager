@@ -33,6 +33,7 @@ const {
   applyCustomerSettings,
   asarHeaderHash,
   createFeedServer,
+  describeLogEntry,
   describeUpdaterEntries,
   extractNetworkTargets,
   findLostSettings,
@@ -52,8 +53,11 @@ const {
   swapAsarText,
 } = require('./upgrade-smoke-support.cjs')
 
-// electron-builder.config.cjs 的 productName：安装目录、程序文件、.app 都叫这个名字。
+// electron-builder.config.cjs 的 productName：程序文件和 .app 叫这个名字。
 const PRODUCT_NAME = '星芒AI管理工具'
+// NSIS 的默认安装目录不用 productName，用 package.json 的 name（electron-builder 的 APP_FILENAME），
+// 客户电脑上是 C:\Program Files\xingmang-ai-manager。
+const WINDOWS_INSTALL_DIRECTORY_NAME = 'xingmang-ai-manager'
 const DEFAULT_PORT = 18123
 // 下载 120~150 MB 走本机回环只要几秒，慢的是旧版本自己核摘要、Windows Defender 扫安装包。
 const DOWNLOAD_BUDGET_MS = 8 * 60 * 1000
@@ -218,7 +222,7 @@ function systemTool(name) {
 }
 
 function windowsInstallDirectory() {
-  return path.join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', PRODUCT_NAME)
+  return path.join(process.env.ProgramW6432 || process.env.ProgramFiles || 'C:\\Program Files', WINDOWS_INSTALL_DIRECTORY_NAME)
 }
 
 function windowsAppPids() {
@@ -351,6 +355,13 @@ const windows = {
   installedVersion(installed) {
     return readPackagedPackageJson(path.join(installed.resources, 'app.asar')).version
   },
+
+  // Where the old version left the download and the installer it started.
+  describeScene() {
+    const cache = path.join(process.env.LOCALAPPDATA || '', 'xingmang-ai-manager-updater')
+    const listed = fs.existsSync(cache) ? fs.readdirSync(cache, { recursive: true }).join('、') : '（没有）'
+    return [`更新缓存 ${cache}：${listed}`]
+  },
 }
 
 // ---- macOS -----------------------------------------------------------------
@@ -412,6 +423,10 @@ function macResign(appPath, identity) {
   run('/usr/bin/codesign', ['--force', '--deep', '--preserve-metadata=identifier,entitlements,flags,runtime', '--timestamp=none',
     '--sign', identity.sha1, '--keychain', identity.keychainPath, appPath], { timeoutMs: 10 * 60 * 1000 })
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath], { timeoutMs: 10 * 60 * 1000 })
+}
+
+function macBundleValue(installed, key) {
+  return run('/usr/bin/plutil', ['-extract', key, 'raw', '-o', '-', path.join(installed.appPath, 'Contents', 'Info.plist')]).stdout.trim()
 }
 
 const SOURCE_EXTENSIONS = /\.(?:c?js|mjs|tsx?|json|html)$/i
@@ -559,23 +574,45 @@ const macos = {
   },
 
   installedVersion(installed) {
-    return run('/usr/bin/plutil', ['-extract', 'CFBundleShortVersionString', 'raw', '-o', '-',
-      path.join(installed.appPath, 'Contents', 'Info.plist')]).stdout.trim()
+    return macBundleValue(installed, 'CFBundleShortVersionString')
+  },
+
+  // Squirrel.Mac hands the swap to ShipIt, a separate launchd job that logs to
+  // its own files and the unified log; neither shows in the app's runtime log.
+  describeScene(installed) {
+    const shipItCache = path.join(os.homedir(), 'Library', 'Caches', `${macBundleValue(installed, 'CFBundleIdentifier')}.ShipIt`)
+    const lines = []
+    for (const name of ['ShipIt_stderr.log', 'ShipIt_stdout.log']) {
+      const text = readTextIfPresent(path.join(shipItCache, name))
+      lines.push(`${name}：${text === null ? '（没有）' : ''}`, ...(text || '').trim().split('\n').slice(-40).map((line) => `  ${line}`))
+    }
+    const unified = sudo(['/usr/bin/log', 'show', '--last', '20m', '--style', 'compact', '--predicate',
+      'process == "ShipIt" OR eventMessage CONTAINS[c] "squirrel" OR eventMessage CONTAINS[c] "ShipIt"'], { allowFailure: true, timeoutMs: 180_000 })
+    lines.push('系统日志里 ShipIt / Squirrel 的最后 60 行：', ...`${unified.stdout}${unified.stderr}`.trim().split('\n').slice(-60).map((line) => `  ${line}`))
+    return lines
   },
 }
 
 // ---- the run ---------------------------------------------------------------
 
-function reportScene(userData, log, feedLog, outside) {
+function reportScene(platform, installed, userData, log, feedLog, outside) {
   report('失败时的现场：')
   for (const name of ['pending-update.json', 'last-run-version.json', 'settings.json']) {
     report(`  ${name}: ${(readTextIfPresent(path.join(userData, name)) || '（没有）').trim()}`)
   }
-  const lines = describeUpdaterEntries(log.entries())
-  report(`  运行日志里更新相关的最后 ${Math.min(lines.length, 60)} 行：`)
-  for (const line of lines.slice(-60)) report(`    ${line}`)
+  // Every source, not just the updater: a quit, a crash or a startup failure
+  // between the two runs shows up under main or window.
+  const lines = log.entries().map(describeLogEntry)
+  report(`  运行日志最后 ${Math.min(lines.length, 80)} 行：`)
+  for (const line of lines.slice(-80)) report(`    ${line}`)
   report(`  假更新源一共收到 ${feedLog.length} 个请求`)
   if (outside.size > 0) report(`  星芒连过的本机以外地址：${[...outside].join('、')}`)
+  try {
+    report(`  程序还在跑吗：${platform.alive(installed) ? '在' : '不在'}；装着的版本：${platform.installedVersion(installed)}`)
+    for (const line of platform.describeScene(installed)) report(`  ${line}`)
+  } catch (error) {
+    report(`  读系统这边的现场时出错：${error.message}`)
+  }
 }
 
 async function upgrade(options) {
@@ -667,7 +704,7 @@ async function upgrade(options) {
     report(`通过：${options.oldVersion} 自己下载、核对、安装了 ${newVersion}，新版本接着用原来的数据和设置起来了`)
   } catch (error) {
     if (userData && log) {
-      reportScene(userData, log, feedLog, outside)
+      reportScene(platform, installed, userData, log, feedLog, outside)
       // The workflow keeps <work>/app-logs when a run fails: the whole log,
       // not just the updater lines above.
       try {
