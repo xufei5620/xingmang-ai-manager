@@ -29,7 +29,7 @@
 - **无限画布 + AI 工作区**（2026-08）：本仓自研的节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。
 - **线路自动切换与游戏加速**：客户端在线路1、线路2 之间自己切（`relay-route-controller.ts` / `relay-line-fetch.ts`）；游戏加速是本机 Mihomo 系统代理（`acceleration-*`，见 `docs/GLOBAL-ACCELERATION.md`）。
 
-**技术栈**：Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 两个账号后端（`xm.solov.cc` 是 new-api 生产实例，版本会跟上游漂移；`api.solov.cc` 是 sub2api），new-api 端点事实见 `docs/RECON-new-api.md`。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，第一版功能已做完（不带加速），发布开关还关着，见 `docs/LINUX.md`。
+**技术栈**：Electron 45 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 两个账号后端（`xm.solov.cc` 是 new-api 生产实例，版本会跟上游漂移；`api.solov.cc` 是 sub2api），new-api 端点事实见 `docs/RECON-new-api.md`。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，第一版功能已做完（不带加速），发布开关还关着，见 `docs/LINUX.md`。
 
 ---
 

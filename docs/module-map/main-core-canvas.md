@@ -103,6 +103,7 @@
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品；取回成品时另记一笔「请求号 → 片段」（最近 100 条），视频剪辑页重开时按请求号把片段挂回镜头
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + 最后写的 `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写、单文件/总量/账号目录数上限（防被攻破的渲染层换 scope 写满磁盘）；对话数上限与渲染层 `storage.ts` 是有意重复
 - `ai-chat-attachments.ts` — 聊天里附带的图片只从系统选文件框和剪贴板在主进程里取，渲染层给不出任何路径或字节（I15 同一思路）；太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片素材目录
+- `clipboard-image.ts` — 图片进出剪贴板（作品菜单「复制」、聊天粘贴截图）：Electron 44 起只剩按格式异步读写，一律以 `image/png` 进出
 - `chat-key-store.ts` — AI 聊天按分组签发的 Key 的本机缓存（`ChatKeyStore`）：`safeStorage` 加密落盘，`basic_text` 后端时拒绝落盘、只在本次运行内存里留；有账号数、每账号 Key 数上限，支持按账号/分组/Key 失效，并把退役分组名改成新名。由 `chat-credential-coordinator.ts`、`account-key-options.ts` 使用
 
 ### 素材存储与读取

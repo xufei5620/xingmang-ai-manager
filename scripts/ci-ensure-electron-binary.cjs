@@ -1,6 +1,6 @@
 // 要用到 Electron 二进制的 CI 作业在 `npm ci` 之后先跑这一步，把二进制限时、带重试地装好。
 //
-// 为什么不等测试自己去装：Electron 43 的 npm 包没有 postinstall，`npm ci` 只解开外壳，
+// 为什么不等测试自己去装：Electron 43 起 npm 包没有 postinstall，`npm ci` 只解开外壳，
 // 二进制要等第一次 `require('electron')` 时由 index.js 现场调 install.js 去下
 // （@electron/get）。那次下载只发一个请求，不重试也不限时，网络一抖，碰巧最先加载
 // Electron 的那个测试文件就带着「Electron failed to install correctly」红掉：
