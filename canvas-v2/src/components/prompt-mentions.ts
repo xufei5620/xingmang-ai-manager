@@ -1,3 +1,4 @@
+import { maximumPromptLength } from '../persistence/workflow-schema'
 import type { UpstreamMediaReference } from './upstream-references'
 
 export interface PromptTextSegment {
@@ -131,11 +132,12 @@ export function mentionRenderParts(text: string): { marker: string; rest: string
     : { marker: '', rest: text }
 }
 
-export const promptEditorMaxLength = 10_000
+export const promptEditorMaxLength = maximumPromptLength
 
 export function clipPromptEditorValue(value: string, caret: number | null = null): { value: string; caret: number | null } {
   if (value.length <= promptEditorMaxLength) return { value, caret }
-  const clipped = value.slice(0, promptEditorMaxLength)
+  const end = /[\uD800-\uDBFF]/.test(value.charAt(promptEditorMaxLength - 1)) ? promptEditorMaxLength - 1 : promptEditorMaxLength
+  const clipped = value.slice(0, end)
   return { value: clipped, caret: caret === null ? null : Math.min(Math.max(0, caret), clipped.length) }
 }
 

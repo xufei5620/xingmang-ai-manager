@@ -20,9 +20,68 @@
   --danger: var(--bad);
   --focus: var(--accent);
   --text-on-accent: var(--accent-fg);
+  --accent-hover: var(--accent-2);
   --xy-edge-stroke-default: var(--canvas-edge);
   --xy-attribution-background-color-default: var(--panel-solid);
   --xy-minimap-mask-background-color-default: color-mix(in srgb, var(--bg) 72%, transparent);
+}
+
+/* The web defaults share the workspace palette; alternate skins and high
+   contrast keep their own tokens. Node geometry and semantic port colors stay
+   independent from these surface colors. */
+:root[data-theme='light'][data-skin='dawn']:not(.hc):not([data-contrast='high']) {
+  --win: #f5f5f4;
+  --rail: #f7f7f6;
+  --bg: #f4f5f5;
+  --panel: #ffffff;
+  --panel-solid: #ffffff;
+  --panel-hover: #f1f2f2;
+  --panel-2: #f7f7f6;
+  --line: #e3e5e5;
+  --line-2: #cfd3d4;
+  --line-3: #a3aaad;
+  --text: #252a2d;
+  --text-2: #555f64;
+  --text-3: #69747a;
+  --kbd-bg: #eef0f0;
+  --accent: #b85732;
+  --accent-2: #984324;
+  --accent-fg: #ffffff;
+  --accent-glow: rgba(184, 87, 50, .14);
+  --accent-soft: #fbede6;
+  --btn-2-bg: #ffffff;
+  --btn-2-hover: #f1f2f2;
+  --canvas-grid: #d8ddde;
+  --canvas-edge: #8c969b;
+  --shadow-menu: 0 4px 16px rgba(30, 39, 43, .08);
+  --shadow-panel: 0 8px 24px rgba(30, 39, 43, .09);
+  --shadow-floating: 0 8px 28px rgba(30, 39, 43, .11);
+}
+
+:root[data-theme='dark'][data-skin='obsidian']:not(.hc):not([data-contrast='high']) {
+  --win: #17191d;
+  --rail: #1b1d21;
+  --bg: #17191d;
+  --panel: #202227;
+  --panel-solid: #202227;
+  --panel-hover: #30343b;
+  --panel-2: #292c32;
+  --line: #373b44;
+  --line-2: #4b505b;
+  --line-3: #707886;
+  --text: #f1f2f4;
+  --text-2: #b9bec8;
+  --text-3: #a5aab5;
+  --kbd-bg: #292c32;
+  --accent: #e3a080;
+  --accent-2: #efb89d;
+  --accent-fg: #221b17;
+  --accent-glow: rgba(227, 160, 128, .12);
+  --accent-soft: #3b2c28;
+  --btn-2-bg: #292c32;
+  --btn-2-hover: #30343b;
+  --canvas-grid: #363a42;
+  --canvas-edge: #7f8795;
 }
 
 .canvas-flow .react-flow { --xy-background-color: var(--canvas-bg); }

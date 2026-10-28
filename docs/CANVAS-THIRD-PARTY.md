@@ -12,6 +12,20 @@
 
 后续新增运行时依赖必须补充精确版本、仓库、子目录许可证例外和用途。直接迁移或改编上游文件时，必须额外记录 commit SHA、原路径、目标路径、版权声明和修改摘要。
 
+上表的 React 版本是 `canvas-v2/package.json` 里写的；画布实际由 `canvas:prepare` 用主仓根目录的依赖构建，跑的是根目录锁定的 `react` / `react-dom` 19.2.8。
+
+## 随内核带进来的第三方构建产物
+
+画布内核来自 xingmang-canvas，按 tag 同步进 `canvas-v2/`（#1393）。内核里有一份第三方源码编出来的运行时，原样随内核进来：
+
+| 项目 | 版本 | 来源 | 许可证 | 目标路径 | 用途 | 和上游比改了什么 |
+|---|---|---|---|---|---|---|
+| OpenCV GrabCut 运行时 | OpenCV 4.13.0（`https://codeload.github.com/opencv/opencv/tar.gz/refs/tags/4.13.0`，sha256 `1d40ca01…3017d`），Emscripten 4.0.20（release commit `c387d7a7e9537d0041d2c3ae71b7538cc978104e`） | xingmang-canvas `canvas-kernel/src/vendor/opencv-grabcut/` | Apache-2.0（OpenCV）；GrabCut、GCGraph 另带 Intel 的许可声明；Emscripten 运行时的许可证一并保留 | `canvas-v2/src/vendor/opencv-grabcut/runtime/opencv-grabcut-<sha256>.js`，打包成 `dist-canvas/assets/layer-grabcut-worker-*.js`（约 1.8MB） | 图层抠图，只在用户手动框选时在同源的模块 Worker 里跑 | 算法源码不改；只编 core、imgproc、js，导出名单只加 `setRNGSeed`、`grabCut`；`WASM=0`、`DYNAMIC_EXECUTION=0`、不开线程；`bounded-memory.patch` 把堆限在 512MiB |
+
+源码包、工具链的下载地址和完整哈希、构建参数、许可证全文的哈希都在同目录的 `manifest.json`，许可证全文在 `LICENSES.txt`，也印在运行时文件开头。运行时文件名就是它内容的 sha256。
+
+这份运行时是 Emscripten 生成的通用加载代码，里面有 1 处 `fetch`、5 处 `XMLHttpRequest`：是 Emscripten 读外部文件用的通用代码，这份构建不读任何外部文件（同目录 `README.md`）。画布窗口的 CSP `connect-src` 只放行 `xingmang-asset:`，它也连不出去。出网门禁 `scripts/verify-canvas-network-boundary.test.cjs` 只给这一个文件登记了这几处，个数钉死。
+
 ## 自有实现
 
 以下能力分为已经实现和计划实现两类，均按星芒数据契约独立开发，不复制 React Flow Pro 示例或其他项目源码。

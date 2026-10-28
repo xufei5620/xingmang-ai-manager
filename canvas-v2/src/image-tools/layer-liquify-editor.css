@@ -1,0 +1,72 @@
+.liquify-backdrop { position: fixed; z-index: 1710; inset: 0; display: grid; place-items: center; padding: 18px; background: #070b0fe8; backdrop-filter: blur(8px); }
+.liquify-editor { display: flex; flex-direction: column; width: min(1260px, 100%); height: min(840px, calc(100dvh - 36px)); min-width: 0; min-height: 0; color: #dce9e8; color-scheme: dark; background: #172126; border: 1px solid #3e515a; border-radius: 15px; box-shadow: 0 24px 90px #000a; font-size: 12px; overflow: hidden; }
+.liquify-editor > header, .liquify-editor > footer { display: flex; flex: none; align-items: center; gap: 12px; padding: 13px 18px; background: #1b282e; }
+.liquify-editor > header { justify-content: space-between; border-bottom: 1px solid #34464d; }
+.liquify-editor h2 { display: flex; align-items: center; gap: 9px; font-size: 19px; font-weight: 600; margin: 4px 0; }
+.liquify-editor h3 { margin: 0 0 12px; font-size: 12px; font-weight: 600; }
+.liquify-editor header span, .liquify-editor small { color: #9bb1ba; font-size: 10px; line-height: 1.5; }
+.liquify-editor button { display: inline-flex; flex: none; align-items: center; justify-content: center; gap: 6px; min-height: 33px; min-width: 0; padding: 7px 10px; border: 1px solid #3b525a; border-radius: 7px; color: #dce9e8; background: #24363e; font: inherit; cursor: pointer; }
+.liquify-editor button:hover { background: #30474f; }
+.liquify-editor button[aria-pressed="true"] { border-color: #92c9b6; color: #bdedda; background: #294a43; }
+.liquify-editor button:disabled { opacity: .4; cursor: default; }
+.liquify-editor :is(button, input, [tabindex]):focus-visible { outline: 2px solid #a4ddc4; outline-offset: 2px; }
+.liquify-layout { display: grid; grid-template-columns: minmax(0, 1fr) 275px; flex: 1; min-height: 0; }
+.liquify-preview-panel { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 14px; background: #10191e; }
+.liquify-preview-toolbar, .liquify-view-controls { display: flex; flex: none; gap: 7px; align-items: center; justify-content: space-between; }
+.liquify-preview-toolbar > div { display: flex; align-items: center; gap: 6px; }
+.liquify-preview-toolbar span { color: #99b0b4; font-size: 10px; margin-left: 4px; white-space: nowrap; }
+.liquify-preview-stage { position: relative; flex: 1; min-height: 100px; margin: 12px 0; overflow: hidden; border: 1px solid #31464e; border-radius: 7px; background: #0b1318; touch-action: none; cursor: none; isolation: isolate; }
+.liquify-preview-stage.is-panning { cursor: grab; }
+.liquify-preview-stage.is-panning:active { cursor: grabbing; }
+.liquify-preview-stage.is-before { cursor: default; }
+.liquify-preview-image { position: absolute; left: 50%; top: 50%; box-shadow: 0 8px 35px #0008; }
+.liquify-preview-image > .layer-recipe-preview { width: 100%; height: 100%; border-radius: 0; }
+.liquify-preview-image svg { display: block; width: 100%; height: 100%; }
+.liquify-brush-cursor { pointer-events: none; }
+.liquify-before-label { position: absolute; left: 12px; bottom: 12px; padding: 7px 10px; border: 1px solid #69827a; border-radius: 6px; color: #c5dbd1; background: #13241ee8; pointer-events: none; font-size: 10px; }
+.liquify-view-controls { justify-content: flex-start; }
+.liquify-view-spacer { flex: 1; }
+.liquify-view-controls output { min-width: 40px; text-align: center; font-size: 11px; color: #b2c5cb; font-variant-numeric: tabular-nums; }
+.liquify-preview-panel > p { margin: 11px 0 0; color: #90a7b0; font-size: 10px; line-height: 1.6; }
+.liquify-controls { min-width: 0; min-height: 0; overflow-y: auto; padding: 18px 15px; border-left: 1px solid #34464d; overscroll-behavior: contain; scrollbar-color: #49616a #172126; }
+.liquify-tools { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.liquify-tools button { justify-content: flex-start; padding: 9px 8px; font-size: 11px; }
+.liquify-tools button:first-child { grid-column: 1 / -1; }
+.liquify-tool-hint { min-height: 36px; font-size: 11px; color: #a6bfc2; line-height: 1.6; margin: 13px 0 18px; }
+.liquify-field { display: grid; gap: 9px; margin: 18px 0; font-size: 11px; color: #b7ccce; }
+.liquify-field > div { display: flex; align-items: center; gap: 7px; }
+.liquify-field input { min-width: 0; font: inherit; }
+.liquify-field input[type="range"] { flex: 1; width: 0; accent-color: #a4d4c2; }
+.liquify-field input[type="number"] { width: 52px; height: 30px; padding: 4px; border: 1px solid #3e515b; border-radius: 5px; background: #111c22; color: #d3e6e5; text-align: right; }
+.liquify-field small { width: 13px; }
+.liquify-help { margin-top: 22px; padding: 12px; border: 1px solid #34494b; border-radius: 8px; background: #1b2c2d; }
+.liquify-help strong { font-size: 11px; color: #bbd6cc; }
+.liquify-help p { color: #9bb4b6; line-height: 1.7; font-size: 10px; margin: 8px 0 0; }
+.liquify-reset { width: 100%; margin-top: 16px; }
+.liquify-editor > footer { border-top: 1px solid #34464d; }
+.liquify-editor > footer > div { flex: 1; min-width: 0; color: #b0c8c4; font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; }
+.liquify-editor > footer small { display: block; margin-top: 2px; }
+.liquify-editor [role="alert"] { color: #efb5a2; margin: 0; }
+.liquify-editor .is-primary { color: #152c23; background: #acd8c6; border-color: #acd8c6; }
+@media (max-width: 760px) {
+  .liquify-backdrop { padding: 0; }
+  .liquify-editor { width: 100%; height: 100dvh; border: 0; border-radius: 0; }
+  .liquify-editor > header { padding: 10px 12px; }
+  .liquify-editor h2 { font-size: 17px; }
+  .liquify-layout { display: flex; flex-direction: column; overflow-y: auto; }
+  .liquify-preview-panel { flex: none; padding: 10px; }
+  .liquify-preview-stage { flex: none; height: clamp(210px, 38dvh, 400px); margin: 9px 0; }
+  .liquify-preview-toolbar { gap: 4px; }
+  .liquify-preview-toolbar button { padding: 6px 8px; }
+  .liquify-preview-toolbar span { font-size: 9px; margin: 0; }
+  .liquify-view-controls { gap: 5px; }
+  .liquify-view-controls button { padding: 7px; }
+  .liquify-controls { flex: none; overflow: visible; border-left: 0; border-top: 1px solid #34464d; padding: 15px; }
+  .liquify-tools { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .liquify-tools button:first-child { grid-column: auto; }
+  .liquify-tools button { flex-direction: column; padding: 8px 3px; gap: 5px; font-size: 10px; }
+  .liquify-tool-hint { min-height: 0; margin-bottom: 8px; }
+  .liquify-editor > footer { flex-wrap: wrap; padding: 10px 12px; gap: 7px; }
+  .liquify-editor > footer > div { flex-basis: 100%; font-size: 10px; }
+  .liquify-editor > footer > button { flex: 1; min-height: 36px; }
+}

@@ -1,0 +1,26 @@
+.collage-input-sorter { width: 100%; min-width: 0; }
+.collage-input-sorter-heading { display: flex; flex-wrap: wrap; gap: 5px 10px; justify-content: space-between; margin: 12px 0 7px; font-size: 12px; color: #ced8e2; }
+.collage-input-sorter-heading span,.collage-input-notice { color: #8392a3; font-size: 11px; }
+.collage-input-sorter ol { list-style: none; padding: 0; margin: 0; display: grid; gap: 5px; max-height: 222px; overflow: auto; }
+.collage-input-sorter li { display: flex; align-items: center; gap: 5px; min-width: 0; padding: 5px; border: 1px solid #35404d; border-radius: 6px; background: #18202a; }
+.collage-input-sorter li.is-drop-target { border-color: #80d3b1; box-shadow: inset 0 0 0 1px #80d3b1; }
+.collage-input-sorter li img { width: 28px; height: 28px; object-fit: contain; flex-shrink: 0; background: #0f141b; border-radius: 3px; }
+.collage-input-number { width: 15px; font-size: 11px; color: #90a0b2; text-align: center; flex-shrink: 0; }
+.collage-input-label { min-width: 0; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.collage-input-sorter button { display: inline-flex; justify-content: center; align-items: center; width: 24px; height: 24px; padding: 0; flex-shrink: 0; color: #d7e4f2; background: #263242; border: 1px solid #465365; border-radius: 4px; }
+.collage-input-sorter button:disabled { opacity: .35; cursor: not-allowed; }
+.collage-input-sorter button:focus-visible { outline: 2px solid #96e5be; outline-offset: 2px; }
+.collage-input-grip { cursor: grab; }
+.collage-input-notice { display: block; margin-top: 7px; line-height: 1.5; }
+.collage-input-pending { font-size: 10px; color: #c4ae7e; }
+.collage-input-sorter.is-compact ol { max-height: 108px; }
+.image-grid-cell-controls { position: absolute; z-index: 3; pointer-events: none; }
+.image-grid-cell-controls .collage-input-grip { position: absolute; top: 4px; right: 4px; pointer-events: auto; width: 22px; height: 22px; background: #16212dd9; }
+.image-grid-cell-controls.is-drop-target { outline: 2px solid #80d3b1; outline-offset: -2px; }
+
+/* The collage card contains a bounded input list as well as the image stage. */
+.image-tool-node-preview.has-collage-order { max-height: none; overflow: visible; padding: 8px; --image-tool-preview-height: 180px; }
+.image-tool-node .collage-input-sorter button,.image-tool-dialog .collage-input-sorter button { width: 24px; height: 24px; min-height: 24px; padding: 0; gap: 0; }
+.image-tool-node .collage-input-sorter button svg,.image-tool-dialog .collage-input-sorter button svg { width: 13px; height: 13px; flex: none; stroke-width: 2; }
+.image-tool-node .image-grid-cell-controls .collage-input-grip,.image-tool-dialog .image-grid-cell-controls .collage-input-grip { width: 22px; height: 22px; min-height: 22px; color: #f1f7ff; border-color: #8192a7; }
+.image-tool-editor-preview > .collage-input-sorter:first-child { max-height: none; }

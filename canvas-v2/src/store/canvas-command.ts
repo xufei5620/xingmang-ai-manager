@@ -8,6 +8,7 @@ export type CanvasCommand =
   | { type: 'resize-nodes'; dimensions: Readonly<Record<string, { width: number; height: number }>>; mergeKey?: string }
   | { type: 'set-node-flags'; nodeIds: string[]; locked?: boolean; disabled?: boolean }
   | { type: 'replace-nodes'; nodes: EditorNodeRecord[]; mergeKey?: string }
+  | { type: 'replace-graph'; nodes: EditorNodeRecord[]; edges: EditorEdgeRecord[]; mergeKey?: string }
   | { type: 'insert-node-on-edge'; node: EditorNodeRecord; edgeId: string; before: EditorEdgeRecord; after: EditorEdgeRecord }
   | { type: 'splice-node-on-edge'; nodeId: string; edgeId: string; before: EditorEdgeRecord; after: EditorEdgeRecord }
   | { type: 'delete-elements'; nodeIds: string[]; edgeIds?: string[]; bridges?: EditorEdgeRecord[] }
@@ -16,7 +17,7 @@ export type CanvasCommand =
   | { type: 'reconnect-edge'; edgeId: string; edge: EditorEdgeRecord }
   | { type: 'set-viewport'; viewport: CanvasViewport; mergeKey?: string }
   | { type: 'set-media-groups'; mediaGroups: CanvasMediaGroups }
-  | { type: 'replace-document'; document: CanvasDocumentState }
+  | { type: 'replace-document'; document: CanvasDocumentState; resetHistory?: boolean }
   | { type: 'rename-document'; name: string }
 
 export function commandMergeKey(command: CanvasCommand): string | null {

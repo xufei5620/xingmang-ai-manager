@@ -10,6 +10,7 @@ import {
   imageModelPreset,
   type ImageResolution,
 } from '../models'
+import { templateImageModelCompatibility } from '../templates/template-catalog-image-options'
 
 export interface OperationDefaultsResult {
   available: boolean
@@ -29,7 +30,7 @@ export function operationDefaultsForTemplateNode(
 ): OperationDefaultsResult {
   if (['image', 'image-generate', 'image-edit'].includes(type)) {
     const effectiveModels = imageModels.length > 0 ? imageModels : [defaultImageModel]
-    const presets = availableImageModelPresets(effectiveModels)
+    const presets = availableImageModelPresets(effectiveModels, true)
     const requiresEdit = type === 'image-edit'
     const requiresSize = typeof preferred.size === 'string'
     const requiresQuality = typeof preferred.quality === 'string'
@@ -37,16 +38,21 @@ export function operationDefaultsForTemplateNode(
       (!requiresEdit || preset.supportsEdits)
       && (!requiresSize || preset.supportsSize)
       && (!requiresQuality || preset.supportsQuality)
+      && templateImageModelCompatibility(preset.id, requiresEdit ? 'edit' : 'generate', preferred).available
     ))
     const preferredModel = typeof preferred.model === 'string' ? preferred.model : ''
-    const selected = compatible.find((preset) => preset.id === preferredModel) ?? compatible[0]
-    if (!selected) return { available: false, config: { model: '' }, reason: requiresEdit ? '没有兼容的图片编辑模型' : '没有兼容的图片生成模型' }
+    const selected = preferredModel ? compatible.find((preset) => preset.id === preferredModel) : compatible[0]
+    if (!selected) {
+      const explanations = (preferredModel ? [preferredModel] : presets.map((preset) => preset.id))
+        .flatMap((model) => templateImageModelCompatibility(model, requiresEdit ? 'edit' : 'generate', preferred).reasons)
+      return { available: false, config: { ...preferred, model: preferredModel }, reason: [...new Set(explanations)].join('；') || (requiresEdit ? '没有兼容的图片编辑模型' : '没有兼容的图片生成模型') }
+    }
     const config: Record<string, unknown> = {
       ...preferred,
       model: selected.id,
       ...(selected.supportsQuality ? { quality: typeof preferred.quality === 'string' ? preferred.quality : defaultImageQuality } : {}),
       ...(selected.supportsSize ? { size: typeof preferred.size === 'string' ? preferred.size : defaultImageSize } : {}),
-      imageResolution: isImageResolution(preferred.imageResolution) && selected.resolutions.includes(preferred.imageResolution)
+      imageResolution: isImageResolution(preferred.imageResolution)
         ? preferred.imageResolution
         : defaultImageResolution,
     }
@@ -56,7 +62,7 @@ export function operationDefaultsForTemplateNode(
   }
   if (['video', 'video-generate'].includes(type)) {
     const effectiveModels = videoModels.length > 0 ? videoModels : [defaultVideoModel]
-    const presets = availableVideoModelPresets(effectiveModels)
+    const presets = availableVideoModelPresets(effectiveModels, true)
     const preferredModel = typeof preferred.model === 'string' ? preferred.model : ''
     const selected = presets.find((preset) => preset.id === preferredModel) ?? presets[0]
     if (!selected) return { available: false, config: { model: '' }, reason: '没有兼容的视频模型' }

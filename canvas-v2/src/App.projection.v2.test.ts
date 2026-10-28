@@ -1,0 +1,284 @@
+// 桌面 v2 编辑器的用例（桌面 000f9131 的 canvas-v2/src/App.projection.test.ts），#4 搬进内核。
+// 内核有意和 v2 不一样的地方，期望改成内核的行为或退役，改动处写了为什么，汇总见 docs/canvas-kernel-v2-tests.md。
+import { describe, expect, it } from 'vitest'
+import type { Edge } from '@xyflow/react'
+import type { WorkflowNode } from './model'
+import {
+  canvasMediaConfigurationErrors,
+  isCanvasGraphNode,
+  isCanvasRunnableTarget,
+  selectCanvasRunNodeIds,
+  toCanvasNode,
+  toCanvasRunGraph,
+  toWorkflowNode,
+  workflowNodeData,
+} from './App'
+import { builtinCanvasTemplates } from './templates/builtin-templates'
+import { instantiateTemplate } from './templates/instantiate-template'
+
+function workflowNode(overrides: Partial<WorkflowNode> = {}): WorkflowNode {
+  return {
+    id: 'node-1',
+    kind: 'prompt',
+    definitionVersion: 3,
+    position: { x: 10, y: 20 },
+    data: { prompt: '测试', model: '', status: 'idle', settings: { note: '保留' } },
+    ...overrides,
+  }
+}
+
+describe('canvas workflow projection', () => {
+  it('projects the product-video template with seconds and ignores durationSeconds', () => {
+    const template = builtinCanvasTemplates.find((item) => item.id === 'xingmang-product-video')!
+    const instance = instantiateTemplate(template, {
+      values: { product: 'p'.repeat(43), prompt: '轻微推近' },
+      availableNodeTypes: new Set(['prompt', 'image-input', 'video-generate', 'gallery', 'output']),
+      createId: (() => { let id = 0; return () => `template-${++id}` })(),
+    })
+    const videoTemplateNode = instance.nodes.find((node) => node.type === 'video-generate')!
+    const video = toCanvasNode(workflowNode({
+      id: videoTemplateNode.id,
+      kind: 'video-generate',
+      data: workflowNodeData('video-generate', videoTemplateNode.config),
+    }))
+    const graph = toCanvasRunGraph([video], [], { image: '生图分组', video: 'grok' })
+    expect(graph.nodes[0].data.seconds).toBe('5')
+    expect((graph.nodes[0].data as Record<string, unknown>).durationSeconds).toBeUndefined()
+
+    const legacy = workflowNodeData('video-generate', { durationSeconds: 8 })
+    expect(legacy.seconds).toBeUndefined()
+    expect(legacy.settings?.durationSeconds).toBe(8)
+  })
+  it('restores registry dimensions for legacy asset nodes without saved geometry', () => {
+    const canvas = toCanvasNode(workflowNode({ id: 'legacy-asset', kind: 'image-input', data: workflowNodeData('image-input') }))
+
+    expect(canvas.width).toBe(280)
+    // v2 固定成登记的 340 高。内核只给媒体节点和分组定高，没放素材的节点随内容长高，
+    // 不然 React Flow 量不到字段、校验提示撑出来的高度（toCanvasNode 的注释）。
+    expect(canvas.height).toBeUndefined()
+    expect(canvas.style).toEqual({ width: 280 })
+  })
+
+  it('uses real portrait video metadata instead of stale saved node dimensions', () => {
+    const assetId = 'v'.repeat(43)
+    const canvas = toCanvasNode(workflowNode({
+      id: 'portrait-video',
+      kind: 'video-input',
+      width: 320,
+      height: 180,
+      data: {
+        prompt: '', model: '', status: 'succeeded',
+        result: {
+          kind: 'video', assetId, localUrl: `xingmang-asset://video/${assetId}`,
+          width: 448, height: 672,
+        },
+      },
+    }))
+
+    expect(canvas.width).toBe(320)
+    expect(canvas.height).toBe(480)
+    expect(canvas.style).toMatchObject({ width: 320, height: 480 })
+    expect(toWorkflowNode(canvas).data.result).toMatchObject({ width: 448, height: 672 })
+  })
+
+  it('keeps generation elapsed time on the in-memory canvas node', () => {
+    const canvas = toCanvasNode(workflowNode({
+      kind: 'image-generate',
+      data: {
+        prompt: '角色', model: 'gpt-image-2', status: 'succeeded',
+        latestAttemptDurationMs: 8_123,
+      },
+    }))
+    expect(toWorkflowNode(canvas).data.latestAttemptDurationMs).toBe(8_123)
+  })
+
+  it('sizes a generated image node to the picture, without form chrome', () => {
+    const assetId = 'i'.repeat(43)
+    const canvas = toCanvasNode(workflowNode({
+      id: 'portrait-image-result',
+      kind: 'image-generate',
+      width: 304,
+      height: 360,
+      data: {
+        prompt: '角色三视图', model: 'gpt-image-2', status: 'succeeded',
+        result: {
+          kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`,
+          width: 1152, height: 1536,
+        },
+      },
+    }))
+
+    expect(canvas.width).toBe(280)
+    expect(canvas.height).toBe(373)
+    expect(canvas.style).toMatchObject({ width: 280, height: 373 })
+  })
+
+  it('sizes a generated portrait video node to the picture, without form chrome', () => {
+    const assetId = 'g'.repeat(43)
+    const canvas = toCanvasNode(workflowNode({
+      id: 'portrait-video-result',
+      kind: 'video-generate',
+      width: 304,
+      height: 360,
+      data: {
+        prompt: '竖屏镜头', model: 'grok-imagine-video', status: 'succeeded',
+        result: {
+          kind: 'video', assetId, localUrl: `xingmang-asset://video/${assetId}`,
+          width: 448, height: 672,
+        },
+      },
+    }))
+
+    expect(canvas.width).toBe(320)
+    expect(canvas.height).toBe(480)
+    expect(canvas.style).toMatchObject({ width: 320, height: 480 })
+  })
+
+  it('uses the requested video size while metadata is still unavailable', () => {
+    const assetId = 'p'.repeat(43)
+    const canvas = toCanvasNode(workflowNode({
+      id: 'pending-portrait-video',
+      kind: 'video-generate',
+      width: 304,
+      height: 360,
+      data: {
+        prompt: '竖屏镜头', model: 'grok-imagine-video', status: 'succeeded', size: '720x1280',
+        result: { kind: 'video', assetId, localUrl: `xingmang-asset://video/${assetId}` },
+      },
+    }))
+
+    expect(canvas.style).toMatchObject({ width: 270, height: 480 })
+  })
+
+  it('round-trips definition metadata without leaking it into user settings', () => {
+    const source = workflowNode({
+      kind: 'unknown',
+      definitionVersion: 7,
+      disabled: true,
+      unknownKind: 'future-super-node',
+    })
+
+    const canvas = toCanvasNode(source)
+    expect(canvas).toMatchObject({ type: 'unknown', definitionVersion: 7, disabled: true, unknownKind: 'future-super-node' })
+    expect(canvas.data.settings).toEqual({ note: '保留' })
+    expect(toWorkflowNode(canvas)).toMatchObject({
+      kind: 'unknown', definitionVersion: 7, disabled: true, unknownKind: 'future-super-node',
+      data: { settings: { note: '保留' } },
+    })
+  })
+
+  it('preserves disabled known nodes and excludes unknown placeholders from execution', () => {
+    const disabled = toCanvasNode(workflowNode({ id: 'disabled', disabled: true, definitionVersion: 4 }))
+    const unknown = toCanvasNode(workflowNode({
+      id: 'unknown', kind: 'unknown', disabled: true, unknownKind: 'future-node', definitionVersion: 9,
+    }))
+    const edges: Edge[] = [{ id: 'edge-1', source: 'disabled', target: 'unknown' }]
+
+    const graph = toCanvasRunGraph([disabled, unknown], edges, { image: '生图分组', video: 'grok' })
+
+    expect(graph.nodes).toEqual([expect.objectContaining({ id: 'disabled', definitionVersion: 4, disabled: true })])
+    expect(graph.edges).toEqual([])
+  })
+
+  it('projects an empty generate node as a pending media box', () => {
+    const image = toCanvasNode(workflowNode({
+      id: 'pending-image', kind: 'image-generate', data: workflowNodeData('image-generate', { size: '1152x1536' }),
+    }))
+    const video = toCanvasNode(workflowNode({
+      id: 'pending-video', kind: 'video-generate', data: workflowNodeData('video-generate', { size: '1280x720' }),
+    }))
+    expect(image).toMatchObject({ width: 280, height: 373 })
+    expect(video).toMatchObject({ width: 320, height: 180 })
+  })
+
+  it('separates graph members from runnable targets and structural nodes', () => {
+    const active = toCanvasNode(workflowNode({ id: 'active', kind: 'image-generate', data: workflowNodeData('image-generate') }))
+    const disabled = toCanvasNode(workflowNode({ id: 'disabled', kind: 'image-generate', disabled: true, data: workflowNodeData('image-generate') }))
+    const group = toCanvasNode(workflowNode({ id: 'group', kind: 'group', data: workflowNodeData('group') }))
+    const note = toCanvasNode(workflowNode({ id: 'note', kind: 'note', data: workflowNodeData('note') }))
+
+    expect(isCanvasGraphNode(active)).toBe(true)
+    expect(isCanvasRunnableTarget(active)).toBe(true)
+    expect(isCanvasGraphNode(disabled)).toBe(true)
+    expect(isCanvasRunnableTarget(disabled)).toBe(false)
+    expect(isCanvasGraphNode(group)).toBe(false)
+    expect(isCanvasGraphNode(note)).toBe(false)
+    expect(toCanvasRunGraph([active, disabled, group, note], [], { image: '', video: '' }).nodes.map((node) => node.id)).toEqual(['active', 'disabled'])
+  })
+
+  it('projects a template-bound local asset into an owned image-input run', () => {
+    const assetId = 'a'.repeat(43)
+    const data = workflowNodeData('image-input', { assetId })
+    expect(data).toMatchObject({
+      status: 'succeeded',
+      result: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}` },
+    })
+    expect(data.settings).toBeUndefined()
+
+    const canvas = toCanvasNode(workflowNode({ id: 'asset', kind: 'image-input', data }))
+    expect(toCanvasRunGraph([canvas], [], { image: '生图分组', video: 'grok' }).nodes[0].data.adoptedAssetId).toBe(assetId)
+  })
+
+  it('projects image and video nodes with their independently configured groups', () => {
+    const image = toCanvasNode(workflowNode({
+      id: 'image', kind: 'image-generate', data: workflowNodeData('image-generate', { model: 'gpt-image-2', imageResolution: '4K' }),
+    }))
+    const video = toCanvasNode(workflowNode({
+      id: 'video', kind: 'video-generate', data: workflowNodeData('video-generate', { model: 'grok-imagine-video' }),
+    }))
+
+    const graph = toCanvasRunGraph([image, video], [], { image: '生图分组', video: 'grok' })
+
+    expect(graph.nodes.find((node) => node.id === 'image')?.data.group).toBe('生图分组')
+    expect(graph.nodes.find((node) => node.id === 'image')?.data.imageResolution).toBe('4K')
+    expect(graph.nodes.find((node) => node.id === 'video')?.data.group).toBe('grok')
+  })
+
+  it('projects only the bounded MiniMax settings needed by the main-process run', () => {
+    const video = toCanvasNode(workflowNode({
+      id: 'video', kind: 'video-generate', data: workflowNodeData('video-generate', {
+        model: 'minimax-h3-base',
+        videoMode: 'ref2va', videoResolution: '720p', videoAspectRatio: '9:16', promptOptimization: true, ignored: 'local-only',
+      }),
+    }))
+    expect(toCanvasRunGraph([video], [], { image: '', video: 'video' }).nodes[0].data).toMatchObject({
+      group: 'video', videoMode: 'ref2va', videoResolution: '720p', videoAspectRatio: '9:16', promptOptimization: true,
+    })
+    expect(toCanvasRunGraph([video], [], { image: '', video: 'video' }).nodes[0].data).not.toHaveProperty('ignored')
+  })
+
+  it('validates media groups only for the selected run scope and its upstream dependencies', () => {
+    const prompt = toCanvasNode(workflowNode({ id: 'prompt' }))
+    const image = toCanvasNode(workflowNode({
+      id: 'image', kind: 'image-generate', data: workflowNodeData('image-generate', { model: 'gpt-image-2' }),
+    }))
+    const unrelatedVideo = toCanvasNode(workflowNode({
+      id: 'video', kind: 'video-generate', data: workflowNodeData('video-generate', { model: 'grok-imagine-video' }),
+    }))
+    const graph = toCanvasRunGraph([prompt, image, unrelatedVideo], [
+      { id: 'prompt-image', source: 'prompt', target: 'image' },
+    ], { image: '生图分组', video: '' })
+    const scope = { kind: 'to-node' as const, nodeId: 'image' }
+
+    expect([...selectCanvasRunNodeIds(graph, scope)]).toEqual(expect.arrayContaining(['prompt', 'image']))
+    expect(selectCanvasRunNodeIds(graph, scope).has('video')).toBe(false)
+    expect(canvasMediaConfigurationErrors(graph, scope, {
+      imageGroup: '生图分组', imageModels: ['gpt-image-2'], videoModels: [],
+    })).toEqual([])
+  })
+
+  it('reports unavailable models in the active run closure but ignores disabled media nodes', () => {
+    const activeImage = toCanvasNode(workflowNode({
+      id: 'active-image', kind: 'image-generate', data: workflowNodeData('image-generate', { model: 'gpt-image-2' }),
+    }))
+    const disabledVideo = toCanvasNode(workflowNode({
+      id: 'disabled-video', kind: 'video-generate', disabled: true,
+      data: workflowNodeData('video-generate', { model: 'grok-imagine-video' }),
+    }))
+    const graph = toCanvasRunGraph([activeImage, disabledVideo], [], { image: '生图分组', video: '' })
+
+    expect(canvasMediaConfigurationErrors(graph, { kind: 'all' }, {
+      imageGroup: '生图分组', imageModels: [], videoModels: [],
+    })).toEqual(['生图分组「生图分组」不提供模型：gpt-image-2'])
+  })
+})

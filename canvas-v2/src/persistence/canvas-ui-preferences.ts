@@ -8,6 +8,10 @@ export interface CanvasUiPreferences {
   focusMode: boolean
   rightPanel: CanvasRightPanel
   minimapOpen: boolean
+  snapEnabled?: boolean
+  connectionsHidden?: boolean
+  composerFollowNode?: boolean
+  composerCollapsed?: boolean
 }
 
 export interface CanvasUiPreferencesStorage {
@@ -21,6 +25,10 @@ export const defaultCanvasUiPreferences: CanvasUiPreferences = {
   focusMode: false,
   rightPanel: null,
   minimapOpen: false,
+  snapEnabled: true,
+  connectionsHidden: false,
+  composerFollowNode: false,
+  composerCollapsed: false,
 }
 
 /** Opening a project always starts with the node library as a rail. Expanding
@@ -54,6 +62,10 @@ function normalizePreferences(value: unknown): CanvasUiPreferences {
     focusMode: raw.focusMode === true,
     rightPanel: raw.rightPanel === 'assets' || raw.rightPanel === 'runs' ? raw.rightPanel : null,
     minimapOpen: raw.minimapOpen === true,
+    snapEnabled: raw.snapEnabled !== false,
+    connectionsHidden: raw.connectionsHidden === true,
+    composerFollowNode: raw.composerFollowNode === true,
+    composerCollapsed: raw.composerCollapsed === true,
   }
 }
 

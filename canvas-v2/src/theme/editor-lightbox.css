@@ -1,0 +1,33 @@
+.media-lightbox.media-lightbox-enhanced {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px 18px;
+}
+.media-lightbox-enhanced .media-lightbox-toolbar {
+  position: static;
+  width: 100%;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.media-lightbox-enhanced .media-lightbox-toolbar > span { margin-right: auto; }
+.media-lightbox-zoom { display: flex; width: 100%; flex-shrink: 0; justify-content: center; align-items: center; gap: 6px; }
+.media-lightbox-zoom button { display: inline-flex; min-width: 32px; height: 32px; align-items: center; justify-content: center; gap: 5px; padding: 0 8px; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 7px; cursor: pointer; }
+.media-lightbox-zoom button:hover:not(:disabled),
+.media-lightbox-zoom button[aria-pressed='true'] { color: var(--text-primary); background: var(--surface-hover); border-color: var(--accent); }
+.media-lightbox-zoom button:disabled { opacity: .4; cursor: default; }
+.media-lightbox-zoom output { min-width: 48px; color: var(--text-primary); font-size: 12px; text-align: center; font-variant-numeric: tabular-nums; }
+.media-lightbox-zoom > span { margin-left: 8px; color: var(--text-muted); font-size: 11px; }
+.media-lightbox-enhanced .media-lightbox-image-viewport { width: 100%; min-height: 0; flex: 1; overflow: auto; overscroll-behavior: contain; border-radius: 10px; }
+.media-lightbox-image-stage { display: flex; width: max-content; height: max-content; min-width: 100%; min-height: 100%; align-items: center; justify-content: center; padding: 16px; box-sizing: border-box; }
+.media-lightbox-enhanced .media-lightbox-image { flex-shrink: 0; max-width: none; max-height: none; object-fit: contain; border: 0; box-shadow: 0 0 0 1px var(--border-subtle), var(--shadow-lightbox); }
+.media-lightbox-enhanced .media-lightbox-video,
+.media-lightbox-enhanced .media-lightbox-audio { margin: auto; }
+.media-lightbox-enhanced button:focus-visible,
+.media-lightbox-image-viewport:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (max-width: 560px) {
+  .media-lightbox.media-lightbox-enhanced { padding: 10px; gap: 8px; }
+  .media-lightbox-zoom > span { display: none; }
+  .media-lightbox-enhanced .media-lightbox-toolbar time { display: none; }
+}

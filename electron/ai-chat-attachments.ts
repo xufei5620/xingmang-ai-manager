@@ -36,7 +36,7 @@ export interface ChatAttachmentServiceOptions {
   /** Opens the native picker and returns absolute paths, or an empty list when canceled. */
   pickFiles(): Promise<string[]>
   /** The clipboard's image as PNG bytes, or null when it holds no image. */
-  readClipboardImage(): Buffer | null
+  readClipboardImage(): Promise<Buffer | null>
 }
 
 export interface ChatAttachmentService {
@@ -107,7 +107,7 @@ export function createChatAttachmentService(options: ChatAttachmentServiceOption
   }
 
   async function paste(userId: number): Promise<AiStoredAsset | null> {
-    const bytes = options.readClipboardImage()
+    const bytes = await options.readClipboardImage()
     if (!bytes || bytes.length === 0) return null
     return options.store.storeLocalBytes(userId, prepareChatImage(bytes, options.codec))
   }

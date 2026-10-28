@@ -1,0 +1,30 @@
+.canvas-draft-recovery { width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow: auto; }
+.canvas-draft-options { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.canvas-draft-options legend { padding: 0 4px; color: var(--text-secondary); font-size: var(--text-xs); }
+.canvas-project-dialog .canvas-draft-options label { display: flex; align-items: center; gap: 10px; cursor: pointer; }
+.canvas-project-dialog .canvas-draft-options input { width: 16px; height: 16px; padding: 0; accent-color: var(--accent); }
+.canvas-draft-options span { display: grid; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.canvas-draft-options small { color: var(--text-muted); }
+.canvas-draft-export { min-height: 32px; padding: 0 10px; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.canvas-draft-notices { position: absolute; z-index: 30; top: 12px; right: 12px; left: 12px; display: grid; gap: 8px; margin: auto; max-width: 760px; }
+.canvas-draft-notice { display: grid; gap: 10px; padding: 12px 14px; color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid var(--warning); border-radius: var(--radius-panel); box-shadow: var(--shadow-floating); font-size: var(--text-xs); }
+.canvas-draft-notice p { margin: 0; line-height: 1.55; }
+.canvas-draft-notice nav { display: flex; flex-wrap: wrap; gap: 8px; }
+.canvas-draft-notice button { min-height: 32px; padding: 0 10px; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.canvas-draft-notice button.is-primary { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
+.canvas-draft-notice button:disabled { opacity: 0.5; }
+.canvas-draft-recovery p { line-height: 1.6; }
+.canvas-draft-actions, .canvas-draft-confirmation > div { display: flex; flex-wrap: wrap; gap: 8px; }
+.canvas-draft-actions button, .canvas-draft-confirmation button { min-height: 36px; padding: 6px 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); background: var(--surface-2); color: var(--text-secondary); }
+.canvas-draft-actions button:disabled, .canvas-draft-confirmation button:disabled { opacity: 0.5; cursor: not-allowed; }
+.canvas-draft-feedback { color: var(--text-primary); font-size: var(--text-xs); }
+.canvas-draft-hint { color: var(--text-secondary); font-size: var(--text-xs); }
+.canvas-draft-confirmation { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--warning); border-radius: var(--radius-control); background: var(--surface-2); }
+.canvas-draft-confirmation p { margin: 0; }
+.canvas-draft-confirmation .is-destructive { border-color: var(--warning); color: var(--text-primary); }
+.canvas-draft-recovery footer { flex-wrap: wrap; }
+@media (max-width: 480px) {
+  .canvas-draft-recovery { max-height: calc(100dvh - 24px); }
+  .canvas-draft-actions button { flex: 1 1 140px; }
+  .canvas-draft-confirmation > div button { flex: 1 1 140px; }
+}

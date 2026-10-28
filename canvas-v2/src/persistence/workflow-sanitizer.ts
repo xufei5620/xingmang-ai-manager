@@ -1,3 +1,25 @@
+import { assertNodeMediaSourceGroup } from '../lib/node-model-source-contract'
+import { assertRouterStrategyWorkflowConfiguration } from '../lib/router-strategy-contract'
+import { finiteCanvasViewportTranslation, maximumCanvasViewportZoom, minimumCanvasViewportZoom } from './canvas-viewport-limits'
+import { assertWorkflowColorGradeDetailPlacement } from './workflow-schema'
+import { parseNodeStoryboardTask } from '../storyboard/storyboard-task'
+import { parseNodeExteriorTask } from '../exterior/exterior-task'
+import { parseNodeInteriorTask } from '../interior/interior-task'
+import { parseNodeCommerceTask } from '../commerce/commerce-task'
+import { parseNodeImageReferenceOrder } from '../commerce/image-reference-order'
+import { assertCommerceTaskConfiguration } from '../commerce/image-task-configuration'
+import { parseVideoGenerateAudio } from '../runtime/video-audio'
+import { parseNodeVideoReferenceOrder } from '../video-tools/video-reference-order'
+import { parseTextWebSearch } from '../runtime/text-web-search'
+import { parseImageCandidateCount, type ImageCandidateCount } from '../runtime/image-candidate-count'
+import { parseVideoCandidateCount, type VideoCandidateCount } from '../runtime/video-candidate-count'
+import { parseImageCollageInputOrder, remapCollageInputOrderSettings } from '../image-tools/collage-input-order'
+import { parseNodeTileInput } from '../image-tools/tile-input'
+import { parseImageTransformRecipe, imageTransformRecipeForNode, isImageTransformNodeKind } from '../image-tools/recipe'
+import { parseImageCropEditorPreferences } from '../image-tools/crop-editor-preferences'
+import { parseImageCompareSettings } from '../image-tools/viewer-settings'
+import { parsePanoramaView } from '../image-tools/panorama-view-state'
+import { parsePromptReferences } from '../library/prompt-references'
 import {
   type AssetRef,
   type NodeKind,
@@ -8,6 +30,7 @@ import {
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import {
   finiteCoordinate,
+  hasInvalidNoteText,
   isRecord,
   localAssetUrl,
   maximumGroupNameLength,
@@ -16,11 +39,13 @@ import {
   maximumNodeKindLength,
   maximumOptionLength,
   maximumPromptLength,
+  maximumOutputTextLength,
   maximumTaskIdLength,
   maximumWorkflowEdges,
   maximumWorkflowNameLength,
   maximumWorkflowNodes,
   optionalSafeString,
+  safeNoteText,
   safeString,
   stableAssetId,
   type WorkflowParseResult,
@@ -32,12 +57,21 @@ const knownNodeKinds = new Set<NodeKind>(builtinNodeRegistry.list()
 const forbiddenSettingsKey = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|password)/i
 const unsafeSettingsString = /(?:data:|https?:\/\/|file:|[A-Za-z]:\\|(?:^|\/)Users\/|(?:^|\/)home\/)/i
 
-function safeSettings(value: unknown, depth = 0): Record<string, unknown> | undefined | null {
+function safeSettings(value: unknown, depth = 0, allowNoteText = false): Record<string, unknown> | undefined | null {
   if (value === undefined) return undefined
   if (!isRecord(value) || depth > 6 || Object.keys(value).length > 100) return null
   const result: Record<string, unknown> = {}
   for (const [key, entry] of Object.entries(value)) {
     if (!key || key.length > 128 || forbiddenSettingsKey.test(key)) continue
+    if (depth === 0 && key === 'imageTransform') {
+      try { result[key] = parseImageTransformRecipe(entry) } catch { return null }
+      continue
+    }
+    if (allowNoteText && depth === 0 && key === 'text') {
+      const text = safeNoteText(entry)
+      if (text !== undefined) result[key] = text
+      continue
+    }
     if (typeof entry === 'string') {
       if (entry.length > 10_000 || entry.includes('\0') || unsafeSettingsString.test(entry)) continue
       result[key] = entry
@@ -98,15 +132,26 @@ function readNode(value: unknown): WorkflowNode | null {
   const id = safeString(value.id, maximumNodeIdLength)
   const wireKind = safeString(value.kind, maximumNodeKindLength)
   if (!id || !wireKind || !isRecord(value.position) || !isRecord(value.data)) return null
+  try { assertNodeMediaSourceGroup(wireKind, value.data); assertWorkflowColorGradeDetailPlacement(wireKind, value.data) } catch { return null }
+  if (wireKind === 'note' && hasInvalidNoteText(value.data.settings)) return null
   if (!finiteCoordinate(value.position.x) || !finiteCoordinate(value.position.y)) return null
   if (!Number.isInteger(value.definitionVersion) || (value.definitionVersion as number) < 1 || (value.definitionVersion as number) > 10_000) {
     return null
   }
   const prompt = optionalSafeString(value.data.prompt, maximumPromptLength)
+  const promptReferences = parsePromptReferences(prompt ?? '', value.data.promptReferences)
+  if (value.data.dirty !== undefined && typeof value.data.dirty !== 'boolean') return null
+  const outputText = (wireKind === 'text-generate' || wireKind === 'output') ? optionalSafeString(value.data.outputText, maximumOutputTextLength) : undefined
+  let textWebSearch: boolean | undefined
+  try { textWebSearch = parseTextWebSearch(value.data.textWebSearch, wireKind) } catch { return null }
   const model = optionalSafeString(value.data.model, maximumModelLength)
   const group = optionalSafeString(value.data.group, maximumGroupNameLength)
   const quality = optionalSafeString(value.data.quality, maximumOptionLength)
   const size = optionalSafeString(value.data.size, maximumOptionLength)
+  let imageCandidateCount: ImageCandidateCount | undefined
+  try { imageCandidateCount = parseImageCandidateCount(value.data.imageCandidateCount, wireKind) } catch { return null }
+  let videoCandidateCount: VideoCandidateCount | undefined
+  try { videoCandidateCount = parseVideoCandidateCount(value.data.videoCandidateCount, wireKind) } catch { return null }
   const imageResolution = optionalSafeString(value.data.imageResolution, 2)
   if (imageResolution && imageResolution !== '1K' && imageResolution !== '2K' && imageResolution !== '4K') return null
   const seconds = value.data.seconds === undefined
@@ -115,7 +160,62 @@ function readNode(value: unknown): WorkflowNode | null {
       ? value.data.seconds
       : null
   const result = readAsset(value.data.result)
-  const settings = safeSettings(value.data.settings)
+  if (Object.hasOwn(value.data, 'storyboardTask') || Object.hasOwn(value.data, 'exteriorTask') || Object.hasOwn(value.data, 'interiorTask') || Object.hasOwn(value.data, 'commerceTask') || Object.hasOwn(value.data, 'imageReferenceOrder')) return null
+  const settings = safeSettings(value.data.settings, 0, wireKind === 'note')
+  if (isRecord(value.data.settings)) {
+    try {
+      if (Object.hasOwn(value.data.settings, 'interiorTask')) { if (!settings) return null; settings.interiorTask = parseNodeInteriorTask(wireKind, value.data.settings.interiorTask) }
+      if (Object.hasOwn(value.data.settings, 'exteriorTask')) { if (!settings) return null; settings.exteriorTask = parseNodeExteriorTask(wireKind, value.data.settings.exteriorTask) }
+      if (Object.hasOwn(value.data.settings, 'storyboardTask')) { if (!settings) return null; settings.storyboardTask = parseNodeStoryboardTask(wireKind, value.data.settings.storyboardTask) }
+      if (value.data.settings.commerceTask !== undefined) { if (!settings) return null; settings.commerceTask = parseNodeCommerceTask(wireKind, value.data.settings.commerceTask) }
+      if (value.data.settings.imageReferenceOrder !== undefined) { if (!settings) return null; settings.imageReferenceOrder = parseNodeImageReferenceOrder(wireKind, value.data.settings.imageReferenceOrder) }
+      assertCommerceTaskConfiguration(settings?.commerceTask as import('../commerce/commerce-task').CommerceTask | undefined, settings?.imageReferenceOrder as import('../commerce/image-reference-order').ImageReferenceOrder | undefined, { size: typeof value.data.size === 'string' ? value.data.size : undefined, imageResolution: typeof value.data.imageResolution === 'string' ? value.data.imageResolution : undefined }, settings?.interiorTask as import('../interior/interior-task').InteriorTask | undefined, settings?.exteriorTask as import('../exterior/exterior-task').ExteriorTask | undefined, settings?.storyboardTask as import('../storyboard/storyboard-task').StoryboardTask | undefined)
+    } catch { return null }
+  }
+  if (isRecord(value.data.settings) && value.data.settings.imageEditMask !== undefined) {
+    try {
+      if (!settings) return null
+      settings.imageEditMask = parseNodeImageEditMask(wireKind, value.data.settings.imageEditMask)
+    } catch { return null }
+  }
+  if (wireKind === 'image-crop' && isRecord(value.data.settings) && value.data.settings.imageCropEditor !== undefined) {
+    try {
+      const preferences = parseImageCropEditorPreferences(value.data.settings.imageCropEditor)
+      if (!settings) return null
+      settings.imageCropEditor = preferences
+    } catch { return null }
+  }
+  if (isRecord(value.data.settings)) {
+    try {
+      if (value.data.settings.generateAudio !== undefined) {
+        if (!settings) return null
+        settings.generateAudio = parseVideoGenerateAudio(value.data.settings.generateAudio, wireKind)
+      }
+      if (value.data.settings.videoReferenceOrder !== undefined) {
+        if (!settings) return null
+        settings.videoReferenceOrder = parseNodeVideoReferenceOrder(wireKind, value.data.settings.videoReferenceOrder)
+      }
+      if (wireKind === 'image-collage' && value.data.settings.imageCollageInputOrder !== undefined) {
+        if (!settings) return null
+        settings.imageCollageInputOrder = parseImageCollageInputOrder(value.data.settings.imageCollageInputOrder)
+      }
+      if (value.data.settings.tileInput !== undefined) {
+        if (!settings) return null
+        settings.tileInput = parseNodeTileInput(wireKind, value.data.settings.tileInput)
+      }
+      if (wireKind === 'image-compare' && value.data.settings.imageCompare !== undefined) {
+        if (!settings) return null
+        settings.imageCompare = parseImageCompareSettings(value.data.settings.imageCompare)
+      }
+      if (wireKind === 'image-panorama' && value.data.settings.imagePanorama !== undefined) {
+        if (!settings) return null
+        settings.imagePanorama = parsePanoramaView(value.data.settings.imagePanorama)
+      }
+    } catch { return null }
+  }
+  if (settings && isImageTransformNodeKind(wireKind)) {
+    try { imageTransformRecipeForNode(wireKind, settings) } catch { return null }
+  }
   const candidateAssetIds = value.data.candidateAssetIds === undefined
     ? undefined
     : Array.isArray(value.data.candidateAssetIds)
@@ -126,7 +226,7 @@ function readNode(value: unknown): WorkflowNode | null {
   const parentId = value.parentId === undefined ? undefined : safeString(value.parentId, maximumNodeIdLength)
   const width = value.width === undefined ? undefined : finiteCoordinate(value.width) && value.width >= 80 ? value.width : null
   const height = value.height === undefined ? undefined : finiteCoordinate(value.height) && value.height >= 40 ? value.height : null
-  if (prompt === null || model === null || group === null || quality === null || size === null || imageResolution === null || seconds === null || result === null
+  if (prompt === null || outputText === null || model === null || group === null || quality === null || size === null || imageResolution === null || seconds === null || result === null
     || settings === null || candidateAssetIds === null || parentId === null || width === null || height === null) return null
   const kind = knownNodeKind(wireKind)
   if (!kind) {
@@ -143,6 +243,8 @@ function readNode(value: unknown): WorkflowNode | null {
       ...(value.locked === true ? { locked: true } : {}),
       data: {
         prompt: prompt ?? '',
+        ...(promptReferences.length ? { promptReferences } : {}),
+        ...(value.data.dirty === true ? { dirty: true } : {}),
         model: model ?? '',
         ...(group ? { group } : {}),
         status: 'failed',
@@ -150,6 +252,8 @@ function readNode(value: unknown): WorkflowNode | null {
         ...(quality ? { quality } : {}),
         ...(size ? { size } : {}),
         ...(imageResolution ? { imageResolution: imageResolution as '1K' | '2K' | '4K' } : {}),
+        ...(imageCandidateCount !== undefined ? { imageCandidateCount } : {}),
+        ...(videoCandidateCount !== undefined ? { videoCandidateCount } : {}),
         ...(seconds ? { seconds } : {}),
         ...(result ? { result } : {}),
         ...(settings ? { settings } : {}),
@@ -169,12 +273,18 @@ function readNode(value: unknown): WorkflowNode | null {
     ...(value.locked === true ? { locked: true } : {}),
     data: {
       prompt: prompt ?? '',
+      ...(promptReferences.length ? { promptReferences } : {}),
+      ...(value.data.dirty === true ? { dirty: true } : {}),
       model: model ?? '',
       ...(group ? { group } : {}),
-      status: result?.assetId ? 'succeeded' : 'idle',
+      status: result?.assetId || ((kind === 'text-generate' || kind === 'output') && outputText) ? 'succeeded' : 'idle',
+      ...((kind === 'text-generate' || kind === 'output') && outputText ? { outputText } : {}),
+      ...(textWebSearch !== undefined ? { textWebSearch } : {}),
       ...(quality ? { quality } : {}),
       ...(size ? { size } : {}),
       ...(imageResolution ? { imageResolution: imageResolution as '1K' | '2K' | '4K' } : {}),
+      ...(imageCandidateCount !== undefined ? { imageCandidateCount } : {}),
+      ...(videoCandidateCount !== undefined ? { videoCandidateCount } : {}),
       ...(seconds ? { seconds } : {}),
       ...(result ? { result } : {}),
       ...(settings ? { settings } : {}),
@@ -209,6 +319,7 @@ function readEdgeStrings(value: unknown): WorkflowEdge | null {
 }
 
 export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
+  try { assertRouterStrategyWorkflowConfiguration(raw) } catch { return null }
   if (!isRecord(raw) || raw.schemaVersion !== 2) return null
   const name = safeString(raw.name, maximumWorkflowNameLength)
   if (!name || !Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) return null
@@ -293,12 +404,12 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
   if (raw.viewport !== undefined) {
     if (
       isRecord(raw.viewport)
-      && finiteCoordinate(raw.viewport.x)
-      && finiteCoordinate(raw.viewport.y)
+      && finiteCanvasViewportTranslation(raw.viewport.x)
+      && finiteCanvasViewportTranslation(raw.viewport.y)
       && typeof raw.viewport.zoom === 'number'
       && Number.isFinite(raw.viewport.zoom)
-      && raw.viewport.zoom >= 0.01
-      && raw.viewport.zoom <= 8
+      && raw.viewport.zoom >= minimumCanvasViewportZoom
+      && raw.viewport.zoom <= maximumCanvasViewportZoom
     ) viewport = { x: raw.viewport.x, y: raw.viewport.y, zoom: raw.viewport.zoom }
     else warnings.push('已忽略无效的画布视口')
   }
@@ -329,6 +440,8 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
     }
   }
 
+  for (const node of nodes) if (node.kind === 'image-collage') node.data.settings = remapCollageInputOrderSettings(node.data.settings, new Map(edges.filter((edge) => edge.target === node.id).map((edge) => [edge.id, edge.id])))
+
   return {
     workflow: {
       schemaVersion: 2,
@@ -341,3 +454,4 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
     warnings,
   }
 }
+import { parseNodeImageEditMask } from '../image-tools/image-mask-workflow'

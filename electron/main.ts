@@ -31,6 +31,7 @@ import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
+import { createSensitiveClipboard } from './sensitive-clipboard'
 import { recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createAccelerationHost, createAccelerationRouting, createAccelerationServices } from './bootstrap/acceleration'
@@ -384,7 +385,9 @@ function createWindow(
   // Electron 默认没有右键菜单，客户手动复制、粘贴只能靠这个。
   attachEditContextMenu(window.webContents, {
     popup: (template) => { Menu.buildFromTemplate(template).popup({ window }) },
-    writeText: (text) => { clipboard.writeText(text) },
+    writeText: (text) => {
+      clipboard.writeText(text).catch((error: unknown) => runtimeLog.exception('window', 'context-menu.copy-link.failed', error))
+    },
   })
 
   window.once('ready-to-show', () => {
@@ -653,7 +656,7 @@ async function presentStartupFailure(error: unknown, logPath: string | null): Pr
         noLink: true,
       })
       const choice = buttons[response]
-      if (choice === copyLabel) clipboard.writeText(content.copyText)
+      if (choice === copyLabel) await clipboard.writeText(content.copyText)
       else if (choice === logLabel && logPath) await shell.openPath(path.dirname(logPath))
       else return
     }
@@ -2222,8 +2225,11 @@ if (!hasSingleInstanceLock) {
         refreshIdleInstall()
       },
     })
+    // 复制密钥、新密码用：60 秒自动清，退出前（prepareToQuit）再清一次。
+    const sensitiveClipboard = createSensitiveClipboard({ clipboard })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
+      sensitiveClipboard,
       codexRemote,
       realmAccounts: accounts,
       accountWork,
@@ -2766,7 +2772,8 @@ if (!hasSingleInstanceLock) {
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
         // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
-        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle(), codexRemote.farewell()])
+        // 刚复制的密钥还没到 60 秒也现在清掉：剪贴板要异步读回来比对，will-quit 里来不及。
+        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle(), codexRemote.farewell(), sensitiveClipboard.flush()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,

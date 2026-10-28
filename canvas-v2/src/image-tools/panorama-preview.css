@@ -1,0 +1,11 @@
+.image-tool-panorama { position: relative; width: 100%; min-width: 0; }
+.image-tool-panorama canvas.is-unavailable { visibility: hidden; position: absolute; pointer-events: none; }
+.image-tool-panorama .panorama-load-notice { min-height: 110px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; padding: 14px; margin: 0; color: #a7b8c8; font-size: 12px; line-height: 1.6; }
+.image-tool-panorama .panorama-view-hint, .image-tool-panorama .panorama-format-hint { margin: 7px 0 0; color: #96a7b9; font-size: 11px; line-height: 1.5; }
+.image-tool-panorama .panorama-format-hint { color: #7e8ea1; }
+.image-tool-panorama.is-compact canvas { height: 140px; border-radius: 7px; }
+.image-tool-panorama.is-compact .image-tool-inline-actions { margin: 7px 6px 0; gap: 4px; }
+.image-tool-panorama.is-compact .image-tool-inline-actions button { min-height: 24px; padding: 3px 6px; font-size: 10px; }
+.image-tool-panorama.is-compact .image-tool-inline-actions span { font-size: 10px; }
+.image-tool-panorama.is-compact .panorama-view-hint, .image-tool-panorama.is-compact .panorama-format-hint { margin: 5px 7px; font-size: 9px; }
+.image-tool-panorama.is-compact .image-tool-panorama-fallback { max-height: 140px; }
