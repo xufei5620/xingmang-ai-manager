@@ -55,5 +55,9 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    // Maps for Sentry only (G06): 'hidden' writes them without a reference in
+    // the code, and scripts/stash-renderer-sourcemaps.cjs moves them out of dist/
+    // before anything can package them.
+    sourcemap: 'hidden',
   },
 })

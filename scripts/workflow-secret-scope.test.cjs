@@ -10,7 +10,8 @@ const workflowDirectory = path.join(__dirname, '..', '.github', 'workflows')
 // environment's secrets after that environment's protection rules pass: for
 // `release` that is the required reviewers (the two approvals of a release) and
 // the main-only deployment branch rule; for `cos-sync` it is the main-only rule
-// (no reviewer, the scheduled syncs could not run otherwise). Repository-level
+// (no reviewer, the scheduled syncs could not run otherwise), and `sentry` is the
+// same main-only rule. Repository-level
 // secrets have no such gate: any workflow pushed to any branch reads them.
 //
 // So the failure this file guards against is a two-step one. Someone adds a job
@@ -37,6 +38,9 @@ const environmentSecrets = new Map([
   ['XINGMANG_SIGNING_PUBLISHER', 'release'],
   ['COS_SECRET_ID', 'cos-sync'],
   ['COS_SECRET_KEY', 'cos-sync'],
+  // G06：Sentry 组织令牌，只能建 release、传对照表。sentry 环境只放行 main、不设批准，
+  // 跟 cos-sync 一样：挂 release 每次发版就要多批一次。
+  ['SENTRY_AUTH_TOKEN', 'sentry'],
 ])
 
 // 2026-10-18 yoyo 定：这两把照旧放仓库级（#1090）。访问统计令牌只有 Cloudflare
@@ -146,6 +150,7 @@ test('the scan sees the secrets the release, sync and repository-level jobs real
     'publish-release.yml publish R2_SECRET_ACCESS_KEY',
     'publish-release.yml publish XINGMANG_UPDATE_SIGNING_KEY',
     'publish-release.yml cos-sync COS_SECRET_KEY',
+    'publish-release.yml sentry-sourcemaps SENTRY_AUTH_TOKEN',
     'rollback-release.yml rollback XINGMANG_UPDATE_SIGNING_KEY',
     'service-status.yml publish R2_ACCESS_KEY_ID',
     'acceleration-nodes.yml publish XINGMANG_UPDATE_SIGNING_KEY',

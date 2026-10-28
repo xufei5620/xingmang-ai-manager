@@ -233,7 +233,7 @@ function renderRolloutHealth(result, checkedAt) {
     `- 停住的条件：新版自己出过至少 ${MIN_EVENTS} 次、样本够，又比还在旧版的多出一倍以上、每 100 台·天多 ${MIN_RATE_GAP} 次以上；没有可比的对照时，只拦每 100 台·天闪退 ${CRASH_CEILING} 次以上的。`
       + `升新版没装上的占两成以上也停住。`,
     `- 放开的条件：发出去满 ${MIN_OBSERVATION_HOURS} 小时、新版样本够、没有上面的情况；样本一直不够的，满 ${LONG_OBSERVATION_HOURS} 小时也建议放开，写明只能粗看。`,
-    '- Sentry 上新冒出来的报错没算进来：还没有读 Sentry 的令牌（商业级差距报告 G06），有了再加。',
+    '- Sentry 上新冒出来的报错没算进来：发版用的 Sentry 令牌只能传对照表、读不了报错（商业级差距报告 G06）。放量期间去 Sentry 按这一版的 release 筛一眼；同一个报错一小时超过 10 次 Sentry 会直接发邮件。',
   )
   for (const note of result.notes) lines.push(`- ${note}`)
   return `${lines.join('\n')}\n`

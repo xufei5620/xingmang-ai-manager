@@ -30,6 +30,9 @@ const RELEASE_SECRET_NAMES = [
   'R2_ACCOUNT_ID',
   'R2_BUCKET',
   'R2_SECRET_ACCESS_KEY',
+  // Sentry 组织令牌（2026-10-28 加，G06），放在 sentry 环境，不在 release。缺了它只是这一版
+  // 的对照表不传，发版照常。
+  'SENTRY_AUTH_TOKEN',
   'XINGMANG_MAC_SIGNING_P12_BASE64',
   'XINGMANG_MAC_SIGNING_P12_PASSWORD',
   'XINGMANG_MAC_SIGNING_SHA256',
@@ -213,6 +216,77 @@ test('provenance is attested for exactly what an approved publish shipped, by a 
   assert.equal(attestJob.concurrency, undefined)
   // GitHub 托管的签名服务慢也就几十秒，不该占着机器等上一个小时。
   assert.ok(attestJob['timeout-minutes'] <= 15, String(attestJob['timeout-minutes']))
+})
+
+test('source maps reach Sentry only for what an approved publish shipped, from a job that holds nothing else', () => {
+  // G06：对照表随出包作业各自留一份，发版通过以后由单独的作业传给 Sentry。
+  const sentryJob = workflow.jobs['sentry-sourcemaps']
+  const attestJob = workflow.jobs.attest
+  assert.deepEqual(sentryJob.needs, ['publish', 'windows-build', 'macos-build', 'linux-build'])
+  assert.equal(sentryJob.if, attestJob.if)
+  // 令牌在 sentry 环境（只放 main、不设批准），不在 release：不多一次批准，也拿不到 R2、证书和签名私钥。
+  assert.equal(sentryJob.environment, 'sentry')
+  assert.deepEqual(sentryJob.permissions, { contents: 'read' })
+  const text = YAML.stringify(sentryJob)
+  assert.deepEqual([...new Set([...text.matchAll(/secrets\.([A-Za-z0-9_]+)/g)].map((match) => match[1]))], ['SENTRY_AUTH_TOKEN'])
+  assert.doesNotMatch(text, /npm (?:ci|install)|npx |aws s3|gh release|R2_|XINGMANG_MAC_SIGNING/)
+  assert.equal(sentryJob.concurrency, undefined)
+  assert.ok(sentryJob['timeout-minutes'] <= 30, String(sentryJob['timeout-minutes']))
+  for (const step of sentryJob.steps) {
+    if (step.uses) assert.match(step.uses, /^actions\/(?:checkout|setup-node|download-artifact)@[0-9a-f]{40}$/, step.uses)
+    if (/actions\/checkout@/.test(String(step.uses || ''))) assert.equal(step.with['persist-credentials'], false)
+  }
+  // 令牌没放进去时整个作业只提醒、不变红；放进去以后每一步都要跑。
+  const token = sentryJob.steps[0]
+  assert.equal(token.id, 'token')
+  assert.match(token.run, /::warning::/)
+  assert.doesNotMatch(token.run, /echo "\$SENTRY_AUTH_TOKEN|exit 1/)
+  for (const step of sentryJob.steps.slice(1)) assert.match(String(step.if), /steps\.token\.outputs\.configured == 'true'/)
+
+  // 下哪几份照 publish 实际发了什么：Windows / macOS 看出包结果，Linux 看 publish 当时下没下，两种芯片各一份。
+  const downloads = sentryJob.steps.filter((step) => /actions\/download-artifact@/.test(String(step.uses || '')))
+  assert.deepEqual(downloads.map((step) => [step.with.name, step.with.path]), [
+    ['sourcemaps-windows-${{ needs.windows-build.outputs.version }}', 'sourcemaps/windows'],
+    ['sourcemaps-macos-${{ needs.macos-build.outputs.version }}', 'sourcemaps/macos'],
+    ['sourcemaps-linux-x64-${{ needs.linux-build.outputs.version }}', 'sourcemaps/linux-x64'],
+    ['sourcemaps-linux-arm64-${{ needs.linux-build.outputs.version }}', 'sourcemaps/linux-arm64'],
+  ])
+  assert.match(downloads[0].if, /needs\.windows-build\.result == 'success'/)
+  assert.match(downloads[1].if, /needs\.macos-build\.result == 'success'/)
+  for (const step of downloads.slice(2)) assert.match(step.if, /needs\.publish\.outputs\.linux == 'true'/)
+  assert.doesNotMatch(text, /XINGMANG_PUBLISH_LINUX/)
+  // 下载目录的名字就是上传脚本认的那几种（每种对应哪些 dist 在脚本里）。
+  const { BUILDS } = require('./sentry-sourcemaps.cjs')
+  assert.deepEqual(downloads.map((step) => step.with.path.replace('sourcemaps/', '')).sort(), [...BUILDS.keys()].sort())
+
+  // 每个出包作业都把自己编译出来的那份对照表单独存一个 artifact，名字和上面下载的一致；不混进安装包那个。
+  const uploadsOf = (job) => job.steps.filter((step) => /actions\/upload-artifact@/.test(String(step.uses || '')))
+  for (const [job, name] of [
+    [windowsJob, 'sourcemaps-windows-${{ steps.metadata.outputs.version }}'],
+    [macosJob, 'sourcemaps-macos-${{ steps.metadata.outputs.version }}'],
+    [linuxBuildJob, 'sourcemaps-linux-${{ matrix.arch }}-${{ steps.metadata.outputs.version }}'],
+  ]) {
+    const maps = uploadsOf(job).filter((step) => step.with.path === 'dist-sourcemaps/')
+    assert.deepEqual(maps.map((step) => step.with.name), [name])
+    assert.equal(maps[0].with['if-no-files-found'], 'error')
+    for (const step of uploadsOf(job)) {
+      if (step !== maps[0]) assert.doesNotMatch(String(step.with.path), /sourcemaps|\.map\b/)
+    }
+  }
+
+  // sentry-cli 按版本和 SHA-256 钉死，先核对再给执行权限；令牌只交给上传那一步。
+  const install = sentryJob.steps.find((step) => /Install the pinned sentry-cli/.test(step.name || ''))
+  assert.match(sentryJob.env.SENTRY_CLI_SHA256, /^[0-9a-f]{64}$/)
+  assert.match(sentryJob.env.SENTRY_CLI_VERSION, /^\d+\.\d+\.\d+$/)
+  const lines = commandLines(install.run)
+  assert.ok(lines.findIndex((line) => /sha256sum --check --strict/.test(line)) < lines.findIndex((line) => /chmod \+x/.test(line)))
+  assert.match(install.run, /https:\/\/github\.com\/getsentry\/sentry-cli\/releases\/download\/\$SENTRY_CLI_VERSION\//)
+  assert.equal(install.env, undefined)
+  const upload = sentryJob.steps.at(-1)
+  assert.equal(upload.run, 'node scripts/sentry-sourcemaps.cjs --directory sourcemaps --version "$PACKAGE_VERSION" --cli "$RUNNER_TEMP/sentry-cli" --summary "$GITHUB_STEP_SUMMARY"')
+  assert.deepEqual(upload.env, { SENTRY_AUTH_TOKEN: '${{ secrets.SENTRY_AUTH_TOKEN }}' })
+  assert.ok(sentryJob.steps.indexOf(upload) > sentryJob.steps.indexOf(install))
+  assert.equal(sentryJob.env.PACKAGE_VERSION, publishJob.env.PACKAGE_VERSION)
 })
 
 test('the Windows build job holds no credentials at all', () => {
