@@ -10,8 +10,8 @@
 //      Mac 交给 Squirrel.Mac 核代码签名），记下「已下载」。
 //   2. 关掉（强制结束，客户关机、被杀毒结束都是这样）。这时往设置里写几样客户自己选的外观。
 //   3. 第二次打开：它认出上次下好的版本，预告 5 秒后自己装上（打开时装，auto-update-install.ts），
-//      安装程序装完把新版本拉起来。Mac 上 Squirrel.Mac 也可能在第 2 步旧版本一结束就换好了，
-//      那第二次打开的直接就是新版本，客户的 Mac 上同样会这样升上来。
+//      安装程序（Mac 上是 Squirrel.Mac 的 ShipIt）装完把新版本拉起来。Mac 上新版本第一次打开会弹
+//      钥匙串框，这一步替客户点「始终允许」，见 macos.approveNewVersion。
 //   4. 新版本起来以后写下「本次启动是更新后的第一次」（version.updated，带旧、新版本号），
 //      上次运行版本记成新版本，第 2 步写的设置原样还在。三样都在旧版本那份数据目录里。
 //
@@ -590,8 +590,8 @@ const macos = {
     if (partitions.length === item.partitions.length) return
     identity.security(['set-generic-password-partition-list', '-s', item.service, ...(item.account ? ['-a', item.account] : []),
       '-S', partitions.join(','), '-k', identity.keychainPassword, identity.keychainPath], [identity.keychainPassword])
-    // `security -i`, which carries the password on stdin, does not report a
-    // failed subcommand through its exit status; the list is read back instead.
+    // `security -i`, which carries the password on stdin, need not report a
+    // failed subcommand in its exit status; the list is read back instead.
     const updated = findSafeStorageItem(identity.security(['dump-keychain', '-a', identity.keychainPath]))
     if (!updated || partitions.some((partition) => !updated.partitions.includes(partition))) {
       throw new Error(`没能把新版本加进「${item.service}」的放行名单，现在是：${updated ? updated.partitions.join('、') : '钥匙不见了'}`)
@@ -611,9 +611,9 @@ const macos = {
     return run('/usr/bin/pgrep', ['-f', `${installed.appPath}/Contents/MacOS/`], { allowFailure: true }).status === 0
   },
 
-  // Squirrel.Mac's ShipIt waits for the app to end and may then swap the
-  // bundle on its own; opening the app while it is halfway through would race
-  // the swap.
+  // A force-killed app never hands Squirrel.Mac's ShipIt the update (the runs
+  // so far show none), but one already queued would swap the bundle once the
+  // app is gone; opening the app halfway through would race it.
   async settle() {
     await delay(5000)
     await waitFor('ShipIt 还没装完', 3 * 60 * 1000, () => run('/usr/bin/pgrep', ['-x', 'ShipIt'], { allowFailure: true }).status !== 0)
