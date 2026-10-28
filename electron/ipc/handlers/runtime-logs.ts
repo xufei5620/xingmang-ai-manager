@@ -61,7 +61,7 @@ export function registerRuntimeLogHandlers(ctx: IpcHandlerContext): () => void {
   registerTrustedHandler('runtime-logs:copy-feedback', async (event, reportId?: unknown) => {
     if (reportId !== undefined) {
       const { preview, regenerated } = await resolveFeedbackPreview(event.sender.id, reportId)
-      clipboard.writeText(preview.text)
+      await clipboard.writeText(preview.text)
       return regenerated
         ? { entries: preview.entries, regenerated: publicFeedbackPreview(preview) }
         : { entries: preview.entries }
@@ -70,7 +70,7 @@ export function registerRuntimeLogHandlers(ctx: IpcHandlerContext): () => void {
       options.runtimeLog.feedbackReport(),
       options.runtimeLog.snapshot(),
     ])
-    clipboard.writeText(report)
+    await clipboard.writeText(report)
     return { entries: snapshot.total }
   })
   registerTrustedHandler('runtime-logs:export-feedback', async (event, reportId?: unknown) => {

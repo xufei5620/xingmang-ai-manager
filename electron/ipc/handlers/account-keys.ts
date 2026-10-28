@@ -180,7 +180,7 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('account:copy-key', async (_event, id: unknown) => {
     const key = await revealAccountKeySecret(id)
-    sensitiveClipboard.write(key)
+    await sensitiveClipboard.write(key)
   })
   registerTrustedHandler('account:reveal-key', (_event, id: unknown) => revealAccountKeySecret(id))
   registerTrustedHandler('account:list-key-models', async (_event, id: unknown) => {

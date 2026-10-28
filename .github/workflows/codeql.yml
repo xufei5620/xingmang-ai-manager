@@ -1,0 +1,95 @@
+# 代码扫描（CodeQL，2026-10-28 加，商业级差距报告 G21）：GitHub 自家的静态分析，找命令注入、
+# 路径穿越、原型污染、工作流里的表达式注入这一类问题。我们自己的审查都是同一批 AI 在看，容易有
+# 同样的盲区，这是另一双眼睛。
+#
+# ## 现在只报不挡
+#
+# 它不在 main 的必过检查（quality-gate）里，PR 上也不把结果交给 Code scanning，所以不会有哪个 PR
+# 因为它变红、合不进去，发版也不看它。结果在两处：
+#   1. 仓库 Security 标签页的 Code scanning；
+#   2. 每次运行的日志和摘要页：scripts/codeql-summary.cjs 把每一条的严重程度、规则、文件和行号
+#      列出来。线程的令牌读 Code scanning 接口是 403，读得到作业日志，这一份是给线程看的。
+# 先攒一阵看看误报多不多、真问题有多少，再决定要不要挡。要挡的话：PR 上也上传结果、把它加进
+# main 的必过检查，这要产品所有者点头。
+#
+# ## 什么时候跑
+#
+# - 每天北京时间 4:23 扫一次 main，赶在 7 点的日汇总之前。不在每次合进 main 时扫：合并平均五六
+#   分钟一次（quality.yml 开头那段），一次扫描要十几分钟，会一直占着两台机器跟 PR 的 CI 抢。
+# - 改了这个文件或 codeql-summary.cjs 的 PR 先在 PR 上扫一遍、不上传，确认配置能跑；合进 main
+#   马上正式扫一次，不用等到夜里。
+# - Actions 页面也能手动跑（Run workflow）。
+#
+# ## 扫什么
+#
+# javascript-typescript（主进程、两套渲染层、画布、脚本和测试）和 actions（工作流本身：
+# publish-release 拿着发版凭据，表达式注入在那里就是发版机器上的任意命令）。不扫 ui-spec/，那是
+# 界面原型，不进安装包。两种都不用编译（build-mode: none），所以作业不装依赖、不跑仓库里的任何
+# npm 包，只跑 GitHub 的 CodeQL 和一个只用 Node 自带模块的整理脚本。
+name: codeql
+
+on:
+  schedule:
+    - cron: '23 20 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/codeql.yml
+      - scripts/codeql-summary.cjs
+  pull_request:
+    paths:
+      - .github/workflows/codeql.yml
+      - scripts/codeql-summary.cjs
+
+# main 上开跑的不取消，理由同 quality.yml 开头：被下一次顶掉的话一次结果都留不下。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    # fork 里定时跑没有意义，结果也传不到这里。
+    if: ${{ github.event_name != 'schedule' || github.repository == 'xufei5620/xingmang-ai-manager' }}
+    name: analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # 只为把结果交给 Code scanning，别的什么都写不了。
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [actions, javascript-typescript]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config: |
+            paths-ignore:
+              - ui-spec
+
+      # PR 上只扫不传：传了 GitHub 会在 PR 上挂一个按新增告警变红的检查，那就不是只报不挡了。
+      - id: analyze
+        uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          category: /language:${{ matrix.language }}
+          upload: ${{ github.event_name == 'pull_request' && 'never' || 'always' }}
+
+      - name: List what the scan found
+        env:
+          SARIF_DIRECTORY: ${{ steps.analyze.outputs.sarif-output }}
+        run: node scripts/codeql-summary.cjs "$SARIF_DIRECTORY"
