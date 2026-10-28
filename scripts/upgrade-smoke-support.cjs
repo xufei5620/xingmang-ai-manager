@@ -441,16 +441,20 @@ function readKeychainAttribute(record, name) {
   return match[1] ? Buffer.from(match[1], 'hex').toString('utf8') : match[2]
 }
 
-// The partition list is an ACL entry of its own whose description is a plist,
-// printed as hex or as text depending on the macOS release.
+// The partition list is an ACL entry of its own. macOS prints its
+// description as the comma-separated list (cdhash:…, teamid:…, apple:), or
+// as a plist on releases that store it that way.
 function readPartitionIds(record) {
   const partitions = []
   for (const entry of record.split(/^\s*entry \d+:\s*$/m).slice(1)) {
     if (!/^\s*authorizations \(\d+\):.*\bpartition_id\b/m.test(entry)) continue
-    const decoded = [...entry.matchAll(/\b(?:[0-9A-Fa-f]{2}){8,}\b/g)].map((match) => Buffer.from(match[0], 'hex').toString('utf8'))
-    for (const text of [entry, ...decoded]) {
-      for (const match of text.matchAll(/<string>([^<]+)<\/string>/g)) partitions.push(match[1])
+    const description = /^\s*description: (.*)$/m.exec(entry)?.[1].trim() || ''
+    if (/^[a-z-]+:[^\s,]*(?:,[a-z-]+:[^\s,]*)*$/.test(description)) {
+      partitions.push(...description.split(','))
+      continue
     }
+    const text = /^(?:[0-9A-Fa-f]{2})+$/.test(description) ? Buffer.from(description, 'hex').toString('utf8') : entry
+    for (const match of text.matchAll(/<string>([^<]+)<\/string>/g)) partitions.push(match[1])
   }
   return [...new Set(partitions)]
 }
@@ -475,24 +479,6 @@ function findSafeStorageItem(dump) {
     }
   }
   return null
-}
-
-/**
- * The partition list after the customer answers the keychain prompt the new
- * version raises with "Always Allow". A program without an Apple team
- * identifier is admitted by the hash of its own code, so every update is a
- * stranger to the key the version before it created. Refuses a list that
- * does not show the old version admitted that way: then this is not the
- * prompt the run knows how to answer.
- */
-function allowNewVersionPartition(partitions, { oldCdhash, newCdhash }) {
-  const oldEntry = partitions.find((partition) => partition.toLowerCase() === `cdhash:${oldCdhash.toLowerCase()}`)
-  if (!oldEntry) {
-    throw new Error(`钥匙串里那把钥匙的放行名单（${partitions.join('、') || '空'}）里没有按 cdhash:${oldCdhash} 放行的旧版本，不是认得的那种询问，不敢替客户点「始终允许」`)
-  }
-  const hex = oldEntry.slice('cdhash:'.length)
-  const newEntry = `cdhash:${hex === hex.toUpperCase() ? newCdhash.toUpperCase() : newCdhash.toLowerCase()}`
-  return partitions.includes(newEntry) ? partitions : [...partitions, newEntry]
 }
 
 function parseRuntimeLog(text) {
@@ -577,7 +563,6 @@ module.exports = {
   UPDATE_KEY_MODULE,
   WINDOWS_ASAR_RESOURCE_FILE,
   addHostsBlock,
-  allowNewVersionPartition,
   applyCustomerSettings,
   asarFileIntegrity,
   asarHeaderHash,

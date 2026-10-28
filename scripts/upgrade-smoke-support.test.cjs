@@ -12,7 +12,6 @@ const {
   CUSTOMER_SETTINGS,
   UPDATE_KEY_MODULE,
   addHostsBlock,
-  allowNewVersionPartition,
   applyCustomerSettings,
   asarFileIntegrity,
   asarHeaderHash,
@@ -321,13 +320,24 @@ test('findLostSettings reports the customer choices and working folder the new v
   assert.throws(() => findLostSettings(before, '{'), /JSON/)
 })
 
-// What `security dump-keychain -a` prints for a temporary keychain holding the
-// signing identity's key and the item the old version created on first start.
-function keychainDump({ partitions }) {
+// What `security dump-keychain -a` printed on the macOS runner (2026-10-28)
+// for a keychain holding the signing identity's key and the item the old
+// version created on first start. The login keychain adds the integrity and
+// partition_id entries; a keychain from `security create-keychain` does not.
+function keychainDump({ login }) {
   const hex = (text) => Buffer.from(text, 'utf8').toString('hex').toUpperCase()
-  const escaped = (text) => [...Buffer.from(text, 'utf8')].map((byte) => (byte < 0x80 ? String.fromCharCode(byte) : `\\${byte.toString(8)}`)).join('')
-  const blob = (text) => `0x${hex(text)}  "${escaped(text)}"`
-  const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>Partitions</key>\n\t<array>\n${partitions.map((partition) => `\t\t<string>${partition}</string>\n`).join('')}\t</array>\n</dict>\n</plist>\n`
+  const blob = (text) => `0x${hex(text)}  "${text}"`
+  const entries = [
+    ['decrypt derive export_clear export_wrapped mac sign', 'xingmang-ai-manager Safe Storage',
+      ['        applications (1):', '            0: /Applications/星芒AI管理工具.app (OK)',
+        '                requirement: identifier "com.xingmang.ai.manager" and certificate leaf = H"91b73eeaafe42f840f14b3484a2c14faf900be16"']],
+    ['encrypt', 'xingmang-ai-manager Safe Storage', ['        applications: <null>']],
+    ...(login ? [
+      ['integrity', '2beddbfb47b151d9558b2b36bb4c76613f0bb352f8cd42ec7b62933cd0f7113e', ['        applications: <null>']],
+      ['partition_id', 'cdhash:bd9bf15d06cebc67d970cf347068b427f096069e', ['        applications: <null>']],
+    ] : []),
+    ['change_acl', 'xingmang-ai-manager Safe Storage', ['        applications (0):']],
+  ]
   return [
     'keychain: "/Users/runner/work/_temp/upgrade-smoke/upgrade-smoke.keychain-db"',
     'version: 512',
@@ -338,64 +348,43 @@ function keychainDump({ partitions }) {
     '    entry 0:',
     '        authorizations (1): partition_id',
     "        don't-require-password",
-    `        description: ${hex('<plist><array><string>apple-tool:</string><string>codesign:</string></array></plist>')}`,
+    '        description: apple-tool:,apple:,codesign:',
     '        applications: <null>',
-    'keychain: "/Users/runner/work/_temp/upgrade-smoke/upgrade-smoke.keychain-db"',
+    'keychain: "/Users/runner/Library/Keychains/login.keychain-db"',
     'version: 512',
     'class: "genp"',
     'attributes:',
-    `    0x00000007 <blob>=${blob('星芒AI管理工具 Safe Storage')}`,
+    `    0x00000007 <blob>=${blob('xingmang-ai-manager Safe Storage')}`,
     '    0x00000008 <blob>=<NULL>',
-    `    "acct"<blob>=${blob('星芒AI管理工具')}`,
-    '    "cdat"<timedate>=0x32303236313032383037303934355A00  "20261028070945Z\\000"',
-    `    "svce"<blob>=${blob('星芒AI管理工具 Safe Storage')}`,
-    'access: 3 entries',
-    '    entry 0:',
-    '        authorizations (6): decrypt derive export_clear export_wrapped mac sign',
-    "        don't-require-password",
-    '        description: 星芒AI管理工具 Safe Storage',
-    '        applications (1):',
-    '            0: /Applications/星芒AI管理工具.app (OK)',
-    '    entry 1:',
-    '        authorizations (1): encrypt',
-    "        don't-require-password",
-    '        description: 星芒AI管理工具 Safe Storage',
-    '        applications: <null>',
-    '    entry 2:',
-    '        authorizations (1): partition_id',
-    "        don't-require-password",
-    `        description: ${hex(plist)}`,
-    '        applications: <null>',
+    '    "acct"<blob>="xingmang-ai-manager"',
+    `    "svce"<blob>=${blob('xingmang-ai-manager Safe Storage')}`,
+    `access: ${entries.length} entries`,
+    ...entries.flatMap(([authorizations, description, rest], index) => [
+      `    entry ${index}:`,
+      `        authorizations (${authorizations.split(' ').length}): ${authorizations}`,
+      "        don't-require-password",
+      `        description: ${description}`,
+      ...rest,
+    ]),
     '',
   ].join('\n')
 }
 
-test('findSafeStorageItem reads the old version\'s key and who may read it', () => {
-  const item = findSafeStorageItem(keychainDump({ partitions: ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'] }))
-  assert.equal(item.service, '星芒AI管理工具 Safe Storage')
-  assert.equal(item.account, '星芒AI管理工具')
-  assert.deepEqual(item.partitions, ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'])
-  assert.match(item.access, /^access: 3 entries\n[\s\S]*partition_id/)
-  const plain = 'keychain: "/k"\nclass: "genp"\nattributes:\n    "acct"<blob>="Electron"\n    "svce"<blob>="Electron Safe Storage"\n'
-    + 'access: 1 entries\n    entry 0:\n        authorizations (1): partition_id\n        description: <?xml version="1.0"?>\n'
-    + '<plist version="1.0"><dict><key>Partitions</key><array><string>teamid:ABCDE12345</string></array></dict></plist>\n'
-  assert.deepEqual(findSafeStorageItem(plain), {
-    service: 'Electron Safe Storage', account: 'Electron', partitions: ['teamid:ABCDE12345'], access: plain.slice(plain.indexOf('access:')).trimEnd(),
-  })
-  assert.equal(findSafeStorageItem(keychainDump({ partitions: [] }).split('keychain: ').slice(0, 2).join('keychain: ')), null)
-})
-
-test('allowNewVersionPartition admits the new version the way the old one is admitted', () => {
-  const oldCdhash = '0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'
-  const newCdhash = 'FFEEDDCCBBAA99887766554433221100FFEEDDCC'
-  assert.deepEqual(allowNewVersionPartition(['apple-tool:', `cdhash:${oldCdhash}`], { oldCdhash: oldCdhash.toUpperCase(), newCdhash }),
-    ['apple-tool:', `cdhash:${oldCdhash}`, `cdhash:${newCdhash.toLowerCase()}`])
-  assert.deepEqual(allowNewVersionPartition([`cdhash:${oldCdhash.toUpperCase()}`], { oldCdhash, newCdhash }),
-    [`cdhash:${oldCdhash.toUpperCase()}`, `cdhash:${newCdhash}`])
-  const already = [`cdhash:${oldCdhash}`, `cdhash:${newCdhash.toLowerCase()}`]
-  assert.deepEqual(allowNewVersionPartition(already, { oldCdhash, newCdhash }), already)
-  assert.throws(() => allowNewVersionPartition(['teamid:ABCDE12345'], { oldCdhash, newCdhash }), /teamid:ABCDE12345.*不敢替客户/)
-  assert.throws(() => allowNewVersionPartition([], { oldCdhash, newCdhash }), /（空）/)
+test('findSafeStorageItem reads the old version\'s key and which programs it admits', () => {
+  const login = findSafeStorageItem(keychainDump({ login: true }))
+  assert.equal(login.service, 'xingmang-ai-manager Safe Storage')
+  assert.equal(login.account, 'xingmang-ai-manager')
+  assert.deepEqual(login.partitions, ['cdhash:bd9bf15d06cebc67d970cf347068b427f096069e'])
+  assert.match(login.access, /^access: 5 entries\n[\s\S]*change_acl/)
+  assert.deepEqual(findSafeStorageItem(keychainDump({ login: false })).partitions, [])
+  const chinese = '星芒AI管理工具 Safe Storage'
+  const escaped = `keychain: "/k"\nclass: "genp"\nattributes:\n    "svce"<blob>=0x${Buffer.from(chinese).toString('hex').toUpperCase()}  "\\346\\230\\237"\n`
+  assert.equal(findSafeStorageItem(escaped).service, chinese)
+  const plist = 'keychain: "/k"\nclass: "genp"\nattributes:\n    "svce"<blob>="Electron Safe Storage"\naccess: 1 entries\n    entry 0:\n'
+    + '        authorizations (1): partition_id\n'
+    + `        description: ${Buffer.from('<plist><array><string>teamid:ABCDE12345</string></array></plist>').toString('hex')}\n`
+  assert.deepEqual(findSafeStorageItem(plist).partitions, ['teamid:ABCDE12345'])
+  assert.equal(findSafeStorageItem(keychainDump({ login: true }).split('keychain: ').slice(0, 2).join('keychain: ')), null)
 })
 
 test('createFeedServer serves the flat feed and nothing else', async (t) => {
