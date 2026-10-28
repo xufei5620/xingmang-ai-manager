@@ -23,13 +23,16 @@ const listeners = new Set<(event: AiVideoProgressEvent) => void>()
 const plans = new Map<string, { resolve: (plan: VideoStudioPlan) => void, reject: (reason: Error) => void }>()
 const clips = new Map<string, { input: AiVideoGenerateInput, resolve: (clip: AiVideoClip) => void, reject: (reason: Error) => void }>()
 // 重开页面后回来接的请求。开发版 StrictMode 会把发起接回的 effect 跑两遍，主进程对同一个请求号回的是同一份，这里同样一起应答。
-const resumes = new Map<string, Array<(clip: AiVideoClip | null) => void>>()
+const resumes = new Map<string, Array<{ resolve: (clip: AiVideoClip | null) => void, reject: (reason: Error) => void }>>()
 // 还没交给服务端的请求：停下时主进程回「不会照样出」。没列在这里的，停下时都当已经交出去、钱扣了。
 const unsent = new Set<string>()
 const library = new Map<string, ArrayBuffer>()
 let exported: ArrayBuffer | null = null
 let assetCounter = 0
 let folderOpens = true
+// 地址带 ?models=held 时各分组先不回模型表，等测试叫 releaseModels：页面刚打开、模型还没读完就点生成的那一下（#1489 R28-4）。
+const modelsHeld = query.get('models') === 'held'
+const heldModels: Array<() => void> = []
 const groups = [{ name: 'GPT', description: '聊天', ratio: 1, recommended: true }, { name: '图片模型', description: '图片和视频', ratio: 1 }]
 const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
@@ -42,10 +45,14 @@ function clipFor(assetId: string): AiVideoClip {
 }
 const bridge: VideoStudioBridge = {
   listAiChatGroups: async () => { record('groups'); return groups },
-  prepareAiChatGroup: async (group) => { record('prepare', group); return { group, models: groupModels[group] ?? [], keyCreated: false } },
+  prepareAiChatGroup: async (group) => {
+    record('prepare', group)
+    if (modelsHeld) await new Promise<void>((resolve) => { heldModels.push(resolve) })
+    return { group, models: groupModels[group] ?? [], keyCreated: false }
+  },
   planVideoStudio: (input: VideoStudioPlanInput) => { record('plan', input); return new Promise((resolve, reject) => { plans.set(input.requestId, { resolve, reject }) }) },
   generateAiVideo: (input) => { record('generate', input); return new Promise((resolve, reject) => { clips.set(input.requestId, { input, resolve, reject }) }) },
-  resumeAiVideo: (requestId) => { record('resume', requestId); return new Promise((resolve) => { resumes.set(requestId, [...resumes.get(requestId) ?? [], resolve]) }) },
+  resumeAiVideo: (requestId) => { record('resume', requestId); return new Promise((resolve, reject) => { resumes.set(requestId, [...resumes.get(requestId) ?? [], { resolve, reject }]) }) },
   cancelAiVideo: async (requestId) => {
     record('cancel', requestId)
     const plan = plans.get(requestId)
@@ -82,7 +89,7 @@ async function finishResume(requestId: string, color: string) {
   const assetId = nextAssetId()
   library.set(assetId, data)
   resumes.delete(requestId)
-  for (const resolve of waiting) resolve(clipFor(assetId))
+  for (const { resolve } of waiting) resolve(clipFor(assetId))
   return assetId
 }
 
@@ -105,6 +112,8 @@ declare global {
       pendingResumes(): string[]
       finishResume(requestId: string, color: string): Promise<string>
       dropResume(requestId: string): void
+      failResume(requestId: string, message: string): void
+      releaseModels(): void
       finishPlan(plan: VideoStudioPlan): void
       failPlan(message: string): void
       finishClip(requestId: string, color: string, sound?: boolean): Promise<string>
@@ -123,7 +132,13 @@ window.videoStudioPage = {
   pendingClips: () => [...clips.entries()].map(([requestId, clip]) => ({ requestId, prompt: clip.input.prompt })),
   pendingResumes: () => [...resumes.keys()],
   finishResume,
-  dropResume: (requestId) => { const waiting = resumes.get(requestId) ?? []; resumes.delete(requestId); for (const resolve of waiting) resolve(null) },
+  dropResume: (requestId) => { const waiting = resumes.get(requestId) ?? []; resumes.delete(requestId); for (const { resolve } of waiting) resolve(null) },
+  failResume: (requestId, message) => {
+    const waiting = resumes.get(requestId) ?? []
+    resumes.delete(requestId)
+    for (const { reject } of waiting) reject(new Error(`Error invoking remote method 'video:resume': Error: ${message}`))
+  },
+  releaseModels: () => { for (const release of heldModels.splice(0)) release() },
   finishPlan: (plan) => { for (const [id, entry] of plans) { plans.delete(id); entry.resolve(plan) } },
   failPlan: (message) => { for (const [id, entry] of plans) { plans.delete(id); entry.reject(new Error(`Error invoking remote method 'video-studio:plan': Error: ${message}`)) } },
   finishClip,

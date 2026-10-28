@@ -8,8 +8,24 @@ import { setRelocatedFolderPolicy } from './relocated-folders'
 const roots: string[] = []
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
+
+/** Lets the atomic writer's temporary file take a few bytes, then fails the way a full disk does. */
+function failTemporaryFileWrites(): void {
+  const open = fs.promises.open
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+    const handle = await open(...args)
+    if (String(args[0]).endsWith('.tmp')) {
+      handle.writeFile = async () => {
+        await handle.write(Buffer.from('half'))
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+      }
+    }
+    return handle
+  })
+}
 
 function box(type: string, payload: Buffer): Buffer {
   const header = Buffer.alloc(8)
@@ -130,6 +146,34 @@ describe('AiVideoAssetStore', () => {
     await menuItems[1].run()
     expect(fs.readFileSync(target)).toEqual(mp4())
     expect(revealInFolder).toHaveBeenCalledOnce()
+  })
+
+  it('leaves no half-written film behind when a save fails part-way', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-save-'))
+    const saveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-save-target-'))
+    roots.push(outputRoot, saveRoot)
+    const target = path.join(saveRoot, 'saved.mp4')
+    let currentUserId = 7
+    const store = new AiVideoAssetStore({
+      outputRoot,
+      nativeOperations: { selectSavePath: async () => target, revealInFolder: vi.fn(), showContextMenu: vi.fn() },
+    })
+    const asset = await store.storeComposed(7, mp4())
+    const authorize = () => { if (currentUserId !== 7) throw new Error('账号已切换，请重新另存') }
+
+    failTemporaryFileWrites()
+    await expect(store.saveAs(7, asset.assetId, authorize)).rejects.toThrow('视频另存失败，请检查目标目录写入权限')
+    expect(fs.readdirSync(saveRoot)).toEqual([])
+
+    vi.restoreAllMocks()
+    currentUserId = 8
+    await expect(store.saveAs(7, asset.assetId, authorize)).rejects.toThrow('账号已切换，请重新另存')
+    expect(fs.readdirSync(saveRoot)).toEqual([])
+
+    currentUserId = 7
+    await expect(store.saveAs(7, asset.assetId, authorize)).resolves.toBe(true)
+    expect(fs.readFileSync(target)).toEqual(mp4())
+    expect(fs.readdirSync(saveRoot)).toEqual(['saved.mp4'])
   })
 })
 

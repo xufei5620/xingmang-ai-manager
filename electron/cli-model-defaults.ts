@@ -164,6 +164,15 @@ export function sortClaudeModelsNewestFirst(models: readonly string[]): string[]
   return [...models].sort((left, right) => compareNewerFirst(left, right) || claudeTier(right) - claudeTier(left))
 }
 
+/**
+ * 挑默认时先拿掉下架名单上的；拿完一个能对话的都不剩，就退回账号列着的全部（#1154 第 3 条）。账号还列着的型号
+ * 就还能用，下架名单写多了（比如把老账号分组里仅有的几个都写了进去）不该让登录自动配置直接失败。
+ */
+function offeredCliModels(table: CliModelTable, models: readonly string[]): readonly string[] {
+  const listed = models.filter((model) => !table.retired.includes(model))
+  return listed.some((model) => !isNonInteractiveCliModel(model)) ? listed : models
+}
+
 function knownCliModel(table: CliModelTable, offered: readonly string[]): string | undefined {
   return [table.default, ...table.previous].find((model) => offered.includes(model))
 }
@@ -183,6 +192,7 @@ function sameFamilyCliModel(table: CliModelTable, offered: readonly string[], re
 /**
  * 新配工具、打开前劝换、配置窗口预选用哪个型号。preferred 是原来设的那个：账号还列着就留着，不列了就按它的系列挑。
  * 默认、上一代、同系列都挑不到时，Claude Code 按 Opus > Sonnet > Haiku 挑，别家取列表里第一个能对话的。
+ * 下架名单上的不挑，除非账号列着的能对话的型号全在名单上（offeredCliModels）。
  */
 export function resolveDefaultCliModel(
   provider: ProviderId,
@@ -192,7 +202,7 @@ export function resolveDefaultCliModel(
 ): string | null {
   if (preferred && models.includes(preferred)) return preferred
   const table = cliModelTable(provider, hints)
-  const offered = models.filter((model) => !table.retired.includes(model))
+  const offered = offeredCliModels(table, models)
   const known = knownCliModel(table, offered)
   if (known) return known
   // The model endpoint sorts IDs alphabetically, which puts service-only

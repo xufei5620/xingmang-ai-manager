@@ -26,6 +26,8 @@ const valueImportable = [
   // 视频剪辑读回存着的工程时按片段编号重拼缩略图地址，缩略图一升版旧工程照样显示（#1406 P3-4）；文件本身什么都不 import。
   'electron/asset-thumbnail',
   'electron/ai-chat-protocol',
+  // 视频交出去却没拿到任务号时那句话，主进程报错、视频剪辑页照它认出「结果不明」共用一份（#1489 N2）；文件本身什么都不 import。
+  'electron/ai-video-submission',
   'electron/catalog',
   // 一句报错本身是不是中文（去掉引号段和路径再看），按钮操作的报错与主进程更新失败那句共用一份（第三十批 A）。
   'electron/chinese-sentence',

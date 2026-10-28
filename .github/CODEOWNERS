@@ -23,3 +23,8 @@
 /electron/canvas-project-package.ts @xufei5620
 /electron/canvas-preload.ts @xufei5620
 /electron/canvas-prompt-preset-store.ts @xufei5620
+
+# 画布窗口的 CSP 写在 index.html 里（connect-src 只放行 xingmang-asset:），换内核以后
+# canvas-v2/ 由同步脚本维护（#1393），清单 KERNEL_SOURCE.json 记着它来自哪个内核 tag。
+/canvas-v2/index.html @xufei5620
+/canvas-v2/KERNEL_SOURCE.json @xufei5620
