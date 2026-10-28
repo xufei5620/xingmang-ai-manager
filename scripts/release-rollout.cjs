@@ -18,7 +18,7 @@ const path = require('node:path')
 // update-release-utils.cjs 顶层不引第三方包（yaml 到 parseLatestMetadata 真用时才加载），release-tag 作业只跑
 // describe、不装依赖也能 require 这个脚本。
 const { UPDATE_MANIFEST_NAMES, compareReleaseVersions, parseLatestMetadata } = require('./update-release-utils.cjs')
-const { StatusInputError, applyStatusChanges, describeStatus, parseCurrentStatus } = require('./service-status.cjs')
+const { StatusInputError, applyStatusChanges, describeStatus, parseCurrentStatus, validReleasePlatforms } = require('./service-status.cjs')
 
 const PLAIN_VERSION = /^\d{1,5}\.\d{1,5}\.\d{1,5}$/
 // 每份清单是哪个平台的，写法与 service-status.cjs 的平台表一致（只对这几种安装包分批时用）。
@@ -121,8 +121,10 @@ function sameVersion(left, right) {
  * - 这个版本哪个平台都还没发出去：照这次选的写。线上要是已经有这一版的放量（以前的做法是发布之前先跑
  *   service-status，或者上一次触发写了、没发出去就取消了），也换成这次选的：批的人看着这次的选项批的。
  *   选 100 就清掉放量（线上本来没有就不动）。
- * - 别的平台已经发出去了、这次补发一个平台：线上有这一版的放量，就照它走、不改（可能正停着）；没有
- *   （已经全部放开了），就只对这次新发的平台分批，已经全放的平台不受影响。
+ * - 别的平台已经发出去了、这次补发一个平台：线上有这一版的放量，就照它走（可能正停着）；没有
+ *   （已经全部放开了），就只对这次新发的平台分批，已经全放的平台不受影响。线上的放量只管某几个平台、
+ *   又不含这次补发的（比如全放以后补发过 Linux，留下「0.2.23 20@linux」，现在又补发 Mac），把补发的
+ *   平台并进去、比例照线上的：不并的话补发的平台不在名单里，等于全放（#1525 R29-04）。
  */
 function planReleaseRollout({ version, percent, current = {}, publishing, live }) {
   const target = plainVersion(version)
@@ -140,11 +142,23 @@ function planReleaseRollout({ version, percent, current = {}, publishing, live }
     if (!existing) return { input: null, message: '这次选了全部放开，线上本来就没有分批放量，状态文件不用改' }
     return { input: 'none', message: `这次选了全部放开，清掉线上原来的${currentLine}` }
   }
+  const platforms = [...new Set(publishing.filter((name) => !isLive(name)).map((name) => MANIFEST_PLATFORMS[name]))]
   if (existingForTarget) {
-    return { input: null, message: `${target} 已经有平台发出去了，这次补发的平台照线上的放量走，不改。现在线上的${currentLine}` }
+    // 照客户端的读法：平台表读不懂就是对所有平台分批。只管「mac-x64」这类一种架构的，补发的整个平台也要
+    // 并进去，并进去以后它就是多余的。
+    const scoped = validReleasePlatforms(existingForTarget.platforms)
+    const missing = scoped ? platforms.filter((name) => !scoped.includes(name)) : []
+    if (missing.length === 0) {
+      return { input: null, message: `${target} 已经有平台发出去了，这次补发的平台照线上的放量走，不改。现在线上的${currentLine}` }
+    }
+    const merged = [...scoped.filter((name) => !missing.includes(name.split('-')[0])), ...missing]
+    const input = `${target} ${existingForTarget.percent}@${merged.join('|')}`
+    return {
+      input,
+      message: `${target} 已经有平台发出去了，线上的放量没管到这次补发的 ${missing.join('、')}，不并进去就是全放；并进去照线上的比例走，写成「${input}」。原来线上的${currentLine}`,
+    }
   }
   if (percent >= 100) return { input: null, message: `${target} 已经有平台发出去、也已经全部放开了，这次补发的平台照样全部放开，状态文件不用改` }
-  const platforms = [...new Set(publishing.filter((name) => !isLive(name)).map((name) => MANIFEST_PLATFORMS[name]))]
   return {
     input: `${target} ${percent}@${platforms.join('|')}`,
     message: `${target} 已经有平台发出去、全部放开了；分批放量只管这次新发的 ${platforms.join('、')}，写成「${target} ${percent}@${platforms.join('|')}」，已经发出去的平台不受影响`,

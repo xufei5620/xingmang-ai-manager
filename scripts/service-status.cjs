@@ -922,4 +922,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyFeaturesOff, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, isNonInteractiveCliModel, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }
+module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyFeaturesOff, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, isNonInteractiveCliModel, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates, validReleasePlatforms }

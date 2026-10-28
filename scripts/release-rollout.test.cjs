@@ -104,6 +104,36 @@ test('a platform published later joins the rollout already running, or is rolled
   assert.equal(plan({ ...linux, live: shipped, percent: 100 }).input, null)
 })
 
+test('a platform published later is added to a rollout that only covers other platforms', () => {
+  // 全放以后补发过 Linux，线上留着「0.2.23 0@linux」（正停着），现在补发 Mac：不并进去，Mac 不在名单里就是全放（#1525 R29-04）。
+  const mac = { publishing: ['latest-mac.yml'], live: live({ 'latest.yml': '0.2.23', 'latest-linux.yml': '0.2.23', 'latest-linux-arm64.yml': '0.2.23' }) }
+  const paused = { rollout: { version: '0.2.23', percent: 0, platforms: ['linux'] } }
+  const joined = plan({ ...mac, current: paused })
+  assert.equal(joined.input, '0.2.23 0@linux|mac')
+  assert.match(joined.message, /没管到这次补发的 mac/)
+  assert.match(joined.message, /只管 Linux/)
+  // 比例照线上的：这次选的是给头一次发这个版本用的，补发选 100 也不能把停着的放开。
+  assert.equal(plan({ ...mac, current: paused, percent: 100 }).input, '0.2.23 0@linux|mac')
+  // 这次产物里有已经发出去的平台，只并没发出去的。
+  assert.equal(plan({
+    publishing: ['latest.yml', 'latest-mac.yml'],
+    live: live({ 'latest.yml': '0.2.23' }),
+    current: { rollout: { version: 'v0.2.23', percent: 20, platforms: ['windows'] } },
+  }).input, '0.2.23 20@windows|mac')
+  // 只管 Intel 版 Mac 的：整个 Mac 并进去，mac-x64 那一项就多余了。
+  assert.equal(plan({ ...mac, current: { rollout: { version: '0.2.23', percent: 20, platforms: ['mac-x64', 'linux'] } } }).input, '0.2.23 20@linux|mac')
+})
+
+test('a platform published later that the scoped rollout already covers leaves it alone', () => {
+  const mac = { publishing: ['latest-mac.yml'], live: live({ 'latest.yml': '0.2.23' }) }
+  const covered = plan({ ...mac, current: { rollout: { version: '0.2.23', percent: 20, platforms: ['linux', 'mac'] } } })
+  assert.equal(covered.input, null)
+  assert.match(covered.message, /照线上的放量走/)
+  // 跟客户端一样规整大小写；平台表里有一项读不懂，客户端当成对所有平台分批，补发的平台已经管到了。
+  assert.equal(plan({ ...mac, current: { rollout: { version: '0.2.23', percent: 20, platforms: [' MAC '] } } }).input, null)
+  assert.equal(plan({ ...mac, current: { rollout: { version: '0.2.23', percent: 20, platforms: ['windows', 'mac-m1'] } } }).input, null)
+})
+
 test('the plan refuses what it cannot reason about', () => {
   assert.throws(() => plan({ percent: 101 }), RolloutInputError)
   assert.throws(() => plan({ publishing: [] }), RolloutInputError)
@@ -150,6 +180,15 @@ test('the command line writes the new rollout and keeps every other switch as it
   const first = runPlan({})
   assert.equal(first.status, 0, first.output)
   assert.deepEqual(Object.keys(first.next).sort(), ['rollout', 'updatedAt'])
+})
+
+test('the command line adds the platform published later to a rollout scoped to other platforms', () => {
+  const current = JSON.stringify({ badVersions: ['0.2.10'], rollout: { version: '0.2.23', percent: 20, platforms: ['windows'] } })
+  const run = runPlan({ artifacts: ['latest-mac.yml'], liveManifests: { 'latest.yml': '0.2.23' }, current })
+  assert.equal(run.status, 0, run.output)
+  assert.deepEqual(run.next.rollout, { version: '0.2.23', percent: 20, platforms: ['windows', 'mac'] })
+  assert.deepEqual(run.next.badVersions, ['0.2.10'])
+  assert.match(run.summary, /写成「0\.2\.23 20@windows\|mac」/)
 })
 
 test('the command line writes nothing on a rerun, and stops on a status file it cannot read', () => {
