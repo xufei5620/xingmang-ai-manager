@@ -82,7 +82,7 @@ export function createIpcHandlerContext(
   const { options } = base
   const externalShell = options.externalShell ?? createExternalShellLauncher()
   // 密钥和新密码 60 秒后自动从剪贴板清掉（第十三批 8）。
-  const sensitiveClipboard = createSensitiveClipboard({ clipboard })
+  const sensitiveClipboard = options.sensitiveClipboard ?? createSensitiveClipboard({ clipboard })
   // 最近几次导出写出来的文件：「打开所在位置」只认这里面的路径。
   const exportedFiles: string[] = []
   const rememberExportedFile = (filePath: string) => {

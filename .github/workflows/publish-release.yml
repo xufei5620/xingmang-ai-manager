@@ -47,6 +47,14 @@
 # 最后才覆盖清单**。这三步在下面是三个独立的步骤，顺序由
 # scripts/publish-workflow-config.test.cjs 钉住。
 #
+# ## 分批放量是发版的一项输入
+#
+# 「上传以后先推给多少」默认 20：publish 作业在覆盖清单之前，先把这一版的分批放量写进
+# service-status.json、核对客户读到的就是这一份，再换清单（scripts/release-rollout.cjs）。原来放量是
+# 另一条工作流，要人记着在触发之前先跑，0.2.20、0.2.21 都忘了，等于全量发。100 只给快修通道里客户
+# 正卡着、要强制更新的那种；选了它，release-tag 会在运行页面上打一条黄色提示，两次批准之前都看得到。
+# 放开前的建议由 rollout-health 工作流每天中午给出。
+#
 # ## tag 在触发时就占上
 #
 # 作业用的 GITHUB_TOKEN 建不了「工作流文件和 main 对不上」的提交上的 tag 和 Release
@@ -79,6 +87,17 @@ on:
           - windows
           - macos
           - linux
+      rollout:
+        description: '上传以后先自动推给多少电脑（平时就选 20，第二天看过体检再放开；100 只给快修通道里客户正卡着、要强制更新的）'
+        required: true
+        default: '20: 先推给两成电脑（平时都选这个）'
+        type: choice
+        options:
+          - '20: 先推给两成电脑（平时都选这个）'
+          - '5: 先推给 5% 的电脑'
+          - '50: 先推给一半电脑'
+          - '0: 先不自动推，只给自己点「检查更新」的人'
+          - '100: 全部放开（只给快修：客户正卡着、要强制更新的）'
 
 permissions:
   contents: read
@@ -214,6 +233,16 @@ jobs:
             --tag-target "$existing" --release-exists "$release_exists" --live-dir "$live" --status "$status_file")
           printf '%s\n' "$plan"
           printf '%s\n' "$plan" >> "$GITHUB_OUTPUT"
+
+      # 把这次选的「上传以后先推给多少」写到运行页面上：这个作业几分钟就跑完，批的人第一次批准（Mac 出包）
+      # 和第二次批准（上传）之前都看得到；选了 100 另打一条黄色提示。比例写错（从接口触发时）就在这里停下，
+      # tag 还没占。这次不对外发时不写。
+      - name: Show the approver how far this release will reach
+        if: ${{ steps.plan.outputs.action != 'none' }}
+        env:
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+          ROLLOUT: ${{ inputs.rollout }}
+        run: node scripts/release-rollout.cjs describe --version "$CONFIRM_VERSION" --rollout "$ROLLOUT" --summary "$GITHUB_STEP_SUMMARY"
 
       # 动手：上一步的结论对过格式、再核一遍 tag 现在的样子才动。
       - name: Reserve the release tag on the commit being built
@@ -358,7 +387,7 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
-      # Electron 43 的 npm 包不带二进制：release:build 里的 npm test 第一次
+      # Electron 43 起 npm 包不带二进制：release:build 里的 npm test 第一次
       # require('electron') 时才现下，只试一次，网络一抖就红（#319、#796）。这里先
       # 限时、带重试地装好，见 scripts/ci-ensure-electron-binary.cjs。
       - name: Install the Electron binary before the release gate loads it
@@ -999,6 +1028,71 @@ jobs:
             exit 1
           fi
           echo "已逐字节复核 $checked 个产物"
+
+      # 换清单之前写好分批放量（「上传以后先推给多少」，scripts/release-rollout.cjs 开头）。这一步只读：取回
+      # 线上的状态文件和各份清单，算出要不要改、改成什么，要改就写出新的一份交给下一步。线上那份读不到
+      # （404 以外）或者读不懂就停下：此刻线上还是旧版本，停下没有代价，硬写会抹掉撤回名单、最低版本这些。
+      # 同一次发布重跑时（这次要发的清单线上已经是这一版）不改放量：这期间可能已经有人填过 0 停住。
+      - name: Decide how far this release reaches before the manifests switch
+        id: rollout
+        env:
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+          ROLLOUT: ${{ inputs.rollout }}
+        run: |
+          set -euo pipefail
+          live="$RUNNER_TEMP/rollout-live"
+          mkdir -p "$live"
+          for manifest in latest.yml latest-mac.yml latest-linux.yml latest-linux-arm64.yml; do
+            code=$(curl --silent --show-error --max-time 60 --output "$live/$manifest" \
+              --write-out '%{http_code}' "$PUBLIC_BASE/$manifest")
+            case "$code" in
+              200) ;;
+              404) rm -f "$live/$manifest" ;;
+              *) echo "::error::读取线上 $manifest 失败（HTTP $code），算不清分批放量，已停在覆盖清单之前"; exit 1 ;;
+            esac
+          done
+          code=$(curl --silent --show-error --max-time 30 --output "$RUNNER_TEMP/rollout-current.json" \
+            --write-out '%{http_code}' "$PUBLIC_BASE/service-status.json")
+          case "$code" in
+            200) ;;
+            404) echo "线上还没有 service-status.json，从空白开始"; rm -f "$RUNNER_TEMP/rollout-current.json" ;;
+            *) echo "::error::读取线上 service-status.json 失败（HTTP $code），为免抹掉别的开关，已停在覆盖清单之前"; exit 1 ;;
+          esac
+          rm -f "$RUNNER_TEMP/rollout-status.json"
+          node scripts/release-rollout.cjs plan --version "$PACKAGE_VERSION" --rollout "$ROLLOUT" \
+            --artifacts release-artifacts --live "$live" --current "$RUNNER_TEMP/rollout-current.json" \
+            --output "$RUNNER_TEMP/rollout-status.json" --summary "$GITHUB_STEP_SUMMARY"
+          if [ -f "$RUNNER_TEMP/rollout-status.json" ]; then
+            echo 'write=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'write=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      # 传上去、确认客户会用的地址读到的就是这一份，才往下换清单。读到的不是（缓存）就停在换清单之前，
+      # 过几分钟用 Re-run failed jobs 重跑：上传前那道关认得出同一批文件，会放行。洛杉矶那份
+      # （xm-direct）是 nginx 原样转发这里、不加缓存（服务端 10-17 核过），不用另核。
+      - name: Upload the rollout before the manifests switch
+        if: ${{ steps.rollout.outputs.write == 'true' }}
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          PUBLIC_BASE: ${{ steps.feed.outputs.base }}
+        run: |
+          set -euo pipefail
+          aws s3 cp "$RUNNER_TEMP/rollout-status.json" \
+            "s3://$R2_BUCKET/$OBJECT_PREFIX/service-status.json" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+            --content-type 'application/json; charset=utf-8' \
+            --cache-control 'no-cache'
+          curl --fail --silent --show-error --max-time 30 --output "$RUNNER_TEMP/rollout-published.json" "$PUBLIC_BASE/service-status.json"
+          if ! cmp -s "$RUNNER_TEMP/rollout-status.json" "$RUNNER_TEMP/rollout-published.json"; then
+            echo "::error::分批放量传上去了，但客户会用的地址读到的不是这一份（可能是缓存），已停在覆盖清单之前；过几分钟用 Re-run failed jobs 重跑"
+            exit 1
+          fi
+          echo "客户会用的地址已经读到新的分批放量，可以换清单了"
 
       # 第三步，且必须是最后一步：更新清单。到这里为止线上仍是旧版本，随时可以放弃。
       # 每份清单都在这一步，别的步骤一律不许碰它们 —— 顺手 cp 一次就让上面这道顺序

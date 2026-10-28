@@ -4,7 +4,7 @@
 
 import os from 'node:os'
 import path from 'node:path'
-import { app, BrowserWindow, clipboard, dialog, Menu, nativeImage, safeStorage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ClipboardItem, dialog, Menu, nativeImage, safeStorage, shell } from 'electron'
 import { AccountCredentialStore } from '../account-credential-store'
 import { createAccountUsageTracker } from '../account-usage-tracker'
 import { createActiveIdentityReader } from '../active-identity'
@@ -31,6 +31,7 @@ import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
 import { createChatCredentialCoordinator } from '../chat-credential-coordinator'
 import { ChatKeyStore } from '../chat-key-store'
+import { readClipboardPng, writeClipboardPng } from '../clipboard-image'
 import { ipcEventChannels } from '../ipc-contract'
 import type { AccountGroupHints } from '../managed-cli-groups'
 import { ManagedCliKeyStore } from '../managed-cli-key-store'
@@ -109,6 +110,13 @@ function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
       }
     },
   }
+}
+
+// 作品菜单的「复制」：先用系统的图片解码认一遍（坏图当场说），再统一以 PNG 放上剪贴板。
+async function copyImageToClipboard(bytes: Buffer): Promise<void> {
+  const image = nativeImage.createFromBuffer(bytes)
+  if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
+  await writeClipboardPng(clipboard, (payload) => new ClipboardItem(payload), image.toPNG())
 }
 
 // Screenshots pasted into the chat are shrunk here, in the main process, before
@@ -223,11 +231,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
       unwritableGuidance: '可以先在画布里新建一个项目、给它选一个自己的文件夹，在那里生成就能存下来；也可以联系客服。',
       trustedProxyFetchImpl: sessionFetch,
       nativeOperations: {
-        copyImage: (bytes) => {
-          const image = nativeImage.createFromBuffer(bytes)
-          if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-          clipboard.writeImage(image)
-        },
+        copyImage: copyImageToClipboard,
         selectSavePath: async (suggestedFileName) => {
           const result = await dialog.showSaveDialog({
             title: '图片另存为',
@@ -312,11 +316,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         unwritableGuidance: '这个项目的文件夹可能被移走了，或者放不进新文件。请新建一个项目、换个文件夹再试。',
         trustedProxyFetchImpl: sessionFetch,
         nativeOperations: {
-          copyImage: (bytes) => {
-            const image = nativeImage.createFromBuffer(bytes)
-            if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-            clipboard.writeImage(image)
-          },
+          copyImage: copyImageToClipboard,
           selectSavePath: async (suggestedFileName) => {
             const result = await dialog.showSaveDialog({
               title: '图片另存为', defaultPath: suggestedFileName,
@@ -407,8 +407,10 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         })
         return result.canceled ? [] : result.filePaths
       },
-      readClipboardImage: () => {
-        const image = clipboard.readImage()
+      readClipboardImage: async () => {
+        const png = await readClipboardPng(clipboard)
+        if (!png) return null
+        const image = nativeImage.createFromBuffer(png)
         return image.isEmpty() ? null : image.toPNG()
       },
     })

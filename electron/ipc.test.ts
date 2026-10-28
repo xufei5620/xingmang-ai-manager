@@ -35,8 +35,9 @@ const electronMocks = vi.hoisted(() => ({
   browserWindowFromWebContents: vi.fn<(...args: unknown[]) => unknown>(() => undefined),
   openExternal: vi.fn(),
   openPath: vi.fn(),
-  writeText: vi.fn(),
-  readText: vi.fn(() => ''),
+  // Electron 44+ clipboard: reads and writes return promises, clear() does not.
+  writeText: vi.fn(async (_text: string) => {}),
+  readText: vi.fn(async () => ''),
   clearClipboard: vi.fn(),
 }))
 
@@ -415,7 +416,7 @@ beforeEach(() => {
   electronMocks.openPath.mockResolvedValue('')
   electronMocks.writeText.mockReset()
   electronMocks.readText.mockReset()
-  electronMocks.readText.mockReturnValue('')
+  electronMocks.readText.mockResolvedValue('')
   electronMocks.clearClipboard.mockReset()
   electronMocks.browserWindowFromWebContents.mockReset()
   electronMocks.browserWindowFromWebContents.mockReturnValue(undefined)
@@ -980,7 +981,7 @@ describe('registerIpcHandlers', () => {
       const { runtimeLog } = register()
       const owner = trustedEvent()
       const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string; text: string }
-      electronMocks.writeText.mockImplementationOnce(() => { throw new Error('Clipboard unavailable') })
+      electronMocks.writeText.mockRejectedValueOnce(new Error('Clipboard unavailable'))
       await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).rejects.toThrow('Clipboard unavailable')
       await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({ entries: 0 })
       electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: true })
@@ -7870,18 +7871,18 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         const { accountService } = register()
         const plaintextKey = 'sk-ipc-auto-clear'
         vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
-        electronMocks.readText.mockReturnValue(plaintextKey)
+        electronMocks.readText.mockResolvedValue(plaintextKey)
         await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
 
-        vi.advanceTimersByTime(59_999)
+        await vi.advanceTimersByTimeAsync(59_999)
         expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
-        vi.advanceTimersByTime(1)
+        await vi.advanceTimersByTimeAsync(1)
         expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
 
         electronMocks.clearClipboard.mockClear()
         await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
-        electronMocks.readText.mockReturnValue('something the user copied')
-        vi.advanceTimersByTime(60_000)
+        electronMocks.readText.mockResolvedValue('something the user copied')
+        await vi.advanceTimersByTimeAsync(60_000)
         expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
       } finally {
         vi.useRealTimers()
@@ -7896,14 +7897,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         const { accountService, dispose } = register()
         const plaintextKey = 'sk-ipc-dispose-clear'
         vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
-        electronMocks.readText.mockReturnValue(plaintextKey)
+        electronMocks.readText.mockResolvedValue(plaintextKey)
         await electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 42)
         expect(electronMocks.clearClipboard).not.toHaveBeenCalled()
 
         dispose()
+        // Reading the clipboard back is asynchronous since Electron 44; the
+        // check-and-clear lands once that read resolves.
+        await vi.advanceTimersByTimeAsync(0)
         expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
         // The pending wipe is cancelled rather than left to fire after quit.
-        vi.advanceTimersByTime(60_000)
+        await vi.advanceTimersByTimeAsync(60_000)
         expect(electronMocks.clearClipboard).toHaveBeenCalledTimes(1)
       } finally {
         vi.useRealTimers()
