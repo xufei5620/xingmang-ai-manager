@@ -575,7 +575,7 @@ const macos = {
   // customers met on 10-27, answered with "Always Allow". Unanswered it holds
   // the new version before its first log line. The run answers it the way
   // the customer does, and only when the old version was admitted the way
-  // that dialog implies; anything else fails here instead of hanging there.
+  // that dialog implies.
   approveNewVersion(installed, { identity, oldCdhash, newCdhash }) {
     const item = findSafeStorageItem(identity.security(['dump-keychain', '-a', identity.keychainPath]))
     if (!item) {
@@ -586,7 +586,17 @@ const macos = {
       report('旧版本没往钥匙串里存钥匙，新版本第一次打开时自己建，不会弹框')
       return
     }
-    const partitions = allowNewVersionPartition(item.partitions, { oldCdhash, newCdhash })
+    report(`旧版本建的钥匙「${item.service}」，谁能不问就读：`)
+    for (const line of item.access.split('\n').slice(0, 60)) report(`  ${line}`)
+    let partitions
+    try {
+      partitions = allowNewVersionPartition(item.partitions, { oldCdhash, newCdhash })
+    } catch (error) {
+      // Not the prompt the run knows how to answer. It goes on unanswered: if
+      // the new version then hangs, the scene shows where.
+      report(`${error.message}；不替客户点，接着看新版本会不会停在钥匙串框前`)
+      return
+    }
     if (partitions.length === item.partitions.length) return
     identity.security(['set-generic-password-partition-list', '-s', item.service, ...(item.account ? ['-a', item.account] : []),
       '-S', partitions.join(','), '-k', identity.keychainPassword, identity.keychainPath], [identity.keychainPassword])

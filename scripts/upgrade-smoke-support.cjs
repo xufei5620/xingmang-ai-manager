@@ -442,30 +442,37 @@ function readKeychainAttribute(record, name) {
 }
 
 // The partition list is an ACL entry of its own whose description is a plist,
-// printed as hex.
+// printed as hex or as text depending on the macOS release.
 function readPartitionIds(record) {
   const partitions = []
   for (const entry of record.split(/^\s*entry \d+:\s*$/m).slice(1)) {
     if (!/^\s*authorizations \(\d+\):.*\bpartition_id\b/m.test(entry)) continue
-    const description = /^\s*description: (\S+)\s*$/m.exec(entry)?.[1] || ''
-    const text = /^(?:[0-9A-Fa-f]{2})+$/.test(description) ? Buffer.from(description, 'hex').toString('utf8') : description
-    for (const match of text.matchAll(/<string>([^<]+)<\/string>/g)) partitions.push(match[1])
+    const decoded = [...entry.matchAll(/\b(?:[0-9A-Fa-f]{2}){8,}\b/g)].map((match) => Buffer.from(match[0], 'hex').toString('utf8'))
+    for (const text of [entry, ...decoded]) {
+      for (const match of text.matchAll(/<string>([^<]+)<\/string>/g)) partitions.push(match[1])
+    }
   }
-  return partitions
+  return [...new Set(partitions)]
 }
 
 /**
  * The key Chromium keeps for the app in the keychain (cookies, safeStorage),
- * as `security dump-keychain -a` lists it: its service, account and the
- * partition list deciding which programs may read it without asking. Null
- * when the dump has no such item.
+ * as `security dump-keychain -a` lists it: its service, account, the
+ * partition list deciding which programs may read it without asking, and the
+ * access section as printed. Null when the dump has no such item.
  */
 function findSafeStorageItem(dump) {
   for (const record of String(dump).split(/^keychain: /m)) {
     if (!/^class: "genp"$/m.test(record)) continue
     const service = readKeychainAttribute(record, 'svce')
     if (!service || !service.endsWith(' Safe Storage')) continue
-    return { service, account: readKeychainAttribute(record, 'acct'), partitions: readPartitionIds(record) }
+    const access = record.indexOf('\naccess:')
+    return {
+      service,
+      account: readKeychainAttribute(record, 'acct'),
+      partitions: readPartitionIds(record),
+      access: access === -1 ? '' : record.slice(access + 1).trimEnd(),
+    }
   }
   return null
 }

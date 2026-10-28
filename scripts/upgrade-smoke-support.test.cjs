@@ -372,13 +372,16 @@ function keychainDump({ partitions }) {
 
 test('findSafeStorageItem reads the old version\'s key and who may read it', () => {
   const item = findSafeStorageItem(keychainDump({ partitions: ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'] }))
-  assert.deepEqual(item, {
-    service: '星芒AI管理工具 Safe Storage',
-    account: '星芒AI管理工具',
-    partitions: ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'],
+  assert.equal(item.service, '星芒AI管理工具 Safe Storage')
+  assert.equal(item.account, '星芒AI管理工具')
+  assert.deepEqual(item.partitions, ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'])
+  assert.match(item.access, /^access: 3 entries\n[\s\S]*partition_id/)
+  const plain = 'keychain: "/k"\nclass: "genp"\nattributes:\n    "acct"<blob>="Electron"\n    "svce"<blob>="Electron Safe Storage"\n'
+    + 'access: 1 entries\n    entry 0:\n        authorizations (1): partition_id\n        description: <?xml version="1.0"?>\n'
+    + '<plist version="1.0"><dict><key>Partitions</key><array><string>teamid:ABCDE12345</string></array></dict></plist>\n'
+  assert.deepEqual(findSafeStorageItem(plain), {
+    service: 'Electron Safe Storage', account: 'Electron', partitions: ['teamid:ABCDE12345'], access: plain.slice(plain.indexOf('access:')).trimEnd(),
   })
-  const ascii = 'keychain: "/k"\nclass: "genp"\nattributes:\n    "acct"<blob>="Electron"\n    "svce"<blob>="Electron Safe Storage"\naccess: 0 entries\n'
-  assert.deepEqual(findSafeStorageItem(ascii), { service: 'Electron Safe Storage', account: 'Electron', partitions: [] })
   assert.equal(findSafeStorageItem(keychainDump({ partitions: [] }).split('keychain: ').slice(0, 2).join('keychain: ')), null)
 })
 
