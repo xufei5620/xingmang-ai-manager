@@ -23,17 +23,27 @@ interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'
   fallbackLabel?: string
 }
 
-export function SafeImage({ src, fallbackSrc, fallbackLabel = '素材不可用', className, ...props }: SafeImageProps) {
-  const [failedSrc, setFailedSrc] = useState<string | null>(null)
-  const { onError, ...imageProps } = props
-
-  useEffect(() => setFailedSrc(null), [src, fallbackSrc])
-
+/**
+ * The address a SafeImage shows next: the thumbnail, then the original, then
+ * nothing. Every address that already failed stays failed, so a tile whose
+ * thumbnail and original both fail stops on the placeholder instead of going
+ * back to the thumbnail and retrying the pair forever.
+ */
+export function safeImageSource(src: string, fallbackSrc: string | undefined, failed: readonly string[]): string | undefined {
   const primary = isCanvasImagePreviewUrl(src) ? src : undefined
   const fallback = isCanvasImagePreviewUrl(fallbackSrc) && fallbackSrc !== src ? fallbackSrc : undefined
-  const activeSrc = primary && failedSrc !== primary ? primary : fallback
+  return [primary, fallback].find((candidate) => candidate !== undefined && !failed.includes(candidate))
+}
 
-  if (!activeSrc || failedSrc === activeSrc) {
+export function SafeImage({ src, fallbackSrc, fallbackLabel = '素材不可用', className, ...props }: SafeImageProps) {
+  const [failedSources, setFailedSources] = useState<readonly string[]>([])
+  const { onError, ...imageProps } = props
+
+  useEffect(() => setFailedSources([]), [src, fallbackSrc])
+
+  const activeSrc = safeImageSource(src, fallbackSrc, failedSources)
+
+  if (!activeSrc) {
     return (
       <span className={`${className ?? ''} media-unavailable`} role="img" aria-label={fallbackLabel}>
         <ImageOff size={18} aria-hidden="true" />
@@ -41,7 +51,7 @@ export function SafeImage({ src, fallbackSrc, fallbackLabel = '素材不可用',
       </span>
     )
   }
-  return <img {...imageProps} className={className} src={resolveCanvasAssetDisplayUrl(activeSrc)} onError={(event) => { setFailedSrc(activeSrc); onError?.(event) }} />
+  return <img {...imageProps} className={className} src={resolveCanvasAssetDisplayUrl(activeSrc)} onError={(event) => { setFailedSources((current) => current.includes(activeSrc) ? current : [...current, activeSrc]); onError?.(event) }} />
 }
 
 interface VideoCoverImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {

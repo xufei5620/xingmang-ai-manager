@@ -14,7 +14,19 @@ export interface DramaConfirmSelection {
   sceneIds: readonly string[]
   propIds: readonly string[]
   shotIds: readonly string[]
+  /** New names keyed by `dramaAssetKey`, because each table numbers its rows on its own. */
   renamed?: Record<string, string>
+}
+
+export type DramaAssetTable = 'character' | 'scene' | 'prop'
+
+/**
+ * Characters, scenes and props are numbered per table, so a model may well
+ * answer with character 1, scene 1 and prop 1. A row is only identified by its
+ * table together with its ID.
+ */
+export function dramaAssetKey(table: DramaAssetTable, elementId: string): string {
+  return `${table}:${elementId}`
 }
 
 export function defaultDramaConfirmSelection(tables: DramaParseTables): DramaConfirmSelection {
@@ -65,6 +77,8 @@ export function buildDramaNodesFromTables(
   const renamed = selection.renamed ?? {}
   const nodes: EditorNodeRecord[] = []
   const edges: EditorEdgeRecord[] = []
+  // Keyed by dramaAssetKey: one map for all three tables used to let prop 1 overwrite character 1, and every
+  // shot then took the prop as its character reference.
   const assetIds = new Map<string, string>()
   const bibleId = options.bibleId ?? (options.includeBible === false ? undefined : options.createId())
   if (bibleId && options.includeBible !== false && !options.bibleId) {
@@ -81,8 +95,8 @@ export function buildDramaNodesFromTables(
 
   selectedCharacters.forEach((row, index) => {
     const id = options.createId()
-    assetIds.set(row.elementId, id)
-    const name = renamed[row.elementId] || row.name
+    assetIds.set(dramaAssetKey('character', row.elementId), id)
+    const name = renamed[dramaAssetKey('character', row.elementId)] || row.name
     const appearance = row.appearance
     const sheetPrompt = compileAssetSheetPrompt({
       assetKind: 'character', name, elementId: row.elementId, appearance,
@@ -96,8 +110,8 @@ export function buildDramaNodesFromTables(
   })
   selectedScenes.forEach((row, index) => {
     const id = options.createId()
-    assetIds.set(row.elementId, id)
-    const name = renamed[row.elementId] || row.name
+    assetIds.set(dramaAssetKey('scene', row.elementId), id)
+    const name = renamed[dramaAssetKey('scene', row.elementId)] || row.name
     const sheetPrompt = compileAssetSheetPrompt({
       assetKind: 'scene', name, elementId: row.elementId, appearance: row.environment,
     })
@@ -110,8 +124,8 @@ export function buildDramaNodesFromTables(
   })
   selectedProps.forEach((row, index) => {
     const id = options.createId()
-    assetIds.set(row.elementId, id)
-    const name = renamed[row.elementId] || row.name
+    assetIds.set(dramaAssetKey('prop', row.elementId), id)
+    const name = renamed[dramaAssetKey('prop', row.elementId)] || row.name
     const sheetPrompt = compileAssetSheetPrompt({
       assetKind: 'prop', name, elementId: row.elementId, appearance: row.morphology,
     })
@@ -126,11 +140,11 @@ export function buildDramaNodesFromTables(
   selectedShots.forEach((row, index) => {
     const id = options.createId()
     const referenced = [
-      ...row.characterIds,
-      row.sceneId,
-      ...(row.propIds ?? []),
-    ].flatMap((elementId) => {
-      const nodeId = assetIds.get(elementId)
+      ...row.characterIds.map((elementId) => ({ table: 'character' as const, elementId })),
+      { table: 'scene' as const, elementId: row.sceneId },
+      ...(row.propIds ?? []).map((elementId) => ({ table: 'prop' as const, elementId })),
+    ].flatMap(({ table, elementId }) => {
+      const nodeId = assetIds.get(dramaAssetKey(table, elementId))
       return nodeId ? [{ elementId, nodeId }] : []
     })
     const gate = dramaShotGate(referenced.map((entry) => ({

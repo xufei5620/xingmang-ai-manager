@@ -30,9 +30,9 @@ export function isAssetSelected(selection: AssetSelection, assetId: string): boo
   return selection.ids.has(assetId)
 }
 
-/** Detail is only meaningful for a single tile, so it follows the lone selection. */
+/** Detail is only meaningful for a single tile, so it shows the lone selected tile, whatever the anchor says. */
 export function assetSelectionDetailId(selection: AssetSelection): string | null {
-  return selection.ids.size === 1 ? (selection.anchor ?? [...selection.ids][0] ?? null) : null
+  return selection.ids.size === 1 ? ([...selection.ids][0] ?? null) : null
 }
 
 function selectOnly(assetId: string): AssetSelection {
@@ -56,7 +56,9 @@ export function assetSelectionForActivation(
   }
   if (modifiers.toggle) {
     const ids = new Set(current.ids)
-    if (ids.delete(assetId)) return { ids, anchor: ids.size > 0 ? current.anchor : null }
+    // Deselecting the anchor hands it to a tile that is still selected, so a later Shift range starts from
+    // something the user can see highlighted.
+    if (ids.delete(assetId)) return { ids, anchor: ids.size === 0 ? null : current.anchor !== null && ids.has(current.anchor) ? current.anchor : ([...ids][0] as string) }
     ids.add(assetId)
     return { ids, anchor: assetId }
   }

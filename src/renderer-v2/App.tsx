@@ -580,7 +580,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         {helpShortcuts.map((item) => <button key={item.id} type="button" className="v2-support-item" onClick={() => { setHelp(false); item.run() }} data-testid={`support-more-${item.id}`}><item.icon size={16} aria-hidden="true" /><span>{item.label}</span></button>)}
       </div>
     </Dialog>}
-    <RequiredUpdateGate update={update} windows={os === 'win'} linux={os === 'linux'} actions={{
+    <RequiredUpdateGate update={update} windows={os === 'win'} linux={os === 'linux'} mac={os === 'mac'} actions={{
       check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />

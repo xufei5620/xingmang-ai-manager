@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { DramaParseTables } from '../library/drama-model'
-import { defaultDramaConfirmSelection, type DramaConfirmSelection } from '../library/drama-layout'
+import { defaultDramaConfirmSelection, dramaAssetKey, type DramaConfirmSelection } from '../library/drama-layout'
 
 interface DramaParseConfirmProps {
   tables: DramaParseTables
@@ -13,6 +13,7 @@ function TableSection<T>({
   rows,
   idOf,
   labelOf,
+  renameKeyOf,
   selected,
   renamed,
   onToggle,
@@ -22,6 +23,8 @@ function TableSection<T>({
   rows: readonly T[]
   idOf(row: T): string
   labelOf(row: T): string
+  /** The four tables number their rows independently, so a new name is stored under table and ID. */
+  renameKeyOf(id: string): string
   selected: ReadonlySet<string>
   renamed: Record<string, string>
   onToggle(id: string): void
@@ -38,9 +41,9 @@ function TableSection<T>({
               <label>
                 <input type="checkbox" checked={selected.has(id)} onChange={() => onToggle(id)} />
                 <input
-                  value={renamed[id] ?? labelOf(row)}
+                  value={renamed[renameKeyOf(id)] ?? labelOf(row)}
                   aria-label={`${title}名称`}
-                  onChange={(event) => onRename(id, event.target.value)}
+                  onChange={(event) => onRename(renameKeyOf(id), event.target.value)}
                 />
               </label>
             </li>
@@ -77,10 +80,10 @@ export function DramaParseConfirm({ tables, onCancel, onConfirm }: DramaParseCon
         </header>
         <p>只会生成圣经、资产和分镜，不会自动创建出图节点，也不会消耗生图额度。</p>
         <div className="drama-confirm-grid">
-          <TableSection title="角色" rows={tables.characters} idOf={(row) => row.elementId} labelOf={(row) => row.name} selected={characterIds} renamed={renamed} onToggle={(id) => toggle(setCharacterIds, characterIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
-          <TableSection title="场景" rows={tables.scenes} idOf={(row) => row.elementId} labelOf={(row) => row.name} selected={sceneIds} renamed={renamed} onToggle={(id) => toggle(setSceneIds, sceneIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
-          <TableSection title="道具" rows={tables.props} idOf={(row) => row.elementId} labelOf={(row) => row.name} selected={propIds} renamed={renamed} onToggle={(id) => toggle(setPropIds, propIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
-          <TableSection title="镜头" rows={tables.shots} idOf={(row) => row.shotId} labelOf={(row) => row.shotId} selected={shotIds} renamed={renamed} onToggle={(id) => toggle(setShotIds, shotIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
+          <TableSection title="角色" rows={tables.characters} idOf={(row) => row.elementId} labelOf={(row) => row.name} renameKeyOf={(id) => dramaAssetKey('character', id)} selected={characterIds} renamed={renamed} onToggle={(id) => toggle(setCharacterIds, characterIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
+          <TableSection title="场景" rows={tables.scenes} idOf={(row) => row.elementId} labelOf={(row) => row.name} renameKeyOf={(id) => dramaAssetKey('scene', id)} selected={sceneIds} renamed={renamed} onToggle={(id) => toggle(setSceneIds, sceneIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
+          <TableSection title="道具" rows={tables.props} idOf={(row) => row.elementId} labelOf={(row) => row.name} renameKeyOf={(id) => dramaAssetKey('prop', id)} selected={propIds} renamed={renamed} onToggle={(id) => toggle(setPropIds, propIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
+          <TableSection title="镜头" rows={tables.shots} idOf={(row) => row.shotId} labelOf={(row) => row.shotId} renameKeyOf={(id) => `shot:${id}`} selected={shotIds} renamed={renamed} onToggle={(id) => toggle(setShotIds, shotIds, id)} onRename={(id, name) => setRenamed((current) => ({ ...current, [id]: name }))} />
         </div>
         <footer>
           <button type="button" onClick={onCancel}>取消</button>

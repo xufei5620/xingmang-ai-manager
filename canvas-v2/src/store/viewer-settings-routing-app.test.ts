@@ -5,6 +5,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import * as ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
+import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { EditorNodeRecord } from '../domain/node-definition'
 import { createEmptyWorkflow, parseWorkflowFile, serializeWorkflow, type WorkflowNode, type WorkflowNodeData } from '../model'
 import type { CanvasNode } from '../nodes/WorkflowNodes'
@@ -51,7 +52,7 @@ function actual<T>(name: string, environment: Record<string, unknown>): T {
   return new Function(...Object.keys(environment), ts.transpileModule(`return (${callback});`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(environment)) as T
 }
 
-function fixture(kind: 'image-compare' | 'image-panorama' = 'image-compare') {
+function fixture(kind: 'image-compare' | 'image-panorama' | 'note' = 'image-compare') {
   let captured: CanvasDocumentController | undefined
   function project(record: EditorNodeRecord): CanvasNode {
     return { ...record, type: record.type as CanvasNode['type'], data: { prompt: '', model: '', status: 'idle', ...record.data } }
@@ -60,21 +61,22 @@ function fixture(kind: 'image-compare' | 'image-panorama' = 'image-compare') {
   renderToStaticMarkup(createElement(Capture))
   if (!captured) throw new Error('Missing document controller')
   const document = captured
-  const settings = kind === 'image-compare' ? { imageCompare: { mode: 'slider', position: 50, a: '0', b: '1', grid: ['0', '1', null, null] } } : { imagePanorama: { yaw: 40, pitch: 15, fov: 70 } }
+  const settings = kind === 'image-compare' ? { imageCompare: { mode: 'slider', position: 50, a: '0', b: '1', grid: ['0', '1', null, null] } } : kind === 'note' ? { text: '旧备注' } : { imagePanorama: { yaw: 40, pitch: 15, fov: 70 } }
   const asset = { kind: 'image' as const, assetId: 'A'.repeat(43), localUrl: `xingmang-asset://image/${'A'.repeat(43)}`, width: 640, height: 480 }
   const records: EditorNodeRecord[] = ['viewer', 'ai', 'later', 'unrelated'].map((id, index) => ({
     id, type: index === 0 ? kind : 'image-generate', definitionVersion: 1, position: { x: index * 360, y: 0 },
     data: { prompt: 'kept prompt', model: index === 0 ? '' : 'existing-model', dirty: false, result: asset, ...(index === 0 ? { settings } : {}) },
   }))
+  // A note has no ports, so it is never the first link of the chain.
   document.execute({ type: 'replace-document', resetHistory: true, document: { ...createCanvasDocument(), nodes: records, edges: [
-    { id: 'first', source: 'viewer', sourceHandle: 'out:image', target: 'ai', targetHandle: 'in:image' },
+    ...(kind === 'note' ? [] : [{ id: 'first', source: 'viewer', sourceHandle: 'out:image', target: 'ai', targetHandle: 'in:image' }]),
     { id: 'next', source: 'ai', sourceHandle: 'out:image', target: 'later', targetHandle: 'in:image' },
   ] } })
   document.setNodes((nodes) => nodes.map((node) => ({ ...node, data: { ...node.data, status: 'succeeded', costQuota: 31, latestAttemptDurationMs: 1600, candidateAssetIds: [asset.assetId], selectedCandidateId: 'candidate', candidates: [{ candidateId: 'candidate', attemptId: 'attempt', createdAt: '2026-10-14T00:00:00.000Z', asset }] } })))
   const graphRef = { current: document.getGraphSnapshot() }, execute = vi.fn(document.execute), setDirtyNodeIds = vi.fn()
   const dirty = actual<(id: string, patch: Partial<WorkflowNodeData>, discrete: boolean) => void>('markDirtyFrom', { graphRef, execute, setDirtyNodeIds, markNodeAndDescendantsDirty, canvasNodeDocumentRecord })
   const markDirtyFrom = vi.fn(dirty)
-  const onSettingsChange = actual<(id: string, patch: Record<string, unknown>) => void>('onSettingsChange', { getGraphSnapshot: document.getGraphSnapshot, graphRef, execute, canvasNodeDocumentRecord, markDirtyFrom, isDramaAssetNodeType: () => false })
+  const onSettingsChange = actual<(id: string, patch: Record<string, unknown>) => void>('onSettingsChange', { getGraphSnapshot: document.getGraphSnapshot, graphRef, execute, canvasNodeDocumentRecord, markDirtyFrom, isDramaAssetNodeType: () => false, builtinNodeRegistry })
   const toWorkflowNode = actual<(node: CanvasNode) => WorkflowNode>('toWorkflowNode', { parseImageCandidateCount, parseVideoCandidateCount, maximumOutputTextLength: 200_000 })
   function saved() {
     const graph = document.getGraphSnapshot()
@@ -140,6 +142,17 @@ describe('actual App viewer-only settings routing', () => {
     expect(after.nodes.find((node) => node.id === nodeId)?.data.dirty).toBe(true)
     expect(after.nodes.find((node) => node.id === 'later')?.data.dirty).toBe(true)
     expect(after.nodes.find((node) => node.id === 'unrelated')?.data.dirty).toBe(false)
+  })
+
+  it('saves a note edit without leaving the note or anything else waiting for a rerun', () => {
+    const f = fixture('note'), before = f.document.getGraphSnapshot()
+    f.onSettingsChange('viewer', { text: '新备注' })
+    const after = f.document.getGraphSnapshot()
+    expect(after.nodes[0].data.settings?.text).toBe('新备注')
+    expect(f.markDirtyFrom).not.toHaveBeenCalled()
+    expect(f.setDirtyNodeIds).not.toHaveBeenCalled()
+    expect(after.nodes.map((node) => node.data.dirty)).toEqual([false, false, false, false])
+    expect(after.nodes.slice(1)).toEqual(before.nodes.slice(1))
   })
 
   it('ignores a settings callback whose node was removed', () => {

@@ -41,6 +41,17 @@ describe('assetSelectionForActivation', () => {
     expect(idsOf(assetSelectionForActivation(added, 'a', order, { toggle: true }))).toEqual(['c'])
   })
 
+  it('hands the anchor to a tile that is still selected when the anchor is toggled off', () => {
+    // Select a, Ctrl-add b (anchor b), Ctrl-remove b: a is the only tile left, so it is the anchor and the detail.
+    const added = assetSelectionForActivation(selection(['a']), 'b', order, { toggle: true })
+    const removed = assetSelectionForActivation(added, 'b', order, { toggle: true })
+    expect(idsOf(removed)).toEqual(['a'])
+    expect(removed.anchor).toBe('a')
+    expect(assetSelectionDetailId(removed)).toBe('a')
+    const kept = assetSelectionForActivation(selection(['a', 'b', 'c'], 'c'), 'a', order, { toggle: true })
+    expect(kept.anchor).toBe('c')
+  })
+
   it('forgets the anchor once a toggle empties the selection', () => {
     expect(assetSelectionForActivation(selection(['a']), 'a', order, { toggle: true })).toEqual(emptyAssetSelection)
   })
@@ -109,6 +120,10 @@ describe('assetSelectionAfterKey', () => {
 describe('assetSelectionDetailId', () => {
   it('reports the lone selection', () => {
     expect(assetSelectionDetailId(selection(['b']))).toBe('b')
+  })
+
+  it('reports the lone selected tile even when the anchor points elsewhere', () => {
+    expect(assetSelectionDetailId(selection(['a'], 'b'))).toBe('a')
   })
 
   it('reports nothing for an empty or multiple selection', () => {

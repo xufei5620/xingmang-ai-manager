@@ -137,19 +137,26 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
 
 describe('update install prompt copy', () => {
   it('matches the wording approved on 2026-10-25 for each kind of computer', () => {
+    // The Mac keychain sentence was approved on 2026-10-28.
     expect(buildInstallPrompt('0.2.22', 'darwin', { unattended: true })).toEqual({
       title: '星芒AI管理工具',
       message: '新版 0.2.22 已经下好，现在装上吗？',
-      detail: '装的时候星芒会先关掉，装好自动打开。现在不装也行：你不用电脑时星芒会自己装好，装完照旧待在菜单栏。',
+      detail: '装的时候星芒会先关掉，装好自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行：你不用电脑时星芒会自己装好，装完照旧待在菜单栏。',
       buttons: ['稍后再说', '现在安装'],
     })
     expect(buildInstallPrompt('0.2.22', 'darwin', { unattended: false }).detail)
-      .toBe('装的时候星芒会先关掉，装好自动打开。现在不装也行：退出星芒或下次打开时自动装上。')
+      .toBe('装的时候星芒会先关掉，装好自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行：退出星芒或下次打开时自动装上。')
     expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false }).detail)
       .toBe('装的时候星芒会先关掉，装好自动打开。Windows 弹出授权窗口时请点「是」。现在不装也行：关掉软件或下次打开时自动装上。')
     // Running elevated already, so no consent window appears.
     expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false, elevated: true }).detail)
       .toBe('装的时候星芒会先关掉，装好自动打开。现在不装也行：关掉软件或下次打开时自动装上。')
+  })
+
+  it('mentions the keychain prompt only on a Mac', () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      for (const unattended of [true, false]) expect(buildInstallPrompt('0.2.22', platform, { unattended }).detail).not.toContain('钥匙串')
+    }
   })
 
   it('puts the safe answer first so it is the default and the cancel button', () => {

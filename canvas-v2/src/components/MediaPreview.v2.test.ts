@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canvasAssetIsPreviewable, downsampleWaveform, formatMediaTime, isCanvasImagePreviewUrl, isLocalCanvasAssetUrl, waveformAreaPath } from './MediaPreview'
+import { canvasAssetIsPreviewable, downsampleWaveform, formatMediaTime, isCanvasImagePreviewUrl, isLocalCanvasAssetUrl, safeImageSource, waveformAreaPath } from './MediaPreview'
 
 describe('canvas media preview protocol', () => {
   it('accepts owned image, video, and audio asset URLs', () => {
@@ -44,6 +44,34 @@ describe('canvas media preview protocol', () => {
       localUrl: '',
       thumbnailUrl: `xingmang-asset://video/${assetId}`,
     })).toBe(false)
+  })
+})
+
+describe('safe image source', () => {
+  const thumbnail = `xingmang-asset://thumb/v1/image/${'c'.repeat(43)}`
+  const original = `xingmang-asset://image/${'c'.repeat(43)}`
+
+  it('falls back from the thumbnail to the original', () => {
+    expect(safeImageSource(thumbnail, original, [])).toBe(thumbnail)
+    expect(safeImageSource(thumbnail, original, [thumbnail])).toBe(original)
+  })
+
+  it('stops on the placeholder once both addresses failed instead of retrying the thumbnail', () => {
+    // Replays the error events the way SafeImage records them: each failure is added, none is forgotten.
+    const failed: string[] = []
+    const shown: (string | undefined)[] = []
+    for (let event = 0; event < 4; event += 1) {
+      const active = safeImageSource(thumbnail, original, failed)
+      shown.push(active)
+      if (active) failed.push(active)
+    }
+    expect(shown).toEqual([thumbnail, original, undefined, undefined])
+  })
+
+  it('ignores a fallback that is not a previewable image or repeats the primary', () => {
+    expect(safeImageSource(thumbnail, 'https://example.com/a.png', [thumbnail])).toBeUndefined()
+    expect(safeImageSource(original, original, [original])).toBeUndefined()
+    expect(safeImageSource('', original, [])).toBe(original)
   })
 })
 

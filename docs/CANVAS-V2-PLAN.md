@@ -114,4 +114,4 @@ node --test scripts/verify-canvas-provenance.test.cjs scripts/verify-canvas-rend
 git diff --check
 ```
 
-四视口视觉门禁 `test:canvas:visual` 点的是换内核之前的界面，随 #1393 退役；现在由 `e2e/canvas-kernel-smoke.mjs`（只在 Windows 上跑，Windows CI 每次都跑）用真的 Electron 和 mock 账号后端，把桌面画布从新建项目、出图、自动保存关窗、复制、跨项目撤销、打开旧工程到 Ctrl+C/Ctrl+V 和素材库收藏改名整条点一遍，画布零出网。发布前还要手工检查项目导入导出、资产右键和取消运行。
+四视口视觉门禁 `test:canvas:visual` 点的是换内核之前的界面，随 #1393 退役；现在由 `e2e/canvas-kernel-smoke.mjs`（只在 Windows 上跑，Windows CI 每次都跑）用真的 Electron 和 mock 账号后端，把桌面画布从新建项目、出图、自动保存关窗、复制、跨项目撤销、打开旧工程到 Ctrl+C/Ctrl+V、素材库收藏改名整条点一遍，顺带看「生成来源」下拉框有样式、检查器开着时创作库点得开、便签不算待更新，画布零出网。发布前还要手工检查项目导入导出、资产右键和取消运行。
