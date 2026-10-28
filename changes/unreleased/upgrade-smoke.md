@@ -1,0 +1,8 @@
+## 开发
+
+- 新增 `upgrade-smoke` 工作流（商业级差距报告 G13）：在 Windows 和 macOS runner 上装客户手上的正式旧版本
+  （0.2.19 和最新正式版），让它从本机假更新源自己下载、核对、安装这次的包并重开，再核新版本记下了
+  「更新后第一次启动」、上次运行版本、客户设置都还在。`package-for-testing` 出完包后自动接着跑，动到更新链路的
+  PR 也跑。只改 runner 上装好的那份旧版本（Windows 换 `app.asar` 里的发布者公钥并修回完整性记录，Mac 统一重签），
+  客户包里没有任何口子；旧版本打开之前就断了外网并先自证。见 `docs/RELEASING.md`「旧版升新版冒烟（CI）」、
+  `scripts/upgrade-smoke.cjs`。
