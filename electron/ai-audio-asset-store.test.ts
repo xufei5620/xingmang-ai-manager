@@ -68,8 +68,24 @@ function audioFixtureRoot(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
+
+/** Lets the atomic writer's temporary file take a few bytes, then fails the way a full disk does. */
+function failTemporaryFileWrites(): void {
+  const open = fs.promises.open
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+    const handle = await open(...args)
+    if (String(args[0]).endsWith('.tmp')) {
+      handle.writeFile = async () => {
+        await handle.write(Buffer.from('half'))
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+      }
+    }
+    return handle
+  })
+}
 
 describe('AiAudioAssetStore', () => {
   it('recognizes MP3 and WAV fixtures by content', () => {
@@ -155,6 +171,28 @@ describe('AiAudioAssetStore', () => {
     await menuItems[1].run()
     expect(fs.readFileSync(target)).toEqual(fs.readFileSync(path.join(fixtureRoot, '8月14日.wav')))
     expect(revealInFolder).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the file being replaced intact when an audio save fails part-way', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-save-'))
+    const saveRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-save-target-'))
+    roots.push(outputRoot, saveRoot)
+    const fixtureRoot = audioFixtureRoot()
+    const target = path.join(saveRoot, 'saved.wav')
+    fs.writeFileSync(target, 'previous recording')
+    const store = new AiAudioAssetStore({ outputRoot, nativeOperations: {
+      selectSavePath: async () => target, revealInFolder: vi.fn(), showContextMenu: vi.fn(),
+    } })
+    const asset = await store.storeLocalFile(36, path.join(fixtureRoot, '8月14日.wav'))
+
+    failTemporaryFileWrites()
+    await expect(store.saveAs(36, asset.assetId)).rejects.toThrow('音频另存失败，请检查目标目录写入权限')
+    expect(fs.readFileSync(target, 'utf8')).toBe('previous recording')
+    expect(fs.readdirSync(saveRoot)).toEqual(['saved.wav'])
+
+    vi.restoreAllMocks()
+    await expect(store.saveAs(36, asset.assetId)).resolves.toBe(true)
+    expect(fs.readFileSync(target)).toEqual(pcmWav())
   })
 })
 

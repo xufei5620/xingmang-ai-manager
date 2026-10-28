@@ -9,6 +9,7 @@ import {
   assertNoReparseComponents,
   ensureSafeDataDirectory,
   removeSafeDataFile,
+  writeAtomicSafeBinaryFile,
 } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -26,6 +27,9 @@ const MAXIMUM_REVISED_PROMPT_LENGTH = 40_000
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const FILE_LABEL = 'AI 图片资产'
+// 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
+// 下的结果给 0o644，不用原子写默认的 0o600。
+const SAVED_COPY_FILE_MODE = 0o644
 const PROXY_AWARE_IMAGE_HOSTS = new Set(['imgen.x.ai'])
 const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
 /** 生成前试写失败时挂在错误上的 code，与「已生成但保存失败」那类扣过费的错误区分开。 */
@@ -828,7 +832,7 @@ export class AiAssetStore {
     await authorize?.()
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('图片另存地址无效')
     try {
-      await fs.promises.writeFile(target, owned.bytes)
+      await writeAtomicSafeBinaryFile(target, owned.bytes, '图片另存文件', { mode: SAVED_COPY_FILE_MODE })
     } catch {
       throw new Error('图片另存失败，请检查目标目录写入权限')
     }

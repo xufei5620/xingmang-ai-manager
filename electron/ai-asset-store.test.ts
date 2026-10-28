@@ -73,6 +73,21 @@ afterEach(() => {
   }
 })
 
+/** Lets the atomic writer's temporary file take a few bytes, then fails the way a full disk does. */
+function failTemporaryFileWrites(): void {
+  const open = fs.promises.open
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (...args: Parameters<typeof open>) => {
+    const handle = await open(...args)
+    if (String(args[0]).endsWith('.tmp')) {
+      handle.writeFile = async () => {
+        await handle.write(Buffer.from('half'))
+        throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' })
+      }
+    }
+    return handle
+  })
+}
+
 describe('image inspection', () => {
   it('recognizes PNG, JPEG, and WebP dimensions by magic bytes', () => {
     expect(inspectAiImage(png())).toMatchObject({ mimeType: 'image/png', width: 2, height: 3 })
@@ -563,6 +578,38 @@ describe('AiAssetStore native operations', () => {
     })
     const asset = await store.storeBase64(42, png().toString('base64'))
     await expect(store.saveAs(42, asset.assetId)).resolves.toBe(false)
+  })
+
+  it('keeps the file being replaced intact when the save fails part-way', async () => {
+    const directory = temporaryDirectory()
+    const savedPath = path.join(directory, 'saved.png')
+    fs.writeFileSync(savedPath, 'previous picture')
+    const store = new AiAssetStore({
+      ...storeOptions(),
+      nativeOperations: { selectSavePath: vi.fn(async () => savedPath) },
+    })
+    const asset = await store.storeBase64(42, png().toString('base64'))
+
+    failTemporaryFileWrites()
+    await expect(store.saveAs(42, asset.assetId)).rejects.toThrow('图片另存失败，请检查目标目录写入权限')
+    expect(fs.readFileSync(savedPath, 'utf8')).toBe('previous picture')
+    expect(fs.readdirSync(directory)).toEqual(['saved.png'])
+
+    vi.restoreAllMocks()
+    await expect(store.saveAs(42, asset.assetId)).resolves.toBe(true)
+    expect(fs.readFileSync(savedPath)).toEqual(png())
+    expect(fs.readdirSync(directory)).toEqual(['saved.png'])
+  })
+
+  it.runIf(process.platform !== 'win32')('gives a saved copy the ordinary 0644 permissions', async () => {
+    const savedPath = path.join(temporaryDirectory(), 'saved.png')
+    const store = new AiAssetStore({
+      ...storeOptions(),
+      nativeOperations: { selectSavePath: vi.fn(async () => savedPath) },
+    })
+    const asset = await store.storeBase64(42, png().toString('base64'))
+    await expect(store.saveAs(42, asset.assetId)).resolves.toBe(true)
+    expect(fs.statSync(savedPath).mode & 0o777).toBe(0o644)
   })
 })
 
