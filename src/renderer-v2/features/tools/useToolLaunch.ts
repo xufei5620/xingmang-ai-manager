@@ -41,6 +41,8 @@ interface ToolLaunchOptions {
   switchToolAccount(tool: ToolId, target: AccountSourceTarget): Promise<AccountSourceSwitchResult | null>
   openToolConfig(tool: ToolId): void
   setSwitchRestartOffer: Dispatch<SetStateAction<AccountSourceTarget | null>>
+  /** 状态文件关掉了 Codex 桌面端的中文补丁（remote-features.ts）；缺省 = 没关（旧行为）。 */
+  chineseSuspended?: boolean
 }
 
 /**
@@ -48,7 +50,7 @@ interface ToolLaunchOptions {
  * Codex 桌面端开着要不要重开、要不要中文。每一步都认点「打开」时的那个账号，中途换了账号就停下。
  */
 export function useToolLaunch(options: ToolLaunchOptions) {
-  const { native, app, toolsApi, toolbox, toast, perform, settings, setSettings, platform, os, scope, mounted, accountEpoch, accountBootstrapRef, switchToolAccount, openToolConfig, setSwitchRestartOffer } = options
+  const { native, app, toolsApi, toolbox, toast, perform, settings, setSettings, platform, os, scope, mounted, accountEpoch, accountBootstrapRef, switchToolAccount, openToolConfig, setSwitchRestartOffer, chineseSuspended } = options
   const [modelSwap, setModelSwap] = useState<{ offer: ModelSwapOffer; answer: (choice: ModelSwapChoice) => void } | null>(null)
   const [restartDialog, setRestartDialog] = useState(false)
   const [chineseDialog, setChineseDialog] = useState(false)
@@ -258,6 +260,8 @@ export function useToolLaunch(options: ToolLaunchOptions) {
    * launch with no stored answer asks, and the answer is stored either way.
    */
   async function askForChineseRuntimePatch(epoch = accountEpoch.capture()): Promise<boolean> {
+    // 中文补丁这会儿关着：问了也打不上，先照英文界面打开，放开以后下次打开再问。
+    if (chineseSuspended) return false
     const storedChoice = settings?.codexDesktopChineseRuntimePatch
     if (!chineseRuntimePatchAnswerMissing(platform, storedChoice)) return false
     const locale = await toolsApi.getLocale().catch(() => null)

@@ -288,6 +288,8 @@ export interface AccelerationServicesOptions {
   /** 主窗口和托盘都建得比这里晚，用到时再取。 */
   mainWindow: () => BrowserWindow | null
   applicationTray: () => ApplicationTrayController | null
+  /** 状态文件关掉了网络加速（remote-features.ts）：加速页、托盘、替桌面端连的那次都不连新的。缺省 = 不关。 */
+  accelerationSuspended?: () => boolean
 }
 
 // 加速服务和挂在它上面的几样：时长快用完、加速中断的系统通知，加速页和托盘看到的那一套。
@@ -295,6 +297,7 @@ export interface AccelerationServicesOptions {
 export function createAccelerationServices(options: AccelerationServicesOptions) {
   const { developmentAcceleration, accelerationBundleDamaged, accelerationPreferences, recheckAccelerationBundle, runtimeLog } = options
   const { routing: { codexDesktopAcceleration, claudeDesktopAcceleration, accelerationStartArguments }, readAccelerationAccountScope, mainWindow, applicationTray } = options
+  const { accelerationSuspended } = options
   // 建的过程中互相读得到：还没建好的那一样是空的，跟原来在 main.ts 里一样。
   let trayAcceleration: TrayAccelerationCoordinator | null = null
   let accelerationExpiry: AccelerationExpiryNotice | null = null
@@ -341,6 +344,7 @@ export function createAccelerationServices(options: AccelerationServicesOptions)
       return result
     } } } : {}),
     getAccountScope: () => readAccelerationAccountScope(),
+    ...(accelerationSuspended ? { suspended: accelerationSuspended } : {}),
     onState: (state) => {
       // 托盘与加速页同一口径：软件替他在后台连的那一次不显示（userAccelerationState）。
       trayAcceleration?.observe(userAccelerationState(state))
@@ -362,6 +366,7 @@ export function createAccelerationServices(options: AccelerationServicesOptions)
     connect: async (scope, state) => userAcceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state)),
     disconnect: (scope) => userAcceleration.stopAcceleration(scope),
     onChanged: () => applicationTray()?.updateSnapshot(),
+    ...(accelerationSuspended ? { suspended: accelerationSuspended } : {}),
     log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
   })
   return { accelerationExpiry, accelerationInterruption, acceleration, userAcceleration, trayAcceleration }

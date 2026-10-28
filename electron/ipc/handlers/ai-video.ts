@@ -8,6 +8,7 @@ import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
 import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent } from '../../ipc-contract'
+import { videoStudioOffMessage } from '../../remote-features'
 import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson } from '../../video-studio-plan'
 import { requiredString } from '../parsers/common'
 import {
@@ -103,6 +104,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     if (!chatService) throw new Error('AI聊天服务未就绪')
     const parsed = parseVideoStudioPlanInput(input)
     currentUserId()
+    await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     const key = `${event.sender.id}:${parsed.requestId}`
     if (plans.has(key)) throw new Error('这份分镜正在写，请等它写完')
@@ -139,6 +141,8 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     if (!videoService) throw new Error('视频服务未就绪')
     const parsed = parseAiVideoGenerateInput(input)
     const expectedUserId = currentUserId()
+    // 只拦新交出去的；接回上次没等到的（video:resume）照旧，那一段已经扣过钱。
+    await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
     const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,

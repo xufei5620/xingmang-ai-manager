@@ -342,6 +342,9 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         }
       }
     }
+    // 状态文件关掉了中文补丁（remote-features.ts）：这次不开调试端口打补丁。下面替没设过的人写中文设置那一步
+    // 照旧，那一步不碰调试端口。
+    const chineseOff = serviceOptions.remoteFeatureOff?.('codex-desktop-chinese') === true
     let injectChinese = launchOptions.injectChinese
     if (injectChinese === undefined && platform === 'win32') {
       // The runtime patch is the only reason this app ever starts Codex with a
@@ -368,9 +371,11 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         // unavailable; config.toml will still be honored by Codex itself.
       }
     }
+    const chineseSuspended = chineseOff && injectChinese === true
     return launchCodexDesktopOperation(effectiveLaunchMode, target, {
       ...launchOptions,
-      injectChinese,
+      injectChinese: chineseSuspended ? false : injectChinese,
+      ...(chineseSuspended ? { chineseSuspended } : {}),
       repairPermissionModeVisibility,
     })
   }

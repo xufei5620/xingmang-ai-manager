@@ -11,6 +11,7 @@ import {
   macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage, macosLegacyChatgptMessage,
 } from '../../electron/macos-desktop-install-failure'
 import { operationFailureFrom } from './business-common'
+import { accelerationOffMessage, toolInstallOffMessage, toolLaunchOffMessage, videoStudioOffMessage } from '../../electron/remote-features'
 
 /**
  * 目录里的 16 条都要有交代：要么给出一句真的会到达渲染层的后端原话，要么写明
@@ -18,6 +19,8 @@ import { operationFailureFrom } from './business-common'
  */
 const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: OperationTarget } | { unreachable: string }> = {
   sessionExpired: { sample: '账号接口返回 401 Unauthorized' },
+  // 主进程 remote-features.ts 拼的那几句：状态文件关掉了这一样（G04）。
+  featureSuspended: { sample: toolInstallOffMessage('Codex CLI') },
   toolNotEnabled: { sample: 'Codex CLI 改用当前账号没有完成：分组不存在、不可用或名称重复。已恢复到切换前的配置。' },
   switchUndoFailed: { sample: '改用当前账号没有完成：写入失败 EPERM。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。' },
   pluginCatalogStuck: { sample: 'Codex 插件目录里的旧备份清不掉，这次没有改动' },
@@ -85,6 +88,20 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
 }
 
 describe('renderer-v2 operation error classification', () => {
+  it('names a feature the status file switched off before any install, network or permission rule can claim it', () => {
+    for (const message of [toolInstallOffMessage('Codex CLI'), toolLaunchOffMessage('Claude Code'), videoStudioOffMessage, accelerationOffMessage]) {
+      expect(classifyOperationError(message)).toBe('featureSuspended')
+    }
+    expect(presentOperationError(toolInstallOffMessage('Codex 桌面端'))).toEqual({
+      key: 'featureSuspended',
+      title: '这个功能暂时停用了',
+      body: '我们已经知道这个问题，修好以后会自动恢复，不用重装软件。',
+      actions: [{ id: 'support', label: '找客服' }],
+    })
+    // 经 IPC 过来带着通道名和错误类名，剥掉以后照样认得出。
+    expect(presentOperationFailure(operationFailureFrom(new Error(`Error invoking remote method 'cli:install': RemoteFeatureOffError: ${toolInstallOffMessage('Codex CLI')}`), '安装 Codex CLI'))?.key).toBe('featureSuspended')
+  })
+
   it('names the npm failures a user actually hits during a CLI install', () => {
     expect(classifyOperationError('Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename')).toBe('permission')
     expect(classifyOperationError('Grok CLI 安装失败：EBUSY: resource busy or locked')).toBe('toolRunning')

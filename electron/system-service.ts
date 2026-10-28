@@ -119,6 +119,7 @@ import {
   type RelayRouteSiteId,
 } from './relay-sites'
 import type { RelayRouteChange } from './relay-route-controller'
+import type { RemoteFeatureId } from './remote-features'
 import { inspectMacosCodexApp } from './macos-codex-app'
 import {
   installMacGitRuntime,
@@ -765,6 +766,11 @@ export interface SystemServiceOptions {
    * （#1373，claude-desktop-acceleration.ts）。实现永不抛错；缺省 = 旧行为，直接打开。
    */
   prepareClaudeDesktopLaunch?: (context: ClaudeDesktopLaunchContext) => Promise<unknown>
+  /**
+   * 状态文件里关掉的功能这一刻关着没有（remote-feature-gate.ts）：Codex 桌面端中文关着时打开它不打中文补丁。
+   * 缺省 = 什么都不关。
+   */
+  remoteFeatureOff?: (feature: RemoteFeatureId) => boolean
   /** runtime.jsonl sink for steps that are allowed to fail without blocking. */
   runtimeLog?: RuntimeLogLike
   /** 随包的中文 AGENTS.md 模板路径；缺省则打开目录时不生成项目说明。 */

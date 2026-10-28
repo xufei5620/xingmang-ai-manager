@@ -52,7 +52,8 @@ const RELEASE_PLATFORM_LABELS = {
 const MAX_RELEASE_PLATFORMS = 9
 // 第一个认平台的客户端版本：更早的不认，带平台的条目在它们那里照旧对所有平台生效。
 const PLATFORM_AWARE_CLIENT = '0.2.20'
-// 已知问题提示和充值方式开关（客户端 electron/service-status.ts 的 knownIssues / paymentMethodsOff）从这一版起认。
+// 已知问题提示、充值方式开关和远程关功能（客户端 electron/service-status.ts 的 knownIssues / paymentMethodsOff /
+// featuresOff）从这一版起认。
 const REMOTE_SWITCH_CLIENT = '0.2.23'
 // 挂在哪一页、按钮去哪，与客户端 knownIssuePages / knownIssueActions 一致；条数上限与它的 maxKnownIssues 等一致。
 const KNOWN_ISSUE_PAGES = ['all', 'home', 'chat', 'recharge', 'settings']
@@ -64,6 +65,26 @@ const MAX_PAYMENT_METHODS_OFF = 16
 const MAX_SWITCH_VERSIONS = 20
 const PAYMENT_METHOD = /^[A-Za-z0-9_.-]{1,64}$/
 const PAYMENT_METHOD_LABELS = { alipay: '支付宝', wxpay: '微信', qqpay: 'QQ 钱包', stripe: 'Stripe' }
+// 能远程关的功能，跟客户端 electron/remote-features.ts 的 remoteFeatureIds 一模一样（测试对着它核）：
+// 名单外的名字客户端整条不管，这里先拦下，免得批了以为关掉了。
+const FEATURE_LABELS = {
+  'video-studio': '视频剪辑',
+  'codex-remote': '手机遥控 Codex',
+  'mac-idle-install': 'Mac 闲着时自己装更新',
+  'tray-release': '缩到托盘久了关界面省内存',
+  acceleration: '网络加速（新连接）',
+  'codex-desktop-chinese': 'Codex 桌面端中文补丁',
+}
+const FEATURE_TOOL_LABELS = {
+  claude: 'Claude Code', codex: 'Codex CLI', grok: 'Grok CLI', codexDesktop: 'Codex 桌面端',
+  claudeDesktop: 'Claude Desktop', workbuddy: 'WorkBuddy', opencode: 'OpenCode',
+}
+const FEATURE_IDS = [
+  ...Object.keys(FEATURE_LABELS),
+  ...Object.keys(FEATURE_TOOL_LABELS).map((tool) => `install:${tool}`),
+  ...Object.keys(FEATURE_TOOL_LABELS).map((tool) => `launch:${tool}`),
+]
+const MAX_FEATURES_OFF = 32
 // 提示里不许带链接（docs/SERVICE-STATUS.md）：客户端照纯文字摆，点不开；状态文件没有签名，带网址的提示
 // 正是被人改了文件以后最想塞进来的东西。客户端用同一个写法，碰到就整条不显示。
 const LINK_LIKE = /[a-z][a-z0-9+.-]*:\/\/|www\.|[a-z0-9-]+\.(?:com|cn|cc|net|org|top|xyz|fun|io|me|vip|shop|site|link|info|biz)\b/i
@@ -459,6 +480,57 @@ function applyPaymentMethodsOff(current, input) {
   return switches.size ? [...switches.values()] : undefined
 }
 
+// 客户端认名字不分大小写（install:codexdesktop 也算），这里一样，写回去用名单上的写法。
+function featureId(value) {
+  const name = String(value ?? '').trim().toLowerCase()
+  return FEATURE_IDS.find((id) => id.toLowerCase() === name) ?? null
+}
+
+function readFeaturesOff(current) {
+  const switches = new Map()
+  for (const entry of Array.isArray(current) ? current.slice(0, MAX_FEATURES_OFF) : []) {
+    if (!isRecord(entry)) continue
+    const feature = featureId(entry.feature)
+    const scope = readSwitchScope(entry)
+    if (!feature || !scope) continue
+    switches.set(feature, { feature, ...scope })
+  }
+  return switches
+}
+
+/**
+ * 远程关功能：「video-studio」关掉视频剪辑，「-video-studio」放开，none 全部放开。后面接「@0.2.23|0.2.24」
+ * 「@mac」只关这几版、这几种安装包，写法同充值方式开关。工具的安装和打开写 install:codex、launch:codex。
+ * 同一样再写一次就换掉它的范围。
+ */
+function applyFeaturesOff(current, input) {
+  const raw = String(input ?? '').trim()
+  if (!raw) return current
+  if (raw.toLowerCase() === 'none') return undefined
+  const switches = readFeaturesOff(current)
+  for (const token of raw.split(/[\s,，]+/).filter(Boolean)) {
+    const [head, ...segments] = token.split(/[@＠]/)
+    const removing = head.startsWith('-')
+    const feature = featureId(removing ? head.slice(1) : head)
+    if (!feature) throw new StatusInputError(`没有这样能关的功能（名字照 docs/SERVICE-STATUS.md「远程关功能」那张表写）：${token}`)
+    if (removing) {
+      if (segments.length) throw new StatusInputError(`放开时只写名字，不带 @：${token}`)
+      switches.delete(feature)
+      continue
+    }
+    if (segments.length > 2) throw new StatusInputError(`一样功能最多带两个 @（版本一个、平台一个）：${token}`)
+    const scope = {}
+    for (const segment of segments) {
+      const kind = /^[\d.|｜v\s-]+$/i.test(segment) ? 'versions' : 'platforms'
+      if (scope[kind]) throw new StatusInputError(`版本和平台各写一个 @：${token}`)
+      scope[kind] = kind === 'versions' ? switchVersions(segment, token) : releasePlatforms(segment, token)
+    }
+    switches.delete(feature)
+    switches.set(feature, { feature, ...scope })
+  }
+  return switches.size ? [...switches.values()] : undefined
+}
+
 function groupName(role, value) {
   const name = value.trim()
   if (!name) throw new StatusInputError(`${role} 那一项里有空的分组名字（两个 | 挨着了？）`)
@@ -642,6 +714,9 @@ function applyStatusChanges(current, changes, now = new Date()) {
   const paymentMethodsOff = applyPaymentMethodsOff(next.paymentMethodsOff, changes['payment-methods-off'])
   if (paymentMethodsOff === undefined) delete next.paymentMethodsOff
   else next.paymentMethodsOff = paymentMethodsOff
+  const featuresOff = applyFeaturesOff(next.featuresOff, changes['features-off'])
+  if (featuresOff === undefined) delete next.featuresOff
+  else next.featuresOff = featuresOff
   next.updatedAt = now.toISOString()
   const text = `${JSON.stringify(next, null, 2)}\n`
   if (Buffer.byteLength(text) > MAX_STATUS_BYTES) throw new StatusInputError('状态文件超过 16 KB，客户端会拒绝读取')
@@ -718,6 +793,20 @@ function describePaymentMethodsOff(current) {
   return `充值页藏掉的付款方式：${parts.join('、')}（只藏软件里的，网站不受影响；只有 ${REMOTE_SWITCH_CLIENT} 及以后的客户端认）`
 }
 
+function describeFeature(feature) {
+  const [kind, tool] = feature.split(':')
+  if (kind === 'install') return `${FEATURE_TOOL_LABELS[tool]}${/[A-Za-z0-9]$/.test(FEATURE_TOOL_LABELS[tool]) ? ' ' : ''}的安装和更新`
+  if (kind === 'launch') return `从星芒打开 ${FEATURE_TOOL_LABELS[tool]}`
+  return FEATURE_LABELS[feature]
+}
+
+function describeFeaturesOff(current) {
+  const switches = [...readFeaturesOff(current).values()]
+  if (switches.length === 0) return '关掉的功能：无'
+  const parts = switches.map((entry) => `${entry.feature}（${describeFeature(entry.feature)}）${describeSwitchScope(entry)}`)
+  return `关掉的功能：${parts.join('、')}（只有 ${REMOTE_SWITCH_CLIENT} 及以后的客户端认）`
+}
+
 function describeStatus(status) {
   const lines = []
   const maintenance = isRecord(status.maintenance) && status.maintenance.active === true ? status.maintenance : null
@@ -730,6 +819,7 @@ function describeStatus(status) {
   lines.push(describeAccountGroups(status.accountGroups))
   lines.push(describeKnownIssues(status.knownIssues))
   lines.push(describePaymentMethodsOff(status.paymentMethodsOff))
+  lines.push(describeFeaturesOff(status.featuresOff))
   return lines
 }
 
@@ -809,7 +899,7 @@ function parseArguments(argv) {
 
 function main(argv) {
   const options = parseArguments(argv)
-  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--published-dates …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …] [--known-issue …] [--known-issue-scope …] [--payment-methods-off …] [--summary <file>]')
+  if (!options.current || !options.output) throw new StatusInputError('用法：service-status.cjs --current <file> --output <file> [--maintenance on|off|keep] [--message …] [--until …] [--bad-versions …] [--rollout …] [--minimum-version …] [--published-versions …] [--published-dates …] [--tool-route-rewrite keep|targeted|merge] [--account-groups …] [--cli-models …] [--known-issue …] [--known-issue-scope …] [--payment-methods-off …] [--features-off …] [--summary <file>]')
   // 工作流只在线上返回 404 时删掉这个文件；文件在就必须读得懂。
   const currentText = fs.existsSync(options.current) ? fs.readFileSync(options.current, 'utf8') : null
   const now = new Date()
@@ -832,4 +922,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, isNonInteractiveCliModel, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }
+module.exports = { LINK_LIKE, StatusInputError, applyAccountGroups, applyBadVersions, applyCliModels, applyFeaturesOff, applyKnownIssues, applyMinimumVersion, applyPaymentMethodsOff, applyRollout, applyStatusChanges, buildApprovalSummary, describeStatus, describeStatusWarnings, escapeWorkflowCommand, isNonInteractiveCliModel, normalizeMessage, normalizeUntil, parseCurrentStatus, parsePublishedDates }

@@ -4,6 +4,7 @@ import { flushSync } from 'react-dom'
 import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, ExternalToolId, LegalDocumentKind, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite } from '../../electron/relay-sites'
 import { appReleaseDownloadUrl } from '../../electron/app-download-page'
+import type { RemoteFeatureId } from '../../electron/remote-features'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createChatTransfer } from './features/chat/transfer'
 import { OnlineStatusContext } from './features/shell/useOnlineStatus'
@@ -153,6 +154,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [guide, setGuide] = useState(false)
   const { startupNotices, noteStartupCheck, showRouteRestartHint, dismissStartupNotice } = useStartupNotices(native, mounted)
   const { boot, bootError, retryBoot, settings, setSettings, platform, systemLabel, session, setSession, update, setUpdate, sessionEvents, restoredBoot } = useAppBoot({ native, app, noteStartupCheck, showRouteRestartHint, setLastFailure, setGuide })
+  // 状态文件关掉的功能（remote-features.ts，G04）：主进程照它拦，这里照它把入口先说清、按钮先灰掉。
+  const featuresOff: readonly RemoteFeatureId[] = update?.featuresOff ?? []
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
@@ -268,7 +271,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const {
     modelSwap, restartDialog, setRestartDialog, chineseDialog, setChineseDialog,
     cancelPendingLaunchDialogs, prepareToolLaunch, launch, requestLaunch, requestLaunchInLastWorkspace, answerChineseRuntimePatch,
-  } = useToolLaunch({ native, app, toolsApi, toolbox, toast, perform, settings, setSettings, platform, os, scope, mounted, accountEpoch, accountBootstrapRef, switchToolAccount, openToolConfig, setSwitchRestartOffer })
+  } = useToolLaunch({ native, app, toolsApi, toolbox, toast, perform, settings, setSettings, platform, os, scope, mounted, accountEpoch, accountBootstrapRef, switchToolAccount, openToolConfig, setSwitchRestartOffer,
+    chineseSuspended: featuresOff.includes('codex-desktop-chinese') })
   const closeAccountDialogs = useCallback(() => { setConfigTool(null); setExternalClient(null) }, [])
   const leaveWorkspace = useCallback(() => { setGuide(false); setPage('home'); setWorkspaceEntered(false) }, [setPage])
   const { accountReadError, setAccountReadError, reloadAccount, logoutVoluntarily } = useAccountSessionSync({
@@ -489,11 +493,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   switchAccount={() => setSwitcher(true)} appSettings={settings ?? undefined}
                   updateAvailable={Boolean(update && !update.error && (update.phase === 'available' || update.phase === 'downloading' || update.phase === 'downloaded'))}
                   accelerating={acceleration.snapshot.state?.phase === 'active'}
+                  videoSuspended={featuresOff.includes('video-studio')}
                   onSettingsGroupChange={setSettingsGroup}
                   // 平台读回来之前按窗口所在系统猜：Linux 上不先挂一张加速卡再撤掉（同侧栏和顶部搜索那一份判断）。
                   accelerationCard={accelerationAvailable ? (shown) => <div data-testid="page-acceleration">
                     <Suspense fallback={null}>
-                      <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null} live={shown}
+                      <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null} live={shown} suspended={featuresOff.includes('acceleration')}
                         onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} onViewLog={() => navigate('feedback', 'log')} preview={accelerationPreview}
                         onContactSupport={() => setHelp(true)} onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })} />
                     </Suspense>
