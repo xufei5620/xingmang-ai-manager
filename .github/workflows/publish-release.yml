@@ -434,6 +434,16 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # G06：这次编译出来的对照表（source map），发版通过以后由 sentry-sourcemaps 作业传给 Sentry。
+      # 单独一个 artifact：publish 和 cos-sync 下的是安装包那一个，对照表进不了更新目录和发布页。
+      - name: Upload the source maps for the Sentry job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sourcemaps-windows-${{ steps.metadata.outputs.version }}
+          path: dist-sourcemaps/
+          retention-days: 14
+          if-no-files-found: error
+
 
   macos-build:
     needs: release-tag
@@ -571,6 +581,15 @@ jobs:
             release-free-${{ steps.metadata.outputs.version }}/*.zip
             release-free-${{ steps.metadata.outputs.version }}/*.blockmap
             release-free-${{ steps.metadata.outputs.version }}/latest-mac.yml
+          retention-days: 14
+          if-no-files-found: error
+
+      # 两个架构的包是同一次编译出来的，对照表只有一份（sentry-sourcemaps 传给两个 dist）。
+      - name: Upload the source maps for the Sentry job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sourcemaps-macos-${{ steps.metadata.outputs.version }}
+          path: dist-sourcemaps/
           retention-days: 14
           if-no-files-found: error
 
@@ -737,6 +756,15 @@ jobs:
           path: |
             release-${{ steps.metadata.outputs.version }}/*.deb
             release-${{ steps.metadata.outputs.version }}/latest-linux*.yml
+          retention-days: 14
+          if-no-files-found: error
+
+      # 两个架构在两台机器上各编译一次，对照表各传各的。
+      - name: Upload the source maps for the Sentry job
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: sourcemaps-linux-${{ matrix.arch }}-${{ steps.metadata.outputs.version }}
+          path: dist-sourcemaps/
           retention-days: 14
           if-no-files-found: error
 
@@ -1452,3 +1480,97 @@ jobs:
             release-artifacts/*.dmg
             release-artifacts/*.zip
             release-artifacts/*.deb
+
+  # 把这一版的对照表（source map）传给 Sentry（商业级差距报告 G06）。传上去以后，Sentry 后台里这一版的
+  # 报错直接显示 electron/*.ts、src/renderer-v2/*.tsx 的行号，不再是压缩后的「第 1 行第 3 万多列」。
+  #
+  # 和 attest 一样单独排在 publish 后面：
+  #   - 只传真发出去的那一批：publish 成功才跑，哪几个平台照 publish 来，Linux 照 publish 当时实际下没下。
+  #     发布守卫不许同一个版本发两次，所以同一个 release 下不会先后出现两份不一样的对照表。
+  #   - 令牌放在 sentry 环境（只放行 main、不设批准，docs/RELEASING.md「崩溃上报的 source map」）：挂 release
+  #     每次发版就要多批一次。令牌是 Sentry 的组织令牌，只能建 release、传对照表。这个作业不装依赖、
+  #     不碰更新源和仓库，sentry-cli 按版本号和 SHA-256 钉死。
+  #   - 失败不影响客户：更新源和发布页都已经换好，只是这一版的报错暂时看不到源码行。单独重跑这个作业
+  #     （Re-run this job）就行；别用 Re-run failed jobs，理由和 cos-sync 一样。
+  #   - 令牌还没放进去时只提醒、不算失败，免得发版运行页无端变红。
+  sentry-sourcemaps:
+    needs: [publish, windows-build, macos-build, linux-build]
+    # 和 attest 一样写 !cancelled()：只发一个平台时被跳过的出包作业不能把它也带着跳过。
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    environment: sentry
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version || needs.macos-build.outputs.version || needs.linux-build.outputs.version }}
+      # 不是机密：Sentry 的组织和项目名，客户端的上报地址里本来就看得到项目编号。
+      SENTRY_ORG: linfeng-aurora-inc
+      SENTRY_PROJECT: electron
+      # sentry-cli 3.8.0（2026-09-16 发布）Linux x86_64。SHA-256 按 GitHub 发布页和 npm 上
+      # @sentry/cli-linux-x64@3.8.0 包里的同一个文件各算一遍，两边一致。换版本时两边都要重新核。
+      SENTRY_CLI_VERSION: 3.8.0
+      SENTRY_CLI_SHA256: 13f8cb34ae01a6a272d7d7c22e277a105286615b4020de900ea95a8de47cdbb6
+    steps:
+      - name: Check that the Sentry token is configured
+        id: token
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: |
+          # 只判断非空，绝不回显取值。
+          if [ -z "$SENTRY_AUTH_TOKEN" ]; then
+            echo "::warning::sentry 环境里没有 SENTRY_AUTH_TOKEN，这一版的对照表没传（发版本身不受影响）。配法见 docs/RELEASING.md「崩溃上报的 source map」"
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.token.outputs.configured == 'true' }}
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ steps.token.outputs.configured == 'true' }}
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.token.outputs.configured == 'true' && needs.windows-build.result == 'success' }}
+        with:
+          name: sourcemaps-windows-${{ needs.windows-build.outputs.version }}
+          path: sourcemaps/windows
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.token.outputs.configured == 'true' && needs.macos-build.result == 'success' }}
+        with:
+          name: sourcemaps-macos-${{ needs.macos-build.outputs.version }}
+          path: sourcemaps/macos
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.token.outputs.configured == 'true' && needs.publish.outputs.linux == 'true' }}
+        with:
+          name: sourcemaps-linux-x64-${{ needs.linux-build.outputs.version }}
+          path: sourcemaps/linux-x64
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ steps.token.outputs.configured == 'true' && needs.publish.outputs.linux == 'true' }}
+        with:
+          name: sourcemaps-linux-arm64-${{ needs.linux-build.outputs.version }}
+          path: sourcemaps/linux-arm64
+
+      - name: Install the pinned sentry-cli
+        if: ${{ steps.token.outputs.configured == 'true' }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --max-time 120 \
+            --output "$RUNNER_TEMP/sentry-cli" \
+            "https://github.com/getsentry/sentry-cli/releases/download/$SENTRY_CLI_VERSION/sentry-cli-Linux-x86_64"
+          echo "$SENTRY_CLI_SHA256  $RUNNER_TEMP/sentry-cli" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/sentry-cli"
+
+      - name: Upload this release's source maps to Sentry
+        if: ${{ steps.token.outputs.configured == 'true' }}
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+        run: node scripts/sentry-sourcemaps.cjs --directory sourcemaps --version "$PACKAGE_VERSION" --cli "$RUNNER_TEMP/sentry-cli" --summary "$GITHUB_STEP_SUMMARY"

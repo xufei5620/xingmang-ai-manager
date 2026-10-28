@@ -613,21 +613,64 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 - 若新 `latest.yml` 已发布但验收失败，原子恢复旧 `latest.yml`。保留新产物用于调查，不要让它继续被元数据引用。0.2.18 起 Windows 的 `latest.yml` 要带签名，私钥只在 release 环境里，手工改的清单这些客户端会拒装，要换清单请用 `rollback-release`。
 - 不得用修改后的同版本安装程序覆盖线上文件。任何二进制变化都必须提升版本并重新生成 `latest.yml`。
 
-## 9. 崩溃上报的 source map（暂未接入）
+## 9. 崩溃上报的 source map
 
-打包产物经过 `scripts/minify-electron.cjs` 压缩，Sentry 后台看到的堆栈因此是压缩后的行列号。
-接上 source map 之后才能直接定位到源文件。这一步**当前没有做**，因为它需要一个 Sentry
-auth token（和 DSN 不同，那是写权限凭据，不能进仓库）。要补的话：
+客户端自己按 Sentry 的 envelope 格式发报错（`electron/crash-reporter.ts`，没用 `@sentry/electron`），
+收在 Sentry 组织 `linfeng-aurora-inc` 的项目 `electron`（美国区）。安装包里的代码是压缩过的，
+0.2.23 起每次发版把这一版的对照表（source map）传给 Sentry，后台的堆栈直接显示
+`electron/*.ts`、`src/renderer-v2/*.tsx` 的行号（商业级差距报告 G06）。更早的版本没有对照表，
+只能拿压缩后的行列号对着同版本的 `dist-electron` 人工找。
 
-1. 在 Sentry 的 Organization Settings - Auth Tokens 建一个只勾 `project:releases` 的 token，
-   存成 GitHub Actions secret（例如 `SENTRY_AUTH_TOKEN`），本地则放在环境变量里，**不要**写进
-   `electron-builder.config.cjs` 或任何提交的文件。
-2. 让 `npm run compile` 产出 source map（`tsconfig.electron.json` 的 `sourceMap`，以及
-   `scripts/minify-electron.cjs` 保留 map），并确认 `electron-builder.config.cjs` 的 `files`
-   不会把 `.map` 打进安装包——map 只上传给 Sentry，不随客户端分发。
-3. 发布构建之后、上传产物之前，用 `sentry-cli sourcemaps upload` 把 map 传到与
-   `electron/crash-report.ts` 里 `release` 字段相同的版本号下
-   （`xingmang-ai-manager@<version>`），否则 Sentry 关联不上。
-4. 验证：在打包版触发一次崩溃，确认后台的堆栈显示的是 `electron/*.ts` 的行号。
+### 怎么对上
 
-在此之前，排查仍可用压缩后的行列号配合同版本的 `dist-electron` 产物人工比对。
+Sentry 只在三样都对上时用对照表，客户端和上传两边按同一套名字（`scripts/sentry-sourcemaps.test.cjs` 钉住）：
+
+- release：`xingmang-ai-manager@<版本>`（`crashReportRelease`）。
+- dist：`<平台>-<芯片>`，即 `win32-x64`、`darwin-arm64`、`darwin-x64`、`linux-x64`、`linux-arm64`（`crashReportDist`）。
+- 文件地址：主进程的帧从 `…\app.asar\dist-electron\main.js` 改写成 `app:///dist-electron/main.js`，
+  主窗口渲染层的从 `xingmang://app/assets/index-xxx.js` 改写成 `app:///dist/assets/index-xxx.js`
+  （`resolveCrashFrameUrl`）。顺带客户的安装路径不再随报错发出去。画布窗口不上报，不在这里面。
+
+### 怎么出、怎么传
+
+1. `npm run compile`（`compile:runtime`）顺带出对照表：vite 用 `build.sourcemap: 'hidden'`，
+   `scripts/stash-renderer-sourcemaps.cjs` 随即把 `.js.map` 搬到 `dist-sourcemaps/dist/`；
+   tsc 带 `--inlineSourceMap --inlineSources`，`scripts/minify-electron.cjs` 压缩时把映射接回 `.ts`，
+   写到 `dist-sourcemaps/dist-electron/`，发出去的代码里不留 `sourceMappingURL`。
+   `dist-sourcemaps/` 不在 `electron-builder.config.cjs` 的 `files` 里、也不进 git，**安装包里没有任何一份对照表**。
+2. 三个出包作业各把自己的 `dist-sourcemaps/` 存成工作流产物 `sourcemaps-<平台>-<版本>`，留 14 天。
+3. 发版通过、`publish` 成功以后，`sentry-sourcemaps` 作业在 `sentry` 环境里下载这几份、按版本号和
+   SHA-256 装 sentry-cli，跑 `scripts/sentry-sourcemaps.cjs`：建 release，按 dist 和目录逐份传（带 `--wait`，
+   Sentry 处理失败当场就红），最后 finalize。只传真发出去的平台。
+4. 这个作业红了不影响客户：更新源和发布页都已经换好，只是这一版的报错暂时看不到源码行。
+   14 天内单独重跑这个作业（Re-run this job）即可，别用 Re-run failed jobs（理由同 `cos-sync`）。
+
+### 令牌
+
+- `SENTRY_AUTH_TOKEN` 放在 GitHub 的 `sentry` 环境里（Settings → Environments → `sentry`，
+  只放行 `main`，不设批准，免得每次发版多批一次）。它是 Sentry 的**组织令牌**
+  （Organization Settings → Auth Tokens → Create New Token），只能建 release、传对照表，读不了报错内容。
+- 没放令牌时作业只提醒、不算失败，这一版就没有对照表。
+- 换令牌：Sentry 里新建一个组织令牌，替换 `sentry` 环境里的值，再把旧的删掉。令牌**不要**写进任何提交的文件，
+  也不要发到聊天里。`scripts/workflow-secret-scope.test.cjs` 钉住只有这个作业读它。
+
+### 升 sentry-cli
+
+改 `publish-release.yml` 里 `sentry-sourcemaps` 作业的 `SENTRY_CLI_VERSION` 和 `SENTRY_CLI_SHA256`。
+SHA-256 按 GitHub 发布页的 `sentry-cli-Linux-x86_64` 和 npm 上 `@sentry/cli-linux-x64` 同版本包里的
+那个文件各算一遍，两边一致才换。换大版本前确认 `sourcemaps upload` 还认 `--release`、`--dist`、`--url-prefix`。
+
+### 报警和每版健康数
+
+- Sentry → Monitors → Alerts 里有两条：Sentry 自带的「高优先级报错发邮件」，和「同一个报错一小时超过10次」
+  （每来一个报错检查一次，同一个报错一小时超过 10 次就发邮件，同一个报错一天最多发一封）。免费版就有。
+- 每版的闪退、卡住、星芒更新出错，每 100 台·天几次，早上的日汇总（`scripts/update-feed-stats.cjs`）
+  「每版健康数」里有，最新三版各算各的；放量体检（`scripts/rollout-health.cjs`）只在放量期间比新旧版。
+  这两份都出自每天打卡，不读 Sentry。新版明显偏高时去 Sentry 按 release 筛这一版新冒出来的报错。
+
+### 验证
+
+发版以后，`sentry-sourcemaps` 作业的运行摘要里会列出这一版每种安装包传了多少文件。要看真报错能不能对上：
+在这一版的打包版上设环境变量 `XINGMANG_CRASH_REPORT_TEST=1` 启动一次，Sentry 里会多一条「崩溃上报自检」，
+堆栈应显示 `electron/main.ts` 的行号；对不上时看 Sentry 在那条事件堆栈上给的 source map 提示，
+多半是 release、dist 或文件地址三样里有一样没对上。

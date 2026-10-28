@@ -2,17 +2,21 @@ import { describe, expect, it } from 'vitest'
 import {
   buildCrashReportEnvelope,
   buildCrashReportEvent,
+  crashReportDist,
   crashReportDsn,
+  crashReportRelease,
   crashReportSignature,
   parseCrashReportDsn,
   parseCrashStackFrames,
   redactCrashText,
+  resolveCrashFrameUrl,
   shouldReportCrashes,
   type CrashReportEnvironment,
 } from './crash-report'
 
 const runtime: CrashReportEnvironment = {
   release: 'xingmang-ai-manager@9.9.9',
+  dist: 'win32-x64',
   environment: 'production',
   homeDirectory: 'C:\\Users\\yoyo',
   appVersion: '9.9.9',
@@ -113,6 +117,53 @@ describe('parseCrashStackFrames', () => {
   it('drops lines that are not frames instead of guessing', () => {
     expect(parseCrashStackFrames('Error: boom\n  caused by something', '')).toEqual([])
   })
+
+  it('files packaged frames under the address their source maps were uploaded to', () => {
+    const stack = [
+      'Error: boom',
+      '    at D.generate (D:\\软件\\xingmang-ai-manager\\resources\\app.asar\\dist-electron\\ai-video-service.js:1:4521)',
+      '    at WebContents.<anonymous> (/Applications/星芒AI管理工具.app/Contents/Resources/app.asar/dist-electron/main.js:2:88)',
+      '    at onClick (xingmang://app/assets/index-B1x2.js:3:77)',
+    ].join('\n')
+    const frames = parseCrashStackFrames(stack, 'C:\\Users\\yoyo')
+    expect(frames.map((frame) => [frame.filename, frame.abs_path, frame.in_app])).toEqual([
+      ['app:///dist/assets/index-B1x2.js', 'app:///dist/assets/index-B1x2.js', true],
+      ['app:///dist-electron/main.js', 'app:///dist-electron/main.js', true],
+      ['app:///dist-electron/ai-video-service.js', 'app:///dist-electron/ai-video-service.js', true],
+    ])
+    expect(JSON.stringify(frames)).not.toMatch(/软件|Applications|resources/i)
+  })
+})
+
+describe('resolveCrashFrameUrl', () => {
+  it('keeps only the path inside the archive, whatever folder it was installed in', () => {
+    expect(resolveCrashFrameUrl('C:\\Program Files\\xingmang-ai-manager\\resources\\app.asar\\dist-electron\\ipc\\handlers\\config.js'))
+      .toBe('app:///dist-electron/ipc/handlers/config.js')
+    expect(resolveCrashFrameUrl('/home/yoyo/.local/opt/星芒/resources/app.asar/dist-electron/main.js')).toBe('app:///dist-electron/main.js')
+    expect(resolveCrashFrameUrl('C:\\Program Files\\x\\resources\\app.asar.unpacked\\dist-electron\\worker.js')).toBe('app:///dist-electron/worker.js')
+  })
+
+  it('maps the main window renderer onto the dist directory it is served from', () => {
+    expect(resolveCrashFrameUrl('xingmang://app/assets/index-B1x2.js')).toBe('app:///dist/assets/index-B1x2.js')
+    expect(resolveCrashFrameUrl('xingmang://app/assets/chat-9.js?v=1#top')).toBe('app:///dist/assets/chat-9.js')
+  })
+
+  it('leaves frames that are not the packaged app alone', () => {
+    for (const filename of [
+      'node:internal/process/task_queues',
+      'C:\\Users\\yoyo\\app\\dist-electron\\config-files.js',
+      'xingmang-canvas://canvas/assets/index.js',
+    ]) {
+      expect(resolveCrashFrameUrl(filename), filename).toBeNull()
+    }
+  })
+})
+
+describe('crashReportRelease and crashReportDist', () => {
+  it('name the release and the build the way the source map upload does', () => {
+    expect(crashReportRelease('0.2.23')).toBe('xingmang-ai-manager@0.2.23')
+    expect(crashReportDist('darwin', 'arm64')).toBe('darwin-arm64')
+  })
 })
 
 describe('buildCrashReportEvent', () => {
@@ -129,6 +180,7 @@ describe('buildCrashReportEvent', () => {
     expect(event.exception.values[0].stacktrace?.frames[0].filename).toBe('%USERPROFILE%\\app\\a.js')
     expect(event.extra).toEqual({ context: '来自 %USERPROFILE%' })
     expect(event.level).toBe('fatal')
+    expect(event.dist).toBe('win32-x64')
     expect(event.timestamp).toBe(Math.floor(fixedNow.getTime() / 1000))
     expect(JSON.stringify(event)).not.toContain('yoyo')
     for (const forbidden of ['user', 'request', 'breadcrumbs', 'server_name']) {
