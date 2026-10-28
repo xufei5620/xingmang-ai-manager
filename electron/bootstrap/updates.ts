@@ -199,6 +199,9 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
         const { message, detail } = buildUpdateDownloadMeasureLog(measure)
         runtimeLog.log('info', 'updater', 'download.measured', message, detail)
       },
+      downloadedSuperseded: (from, to) => {
+        runtimeLog.log('info', 'updater', 'download.superseded', `下好的 ${from ?? '旧版本'} 已经不是最新的，换下 ${to}`, { from, to })
+      },
       // 监视器在更新服务之后才建（它要把结果交回更新服务），这里等真正检查时再取。
       refreshServiceStatus: () => serviceStatusMonitor ? serviceStatusMonitor.refresh() : Promise.resolve(null),
       releaseGuardAtLaunch,

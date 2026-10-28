@@ -194,6 +194,8 @@ export interface UpdateInstallPrompterOptions {
 export interface UpdateInstallPrompter {
   /** 更新状态变了（宿主订阅 updaterService 后转进来）。 */
   observe(snapshot: UpdateSnapshot): void
+  /** 跳框开着、还在等客户回答。 */
+  prompting(): boolean
   dispose(): void
 }
 
@@ -470,6 +472,9 @@ export function createUpdateInstallPrompter(options: UpdateInstallPrompterOption
       if (version && !asked.has(version) && open === null) waiting = version
       else if (waiting && waiting !== version) waiting = null
       schedule()
+    },
+    prompting() {
+      return open !== null
     },
     dispose() {
       if (disposed) return
