@@ -3052,8 +3052,10 @@ if (!hasSingleInstanceLock) {
     }
     if (updaterService.getState().phase !== 'disabled') {
       const checkForUpdates = () => {
-        // 已下载阶段（含安装失败后的恢复态）不允许定时检查覆盖，否则错误横幅和「重启并安装」入口会消失
-        if (updaterService.getState().phase === 'downloaded') return
+        // 已经下好一版时定时检查只看有没有比它新的（updater.ts 的 refreshDownloaded），一样新就原样留着，
+        // 安装失败的横幅和「重启并安装」入口都不动。跳框正问着装不装手里这一版时先不查：查到新的会把它换掉，
+        // 客户再点「现在安装」就什么也不装了。
+        if (updaterService.getState().phase === 'downloaded' && updateInstallPrompter.prompting()) return
         void updaterService.scheduledCheck().catch((error) => {
           runtimeLog.exception('updater', 'scheduled.check.failed', error)
         })

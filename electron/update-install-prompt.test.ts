@@ -295,6 +295,21 @@ describe('createUpdateInstallPrompter', () => {
     other.dispose()
   })
 
+  it('says a question is up from the moment it appears until it is answered', async () => {
+    const test = harness('win32')
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    prompter.observe(test.state.snapshot)
+    expect(prompter.prompting()).toBe(false)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(prompter.prompting()).toBe(true)
+    test.asks[0].answer('later')
+    await settle()
+    expect(prompter.prompting()).toBe(false)
+    prompter.dispose()
+  })
+
   it('skips the question and installs while idle when nobody is at the Mac', async () => {
     const test = harness()
     const prompter = createUpdateInstallPrompter(test.options)
