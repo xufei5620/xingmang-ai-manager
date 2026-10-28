@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CanvasRunStore } from './canvas-run-store'
 import type {
   CanvasRunAsset,
@@ -180,6 +180,66 @@ describe('CanvasRunStore', () => {
     fs.writeFileSync(filePath, '{invalid', 'utf8')
     expect(await store.listRuns(7)).toEqual([])
     expect(fs.readdirSync(path.dirname(filePath)).some((entry) => entry.includes('.corrupt-'))).toBe(true)
+  })
+
+  it('offers each attempt that handed out an asset, newest first across projects, and returns the accepted one while it is owned', async () => {
+    const { owned, store } = fixture()
+    const shown = asset('a')
+    const other = asset('b')
+    owned.set(shown.assetId, { ...shown, width: 512 })
+    owned.set(other.assetId, other)
+    function attempt(
+      fingerprintCharacter: string,
+      state: 'succeeded' | 'cached' | 'failed',
+      candidateAsset?: CanvasRunAsset,
+    ): CanvasRunRecord['nodes'][number]['attempts'][number] {
+      return {
+        attemptId: `attempt-${fingerprintCharacter}`,
+        fingerprint: fingerprintCharacter.repeat(64),
+        state,
+        startedAt: '2026-08-13T00:00:00.000Z',
+        completedAt: '2026-08-13T00:00:01.000Z',
+        durationMs: 1_000,
+        cached: state === 'cached',
+        candidates: candidateAsset
+          ? [{ candidateId: 'candidate-shown', attemptId: 'attempt-c', createdAt: '2026-08-13T00:00:00.000Z', asset: candidateAsset }]
+          : [],
+      }
+    }
+    function projectRun(runId: string, projectId: string, attempts: CanvasRunRecord['nodes'][number]['attempts']): CanvasRunRecord {
+      const base = record(runId)
+      return { ...base, projectId, nodes: [{ nodeId: 'image', kind: 'image-generate', state: 'succeeded', attempts }] }
+    }
+    const original = '11111111-1111-1111-1111-111111111111'
+    const copy = '22222222-2222-2222-2222-222222222222'
+    await store.saveRun(7, projectRun('original', original, [
+      attempt('c', 'succeeded', shown), attempt('d', 'failed'), attempt('e', 'succeeded', other),
+    ]))
+    await store.saveRun(7, projectRun('copy', copy, [attempt('f', 'cached', shown), attempt('f', 'cached', shown)]))
+
+    const reads = vi.spyOn(owned, 'get')
+    const offered: Array<[string, string | undefined]> = []
+    const none = await store.resolveAssetOrigin(7, shown.assetId, (origin) => {
+      offered.push([origin.fingerprint, origin.projectId])
+      return false
+    })
+    expect(none).toBeNull()
+    expect(offered).toEqual([['f'.repeat(64), copy], ['c'.repeat(64), original]])
+    expect(reads).not.toHaveBeenCalled()
+
+    const found = await store.resolveAssetOrigin(7, shown.assetId, (origin) => origin.projectId === original)
+    expect(found).toMatchObject({
+      fingerprint: 'c'.repeat(64),
+      projectId: original,
+      candidate: { candidateId: 'candidate-shown', asset: { kind: 'image', assetId: shown.assetId, width: 512 } },
+    })
+    expect(reads).toHaveBeenCalledOnce()
+    await expect(store.resolveAssetOrigin(8, shown.assetId, () => true)).resolves.toBeNull()
+    await expect(store.resolveAssetOrigin(7, 'z'.repeat(43), () => true)).resolves.toBeNull()
+    await expect(store.resolveAssetOrigin(7, '../escape', () => true)).rejects.toThrow('画布资产标识格式错误')
+
+    owned.delete(shown.assetId)
+    await expect(store.resolveAssetOrigin(7, shown.assetId, () => true)).resolves.toBeNull()
   })
 
   it('accepts cache only while its asset remains owned by the same user', async () => {

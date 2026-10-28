@@ -17,7 +17,7 @@ import {
 import type { CanvasRunStore } from './canvas-run-store'
 
 export interface CanvasRunServiceOptions {
-  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
+  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'resolveAssetOrigin' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
   maxConcurrency?: number
   maxActiveRuns?: number
@@ -134,6 +134,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       randomUUID,
       resolveCache: (fingerprint) => options.store.resolveCache(input.userId, fingerprint),
       storeCache: (entry) => options.store.storeCache(input.userId, entry),
+      resolveAssetOrigin: (assetId, matches) => options.store.resolveAssetOrigin(input.userId, assetId, matches),
       admitRecord: async (record) => {
         await options.store.saveRun(input.userId, record)
         admissionSettled = true
