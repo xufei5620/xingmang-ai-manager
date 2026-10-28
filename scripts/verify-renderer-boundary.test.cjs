@@ -52,6 +52,8 @@ const valueImportable = [
   // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。
   'electron/input-guards',
   'electron/ipc-contract',
+  // Mac 装新版前提醒钥匙串密码框那句，设置页确认框、必须更新那层和主进程的跳框、通知共用一份；文件本身什么都不 import。
+  'electron/mac-keychain-update-copy',
   // Mac 上一键装桌面端没装成的那几句话，主进程拼、错误框照它认出来配「看安装指南」。
   'electron/macos-desktop-install-failure',
   // 外接工具网络服务的请求头怎么算合格，粘贴识别、填表和主进程拼命令共用一份；文件本身什么都不 import。

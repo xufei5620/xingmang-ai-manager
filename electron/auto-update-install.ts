@@ -29,6 +29,7 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { macKeychainUpdateHint } from './mac-keychain-update-copy'
 import { ensureSafeDataDirectory, readSafeUtf8FileSync, writeAtomicSafeUtf8File } from './safe-local-data'
 import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
 import { updateInstallLaunchTimeoutCode, type UpdateInstallMethod, type UpdateSnapshot } from './updater'
@@ -371,18 +372,21 @@ export interface AutoInstallNotice {
  *
  * 星芒这次本身就带着管理员权限在跑时（`elevated`：自带 Administrator、关了 UAC、右键以管理员
  * 身份运行，见 windows-elevation.ts 的 highIntegrity）不弹授权窗口，那句不说（已知19）。
+ *
+ * Mac 装好重开时会弹钥匙串密码框，同样事先说一声（mac-keychain-update-copy.ts）。
  */
 export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform, elevated = false): AutoInstallNotice {
   const consent = platform === 'win32' && !elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
+  const keychain = platform === 'darwin' ? macKeychainUpdateHint : ''
   if (moment === 'quit') {
     return {
       title: '正在安装星芒AI新版本',
-      body: `正在装新版 ${version}，装好会自动打开。${consent}`,
+      body: `正在装新版 ${version}，装好会自动打开。${consent}${keychain}`,
     }
   }
   return {
     title: '星芒AI马上更新',
-    body: `上次下好的新版 ${version} 几秒后开始安装，软件会先关掉，装好自动打开。${consent}`,
+    body: `上次下好的新版 ${version} 几秒后开始安装，软件会先关掉，装好自动打开。${consent}${keychain}`,
   }
 }
 
@@ -395,9 +399,10 @@ export interface QuitInstallPrompt {
 
 /**
  * 退出时「顺手装上吗」那一问。交给系统安装器的版本（Linux）装完不会自己打开，还要在
- * 系统窗口里输一次开机密码，事先说清楚，免得客户以为软件闪退、被病毒弹窗。
+ * 系统窗口里输一次开机密码，事先说清楚，免得客户以为软件闪退、被病毒弹窗。Mac 重开时的钥匙串
+ * 密码框同理（`platform` 缺省 = 不说那句，旧行为）。
  */
-export function quitInstallPrompt(version: string | null, installMethod: UpdateInstallMethod | null | undefined): QuitInstallPrompt {
+export function quitInstallPrompt(version: string | null, installMethod: UpdateInstallMethod | null | undefined, platform?: NodeJS.Platform): QuitInstallPrompt {
   if (installMethod === 'system-installer') {
     return {
       message: version ? `新版本 ${version} 已经下载好，现在装上吗？` : '新版本已经下载好，现在装上吗？',
@@ -407,7 +412,7 @@ export function quitInstallPrompt(version: string | null, installMethod: UpdateI
   }
   return {
     message: version ? `新版本 ${version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
-    detail: '安装很快，装完会自动打开新版本。现在不装也行，更新会一直留着，下次退出时再问你。',
+    detail: `安装很快，装完会自动打开新版本。${platform === 'darwin' ? macKeychainUpdateHint : ''}现在不装也行，更新会一直留着，下次退出时再问你。`,
     buttons: ['安装并退出', '先退出，下次再装'],
   }
 }

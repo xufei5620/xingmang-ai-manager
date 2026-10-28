@@ -437,10 +437,31 @@ describe('auto install wording', () => {
     expect(previousAutoInstallFailureMessage('darwin')).not.toContain('授权')
   })
 
-  it('leaves the consent window out when the app already runs with administrator rights on Windows', () => {
-    // 已知19：自带 Administrator 之类不弹授权窗口，说法和 Mac 那份一样。
+  it('tells Mac users how to answer the keychain prompt after either install moment', () => {
+    expect(buildAutoInstallNotice('0.2.12', 'quit', 'darwin')).toEqual({
+      title: '正在安装星芒AI新版本',
+      body: '正在装新版 0.2.12，装好会自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。',
+    })
+    expect(buildAutoInstallNotice('0.2.12', 'launch', 'darwin')).toEqual({
+      title: '星芒AI马上更新',
+      body: '上次下好的新版 0.2.12 几秒后开始安装，软件会先关掉，装好自动打开。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。',
+    })
     for (const moment of ['quit', 'launch'] as const) {
-      expect(buildAutoInstallNotice('0.2.12', moment, 'win32', true)).toEqual(buildAutoInstallNotice('0.2.12', moment, 'darwin'))
+      for (const elevated of [true, false]) expect(buildAutoInstallNotice('0.2.12', moment, 'win32', elevated).body).not.toContain('钥匙串')
+    }
+  })
+
+  it('leaves the consent window out when the app already runs with administrator rights on Windows', () => {
+    // 已知19：自带 Administrator 之类不弹授权窗口，那句不说，别的照旧。
+    expect(buildAutoInstallNotice('0.2.12', 'quit', 'win32', true)).toEqual({
+      title: '正在安装星芒AI新版本',
+      body: '正在装新版 0.2.12，装好会自动打开。',
+    })
+    expect(buildAutoInstallNotice('0.2.12', 'launch', 'win32', true)).toEqual({
+      title: '星芒AI马上更新',
+      body: '上次下好的新版 0.2.12 几秒后开始安装，软件会先关掉，装好自动打开。',
+    })
+    for (const moment of ['quit', 'launch'] as const) {
       expect(buildAutoInstallNotice('0.2.12', moment, 'win32', false).body).toContain('授权窗口')
     }
   })
@@ -503,5 +524,12 @@ describe('system installer channel (Linux .deb)', () => {
       buttons: ['安装并退出', '先退出，下次再装'],
     })
     expect(quitInstallPrompt(null, 'system-installer').message).toBe('新版本已经下载好，现在装上吗？')
+  })
+
+  it('warns Mac users about the keychain prompt in the quit question, and nobody else', () => {
+    expect(quitInstallPrompt('0.2.12', null, 'darwin').detail)
+      .toBe('安装很快，装完会自动打开新版本。重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。现在不装也行，更新会一直留着，下次退出时再问你。')
+    expect(quitInstallPrompt('0.2.12', null, 'win32')).toEqual(quitInstallPrompt('0.2.12', null))
+    expect(quitInstallPrompt('0.2.12', 'system-installer', 'linux').detail).not.toContain('钥匙串')
   })
 })

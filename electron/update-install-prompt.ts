@@ -32,6 +32,7 @@
  *
  * 不含任何 Electron 依赖：框、窗口、空闲时长、装都由宿主接进来。
  */
+import { macKeychainUpdateHint } from './mac-keychain-update-copy'
 import { resolveInstallableUpdateOnQuit } from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
@@ -63,9 +64,13 @@ export interface InstallPromptCopyOptions {
   elevated?: boolean
 }
 
-/** 跳框里的字（yoyo 2026-10-25 回「更新改」的那一版，改字要先问他）。 */
+/**
+ * 跳框里的字（yoyo 2026-10-25 回「更新改」的那一版，改字要先问他）。Mac 那句钥匙串提醒是
+ * 10-28「钥匙串提示改」加的：从这里点「现在安装」，重开后第一眼看到的就是那个系统密码框。
+ */
 export function buildInstallPrompt(version: string, platform: NodeJS.Platform, options: InstallPromptCopyOptions): InstallPrompt {
   const consent = platform === 'win32' && !options.elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
+  const keychain = platform === 'darwin' ? macKeychainUpdateHint : ''
   const later = platform !== 'darwin'
     ? '关掉软件或下次打开时自动装上。'
     : options.unattended
@@ -74,7 +79,7 @@ export function buildInstallPrompt(version: string, platform: NodeJS.Platform, o
   return {
     title: '星芒AI管理工具',
     message: `新版 ${version} 已经下好，现在装上吗？`,
-    detail: `装的时候星芒会先关掉，装好自动打开。${consent}现在不装也行：${later}`,
+    detail: `装的时候星芒会先关掉，装好自动打开。${consent}${keychain}现在不装也行：${later}`,
     buttons: ['稍后再说', '现在安装'],
   }
 }
