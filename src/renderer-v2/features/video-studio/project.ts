@@ -1,4 +1,5 @@
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
+import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
@@ -21,6 +22,13 @@ export interface VideoStudioShot {
    * 钱已经扣了的片段不会只留在作品库里、镜头上却显示「还没生成」。
    */
   requestId?: string
+  /**
+   * 上一次提交没等到服务端的答复（回包丢了、服务端出错、提交到一半点了停止）：那一单可能已经扣了钱，
+   * 却没有任务号，接不回来。跟请求号一起存下，重开以后照样是「没生成出来」加主进程那句提醒，
+   * 不能变回「还没生成」；再生成时确认框另外说清可能多扣一次，并沿用这个请求号（#1489 N2）。
+   * 沿用请求号重新出着的时候也留着，只是不存；出成了才去掉。
+   */
+  unconfirmed?: boolean
   // 下面几项只在这一次打开页面时有，不存。
   status: VideoStudioShotStatus
   stage?: AiVideoProgressEvent['stage']
@@ -219,6 +227,11 @@ export function buildVideoStudioClipRequest(settings: VideoStudioSettings, shot:
   return { ...base, ...grokDimensions[settings.aspect] }
 }
 
+/** 这几个镜头里上次提交结果不明、再生成可能多扣一次的，按在分镜里的位置给出第几个（从 0 数）。 */
+export function videoStudioUnconfirmedIndexes(project: VideoStudioProject, ids: readonly string[]): number[] {
+  return project.shots.flatMap((shot, index) => ids.includes(shot.id) && shot.unconfirmed ? [index] : [])
+}
+
 /** 能拼了：至少一个镜头，每个镜头都有片段、没有正在生成的。 */
 export function videoStudioReadyToCompose(project: VideoStudioProject): boolean {
   return project.shots.length > 0 && project.shots.every((shot) => shot.clip && !isVideoStudioShotBusy(shot))
@@ -238,6 +251,7 @@ export function videoStudioComposeKey(project: VideoStudioProject): string {
 // —— 存到这台电脑上 ——
 // 存的是想法、设置、分镜和片段编号，片段本身在作品库里。排队、进度这类只在这次打开时有的状态不存；
 // 正在生成的那一段存下请求号，重开以后先当它还在生成，由 useVideoStudio 拿请求号去接回来。
+// 提交结果不明的那一段连同这个标记一起存：重开以后直接是失败加那句提醒，不去接（没有任务号，接不回来）。
 
 const maxStoredIdeaLength = videoStudioPlanLimits.maximumIdeaLength
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
@@ -277,7 +291,9 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     settings: project.settings,
     title: project.title,
     shots: project.shots.map((shot) => ({
-      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.clip ? { clip: shot.clip } : {}), ...(shot.requestId ? { requestId: shot.requestId } : {}),
+      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.clip ? { clip: shot.clip } : {}),
+      // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
+      ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
     })),
     ...(project.exported ? { exported: project.exported } : {}),
   }
@@ -314,13 +330,15 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     ids.add(id)
     const clip = readClip(entry.clip)
     const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
+    const unconfirmed = Boolean(requestId) && entry.unconfirmed === true
     shots.push({
       id,
       prompt: readText(entry.prompt, videoStudioPlanLimits.maximumPromptLength),
       caption: readText(entry.caption, videoStudioPlanLimits.maximumCaptionLength),
       ...(clip ? { clip } : {}),
       ...(requestId ? { requestId } : {}),
-      status: requestId ? 'generating' : clip ? 'done' : 'idle',
+      ...(unconfirmed ? { unconfirmed, error: aiVideoUnconfirmedSubmissionMessage } : {}),
+      status: unconfirmed ? 'failed' : requestId ? 'generating' : clip ? 'done' : 'idle',
     })
   }
   const exported = readClip(value.exported)
