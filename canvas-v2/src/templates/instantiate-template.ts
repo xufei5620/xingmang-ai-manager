@@ -1,9 +1,11 @@
+import { remapImageReferenceOrderSettings } from '../commerce/image-reference-order'
 import type {
   CanvasTemplate,
   InstantiateTemplateOptions,
   TemplateInstance,
 } from './template-types'
 import { validateCanvasTemplate, validateTemplateVariablePath } from './validate-template'
+import { normalizeTemplateVideoConfiguration } from './template-video-options'
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 
 function setPath(config: Record<string, unknown>, path: string, value: unknown): void {
@@ -52,12 +54,21 @@ export function instantiateTemplate(template: CanvasTemplate, options: Instantia
     if (!node) throw new Error(`模板变量引用了不存在的节点：${variable.target.nodeId}`)
     setPath(node.config, variable.target.path, value)
   }
+  for (const node of nodes) {
+    if (node.type === 'video-generate') node.config = normalizeTemplateVideoConfiguration(node.config)
+  }
   const edges = template.workflow.edges.map((edge) => ({
     ...structuredClone(edge),
     id: nextId(),
     source: idMap.get(edge.source) as string,
     target: idMap.get(edge.target) as string,
   }))
+  const edgeIds = new Map(template.workflow.edges.map((edge, index) => [edge.id, edges[index].id]))
+  for (const node of nodes) {
+    const settings = node.config.settings
+    if (settings !== undefined) node.config.settings = remapImageReferenceOrderSettings(settings, edgeIds)
+    if (node.config.imageReferenceOrder !== undefined) node.config = { ...node.config, ...remapImageReferenceOrderSettings({ imageReferenceOrder: node.config.imageReferenceOrder }, edgeIds) }
+  }
   return {
     templateId: template.id,
     templateVersion: template.version,

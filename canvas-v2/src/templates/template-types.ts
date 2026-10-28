@@ -9,7 +9,7 @@ export type CanvasTemplateIndustry =
   | 'marketing-film'
 
 export interface CanvasTemplateRequirement {
-  media: 'image' | 'video'
+  media: 'image' | 'video' | 'text'
   operation: 'generate' | 'edit'
   options?: readonly ('size' | 'quality')[]
 }

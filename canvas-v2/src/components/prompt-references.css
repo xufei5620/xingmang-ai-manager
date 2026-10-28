@@ -1,0 +1,13 @@
+.wf-prompt-official {
+  color: #d9c8ff;
+  background: color-mix(in srgb, #9874e8 18%, var(--surface-2));
+  border-radius: 4px;
+  box-shadow: 0 0 0 1px color-mix(in srgb, #aa87ee 40%, transparent);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+.wf-prompt-official-badge { color: #bda1f5; }
+[data-theme="light"] .wf-prompt-official { color: #663cb6; }
+[data-theme="light"] .wf-prompt-official-badge { color: #7954b9; }
+.wf-prompt-expand-official { position: absolute; z-index: 2; left: 8px; bottom: 6px; padding: 2px 4px; border: 0; border-radius: 4px; color: var(--text-secondary); background: var(--surface-input); font-size: 10px; cursor: pointer; }
+.wf-prompt-expand-official:hover, .wf-prompt-expand-official:focus-visible { color: var(--accent); background: var(--surface-2); }

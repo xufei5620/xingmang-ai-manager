@@ -1,4 +1,5 @@
 import type { WorkflowFile } from '../model'
+import { workflowForHostProject, type CanvasProjectStore } from './host-project-fields'
 import { migrateWorkflowDocument } from './workflow-migrations'
 import { sanitizeWorkflowV2 } from './workflow-sanitizer'
 import {
@@ -30,8 +31,10 @@ export function parseWorkflowFile(content: string): WorkflowFile | null {
   return parseWorkflowFileDetailed(content)?.workflow ?? null
 }
 
-export function serializeWorkflow(workflow: WorkflowFile): string {
+/** Without a store the kernel format is written, as servers and project files expect. */
+export function serializeWorkflow(workflow: WorkflowFile, store?: CanvasProjectStore): string {
   const sanitized = sanitizeWorkflowV2(toPersistedWorkflowV2(workflow))
   if (!sanitized) throw new Error('工作流包含无法安全保存的数据')
-  return JSON.stringify(toPersistedWorkflowV2(sanitized.workflow), null, 2)
+  const persisted = toPersistedWorkflowV2(sanitized.workflow)
+  return JSON.stringify(store ? workflowForHostProject(persisted, store) : persisted, null, 2)
 }

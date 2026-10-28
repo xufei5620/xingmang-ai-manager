@@ -1,0 +1,55 @@
+/* 星芒AI管理工具 · 设计 Token v3.0 · Starlight Gold
+   来源：品牌套装 Xingmang_SOLOV_BrandKit v1.0 六色 + 语义层。
+   规则：页面和组件只允许引用这里的变量，禁止在组件里写死色值。 */
+:root {
+  --r-win: 16px;
+  --font: -apple-system, "PingFang SC", "Segoe UI", "Microsoft YaHei UI", "Noto Sans CJK SC", sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Mono", Consolas, Menlo, monospace;
+  --xm-navy: #0B1F3B; --xm-gold: #D4A355; --xm-ivory: #FAF7EE; --xm-sky: #A7D1F7; --xm-slate: #3D5B8F; --xm-mist: #E6EEF6;
+  --ok: #3DD68C; --ok-soft: rgba(61,214,140,.14); --warn: #F0883E; --warn-soft: rgba(240,136,62,.15); --bad: #FF6B6B; --bad-soft: rgba(255,107,107,.14);
+}
+[data-theme="dark"] {
+  --win:#0A1426; --rail:#08111F; --bg:#0C172B; --panel:rgba(167,209,247,.045); --panel-solid:#132039; --panel-hover:rgba(167,209,247,.07); --panel-2:rgba(167,209,247,.075);
+  --line:rgba(167,209,247,.10); --line-2:rgba(167,209,247,.17); --line-3:rgba(167,209,247,.28); --text:#EEF3FA; --text-2:#9DB0CB; --text-3:#91A3BF; --kbd-bg:rgba(167,209,247,.08);
+  --accent:#D4A355; --accent-2:#E6BF7A; --accent-fg:#0B1F3B; --accent-glow:rgba(212,163,85,.32); --accent-soft:rgba(212,163,85,.16); --info:#A7D1F7;
+  --overlay:rgba(5,10,20,.62); --shadow:0 24px 64px rgba(0,0,0,.6),0 2px 8px rgba(0,0,0,.4); --btn-2-bg:rgba(167,209,247,.07); --btn-2-hover:rgba(167,209,247,.12);
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(212,163,85,.13), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(61,91,143,.35), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(167,209,247,.10), inset 0 1px 0 rgba(255,255,255,.05); --card-grad: linear-gradient(180deg, rgba(167,209,247,.06), rgba(167,209,247,.025)); --bubble-user: rgba(212,163,85,.16);
+}
+[data-theme="light"] {
+  --win:#F4F1E8; --rail:#F3EFE4; --bg:#FAF7EE; --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#FBF9F3; --panel-2:#F1EEE5;
+  --line:rgba(11,31,59,.09); --line-2:rgba(11,31,59,.15); --line-3:rgba(11,31,59,.26); --text:#0B1F3B; --text-2:#4A5B75; --text-3:#61718B; --kbd-bg:#EFEBE0;
+  --accent:#0B1F3B; --accent-2:#3D5B8F; --accent-fg:#FFFFFF; --accent-glow:rgba(11,31,59,.22); --accent-soft:rgba(61,91,143,.12); --info:#3D5B8F;
+  --overlay:rgba(11,31,59,.42); --shadow:0 24px 64px rgba(11,31,59,.22),0 2px 8px rgba(11,31,59,.08); --btn-2-bg:#FFFFFF; --btn-2-hover:#F3F0E7;
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(212,163,85,.18), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(167,209,247,.35), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(11,31,59,.06), 0 1px 2px rgba(11,31,59,.06); --card-grad:#FFFFFF; --bubble-user: rgba(212,163,85,.18);
+  --ok:#137D49; --warn:#A74A10; --bad:#BC3030;
+}
+[data-os="win"] { --font: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif; }
+[data-os="linux"] { --font: "Noto Sans CJK SC", "Noto Sans", "Source Han Sans SC", "WenQuanYi Micro Hei", sans-serif; }
+
+
+/* Shared scales. Product layout may compose these primitives; brand art is unchanged. */
+:root {
+  --font-display:42px; --font-h1:22px; --font-h2:15px; --font-body-l:14px; --font-body:14px;
+  --font-small:12.5px; --font-small-compact:12px; --font-micro:11.5px; --font-micro-compact:11px;
+  --line-display:1.12; --line-heading:1.2; --line-body:1.5;
+  --space-1:4px; --space-2:8px; --space-3:12px; --space-4:16px; --space-5:20px;
+  --space-6:24px; --space-7:28px; --space-8:32px;
+  --radius-input:8px; --radius-button:9px; --radius-card:13px; --radius-dialog:16px;
+  --control-xs:28px; --control-sm:32px; --control-md:36px;
+  --sidebar-expanded:216px; --sidebar-collapsed:60px; --titlebar-height:36px;
+  --topbar-height:46px; --statusbar-height:30px; --tool-status-min:86px;
+  --dialog-width:480px; --dialog-wide:640px; --drawer-width:420px;
+  --z-drawer:15; --z-notice:18; --z-dialog:20; --z-popover:25; --z-toast:30; --z-coach:35;
+  --duration-fast:150ms; --duration-enter:200ms; --duration-progress:300ms; --duration-spin:800ms;
+  --ease-standard:ease; --ease-enter:ease-out;
+}
+[data-theme="dark"].hc, [data-theme="dark"][data-contrast="high"] {
+  --line:rgba(167,209,247,.35); --line-2:rgba(167,209,247,.55); --line-3:rgba(167,209,247,.65);
+  --text-2:#C7D3E6; --text-3:#B0BFD4;
+}
+[data-theme="light"].hc, [data-theme="light"][data-contrast="high"] {
+  --line:rgba(11,31,59,.35); --line-2:rgba(11,31,59,.55); --line-3:rgba(11,31,59,.65);
+  --text-2:#23324A; --text-3:#3E4D65;
+}

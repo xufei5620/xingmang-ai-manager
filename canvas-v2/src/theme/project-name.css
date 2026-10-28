@@ -1,0 +1,10 @@
+.canvas-brand .canvas-project-name { display: inline-flex; min-width: 0; align-items: center; gap: 7px; padding: 5px 6px; border: 1px solid transparent; border-radius: 6px; color: var(--text-primary); background: transparent; text-align: left; cursor: pointer; }
+.canvas-brand .canvas-project-name:hover { background: var(--surface-hover); border-color: var(--border-subtle); }
+.canvas-brand .canvas-project-name strong { overflow: hidden; min-width: 0; text-overflow: ellipsis; white-space: nowrap; }
+.canvas-brand .canvas-project-name svg { flex-shrink: 0; color: var(--text-muted); }
+.canvas-project-name-form { position: relative; display: flex; min-width: 0; align-items: center; gap: 4px; }
+.canvas-project-name-form input { min-width: 40px; width: 180px; height: 29px; padding: 0 7px; color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--accent); border-radius: 5px; font-size: 12px; }
+.canvas-project-name-form > button { display: grid; width: 25px; height: 28px; padding: 0; place-items: center; border: 1px solid var(--border-subtle); border-radius: 5px; background: var(--surface-2); color: var(--text-secondary); }
+.canvas-project-name-form > p { position: absolute; z-index: 40; top: calc(100% + 8px); left: 0; width: min(280px, calc(100vw - 70px)); margin: 0; padding: 10px; border: 1px solid var(--danger); border-radius: 6px; color: var(--danger); background: var(--surface-1); font-size: 11px; line-height: 1.6; white-space: normal; box-shadow: var(--shadow-floating); }
+.canvas-project-name-form button:disabled, .canvas-brand .canvas-project-name:disabled { opacity: .5; cursor: default; }
+@media (max-width: 700px) { .canvas-project-name-form input { width: 110px; } }

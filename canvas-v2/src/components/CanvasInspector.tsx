@@ -1,19 +1,26 @@
 import type { ReactNode } from 'react'
-import { Ban, Box, CirclePlay, Crosshair, Film, Image as ImageIcon, Lock, LockOpen, Maximize2, Music2, SlidersHorizontal, X } from 'lucide-react'
+import { Ban, Box, CirclePlay, Crosshair, FileText, Film, Image as ImageIcon, Lock, LockOpen, Maximize2, Music2, SlidersHorizontal, X } from 'lucide-react'
 import { middleTruncate } from '../identifier-display'
 import { SafeImage, isLocalCanvasAssetUrl } from './MediaPreview'
 import { canvasInspectorParameterRows } from './canvas-inspector-model'
 import type { CanvasInspectorNode } from './canvas-inspector-model'
 import type { DramaShotAlert } from '../library/drama-graph'
+import type { CanvasNodeSourceCatalog } from '../library/node-model-availability'
+import { inspectSelectedNodeRun } from './node-run-actions'
+import type { CanvasCapabilityProfile } from '../host-capabilities'
 
 export type { CanvasInspectorNode } from './canvas-inspector-model'
 export type CanvasInspectorTab = 'node' | 'assets' | 'runs'
 
 interface CanvasInspectorProps {
+  readOnly?: boolean
+  canRun?: boolean
   tab: CanvasInspectorTab
   nodes: readonly CanvasInspectorNode[]
   imageModels: readonly string[]
   videoModels: readonly string[]
+  textModels?: readonly string[]
+  sourceCatalog?: CanvasNodeSourceCatalog
   onTabChange(tab: CanvasInspectorTab): void
   onClose(): void
   onLocate(nodeId: string): void
@@ -22,6 +29,8 @@ interface CanvasInspectorProps {
   onToggleDisabled(nodeId: string, disabled: boolean): void
   onPreview(node: CanvasInspectorNode): void
   dramaAlerts?: readonly DramaShotAlert[]
+  /** The host's profile. Omitted, models and resolutions are offered as the kernel's request builder allows. */
+  capabilities?: CanvasCapabilityProfile
   children?: ReactNode
 }
 
@@ -35,14 +44,16 @@ const statusLabel: Record<string, string> = {
  * gave every value two independent editors and consumed the space that run
  * history, cost and error detail actually need.
  */
-function NodeParameterSummary({ node, onLocate }: {
+function NodeParameterSummary({ node, onLocate, readOnly, capabilities }: {
+  readOnly?: boolean
   node: CanvasInspectorNode
   onLocate(nodeId: string): void
+  capabilities?: CanvasCapabilityProfile
 }) {
-  const rows = canvasInspectorParameterRows(node)
+  const rows = canvasInspectorParameterRows(node, capabilities)
   return (
     <section className="canvas-inspector-section" aria-label="节点参数">
-      <h3>参数<button type="button" className="canvas-inspector-section-action" onClick={() => onLocate(node.id)}>在节点上编辑</button></h3>
+      <h3>参数<button type="button" className="canvas-inspector-section-action" onClick={() => onLocate(node.id)}>{readOnly ? '定位节点' : '在节点上编辑'}</button></h3>
       {rows.length === 0
         ? <p className="canvas-inspector-muted">该节点没有可编辑参数。</p>
         : <dl className="canvas-inspector-parameters">
@@ -59,26 +70,27 @@ function NodeParameterSummary({ node, onLocate }: {
 
 function NodePreview({ node, onPreview }: { node: CanvasInspectorNode; onPreview(node: CanvasInspectorNode): void }) {
   const asset = node.previewAsset
-  if (!asset) return <p className="canvas-inspector-muted">尚无结果</p>
+  if (!asset && !node.outputText) return <p className="canvas-inspector-muted">尚无结果</p>
   return (
-    <button type="button" className={`canvas-inspector-preview is-${asset.kind}`} onClick={() => onPreview(node)} title="放大预览">
+    <>{node.outputText && <button type="button" className="canvas-inspector-preview is-text" onClick={() => onPreview({ ...node, previewAsset: undefined })} title="展开完整文字结果"><FileText size={24} aria-hidden="true" /><span>{node.dirty ? '上次文字结果' : '文字结果'} · {node.outputText.length} 字<Maximize2 size={12} /></span></button>}{asset && <button type="button" className={`canvas-inspector-preview is-${asset.kind}`} onClick={() => onPreview({ ...node, outputText: undefined })} title="放大预览">
       {asset.kind === 'image' && isLocalCanvasAssetUrl(asset.localUrl, 'image')
         ? <SafeImage src={asset.localUrl} alt="节点结果缩略图" fallbackLabel="结果不可用" />
         : asset.kind === 'video' ? <Film size={24} aria-hidden="true" /> : <Music2 size={24} aria-hidden="true" />}
       <span>{asset.kind === 'image' ? '图像结果' : asset.kind === 'video' ? '视频结果' : '音频结果'}<Maximize2 size={12} /></span>
-    </button>
+    </button>}</>
   )
 }
 
 type SingleNodeInspectorProps = Pick<CanvasInspectorProps,
-  'imageModels' | 'videoModels' | 'onLocate' | 'onRun'
-  | 'onToggleLocked' | 'onToggleDisabled' | 'onPreview'> & { node: CanvasInspectorNode }
+  'readOnly' | 'canRun' | 'imageModels' | 'videoModels' | 'textModels' | 'sourceCatalog' | 'onLocate' | 'onRun'
+  | 'onToggleLocked' | 'onToggleDisabled' | 'onPreview' | 'capabilities'> & { node: CanvasInspectorNode }
 
 function SingleNodeInspector(props: SingleNodeInspectorProps) {
   const { node } = props
   const inputs = node.ports.filter((port) => port.direction === 'input')
   const outputs = node.ports.filter((port) => port.direction === 'output')
   const running = node.status === 'running' || node.status === 'queued'
+  const sourceReason = node.group !== undefined ? inspectSelectedNodeRun({ id: node.id, type: node.kind, disabled: node.disabled, data: { group: node.group, model: node.model, status: node.status } }, { connected: true, imageModels: props.imageModels, videoModels: props.videoModels, textModels: props.textModels ?? [], sourceCatalog: props.sourceCatalog }, props.capabilities)?.disabledReason : undefined
   return (
     <div className="canvas-inspector-node-panel">
       <section className="canvas-inspector-node-head">
@@ -87,12 +99,13 @@ function SingleNodeInspector(props: SingleNodeInspectorProps) {
       </section>
       <div className="canvas-inspector-actions" role="toolbar" aria-label="当前节点操作">
         <button type="button" title="定位节点" aria-label="定位节点" onClick={() => props.onLocate(node.id)}><Crosshair size={14} /></button>
-        {node.executable && <button type="button" title="运行此节点" aria-label="运行此节点" disabled={node.disabled || running} onClick={() => props.onRun(node.id)}><CirclePlay size={14} /></button>}
-        <button type="button" title={node.locked ? '解锁位置' : '锁定位置'} aria-label={node.locked ? '解锁节点位置' : '锁定节点位置'} onClick={() => props.onToggleLocked(node.id, !node.locked)}>{node.locked ? <LockOpen size={14} /> : <Lock size={14} />}</button>
-        {node.executable && node.kind !== 'unknown' && <button type="button" className={node.disabled ? 'is-active' : ''} title={node.disabled ? '启用节点' : '禁用节点'} aria-label={node.disabled ? '启用节点' : '禁用节点'} onClick={() => props.onToggleDisabled(node.id, !node.disabled)}><Ban size={14} /></button>}
-        {node.previewAsset && <button type="button" title="预览结果" aria-label="预览结果" onClick={() => props.onPreview(node)}><Maximize2 size={14} /></button>}
+        {props.canRun !== false && node.executable && <button type="button" title={sourceReason || '运行此节点'} aria-label="运行此节点" disabled={node.disabled || running || !!sourceReason} onClick={() => props.onRun(node.id)}><CirclePlay size={14} /></button>}
+        <button type="button" disabled={props.readOnly} title={node.locked ? '解锁位置' : '锁定位置'} aria-label={node.locked ? '解锁节点位置' : '锁定节点位置'} onClick={() => props.onToggleLocked(node.id, !node.locked)}>{node.locked ? <LockOpen size={14} /> : <Lock size={14} />}</button>
+        {node.executable && node.kind !== 'unknown' && <button type="button" disabled={props.readOnly} className={node.disabled ? 'is-active' : ''} title={node.disabled ? '启用节点' : '禁用节点'} aria-label={node.disabled ? '启用节点' : '禁用节点'} onClick={() => props.onToggleDisabled(node.id, !node.disabled)}><Ban size={14} /></button>}
+        {(node.previewAsset || node.outputText) && <button type="button" title="预览结果" aria-label="预览结果" onClick={() => props.onPreview(node)}><Maximize2 size={14} /></button>}
       </div>
-      <NodeParameterSummary node={node} onLocate={props.onLocate} />
+      <NodeParameterSummary readOnly={props.readOnly} node={node} onLocate={props.onLocate} capabilities={props.capabilities} />
+      {sourceReason && <p className="canvas-inspector-error" role="status">{sourceReason}</p>}
       <section className="canvas-inspector-section" aria-label="节点端口">
         <h3>连接</h3>
         <div className="canvas-inspector-ports">
@@ -105,7 +118,7 @@ function SingleNodeInspector(props: SingleNodeInspectorProps) {
         <NodePreview node={node} onPreview={props.onPreview} />
         <dl className="canvas-inspector-runtime">
           <div><dt>候选</dt><dd>{node.candidateCount}</dd></div>
-          <div><dt>尝试</dt><dd>{node.attemptCount}</dd></div>
+          <div><dt>尝试</dt><dd>{node.attemptCount ?? '—'}</dd></div>
           <div><dt>耗时</dt><dd>{node.latestAttemptDurationMs === undefined ? '—' : `${(node.latestAttemptDurationMs / 1000).toFixed(1)} 秒`}</dd></div>
           <div><dt>消耗</dt><dd>{node.costQuota === undefined ? '—' : `${node.costQuota} quota`}</dd></div>
         </dl>
@@ -127,8 +140,8 @@ export function CanvasInspector(props: CanvasInspectorProps) {
       </header>
       <nav className="canvas-inspector-tabs" aria-label="检查器页签">
         <button type="button" className={props.tab === 'node' ? 'is-active' : ''} aria-selected={props.tab === 'node'} onClick={() => props.onTabChange('node')}><Box size={13} />节点</button>
-        <button type="button" className={props.tab === 'assets' ? 'is-active' : ''} aria-selected={props.tab === 'assets'} onClick={() => props.onTabChange('assets')}><ImageIcon size={13} />素材</button>
-        <button type="button" className={props.tab === 'runs' ? 'is-active' : ''} aria-selected={props.tab === 'runs'} onClick={() => props.onTabChange('runs')}><SlidersHorizontal size={13} />运行</button>
+        <button type="button" disabled={props.readOnly} className={props.tab === 'assets' ? 'is-active' : ''} aria-selected={props.tab === 'assets'} onClick={() => props.onTabChange('assets')}><ImageIcon size={13} />素材</button>
+        <button type="button" disabled={props.canRun === false} className={props.tab === 'runs' ? 'is-active' : ''} aria-selected={props.tab === 'runs'} onClick={() => props.onTabChange('runs')}><SlidersHorizontal size={13} />运行</button>
       </nav>
       {props.tab === 'node' ? (
         <>

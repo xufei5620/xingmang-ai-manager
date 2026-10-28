@@ -169,6 +169,52 @@ test('COS synchronization runs as its own job after an approved publish and keep
   assert.equal(workflow.on.release, undefined)
 })
 
+test('provenance is attested for exactly what an approved publish shipped, by a job that installs nothing', () => {
+  // G21：出处证明排在 publish 之后，只证明真发出去的那一批；失败了客户照常更新，单独重跑它就行。
+  const attestJob = workflow.jobs.attest
+  const cosJob = workflow.jobs['cos-sync']
+  assert.deepEqual(attestJob.needs, ['publish', 'windows-build', 'macos-build', 'linux-build'])
+  const runs = (publish) => evaluateCondition(attestJob.if, {
+    needs: { publish, 'windows-build': 'success', 'macos-build': 'skipped', 'linux-build': 'skipped' },
+  })
+  assert.equal(runs('success'), true)
+  for (const result of ['failure', 'skipped', 'cancelled']) assert.equal(runs(result), false, result)
+  // 不挂环境、不读 secret：挂 release 每次发版就要多批一次，读得到 secret 它就不只能签证明了。
+  assert.equal(attestJob.environment, undefined)
+  assert.doesNotMatch(YAML.stringify(attestJob), /secrets\.|aws s3|gh release/)
+  assert.deepEqual(attestJob.permissions, { contents: 'read', 'id-token': 'write', attestations: 'write' })
+  // 签证明的身份令牌只有它拿得到。publish 要 npm ci，放在那里任何一个第三方包都能拿它冒签。
+  const minters = Object.entries(workflow.jobs)
+    .filter(([, job]) => job.permissions?.['id-token'] !== undefined || job.permissions?.attestations !== undefined)
+    .map(([id]) => id)
+  assert.deepEqual(minters, ['attest'])
+  // 不装依赖、不跑仓库里的脚本：只有下载产物、列文件和 GitHub 官方的 attest。
+  for (const step of attestJob.steps) {
+    if (step.uses) assert.match(step.uses, /^actions\/(?:download-artifact|attest)@[0-9a-f]{40}$/, step.uses)
+    for (const line of commandLines(step.run)) assert.doesNotMatch(line, /^\s*(?:npm|npx|yarn|pnpm|corepack|node)\b/, line)
+  }
+  // 下哪几个平台的产物和 cos-sync 一字不差，也就和 publish 实际发的一致：Linux 照 publish 当时
+  // 实际下没下，不看开关。
+  const downloads = (job) => job.steps.filter((step) => /actions\/download-artifact@/.test(String(step.uses || '')))
+  assert.deepEqual(downloads(attestJob), downloads(cosJob))
+  assert.doesNotMatch(YAML.stringify(attestJob), /XINGMANG_PUBLISH_LINUX/)
+  // 签的是 publish 上传、逐字节复核过的那组安装包（blockmap 只是增量下载的索引，不签）。
+  const attest = attestJob.steps.find((step) => /^actions\/attest@/.test(String(step.uses || '')))
+  assert.ok(attestJob.steps.indexOf(attest) > Math.max(...downloads(attestJob).map((step) => attestJob.steps.indexOf(step))))
+  const subjects = String(attest.with['subject-path']).trim().split('\n').map((line) => line.trim())
+  const upload = publishJob.steps.find((step) => /Upload the installers and their blockmaps/.test(step.name || ''))
+  const uploaded = /for file in ([^;]+); do/.exec(upload.run)[1].trim().split(/\s+/)
+  assert.deepEqual(subjects, uploaded.filter((pattern) => !pattern.endsWith('.blockmap')))
+  const listing = attestJob.steps.find((step) => /List what gets a provenance attestation/.test(step.name || ''))
+  assert.ok(attestJob.steps.indexOf(listing) < attestJob.steps.indexOf(attest))
+  assert.ok(String(listing.run).includes(`files=(${subjects.join(' ')})`))
+  // 只签证明，不碰仓库：写不了 tag 和 Release，也不进写更新目录的并发组。
+  assert.equal(attestJob.permissions.contents, 'read')
+  assert.equal(attestJob.concurrency, undefined)
+  // GitHub 托管的签名服务慢也就几十秒，不该占着机器等上一个小时。
+  assert.ok(attestJob['timeout-minutes'] <= 15, String(attestJob['timeout-minutes']))
+})
+
 test('the Windows build job holds no credentials at all', () => {
   // Windows 那一份是无签名发布，出包不需要任何 secret。少一个作业能读到凭据，
   // 「谁能读到证书和 R2 密钥」这个问题就少一个答案。
@@ -1823,4 +1869,151 @@ test('both macOS release packages are launched before they reach the publish job
     // 只装 Rosetta、只启动包：碰不到发布证书。
     assert.equal(/secrets\./.test(JSON.stringify(macosJob.steps[index])), false)
   }
+})
+
+// 分批放量是发版的一项输入（商业级差距报告 G02）：原来要人记着在触发之前先跑 service-status，
+// 0.2.20、0.2.21 都忘了，等于全量发。现在由 publish 作业在换清单之前写好。
+const decideRolloutStep = publishJob.steps.find((step) => step.id === 'rollout')
+const uploadRolloutStep = publishJob.steps.find((step) => /Upload the rollout before the manifests switch/.test(step.name || ''))
+const describeRolloutStep = tagJob.steps.find((step) => /Show the approver how far this release will reach/.test(step.name || ''))
+
+test('the rollout is written by the publish job itself, after the installers check out and before the manifests switch', () => {
+  const verify = stepIndex(publishJob, /Verify the uploaded files are downloadable/)
+  const decide = publishJob.steps.indexOf(decideRolloutStep)
+  const upload = publishJob.steps.indexOf(uploadRolloutStep)
+  const manifest = stepIndex(publishJob, /Publish the update manifests/)
+  assert.ok(verify >= 0 && decide > verify, '安装包核对过了才动状态文件：前面停下时线上什么都没变')
+  assert.ok(upload > decide && manifest > upload, '放量必须在换清单之前写好、核对过')
+  assert.equal(decideRolloutStep.env.ROLLOUT, '${{ inputs.rollout }}')
+  assert.match(decideRolloutStep.run, /node scripts\/release-rollout\.cjs plan --version "\$PACKAGE_VERSION" --rollout "\$ROLLOUT"/)
+  // 只在算出来要改时才上传；上传的只有状态文件，传完核对客户读到的就是这一份。
+  assert.equal(uploadRolloutStep.if, "${{ steps.rollout.outputs.write == 'true' }}")
+  const uploads = commandLines(uploadRolloutStep.run).filter((line) => /aws s3 cp/.test(line))
+  assert.equal(uploads.length, 1)
+  assert.match(uploadRolloutStep.run, /"s3:\/\/\$R2_BUCKET\/\$OBJECT_PREFIX\/service-status\.json"/)
+  assert.match(uploadRolloutStep.run, /cmp -s "\$RUNNER_TEMP\/rollout-status\.json" "\$RUNNER_TEMP\/rollout-published\.json"/)
+  // 算的那一步只读：碰不到凭据，也不往线上写。
+  assert.doesNotMatch(JSON.stringify(decideRolloutStep), /secrets\.|aws s3/)
+})
+
+test('the run page shows how far the release will reach before either approval', () => {
+  const plan = tagJob.steps.indexOf(planStep)
+  const describe = tagJob.steps.indexOf(describeRolloutStep)
+  const reserve = tagJob.steps.indexOf(reserveStep)
+  // 判断过这次真要对外发、tag 还没占时就写好；比例写错就停在占 tag 之前。
+  assert.ok(plan >= 0 && describe > plan && reserve > describe)
+  assert.equal(describeRolloutStep.if, "${{ steps.plan.outputs.action != 'none' }}")
+  assert.equal(describeRolloutStep.env.ROLLOUT, '${{ inputs.rollout }}')
+  assert.match(describeRolloutStep.run, /^node scripts\/release-rollout\.cjs describe /)
+  assert.match(describeRolloutStep.run, /--summary "\$GITHUB_STEP_SUMMARY"/)
+})
+
+// 算放量、传状态文件两步真的跑一遍：curl 桩从一个本地「更新目录」取文件，aws 桩把文件写回那个目录
+// （就像传上去马上读得到），并记下传了什么。
+function runRolloutSteps({ rollout = '20: 先推给两成电脑（平时都选这个）', artifacts = ['latest.yml', 'latest-mac.yml'], live = {}, statusCode = null, stale = false }) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-rollout-'))
+  const binDirectory = path.join(workspace, 'bin')
+  const served = path.join(workspace, 'served')
+  for (const directory of [binDirectory, served, path.join(workspace, 'release-artifacts')]) fs.mkdirSync(directory)
+  fs.symlinkSync(path.join(root, 'scripts'), path.join(workspace, 'scripts'))
+  fs.symlinkSync(path.join(root, 'node_modules'), path.join(workspace, 'node_modules'))
+  for (const name of artifacts) fs.writeFileSync(path.join(workspace, 'release-artifacts', name), manifestText('0.2.23', name))
+  for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(served, name), text)
+  const logPath = path.join(workspace, 'commands.log')
+  const outputPath = path.join(workspace, 'github-output')
+  // 带 --write-out 的取法照真的 curl 打出状态码；不带的（--fail）取不到就以非 0 退出。
+  const curlStub = `#!/bin/bash
+output=''
+writeout=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  if [ "$1" = '--write-out' ]; then writeout=1; shift; fi
+  shift
+done
+name=$(basename "$1")
+${statusCode ? `if [ "$name" = 'service-status.json' ]; then printf '<html>busy</html>' > "$output"; printf ${statusCode}; exit 0; fi` : ''}
+if [ -f ${JSON.stringify(served)}/"$name" ]; then
+  cp ${JSON.stringify(served)}/"$name" "$output"
+  ${stale ? `[ "$name" = 'service-status.json' ] && printf '{"cached":true}' > "$output"` : ':'}
+  if [ -n "$writeout" ]; then printf 200; fi
+elif [ -n "$writeout" ]; then
+  printf 404
+else
+  exit 22
+fi
+`
+  const awsStub = `#!/bin/bash
+printf 'aws %s\\n' "$*" >> ${JSON.stringify(logPath)}
+cp "$3" ${JSON.stringify(served)}/"$(basename "$4")"
+`
+  for (const [name, body] of [['curl', curlStub], ['aws', awsStub]]) {
+    const executable = path.join(binDirectory, name)
+    fs.writeFileSync(executable, body)
+    fs.chmodSync(executable, 0o755)
+  }
+  const env = {
+    PATH: `${binDirectory}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+    HOME: workspace,
+    RUNNER_TEMP: workspace,
+    GITHUB_OUTPUT: outputPath,
+    GITHUB_STEP_SUMMARY: path.join(workspace, 'summary.md'),
+    PACKAGE_VERSION: '0.2.23',
+    OBJECT_PREFIX: 'xingmang-manager',
+    R2_ACCOUNT_ID: 'stub',
+    R2_BUCKET: 'stub',
+    PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
+    ROLLOUT: rollout,
+  }
+  const decided = spawnSync(SHELL_PATH, ['-c', decideRolloutStep.run], { cwd: workspace, encoding: 'utf8', env })
+  const outputs = readOutputs(outputPath)
+  const uploaded = decided.status === 0 && outputs.write === 'true'
+    ? spawnSync(SHELL_PATH, ['-c', uploadRolloutStep.run], { cwd: workspace, encoding: 'utf8', env })
+    : null
+  const statusPath = path.join(served, 'service-status.json')
+  const status = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, 'utf8')) : null
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { decided, uploaded, outputs, status, log }
+}
+
+test('a first release writes two in ten into the live status file and keeps every other switch', posixOnly, () => {
+  const run = runRolloutSteps({
+    live: {
+      'latest.yml': manifestText('0.2.22', 'windows'),
+      'service-status.json': JSON.stringify({ badVersions: ['0.2.10'], minimumVersion: '0.2.22' }),
+    },
+  })
+  assert.equal(run.decided.status, 0, run.decided.stdout + run.decided.stderr)
+  assert.equal(run.outputs.write, 'true')
+  assert.equal(run.uploaded.status, 0, run.uploaded.stdout + run.uploaded.stderr)
+  assert.deepEqual(run.status.rollout, { version: '0.2.23', percent: 20 })
+  assert.deepEqual(run.status.badVersions, ['0.2.10'])
+  assert.equal(run.status.minimumVersion, '0.2.22')
+  assert.match(run.log, /^aws s3 cp \S+rollout-status\.json s3:\/\/stub\/xingmang-manager\/service-status\.json /m)
+  assert.match(run.uploaded.stdout, /客户会用的地址已经读到新的分批放量/)
+
+  // 线上还没有状态文件（404）：从空白开始写。
+  const blank = runRolloutSteps({})
+  assert.equal(blank.uploaded.status, 0, blank.uploaded.stdout + blank.uploaded.stderr)
+  assert.deepEqual(blank.status.rollout, { version: '0.2.23', percent: 20 })
+})
+
+test('a rerun leaves the rollout alone, and anything unreadable stops before the manifests', posixOnly, () => {
+  const paused = JSON.stringify({ rollout: { version: '0.2.23', percent: 0 } })
+  const rerun = runRolloutSteps({ live: { 'latest.yml': manifestText('0.2.23', 'windows'), 'latest-mac.yml': manifestText('0.2.23', 'mac'), 'service-status.json': paused } })
+  assert.equal(rerun.decided.status, 0, rerun.decided.stdout + rerun.decided.stderr)
+  assert.equal(rerun.outputs.write, 'false')
+  assert.equal(rerun.uploaded, null)
+  assert.deepEqual(rerun.status, JSON.parse(paused))
+
+  const busy = runRolloutSteps({ statusCode: 503 })
+  assert.notEqual(busy.decided.status, 0)
+  assert.match(busy.decided.stdout, /::error::读取线上 service-status\.json 失败（HTTP 503）/)
+  assert.equal(busy.log, '')
+
+  // 传上去了，客户会用的地址读回来的却不是这一份（缓存）：停下，不往下换清单。
+  const stale = runRolloutSteps({ stale: true, live: { 'service-status.json': '{}' } })
+  assert.equal(stale.decided.status, 0, stale.decided.stdout + stale.decided.stderr)
+  assert.notEqual(stale.uploaded.status, 0)
+  assert.match(stale.uploaded.stdout, /::error::分批放量传上去了，但客户会用的地址读到的不是这一份/)
 })

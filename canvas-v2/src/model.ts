@@ -1,14 +1,18 @@
 // 领域模型 —— 刻意零依赖(不 import React/@xyflow):引擎与持久化只认这里
 // 的类型,画布层(App.tsx)负责与 @xyflow/react 的 Node/Edge 互相映射。
 // MVP 数据模型最薄化,见 docs/CANVAS-V2-PLAN.md 第 4 节。
+import type { ImageCandidateCount } from './runtime/image-candidate-count'
+import type { VideoCandidateCount } from './runtime/video-candidate-count'
+import type { PromptReference } from './library/prompt-references'
 
 export type PortKind = 'text' | 'image' | 'video' | 'audio'
 
 export type NodeKind =
   | 'text' | 'image' | 'video'
   | 'prompt' | 'image-input' | 'video-input' | 'audio-input'
-  | 'image-generate' | 'image-edit' | 'video-generate'
+  | 'text-generate' | 'image-generate' | 'image-edit' | 'video-generate'
   | 'frame-extract' | 'router' | 'gallery' | 'output'
+  | 'image-crop' | 'image-collage' | 'image-grid-split' | 'image-tile' | 'image-layer' | 'image-compare' | 'image-panorama'
   | 'group' | 'note' | 'unknown'
   | 'drama-bible' | 'drama-script' | 'drama-parse'
   | 'drama-character' | 'drama-scene' | 'drama-prop' | 'drama-shot'
@@ -38,6 +42,8 @@ export interface AssetRef {
 /** 运行记录投影到节点上的候选视图；仅包含宿主签发的本地资产引用。 */
 export interface WorkflowCandidateRef {
   candidateId: string
+  /** Stable position in a multi-image transformation. */
+  outputIndex?: number
   attemptId: string
   createdAt: string
   asset: AssetRef
@@ -48,6 +54,12 @@ export interface WorkflowCandidateRef {
 
 export interface WorkflowNodeData {
   prompt: string
+  /** Optional official chips over expanded prose; execution only consumes prompt. */
+  promptReferences?: PromptReference[]
+  /** Generated text is separate from the user's reusable input prompt. */
+  outputText?: string
+  /** Explicit Responses web search; omitted preserves ordinary text generation. */
+  textWebSearch?: boolean
   /** relay 侧模型名。渠道配置好之前允许为空,mock 执行器不校验。 */
   model: string
   /** 可选的节点级 relay 分组覆盖；为空时继承项目级生成配置。 */
@@ -58,6 +70,11 @@ export interface WorkflowNodeData {
   size?: string
   /** 图像输出清晰度档位；与视频 resolution 分离。 */
   imageResolution?: '1K' | '2K' | '4K'
+  /** Independent image requests; omitted preserves one request. */
+  imageCandidateCount?: ImageCandidateCount
+  videoCandidateCount?: VideoCandidateCount
+  /** Current durable batch progress; never persisted as document configuration. */
+  videoBatchProgress?: { completed: number; submitted: number; total: number }
   /** 视频生成时长，协议要求为 1-15 的整数字符串。 */
   seconds?: string
   status: NodeStatus
@@ -144,12 +161,20 @@ export const nodeOutputKind: Record<NodeKind, PortKind> = {
   image: 'image',
   video: 'video',
   prompt: 'text',
+  'text-generate': 'text',
   'image-input': 'image',
   'video-input': 'video',
   'audio-input': 'audio',
   'image-generate': 'image',
   'image-edit': 'image',
   'video-generate': 'video',
+  'image-crop': 'image',
+  'image-collage': 'image',
+  'image-grid-split': 'image',
+  'image-tile': 'image',
+  'image-layer': 'image',
+  'image-compare': 'image',
+  'image-panorama': 'image',
   'frame-extract': 'image',
   router: 'text',
   gallery: 'image',
@@ -178,12 +203,20 @@ export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   image: ['text', 'image'],
   video: ['text', 'image', 'video', 'audio'],
   prompt: [],
+  'text-generate': ['text'],
   'image-input': [],
   'video-input': [],
   'audio-input': [],
   'image-generate': ['text', 'image'],
   'image-edit': ['text', 'image'],
   'video-generate': ['text', 'image', 'video', 'audio'],
+  'image-crop': ['image'],
+  'image-collage': ['image'],
+  'image-grid-split': ['image'],
+  'image-tile': ['image'],
+  'image-layer': ['image'],
+  'image-compare': ['image'],
+  'image-panorama': ['image'],
   'frame-extract': ['video'],
   router: ['text', 'image', 'video', 'audio'],
   gallery: ['image', 'video', 'audio'],

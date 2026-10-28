@@ -1,3 +1,5 @@
+import { parseImageCandidateCount } from '../runtime/image-candidate-count'
+import { parseVideoCandidateCount } from '../runtime/video-candidate-count'
 import type { AssetRef, NodeKind } from '../model'
 import {
   defaultImageQuality,
@@ -14,12 +16,15 @@ import {
   videoModelPreset,
 } from '../models'
 import type { CanvasHostBridge } from '../host'
+import type { CanvasCapabilityProfile } from '../host-capabilities'
 import type { NodeExecutor } from './engine'
 
 export interface HostExecutorOptions {
   imageGroup: string
   videoGroup: string
   host: Pick<CanvasHostBridge, 'generateImage' | 'editImage' | 'generateVideo' | 'cancelRequest'>
+  /** The host's profile: image resolutions are checked against what it declares. */
+  capabilities?: CanvasCapabilityProfile
 }
 
 let requestSequence = 0
@@ -68,7 +73,10 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
   const text: NodeExecutor = async (node) => ({ output: { text: node.data.prompt } })
 
   const image: NodeExecutor = async (node, inputs, signal) => {
-      if (!options.imageGroup) throw new Error('请先在「生成配置」中选择生图分组')
+    if (node.data.settings?.storyboardTask !== undefined || node.data.settings?.exteriorTask !== undefined || node.data.settings?.interiorTask !== undefined || node.data.settings?.commerceTask !== undefined || node.data.settings?.imageReferenceOrder !== undefined) throw new Error('参考图创作请通过画布安全运行服务提交，不会退回普通生成')
+    if (node.data.settings?.imageEditMask !== undefined) throw new Error('蒙版局部修改请通过画布安全运行服务提交，不会退回普通图像编辑')
+      if ((parseImageCandidateCount(node.data.imageCandidateCount, node.kind) ?? 1) > 1) throw new Error('多候选生成请通过画布安全运行服务提交')
+      if (!(node.data.group ?? options.imageGroup)) throw new Error('请先在「生成配置」中选择生图分组')
       const prompt = combinedPrompt(inputs.text, node.data.prompt)
       if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
       const model = node.data.model.trim()
@@ -80,7 +88,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
         size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
         quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
         imageResolution: node.data.imageResolution || defaultImageResolution,
-      })
+      }, options.capabilities)
       if (errors[0]) throw new Error(errors[0])
       const requestId = nextRequestId(node.id)
       const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
@@ -89,7 +97,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
         if (signal.aborted) throw new Error('已取消')
         const assets = await options.host.generateImage({
           requestId,
-          group: options.imageGroup,
+          group: node.data.group ?? options.imageGroup,
           model,
           prompt,
           size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
@@ -107,7 +115,10 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     }
 
   const imageEdit: NodeExecutor = async (node, inputs, signal) => {
-    if (!options.imageGroup) throw new Error('请先在「生成配置」中选择生图分组')
+    if (node.data.settings?.storyboardTask !== undefined || node.data.settings?.exteriorTask !== undefined || node.data.settings?.interiorTask !== undefined || node.data.settings?.commerceTask !== undefined || node.data.settings?.imageReferenceOrder !== undefined) throw new Error('参考图创作请通过画布安全运行服务提交，不会退回普通生成')
+    if (node.data.settings?.imageEditMask !== undefined) throw new Error('蒙版局部修改请通过画布安全运行服务提交，不会退回普通图像编辑')
+    if ((parseImageCandidateCount(node.data.imageCandidateCount, node.kind) ?? 1) > 1) throw new Error('多候选生成请通过画布安全运行服务提交')
+    if (!(node.data.group ?? options.imageGroup)) throw new Error('请先在「生成配置」中选择生图分组')
     const prompt = combinedPrompt(inputs.text, node.data.prompt)
     if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
     const sourceAssetIds = [...new Set(
@@ -127,7 +138,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
       quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
       imageResolution: node.data.imageResolution || defaultImageResolution,
       referenceImageCount: sourceAssetIds.length,
-    })
+    }, options.capabilities)
     if (errors[0]) throw new Error(errors[0])
     const requestId = nextRequestId(node.id)
     const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
@@ -136,7 +147,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
       if (signal.aborted) throw new Error('已取消')
       const assets = await options.host.editImage({
         requestId,
-        group: options.imageGroup,
+        group: node.data.group ?? options.imageGroup,
         model,
         prompt,
         sourceAssetIds,
@@ -161,7 +172,8 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
   }
 
   const video: NodeExecutor = async (node, inputs, signal) => {
-    if (!options.videoGroup) throw new Error('请先在「生成配置」中选择视频分组')
+    if ((parseVideoCandidateCount(node.data.videoCandidateCount, node.kind) ?? 1) > 1) throw new Error('多候选视频生成请通过画布安全运行服务提交')
+    if (!(node.data.group ?? options.videoGroup)) throw new Error('请先在「生成配置」中选择视频分组')
     const prompt = combinedPrompt(inputs.text, node.data.prompt)
     if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
     const model = node.data.model.trim() || defaultVideoModel
@@ -180,6 +192,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     const imageAssetIds = assetIds(images, '视频参考图片')
     const videoAssetIds = assetIds(videos, '视频参考视频')
     const audioAssetIds = assetIds(audios, '视频参考音频')
+    if (node.data.settings?.generateAudio !== undefined) throw new Error('此运行入口不支持视频音频设置，请使用网页画布的完整运行流程')
     const requestedMode = typeof node.data.settings?.videoMode === 'string' ? node.data.settings.videoMode : 'auto'
     const mode = preset.provider === 'minimax-h3'
       ? resolveMiniMaxVideoMode({
@@ -214,7 +227,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
       if (signal.aborted) throw new Error('已取消')
       const asset = await options.host.generateVideo({
         requestId,
-        group: options.videoGroup,
+        group: node.data.group ?? options.videoGroup,
         model,
           prompt,
           seconds,
@@ -243,10 +256,18 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
   }
   const unsupported: NodeExecutor = async () => { throw new Error('当前节点能力尚未接入，请勿提交付费请求') }
   return {
-    text, video, prompt: text,
+    text, video, prompt: text, 'text-generate': unsupported,
     'image-input': unsupported, 'video-input': unsupported, 'audio-input': unsupported,
     image: imageOrEdit, 'image-generate': imageOrEdit, 'image-edit': imageEdit, 'video-generate': video,
-    'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
+    'frame-extract': unsupported,
+    'image-crop': unsupported,
+    'image-collage': unsupported,
+    'image-grid-split': unsupported,
+    'image-tile': unsupported,
+    'image-layer': unsupported,
+    'image-compare': unsupported,
+    'image-panorama': unsupported,
+ router: unsupported, gallery: unsupported, output: unsupported,
     group: unsupported, note: unsupported,
     unknown: unsupported,
     'drama-bible': text, 'drama-script': text, 'drama-parse': text, 'drama-shot': text,

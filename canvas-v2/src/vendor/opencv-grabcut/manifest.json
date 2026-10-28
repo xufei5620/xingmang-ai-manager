@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "opencvVersion": "4.13.0",
+  "buildRevision": "noeval-r1",
+  "format": "esm-factory-asmjs",
+  "bytes": 1936903,
+  "gzipBytes": 434085,
+  "sha256": "2b3586b4fe00ea68120073e8902655b27997b6a61951074fd78a2df1ff74d6a5",
+  "rawBytes": 1918279,
+  "rawSha256": "2551f898085e3fb4c7c3df1b33afb2a1d2f44cf725d56d4bb7e50118150fb500",
+  "sourceArchives": [
+    {
+      "name": "emsdk-4.0.20",
+      "url": "https://codeload.github.com/emscripten-core/emsdk/tar.gz/refs/tags/4.0.20",
+      "bytes": 206951,
+      "sha256": "2a8a70eb1c0a47883272a001feb4c7209db6e9bcc36774dd9770050e7ac64fa0"
+    },
+    {
+      "name": "opencv-4.13.0",
+      "url": "https://codeload.github.com/opencv/opencv/tar.gz/refs/tags/4.13.0",
+      "bytes": 95420275,
+      "sha256": "1d40ca017ea51c533cf9fd5cbde5b5fe7ae248291ddf2af99d4c17cf8e13017d"
+    }
+  ],
+  "emscripten": {
+    "version": "4.0.20",
+    "emscriptenReleaseCommit": "c387d7a7e9537d0041d2c3ae71b7538cc978104e",
+    "url": "https://storage.googleapis.com/webassembly/emscripten-releases-builds/mac/c387d7a7e9537d0041d2c3ae71b7538cc978104e/wasm-binaries-arm64.tar.xz",
+    "bytes": 297205984,
+    "sha256": "144433e905ec1db726df9128e99624b9b4a3716e96dfb37dde22e2294a675c07",
+    "crc32c": "RhyXIg==",
+    "officialResponseCrc32cVerified": true
+  },
+  "cmake": {
+    "version": "3.31.6",
+    "url": "https://files.pythonhosted.org/packages/7f/09/516b0d709672bc430eb13278f0316acd34869269447744f5d136daeef689/cmake-3.31.6-py3-none-macosx_10_10_universal2.whl",
+    "bytes": 47224338,
+    "sha256": "da9d4fd9abd571fd016ddb27da0428b10277010b23bb21e3678f8b9e96e1686e",
+    "pypiSha256Verified": true
+  },
+  "buildSettings": {
+    "DYNAMIC_EXECUTION": 0,
+    "WASM": 0,
+    "USE_PTHREADS": 0,
+    "EXPORT_ES6": 1,
+    "MODULARIZE": 1,
+    "INITIAL_MEMORY": 33554432,
+    "MAXIMUM_MEMORY": 536870912,
+    "BUILD_LIST": "core,imgproc,js",
+    "CMAKE_CXX_STANDARD": 17
+  },
+  "whitelistSha256": "55e7dc151348d4b62d2e185acac1f801f9a52ac1e4dd760f79c59a36de4f2c1e",
+  "memoryPatchSha256": "5ade30c2d6f3d7e33b9714df91b7e15cfc1749a03b611f3af13a78b3d20c0248",
+  "licensesSha256": "a7040b22a7974fc813ea214114783b1baa86efb8ca43614a00dce2557bb455a0",
+  "packageInstalled": false,
+  "buildRecipeSha256": "2b3083fbc32c1c10af76e69564f1f28c22346a3e13f2a4af344d57ce7dafd7f5",
+  "sourcePath": "canvas-kernel/src/vendor/opencv-grabcut/runtime/opencv-grabcut-2b3586b4fe00ea68120073e8902655b27997b6a61951074fd78a2df1ff74d6a5.js",
+  "delivery": {
+    "mode": "static-module-worker-dependency",
+    "outputPattern": "_next/static/chunks/layer-grabcut-worker-[hash].js",
+    "standaloneRuntimeUrl": false,
+    "previousReleaseRetention": "native-hashed-worker-chunk"
+  }
+}

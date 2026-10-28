@@ -43,6 +43,7 @@ import type { DiagnosticsReport, DiagnosticsRunOptions } from './diagnostics'
 import type { ConnectionCheckResult, ConnectionProbeReport } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import type { ExternalShellLauncher } from './system-shell'
+import type { SensitiveClipboard } from './sensitive-clipboard'
 import type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
@@ -162,6 +163,11 @@ export interface IpcRegistrationOptions {
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
   externalShell?: ExternalShellLauncher
+  /**
+   * 复制密钥、新密码用的剪贴板（60 秒后自动清）。main.ts 自己建一份传进来，退出前还要叫它
+   * 清一次（flush）；不传 = 这里用 Electron 的剪贴板建一份（测试与旧调用方）。
+   */
+  sensitiveClipboard?: SensitiveClipboard
   /** Defaults to Electron's `shell.showItemInFolder`; injectable for tests. */
   revealInFolder?(filePath: string): void | Promise<void>
   updaterService: UpdaterService

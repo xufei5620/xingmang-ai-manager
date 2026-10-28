@@ -16,22 +16,21 @@ export function canvasEdgeToneVariable(tone: CanvasEdgeTone): string {
   return tone === 'unknown' ? 'var(--xy-edge-stroke-default)' : `var(--port-${tone})`
 }
 
-/** Every wire uses one muted stroke. Port chips stay colored; the graph does not. */
-export const canvasEdgeStroke = 'var(--canvas-edge)'
+export function canvasEdgeToneLabel(tone: CanvasEdgeTone): string {
+  return { text: '文本', image: '图片', video: '视频', audio: '音频', unknown: '数据' }[tone]
+}
 
 /** Horizontal pull of the cubic bezier. Too little hugs the node; too much loops. */
 export const canvasEdgeCurvature = 0.35
 
-/**
- * Midpoint of the two endpoints, which is where the edge toolbar anchors.
- * The bezier control points sit off this line, so it is computed here and
- * unit tested rather than trusted to stay in sync by inspection.
- */
-export function canvasEdgeMidpoint(
-  source: { x: number; y: number },
-  target: { x: number; y: number },
+/** Keyboard clicks have no screen point; anchor to the visible button instead. */
+export function canvasEdgeInsertPoint(
+  event: { detail: number; clientX: number; clientY: number },
+  button: { left: number; top: number; width: number; height: number },
 ): { x: number; y: number } {
-  return { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 }
+  return event.detail === 0
+    ? { x: button.left + button.width / 2, y: button.top + button.height / 2 }
+    : { x: event.clientX, y: event.clientY }
 }
 
 export function canvasEdgeTouchesSelection(

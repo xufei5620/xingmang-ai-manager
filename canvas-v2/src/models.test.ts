@@ -1,122 +1,58 @@
 import { describe, expect, it } from 'vitest'
-import {
-  imageSizeLabel,
-  imageModelPreset,
-  normalizeVideoSeconds,
-  resolveMiniMaxVideoMode,
-  validateImageModelOptions,
-  validateVideoModelOptions,
-  videoModelPresets,
-} from './models'
+import { availableImageModelPresets, knownNonTextModel, knownVideoModel, imageModelPreset, imageModelPresets, videoModelPreset, validateVideoModelOptions } from './models'
+import { imageRequestModelControls, supportedImageRequestResolutions } from './runtime/image-request-parameters'
 
-describe('canvas media model capabilities', () => {
-  it('does not send unsupported image options to Grok models', () => {
-    const preset = imageModelPreset('grok-imagine-image-2.0')
-    expect(preset).toMatchObject({ supportsSize: false, supportsQuality: false, supportsEdits: true })
-    expect(preset.resolutions).toEqual(['1K'])
-    expect(validateImageModelOptions({
-      model: preset.id,
-      operation: 'generate',
-      size: '1024x1024',
-      quality: 'low',
-    })).toEqual([
-      '模型「Grok Imagine 2.0」不接受尺寸参数',
-      '模型「Grok Imagine 2.0」不接受画质参数',
-    ])
+describe('image resolution capabilities', () => {
+  it('filters known text and video models from mixed image catalogs while keeping custom IDs', () => {
+    expect(availableImageModelPresets(['gpt-image-2', 'gpt-4o-mini', 'grok-imagine-video', 'proxy/MINIMAX-H3-FAST', 'gemini-3.1-flash-image', 'custom-paint-model'], true).map((preset) => preset.id))
+      .toEqual(['gpt-image-2', 'gemini-3.1-flash-image', 'custom-paint-model'])
+  })
+  it('keeps Sora video families out of text and image selectors without guessing unknown aliases', () => {
+    expect(knownVideoModel('proxy/SORA-2-PRO')).toBe(true)
+    expect(knownNonTextModel('sora-2')).toBe(true)
+    expect(availableImageModelPresets(['sora-2', 'proxy/SORA-2-PRO', 'custom-paint-model'], true).map((preset) => preset.id)).toEqual(['custom-paint-model'])
+    expect(knownVideoModel('soramic-image')).toBe(false)
   })
 
-  it('exposes Gemini 3.1 Flash Image with ratio selection and no edit or quality claim', () => {
-    const preset = imageModelPreset('gemini-3.1-flash-image')
-    expect(preset).toMatchObject({
-      label: 'Gemini 3.1 Flash Image', supportsSize: true, supportsQuality: false, supportsEdits: false,
-      resolutions: ['1K', '2K', '4K'],
-    })
-    expect(preset.sizes).toContain('1280x720')
-    expect(validateImageModelOptions({
-      model: preset.id, operation: 'generate', size: '1280x720',
-    })).toEqual([])
-    expect(validateImageModelOptions({
-      model: preset.id, operation: 'generate', size: '1111x777',
-    })).toContain('模型「Gemini 3.1 Flash Image」不支持这个图片尺寸')
-    expect(validateImageModelOptions({
-      model: preset.id, operation: 'edit', referenceImageCount: 1,
-    })).toContain('模型「Gemini 3.1 Flash Image」不支持图片编辑')
-  })
-
-  it('exposes native clarity tiers only where the provider supports them', () => {
-    expect(imageModelPreset('gpt-image-2').resolutions).toEqual(['1K', '2K', '4K'])
-    for (const model of ['gpt-image-1', 'jimeng_high_aes_general_v21_L', 'grok-imagine-image']) {
-      expect(imageModelPreset(model).resolutions).toEqual(['1K'])
-      expect(validateImageModelOptions({ model, operation: 'generate', imageResolution: '4K' }))
-        .toContain(`模型「${imageModelPreset(model).label}」不支持 4K 清晰度`)
+  it('advertises only resolution tiers implemented by the shared request builder', () => {
+    for (const preset of imageModelPresets) {
+      expect(preset.resolutions).toEqual(supportedImageRequestResolutions(preset.id))
+      expect(imageRequestModelControls(preset.id)).toMatchObject({ supportsSize: preset.supportsSize, supportsQuality: preset.supportsQuality })
     }
+    expect(imageModelPreset('custom-image').resolutions).toEqual(['1K'])
+    expect(imageModelPreset('proxy-gpt-image-2').resolutions).toEqual(['1K'])
   })
 
-  it('rejects invalid GPT Image 2 dimensions before a paid request', () => {
-    expect(validateImageModelOptions({
-      model: 'gpt-image-2',
-      operation: 'generate',
-      size: '1023x1024',
-      quality: 'low',
-    })).toContain('GPT Image 2 的宽高必须都是 16 的倍数')
+  it.each(['gpt-image-2-2026-04-21', 'GPT-IMAGE-2'])('retains supported dimensions and explicit quality for known alias %s', (model) => {
+    const preset = imageModelPreset(model)
+    expect(preset.id).toBe(model)
+    expect(preset.sizes).toContain('1280x720')
+    expect(preset.resolutions).toEqual(['1K', '2K', '4K'])
+    expect(preset.supportsQuality).toBe(true)
+    expect(preset.resolutionNote).toContain('实验性')
   })
 
-  it('validates image edit capability and reference count', () => {
-    expect(validateImageModelOptions({
-      model: 'jimeng_high_aes_general_v21_L',
-      operation: 'edit',
-      referenceImageCount: 0,
-    })).toEqual([
-      '模型「即梦(快·中文强)」不支持图片编辑',
-      '图片编辑至少需要 1 张参考图',
-    ])
+  it('distinguishes an unimplemented Gemini adapter from the native model capabilities', () => {
+    const preset = imageModelPreset('gemini-3.1-flash-image')
+    expect(preset.resolutions).toEqual(['1K'])
+    expect(preset.resolutionNote).toContain('支持原生 2K/4K')
+    expect(preset.resolutionNote).toContain('当前接入通道尚未实现')
   })
+})
 
-  it('exposes all production video models and applies provider duration rules', () => {
-    expect(videoModelPresets.map((preset) => preset.id)).toEqual([
-      'grok-imagine-video',
-      'grok-imagine-video-1.5',
-      'minimax-h3-mini',
-      'minimax-h3-fast',
-      'minimax-h3-base',
-    ])
-    expect(normalizeVideoSeconds(15, 'grok-imagine-video')).toBe('15')
-    expect(normalizeVideoSeconds('5', 'grok-imagine-video')).toBe('5')
-    expect(normalizeVideoSeconds(18, 'grok-imagine-video')).toBeNull()
-    expect(normalizeVideoSeconds('5.5', 'grok-imagine-video')).toBeNull()
-    expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 16 })).toEqual([
-      '视频时长必须在 1-15 秒之间',
-    ])
-    expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 5, size: '1280x720' })).toEqual([])
-    expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 5, size: '111x222' }))
-      .toEqual(['模型「Grok Imagine Video」不支持这个视频比例'])
-    expect(normalizeVideoSeconds('4', 'minimax-h3-mini')).toBeNull()
-    expect(normalizeVideoSeconds('6', 'minimax-h3-mini')).toBe('6')
+
+describe('Seedance exact model catalog', () => {
+  it('exposes only the integrated native model and does not infer compatibility from aliases', () => {
+    const id = 'doubao-seedance-2-0-mini-260615'
+    expect(videoModelPreset(id)).toMatchObject({ provider: 'ark-seedance', minimumSeconds: 4, maximumSeconds: 15, defaultSeconds: 5, defaultSize: 'auto', supportsVideo: true, supportsAudio: true })
+    expect(videoModelPreset('seedance-2-mini')).toMatchObject({ provider: 'unknown', supportsVideo: false, sizes: [] })
+    expect(validateVideoModelOptions({ model: id, seconds: '5', size: 'auto' }).join()).toContain('完整运行服务')
+    expect(validateVideoModelOptions({ model: 'seedance-2-mini', seconds: '5', size: 'auto' }).join()).toContain('协议尚未确认')
   })
-
-  it('derives and validates MiniMax modes from connected media', () => {
-    expect(resolveMiniMaxVideoMode({ imageCount: 0 })).toBe('t2va')
-    expect(resolveMiniMaxVideoMode({ imageCount: 1 })).toBe('i2va')
-    expect(resolveMiniMaxVideoMode({ imageCount: 2 })).toBe('fl2va')
-    expect(resolveMiniMaxVideoMode({ imageCount: 3 })).toBe('ref2va')
-    expect(resolveMiniMaxVideoMode({ audioCount: 1 })).toBe('ref2va')
-    expect(validateVideoModelOptions({
-      model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', resolution: '720p', aspectRatio: '21:9',
-      imageCount: 9, audioCount: 3,
-    })).toEqual([])
-    expect(validateVideoModelOptions({
-      model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', imageCount: 1, videoCount: 1,
-    })).toContain('MiniMax H3 当前不支持参考视频（max_videos=0）')
-    expect(validateVideoModelOptions({
-      model: 'minimax-h3-base', seconds: 10, mode: 'fl2va', imageCount: 1,
-    })).toContain('FL2VA 需要且只能连接 2 张图片，顺序为首帧、尾帧')
-    expect(validateVideoModelOptions({
-      model: 'minimax-h3-fast', seconds: 5, mode: 'i2va', imageCount: 2,
-    })).toContain('I2VA 需要且只能连接 1 张图片')
-  })
-
-  it('labels common image dimensions with user-facing aspect ratios', () => {
-    expect(imageSizeLabel('1024x1024')).toBe('1:1 · 1024x1024')
-    expect(imageSizeLabel('1792x768')).toBe('21:9 · 1792x768')
+  it('keeps native video models out of image and text catalogs without hiding custom image IDs', () => {
+    const models = ['doubao-seedance-2-0-mini-260615', 'seedance-2-mini', 'gpt-4o-mini', 'custom-paint-model']
+    expect(availableImageModelPresets(models, true).map((item) => item.id)).toEqual(['custom-paint-model'])
+    expect(knownNonTextModel('doubao-seedance-2-0-mini-260615')).toBe(true)
+    expect(knownNonTextModel('seedance-2-mini')).toBe(true)
   })
 })

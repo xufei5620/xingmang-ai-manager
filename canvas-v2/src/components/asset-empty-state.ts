@@ -14,14 +14,14 @@ export type AssetEmptyAction = 'import' | 'clear-search' | 'clear-filters' | 'sh
 
 export interface AssetEmptyState {
   /** Distinguishes the cases for tests; not shown. */
-  reason: 'library' | 'search' | 'filters' | 'favorite' | 'recent' | 'trash'
+  reason: 'library' | 'search' | 'filters' | 'favorite' | 'recent' | 'trash' | 'category'
   title: string
   description: string
   kind: AssetEmptyAction
   label: string
 }
 
-type EmptyStateQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'view' | 'prompt' | 'runId' | 'nodeId'>
+type EmptyStateQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'view' | 'prompt' | 'runId' | 'nodeId' | 'categoryId'>
 
 const mediaTypeNames: Record<string, string> = { image: '图片', video: '视频', audio: '音频' }
 const sourceNames: Record<string, string> = { generated: 'AI 生成', imported: '本地导入', legacy: '历史素材' }
@@ -93,6 +93,7 @@ export function assetEmptyState(query: EmptyStateQuery): AssetEmptyState {
       label: '查看全部素材',
     }
   }
+  if (query.categoryId !== undefined) return { reason: 'category', title: query.categoryId === null ? '未分类中暂无素材' : '当前分类中暂无素材', description: '导入图片、视频或音频时会使用当前分类，也可以移动已有素材到这里。', kind: 'import', label: '导入到当前分类' }
   return {
     reason: 'library',
     title: '素材库还是空的',

@@ -1,0 +1,146 @@
+.canvas-workshop-backdrop { position: fixed; inset: 0; z-index: 220; display: grid; place-items: center; padding: 20px; background: #05080dc2; backdrop-filter: blur(7px); }
+.canvas-workshop-dialog { width: min(780px, 100%); max-height: calc(100dvh - 40px); overflow: auto; padding: 22px; color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid var(--border-strong); border-radius: 18px; box-shadow: 0 24px 90px #0009; }
+.canvas-workshop-dialog header, .canvas-workshop-dialog footer { display: flex; align-items: center; gap: 10px; }
+.canvas-workshop-dialog header { justify-content: space-between; margin-bottom: 18px; }
+.canvas-workshop-save-body { display: grid; grid-template-columns: minmax(190px, 270px) minmax(0, 1fr); flex: 1; min-height: 0; gap: 18px; overflow: hidden; }
+.canvas-workshop-save-fields, .canvas-workshop-save-targets { min-width: 0; min-height: 0; overflow-y: auto; padding-right: 4px; }
+.canvas-workshop-save-preview { min-width: 0; min-height: 0; overflow: hidden; }
+.canvas-workshop-save-targets .canvas-workshop-search { margin: 0 0 10px; gap: 6px; }
+.canvas-workshop-save-targets .canvas-workshop-list { max-height: 360px; }
+.canvas-workshop-target-pages { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between; margin: 12px 0; font-size: 11px; color: var(--text-secondary); }
+.canvas-workshop-comparison { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.canvas-workshop-comparison-scroll { flex: 1; min-height: 0; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border-subtle); border-radius: 12px; }
+.canvas-workshop-parameter-preview { margin: 12px; padding: 12px; background: var(--surface-inset); border-radius: 9px; font-size: 12px; }
+.canvas-workshop-parameter-preview summary { cursor: pointer; padding: 7px 0; overflow-wrap: anywhere; }
+.canvas-workshop-parameter-preview dd { margin: 5px 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-secondary); }
+.canvas-workshop-parameter-preview pre { margin: 0; font-size: 11px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.canvas-workshop-source-review .canvas-workshop-parameter-preview { margin: 4px 0; padding: 0 8px; }
+.canvas-workshop-source-review .canvas-workshop-parameter-preview:not([open]) { background: transparent; }
+.canvas-workshop-source-policy { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 0 0 12px; padding: 10px; border: 1px solid var(--border-subtle); border-radius: 10px; }
+.canvas-workshop-source-policy legend { padding: 0 5px; font-size: 12px; color: var(--text-secondary); }
+.canvas-workshop-dialog .canvas-workshop-source-policy > label { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding: 9px; border: 1px solid var(--border-subtle); border-radius: 7px; cursor: pointer; }
+.canvas-workshop-source-policy label:has(input:checked) { background: var(--surface-active); border-color: var(--accent); }
+.canvas-workshop-source-policy label:has(input:disabled) { cursor: default; }
+.canvas-workshop-dialog .canvas-workshop-source-policy input[type="radio"] { flex: 0 0 16px; width: 16px; height: 16px; margin: 2px 0 0; padding: 0; accent-color: var(--accent); }
+.canvas-workshop-source-policy strong, .canvas-workshop-source-policy small { display: block; font-size: 12px; line-height: 1.6; }
+.canvas-workshop-source-policy small { margin-top: 4px; color: var(--text-secondary); font-size: 11px; }
+@media (max-width: 620px) { .canvas-workshop-source-policy { grid-template-columns: minmax(0, 1fr); } }
+.canvas-workshop-source-review ul { max-height: 140px; overflow-y: auto; overscroll-behavior: contain; margin: 4px 0; padding-left: 20px; overflow-wrap: anywhere; }
+.canvas-workshop-dialog .canvas-workshop-source-review > label { display: flex; align-items: flex-start; gap: 8px; margin: 8px 0 0; line-height: 1.6; }
+.canvas-workshop-dialog .canvas-workshop-source-review input[type="checkbox"] { flex: 0 0 16px; width: 16px; height: 16px; margin: 2px 0 0; padding: 0; border-radius: 3px; accent-color: var(--accent); }
+.canvas-workshop-recovery-actions { display: flex; flex-wrap: wrap; gap: 8px; flex: 0 0 auto; }
+.canvas-workshop-recovery-notice { z-index: 35; display: flex; justify-content: space-between; gap: 14px; margin: 8px 12px; padding: 12px 16px; color: #f3dbb8; background: #2b2419; border: 1px solid #645033; border-radius: 10px; font-size: 12px; }
+.canvas-workshop-recovery-notice p { margin: 5px 0 0; line-height: 1.6; }
+.canvas-workshop-recovery-notice button { color: #f3dbb8; background: #403420; border: 1px solid #786344; border-radius: 7px; padding: 8px 12px; font: inherit; cursor: pointer; }
+.canvas-workshop-recovery-notice button:disabled { opacity: .55; cursor: wait; }
+.canvas-workshop-edit-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 16px; color: var(--text-secondary); background: var(--surface-floating); border-bottom: 1px solid var(--border-subtle); font-size: 12px; }
+.canvas-workshop-edit-banner button { color: var(--accent-hover); background: var(--surface-hover); border: 1px solid var(--border-subtle); border-radius: 7px; padding: 7px 10px; font: inherit; cursor: pointer; }
+@media (max-width: 700px) {
+  .canvas-workshop-save-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(130px, 38%) minmax(180px, 1fr); gap: 10px; }
+  .canvas-workshop-save-targets .canvas-workshop-list { max-height: 150px; }
+  .canvas-workshop-save-fields label { margin: 7px 0; }
+  .canvas-workshop-recovery-notice, .canvas-workshop-edit-banner { flex-wrap: wrap; }
+  .canvas-workshop-recovery-notice { margin: 6px; padding: 10px; }
+}
+.canvas-workshop-dialog header span, .canvas-workshop-detail > span { font-size: 11px; color: var(--accent-hover); }
+.canvas-workshop-dialog h2 { font-size: 19px; margin: 4px 0 0; }
+.canvas-workshop-dialog h3 { margin: 10px 0; font-size: 18px; }
+.canvas-workshop-dialog button, .canvas-workshop-dialog input, .canvas-workshop-dialog textarea, .canvas-workshop-dialog select { font: inherit; }
+.canvas-workshop-dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 8px 11px; border: 1px solid var(--border-subtle); border-radius: 8px; color: var(--text-primary); background: var(--surface-hover); cursor: pointer; }
+.canvas-workshop-dialog button.is-primary { background: var(--accent); color: var(--text-on-accent, #fff); }
+.canvas-workshop-dialog button:disabled { cursor: default; opacity: .45; }
+.canvas-workshop-dialog :is(button,input,select,textarea,a):focus-visible { outline: 2px solid var(--accent-hover); outline-offset: 3px; }
+.canvas-workshop-dialog label { display: grid; gap: 8px; margin: 15px 0; font-size: 12px; color: var(--text-secondary); }
+.canvas-workshop-dialog input, .canvas-workshop-dialog textarea, .canvas-workshop-dialog select { width: 100%; min-width: 0; box-sizing: border-box; color: var(--text-primary); background: var(--surface-inset, #11151c); border: 1px solid var(--border-strong); border-radius: 8px; padding: 10px; }
+.canvas-workshop-dialog textarea { resize: vertical; }
+.canvas-workshop-dialog footer { justify-content: flex-end; margin-top: 20px; font-size: 12px; }
+.canvas-workshop-dialog footer a { color: var(--accent-hover); margin-right: auto; }
+.canvas-workshop-intro { color: var(--text-secondary); font-size: 12px; line-height: 1.8; }
+.canvas-workshop-error { color: var(--danger); font-size: 12px; line-height: 1.7; }
+.canvas-workshop-error button { margin-left: 8px; }
+.canvas-workshop-search { display: flex; gap: 10px; align-items: center; margin: 18px 0; }
+.canvas-workshop-search select { max-width: 130px; }
+.canvas-workshop-sources { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
+.canvas-workshop-sources button[aria-pressed="true"] { color: var(--accent-hover); border-color: var(--accent); background: var(--accent-subtle, #202b41); }
+.canvas-workshop-filters { display: flex; align-items: center; flex: 0 0 auto; gap: 12px; margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--border-subtle); border-radius: 10px; background: var(--surface-inset); }
+.canvas-workshop-filters label { display: flex; align-items: center; flex: 0 1 300px; min-width: 0; gap: 10px; margin: 0; }
+.canvas-workshop-filters label > span { flex-shrink: 0; }
+.canvas-workshop-filters select { padding: 8px; }
+.canvas-workshop-filter-summary { flex: 1; color: var(--text-secondary); font-size: 11px; line-height: 1.6; }
+.canvas-workshop-filters > button { flex-shrink: 0; font-size: 11px; }
+.canvas-workshop-empty { padding: 16px; border: 1px dashed var(--border-subtle); border-radius: 10px; }
+.canvas-workshop-empty > p { margin: 0 0 10px; }
+.canvas-workshop-empty > p:last-child { margin-bottom: 0; }
+.canvas-workshop-notice { flex: 0 0 auto; margin: 0 0 10px; color: var(--accent-hover); font-size: 12px; line-height: 1.6; }
+.canvas-workshop-prompt-body { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; line-height: 1.8; color: var(--text-primary); }
+.canvas-workshop-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 18px; }
+.canvas-workshop-list { display: grid; align-content: start; gap: 8px; max-height: 340px; overflow: auto; }
+.canvas-workshop-list button { display: grid; justify-content: stretch; gap: 6px; text-align: left; padding: 14px; }
+.canvas-workshop-list button[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-subtle, #202b41); }
+.canvas-workshop-list :is(span,small) { font-size: 11px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.canvas-workshop-list strong { font-size: 13px; overflow-wrap: anywhere; }
+.canvas-workshop-list p, .canvas-workshop-detail p { font-size: 12px; line-height: 1.8; color: var(--text-secondary); overflow-wrap: anywhere; }
+.canvas-workshop-detail { padding: 18px; border: 1px solid var(--border-subtle); border-radius: 12px; overflow-wrap: anywhere; }
+.canvas-workshop-detail dl { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; font-size: 12px; }
+.canvas-workshop-detail dd { margin: 0; text-align: right; }
+.canvas-arrange-control { position: relative; }
+.canvas-arrange-menu { position: absolute; top: calc(100% + 8px); right: 0; z-index: 120; min-width: 180px; padding: 8px; background: var(--surface-floating-strong); border: 1px solid var(--border-strong); border-radius: 10px; box-shadow: var(--shadow-menu); }
+.canvas-arrange-menu strong { display: block; padding: 5px 8px 9px; color: var(--text-secondary); font-size: 11px; }
+.canvas-arrange-menu button { display: flex; width: 100%; padding: 8px; color: var(--text-primary); border: 0; border-radius: 6px; background: transparent; text-align: left; font-size: 12px; }
+.canvas-arrange-menu button:hover { background: var(--surface-hover); }
+.canvas-context-menu { max-height: min(70dvh, 500px); overflow-y: auto; }
+.canvas-context-menu .canvas-context-related { border-bottom: 1px solid var(--border-subtle); padding-bottom: 5px; margin-bottom: 3px; }
+.canvas-context-related summary { padding: 8px; cursor: pointer; color: var(--text-primary); font-size: 12px; }
+.canvas-context-related button { width: 100%; }
+@media (max-width: 620px) { .canvas-workshop-backdrop { padding: 10px; } .canvas-workshop-dialog { padding: 16px; max-height: calc(100dvh - 20px); } .canvas-workshop-content { grid-template-columns: minmax(0, 1fr); } .canvas-workshop-list { max-height: 190px; } .canvas-workshop-search { flex-wrap: wrap; } .canvas-workshop-search input { flex: 1; } .canvas-workshop-dialog footer { flex-wrap: wrap; } }
+
+.wf-group-controls { display: flex; align-items: center; gap: 8px; padding: 0 12px; }
+.wf-group-controls .wf-model { flex: 1; min-width: 0; margin: 0; }
+.wf-group-select { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-hover); color: var(--text-primary); font-size: 11px; cursor: pointer; }
+.wf-group-select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.canvas-workshop-dialog.is-library { box-sizing: border-box; display: flex; flex-direction: column; width: min(1120px, 100%); height: min(900px, calc(100dvh - 40px)); min-height: 0; overflow: hidden; }
+.canvas-workshop-dialog.is-library .canvas-workshop-content { flex: 1; min-height: 0; grid-template-columns: minmax(190px, 250px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); align-items: stretch; overflow: hidden; }
+.canvas-workshop-dialog.is-library .canvas-workshop-list { min-height: 0; max-height: none; overflow-y: auto; overscroll-behavior: contain; }
+.canvas-workshop-dialog.is-library .canvas-workshop-detail { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 0; overflow: hidden; }
+.canvas-workshop-dialog.is-library .canvas-workshop-detail h3 { overflow-wrap: anywhere; }
+.canvas-workshop-dialog.is-library .xm-workshop-node-list-heading > label { margin: 0; }
+.canvas-workshop-dialog.is-library .xm-workshop-node-list-heading > input { width: auto; padding: 7px 9px; }
+.canvas-workshop-dialog.is-library .xm-workshop-graph-toolbar button { padding: 4px 7px; font-size: 11px; }
+.canvas-workshop-dialog.is-library .xm-workshop-node-list > li > button { padding: 11px; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; }
+.canvas-workshop-dialog.is-library .xm-workshop-node-preparation p, .canvas-workshop-dialog.is-library .xm-workshop-readiness-summary p { font-size: 11px; margin: 0; }
+/* Only the library owns a bounded split view; save/rename forms keep their normal scrolling. */
+.canvas-workshop-dialog.is-library > header { flex: 0 0 auto; margin-bottom: 8px; }
+.canvas-workshop-dialog.is-library > .canvas-workshop-intro { flex: 0 0 auto; margin: 0 0 10px; }
+.canvas-workshop-dialog.is-library > .canvas-workshop-search { flex: 0 0 auto; margin: 0 0 12px; }
+.canvas-workshop-dialog.is-library > .canvas-workshop-error { flex: 0 0 auto; max-height: 64px; overflow-y: auto; margin: 0 0 10px; }
+.canvas-workshop-dialog.is-library > footer { flex: 0 0 auto; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-subtle); }
+.canvas-workshop-detail-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px; }
+.canvas-workshop-detail-scroll:focus-visible { outline: 2px solid var(--accent-hover); outline-offset: -3px; }
+.canvas-workshop-item-kind { font-size: 11px; color: var(--accent-hover); }
+.canvas-workshop-item-actions { display: flex; flex: 0 0 auto; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-top: 1px solid var(--border-subtle); background: var(--surface-floating-strong); }
+.canvas-workshop-item-actions > .canvas-workshop-intro { min-width: 0; margin: 0; font-size: 11px; }
+.canvas-workshop-item-actions > button { flex-shrink: 0; }
+.canvas-workshop-dialog.is-library .canvas-workshop-detail > p { margin: 16px; }
+@media (max-width: 760px) {
+  .canvas-workshop-dialog.is-library .canvas-workshop-content { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(72px, 25%) minmax(0, 1fr); gap: 10px; }
+  .canvas-workshop-dialog.is-library .canvas-workshop-list { max-height: none; }
+  .canvas-workshop-detail-scroll { padding: 12px; }
+  .canvas-workshop-item-actions { flex-wrap: wrap; gap: 7px; padding: 10px 12px; }
+  .canvas-workshop-item-actions > .canvas-workshop-intro { flex: 1 1 160px; }
+}
+@media (max-width: 620px) {
+  .canvas-workshop-dialog.is-library { height: calc(100dvh - 20px); }
+  .canvas-workshop-filters { flex-wrap: wrap; gap: 8px; padding: 8px; margin-bottom: 8px; }
+  .canvas-workshop-filters label { flex: 1 1 100%; }
+  .canvas-workshop-filters .canvas-workshop-filter-summary { min-width: 140px; }
+  .canvas-workshop-dialog.is-library > .canvas-workshop-search { gap: 6px; margin-bottom: 8px; }
+  .canvas-workshop-dialog.is-library > footer { gap: 6px; margin-top: 8px; padding-top: 8px; }
+  .canvas-workshop-dialog.is-library > footer > button { padding: 7px 8px; }
+}
+
+.canvas-workshop-transfer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.canvas-workshop-transfer-actions button { flex: 1; }
+
+.canvas-workshop-transfer-overlay .xm-community-backdrop { z-index: 240; }
+.canvas-workshop-transfer-overlay .xm-transfer-banner { position: fixed; z-index: 240; top: 24px; left: 50%; transform: translateX(-50%); max-width: calc(100vw - 32px); width: 520px; box-sizing: border-box; color: #ead5b6; background: #252014; box-shadow: 0 15px 50px #0008; }

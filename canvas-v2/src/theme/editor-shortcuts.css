@@ -1,0 +1,41 @@
+.canvas-navigation-tools .canvas-shortcut-trigger,
+.canvas-client .canvas-navigation-tools .canvas-shortcut-trigger {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 9px;
+  font-size: 11px;
+}
+.canvas-shortcut-backdrop { position: fixed; inset: 0; z-index: 4000; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgb(0 0 0 / .56); }
+.canvas-shortcut-dialog { display: flex; flex-direction: column; width: min(780px, 100%); max-height: calc(100dvh - 40px); overflow: hidden; color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid var(--border-strong); border-radius: 16px; box-shadow: var(--shadow-modal); font-size: 12px; line-height: 1.5; }
+.canvas-shortcut-dialog > header { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 24px 0; }
+.canvas-shortcut-eyebrow { color: var(--text-muted); font-size: 11px; }
+.canvas-shortcut-dialog h2 { margin: 4px 0 0; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+.canvas-shortcut-close { display: grid; width: 32px; height: 32px; flex-shrink: 0; place-items: center; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: 8px; cursor: pointer; }
+.canvas-shortcut-close:hover { color: var(--text-primary); background: var(--surface-hover); }
+.canvas-shortcut-description { flex-shrink: 0; margin: 12px 24px 18px; color: var(--text-secondary); }
+.canvas-shortcut-content { overflow: auto; min-height: 0; padding: 0 24px 20px; overscroll-behavior: contain; }
+.canvas-shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 32px; }
+.canvas-shortcut-grid h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.canvas-shortcut-grid p { margin: 5px 0 10px; color: var(--text-muted); font-size: 11px; }
+.canvas-shortcut-grid dl { display: grid; gap: 2px; margin: 0; }
+.canvas-shortcut-grid dl > div { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 32px; border-bottom: 1px solid var(--border-subtle); }
+.canvas-shortcut-grid dt { color: var(--text-secondary); }
+.canvas-shortcut-grid dd { display: flex; flex-shrink: 0; gap: 3px; margin: 0; }
+.canvas-shortcut-dialog kbd { display: inline-block; padding: 2px 5px; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 4px; font: inherit; font-size: 10px; white-space: nowrap; }
+.canvas-shortcut-grid .canvas-shortcut-tip { margin-top: 15px; line-height: 1.7; }
+.canvas-shortcut-dialog > footer { display: flex; flex-shrink: 0; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 24px; color: var(--text-muted); border-top: 1px solid var(--border-subtle); font-size: 11px; }
+.canvas-shortcut-trigger:focus-visible,
+.canvas-shortcut-dialog button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.canvas-shortcut-content:focus-visible { outline: 1px solid var(--focus); outline-offset: -3px; }
+@media (max-width: 660px) {
+  .canvas-shortcut-backdrop { padding: 12px; }
+  .canvas-shortcut-dialog { max-height: calc(100dvh - 24px); }
+  .canvas-shortcut-dialog > header { padding: 18px 18px 0; }
+  .canvas-shortcut-description { margin-right: 18px; margin-left: 18px; }
+  .canvas-shortcut-content { padding: 0 18px 18px; }
+  .canvas-shortcut-grid { grid-template-columns: minmax(0, 1fr); gap: 22px; }
+  .canvas-shortcut-dialog > footer { padding: 12px 18px; }
+}

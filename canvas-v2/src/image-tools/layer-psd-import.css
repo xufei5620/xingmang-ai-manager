@@ -1,0 +1,42 @@
+.layer-psd-import-backdrop { position: fixed; inset: 0; z-index: 1600; display: grid; place-items: center; padding: 20px; background: #070b0fd9; backdrop-filter: blur(6px); }
+.layer-psd-import-dialog { width: min(900px, 100%); max-height: calc(100dvh - 40px); min-height: 0; display: flex; flex-direction: column; color: #dce5e7; background: #172126; border: 1px solid #42565e; border-radius: 14px; box-shadow: 0 24px 90px #0009; outline: none; }
+.layer-psd-import-dialog > header, .layer-psd-import-dialog > footer { display: flex; flex: none; align-items: center; gap: 12px; padding: 16px 20px; }
+.layer-psd-import-dialog > header { justify-content: space-between; border-bottom: 1px solid #33464f; }
+.layer-psd-import-dialog h2 { display: flex; align-items: center; gap: 9px; margin: 5px 0 0; font-size: 18px; }
+.layer-psd-import-dialog header span { color: #95a9b0; font-size: 11px; }
+.layer-psd-import-dialog button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px; border: 1px solid #455b63; border-radius: 7px; padding: 7px 11px; color: #dbe8eb; background: #24343b; font: inherit; font-size: 12px; cursor: pointer; }
+.layer-psd-import-dialog button:hover { background: #31454d; }
+.layer-psd-import-dialog button:disabled { opacity: .5; cursor: default; }
+.layer-psd-import-dialog button:focus-visible { outline: 2px solid #a7ddc6; outline-offset: 3px; }
+.layer-psd-import-dialog .is-primary { color: #13251f; background: #acdcca; border-color: #acdcca; }
+.layer-psd-import-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 20px; }
+.layer-psd-import-body > p { margin: 0 0 14px; color: #acbec5; font-size: 12px; line-height: 1.7; }
+.layer-psd-import-file { display: flex; align-items: center; gap: 12px; margin: 16px 0; }
+.layer-psd-import-file > span { min-width: 0; overflow-wrap: anywhere; font-size: 12px; color: #cedbe0; }
+.layer-psd-import-body .layer-psd-import-limits { color: #8ea4ad; font-size: 11px; }
+.layer-psd-import-body .layer-psd-import-status { display: flex; align-items: center; gap: 8px; color: #bbdfcf; }
+.layer-psd-import-body .layer-psd-import-error { color: #ffc5b8; padding: 10px; border: 1px solid #a66e5b80; border-radius: 6px; background: #7a39242a; }
+.layer-psd-import-facts { display: flex; align-items: center; flex-wrap: wrap; gap: 13px; margin: 18px 0 12px; font-size: 12px; }
+.layer-psd-import-facts > span { color: #a5bac2; }
+.layer-psd-import-preview-layout { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(210px, 1fr); gap: 16px; align-items: start; }
+.layer-psd-import-preview, .layer-psd-import-thumb { position: relative; isolation: isolate; overflow: hidden; background-color: #39474e; background-image: conic-gradient(#29363c 25%, transparent 0 50%, #29363c 0 75%, transparent 0); background-size: 16px 16px; border-radius: 7px; }
+.layer-psd-import-preview { width: min(100%, calc(320px * var(--layer-psd-ratio, 1))); margin: auto; }
+.layer-psd-import-composite { position: absolute; inset: 0; isolation: isolate; }
+.layer-psd-import-composite > img { position: absolute; object-fit: fill; pointer-events: none; }
+.layer-psd-import-layers { list-style: none; margin: 0; padding: 0; max-height: 360px; overflow: auto; }
+.layer-psd-import-layers li { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #33454d; }
+.layer-psd-import-thumb { flex: none; display: grid; place-items: center; width: 48px; height: 42px; }
+.layer-psd-import-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.layer-psd-import-layers li > div { min-width: 0; display: grid; gap: 5px; }
+.layer-psd-import-layers strong { font-size: 12px; overflow-wrap: anywhere; }
+.layer-psd-import-layers small { color: #9eb2ba; font-size: 10px; }
+.layer-psd-import-layers li.layer-psd-import-group { display: block; padding-left: 10px; border-left: 2px solid #5b8178; }
+.layer-psd-import-group > div > strong { display: flex; align-items: center; gap: 6px; color: #c4e3d4; }
+.layer-psd-import-group > ol { list-style: none; margin: 7px 0 0; padding: 0 0 0 7px; }
+.layer-psd-import-warnings { margin: 15px 0 0; padding-left: 18px; color: #d4c4a5; font-size: 11px; line-height: 1.8; }
+.layer-psd-import-dialog > footer { border-top: 1px solid #33464f; justify-content: flex-end; flex-wrap: wrap; }
+.layer-psd-import-dialog > footer small { flex: 1; color: #92a9b0; font-size: 11px; min-width: 180px; }
+.layer-psd-import-spin { flex: none; animation: layer-psd-import-spin 1s linear infinite; }
+@keyframes layer-psd-import-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .layer-psd-import-spin { animation: none; } }
+@media (max-width: 600px) { .layer-psd-import-backdrop { padding: 10px; } .layer-psd-import-dialog { max-height: calc(100dvh - 20px); } .layer-psd-import-preview-layout { grid-template-columns: 1fr; } .layer-psd-import-layers { max-height: 220px; } .layer-psd-import-dialog > footer small { flex-basis: 100%; } }

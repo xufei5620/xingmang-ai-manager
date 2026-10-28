@@ -14,6 +14,8 @@ export interface MediaNodeDimensions {
   height: number
 }
 
+export const maximumMediaAssetNodeEdge = 480
+
 function validRatioPart(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0
 }
@@ -186,18 +188,28 @@ export function mediaAssetNodeDimensions(
   }
   let width = kind === 'video' ? 320 : 280
   let height = Math.round(width / ratio)
-  if (height > 480) {
-    height = 480
+  if (height > maximumMediaAssetNodeEdge) {
+    height = maximumMediaAssetNodeEdge
     width = Math.round(height * ratio)
   } else if (height < 140) {
     height = 140
     width = Math.round(height * ratio)
-    if (width > 480) {
-      width = 480
+    if (width > maximumMediaAssetNodeEdge) {
+      width = maximumMediaAssetNodeEdge
       height = Math.round(width / ratio)
     }
   }
   return { width: Math.max(96, width), height: Math.max(80, height) }
+}
+
+/** Reserve only placement space until native metadata arrives. Never persist
+ * this bound as image metadata or change the visible placeholder dimensions.
+ */
+export function unresolvedMediaPlacementDimensions(asset: CanvasAssetSummary | AssetRef): MediaNodeDimensions | null {
+  const kind = mediaKind(asset)
+  if (kind !== 'image' && kind !== 'video') return null
+  if ('width' in asset && validRatioPart(asset.width) && 'height' in asset && validRatioPart(asset.height)) return null
+  return { width: maximumMediaAssetNodeEdge, height: maximumMediaAssetNodeEdge }
 }
 
 /** React Flow 的外层节点也必须为竖屏结果预留真实高度，否则内部 video 会被裁切。 */

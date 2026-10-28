@@ -1,0 +1,17 @@
+.video-candidate-panel { position: absolute; z-index: 8; right: 8px; bottom: 8px; left: 8px; padding: 5px; color: var(--text-secondary); background: var(--surface-floating); border: 1px solid var(--border-subtle); border-radius: 8px; box-shadow: var(--shadow-menu); }
+.video-candidate-strip { display: flex; gap: 5px; min-width: 0; padding: 1px; overflow-x: auto; overscroll-behavior: contain; }
+.video-candidate-panel .video-candidate-tile { position: relative; display: grid; place-items: center; flex: 0 0 44px; width: 44px; height: 31px; min-height: 0; padding: 0; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 5px; color: var(--text-secondary); background: var(--surface-media); }
+.video-candidate-panel .video-candidate-tile.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.video-candidate-tile video { display: block; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.video-candidate-tile > span:not(.media-unavailable) { position: absolute; right: 2px; bottom: 1px; min-width: 12px; padding-inline: 2px; border-radius: 3px; color: white; background: #111b; font-size: 9px; line-height: 12px; }
+.video-candidate-tile .media-unavailable { width: 100%; height: 100%; min-height: 0; padding: 0; font-size: 0; }
+.video-candidate-tile .media-unavailable > span { display: none; }
+.video-candidate-footer { display: flex; align-items: center; justify-content: space-between; gap: 3px; min-width: 0; min-height: 22px; margin-top: 3px; }
+.video-candidate-footer > small { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; line-height: 16px; }
+.video-candidate-actions { display: flex; flex: 0 0 auto; gap: 2px; }
+.video-candidate-panel .video-candidate-actions button { display: grid; place-items: center; width: 22px; height: 22px; min-height: 0; padding: 0; border: 1px solid transparent; border-radius: 5px; color: var(--text-secondary); background: transparent; }
+.video-candidate-panel button:hover { background: var(--surface-3); color: var(--text-primary); }
+.video-candidate-panel button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.video-candidate-panel button:disabled { opacity: .45; cursor: not-allowed; }
+.wf-editor-node.has-video-candidates .wf-media-state-badges { bottom: 85px; }
+.wf-editor-node.has-video-candidates .wf-media-failure { bottom: 85px; max-height: calc(100% - 94px); }

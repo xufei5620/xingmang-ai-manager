@@ -1,3 +1,5 @@
+import { resolveCanvasAssetDisplayUrl } from '../asset-display-url'
+
 /**
  * Cover frames for videos the platform could not thumbnail.
  *
@@ -120,7 +122,7 @@ export async function captureVideoCoverFrame(src: string, timeoutMs = 10_000): P
         }, { once: true })
         video.currentTime = seekTo
       }, { once: true })
-      video.src = src
+      video.src = resolveCanvasAssetDisplayUrl(src) ?? ''
     })
   } finally {
     cleanup()

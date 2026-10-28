@@ -206,9 +206,10 @@ export function createMockExecutors(delayMs = 600): Record<NodeKind, NodeExecuto
     }
   const unsupported: NodeExecutor = async () => { throw new Error('该节点尚未接入可执行能力') }
   return {
-    text, image, video, prompt: text,
+    text, image, video, prompt: text, 'text-generate': unsupported,
     'image-input': unsupported, 'video-input': unsupported, 'audio-input': unsupported,
     'image-generate': image, 'image-edit': image, 'video-generate': video,
+    'image-crop': unsupported, 'image-collage': unsupported, 'image-grid-split': unsupported, 'image-tile': unsupported, 'image-layer': unsupported, 'image-compare': unsupported, 'image-panorama': unsupported,
     'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
     group: unsupported, note: unsupported,
     unknown: unsupported,
