@@ -494,6 +494,45 @@ test('stops and warns when picking a clip back up turns out the submission went 
   await page.close()
 })
 
+// #1489 N2：结果不明的那一段确认了再付一次，这一单却没交出去就停下了、或者被服务端拒了：上一次那一单照样可能扣了钱，提醒不能丢。
+test('keeps the warning when paying again for an unanswered clip does not go through', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '森林', { title: '森林', shots: [{ prompt: '树影' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [clip] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate(([requestId, message]) => window.videoStudioPage.failClip(requestId, message), [clip.requestId, unclear])
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  const confirm = page.getByTestId('video-confirm')
+  async function payAgain() {
+    await page.getByTestId('video-shot-generate-0').click()
+    await confirm.getByTestId('video-confirm-unconfirmed').waitFor()
+    await confirm.getByRole('checkbox').check()
+    await confirm.getByRole('button', { name: '开始生成' }).click()
+    await page.waitForFunction((requestId) => window.videoStudioPage.pendingClips().some((pending) => pending.requestId === requestId), clip.requestId)
+  }
+
+  // 还没交给服务端就点了停止：回到失败加那句提醒，不是「还没生成」。
+  await payAgain()
+  await page.evaluate((requestId) => window.videoStudioPage.unsent(requestId), clip.requestId)
+  await page.getByTestId('video-generate-stop').click()
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+
+  // 这回被服务端拒了：上屏的是这一回的原因，再生成时确认框照样提醒可能多扣。
+  await payAgain()
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '这次的描述没通过安全审核，换个说法再试'), clip.requestId)
+  await page.getByTestId('video-shot-0').getByText('这次的描述没通过安全审核，换个说法再试').waitFor()
+  await page.reload()
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByTestId('video-confirm-unconfirmed').waitFor()
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // #1489 R28-4：模型表还没读完就点了生成，读完以后记着的模型换成了默认的；排在后面的那一段照客户确认时的模型出，不悄悄换。
 test('makes every queued clip with the model the person confirmed, even if the model list settles on another one meanwhile', async () => {
   const { page, errors } = await openStudio()

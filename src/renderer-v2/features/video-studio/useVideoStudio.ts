@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { isAiVideoUnconfirmedSubmission } from '../../../../electron/ai-video-submission'
+import { aiVideoUnconfirmedSubmissionMessage, isAiVideoUnconfirmedSubmission } from '../../../../electron/ai-video-submission'
 import type { AiChatGroupSummary, AiVideoClip, XingmangApi } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -80,14 +80,24 @@ function loadProject(storage: VideoStudioStorage | null, scope: string): VideoSt
   return createVideoStudioProject()
 }
 
+/** 只留镜头本身和上一段片段，这一次出片的请求号、进度和报错都去掉。 */
+function shotWithoutRun(shot: VideoStudioShot) {
+  const { requestId: _requestId, unconfirmed: _unconfirmed, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
+  return rest
+}
+
 /**
  * 片段停下或失败以后回到什么样：有上一段就还是「已生成」，没有就是「没生成」。失败的留着请求号：
  * 「暂时查不到进度」这类失败时服务端多半还在出，下次打开页面拿它接回来；真失败了主进程回 null，照样回到「没生成」。
  * 提交结果不明的（主进程那句「提交结果不明确」）另外记下 unconfirmed：钱可能扣了、却接不回来，重开也照样提醒。
+ * 沿用请求号重新提交的那一单没交出去就停下、或者被服务端明确拒掉，上一次那一单照样可能扣了钱，这个提醒也不丢。
  */
 function settleShot(shot: VideoStudioShot, error?: string): VideoStudioShot {
-  const { requestId, unconfirmed: _unconfirmed, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
-  if (error) return { ...rest, ...(requestId ? { requestId, ...(isAiVideoUnconfirmedSubmission(error) ? { unconfirmed: true } : {}) } : {}), status: 'failed', error }
+  const rest = shotWithoutRun(shot)
+  const { requestId } = shot
+  const unconfirmed = Boolean(requestId) && (shot.unconfirmed === true || (error !== undefined && isAiVideoUnconfirmedSubmission(error)))
+  const message = error || (unconfirmed ? aiVideoUnconfirmedSubmissionMessage : '')
+  if (message) return { ...rest, ...(requestId ? { requestId } : {}), ...(unconfirmed ? { unconfirmed: true } : {}), status: 'failed', error: message }
   return { ...rest, status: rest.clip ? 'done' : 'idle' }
 }
 
@@ -270,7 +280,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (!alive()) return
       if (!clip && onMissing) { next = onMissing; return }
       commit((current) => {
-        const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId === requestId ? settleShot(clip ? { ...item, clip } : item) : item)
+        const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
+          : clip ? { ...shotWithoutRun(item), clip, status: 'done' } : settleShot(item))
         return clip ? { ...updated, exported: undefined } : updated
       })
     } catch (reason) {
@@ -304,14 +315,16 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   }
   /**
    * 新提交一单：这一步开始花钱。按确认时的那份设置出（QueuedShot）。上一次提交结果不明的那一镜沿用原来的请求号：
-   * MiniMax 拿它当去重的凭据，服务端其实收下过那一单时不会再出一份。
+   * MiniMax 拿它当去重的凭据，服务端其实收下过那一单时不会再出一份。在出的这段时间 unconfirmed 还留在这一镜上
+   * （不存，见 project.ts），这一单没出成时那句提醒跟着回来。
    */
   function submitShot(shotId: string, settings: VideoStudioSettings, requestId = createVideoStudioId()) {
     const shot = projectRef.current.shots.find((item) => item.id === shotId)
     if (!shot) return
+    const unconfirmed = shot.unconfirmed === true && shot.requestId === requestId
     // 沿用的请求号这回是新交出去的一单，停下时要去停它，不能还按「在接回的」跳过。
     billed.current.delete(requestId)
-    commit((current) => updateVideoStudioShot(current, shotId, (item) => ({ ...settleShot(item), status: 'generating', requestId })))
+    commit((current) => updateVideoStudioShot(current, shotId, (item) => ({ ...shotWithoutRun(item), status: 'generating', requestId, ...(unconfirmed ? { unconfirmed } : {}) })))
     void awaitClip(shotId, requestId, () => bridge.generateAiVideo(buildVideoStudioClipRequest(settings, shot, requestId)))
   }
   /**

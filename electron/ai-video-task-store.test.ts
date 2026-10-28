@@ -229,8 +229,10 @@ describe('AiVideoTaskStore', () => {
     const { root, store } = fixture()
     const now = () => new Date('2026-10-28T00:00:00.000Z')
     const dated = new AiVideoTaskStore({ rootDirectory: root, now })
-    await dated.markUnconfirmed(7, 'request-1')
+    await expect(dated.markUnconfirmed(7, 'request-1')).resolves.toBe(false)
     await dated.markUnconfirmed(7, 'request-2')
+    // Sent again under the same id: the earlier, unclear attempt is reported so it is not forgotten.
+    await expect(dated.markUnconfirmed(7, 'request-2')).resolves.toBe(true)
 
     const reopened = new AiVideoTaskStore({ rootDirectory: root })
     await expect(reopened.findUnconfirmed(7, 'request-1')).resolves.toEqual({ requestId: 'request-1', submittedAt: '2026-10-28T00:00:00.000Z' })

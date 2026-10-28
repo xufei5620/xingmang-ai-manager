@@ -26,6 +26,7 @@ export interface VideoStudioShot {
    * 上一次提交没等到服务端的答复（回包丢了、服务端出错、提交到一半点了停止）：那一单可能已经扣了钱，
    * 却没有任务号，接不回来。跟请求号一起存下，重开以后照样是「没生成出来」加主进程那句提醒，
    * 不能变回「还没生成」；再生成时确认框另外说清可能多扣一次，并沿用这个请求号（#1489 N2）。
+   * 沿用请求号重新出着的时候也留着，只是不存；出成了才去掉。
    */
   unconfirmed?: boolean
   // 下面几项只在这一次打开页面时有，不存。
@@ -291,7 +292,8 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     title: project.title,
     shots: project.shots.map((shot) => ({
       id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.clip ? { clip: shot.clip } : {}),
-      ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed ? { unconfirmed: true } : {}) } : {}),
+      // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
+      ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
     })),
     ...(project.exported ? { exported: project.exported } : {}),
   }

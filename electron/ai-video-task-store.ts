@@ -331,15 +331,22 @@ export class AiVideoTaskStore {
     })
   }
 
-  /** About to send a paid request: remember it until the task id comes back, in case it never does. */
-  async markUnconfirmed(userId: number, requestId: string): Promise<void> {
+  /**
+   * About to send a paid request: remember it until the task id comes back, in
+   * case it never does. Answers whether an earlier attempt under the same id was
+   * already unclear: the video studio resubmits such a shot under its old id,
+   * and that earlier attempt may have been paid for whatever becomes of this one.
+   */
+  async markUnconfirmed(userId: number, requestId: string): Promise<boolean> {
     const entry = readUnconfirmed({ requestId, submittedAt: this.now().toISOString() })
     if (!entry) throw new Error('AI 视频请求标识格式错误')
     return this.enqueue(userId, async () => {
       const state = await this.read(userId)
+      const earlier = state.unconfirmed.some((existing) => existing.requestId === requestId)
       state.unconfirmed = [entry, ...state.unconfirmed.filter((existing) => existing.requestId !== requestId)]
         .slice(0, MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS)
       await this.write(userId, state)
+      return earlier
     })
   }
 

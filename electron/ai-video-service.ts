@@ -729,9 +729,13 @@ export function createAiVideoService(options: {
       // Written before the POST so that any way of losing the reply, the app
       // being killed included, still leaves "sent, outcome unknown" behind for
       // resumeRequest. Losing the write only loses that warning, never the clip,
-      // so it does not hold the request up.
-      const forgetSubmission = () => options.tasks.clearUnconfirmed(credential.userId, requestId).catch(() => undefined)
-      await options.tasks.markUnconfirmed(credential.userId, requestId).catch(() => undefined)
+      // so it does not hold the request up. A record left by an earlier unclear
+      // attempt under the same id stays even if this one never gets through:
+      // that attempt may still have been paid for.
+      const earlierUnclear = await options.tasks.markUnconfirmed(credential.userId, requestId).catch(() => true)
+      const forgetSubmission = async () => {
+        if (!earlierUnclear) await options.tasks.clearUnconfirmed(credential.userId, requestId).catch(() => undefined)
+      }
       if (operation.controller.signal.aborted) {
         await forgetSubmission()
         throw operation.controller.signal.reason

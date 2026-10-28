@@ -81,7 +81,11 @@ function setup(
     // that only care about the task being gone keep asserting on remove.
     finish: vi.fn(async (task: Pick<StoredAiVideoTask, 'userId' | 'taskId'>, _asset: FinishedAiVideoAsset) => remove(task.userId, task.taskId)),
     findFinished: vi.fn(async (_userId: number, _requestId: string): Promise<FinishedAiVideoTask | null> => null),
-    markUnconfirmed: vi.fn(async (_userId: number, requestId: string) => { unconfirmed.add(requestId) }),
+    markUnconfirmed: vi.fn(async (_userId: number, requestId: string) => {
+      const earlier = unconfirmed.has(requestId)
+      unconfirmed.add(requestId)
+      return earlier
+    }),
     clearUnconfirmed: vi.fn(async (_userId: number, requestId: string) => { unconfirmed.delete(requestId) }),
     findUnconfirmed: vi.fn(async (_userId: number, requestId: string) => (
       unconfirmed.has(requestId) ? { requestId, submittedAt: '2026-10-28T00:00:00.000Z' } : null
@@ -584,6 +588,7 @@ describe('createAiVideoService', () => {
     const stopped = setup(neverSent)
     vi.mocked(stopped.tasks.markUnconfirmed).mockImplementationOnce(async () => {
       expect(stopped.service.cancel(41, 'shot-stopped-early')).toEqual({ canceled: true, mayStillComplete: false })
+      return false
     })
     await expect(stopped.service.generate(41, {
       requestId: 'shot-stopped-early', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
@@ -591,6 +596,26 @@ describe('createAiVideoService', () => {
     expect(neverSent).not.toHaveBeenCalled()
     expect(stopped.tasks.clearUnconfirmed).toHaveBeenCalledWith(7, 'shot-stopped-early')
     await expect(stopped.service.resumeRequest(41, 7, 'shot-stopped-early')).resolves.toBeNull()
+  })
+
+  it('keeps an earlier unclear attempt on record when its resubmission is stopped early or turned down', async () => {
+    const dropped = vi.fn(async () => { throw new TypeError('socket reset') }) as unknown as typeof fetch
+    const { service, tasks } = setup(dropped)
+    const input = { requestId: 'shot-retried', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5' }
+    await expect(service.generate(41, input)).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+
+    vi.mocked(tasks.markUnconfirmed).mockImplementationOnce(async () => {
+      expect(service.cancel(41, 'shot-retried')).toEqual({ canceled: true, mayStillComplete: false })
+      return true
+    })
+    await expect(service.generate(41, input)).rejects.toThrow('已取消视频请求')
+    expect(dropped).toHaveBeenCalledOnce()
+    await expect(service.resumeRequest(41, 7, 'shot-retried')).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+
+    vi.mocked(dropped).mockImplementationOnce(async () => jsonResponse({ error: { message: 'prompt rejected by moderation' } }, 400))
+    await expect(service.generate(41, input)).rejects.toThrow()
+    expect(tasks.clearUnconfirmed).not.toHaveBeenCalled()
+    await expect(service.resumeRequest(41, 7, 'shot-retried')).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
   })
 
   it('still sends the paid request when the unclear-request record cannot be written', async () => {

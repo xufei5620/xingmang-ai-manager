@@ -182,6 +182,12 @@ describe('video studio project', () => {
     expect(videoStudioUnconfirmedIndexes(restored!, ['shot-3', 'shot-2', 'shot-1'])).toEqual([0, 1])
     expect(videoStudioUnconfirmedIndexes(restored!, ['shot-3'])).toEqual([])
 
+    // Being paid for again under the same id: reopening picks it back up, and the main process answers for the earlier attempt.
+    const retrying = restoreVideoStudioProject(JSON.parse(JSON.stringify(serializeVideoStudioProject({
+      ...unclear, shots: [{ ...unclear.shots[0], status: 'generating', error: undefined }],
+    }))))
+    expect(retrying?.shots).toEqual([{ id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', requestId: 'lost', status: 'generating' }])
+
     // The mark means nothing without the request it belongs to.
     const orphan = restoreVideoStudioProject({ version: 1, settings: defaultVideoStudioSettings(), title: '', shots: [{ id: 'x', prompt: '一', caption: '', unconfirmed: true }] })
     expect(orphan?.shots).toEqual([{ id: 'x', prompt: '一', caption: '', status: 'idle' }])
