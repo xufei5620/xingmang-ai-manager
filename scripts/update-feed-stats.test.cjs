@@ -818,6 +818,34 @@ test('the check-in section reads one whole day for shares and every day for rate
   assert.doesNotMatch(section, /\| (?:1|2|3|4|5|6|7) \|/)
 })
 
+test('G06: the newest versions each get their own crash, freeze and update-error rates', async () => {
+  const cloudflare = createCloudflare({
+    usage: (filter) => (filter.datetime_geq !== '2026-10-06T12:00:00Z' ? [] : [
+      // 0.2.23: four machine-days. Each row stands for two identical check-ins, so its
+      // counts land twice: two crashes and six freezes between them.
+      usageRow(usagePath({ app: '0.2.23', hangs: 'e~1_s~2' }), 2),
+      usageRow(usagePath({ app: '0.2.23', hangs: 'w~1' }), 2),
+      // 0.2.22: two machine-days, each with one failed update on the way to 0.2.23.
+      usageRow(usagePath({ app: '0.2.22', updates: 'dl~net~1' }), 2),
+      // Older versions fall off the table once three newer ones are there.
+      usageRow(usagePath({ app: '0.2.21' })),
+      usageRow(usagePath({ app: '0.2.19', hangs: 'e~5' })),
+      // A machine whose version could not be read is not a version of its own.
+      usageRow(usagePath({ app: 'x' })),
+    ]),
+  })
+  const report = await collectUpdateFeedStats({ token: TOKEN, days: 2, now, fetchImpl: cloudflare.fetchImpl })
+  const section = report.slice(report.indexOf('### 每版健康数'))
+  assert.ok(report.indexOf('### 每版健康数') > report.indexOf('### 出错和卡住'))
+  assert.match(section, /\| 版本 \| 意外退出（闪退） \| 卡住（窗口没响应、界面卡 2 秒以上） \| 星芒更新出错（检查、下载、安装） \| 样本 \|/)
+  assert.match(section, /\| 0\.2\.23 \| 50\.0 \| 150\.0 \| 0\.0 \| 不到 20 台·天 \|/)
+  assert.match(section, /\| 0\.2\.22 \| 0\.0 \| 0\.0 \| 100\.0 \| 不到 20 台·天 \|/)
+  assert.match(section, /\| 0\.2\.21 \| 0\.0 \| 0\.0 \| 0\.0 \| 不到 20 台·天 \|/)
+  assert.doesNotMatch(section, /0\.2\.19|\| x \|/)
+  assert.ok(section.indexOf('0.2.23') < section.indexOf('0.2.22'))
+  assert.match(section, /旧版天然偏高/)
+})
+
 test('the check-in section says plainly when there is nothing to read or no way to read it', async () => {
   const empty = createCloudflare()
   assert.match(await collectUpdateFeedStats({ token: TOKEN, days: 1, now, fetchImpl: empty.fetchImpl }), /这段时间没有认得出的打卡记录/)

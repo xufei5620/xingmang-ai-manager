@@ -24,6 +24,8 @@ export interface CrashReportEndpoint {
 
 export interface CrashReportFrame {
   filename: string
+  /** What Sentry looks a source map up by. Same value as `filename`. */
+  abs_path: string
   function?: string
   lineno?: number
   colno?: number
@@ -37,6 +39,7 @@ export interface CrashReportEvent {
   level: 'fatal' | 'error'
   logger: string
   release: string
+  dist: string
   environment: string
   tags: Record<string, string>
   contexts: Record<string, Record<string, string | number>>
@@ -56,6 +59,8 @@ export interface CrashReportInput {
 
 export interface CrashReportEnvironment {
   release: string
+  /** Which build of the release this is, see crashReportDist. */
+  dist: string
   environment: string
   homeDirectory: string
   appVersion: string
@@ -146,6 +151,51 @@ function describeError(error: unknown): { type: string; value: string; stack: st
 const framePattern = /^\s*at\s+(?:(.+?)\s+\()?(.+?):(\d+):(\d+)\)?\s*$/
 
 /**
+ * The release every event of this version is filed under. The source maps are
+ * uploaded under the same name (scripts/sentry-sourcemaps.cjs), and an event
+ * whose release differs by a single character gets no maps at all.
+ */
+export function crashReportRelease(version: string): string {
+  return `xingmang-ai-manager@${version}`
+}
+
+/**
+ * The source maps of a release are uploaded once per build (publish-release.yml
+ * `sentry-sourcemaps`), and each build is told apart by this value. Windows,
+ * macOS and the two Linux runners each compile their own copy of the code, so
+ * an event has to name which one produced it for Sentry to pick the right map.
+ * scripts/sentry-sourcemaps.cjs uploads under exactly these names.
+ */
+export function crashReportDist(platform: string, arch: string): string {
+  return `${platform}-${arch}`
+}
+
+// Everything the app ships sits under app.asar (or app.asar.unpacked), and the
+// main window loads its renderer from xingmang://app/, which serves the
+// archive's dist/ directory (security.ts resolvePackagedApplicationFile).
+const packagedArchivePattern = /[\\/]app\.asar(?:\.unpacked)?[\\/](.+)$/i
+const rendererOrigin = 'xingmang://app/'
+
+/**
+ * Rewrites a frame from the packaged app into the address its source map was
+ * uploaded under: `app:///dist-electron/main.js`, `app:///dist/assets/x.js`.
+ * Sentry only applies a map whose address matches the frame exactly, and the
+ * install directory in front of app.asar differs from machine to machine (the
+ * Windows installer lets the customer pick any folder), so the prefix has to go.
+ * Dropping it also keeps the install location out of the report. Anything else
+ * is not ours to map and comes back null.
+ */
+export function resolveCrashFrameUrl(rawFilename: string): string | null {
+  const archived = packagedArchivePattern.exec(rawFilename)
+  if (archived) return `app:///${archived[1].replaceAll('\\', '/')}`
+  if (rawFilename.toLowerCase().startsWith(rendererOrigin)) {
+    const [location] = rawFilename.slice(rendererOrigin.length).split(/[?#]/)
+    return `app:///dist/${location}`
+  }
+  return null
+}
+
+/**
  * Sentry orders frames oldest first, which is the reverse of a V8 stack. Lines
  * that do not parse are dropped rather than guessed at: a half-parsed frame
  * points reviewers at the wrong line, which is worse than one fewer frame.
@@ -156,9 +206,10 @@ export function parseCrashStackFrames(stack: string, homeDirectory: string): Cra
     const match = framePattern.exec(line)
     if (!match) continue
     const rawFilename = match[2]
-    const filename = redactCrashText(rawFilename, homeDirectory)
+    const filename = redactCrashText(resolveCrashFrameUrl(rawFilename) ?? rawFilename, homeDirectory)
     frames.push({
       filename,
+      abs_path: filename,
       ...(match[1] ? { function: redactCrashText(match[1], homeDirectory).slice(0, 200) } : {}),
       lineno: Number(match[3]),
       colno: Number(match[4]),
@@ -189,6 +240,7 @@ export function buildCrashReportEvent(
     level: input.level ?? 'error',
     logger: input.source,
     release: runtime.release,
+    dist: runtime.dist,
     environment: runtime.environment,
     tags: {
       process: input.source,

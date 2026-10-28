@@ -1215,6 +1215,44 @@ function renderUsageRates(usage) {
   return lines
 }
 
+// 每版健康数（商业级差距报告 G06）：最新的几版各算各的，早上的日汇总拿新版和上一版比。比的三样和放量体检
+// （rollout-health.cjs）一样出自每天打卡；那边只在放量期间看，这里天天有。
+const HEALTH_VERSIONS = 3
+const HEALTH_METRICS = [
+  ['意外退出（闪退）', (record) => record.hangs.filter((item) => item.code === 'e')],
+  ['卡住（窗口没响应、界面卡 2 秒以上）', (record) => record.hangs.filter((item) => item.code === 'w' || item.code === 's')],
+  ['星芒更新出错（检查、下载、安装）', (record) => record.updates],
+]
+
+function renderUsageVersions(usage) {
+  const versions = sortVersionsDescending([...new Set(usage.records.map((record) => record.app).filter((app) => app !== null))])
+    .slice(0, HEALTH_VERSIONS)
+  if (!versions.length) return []
+  const lines = [
+    '',
+    '### 每版健康数（每 100 台·天几次）',
+    '',
+    `最新的 ${versions.length} 版各算各的，这段时间的打卡加在一起。新版明显比上一版高，先去 Sentry 看这一版新冒出来的报错。`,
+    '',
+    `| 版本 | ${HEALTH_METRICS.map(([label]) => label).join(' | ')} | 样本 |`,
+    `|---|${HEALTH_METRICS.map(() => '---:').join('|')}|---|`,
+  ]
+  for (const version of versions) {
+    const records = usage.records.filter((record) => record.app === version)
+    const machineDays = sumWeights(records)
+    const rates = HEALTH_METRICS.map(([, itemsOf]) => formatRate(
+      records.reduce((sum, record) => sum + itemsOf(record).reduce((count, item) => count + item.count, 0) * record.weight, 0),
+      machineDays,
+    ))
+    lines.push(`| ${version} | ${rates.join(' | ')} | ${machineDays >= SMALL_SAMPLE ? '够' : `不到 ${SMALL_SAMPLE} 台·天`} |`)
+  }
+  lines.push(
+    '',
+    '- 「星芒更新出错」旧版天然偏高：往新版升的那一步出的错记在旧版头上。闪退和卡住两项才是这一版本身好不好。',
+  )
+  return lines
+}
+
 function renderUsageScope(usage) {
   const lines = [
     '',
@@ -1240,7 +1278,7 @@ function renderUsageSection(usage) {
       + '安装和更新出没出错、卡住几次，不带账号和电脑编号。一天只发成一条是客户端自己保证的，所以一天一条就是一台电脑。'
       + 'Windows 走线路2 的也先发到这里，和上面那几节不一样，数得到。',
   )
-  if (usage.records.length) lines.push(...renderUsageDay(usage), ...renderUsageRates(usage))
+  if (usage.records.length) lines.push(...renderUsageDay(usage), ...renderUsageRates(usage), ...renderUsageVersions(usage))
   else lines.push('', '这段时间没有认得出的打卡记录：0.2.23 还没发出去，或者装了的都关了这一项。')
   lines.push(...renderUsageScope(usage))
   return lines

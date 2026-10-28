@@ -4,6 +4,8 @@ dist-legacy/
 dist-electron/
 dist-native/
 dist-canvas/
+# 发给 Sentry 的对照表（scripts/minify-electron.cjs、stash-renderer-sourcemaps.cjs），不进安装包也不进仓库
+dist-sourcemaps/
 release/
 release-*/
 .project-surgeon.bak.*/

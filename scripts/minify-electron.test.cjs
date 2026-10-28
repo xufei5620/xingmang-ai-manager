@@ -89,3 +89,63 @@ test('an empty directory is an error rather than a silent success', async (t) =>
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   await assert.rejects(() => minifyElectronDirectory(directory), /没有可压缩/)
 })
+
+// G06: the same transform also hands back a map that leads to the .ts, written
+// beside a copy of the minified file outside the directory that gets packaged.
+function compiledWithInlineMap(t) {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-minify-map-')))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const ts = 'export function boom(value: number): number {\n  if (value > 1) {\n    throw new Error(\'boom\')\n  }\n  return value\n}\n'
+  const map = {
+    version: 3,
+    file: 'boom.js',
+    sources: ['../../electron/nested/boom.ts'],
+    sourcesContent: [ts],
+    names: [],
+    // Line-for-line: each output line comes from the same line of the .ts.
+    mappings: 'AAAA;AACA;AACA;AACA;AACA;AACA',
+  }
+  const js = 'function boom(value) {\n  if (value > 1) {\n    throw new Error(\'boom\')\n  }\n  return value\n}\nmodule.exports = { boom }\n'
+  const out = path.join(directory, 'dist-electron')
+  fs.mkdirSync(path.join(out, 'nested'), { recursive: true })
+  fs.writeFileSync(path.join(out, 'nested', 'boom.js'), `${js}//# sourceMappingURL=data:application/json;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}\n`)
+  return { directory, out, maps: path.join(directory, 'dist-sourcemaps', 'dist-electron') }
+}
+
+test('G06: the map is written outside the packaged directory and points back at the .ts', async (t) => {
+  const { out, maps } = compiledWithInlineMap(t)
+  fs.mkdirSync(maps, { recursive: true })
+  fs.writeFileSync(path.join(maps, 'stale.js.map'), '{}')
+
+  assert.equal(await minifyElectronDirectory(out, { sourceMapDirectory: maps }), 1)
+
+  const shipped = fs.readFileSync(path.join(out, 'nested', 'boom.js'), 'utf8')
+  assert.doesNotMatch(shipped, /sourceMappingURL/)
+  assert.deepEqual(fs.readdirSync(path.join(out, 'nested')), ['boom.js'])
+  // Sentry pairs foo.js with foo.js.map, so the copy has to be byte for byte what ships.
+  assert.equal(fs.readFileSync(path.join(maps, 'nested', 'boom.js'), 'utf8'), shipped)
+  assert.equal(fs.existsSync(path.join(maps, 'stale.js.map')), false)
+  const map = JSON.parse(fs.readFileSync(path.join(maps, 'nested', 'boom.js.map'), 'utf8'))
+  assert.deepEqual(map.sources, ['../../electron/nested/boom.ts'])
+  assert.match(map.sourcesContent[0], /throw new Error\('boom'\)/)
+})
+
+test('G06: a file tsc compiled without its inline map stops the build instead of shipping a useless map', async (t) => {
+  const { out, maps } = compiledWithInlineMap(t)
+  fs.writeFileSync(path.join(out, 'plain.js'), 'module.exports = 1\n')
+  await assert.rejects(() => minifyElectronDirectory(out, { sourceMapDirectory: maps }), /plain\.js 没有 tsc 生成的内联 source map/)
+  assert.match(fs.readFileSync(path.join(out, 'nested', 'boom.js'), 'utf8'), /sourceMappingURL=data:/)
+})
+
+test('G06: compile runs tsc with inline maps and stashes the renderer maps before anything is packaged', () => {
+  const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'))
+  const steps = packageJson.scripts['compile:runtime'].split('&&').map((step) => step.trim())
+  const tsc = steps.findIndex((step) => step.startsWith('tsc -p tsconfig.electron.json'))
+  assert.match(steps[tsc], /--inlineSourceMap --inlineSources/)
+  assert.ok(steps.indexOf('node scripts/minify-electron.cjs') > tsc)
+  assert.equal(steps.indexOf('node scripts/stash-renderer-sourcemaps.cjs'), steps.indexOf('vite build') + 1)
+  // The product build must never carry the maps it just produced.
+  const config = require('../electron-builder.config.cjs')
+  const files = JSON.stringify(config.files ?? config.default?.files)
+  assert.doesNotMatch(files, /dist-sourcemaps/)
+})

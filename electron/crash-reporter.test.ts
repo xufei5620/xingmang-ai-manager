@@ -4,6 +4,7 @@ import { createCrashReporter, type CrashReporterOptions } from './crash-reporter
 
 const runtime: CrashReportEnvironment = {
   release: 'xingmang-ai-manager@9.9.9',
+  dist: 'linux-x64',
   environment: 'production',
   homeDirectory: '/home/yoyo',
   appVersion: '9.9.9',
