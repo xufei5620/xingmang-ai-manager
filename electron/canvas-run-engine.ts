@@ -827,6 +827,12 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             await updateStage(nodeId, stage, attemptId, progress)
           },
         })
+        // raceWithAbort below observes the outcome, but only after the
+        // processing stage is persisted. An executor that fails fast (an
+        // account without video, a node missing its prompt) settles during
+        // that write, and Node reports a rejection still unobserved at the end
+        // of a tick as unhandled; main.ts forwards those to crash reporting.
+        void executorPromise.catch(() => undefined)
         await updateStage(nodeId, 'processing', attemptId)
         releaseStageReporting()
         const result = await raceWithAbort(executorPromise, options.signal)
