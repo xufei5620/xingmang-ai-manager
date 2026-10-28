@@ -548,7 +548,8 @@ describe('moving history to another computer', () => {
 
   it('imports nothing and deletes nothing when this computer already holds 50 conversations', () => {
     const state = workspace(scope, 50)
-    const merged = mergeImportedConversations(state, [{ ...createConversation(undefined, 'new-1'), updatedAt: Date.now() + 1000 }, state.conversations[3]])
+    state.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index })
+    const merged = mergeImportedConversations(state, [{ ...createConversation(undefined, 'new-1'), updatedAt: 5000 }, state.conversations[3]])
     expect(merged.added).toBe(0)
     expect(merged.skipped).toBe(1)
     expect(merged.state.conversations.map((conversation) => conversation.id)).toEqual(state.conversations.map((conversation) => conversation.id))
