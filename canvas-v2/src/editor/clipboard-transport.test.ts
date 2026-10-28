@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { buildCanvasClipboardTransfer, parseCanvasClipboardTransfer, runCanvasClipboardPaste, writeCanvasClipboardEvent, canvasClipboardEventAllowed } from './clipboard-transport'
+import { buildCanvasClipboardTransfer, parseCanvasClipboardTransfer, runCanvasClipboardPaste, writeCanvasClipboardEvent, canvasClipboardEventAllowed, canvasClipboardCopiedHere, canvasClipboardOwnerId } from './clipboard-transport'
 import type { CanvasClipboardPayload } from './clipboard'
 
 const owner = '62026000-0000-4000-8000-000000000001', other = '62026000-0000-4000-8000-000000000002'
@@ -46,12 +46,29 @@ describe('native cross-document selection clipboard', () => {
   it('validates private resources before one atomic apply and leaves the source unchanged', async () => {
     const original = selection(true), text = buildCanvasClipboardTransfer(original, { ownerId: owner, projectId: null }), apply = vi.fn(), inspect = vi.fn(async () => undefined)
     expect(await runCanvasClipboardPaste({ ownerId: owner, current: () => true, read: async () => text, inspect, apply })).toBe(true)
-    expect(inspect).toHaveBeenCalledTimes(1); expect(apply).toHaveBeenCalledTimes(1)
+    expect(inspect).toHaveBeenCalledTimes(1); expect(inspect).toHaveBeenCalledWith(expect.objectContaining({ version: 1 }), text); expect(apply).toHaveBeenCalledTimes(1)
     expect(original.nodes[0].id).toBe('a')
   })
   it('blocks unavailable resources without any partial insertion or reference dropping', async () => {
     const apply = vi.fn(), text = buildCanvasClipboardTransfer(selection(true), { ownerId: owner, projectId: null })
     await expect(runCanvasClipboardPaste({ ownerId: owner, current: () => true, read: async () => text, inspect: async () => { throw new Error('素材缺失') }, apply })).rejects.toThrow('素材缺失')
     expect(apply).not.toHaveBeenCalled()
+  })
+})
+
+describe('desktop clipboard ownership', () => {
+  const workspace = '62026000-0000-4000-8000-0000000000aa'
+  it('prefers the account UUID and falls back to the workspace only on the desktop', () => {
+    expect(canvasClipboardOwnerId(owner, 'desktop', workspace)).toBe(owner)
+    expect(canvasClipboardOwnerId(null, 'desktop', workspace)).toBe(workspace)
+    expect(canvasClipboardOwnerId(null, 'web', workspace)).toBeNull()
+    expect(canvasClipboardOwnerId(null, 'embed', workspace)).toBeNull()
+  })
+  it('recognizes only the exact text this workspace copied', () => {
+    const text = buildCanvasClipboardTransfer(selection(true), { ownerId: workspace, projectId: null })
+    expect(canvasClipboardCopiedHere(text, text)).toBe(true)
+    expect(canvasClipboardCopiedHere(text, null)).toBe(false)
+    expect(canvasClipboardCopiedHere(text.replace('原正文', '改过的'), text)).toBe(false)
+    expect(canvasClipboardCopiedHere(`${text} `, text)).toBe(false)
   })
 })
