@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
@@ -42,6 +43,15 @@ function runBeforePack(electronPlatformName, overrides = {}) {
   return spawnSync(process.execPath, ['-e', `
     const config = require(${JSON.stringify(configPath)})
     config.beforePack({ electronPlatformName: ${JSON.stringify(electronPlatformName)}, arch: 1 })
+      .then(() => process.stdout.write('ok'))
+      .catch((error) => { process.stderr.write(String(error && error.message)); process.exit(3) })
+  `], { cwd: root, encoding: 'utf8', env: cleanBuildEnvironment(overrides) })
+}
+
+function runAfterPack(electronPlatformName, appOutDir, overrides = {}) {
+  return spawnSync(process.execPath, ['-e', `
+    const config = require(${JSON.stringify(configPath)})
+    config.afterPack({ electronPlatformName: ${JSON.stringify(electronPlatformName)}, appOutDir: ${JSON.stringify(appOutDir)}, arch: 1 })
       .then(() => process.stdout.write('ok'))
       .catch((error) => { process.stderr.write(String(error && error.message)); process.exit(3) })
   `], { cwd: root, encoding: 'utf8', env: cleanBuildEnvironment(overrides) })
@@ -114,6 +124,34 @@ test('beforePack only lets a marked Linux build through, local or unsigned relea
     const signedRelease = runBeforePack('linux', { XINGMANG_LINUX_PACKAGE: '1', ...mode })
     assert.notEqual(signedRelease.status, 0, JSON.stringify(mode))
     assert.match(signedRelease.stderr, /没有代码签名，发布只能走 npm run release:package:linux/)
+  }
+})
+
+test('afterPack takes group and other write off the Linux payload only', { skip: process.platform === 'win32' }, (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-linux-after-pack-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  // Electron 45's Linux zip stores 0666/0777 and the unpacked copy keeps them.
+  function stagePayload(name) {
+    const appOutDir = path.join(directory, name)
+    fs.mkdirSync(appOutDir)
+    fs.writeFileSync(path.join(appOutDir, 'resources.pak'), 'pak')
+    fs.chmodSync(path.join(appOutDir, 'resources.pak'), 0o666)
+    return appOutDir
+  }
+  function payloadMode(appOutDir) {
+    return fs.statSync(path.join(appOutDir, 'resources.pak')).mode & 0o777
+  }
+
+  const linux = stagePayload('linux-unpacked')
+  const linuxResult = runAfterPack('linux', linux, { XINGMANG_LINUX_PACKAGE: '1', XINGMANG_LOCAL_BUILD: '1' })
+  assert.equal(linuxResult.status, 0, linuxResult.stderr)
+  assert.equal(payloadMode(linux), 0o644)
+
+  for (const platform of ['win32', 'darwin']) {
+    const other = stagePayload(`${platform}-unpacked`)
+    const result = runAfterPack(platform, other, { XINGMANG_LOCAL_BUILD: '1' })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(payloadMode(other), 0o666, platform)
   }
 })
 

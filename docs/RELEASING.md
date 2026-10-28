@@ -164,14 +164,16 @@ npm run audit:official
 国内镜像不提供 npm audit API，返回 404 不能视为“无漏洞”。
 CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执行阻断；`audit:official` 仍须在正式发布前人工复核全部开发依赖公告。当前 Electron 打包链的上游 high 公告若只能通过降级解决，应记录评估结果，不能用未经打包回归的强制降级换取表面上的零告警。
 
-Electron 不能落后同一大版本的最新版超过 2 周（2026-10-18 定，#1088）。Electron 的补丁版常带 Chromium 安全修复，付款窗口、画布又都加载外部内容；而这些修复多半不会逐条进 npm 的漏洞库，上面两条审计报 0 不代表没落下（推断）。查法（两条分别执行，第二条里的 `43` 换成第一条打出来的大版本号；Mac 上把 `Select-String` 换成 `grep`）：
+Electron 不能落后同一大版本的最新版超过 2 周（2026-10-18 定，#1088）。Electron 的补丁版常带 Chromium 安全修复，付款窗口、画布又都加载外部内容；而这些修复多半不会逐条进 npm 的漏洞库，上面两条审计报 0 不代表没落下（推断）。查法（两条分别执行，第二条里的 `45` 换成第一条打出来的大版本号；Mac 上把 `Select-String` 换成 `grep`）：
 
 ```powershell
 node -p "require('./package-lock.json').packages['node_modules/electron'].version"
-npm view electron time --json --registry=https://registry.npmjs.org/ | Select-String '"43\.'
+npm view electron time --json --registry=https://registry.npmjs.org/ | Select-String '"45\.'
 ```
 
 第一条是锁文件里现在用的版本；第二条按发布先后列出同一大版本的每一版和发布时间（UTC）。比现在用的新的那几行里，第一行的日期离今天超过 14 天，就算落后超过 2 周：要么先升（开 PR 改 `package.json` 和锁文件，CI 跑绿再出包），要么在这一版的 `changes/unreleased/` 分片里 `## 开发` 下写一句「Electron 停在 x.y.z 没升：原因」，汇总后进 CHANGELOG。升级由开发这边做，发版的人只看一眼有没有落后。
+
+大版本另算：Electron 只给最新的三个大版本出安全补丁，大约八周出一个新的（[时间表](https://www.electronjs.org/docs/latest/tutorial/electron-timelines)）。0.2.23 起用 45（G20，原来的 43 在 2027-01-05 停补丁），45 在 2027-04-27 停补丁，在那之前要换到更新的大版本。升 46 前先把加密存储（`safeStorage`）换成异步写法：45 里同步的那几个已经报弃用，46 删掉。升大版本照官方的破坏性改动清单逐条对代码，Mac、Windows 真机各过一遍。
 
 - 在 `package.json` 提升版本号，版本必须高于已发布版本。
 - 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。
