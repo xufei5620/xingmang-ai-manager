@@ -27,7 +27,7 @@
 | #15 / O15 | 画布小地图、专注模式和面板偏好不保存 | canvas_ai | 仍存在 | P3 | 当前根因复读＋全清单同哈希旧隔离证据复用；初始化完成后用户偏好更改不触发保存；真实effect旧结果复用。 [证据说明](domains/canvas_ai.md) | [canvas_ai](domains/canvas_ai.md) |
 | #16 / O16 | 按 / 搜索落到隐藏页面 | renderer | 仍存在 | P2 | 当前完整调用链/哈希复核＋旧原组件或真实模块证据复用；当前v2全viewport搜索首个框＋App缓存hidden/inert页面仍在；不是legacy，旧真实组件证据复用。 [证据说明](domains/renderer.md) | [renderer](domains/renderer.md) |
 | #17 / O17 | 本地导入范围的完整性保障不足 | install_clients | 条件性风险仍适用 | P2，安全边界优先 | 当前静态核对＋相同哈希旧证据复用；当前源码复核与相同哈希的旧证据一致；本轮未重新动态验证。 [证据说明](security-status.md) | [安全摘要](security-status.md) |
-| N1 / N1 | 手机遥控显示已关闭，迟到的任务仍会启动 | install_clients | 仍存在 | P1，优先 | 本轮真实模块离线复现；关闭后turn/start=1、kill=0，服务仍持有进程；当前remote-result。 [证据说明](domains/install_clients.md) | [install_clients](domains/install_clients.md) |
+| N1 / N1 | 手机遥控显示已关闭，迟到的任务仍会启动 | install_clients | **已修复（#1495，云端核实）** | 保留回归 | 原复现基于 c21be274；#1495（029a020）在启动、初始化、开线程三个等待点都回头核对这一轮是否仍有效，迟到起好的 Codex 当场收掉。剩一个窄口子见 [核实结果](verification.md)。 | [install_clients](domains/install_clients.md) |
 | N2 / N2 | 视频提交结果不明确，重开后却显示“还没生成” | renderer（canvas_ai） | 仍存在 | P1，优先 | 当前完整调用链/哈希复核＋旧原组件或真实模块证据复用；c21保存/恢复仍清未知状态，主进程任务号未回时无可恢复记录；旧浏览器与服务mock复用，444ecc18另页。 [证据说明](domains/renderer.md) | [renderer](domains/renderer.md) |
 | N3 / N3 | 订阅确认框停留在旧价格，提交时没有核对价格 | renderer | 仍存在 | P2，金额相关，建议优先 | 当前完整调用链/哈希复核＋旧原组件或真实模块证据复用；旧确认对象与只带plan_id的提交仍存在；旧组件按新价扣费为mock，不是生产扣款。 [证据说明](domains/renderer.md) | [renderer](domains/renderer.md) |
 | N4 / N4 | “另存图片”失败，原有文件可能已经被写坏 | canvas_ai（renderer） | 仍存在 | P2，文件损坏风险，建议优先 | 当前根因复读＋全清单同哈希旧隔离证据复用；图片/视频直接覆盖目标仍在；视频部分写入失败损坏目标，库内原片未损坏；音频为静态同根因。 [证据说明](domains/canvas_ai.md) | [canvas_ai](domains/canvas_ai.md) |
@@ -126,14 +126,14 @@
 | H-VIDEO-EXPLANATION | 钱包不变的正常/配置原因 | 历史保留（解释框架，非故障证明） | 延迟结算、订阅或零价可解释现象，但用户的生产结算配置及账目未核实。 | [历史来源](video-billing.md) |
 | H-VIDEO-UPSTREAM | sub2api服务端上游是否被配置成xm未核实 | 外部未核实 | 仅旧本地后端/配置条件；不能据客户端复核认定生产扣费。 | [历史来源](video-billing.md) |
 | H-VIDEO-VALIDATION | 视频专项132测试与隔离模拟 | 历史保留 | 原报告结果及限定基线保留；本轮没有同数场景重新执行的声明。 | [canvas_ai](video-billing.md) |
-| H-413-FACT | 截图证明HTTP413但具体拦截层待日志确认 | 当前可确认（现场事实；部分仍未知） | 主审按两条Ray核实均CF边缘POST 413且无源站转发；实际正文大小/客户provider配置仍未知；另一次524独立分析。 | [incident](codex-413-incident.md) |
-| H-WS-BEHAVIOR | Codex0.164.0增量/完整请求与426/HTTP回退 | 当前可确认（已校正客户版本） | 现场主域有426规则，直连有101；按客户UA 0.163.0-alpha.11核实426会回退HTTP。首次/缓存失效仍可能发完整上下文。 | [incident](codex-413-incident.md) |
-| H-WS-GAP-01 | 小型线路探针不能发现独立Codex大请求413 | 当前可确认（P2产品缺口） | 小请求探针不能代表独立CLI大请求；主审incident列明确修复与验收，不自动重放付费请求。 | [incident](codex-413-incident.md) |
-| H-WS-GAP-02 | 配置为true不证明旧会话实际启用WebSocket | 当前可确认（P2产品缺口） | 配置支持、需重开与实际传输状态必须区分；客户这两次实际HTTP，不能反推其完整本地配置。 | [incident](codex-413-incident.md) |
+| H-413-FACT | 截图证明HTTP413但具体拦截层待日志确认 | 当前可确认（现场事实；部分仍未知） | 两次均为线路1 入口拒绝的 HTTP POST 413，没有到源站；实际正文大小/客户provider配置仍未知；另一次524独立分析。现场标识不入公开仓库。 | [incident](codex-413-incident.md) |
+| H-WS-BEHAVIOR | Codex增量/完整请求与426/HTTP回退 | 当前可确认 | 主域对WebSocket握手回426（有意设置），直连能升级；Codex收到426会在该会话回退HTTP。首次/缓存失效仍可能发完整上下文。 | [incident](codex-413-incident.md) |
+| H-WS-GAP-01 | 小型线路探针不能发现独立Codex大请求413 | **部分已修（#1496）** | #1496 已能认出413并自动换线路2或建议新开对话、80MB提前提醒、不自动重放；524识别和检查页端到端状态仍缺。 | [incident](codex-413-incident.md) |
+| H-WS-GAP-02 | 配置为true不证明旧会话实际启用WebSocket | **部分已修（#1496）** | #1496 换线后提示重开Codex并核对配置；实际传输方式仍看不出，历史账号托盘释放后换线不出提示（推测）。 | [incident](codex-413-incident.md) |
 | H-WS-GAP-03 | 默认WebSocket与HTTP-only验收覆盖不一致 | 当前可确认（P2验收缺口） | incident明确需补101、426回退、重连、缓存丢失及413/524模拟，并单独授权客户真机验收。 | [incident](codex-413-incident.md) |
-| H-WS-LIMITS | CF及旧后端大小限制不是现场阈值 | 当前可确认（当前配置；历史时点有限） | CF当前max_upload100，源站主域512m/直连256m，new-api显式256MB；源站晚于故障启动，不能冒充当时完整配置。 | [incident](codex-413-incident.md) |
+| H-WS-LIMITS | CF及旧后端大小限制不是现场阈值 | 服务端事实，不入公开仓库 | 各层上限属服务端配置，由维护者私下保留；当前值不能冒充故障当时的完整配置。 | [incident](codex-413-incident.md) |
 | H-WS-PLAN | 413处理建议与只读现场复核待办 | 当前可确认（处置建议未执行） | incident建议核对直连与WS配置、完全重启、由客户正常请求验实际101及任务完成；本审查未代发付费请求/改服务器。 | [incident](codex-413-incident.md) |
-| H-WS-VALIDATION | 7个离线配置验证不替代现场会话 | 历史保留（当前现场调查另记） | 旧7个离线配置场景不改称本轮；当前主审只读CF/源站证据已加入incident，客户切线后的真实完成仍待验。 | [incident](codex-413-incident.md) |
+| H-WS-VALIDATION | 7个离线配置验证不替代现场会话 | 历史保留（当前现场调查另记） | 旧7个离线配置场景不改称本轮；现场只读证据由维护者私下保留，客户切线后的真实完成仍待验。 | [incident](codex-413-incident.md) |
 
 ## 本轮新增发现与额外已修记录
 

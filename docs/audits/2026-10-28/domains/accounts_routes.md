@@ -17,7 +17,7 @@
 | 测试，本轮全文审查 | 3 | `full`；`account-work-gate.test.ts`、`account-usage-tracker.test.ts`、`tool-route-follow-service.test.ts` |
 | 测试，本轮定向审查 | 48 | `targeted`；逐文件核对测试分组索引，对相关断言定向复读，不声称全文阅读 |
 
-因此，38,530 行是清单规模，**不是本轮重新逐行阅读的行数**。生产文件的旧全文审查来源为 `本地证据/xingmang-deep-audit-20261027-ffc04922` 下的 `accounts-coverage.json`、`network_proxy-coverage.json`、`root_persistence-coverage.json`、`security_ipc-coverage.json`。逐文件哈希、来源、实际复读区间与备注见本地受控文件 `accounts_routes-coverage.json`；适合纳入报告的逐文件表见 [逐文件表](../coverage/accounts_routes.md)。
+因此，38,530 行是清单规模，**不是本轮重新逐行阅读的行数**。生产文件的旧全文审查来源为 `本地证据/xingmang-deep-audit-20261027-ffc04922` 下的 `accounts-coverage.json`、`network_proxy-coverage.json`、`root_persistence-coverage.json`、`security_ipc-coverage.json`。逐文件哈希、来源、实际复读区间与备注见本地受控文件 `accounts_routes-coverage.json`。
 
 关键调用边界另核对了 `bootstrap/accounts.ts`、`ipc/handlers/account.ts`、`external-client-route-service.ts` 和对应 renderer 页面。`ffc04922` 到本基线之间的 `main.ts`、`ipc.ts`、`ipc-channel-policy.ts` 变更没有改变本专项的账号工作门闩；`external-client-route-service.ts` 的变化不涉及 N9 所在的延迟切线条件。
 
@@ -186,7 +186,7 @@ R28-3“SavedAccounts 检测未完成就切换，漏掉默认 CLI 同步”属�
 ## 交付索引
 
 - 本页：本报告。
-- [逐文件表](../coverage/accounts_routes.md)：逐文件路径、哈希和审查方式，便于报告 PR 保留可审计覆盖口径。
+- 逐文件表（路径、哈希和审查方式）不放进仓库，汇总见 [全量文件台账](../coverage.md)。
 - `accounts_routes-coverage.json`：完整机器覆盖账本，含旧审查来源、实际复读区间、测试分组。
 - `accounts_routes-coverage-summary.json`：覆盖统计。
 - `accounts_routes-build-coverage.cjs`：重算哈希并生成 JSON 的离线脚本，仅写本临时目录。

@@ -6,17 +6,19 @@
 
 ## 九个范围均无缺失、重复或哈希不符
 
-| 范围 | 文件 | 行数 | 逐文件记录 |
-|---|---:|---:|---|
-| accounts_routes | 102 | 38,530 | [清单](coverage/accounts_routes.md) |
-| canvas_ai | 278 | 59,884 | [清单](coverage/canvas_ai.md) |
-| core | 378 | 127,194 | [清单](coverage/core.md) |
-| install_clients | 147 | 58,723 | [清单](coverage/install_clients.md) |
-| legacy | 187 | 41,207 | [清单](coverage/legacy.md) |
-| platform_network | 154 | 45,207 | [清单](coverage/platform_network.md) |
-| release | 312 | 94,844 | [清单](coverage/release.md) |
-| renderer | 473 | 91,521 | [清单](coverage/renderer.md) |
-| root_docs | 352 | 50,847 | [清单](coverage/root_docs.md) |
+逐文件的路径、哈希和审查方式清单（约 2,400 行）不放进仓库，由审查方本机保留；这里只留各范围的汇总。
+
+| 范围 | 文件 | 行数 |
+|---|---:|---:|
+| accounts_routes | 102 | 38,530 |
+| canvas_ai | 278 | 59,884 |
+| core | 378 | 127,194 |
+| install_clients | 147 | 58,723 |
+| legacy | 187 | 41,207 |
+| platform_network | 154 | 45,207 |
+| release | 312 | 94,844 |
+| renderer | 473 | 91,521 |
+| root_docs | 352 | 50,847 |
 
 ## 方式和数量
 
