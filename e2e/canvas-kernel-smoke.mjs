@@ -522,9 +522,17 @@ function libraryTab(canvas, name) {
   return canvas.getByRole('navigation', { name: '创作库类型' }).getByRole('button', { name, exact: true })
 }
 
+// 画布窗口窄于 1180px 时（Windows CI 机器的屏幕只有 1024 x 768），检查器开着会把创作库压成一条图标栏，
+// 栏上的页签点了也展不开；照用户的做法先把检查器关掉。
+async function closeInspector(canvas) {
+  const inspector = canvas.getByRole('complementary', { name: '统一检查器' })
+  if (await inspector.isVisible()) await inspector.getByRole('button', { name: /^关闭(节点检查器|运行面板|素材面板)$/ }).click()
+}
+
 // 从左边创作库的「节点」里点一下添加。快速创建的搜索会先列出画布上已有的同名节点，点到的可能是旧的那个。
 async function addNode(canvas, label) {
   await clearSelection(canvas)
+  await closeInspector(canvas)
   const before = await nodes(canvas).count()
   const library = canvas.getByRole('complementary', { name: '创作内容库' })
   if (!await library.getByRole('textbox', { name: '搜索节点' }).isVisible()) await libraryTab(canvas, '节点').click()
@@ -546,6 +554,13 @@ async function writeNote(canvas, text) {
 
 async function statusLine(canvas) {
   return evaluateInRenderer(canvas, 'status line', () => document.body.innerText)
+}
+
+// The status bar's own text, hidden parts included: below 1180px the kernel hides
+// the generation summary (canvas-status-media), and a Windows runner's 1024 x 768
+// screen holds the canvas window under that width.
+async function statusBar(canvas) {
+  return evaluateInRenderer(canvas, 'status bar', () => document.querySelector('[aria-label="画布状态"]')?.textContent ?? '')
 }
 
 function pendingCount(text) {
@@ -611,7 +626,7 @@ async function main() {
     await canvas.getByRole('textbox', { name: '画面描述' }).fill('一只绿色的猫')
     await canvas.getByRole('button', { name: '填写并插入' }).click()
     await expect(nodes(canvas)).toHaveCount(4, { timeout: fixtureReadyTimeoutMs })
-    const status = await statusLine(canvas)
+    const status = await statusBar(canvas)
     assert.match(status, /图片 · GPT-image2/)
     assert.doesNotMatch(status, /视频 · 图片模型/)
     recordPass('status-bar-labels')
