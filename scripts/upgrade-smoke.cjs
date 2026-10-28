@@ -422,8 +422,8 @@ function createMacSigningIdentity(work, cleanups) {
   // not the run's to type.
   const defaultKeychain = security(['default-keychain', '-d', 'user']).trim().replace(/^"(.*)"$/, '$1')
   if (!defaultKeychain) throw new Error('读不出当前用户的默认钥匙串，不敢改')
-  security(['default-keychain', '-d', 'user', '-s', keychainPath])
-  cleanups.push(() => security(['default-keychain', '-d', 'user', '-s', defaultKeychain]))
+  // EXPERIMENT (reverted before the PR): leave the login keychain as default.
+  report(`实验：默认钥匙串保持 ${defaultKeychain}`)
   const sha1 = run('/usr/bin/openssl', ['x509', '-in', certificate.certificatePath, '-noout', '-fingerprint', '-sha1'])
     .stdout.split('=').at(-1).trim().replaceAll(':', '').toUpperCase()
   fs.rmSync(path.join(work, 'certificate'), { recursive: true, force: true })
@@ -577,6 +577,11 @@ const macos = {
   // the customer does, and only when the old version was admitted the way
   // that dialog implies.
   approveNewVersion(installed, { identity, oldCdhash, newCdhash }) {
+    // EXPERIMENT (reverted before the PR): read the item where the customer has it.
+    const loginKeychain = path.join(os.homedir(), 'Library', 'Keychains', 'login.keychain-db')
+    const loginItem = findSafeStorageItem(identity.security(['dump-keychain', '-a', loginKeychain]))
+    report(`实验：登录钥匙串里的那把钥匙：${loginItem ? loginItem.service : '没有'}`)
+    if (loginItem) for (const line of loginItem.access.split('\n').slice(0, 60)) report(`  ${line}`)
     const item = findSafeStorageItem(identity.security(['dump-keychain', '-a', identity.keychainPath]))
     if (!item) {
       const service = `${PRODUCT_NAME} Safe Storage`
