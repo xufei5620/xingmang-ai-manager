@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCliModelName, isNonInteractiveCliModel, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement } from './cli-model-defaults'
+import { isCliModelName, isNonInteractiveCliModel, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement, sortClaudeModelsNewestFirst } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -227,6 +227,25 @@ describe('resolveNewestModelOfFamily', () => {
   it('returns null when nothing in the list shares the family', () => {
     expect(resolveNewestModelOfFamily(['gpt-5.4', 'gpt-6-astra'], 'gpt-5.6-sol')).toBeNull()
     expect(resolveNewestModelOfFamily([], 'gpt-5.6-sol')).toBeNull()
+  })
+})
+
+describe('sortClaudeModelsNewestFirst', () => {
+  it('orders Claude models by version first and by Opus, Sonnet, Haiku within a version', () => {
+    expect(sortClaudeModelsNewestFirst([
+      'claude-haiku-4-5',
+      'claude-sonnet-5-5',
+      'claude-3-5-sonnet-20241022',
+      'claude-opus-4-8',
+      'claude-opus-5-5',
+      'claude-sonnet-4-6',
+    ])).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-3-5-sonnet-20241022'])
+  })
+
+  it('leaves the input list untouched', () => {
+    const models = ['claude-haiku-4-5', 'claude-opus-5-5']
+    sortClaudeModelsNewestFirst(models)
+    expect(models).toEqual(['claude-haiku-4-5', 'claude-opus-5-5'])
   })
 })
 

@@ -46,6 +46,12 @@ function markerPath(f: ReturnType<typeof fixture>): string {
   const directory = path.join(f.dataDirectory, 'external-clients', 'claude-desktop')
   return path.join(directory, fs.readdirSync(directory).find((file) => file.endsWith('.json'))!)
 }
+// 0.2.12 写的那串是字符串（选中的在前）；现在保存好几个型号写的是 { name } 对象，所以先存一个、再照当年的样子改回去。
+async function saveLegacyList(f: ReturnType<typeof fixture>, models: readonly string[], overrides: Partial<ClaudeDesktopGatewayInput> = {}) {
+  const saved = await f.service.saveGateway({ ...input, ...overrides, models: [models[0]] })
+  write(saved.path, { ...read(saved.path), inferenceModels: models })
+  return saved
+}
 function snapshot(files: readonly string[]): Map<string, string> {
   return new Map(files.map((file) => [file, fs.readFileSync(file, 'utf8')]))
 }
@@ -248,6 +254,27 @@ describe('Claude Desktop in-app third-party configuration', () => {
     expect(buildClaudeDesktopGatewayConfig({ ...input, baseUrl: 'http://127.0.0.1:4000' }).inferenceGatewayBaseUrl).toBe('http://127.0.0.1:4000')
     expect(() => buildClaudeDesktopGatewayConfig({ ...input, apiKey: 'secret\nheader' })).toThrow('API Key')
     expect(() => buildClaudeDesktopGatewayConfig({ ...input, models: ['alias\nmodel'] })).toThrow('模型 ID')
+  })
+
+  it('writes several models as name objects with the picked one first and one model as a plain string', () => {
+    expect(buildClaudeDesktopGatewayConfig({ ...input, models: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-opus-5-5', 'claude-haiku-4-5'] }).inferenceModels)
+      .toEqual([{ name: 'claude-opus-5-5' }, { name: 'claude-sonnet-5' }, { name: 'claude-haiku-4-5' }])
+    expect(buildClaudeDesktopGatewayConfig({ ...input, models: ['claude-opus-5-5'] }).inferenceModels).toEqual(['claude-opus-5-5'])
+    expect(buildClaudeDesktopGatewayConfig({ ...input, models: [] })).not.toHaveProperty('inferenceModels')
+  })
+
+  it('reads a saved multi-model list back with the first entry as the model and hands the check the model Claude Desktop probes at launch', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-opus-5-5', 'claude-sonnet-5', 'claude-haiku-4-5'] })
+    expect(read(saved.path).inferenceModels).toEqual([{ name: 'claude-opus-5-5' }, { name: 'claude-sonnet-5' }, { name: 'claude-haiku-4-5' }])
+    expect(await f.service.inspectConnection(input.baseUrl)).toMatchObject({ configured: true, configurationReady: true, model: 'claude-opus-5-5' })
+    expect(await f.service.inspectConnection(input.baseUrl)).not.toHaveProperty('models')
+    expect(await f.service.inspectGatewayCredential(input.baseUrl)).toEqual({ apiKey: input.apiKey, model: 'claude-opus-5-5', startupCheckModel: 'claude-haiku-4-5' })
+    expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl: input.baseUrl, apiKey: input.apiKey, model: 'claude-opus-5-5' })
+
+    await f.service.saveGateway(input)
+    expect(read(saved.path).inferenceModels).toEqual(['claude-opus-5'])
+    expect(await f.service.inspectGatewayCredential(input.baseUrl)).toEqual({ apiKey: input.apiKey, model: 'claude-opus-5', startupCheckModel: 'claude-opus-5' })
   })
 
   it.each(['http://example.com', 'https://user:password@example.com', 'https://example.com?key=secret', 'file:///tmp/gateway', 'https://example.com/#secret'])('rejects unsafe gateway address %s before side effects', async (baseUrl) => {
@@ -603,7 +630,7 @@ describe('Claude Desktop legacy model list repair', () => {
 
   it('narrows the toolbox profile to the picked model exactly as a fresh save would and keeps everything else', async () => {
     const f = fixture()
-    const saved = await f.service.saveGateway({ ...input, models: legacyModels })
+    const saved = await saveLegacyList(f, legacyModels)
     write(saved.path, { ...read(saved.path), custom: { preserved: true } })
     const before = fs.readFileSync(saved.path, 'utf8')
     const others = snapshot([f.metadataPath, f.configPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json')])
@@ -626,9 +653,17 @@ describe('Claude Desktop legacy model list repair', () => {
     const f = fixture()
     const manualPath = path.join(f.profileDirectory, 'configLibrary', `${otherId}.json`)
     write(f.metadataPath, { appliedId: otherId, entries: [{ id: otherId, name: 'Manual' }] })
-    write(manualPath, buildClaudeDesktopGatewayConfig({ ...input, models: legacyModels }))
+    write(manualPath, { ...buildClaudeDesktopGatewayConfig(input), inferenceModels: legacyModels })
     const previous = snapshot([f.metadataPath, manualPath])
     expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unowned' })
+    expectSnapshot(previous)
+  })
+
+  it('leaves the multi-model list a current save writes alone', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: legacyModels })
+    const previous = snapshot([saved.path])
+    expect(await f.service.repairLegacyModelList(relayBaseUrls)).toEqual({ status: 'unrecognized', reason: 'model-list' })
     expectSnapshot(previous)
   })
 
@@ -669,7 +704,7 @@ describe('Claude Desktop legacy model list repair', () => {
 
   it('accepts the relay address with a trailing slash like the connection check does', async () => {
     const f = fixture()
-    const saved = await f.service.saveGateway({ ...input, baseUrl: 'https://api.solov.cc/', models: legacyModels })
+    const saved = await saveLegacyList(f, legacyModels, { baseUrl: 'https://api.solov.cc/' })
     expect(await f.service.repairLegacyModelList(relayBaseUrls)).toMatchObject({ status: 'repaired', model: 'claude-sonnet-5' })
     expect(read(saved.path).inferenceModels).toEqual(['claude-sonnet-5'])
   })
@@ -1072,7 +1107,7 @@ describe('Claude Desktop write snapshots', () => {
 
   it('records the owner marker and the toolbox profile for the legacy model repair', async () => {
     const f = fixture()
-    const saved = await f.service.saveGateway({ ...input, models: ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5'] })
+    const saved = await saveLegacyList(f, ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5'])
     const before = onDisk([markerPath(f), saved.path])
     commit.mockClear()
     expect(await f.service.repairLegacyModelList([input.baseUrl])).toMatchObject({ status: 'repaired' })
@@ -1174,7 +1209,7 @@ describe('Claude Desktop write size limit', () => {
 
   it('refuses a legacy model repair that would outgrow the limit and writes nothing', async () => {
     const f = fixture()
-    const saved = await f.service.saveGateway({ ...input, models: ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5'] })
+    const saved = await saveLegacyList(f, ['claude-sonnet-5', 'claude-fable-5', 'claude-opus-5-5'])
     fs.writeFileSync(saved.path, JSON.stringify({ ...read(saved.path), custom: new Array(200_000).fill(0) }), 'utf8')
     const previous = snapshot([saved.path])
     await expect(f.service.repairLegacyModelList([input.baseUrl])).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')

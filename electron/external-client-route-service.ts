@@ -11,6 +11,8 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
+import { resolveClaudeDesktopModels } from './claude-desktop-models'
+import { buildGatewayMessagesProbe, runConnectionProbe } from './connection-check'
 import { type ExternalClientCheckResult, runExternalClientCheck } from './external-client-connection'
 import {
   type DesktopAppUpdateRequest,
@@ -90,6 +92,9 @@ interface ExternalClientKeyCredential {
 function sameRouteUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
 }
+
+// 保存 Claude Desktop 配置时试一个型号最多等多久。试的那几个不通只是菜单里少一个，不值得照自检默认的 20 秒等。
+const claudeDesktopModelProbeTimeoutMs = 8_000
 
 /** 外部客户端要用、但归别处管的那一样，由 createSystemService 传进来。 */
 export interface ExternalClientRouteServiceDependencies {
@@ -260,6 +265,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       configurationError: described?.configurationError ?? null,
       model: credential?.model ?? described?.model ?? null,
       apiKey: credential?.apiKey ?? null,
+      ...(credential?.startupCheckModel ? { startupCheckModel: credential.startupCheckModel } : {}),
       ...(described?.officialAccount ? { officialAccount: true } : {}),
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
@@ -365,13 +371,23 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
         assertContext()
         if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
+        // Claude Desktop 的型号菜单就是写进去的那份清单。选中的排第一当默认，其余 Claude 型号照它开机检查那条
+        // 请求各发一个字，试通了才放进去（claude-desktop-models.ts）：0.2.12 把列着的全写进去（#685），里面有发不
+        // 通的，客户那边就型号被拒、发消息没回复；#746 起只写一个，客户又在 Claude Desktop 里换不了型号。
+        const baseUrl = activeSite.providerBaseUrls.claude
+        const selection = await resolveClaudeDesktopModels(model, models, async (candidate) => (await runConnectionProbe(
+          buildGatewayMessagesProbe(externalClientNames.claudeDesktop, baseUrl, candidate, apiKey),
+          { fetch: serviceOptions.relayFetch, timeoutMs: claudeDesktopModelProbeTimeoutMs },
+        )).ok)
+        assertContext()
+        runtimeLog?.log('info', 'config', 'external-client.claude-desktop.models', 'Claude Desktop 型号菜单只放试通了的型号', {
+          models: selection.models.length, rejected: selection.rejected,
+        })
         const gateway = await claudeDesktopConfig(status, assertContext)
-        // 只写客户选中的那一个型号。0.2.12 曾把当前 Key 能用的全部 claude-* 型号都写进去（#685），
-        // 客户 Mac 上 Claude Desktop 随即提示型号被拒、发消息没回复，退回只写一个（0.2.8 的做法）就好了。
-        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
+        const input = { baseUrl, apiKey, authScheme: 'bearer' as const, models: selection.models }
         const result = await gateway.saveGateway(input)
         assertContext()
-        if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey, keySource)
+        if (owner) await externalOwnership.write(tool, owner, baseUrl, apiKey, keySource)
         const connection = await verifySavedExternalClient(tool, status)
         return { tool, model, path: result.path, files: result.files, backups: result.backups,
           outcome: 'configured', message: result.warnings.join(' '),
