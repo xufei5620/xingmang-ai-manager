@@ -20,6 +20,8 @@ const electronMocks = vi.hoisted(() => ({
   browserWindowOptions: [] as unknown[],
   latestBrowserWindow: null as null | Record<string, unknown>,
   latestWebContents: null as null | Record<string, unknown>,
+  // The canvas window uses the default session, which the main window shares.
+  sessionListeners: new Map<string, Set<(...args: unknown[]) => void>>(),
 }))
 
 vi.mock('electron', () => ({
@@ -37,6 +39,16 @@ vi.mock('electron', () => ({
       executeJavaScript: vi.fn(async () => true),
       setWindowOpenHandler: vi.fn(),
       on: vi.fn(),
+      session: {
+        on: vi.fn((name: string, listener: (...args: unknown[]) => void) => {
+          const listeners = electronMocks.sessionListeners.get(name) ?? new Set()
+          listeners.add(listener)
+          electronMocks.sessionListeners.set(name, listeners)
+        }),
+        removeListener: vi.fn((name: string, listener: (...args: unknown[]) => void) => {
+          electronMocks.sessionListeners.get(name)?.delete(listener)
+        }),
+      },
     }
     electronMocks.latestWebContents = webContents
     const events = new Map<string, (...args: unknown[]) => void>()
@@ -290,6 +302,7 @@ beforeEach(() => {
   electronMocks.browserWindowOptions.length = 0
   electronMocks.latestBrowserWindow = null
   electronMocks.latestWebContents = null
+  electronMocks.sessionListeners.clear()
 })
 
 afterEach(() => {
@@ -486,6 +499,30 @@ describe('createCanvasWindowController', () => {
     expect(externalShell.openExternal).toHaveBeenCalledTimes(2)
     expect(runtimeLog.exception).toHaveBeenCalledTimes(2)
     expect(runtimeLog.exception).toHaveBeenCalledWith('canvas', 'external.open.failed', failure)
+    controller.dispose()
+  })
+
+  it('refuses downloads the canvas page starts without touching other windows on the shared session', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const canvasContents = electronMocks.latestWebContents!
+    const listeners = [...electronMocks.sessionListeners.get('will-download') ?? []]
+    expect(listeners).toHaveLength(1)
+    const [willDownload] = listeners
+
+    const fromCanvas = { preventDefault: vi.fn() }
+    willDownload(fromCanvas, { getFilename: () => 'export.png' }, canvasContents)
+    expect(fromCanvas.preventDefault).toHaveBeenCalledOnce()
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'download.refused', '已拦下画布页面发起的下载')
+
+    const fromMainWindow = { preventDefault: vi.fn() }
+    willDownload(fromMainWindow, { getFilename: () => 'report.zip' }, { id: 1 })
+    expect(fromMainWindow.preventDefault).not.toHaveBeenCalled()
+
+    const destroyWindow = electronMocks.latestBrowserWindow!.destroy as () => void
+    destroyWindow()
+    expect(electronMocks.sessionListeners.get('will-download')?.size).toBe(0)
     controller.dispose()
   })
 

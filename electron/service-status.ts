@@ -18,7 +18,8 @@ import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from
  * 不对、字段缺失，一律当作没有这份文件——没在维护，客户端照常工作。它绝不能因为
  * 这份文件读不到而报错或拖慢启动。分组对照（accountGroups）也守这一条：它只在服务端
  * 已经允许这个账号用的分组里挑，不能让客户端用上任何它本来用不了的分组。型号表（cliModels）同理：
- * 只在账号模型列表里真有的型号里挑，下架名单也只换掉账号已经不再列出的型号。
+ * 只在账号模型列表里真有的型号里挑，下架名单也只换掉账号已经不再列出的型号；挑默认型号时名单把账号列着的
+ * 能对话的型号全写进去了，照旧在账号列着的里挑，不让登录自动配置失败（#1154）。
  */
 export const serviceStatusFileName = 'service-status.json'
 
