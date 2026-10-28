@@ -491,6 +491,16 @@ interface TomlCursor {
   index: number
 }
 
+// The paste box re-parses on every keystroke inside the long-lived main window, so a pasted key path must never walk
+// into or write onto the prototype shared by every object there. Tables carry no prototype and only their own keys
+// count; keys that name the prototype machinery are refused outright, which fails the whole paste like any other
+// TOML this subset does not understand (#1489 U01).
+const reservedTomlKeys = new Set(['__proto__', 'constructor', 'prototype'])
+
+function emptyTomlTable(): Record<string, unknown> {
+  return Object.create(null)
+}
+
 function skipSpaces(cursor: TomlCursor, newlines: boolean): void {
   while (cursor.index < cursor.text.length) {
     const char = cursor.text.charAt(cursor.index)
@@ -540,7 +550,7 @@ function readTomlKeyPath(cursor: TomlCursor): string[] | null {
       key = match ? match[0] : null
       if (match) cursor.index += match[0].length
     }
-    if (key === null) return null
+    if (key === null || reservedTomlKeys.has(key)) return null
     keys.push(key)
     skipSpaces(cursor, false)
     if (cursor.text.charAt(cursor.index) !== '.') return keys
@@ -573,7 +583,7 @@ function readTomlValue(cursor: TomlCursor): unknown {
   }
   if (char === '{') {
     cursor.index += 1
-    const table: Record<string, unknown> = {}
+    const table = emptyTomlTable()
     for (;;) {
       skipSpaces(cursor, true)
       if (cursor.text.charAt(cursor.index) === '}') {
@@ -603,10 +613,10 @@ function readTomlValue(cursor: TomlCursor): unknown {
 function tomlTable(root: Record<string, unknown>, keys: readonly string[]): Record<string, unknown> | null {
   let table = root
   for (const key of keys) {
+    if (!Object.hasOwn(table, key)) table[key] = emptyTomlTable()
     const existing = table[key]
-    if (existing === undefined) table[key] = {}
-    else if (!isRecord(existing)) return null
-    table = table[key] as Record<string, unknown>
+    if (!isRecord(existing)) return null
+    table = existing
   }
   return table
 }
@@ -614,13 +624,13 @@ function tomlTable(root: Record<string, unknown>, keys: readonly string[]): Reco
 function assignToml(table: Record<string, unknown>, keys: readonly string[], value: unknown): boolean {
   const parent = tomlTable(table, keys.slice(0, -1))
   const last = keys[keys.length - 1]
-  if (!parent || last === undefined || last in parent) return false
+  if (!parent || last === undefined || Object.hasOwn(parent, last)) return false
   parent[last] = value
   return true
 }
 
 function parseTomlSubset(text: string): Record<string, unknown> | null {
-  const root: Record<string, unknown> = {}
+  const root = emptyTomlTable()
   let table: Record<string, unknown> | null = root
   const cursor: TomlCursor = { text, index: 0 }
   for (;;) {

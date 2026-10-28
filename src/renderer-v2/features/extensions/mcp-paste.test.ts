@@ -119,6 +119,34 @@ describe('parseMcpPaste', () => {
     }
   })
 
+  it('refuses TOML keys that name the object prototype and leaves the shared prototype untouched', () => {
+    const before = Object.getOwnPropertyNames(Object.prototype)
+    try {
+      for (const text of [
+        '[mcp_servers.__proto__]\ncommand = "npx"',
+        '[mcp_servers.a.__proto__]\npolluted = "yes"',
+        '[mcp_servers.a]\ncommand = "npx"\n__proto__.polluted = "yes"',
+        '[mcp_servers.a]\ncommand = "npx"\n"__proto__" = { polluted = "yes" }',
+        '[mcp_servers.a]\ncommand = "npx"\nenv = { __proto__ = { polluted = "yes" } }',
+        '[mcp_servers.a.constructor.prototype]\npolluted = "yes"',
+        '[mcp_servers.a]\ncommand = "npx"\nprototype = "yes"',
+      ]) {
+        expect(parseMcpPaste(text)).toMatchObject({ status: 'failed', problem: expect.stringContaining('原样复制过来') })
+      }
+      expect(Object.getOwnPropertyNames(Object.prototype)).toEqual(before)
+    } finally {
+      // 万一又改坏了，写进原型的东西别留给后面的用例。
+      for (const name of Object.getOwnPropertyNames(Object.prototype)) {
+        if (!before.includes(name)) Reflect.deleteProperty(Object.prototype, name)
+      }
+    }
+  })
+
+  it('treats names inherited by plain objects as ordinary TOML keys', () => {
+    expect(servers(parseMcpPaste('[mcp_servers.toString]\ncommand = "npx"\nenv = { hasOwnProperty = "1", valueOf = "2" }')))
+      .toEqual([{ name: 'toString', config: { type: 'stdio', command: 'npx', args: [], env: { hasOwnProperty: '1', valueOf: '2' } }, problem: null }])
+  })
+
   it('reads the claude / codex / grok `mcp add` lines from their docs', () => {
     expect(servers(parseMcpPaste('claude mcp add --transport http notion https://mcp.notion.com/mcp'))).toEqual([
       { name: 'notion', config: { type: 'http', url: 'https://mcp.notion.com/mcp', headers: {} }, problem: null },
