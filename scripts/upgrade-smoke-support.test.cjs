@@ -12,6 +12,7 @@ const {
   CUSTOMER_SETTINGS,
   UPDATE_KEY_MODULE,
   addHostsBlock,
+  allowNewVersionPartition,
   applyCustomerSettings,
   asarFileIntegrity,
   asarHeaderHash,
@@ -21,6 +22,7 @@ const {
   extractNetworkTargets,
   findLostSettings,
   findPinnedUpdateKeys,
+  findSafeStorageItem,
   findVersionUpdatedEntry,
   generateUpdateSigningKey,
   parseRuntimeLog,
@@ -317,6 +319,80 @@ test('findLostSettings reports the customer choices and working folder the new v
   assert.deepEqual(findLostSettings(before, dropped).map((line) => line.split('：')[0]), ['uiSkin', 'workspace'])
   assert.throws(() => applyCustomerSettings('[]'), /对象/)
   assert.throws(() => findLostSettings(before, '{'), /JSON/)
+})
+
+// What `security dump-keychain -a` prints for a temporary keychain holding the
+// signing identity's key and the item the old version created on first start.
+function keychainDump({ partitions }) {
+  const hex = (text) => Buffer.from(text, 'utf8').toString('hex').toUpperCase()
+  const escaped = (text) => [...Buffer.from(text, 'utf8')].map((byte) => (byte < 0x80 ? String.fromCharCode(byte) : `\\${byte.toString(8)}`)).join('')
+  const blob = (text) => `0x${hex(text)}  "${escaped(text)}"`
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n\t<key>Partitions</key>\n\t<array>\n${partitions.map((partition) => `\t\t<string>${partition}</string>\n`).join('')}\t</array>\n</dict>\n</plist>\n`
+  return [
+    'keychain: "/Users/runner/work/_temp/upgrade-smoke/upgrade-smoke.keychain-db"',
+    'version: 512',
+    'class: 0x0000000F ',
+    'attributes:',
+    '    0x00000001 <blob>="XingMang Upgrade Smoke Identity"',
+    'access: 1 entries',
+    '    entry 0:',
+    '        authorizations (1): partition_id',
+    "        don't-require-password",
+    `        description: ${hex('<plist><array><string>apple-tool:</string><string>codesign:</string></array></plist>')}`,
+    '        applications: <null>',
+    'keychain: "/Users/runner/work/_temp/upgrade-smoke/upgrade-smoke.keychain-db"',
+    'version: 512',
+    'class: "genp"',
+    'attributes:',
+    `    0x00000007 <blob>=${blob('星芒AI管理工具 Safe Storage')}`,
+    '    0x00000008 <blob>=<NULL>',
+    `    "acct"<blob>=${blob('星芒AI管理工具')}`,
+    '    "cdat"<timedate>=0x32303236313032383037303934355A00  "20261028070945Z\\000"',
+    `    "svce"<blob>=${blob('星芒AI管理工具 Safe Storage')}`,
+    'access: 3 entries',
+    '    entry 0:',
+    '        authorizations (6): decrypt derive export_clear export_wrapped mac sign',
+    "        don't-require-password",
+    '        description: 星芒AI管理工具 Safe Storage',
+    '        applications (1):',
+    '            0: /Applications/星芒AI管理工具.app (OK)',
+    '    entry 1:',
+    '        authorizations (1): encrypt',
+    "        don't-require-password",
+    '        description: 星芒AI管理工具 Safe Storage',
+    '        applications: <null>',
+    '    entry 2:',
+    '        authorizations (1): partition_id',
+    "        don't-require-password",
+    `        description: ${hex(plist)}`,
+    '        applications: <null>',
+    '',
+  ].join('\n')
+}
+
+test('findSafeStorageItem reads the old version\'s key and who may read it', () => {
+  const item = findSafeStorageItem(keychainDump({ partitions: ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'] }))
+  assert.deepEqual(item, {
+    service: '星芒AI管理工具 Safe Storage',
+    account: '星芒AI管理工具',
+    partitions: ['cdhash:0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'],
+  })
+  const ascii = 'keychain: "/k"\nclass: "genp"\nattributes:\n    "acct"<blob>="Electron"\n    "svce"<blob>="Electron Safe Storage"\naccess: 0 entries\n'
+  assert.deepEqual(findSafeStorageItem(ascii), { service: 'Electron Safe Storage', account: 'Electron', partitions: [] })
+  assert.equal(findSafeStorageItem(keychainDump({ partitions: [] }).split('keychain: ').slice(0, 2).join('keychain: ')), null)
+})
+
+test('allowNewVersionPartition admits the new version the way the old one is admitted', () => {
+  const oldCdhash = '0a1b2c3d4e5f60718293a4b5c6d7e8f901234567'
+  const newCdhash = 'FFEEDDCCBBAA99887766554433221100FFEEDDCC'
+  assert.deepEqual(allowNewVersionPartition(['apple-tool:', `cdhash:${oldCdhash}`], { oldCdhash: oldCdhash.toUpperCase(), newCdhash }),
+    ['apple-tool:', `cdhash:${oldCdhash}`, `cdhash:${newCdhash.toLowerCase()}`])
+  assert.deepEqual(allowNewVersionPartition([`cdhash:${oldCdhash.toUpperCase()}`], { oldCdhash, newCdhash }),
+    [`cdhash:${oldCdhash.toUpperCase()}`, `cdhash:${newCdhash}`])
+  const already = [`cdhash:${oldCdhash}`, `cdhash:${newCdhash.toLowerCase()}`]
+  assert.deepEqual(allowNewVersionPartition(already, { oldCdhash, newCdhash }), already)
+  assert.throws(() => allowNewVersionPartition(['teamid:ABCDE12345'], { oldCdhash, newCdhash }), /teamid:ABCDE12345.*不敢替客户/)
+  assert.throws(() => allowNewVersionPartition([], { oldCdhash, newCdhash }), /（空）/)
 })
 
 test('createFeedServer serves the flat feed and nothing else', async (t) => {

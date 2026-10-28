@@ -433,6 +433,61 @@ function findLostSettings(beforeText, afterText) {
     .map(([key, value]) => `${key}：应为 ${JSON.stringify(value)}，实际是 ${JSON.stringify(after[key])}`)
 }
 
+// `security dump-keychain` prints a text attribute as ="…" when it is plain
+// ASCII and as =0x<hex>  "…escaped…" otherwise; the product name is Chinese.
+function readKeychainAttribute(record, name) {
+  const match = new RegExp(`^\\s*"${name}"<blob>=(?:0x([0-9A-Fa-f]+)|"((?:[^"\\\\]|\\\\.)*)")`, 'm').exec(record)
+  if (!match) return null
+  return match[1] ? Buffer.from(match[1], 'hex').toString('utf8') : match[2]
+}
+
+// The partition list is an ACL entry of its own whose description is a plist,
+// printed as hex.
+function readPartitionIds(record) {
+  const partitions = []
+  for (const entry of record.split(/^\s*entry \d+:\s*$/m).slice(1)) {
+    if (!/^\s*authorizations \(\d+\):.*\bpartition_id\b/m.test(entry)) continue
+    const description = /^\s*description: (\S+)\s*$/m.exec(entry)?.[1] || ''
+    const text = /^(?:[0-9A-Fa-f]{2})+$/.test(description) ? Buffer.from(description, 'hex').toString('utf8') : description
+    for (const match of text.matchAll(/<string>([^<]+)<\/string>/g)) partitions.push(match[1])
+  }
+  return partitions
+}
+
+/**
+ * The key Chromium keeps for the app in the keychain (cookies, safeStorage),
+ * as `security dump-keychain -a` lists it: its service, account and the
+ * partition list deciding which programs may read it without asking. Null
+ * when the dump has no such item.
+ */
+function findSafeStorageItem(dump) {
+  for (const record of String(dump).split(/^keychain: /m)) {
+    if (!/^class: "genp"$/m.test(record)) continue
+    const service = readKeychainAttribute(record, 'svce')
+    if (!service || !service.endsWith(' Safe Storage')) continue
+    return { service, account: readKeychainAttribute(record, 'acct'), partitions: readPartitionIds(record) }
+  }
+  return null
+}
+
+/**
+ * The partition list after the customer answers the keychain prompt the new
+ * version raises with "Always Allow". A program without an Apple team
+ * identifier is admitted by the hash of its own code, so every update is a
+ * stranger to the key the version before it created. Refuses a list that
+ * does not show the old version admitted that way: then this is not the
+ * prompt the run knows how to answer.
+ */
+function allowNewVersionPartition(partitions, { oldCdhash, newCdhash }) {
+  const oldEntry = partitions.find((partition) => partition.toLowerCase() === `cdhash:${oldCdhash.toLowerCase()}`)
+  if (!oldEntry) {
+    throw new Error(`钥匙串里那把钥匙的放行名单（${partitions.join('、') || '空'}）里没有按 cdhash:${oldCdhash} 放行的旧版本，不是认得的那种询问，不敢替客户点「始终允许」`)
+  }
+  const hex = oldEntry.slice('cdhash:'.length)
+  const newEntry = `cdhash:${hex === hex.toUpperCase() ? newCdhash.toUpperCase() : newCdhash.toLowerCase()}`
+  return partitions.includes(newEntry) ? partitions : [...partitions, newEntry]
+}
+
 function parseRuntimeLog(text) {
   const entries = []
   for (const line of String(text).split(/\r?\n/)) {
@@ -515,6 +570,7 @@ module.exports = {
   UPDATE_KEY_MODULE,
   WINDOWS_ASAR_RESOURCE_FILE,
   addHostsBlock,
+  allowNewVersionPartition,
   applyCustomerSettings,
   asarFileIntegrity,
   asarHeaderHash,
@@ -524,6 +580,7 @@ module.exports = {
   extractNetworkTargets,
   findLostSettings,
   findPinnedUpdateKeys,
+  findSafeStorageItem,
   findVersionUpdatedEntry,
   generateUpdateSigningKey,
   parseRuntimeLog,

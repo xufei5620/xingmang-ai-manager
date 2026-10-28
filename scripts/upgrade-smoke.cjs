@@ -30,6 +30,7 @@ const { compareReleaseVersions, parseLatestMetadata } = require('./update-releas
 const {
   UPDATE_KEY_MODULE,
   addHostsBlock,
+  allowNewVersionPartition,
   applyCustomerSettings,
   asarHeaderHash,
   createFeedServer,
@@ -38,6 +39,7 @@ const {
   extractNetworkTargets,
   findLostSettings,
   findPinnedUpdateKeys,
+  findSafeStorageItem,
   findVersionUpdatedEntry,
   generateUpdateSigningKey,
   parseRuntimeLog,
@@ -357,6 +359,10 @@ const windows = {
   },
 
   // Where the old version left the download and the installer it started.
+  // Windows keeps Chromium's key under DPAPI, bound to the user rather than
+  // the program: the new version reads it without asking anyone.
+  approveNewVersion() {},
+
   describeScene() {
     const cache = path.join(process.env.LOCALAPPDATA || '', 'xingmang-ai-manager-updater')
     const listed = fs.existsSync(cache) ? fs.readdirSync(cache, { recursive: true }).join('、') : '（没有）'
@@ -409,10 +415,19 @@ function createMacSigningIdentity(work, cleanups) {
   if (searchList.length === 0) throw new Error('读不出当前用户的钥匙串搜索列表，不敢改')
   security(['list-keychains', '-d', 'user', '-s', keychainPath, ...searchList])
   cleanups.push(() => security(['list-keychains', '-d', 'user', '-s', ...searchList]))
+  // The old version creates its Safe Storage key in the default keychain on
+  // first start. Here that is this run's keychain, whose password the run
+  // knows, so it can answer for the customer the prompt the new version
+  // raises (approveNewVersion); the runner's own login keychain password is
+  // not the run's to type.
+  const defaultKeychain = security(['default-keychain', '-d', 'user']).trim().replace(/^"(.*)"$/, '$1')
+  if (!defaultKeychain) throw new Error('读不出当前用户的默认钥匙串，不敢改')
+  security(['default-keychain', '-d', 'user', '-s', keychainPath])
+  cleanups.push(() => security(['default-keychain', '-d', 'user', '-s', defaultKeychain]))
   const sha1 = run('/usr/bin/openssl', ['x509', '-in', certificate.certificatePath, '-noout', '-fingerprint', '-sha1'])
     .stdout.split('=').at(-1).trim().replaceAll(':', '').toUpperCase()
   fs.rmSync(path.join(work, 'certificate'), { recursive: true, force: true })
-  return { sha1, keychainPath }
+  return { sha1, keychainPath, keychainPassword, security }
 }
 
 function macResign(appPath, identity) {
@@ -423,6 +438,15 @@ function macResign(appPath, identity) {
   run('/usr/bin/codesign', ['--force', '--deep', '--preserve-metadata=identifier,entitlements,flags,runtime', '--timestamp=none',
     '--sign', identity.sha1, '--keychain', identity.keychainPath, appPath], { timeoutMs: 10 * 60 * 1000 })
   run('/usr/bin/codesign', ['--verify', '--deep', '--strict', appPath], { timeoutMs: 10 * 60 * 1000 })
+}
+
+// The hash a keychain partition list admits a program by when it has no
+// Apple team identifier (allowNewVersionPartition).
+function macCdhash(appPath) {
+  const signature = run('/usr/bin/codesign', ['-d', '-vvv', appPath])
+  const cdhash = /^CDHash=([0-9a-f]{40})$/im.exec(`${signature.stderr}${signature.stdout}`)?.[1]
+  if (!cdhash) throw new Error(`读不出 ${path.basename(appPath)} 的 CDHash`)
+  return cdhash
 }
 
 function macBundleValue(installed, key) {
@@ -475,6 +499,7 @@ const macos = {
     run('/usr/bin/ditto', ['-x', '-k', path.join(release, file.relativePath), unpacked], { timeoutMs: 10 * 60 * 1000 })
     const appPath = findAppBundle(unpacked)
     macResign(appPath, identity)
+    const newCdhash = macCdhash(appPath)
     const zipPath = path.join(feed, file.relativePath)
     run('/usr/bin/ditto', ['-c', '-k', '--sequesterRsrc', '--keepParent', appPath, zipPath], { timeoutMs: 10 * 60 * 1000 })
     const zip = fs.readFileSync(zipPath)
@@ -485,7 +510,7 @@ const macos = {
       size: zip.length,
     }))
     fs.rmSync(unpacked, { recursive: true, force: true })
-    return {}
+    return { newCdhash }
   },
 
   // Copying the app out of the disk image starts nothing, so here the app is
@@ -540,6 +565,38 @@ const macos = {
     fs.writeFileSync(configPath, rewriteUpdateFeedUrl(fs.readFileSync(configPath, 'utf8'), feedUrl))
     macResign(installed.appPath, identity)
     report('旧版本已改成认本机假源，并和新版本换成同一个临时签名身份')
+    return { oldCdhash: macCdhash(installed.appPath) }
+  },
+
+  // The app encrypts its cookies (the enableCookieEncryption fuse), so on
+  // every start Chromium reads its Safe Storage key from the keychain before
+  // the app's own code runs. The key admits the version that created it by its code hash, and
+  // the first start of an update asks for the login password: the dialog
+  // customers met on 10-27, answered with "Always Allow". Unanswered it holds
+  // the new version before its first log line. The run answers it the way
+  // the customer does, and only when the old version was admitted the way
+  // that dialog implies; anything else fails here instead of hanging there.
+  approveNewVersion(installed, { identity, oldCdhash, newCdhash }) {
+    const item = findSafeStorageItem(identity.security(['dump-keychain', '-a', identity.keychainPath]))
+    if (!item) {
+      const service = `${PRODUCT_NAME} Safe Storage`
+      if (run('/usr/bin/security', ['find-generic-password', '-s', service], { allowFailure: true }).status === 0) {
+        throw new Error(`旧版本把「${service}」建在了别的钥匙串里，不是这次的临时钥匙串，替不了客户点「始终允许」`)
+      }
+      report('旧版本没往钥匙串里存钥匙，新版本第一次打开时自己建，不会弹框')
+      return
+    }
+    const partitions = allowNewVersionPartition(item.partitions, { oldCdhash, newCdhash })
+    if (partitions.length === item.partitions.length) return
+    identity.security(['set-generic-password-partition-list', '-s', item.service, ...(item.account ? ['-a', item.account] : []),
+      '-S', partitions.join(','), '-k', identity.keychainPassword, identity.keychainPath], [identity.keychainPassword])
+    // `security -i`, which carries the password on stdin, does not report a
+    // failed subcommand through its exit status; the list is read back instead.
+    const updated = findSafeStorageItem(identity.security(['dump-keychain', '-a', identity.keychainPath]))
+    if (!updated || partitions.some((partition) => !updated.partitions.includes(partition))) {
+      throw new Error(`没能把新版本加进「${item.service}」的放行名单，现在是：${updated ? updated.partitions.join('、') : '钥匙不见了'}`)
+    }
+    report(`新版本第一次打开会弹钥匙串框要「${item.service}」；替客户输了密码点「始终允许」：放行名单 ${item.partitions.join('、')} 加上新版本`)
   },
 
   launch(installed) {
@@ -589,6 +646,20 @@ const macos = {
     const unified = sudo(['/usr/bin/log', 'show', '--last', '20m', '--style', 'compact', '--predicate',
       'process == "ShipIt" OR eventMessage CONTAINS[c] "squirrel" OR eventMessage CONTAINS[c] "ShipIt"'], { allowFailure: true, timeoutMs: 180_000 })
     lines.push('系统日志里 ShipIt / Squirrel 的最后 60 行：', ...`${unified.stdout}${unified.stderr}`.trim().split('\n').slice(-60).map((line) => `  ${line}`))
+    // An app that is running but never logged is held by something before its
+    // own code: a system dialog nobody on a runner can answer shows as a live
+    // SecurityAgent, and the main thread's stack says what it is waiting on.
+    const agent = run('/usr/bin/pgrep', ['-x', 'SecurityAgent'], { allowFailure: true }).status === 0
+    lines.push(`系统授权框（SecurityAgent）开着吗：${agent ? '开着' : '没有'}`)
+    const pid = run('/usr/bin/pgrep', ['-f', `${installed.appPath}/Contents/MacOS/`], { allowFailure: true }).stdout.trim().split(/\s+/)[0]
+    if (pid) {
+      lines.push(run('/bin/ps', ['-o', 'pid,stat,etime,command', '-p', pid], { allowFailure: true }).stdout.trim())
+      const sampled = run('/usr/bin/sample', [pid, '1'], { allowFailure: true, timeoutMs: 60_000 }).stdout.split('\n')
+      const start = sampled.findIndex((line) => line.includes('com.apple.main-thread'))
+      const end = start === -1 ? -1 : sampled.findIndex((line, index) => index > start && /^\s{4}\d+ Thread_/.test(line))
+      const stack = start === -1 ? ['（没取到）'] : sampled.slice(start, end === -1 ? start + 45 : Math.min(end, start + 45))
+      lines.push('主线程卡在哪：', ...stack.map((line) => `  ${line.slice(0, 220)}`))
+    }
     return lines
   },
 }
@@ -664,7 +735,7 @@ async function upgrade(options) {
     const lastRunPath = path.join(userData, 'last-run-version.json')
     const settingsPath = path.join(userData, 'settings.json')
     log = createLogFollower(path.join(userData, 'logs', 'runtime.jsonl'))
-    platform.patchOld(installed, { feedUrl, key: prepared.key, identity })
+    const patched = platform.patchOld(installed, { feedUrl, key: prepared.key, identity })
 
     const tick = () => {
       log.flush()
@@ -683,6 +754,7 @@ async function upgrade(options) {
     // settings file looks after weeks of use; the new version has to keep them.
     const settingsBefore = applyCustomerSettings(fs.readFileSync(settingsPath, 'utf8'))
     fs.writeFileSync(settingsPath, settingsBefore)
+    platform.approveNewVersion(installed, { ...prepared, ...patched, identity })
 
     report(`第二次打开（这时装着的是 ${platform.installedVersion(installed)}），等它自己装上新版本并重开`)
     platform.launch(installed)
