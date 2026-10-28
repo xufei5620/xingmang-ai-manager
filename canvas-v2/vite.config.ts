@@ -22,6 +22,12 @@ export default defineConfig({
     },
   }],
   base: './',
+  build: {
+    // Vite 默认往入口里塞一段 modulepreload 兼容代码，它用 fetch 预取 <link> 指的模块。
+    // 画布只跑在 Electron 自带的 Chromium 里，原生就支持 modulepreload，这段代码永远不会走到；
+    // 留着它，产物出网门禁（verify-canvas-network-boundary）就得给一处不属于画布的 fetch 开口子。
+    modulePreload: { polyfill: false },
+  },
   resolve: {
     dedupe: ['react', 'react-dom', '@xyflow/react'],
   },

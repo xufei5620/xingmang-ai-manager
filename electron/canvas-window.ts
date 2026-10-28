@@ -1167,6 +1167,19 @@ export function createCanvasWindowController(
       onError: (cause) => { options.runtimeLog.exception('canvas', 'process.gone.recover-failed', cause) },
     })
     canvasCrashRecovery = crashRecovery
+    // The canvas shares the default session with the main window. A download
+    // started by the canvas page opens the system Save As dialog and writes
+    // wherever it is pointed, bypassing the native-dialog-plus-atomic-write
+    // save channels (I15). The desktop canvas saves only through those
+    // channels, so refuse every download it starts and leave other windows'
+    // downloads alone.
+    const canvasSession = window.webContents.session
+    const refuseCanvasDownload = (event: Electron.Event, _item: Electron.DownloadItem, source: Electron.WebContents) => {
+      if (source.id !== senderId) return
+      event.preventDefault()
+      options.runtimeLog.log('warn', 'canvas', 'download.refused', '已拦下画布页面发起的下载')
+    }
+    canvasSession.on('will-download', refuseCanvasDownload)
 
     window.once('ready-to-show', () => {
       window.center()
@@ -1181,6 +1194,7 @@ export function createCanvasWindowController(
       void requestClose()
     })
     window.on('closed', () => {
+      canvasSession.removeListener('will-download', refuseCanvasDownload)
       if (pendingClose?.window === window) finishPendingClose(pendingClose.authorized)
       options.imageService.cancelSender(senderId)
       options.videoService.cancelSender(senderId)
