@@ -954,10 +954,12 @@ describe('codex-remote-service lifecycle', () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
-    const before = s.snapshots.length
-    await s.service.applyAvailability()
+    // Other work still emits on its own schedule (emitSoon), so count nothing: the refresh is the very
+    // snapshot handed to the listener.
+    const refreshed = await s.service.applyAvailability()
     expect(channel.stopped).toBe(0)
-    expect(s.snapshots.length).toBe(before + 1)
+    expect(refreshed).toMatchObject({ available: true, channels: { feishu: { enabled: true } } })
+    expect(s.snapshots).toContain(refreshed)
 
     s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
     const snapshot = await s.service.applyAvailability()
