@@ -68,9 +68,16 @@ export function toolRouteCooldownMs(failures: number): number {
 
 /**
  * 为什么换的线路：failed = 连续几轮没通；hijack = 判成劫持；incident = 服务端在处理整体故障，等够了
- * 还不通，切 CF；recovered = 更高的线路一直通，切回去。
+ * 还不通，切 CF；recovered = 更高的线路一直通，切回去；payload-too-large = Codex 有个对话在 CF 上大到发不
+ * 出去（codex-payload-limit.ts），洛杉矶查得通就换过去。
  */
-export type ToolRouteChangeReason = 'failed' | 'hijack' | 'incident' | 'recovered'
+export type ToolRouteChangeReason = 'failed' | 'hijack' | 'incident' | 'recovered' | 'payload-too-large'
+
+/**
+ * 叫工具线路换到洛杉矶（holdDirect）的结果：switched = 换过去了；already = 本来就在洛杉矶；unreachable = 洛杉矶
+ * 这会儿没查通，没换；fixed = 设置里写死了线路，不换。
+ */
+export type ToolRouteHoldResult = 'switched' | 'already' | 'unreachable' | 'fixed'
 
 export interface ToolRouteChange {
   from: RelayEndpointId
@@ -164,6 +171,12 @@ export interface ToolRouteController {
   recheck(trigger: 'resume' | 'network' | 'manual'): void
   /** 写配置前查模型、工具自检报上来的连接级失败：只叫这里查一轮，不直接计入连败。 */
   reportFailure(trigger: string): void
+  /**
+   * Codex 有个对话在 CF 上大到发不出去（codex-payload-limit.ts）：查一次洛杉矶，通了就换过去，不等三轮、
+   * 不看两次切换的间隔。CF 本来就排在洛杉矶后面，换过去以后没有「CF 好了切回去」这回事；洛杉矶自己连不上
+   * 照旧按原来的规矩退回 CF。
+   */
+  holdDirect(trigger: string): Promise<ToolRouteHoldResult>
   /** 线路、服务端切换状态、三线全挂状态变了就叫一声。 */
   subscribe(listener: (snapshot: ToolRouteSnapshot) => void): () => void
   dispose(): void
@@ -420,7 +433,8 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
   function switchTo(target: RelayEndpointId, reason: ToolRouteChangeReason, trigger: string): void {
     const from = current
     const at = now()
-    if (reason !== 'recovered') {
+    // 对话太大换下来的那条线路本身没坏，不记失败：记了会拉长以后回它的冷却期。
+    if (reason !== 'recovered' && reason !== 'payload-too-large') {
       const records = [...(state.failures[from] ?? []), at]
       state = { ...state, failures: { ...state.failures, [from]: records } }
     }
@@ -441,7 +455,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
     state = { ...state, line: target, lastChange: change }
     log('info', 'relay.route.changed', target === 'direct' ? '工具线路改走线路2' : '工具线路改走线路1', {
       from, to: target, reason, trigger: change.trigger,
-      ...(reason === 'recovered' ? {} : { failures7d: failuresOf(from).length }),
+      ...(reason === 'recovered' || reason === 'payload-too-large' ? {} : { failures7d: failuresOf(from).length }),
     })
     persist()
     emit()
@@ -696,6 +710,17 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
       reportedAt = at
       beginRound(triggerPattern.test(trigger) ? trigger : 'request')
     },
+    async holdDirect(trigger) {
+      if (!automatic || disposed) return 'fixed'
+      if (current === 'direct') return 'already'
+      const result = await probe('direct')
+      if (disposed) return 'fixed'
+      // 查的这一会儿已经换过去了（定时那一轮回升）。
+      if (snapshot().line === 'direct') return 'already'
+      if (!result.ok) return 'unreachable'
+      switchTo('direct', 'payload-too-large', triggerPattern.test(trigger) ? trigger : 'payload')
+      return 'switched'
+    },
     subscribe(listener) {
       listeners.add(listener)
       return () => { listeners.delete(listener) }
@@ -714,7 +739,7 @@ export function createToolRouteController(dependencies: ToolRouteControllerDepen
 
 const stateLabel = '工具线路状态'
 const maxStateBytes = 8 * 1024
-const changeReasons: readonly ToolRouteChangeReason[] = ['failed', 'hijack', 'incident', 'recovered']
+const changeReasons: readonly ToolRouteChangeReason[] = ['failed', 'hijack', 'incident', 'recovered', 'payload-too-large']
 const outageReasons: readonly ToolRouteOutageReason[] = ['reset', 'certificate', 'dns', 'unreachable', 'hijack']
 
 function isTimestamp(value: unknown): value is number {

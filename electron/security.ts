@@ -1,5 +1,8 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { accelerationWorkerArgument } from './acceleration-worker-entry'
+import { loginLaunchArgument } from './login-launch'
+import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 
 export interface ApplicationUrlPolicy {
   rendererRoot: string
@@ -169,10 +172,10 @@ export function isAllowedExternalUrl(targetUrl: string, allowlist: readonly stri
 // arguments would run with the elevated token (#1065).
 //
 // Residual risk: this is a blocklist, so a dangerous switch missing from it
-// still works, and the check runs after Chromium has parsed the command line,
-// so a switch consumed before the main script runs (for example by a child
-// process launched that early) is not undone by exiting here. Accepting only
-// known arguments is the follow-up step in #1065.
+// still works; on Windows, where the elevation is, resolvePackagedLaunchArguments
+// below also drops every switch it does not know. Both run after Chromium has
+// parsed the command line, so a switch consumed before the main script runs (for
+// example by a child process launched that early) is not undone by exiting here.
 const blockedPackagedSwitchNames = new Set([
   // Node inspector. The nodeCliInspect fuse is the first lock; this is the second.
   'inspect',
@@ -218,4 +221,66 @@ export function hasDisallowedPackagedDebugSwitch(
     const switchName = resolveSwitchName(argument, platform)
     return switchName !== null && blockedPackagedSwitchNames.has(switchName)
   })
+}
+
+// Every switch something we know of starts the packaged Windows app with. Only
+// Windows gets an allowlist: it is where a shortcut edit can ride an elevated
+// token, while macOS never elevates this app and Linux refuses to run it as root.
+// Names are compared the way Chromium reads them, so another spelling of an
+// allowed name passes too; none of them is read by Chromium, Electron or Node,
+// except user-data-dir.
+const windowsPackagedLaunchSwitchNames = new Set([
+  // The Run key entry for "open at login" (platform/system-service.ts), which the
+  // unexpected-exit relaunch also adds while the window is in the tray.
+  loginLaunchArgument,
+  // electron-builder's StartApp after an update and the finish page's "run" box
+  // (common.nsh, assistedInstaller.nsh).
+  '--updated',
+  // customUnInstall in build/installer.nsh.
+  uninstallCleanupArgument,
+  uninstallClearLoginArgument,
+  // The packaged acceleration worker (acceleration-development-host.ts).
+  accelerationWorkerArgument,
+  // Electron registers this executable as its toast activator's COM server, and
+  // Windows adds one of these when a notification click starts the app cold.
+  '-Embedding',
+  '-ToastActivated',
+  // The acceleration worker's private profile, and the packaged smokes in CI. It
+  // only moves a directory that normally sits in %APPDATA%, where the same user
+  // can already write anything and which I8 already treats as hostile.
+  '--user-data-dir',
+].flatMap((argument) => resolveSwitchName(argument, 'win32') ?? []))
+
+export type PackagedLaunchArguments =
+  | { action: 'start' }
+  | { action: 'exit' }
+  | { action: 'relaunch'; args: string[]; dropped: string[] }
+
+// A switch outside the allowlist is dropped by starting again without it rather
+// than by refusing to start: a launcher we did not foresee, or a tweak someone
+// once typed into a shortcut, must not leave a customer with an app that never
+// opens. The relaunch keeps the process token, so an elevated launch comes back
+// elevated, minus the switches. Positional arguments (the deep link) are kept.
+export function resolvePackagedLaunchArguments(
+  argv: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): PackagedLaunchArguments {
+  if (hasDisallowedPackagedDebugSwitch(argv, platform)) return { action: 'exit' }
+  if (platform !== 'win32') return { action: 'start' }
+  const args: string[] = []
+  const dropped: string[] = []
+  for (const argument of argv.slice(1)) {
+    if (typeof argument !== 'string') continue
+    const switchName = resolveSwitchName(argument, platform)
+    if (switchName === null || windowsPackagedLaunchSwitchNames.has(switchName)) args.push(argument)
+    else dropped.push(switchName)
+  }
+  if (dropped.length === 0) return { action: 'start' }
+  // The uninstaller and the acceleration host start these with exact arguments
+  // and hold on to this very process (one waits for its exit code, the other
+  // talks to it over IPC); a relaunch would only cut the work loose from them.
+  if (argv.includes(uninstallCleanupArgument) || argv.includes(accelerationWorkerArgument)) {
+    return { action: 'exit' }
+  }
+  return { action: 'relaunch', args, dropped }
 }

@@ -118,7 +118,7 @@ describe('createWeixinRemoteChannel', () => {
       ret: 0,
       get_updates_buf: 'next',
       msgs: [
-        { message_id: 1, from_user_id: owner, message_type: 1, context_token: 'c1', item_list: [{ type: 1, text_item: { text: '一' } }] },
+        { message_id: 1, from_user_id: owner, message_type: 1, create_time_ms: 1761379200000, context_token: 'c1', item_list: [{ type: 1, text_item: { text: '一' } }] },
         { message_id: 2, from_user_id: 'stranger@im.wechat', message_type: 1, item_list: [{ type: 1, text_item: { text: '偷' } }] },
         { message_id: 3, from_user_id: owner, message_type: 2, item_list: [{ type: 1, text_item: { text: '回声' } }] },
       ],
@@ -142,6 +142,41 @@ describe('createWeixinRemoteChannel', () => {
     expect(polls.map((request) => request.body.get_updates_buf)).toEqual(['', 'next', 'next'])
     await channel.stop()
     expect(requests.at(-1)?.url).toBe('https://ilinkai.weixin.qq.com/ilink/bot/msg/notifystop')
+  })
+
+  // #1407 P3-5：每次打开都从空游标拉，第一批里可能有星芒关着时发的旧消息；旧不旧要看发送时间，没带的不执行。
+  it('holds back a message without a sent time from the first batch after opening', async () => {
+    const first = JSON.stringify({
+      ret: 0,
+      get_updates_buf: 'next',
+      msgs: [
+        { message_id: 11, from_user_id: owner, message_type: 1, item_list: [{ type: 1, text_item: { text: '不知道什么时候发的' } }] },
+        { message_id: 12, from_user_id: owner, message_type: 1, create_time_ms: 1761379200000, item_list: [{ type: 1, text_item: { text: '带时间的' } }] },
+      ],
+    })
+    const later = JSON.stringify({
+      ret: 0,
+      get_updates_buf: 'later',
+      msgs: [
+        { message_id: 11, from_user_id: owner, message_type: 1, item_list: [{ type: 1, text_item: { text: '不知道什么时候发的' } }] },
+        { message_id: 13, from_user_id: owner, message_type: 1, item_list: [{ type: 1, text_item: { text: '打开以后发的' } }] },
+      ],
+    })
+    let pollCount = 0
+    const { dependencies, logs } = harness(credentialText(), (url) => {
+      if (url.includes('/msg/notify')) return jsonResponse({ ret: 0 })
+      pollCount += 1
+      if (pollCount === 1) return jsonResponse(first)
+      return pollCount === 2 ? jsonResponse(later) : blockUntilAborted()
+    })
+    const inbound: RemoteInbound[] = []
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
+    await channel.start({ onInbound: (item) => inbound.push(item), onStatus: () => undefined })
+    await vi.waitFor(() => expect(pollCount).toBe(3))
+    // 第一批里没时间的那条不执行，之后重发也不执行；后面拉到的新消息照常交出去。
+    expect(inbound.map((item) => (item.kind === 'text' ? item.text : item.kind))).toEqual(['带时间的', '打开以后发的'])
+    expect(logs).toContain('weixin-inbound-ignored')
+    await channel.stop()
   })
 
   it('stops polling and asks for a new scan when the session expires', async () => {

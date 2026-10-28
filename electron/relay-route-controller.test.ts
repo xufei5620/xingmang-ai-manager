@@ -12,6 +12,7 @@ import {
   relayRouteLineDownConfirmMs,
   relayRouteMinSwitchGapMs,
   relayRouteNetworkSettleMs,
+  relayRoutePayloadHoldMs,
   relayRouteRecheckIntervalMs,
   relayRouteRecoveryMs,
   relayRouteRecoveryProbeIntervalMs,
@@ -1298,6 +1299,150 @@ describe('relay route controller', () => {
     expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
     expect(removed).not.toHaveBeenCalled()
   })
+
+  describe('holding line 2 for a Codex conversation too large for line 1', () => {
+    it('moves the historical site to line 2 on one passing check and keeps it there for a day without counting a failure', async () => {
+      const run = harness({ preferences: { 'solov-api': 'auto' } })
+      run.controller.start()
+      await settle()
+      run.probes.length = 0
+      run.changes.length = 0
+      expect(await run.controller.holdDirect('solov-api', 'payload-too-large')).toBe('switched')
+      await settle()
+      expect(run.probes).toEqual([['solov-api', 'direct']])
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+      expect(run.changes).toEqual([['solov-api', { line: 'direct', settled: true }]])
+      const change = { from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large', at: startedAt }
+      expect(run.controller.lastChange('solov-api')).toEqual(change)
+      expect(run.writes.at(-1)).toEqual({ lines: { 'solov-api': 'direct' }, changes: { 'solov-api': change }, holds: { 'solov-api': startedAt } })
+      expect(run.events('relay.route.changed').at(-1)).toEqual({
+        siteId: 'solov-api', from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large',
+      })
+      // 切回线路 1 的检查要等这一天过完才开始。
+      expect(run.delays()).toEqual([relayRoutePayloadHoldMs])
+    })
+
+    it('does not switch back to line 1 within the day, even when line 1 answers every check', async () => {
+      const run = harness({ preferences: { 'solov-api': 'auto' } })
+      run.controller.start()
+      await settle()
+      await run.controller.holdDirect('solov-api', 'payload-too-large')
+      await settle()
+      for (const trigger of ['manual', 'resume', 'network'] as const) {
+        run.advance(2 * 60 * 60_000)
+        run.controller.recheck(trigger)
+        await settle()
+        if (trigger !== 'manual') await run.fireTimerOf(relayRouteNetworkSettleMs)
+        expect(run.controller.lines()['solov-api'].line).toBe('direct')
+      }
+      run.controller.reportFailure('solov-api', 'direct', 'ERR_CONNECTION_RESET')
+      await settle()
+      expect(run.controller.lines()['solov-api'].line).toBe('direct')
+      expect(run.events('relay.route.changed').filter((entry) => entry.reason === 'recovered')).toEqual([])
+      // 查过几轮，切回去的检查还是换过去那一刻排下的那一个。
+      expect(run.delays()).toEqual([relayRoutePayloadHoldMs])
+    })
+
+    it('starts the usual ten minutes of checks before switching back once the day is over', async () => {
+      const run = harness({ preferences: { 'solov-api': 'auto' } })
+      run.controller.start()
+      await settle()
+      await run.controller.holdDirect('solov-api', 'payload-too-large')
+      await settle()
+      const heldAt = run.now()
+      run.probes.length = 0
+      for (let probe = 0; probe < recoveryProbes; probe++) {
+        expect(run.controller.lines()['solov-api'].line).toBe('direct')
+        await run.fireTimer()
+      }
+      expect(run.probes).toEqual(Array.from({ length: recoveryProbes }, () => ['solov-api', 'primary']))
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+      expect(run.now() - heldAt).toBe(relayRoutePayloadHoldMs + relayRouteRecoveryMs)
+      expect(run.controller.lastChange('solov-api')).toMatchObject({ from: 'direct', to: 'primary', reason: 'recovered' })
+      expect(run.writes.at(-1)?.holds).toBeUndefined()
+    })
+
+    it('still falls back to line 1 when line 2 itself goes down, and drops the hold', async () => {
+      const run = harness({ preferences: { 'solov-api': 'auto' } })
+      run.controller.start()
+      await settle()
+      await run.controller.holdDirect('solov-api', 'payload-too-large')
+      await settle()
+      run.reachable.direct = false
+      run.advance(relayRouteMinSwitchGapMs)
+      run.controller.reportFailure('solov-api', 'direct', 'ERR_CONNECTION_RESET')
+      await settle()
+      await run.fireTimerOf(relayRouteLineDownConfirmMs)
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+      expect(run.controller.lastChange('solov-api')).toMatchObject({ from: 'direct', to: 'primary', reason: 'line-down' })
+      expect(run.writes.at(-1)?.holds).toBeUndefined()
+      expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+    })
+
+    it('keeps a stored hold across a restart and waits out what is left of the day', async () => {
+      const heldAt = startedAt - 60 * 60_000
+      const change: RelayRouteChange = { from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large', at: heldAt }
+      const run = harness({
+        preferences: { 'solov-api': 'auto' },
+        readConclusions: () => ({ lines: { 'solov-api': 'direct' }, changes: { 'solov-api': change }, holds: { 'solov-api': heldAt } }),
+      })
+      // 对话太大换过去的线路 2 不按旧的「直连优先」规矩丢掉。
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+      expect(run.controller.lastChange('solov-api')).toEqual(change)
+      run.controller.start()
+      await settle()
+      // 开机两条一起查，线路 1 查通了也不算切回去的头一次：这一天过完以后从头数够十分钟。
+      expect(run.probes).toEqual([['solov-api', 'direct'], ['solov-api', 'primary']])
+      expect(run.controller.lines()['solov-api'].line).toBe('direct')
+      expect(run.delays()).toEqual([relayRoutePayloadHoldMs - 60 * 60_000])
+      run.probes.length = 0
+      for (let probe = 0; probe < recoveryProbes; probe++) {
+        expect(run.controller.lines()['solov-api'].line).toBe('direct')
+        await run.fireTimer()
+      }
+      expect(run.probes).toHaveLength(recoveryProbes)
+      expect(run.controller.lines()['solov-api'].line).toBe('primary')
+    })
+
+    it('starts the hold without a check when the site is already on line 2', async () => {
+      const fellBack: RelayRouteChange = { from: 'primary', to: 'direct', reason: 'health-failed', trigger: 'scheduled', at: 5 }
+      const run = harness({ preferences: { 'solov-api': 'auto' }, conclusions: { 'solov-api': 'direct' }, changes: { 'solov-api': fellBack } })
+      expect(await run.controller.holdDirect('solov-api', 'payload-too-large')).toBe('already')
+      expect(run.probes).toEqual([])
+      expect(run.controller.lastChange('solov-api')).toEqual(fellBack)
+      expect(run.delays()).toEqual([relayRoutePayloadHoldMs])
+      await settle()
+      expect(run.writes.at(-1)).toEqual({ lines: { 'solov-api': 'direct' }, changes: { 'solov-api': fellBack }, holds: { 'solov-api': startedAt } })
+      expect(run.events('relay.route.payload-hold')).toEqual([{ siteId: 'solov-api', line: 'direct' }])
+    })
+
+    it('does not switch when line 2 does not answer or the site is pinned', async () => {
+      const run = harness({ preferences: { 'solov-api': 'auto' } })
+      run.controller.start()
+      await settle()
+      run.reachable.direct = false
+      const writes = run.writes.length
+      expect(await run.controller.holdDirect('solov-api', 'payload-too-large')).toBe('unreachable')
+      await settle()
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+      expect(run.writes).toHaveLength(writes)
+
+      const pinned = harness({ preferences: { 'solov-api': 'primary' } })
+      expect(await pinned.controller.holdDirect('solov-api', 'payload-too-large')).toBe('fixed')
+      expect(pinned.probes).toEqual([])
+      const disposed = harness({ preferences: { 'solov-api': 'auto' } })
+      disposed.controller.dispose()
+      expect(await disposed.controller.holdDirect('solov-api', 'payload-too-large')).toBe('fixed')
+    })
+
+    it('records a trigger that is not a plain code under a fixed name', async () => {
+      const run = harness({ preferences: { 'solov-api': 'auto' } })
+      run.controller.start()
+      await settle()
+      await run.controller.holdDirect('solov-api', 'C:\\Users\\someone')
+      expect(run.controller.lastChange('solov-api')?.trigger).toBe('payload')
+    })
+  })
 })
 
 describe('relay route conclusion store', () => {
@@ -1369,6 +1514,21 @@ describe('relay route conclusion store', () => {
     } as unknown as RelayRouteConclusions
     await createRelayRouteConclusionStore(filePath).writeConclusions(conclusions)
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, lines: { 'solov-api': 'direct' } })
+  })
+
+  it('round-trips a hold on line 2 and drops a damaged one', async () => {
+    const filePath = temporaryFile()
+    const held: RelayRouteChange = { from: 'primary', to: 'direct', reason: 'payload-too-large', trigger: 'payload-too-large', at: 1_760_000_000_000 }
+    const conclusions: RelayRouteConclusions = {
+      lines: { 'solov-api': 'direct' }, changes: { 'solov-api': held }, holds: { 'solov-api': 1_760_000_000_000 },
+    }
+    await createRelayRouteConclusionStore(filePath).writeConclusions(conclusions)
+    expect(createRelayRouteConclusionStore(filePath).readConclusions()).toEqual(conclusions)
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, ...conclusions })
+    for (const damaged of [-1, 1.5, '1760000000000', null]) {
+      fs.writeFileSync(filePath, JSON.stringify({ version: 1, lines: { 'solov-api': 'direct' }, holds: { 'solov-api': damaged, sub2api: 1 } }))
+      expect(createRelayRouteConclusionStore(filePath).readConclusions()).toEqual({ lines: { 'solov-api': 'direct' }, changes: {} })
+    }
   })
 
   it('requires an absolute path', () => {

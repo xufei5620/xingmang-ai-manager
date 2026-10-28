@@ -197,6 +197,7 @@ describe('main process quit cleanup', () => {
         'codexRemoteKeepAwake.dispose()',
       ],
       routes: [
+        'codexPayloadWatch.dispose()',
         'unsubscribeRelayRoute()',
         'unsubscribeToolRoutes()',
         'systemService.disposeToolRoutes?.()',
@@ -327,6 +328,17 @@ describe('main process quit cleanup', () => {
     const all = steps.map((step) => step.body).join('\n')
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
     expect(all.match(/developmentAcceleration\?\.dispose\(\)/g)).toHaveLength(1)
+  })
+})
+
+describe('main process application protocol', () => {
+  it('attaches the security policy to every xingmang:// file, worker scripts included', () => {
+    // 页面的 <meta> 到不了后台线程，只有协议回包里的头才管得到拼片线程（app-protocol.ts）。
+    const { source } = mainSource()
+    const body = moduleFunction(source, 'registerApplicationProtocol').getText(source)
+    expect(body).toContain("registerFileProtocol('xingmang'")
+    expect(body).toContain('callback({ path: target, headers: applicationSecurityResponseHeaders() })')
+    expect(body).not.toMatch(/callback\(\{ path: target \}\)/)
   })
 })
 

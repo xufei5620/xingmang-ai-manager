@@ -317,7 +317,9 @@ export function describeRelayRouteChange(change: RelayRouteChange): string {
           : change.trigger === requestFailuresTrigger
             ? `${from}上的请求接连断在半路、等不来回话，改走${to}`
             : `${from}连着 ${relayRouteFailureThreshold} 次没连上，改走${to}`
-        : `查到${to}能连上，走${to}`
+        : change.reason === 'payload-too-large'
+          ? `${from}上有个 Codex 对话太大、发不出去，改走${to}`
+          : `查到${to}能连上，走${to}`
   return `${time}，${reason}`
 }
 

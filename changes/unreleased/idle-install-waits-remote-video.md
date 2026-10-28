@@ -1,7 +1,7 @@
 ## 开发
 
 - Mac 闲时自动装更新（#1380，`update-install-prompt.ts`）多看两样：手机遥控有渠道开着（`CodexRemoteService.hasEnabledChannel`）、
-  视频在出或在取回（两个 `AiVideoService` 的 `hasActiveRequests`，含对话页、视频剪辑页、画布和登录时的续取），
+  视频在出或在取回（两个 `AiVideoService` 的 `hasActiveRequests`，含视频剪辑页、画布和登录时的续取），
   主窗口界面手上有事（#1411 的 `rendererBusy`：视频剪辑拼片在界面里跑，主进程只能靠它看到；对话出字、开着对话框也算），
   任一成立就不装，等它们结束再装，或者退出、下次打开时装（0.2.22 审查 YK-2）。之前装的时候会悄悄停掉遥控（重开后不会自己连回去，人在外面也开不了），
   也会打断正在出的视频（交给服务端的照样扣钱）。

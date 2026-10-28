@@ -6,6 +6,7 @@ import { safeStorage } from 'electron'
 import { commandEnvironment } from '../command-runner'
 import { isCodexCliInstalled, resolveCodexCommand } from '../codex-extensions'
 import type { ProviderConfigRoots } from '../codex-home'
+import type { AppServerProcess } from '../codex-remote-app-server'
 import type { CodexRemoteSnapshot } from '../codex-remote-channel'
 import { createRemoteChannelAdapter } from '../codex-remote-channels'
 import { spawnCodexAppServer } from '../codex-remote-process'
@@ -25,6 +26,8 @@ export interface CodexRemoteBootstrapOptions {
   codexEnv: NodeJS.ProcessEnv
   providerRoots: ProviderConfigRoots
   windowsExecution: { mode: WindowsCliExecutionMode; highIntegrity?: boolean }
+  /** 起 Codex 排进安装队列（I11，#1407 P3-3）：装、更新、卸载 Codex 时等它做完再起。 */
+  enqueueLaunch(launch: () => Promise<AppServerProcess>): Promise<AppServerProcess>
   onStateChanged(snapshot: CodexRemoteSnapshot): void
 }
 
@@ -56,11 +59,11 @@ export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRe
     appVersion: options.appVersion,
     homeDirectory: options.homeDirectory,
     log: (level, event, detail) => options.runtimeLog.log(level, 'codex-remote', event, `手机遥控：${event}`, detail),
-    spawnCodex: () => spawnCodexAppServer({
+    spawnCodex: () => options.enqueueLaunch(() => spawnCodexAppServer({
       env,
       // 只在普通权限下才会走到这里（resolveCodexRemoteAvailability），所以按 same-user 认 Codex。
       resolveCommand: () => resolveCodexCommand(env, undefined, undefined, 'same-user'),
-    }),
+    })),
     readCodexSecrets: async () => {
       const key = inspectProviderConfig('codex', options.providerRoots).apiKey.trim()
       return key ? [key] : []

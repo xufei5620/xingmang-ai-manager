@@ -3,22 +3,23 @@ import type { AppSettingsV2, XingmangApi } from '../../../../electron/ipc-contra
 import { errorMessage } from '../../business-common'
 import { diagnosticsRevision, publishDiagnosticsCounts } from './environment-status'
 import { platformApi } from '../../platform-api'
-import { crashReportingNotice, displayRelaunchNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, toolRouteRestartNotice, usageStatsNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './startup-notice'
+import { codexPayloadNotice, crashReportingNotice, displayRelaunchNotice, startupCheckFailure, startupCheckLogContext, startupDiagnosticsIssues, toolRouteRestartNotice, usageStatsNotice, withStartupNotice, withoutStartupNotice, type StartupCheckId, type StartupNotice } from './startup-notice'
 import type { AppApi, AppToast, Perform } from './runtime-context'
 
 const routeRestartHintKey = 'xingmang-v2-route-restart-hint'
+const codexPayloadNoticeKey = 'xingmang-v2-codex-payload-notice'
 
-function readShownRouteRestartHint(): number | null {
+function readShownNoticeId(key: string): number | null {
   try {
-    const value = Number(window.sessionStorage.getItem(routeRestartHintKey))
+    const value = Number(window.sessionStorage.getItem(key))
     return Number.isSafeInteger(value) && value > 0 ? value : null
   } catch {
     return null
   }
 }
 
-function rememberShownRouteRestartHint(id: number) {
-  try { window.sessionStorage.setItem(routeRestartHintKey, String(id)) } catch { /* 记不下最多重新加载后再说一次。 */ }
+function rememberShownNoticeId(key: string, id: number) {
+  try { window.sessionStorage.setItem(key, String(id)) } catch { /* 记不下最多重新加载后再说一次。 */ }
 }
 
 /** 角落那一摞启动提示（StartupNotices）：谁都能往里挂一条，用户随手能关。 */
@@ -36,13 +37,24 @@ export function useStartupNotices(native: XingmangApi, mounted: RefObject<boolea
   // 换线路的重开提示每条只弹一次：窗口重载、同一条提示又被读到时不再弹。缩到托盘关掉界面再重新加载
   // 也算同一个窗口，记在 sessionStorage 里，重新加载以后还认得。
   const shownRouteRestartHint = useRef<number | null>(null)
+  // Codex 有个对话太大、要新开对话的那条（主进程 codex-payload-limit.ts）跟着设置一起读到，同样每条只弹一次。
+  const shownCodexPayloadNotice = useRef<number | null>(null)
   const showRouteRestartHint = useCallback((next: AppSettingsV2) => {
+    const payload = next.codexPayloadNotice
+    if (payload) {
+      shownCodexPayloadNotice.current ??= readShownNoticeId(codexPayloadNoticeKey)
+      if (shownCodexPayloadNotice.current !== payload.id) {
+        shownCodexPayloadNotice.current = payload.id
+        rememberShownNoticeId(codexPayloadNoticeKey, payload.id)
+        noteStartupCheck(codexPayloadNotice(payload))
+      }
+    }
     const hint = next.toolRouteRestartHint
     if (!hint) return
-    shownRouteRestartHint.current ??= readShownRouteRestartHint()
+    shownRouteRestartHint.current ??= readShownNoticeId(routeRestartHintKey)
     if (shownRouteRestartHint.current === hint.id) return
     shownRouteRestartHint.current = hint.id
-    rememberShownRouteRestartHint(hint.id)
+    rememberShownNoticeId(routeRestartHintKey, hint.id)
     const notice = toolRouteRestartNotice(hint)
     if (notice) noteStartupCheck(notice)
   }, [noteStartupCheck])

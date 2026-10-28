@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
 import {
   addVideoStudioShot,
@@ -15,6 +16,7 @@ import {
   settleVideoStudioModels,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotProblem,
@@ -64,6 +66,13 @@ describe('video studio project', () => {
     expect(videoStudioShotProblem({ id: 'a', prompt: '  ', caption: '', status: 'idle' }, 1)).toBe('第 2 个镜头还没写画面描述')
     expect(videoStudioShotProblem({ id: 'a', prompt: '画'.repeat(1_501), caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头的画面描述太长了，删到 1500 个字以内')
     expect(videoStudioShotProblem({ id: 'a', prompt: '橘猫', caption: '', status: 'idle' }, 0)).toBeNull()
+  })
+
+  it('drops invisible control characters pasted into the text before it is sent, keeping line breaks and tabs', () => {
+    expect(videoStudioPlainText(' 橘猫\u000b在雨里\u0000\n回家\t了\u007f ')).toBe('橘猫在雨里\n回家\t了')
+    expect(videoStudioShotProblem({ id: 'a', prompt: '\u0001\u0002', caption: '', status: 'idle' }, 0)).toBe('第 1 个镜头还没写画面描述')
+    const settings = { ...defaultVideoStudioSettings(), videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型' }
+    expect(buildVideoStudioClipRequest(settings, { id: 'a', prompt: '橘猫\u000c回家', caption: '', status: 'idle' }, 'r1').prompt).toBe('橘猫回家')
   })
 
   it('asks Grok for its own frame sizes and MiniMax for its aspect ratio', () => {
@@ -173,5 +182,19 @@ describe('video studio project', () => {
       { id: 'shot-2', prompt: '', caption: '', status: 'idle' },
     ])
     expect(restored).not.toHaveProperty('exported')
+  })
+
+  it('points clips saved under an older thumbnail version at the current one, so old projects keep their pictures', () => {
+    const older = (letter: string) => ({ ...clip(letter), thumbnailUrl: `xingmang-asset://thumb/v1/video/${letter.repeat(43)}` })
+    const restored = restoreVideoStudioProject({
+      version: 1,
+      settings: defaultVideoStudioSettings(),
+      title: '',
+      shots: [{ id: 'old', prompt: '旧镜头', caption: '', clip: older('a') }],
+      exported: older('z'),
+    })
+    expect(restored?.shots[0]?.clip).toEqual({ ...clip('a'), thumbnailUrl: assetThumbnailUrl('a'.repeat(43), 'video') })
+    expect(restored?.exported).toEqual({ ...clip('z'), thumbnailUrl: assetThumbnailUrl('z'.repeat(43), 'video') })
+    expect(restored?.exported?.thumbnailUrl).not.toContain('/v1/')
   })
 })

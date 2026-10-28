@@ -12,7 +12,7 @@ import {
   findExecutable,
   runCommand,
 } from './command-runner'
-import type { RunningToolsReport } from './running-tools'
+import type { CodexPayloadNotice, RunningToolsReport } from './running-tools'
 import type { ToolModelCheck } from './tool-model-check'
 import type { CliModelHints } from './cli-model-defaults'
 import {
@@ -144,7 +144,7 @@ import { createConfigSaveService } from './config-save-service'
 import { createOfficialCredentialService } from './official-credential-service'
 import { createToolRouteFollowService } from './tool-route-follow-service'
 import { createExternalClientRouteService } from './external-client-route-service'
-import { createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
+import { codexRemoteLaunchQueueKey, createProviderLaunchService, providerCommandEnvironment } from './provider-launch-service'
 import { createSystemScanService } from './system-scan-service'
 import { createRuntimeInstallService } from './runtime-install-service'
 import { createCliUninstallService } from './cli-uninstall-service'
@@ -358,7 +358,8 @@ export interface ConfigSavePayload {
 }
 
 /** 换线路定点改写是哪一下起的（只进日志）。 */
-export type ToolRouteFollowReason = 'route-changed' | 'startup' | 'retry' | 'verify'
+/** payload = Codex 有个对话在线路 1 上太大、换到了线路 2（codex-payload-limit.ts），先把 Codex 跟过去。 */
+export type ToolRouteFollowReason = 'route-changed' | 'startup' | 'retry' | 'verify' | 'payload'
 
 export interface ToolRouteFollowRequest {
   reason: ToolRouteFollowReason
@@ -524,6 +525,11 @@ export interface SystemService {
    * 因为连不上换了线路、跟过去的一次提示重开，不一家一句（历史账号，#1061 第 2 条）。可选 = 旧实现不提供。
    */
   noteRouteFollowRestart?(written: readonly ProviderId[]): Promise<void>
+  /**
+   * Codex 有个对话在线路 1 上太大、换到（或者本来就在）线路 2 以后（codex-payload-limit.ts）：Codex 的配置真在线路 2
+   * 上就提示重开 Codex、返回 true；不在返回 false。可选 = 旧实现不提供。
+   */
+  noteCodexPayloadRestart?(): Promise<boolean>
   /** ipc.ts 注册时交进来，注销时交 null。 */
   bindToolRouteAccount?(hooks: ToolRouteAccountHooks | null): void
   /** 星芒窗口回到前台：等着外部客户端退出再换线路的，看一眼退了没有（同一个客户端两次至少隔 2 分钟）。 */
@@ -559,6 +565,8 @@ export interface SystemService {
   inspectInstallationQueue(): InstallationQueueSnapshot
   /** 安装队列每有一项开始或结束就回调一次；装东西时挡住自动睡眠用。 */
   onInstallationQueueChange(listener: (snapshot: InstallationQueueSnapshot) => void): () => void
+  /** 手机遥控起 Codex 排进安装队列（I11），排到了才起；起好就让出队列，Codex 进程本身不占着它。 */
+  enqueueCodexRemoteLaunch<T>(launch: () => Promise<T>): Promise<T>
   /**
    * 清掉以前中途被打断的安装留下的临时下载目录（见 install-leftovers.ts）。排在安装
    * 队列里，不会和正在进行的安装撞上；从不抛错。
@@ -665,6 +673,10 @@ export interface SystemServiceOptions {
   cliModelHints?: () => Promise<CliModelHints | null>
   /** 换线路自动改了工具配置、出了重开提示、外部客户端换成了：叫一声，界面重读（main.ts 发 network:relay-route-changed）。 */
   onToolRouteFollowed?: () => void
+  /** Codex 有个对话太大、换到线路 2 的重开提示出了：叫一声，main.ts 再发一条系统通知（客户这会儿多半在 Codex 里）。 */
+  onCodexPayloadRestart?: () => void
+  /** 设置快照里那条「新开 Codex 对话」的提示（codex-payload-limit.ts）；没有给 undefined。缺省 = 没有。 */
+  codexPayloadNotice?: () => CodexPayloadNotice | undefined
   /** 测试注入：换线路那几个定时器；缺省 setTimeout（unref）。 */
   scheduleToolRoute?: (callback: () => void, delayMs: number) => () => void
   /** 测试注入：换线路那几处用的时钟；缺省 Date.now。 */
@@ -1106,6 +1118,7 @@ export function createSystemService(
   const {
     followToolRoutes,
     noteRouteFollowRestart,
+    noteCodexPayloadRestart,
     accountRouteFollowed,
     accountRouteFaultFollowed,
     writeToolRouteRecord,
@@ -1255,14 +1268,21 @@ export function createSystemService(
     repairGrokHooksBeforeLaunch,
   })
 
+  // 设置快照里那条「新开 Codex 对话」的提示（codex-payload-limit.ts）：只给眼下这一条，过了半小时那边自己收起。
+  function codexPayloadSnapshotFields(): { codexPayloadNotice?: CodexPayloadNotice } {
+    const notice = serviceOptions.codexPayloadNotice?.()
+    return notice ? { codexPayloadNotice: notice } : {}
+  }
+
   return {
     readStoredConfig: () => ({ ...store.read(), activeRelayEndpointIds: { ...relayRouting.preferences },
-      ...routeLineSnapshotFields(), ...toolRouteSnapshotFields(),
+      ...routeLineSnapshotFields(), ...toolRouteSnapshotFields(), ...codexPayloadSnapshotFields(),
       ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
     updateStoredConfig: async (update) => ({ ...await store.update(update), activeRelayEndpointIds: { ...relayRouting.preferences },
-      ...routeLineSnapshotFields(), ...toolRouteSnapshotFields() }),
+      ...routeLineSnapshotFields(), ...toolRouteSnapshotFields(), ...codexPayloadSnapshotFields() }),
     followToolRoutes,
     noteRouteFollowRestart,
+    noteCodexPayloadRestart,
     bindToolRouteAccount,
     recheckPendingExternalRoutes,
     disposeToolRoutes,
@@ -1331,6 +1351,7 @@ export function createSystemService(
     switchExternalClientSource,
     inspectInstallationQueue: () => installationQueue.snapshot(),
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
+    enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),
     cleanupInstallLeftovers,
   }
 }

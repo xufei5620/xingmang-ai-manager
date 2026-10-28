@@ -9,7 +9,7 @@ import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { composeInVideoStudioWorker } from './compose-client'
-import type { VideoStudioComposeProgress, VideoStudioComposeRequest, VideoStudioComposeResult } from './compose-protocol'
+import { addVideoStudioClipBytes, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
 import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from './errors'
 import {
   addVideoStudioShot,
@@ -28,6 +28,7 @@ import {
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
   videoStudioStorageKey,
@@ -218,7 +219,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   const writePlan = async () => {
     const { settings } = projectRef.current
-    if (!settings.idea.trim()) { setError('先写一句想拍什么'); return }
+    const idea = videoStudioPlainText(settings.idea)
+    if (!idea) { setError('先写一句想拍什么'); return }
     if (!settings.textModel || !settings.textGroup) { setError('还没有能写分镜的文字模型，点「刷新模型」再试'); return }
     // 拼片读的是现在这份分镜，写新分镜会把它换掉，两件事不能同时做。
     if (planning || running.current.size || queue.current.length || composeAbort.current) return
@@ -226,7 +228,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     setPlanning(requestId); setError(''); setNotice('')
     try {
       const plan = await bridge.planVideoStudio({
-        requestId, group: settings.textGroup, model: settings.textModel, idea: settings.idea.trim(),
+        requestId, group: settings.textGroup, model: settings.textModel, idea,
         shotCount: settings.shotCount, secondsPerShot: settings.secondsPerShot, aspect: settings.aspect, captions: settings.captions,
       })
       if (!alive()) return
@@ -328,6 +330,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   }
   /** 生成这几个镜头的片段（已经有片段的就是重新生成）。先检查每一镜都写好了，有一处没写好就一段都不发。 */
   const generate = (shotIds: readonly string[]) => {
+    // 写分镜会把镜头整个换掉，付了钱的片段回来时就找不到镜头；拼片读的是现在这几段。这两件事做着时不出片，
+    // 同 writePlan 那边（按钮这时也是灰的，这里兜住以后别的入口）。
+    if (planning || composeAbort.current) return
     const { shots, settings } = projectRef.current
     if (!settings.videoModel || !settings.videoGroup) { setError('还没有能出视频的模型，点「刷新模型」再试'); return }
     const chosen = shots.filter((shot) => shotIds.includes(shot.id) && !isVideoStudioShotBusy(shot))
@@ -372,6 +377,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     const inputs = videoStudioComposeKey(current)
     try {
       const clips: VideoStudioComposeRequest['clips'] = []
+      let totalBytes = 0
       for (const [index, shot] of current.shots.entries()) {
         setComposeState({ phase: 'reading', done: index, total: current.shots.length })
         let bytes: Uint8Array
@@ -382,6 +388,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
           throw new Error(/不存在|无权访问/.test(message) ? `第 ${index + 1} 段片段在作品库里找不到了，重新生成这一段再拼` : videoStudioErrorMessage(reason, `第 ${index + 1} 段片段读不出来，请稍后再试`))
         }
         if (controller.signal.aborted || !alive()) return
+        totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
         // 交给后台线程时字节是转移过去的，要一份自己独占的 ArrayBuffer。
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
         clips.push({ data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer, ...(captions[index] ? { caption: captions[index] } : {}) })

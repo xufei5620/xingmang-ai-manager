@@ -29,6 +29,9 @@
  *   走着的那条不通，隔 relayRouteLineDownConfirmMs 再查它一次，还不通才换；报「网络变了」那几种错的
  *   算没查准，不算不通。
  * - 两次切换至少隔 5 分钟：每切一次工具配置都要跟着改，开着的工具要重开。
+ * - Codex 有个对话在线路 1 上大到发不出去（413，codex-payload-limit.ts）：「自动」的站查一次线路 2，通了当场
+ *   换过去，不等三次、不看切换间隔；从这一刻起 24 小时不切回线路 1（只对先走线路 1 的历史账号有用：
+ *   星芒账号本来就先走线路 2）。线路 2 自己连不上照旧退回线路 1，不然别的工具也跟着用不了。
  *
  * 结论和每个站最近一次切换落盘（relay-route-lines.json），下次开机先用结论，诊断页说得出最近一次
  * 为什么换。只存线路 id 和原因，不存地址：地址只从 relay-sites.ts 里来。
@@ -108,6 +111,9 @@ export const relayRouteNetworkSettleMs = 8_000
 /** 两条一起查出走着的那条没通、另一条通了：隔这么久再查一次走着的那条，还不通才换过去（#1156）。 */
 export const relayRouteLineDownConfirmMs = 4_000
 
+/** Codex 有个对话在线路 1 上大到发不出去、因此换到线路 2 以后，这么久之内不切回线路 1（holdDirect）。墙钟，落盘。 */
+export const relayRoutePayloadHoldMs = 24 * 60 * 60_000
+
 // 网络这会儿正在变（唤醒、换 Wi-Fi、断网那一下）时 Chromium 报的错：说明不了线路坏没坏，两条一起查
 // 时算没查准，不据此换线（#1156）。
 const networkUnsettledCodes: ReadonlySet<string> = new Set(['ERR_NETWORK_CHANGED', 'ERR_INTERNET_DISCONNECTED', 'ERR_NETWORK_IO_SUSPENDED'])
@@ -123,9 +129,16 @@ const maxProbeBytes = 256 * 1024
  * 为什么改的线路：startup = 这次开机第一次定下来，先走的那条查通了；health-failed = 先走的那条连续几次
  * 健康检查没通过（或者它上面的请求接连断在半路、等不来回话，trigger 是 requestFailuresTrigger）、备用那条
  * 查通了，改走备用那条；line-down = 两条一起查的那一轮里走着的那条没通、另一条
- * 通了，当场换过去（哪个方向都可能）；recovered = 退到备用以后先走的那条一直查得通，切回去。
+ * 通了，当场换过去（哪个方向都可能）；recovered = 退到备用以后先走的那条一直查得通，切回去；
+ * payload-too-large = Codex 有个对话在线路 1 上大到发不出去，线路 2 查得通，换过去（holdDirect）。
  */
-export type RelayRouteChangeReason = 'startup' | 'health-failed' | 'line-down' | 'recovered'
+export type RelayRouteChangeReason = 'startup' | 'health-failed' | 'line-down' | 'recovered' | 'payload-too-large'
+
+/**
+ * 叫一个站换到线路 2（holdDirect）的结果：switched = 换过去了；already = 本来就在线路 2；unreachable = 线路 2
+ * 这会儿没查通，没换；fixed = 这个站设置里写死了线路，不换。
+ */
+export type RelayRouteHoldResult = 'switched' | 'already' | 'unreachable' | 'fixed'
 
 /** 一个站最近一次改线路。只记线路 id 和原因，不记地址。 */
 export interface RelayRouteChange {
@@ -146,6 +159,8 @@ export interface RelayRouteChange {
 export interface RelayRouteConclusions {
   lines: Partial<Record<RelayRouteSiteId, RelayEndpointId>>
   changes: Partial<Record<RelayRouteSiteId, RelayRouteChange>>
+  /** 每个站从什么时候起（毫秒）因为 Codex 对话太大留在线路 2（holdDirect）。缺省 = 没有。 */
+  holds?: Partial<Record<RelayRouteSiteId, number>>
 }
 
 export interface RelayRouteState extends RelayRouteLine {
@@ -183,6 +198,12 @@ export interface RelayRouteController {
    * 那条上中途断开（body）、等不来回话（no-answer）的：攒够了就当它连着没查通（#1157 第 1 条）。
    */
   reportFailure(siteId: RelayRouteSiteId, line: RelayEndpointId, reason: string): void
+  /**
+   * Codex 有个对话在线路 1 上大到发不出去（codex-payload-limit.ts）：「自动」的站查一次线路 2，通了当场换过去；
+   * 换过去了、本来就在线路 2 上的，都从这一刻起 relayRoutePayloadHoldMs 里不切回线路 1。线路 2 自己连不上照旧
+   * 退回线路 1（那时这个保持也就作废）。
+   */
+  holdDirect(siteId: RelayRouteSiteId, trigger: string): Promise<RelayRouteHoldResult>
   /**
    * 唤醒、网络恢复、客户点「重新检测」：每个「自动」的站两条一起查一轮，走着的那条不通、另一条通就
    * 换过去；这个站正有检查没回来的，那次查完马上补这一轮。唤醒、网络恢复先等 relayRouteNetworkSettleMs
@@ -232,14 +253,21 @@ export const firstLaunchTrigger = 'first-launch'
 function retireDirectFirstConclusions(stored: RelayRouteConclusions): RelayRouteConclusions {
   const lines = { ...stored.lines }
   const changes = { ...stored.changes }
+  const holds = { ...stored.holds }
   for (const siteId of relayRouteSiteIds) {
     if (relayAutoPreferredLines[siteId] === 'direct' || lines[siteId] !== 'direct') continue
     const change = changes[siteId]
-    if (change?.to === 'direct' && (change.reason === 'health-failed' || change.reason === 'line-down')) continue
+    if (change?.to === 'direct' && (change.reason === 'health-failed' || change.reason === 'line-down' || change.reason === 'payload-too-large')) continue
     delete lines[siteId]
     delete changes[siteId]
+    delete holds[siteId]
   }
-  return { lines, changes }
+  return { lines, changes, ...holdsField(holds) }
+}
+
+// 没有留在线路 2 的站就不带 holds：存下的、读出来的结论和以前一个样子。
+function holdsField(holds: RelayRouteConclusions['holds']): Pick<RelayRouteConclusions, 'holds'> {
+  return holds && Object.keys(holds).length ? { holds: { ...holds } } : {}
 }
 
 export function createRelayRouteController(dependencies: RelayRouteControllerDependencies): RelayRouteController {
@@ -293,8 +321,8 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     for (const [siteId, state] of states) {
       if (state.settled && !state.firstLaunch) lines[siteId] = state.line
     }
-    conclusions = { lines, changes: conclusions.changes }
-    const snapshot: RelayRouteConclusions = { lines: { ...lines }, changes: { ...conclusions.changes } }
+    conclusions = { lines, changes: conclusions.changes, ...holdsField(conclusions.holds) }
+    const snapshot: RelayRouteConclusions = { lines: { ...lines }, changes: { ...conclusions.changes }, ...holdsField(conclusions.holds) }
     // 一个写完再写下一个：两个站差不多同时改了线路时，后写的那份（内容更全）不会被先写的盖掉。
     // 存不下最多下次开机先走上次那条、再查一次，不影响这次。
     writing = writing.then(() => dependencies.writeConclusions(snapshot)).catch((error: unknown) => {
@@ -358,10 +386,30 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     return Math.max(0, state.switchedAt + relayRouteMinSwitchGapMs - at)
   }
 
+  // 因为 Codex 对话太大留在线路 2 的，还要留多久。钟被往回拨过（开始的时刻落到了「现在」后面）就从现在起算
+  // 一整段，同 switchWait。不在线路 2 上了就没有这回事。
+  function holdRemaining(siteId: RelayRouteSiteId, state: SiteState): number {
+    let since = conclusions.holds?.[siteId]
+    if (since === undefined || state.line !== 'direct') return 0
+    const at = now()
+    if (since > at) {
+      since = at
+      conclusions = { ...conclusions, holds: { ...conclusions.holds, [siteId]: at } }
+    }
+    return Math.max(0, since + relayRoutePayloadHoldMs - at)
+  }
+
   // 定下来以后接着看：走先走的那条隔一阵查一次；退到备用那条隔两分钟查一次先走的那条，看能不能切回去。
+  // 因为 Codex 对话太大留在线路 2 的，等这段时间过完再开始查，这段时间里查通的次数不攒（开机那一轮算进去的
+  // 一起清掉），过完了从头数够十分钟。
   function watch(siteId: RelayRouteSiteId, state: SiteState): void {
-    if (state.line === relayAutoPreferredLines[siteId]) setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
-    else setTimer(state, relayRouteRecoveryProbeIntervalMs, () => runCheck(siteId, state, checkRecovery))
+    if (state.line === relayAutoPreferredLines[siteId]) {
+      setTimer(state, relayRouteRecheckIntervalMs, () => beginRound(siteId, state, 'scheduled'))
+      return
+    }
+    const hold = holdRemaining(siteId, state)
+    if (hold > 0) state.recovered = 0
+    setTimer(state, Math.max(relayRouteRecoveryProbeIntervalMs, hold), () => runCheck(siteId, state, checkRecovery))
   }
 
   function settle(siteId: RelayRouteSiteId, state: SiteState, line: RelayEndpointId, reason: RelayRouteChangeReason, trigger?: string): void {
@@ -376,6 +424,12 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     state.requestFailures = []
     // 定下过一次就不再是全新安装，后面照常走三次阈值那一套。
     state.firstLaunch = false
+    // 离开了线路 2（它自己连不上退回去），因为对话太大留下的那段时间作废。
+    if (line !== 'direct' && conclusions.holds?.[siteId] !== undefined) {
+      const holds = { ...conclusions.holds }
+      delete holds[siteId]
+      conclusions = { lines: conclusions.lines, changes: conclusions.changes, ...holdsField(holds) }
+    }
     watch(siteId, state)
     if (!changed) {
       // 开机先定的直连查通了：线路没变，但这是这台电脑第一次查过的结论，要存下来。不存的话下次开机
@@ -387,7 +441,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
     state.switchedAt = at
     const changes = { ...conclusions.changes }
     changes[siteId] = { from, to: line, reason, ...(trigger === undefined ? {} : { trigger }), at }
-    conclusions = { lines: conclusions.lines, changes }
+    conclusions = { ...conclusions, changes }
     log('info', 'relay.route.changed', line === 'direct' ? '「自动」线路改走线路2' : '「自动」线路改走线路1', {
       siteId, from, to: line, reason, ...(trigger === undefined ? {} : { trigger }),
     })
@@ -645,6 +699,11 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
   async function checkRecovery(siteId: RelayRouteSiteId, state: SiteState): Promise<void> {
     const preferred = relayAutoPreferredLines[siteId]
     if (state.line === preferred || !state.settled) return
+    // 因为 Codex 对话太大留在线路 2 的这段时间里不往回切（钟被往前拨过、计时器早到了的，按剩下的重排）。
+    if (holdRemaining(siteId, state) > 0) {
+      watch(siteId, state)
+      return
+    }
     // 两条一起查的那一轮还没回来：这次先不查，过两分钟再来，不然切回去这条计时就断了。
     if (state.checking || state.round) {
       watch(siteId, state)
@@ -692,6 +751,32 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
         preferred ? '先走的那条线路上请求没走通，马上查一轮' : '备用那条线路上请求也没走通，两条一起查一轮', { siteId, line, reason })
       beginRound(siteId, state, triggerPattern.test(reason) ? reason : 'request', !preferred)
     },
+    async holdDirect(siteId, trigger) {
+      const state = states.get(siteId)
+      if (disposed || !state) return 'fixed'
+      function startHold(): void {
+        conclusions = { ...conclusions, holds: { ...conclusions.holds, [siteId]: now() } }
+      }
+      if (state.line === 'direct' && state.settled) {
+        startHold()
+        // 退在备用那条上的：已经挂着的切回检查按这段时间重排。正查着的那一轮查完自己会排。
+        if (state.line !== relayAutoPreferredLines[siteId] && !state.checking && !state.round) watch(siteId, state)
+        persist()
+        log('info', 'relay.route.payload-hold', '已经在线路2上，Codex 对话太大，24 小时内不切回线路1', { siteId, line: state.line })
+        return 'already'
+      }
+      const health = await probeHealth(siteId, 'direct')
+      if (disposed) return 'fixed'
+      if (state.line === 'direct' && state.settled) {
+        startHold()
+        persist()
+        return 'already'
+      }
+      if (health !== 'up') return 'unreachable'
+      startHold()
+      settle(siteId, state, 'direct', 'payload-too-large', triggerPattern.test(trigger) ? trigger : 'payload')
+      return 'switched'
+    },
     recheck(trigger) {
       if (disposed) return
       cancelSettleWait?.()
@@ -738,7 +823,11 @@ function parseConclusionLine(value: unknown): RelayEndpointId | undefined {
 }
 
 function isRelayRouteChangeReason(value: unknown): value is RelayRouteChangeReason {
-  return value === 'startup' || value === 'health-failed' || value === 'line-down' || value === 'recovered'
+  return value === 'startup' || value === 'health-failed' || value === 'line-down' || value === 'recovered' || value === 'payload-too-large'
+}
+
+function parseHoldStart(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined
 }
 
 function parseRelayRouteChange(value: unknown): RelayRouteChange | undefined {
@@ -764,8 +853,8 @@ function parseSiteRecord<T>(value: unknown, parse: (entry: unknown) => T | undef
 }
 
 /**
- * 存「自动」上次的结论和最近一次切换。读坏了一律当没有：最多开机先走默认线路、再查一次。
- * 版本号不变：0.2.17 只读 lines、不认识 changes，装回老版本照样读得出结论。
+ * 存「自动」上次的结论、最近一次切换和因为 Codex 对话太大留在线路 2 的起点。读坏了一律当没有：最多开机先走
+ * 默认线路、再查一次。版本号不变：0.2.17 只读 lines、不认识 changes 和 holds，装回老版本照样读得出结论。
  */
 export function createRelayRouteConclusionStore(filePath: string): Pick<RelayRouteControllerDependencies, 'readConclusions' | 'writeConclusions'> {
   if (!path.isAbsolute(filePath)) throw new Error('连接线路结论必须使用绝对路径。')
@@ -777,11 +866,12 @@ export function createRelayRouteConclusionStore(filePath: string): Pick<RelayRou
         if (content === null) return none
         const value: unknown = JSON.parse(content)
         if (typeof value !== 'object' || value === null || Array.isArray(value)) return none
-        const record = value as { version?: unknown; lines?: unknown; changes?: unknown }
+        const record = value as { version?: unknown; lines?: unknown; changes?: unknown; holds?: unknown }
         if (record.version !== 1 || typeof record.lines !== 'object' || record.lines === null || Array.isArray(record.lines)) return none
         return {
           lines: parseSiteRecord(record.lines, parseConclusionLine),
           changes: parseSiteRecord(record.changes, parseRelayRouteChange),
+          ...holdsField(parseSiteRecord(record.holds, parseHoldStart)),
         }
       } catch {
         return none
@@ -790,7 +880,12 @@ export function createRelayRouteConclusionStore(filePath: string): Pick<RelayRou
     async writeConclusions(conclusions) {
       const lines = parseSiteRecord(conclusions.lines, parseConclusionLine)
       const changes = parseSiteRecord(conclusions.changes, parseRelayRouteChange)
-      const stored = Object.keys(changes).length ? { version: 1, lines, changes } : { version: 1, lines }
+      // 0.2.22 及以前不认 holds（也不认 payload-too-large 这个原因，那条切换记录读的时候丢掉），装回去照样读得出结论。
+      const stored = {
+        version: 1, lines,
+        ...(Object.keys(changes).length ? { changes } : {}),
+        ...holdsField(parseSiteRecord(conclusions.holds, parseHoldStart)),
+      }
       ensureSafeDataDirectory(path.dirname(filePath), conclusionsLabel)
       await writeAtomicSafeUtf8File(filePath, `${JSON.stringify(stored)}\n`, conclusionsLabel)
     },

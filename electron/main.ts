@@ -39,8 +39,11 @@ import { createRealmBusinesses } from './bootstrap/ai-services'
 import { createDiagnostics } from './bootstrap/diagnostics'
 import { createQuitCleanup } from './bootstrap/lifecycle'
 import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/network-routes'
+import { startCodexPayloadWatch } from './bootstrap/codex-payload-watch'
+import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
+import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
@@ -81,6 +84,7 @@ import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
+import { applicationSecurityResponseHeaders } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
@@ -106,7 +110,7 @@ import { guardProcessOutputStreams } from './process-stream-errors'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
-import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
+import { hiddenWindowNotification, hostNotificationMessage, type PlatformHostNotification } from './platform/notifications'
 import { attachPrivacyChangeListener } from './platform/privacy-change-bridge'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
@@ -313,7 +317,7 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
       callback({ error: -6 })
       return
     }
-    callback({ path: target })
+    callback({ path: target, headers: applicationSecurityResponseHeaders() })
   })
 }
 
@@ -981,6 +985,12 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       arch: process.arch,
     })
+    const relaunchedWithout = launchArgumentsRelaunchedWithout()
+    if (relaunchedWithout) {
+      // 正常的启动方式都列在 security.ts 的白名单里。客户日志里出现这一条，说明有一种
+      // 没想到的启动方式：是正常的就补进白名单，不是的话多半是有人改过快捷方式。
+      runtimeLog.log('warn', 'main', 'launch-arguments.relaunched', '启动参数里有不认识的开关，已去掉后重新打开', { switches: relaunchedWithout })
+    }
     logDisplayCrash = (details, recordError) => {
       runtimeLog.log('error', 'display', 'gpu.gone', '显卡进程异常退出', { reason: details.reason, exitCode: details.exitCode })
       if (recordError) runtimeLog.exception('display', 'gpu.record.failed', recordError)
@@ -1156,6 +1166,18 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    // Codex 有个对话太大、要客户新开对话的那条提示（codex-payload-limit.ts）：系统服务放进设置快照，下面开始盯会话记录。
+    const codexPayloadNotices = createCodexPayloadNoticeBoard()
+    // 客户正看着星芒时角落那张卡就够了，不另弹系统通知（同付款到账那条）。主窗口建得比这里晚，用到时才读。
+    function notifyCodexPayload(event: PlatformHostNotification, eventKey: string): void {
+      try {
+        const main = managedMainWindow
+        const watching = Boolean(main && !main.isDestroyed() && main.isVisible() && !main.isMinimized() && main.isFocused())
+        if (!watching) hostNotifier()({ event, eventKey })
+      } catch (cause) {
+        runtimeLog.exception('network', 'codex-payload.notify-failed', cause)
+      }
+    }
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
@@ -1201,6 +1223,8 @@ if (!hasSingleInstanceLock) {
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
+      onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
+      codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
       sweepInstallLeftovers,
@@ -1262,6 +1286,19 @@ if (!hasSingleInstanceLock) {
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
       systemService,
       readAccountSiteId: () => readAccountSiteId(),
+    })
+    const codexPayloadWatch = startCodexPayloadWatch({
+      managerDataDirectory,
+      codexHome: codexContext.codexHome,
+      runtimeLog,
+      readAccountSiteId: () => readAccountSiteId(),
+      routes: networkRoutes,
+      systemService,
+      notices: codexPayloadNotices,
+      notifyHost: (kind, eventKey) => notifyCodexPayload(
+        kind === 'nearing' ? 'codexPayloadNearing' : kind === 'too-large' ? 'codexPayloadLineTwoTooLarge' : 'codexPayloadTooLarge',
+        eventKey,
+      ),
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -1755,7 +1792,7 @@ if (!hasSingleInstanceLock) {
           }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
           if (siteId === 'solov') {
             void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
-            // 对话页、视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
+            // 视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
             void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
           }
         }
@@ -2178,6 +2215,7 @@ if (!hasSingleInstanceLock) {
       codexEnv: rootedOptions.codexExtensions.env,
       providerRoots: rootedOptions.system.providerRoots,
       windowsExecution: windowsCliExecution,
+      enqueueLaunch: (launch) => systemService.enqueueCodexRemoteLaunch(launch),
       onStateChanged: (snapshot) => {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
@@ -2356,6 +2394,7 @@ if (!hasSingleInstanceLock) {
       codexRemoteKeepAwake.dispose()
     })
     quitCleanup.add('routes', () => {
+      codexPayloadWatch.dispose()
       unsubscribeRelayRoute()
       unsubscribeToolRoutes()
       systemService.disposeToolRoutes?.()
@@ -2518,7 +2557,7 @@ if (!hasSingleInstanceLock) {
       accelerationActive: () => acceleration?.hasPossibleSession() === true,
       // 遥控开着就不在闲时重启：重开以后不会自己连回去，人在外面也开不了（YK-2）。
       remoteControlActive: () => codexRemote.hasEnabledChannel(),
-      // 对话页、视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
+      // 视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
       videoWorking: () => [...businesses.values()].some((business) => (
         business.videoService.hasActiveRequests() || business.chatVideoService.hasActiveRequests()
       )),
