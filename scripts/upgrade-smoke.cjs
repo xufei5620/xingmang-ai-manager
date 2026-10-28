@@ -52,6 +52,7 @@ const {
   setWindowsAsarIntegrity,
   sha512Base64,
   swapAsarText,
+  waitForHostsBlock,
 } = require('./upgrade-smoke-support.cjs')
 
 // electron-builder.config.cjs 的 productName：程序文件和 .app 叫这个名字。
@@ -66,6 +67,8 @@ const DOWNLOAD_BUDGET_MS = 8 * 60 * 1000
 const INSTALL_BUDGET_MS = 10 * 60 * 1000
 // 新版本起来以后至少要撑这么久没退出，才算「重开」这一步过了。
 const STAY_ALIVE_MS = 20 * 1000
+// Mac 改完 hosts 到系统解析认它：平时问第一遍就认了，10-28 有一次问完一整遍还都解析到外面。
+const HOSTS_SETTLE_BUDGET_MS = 60 * 1000
 const POLL_MS = 2000
 const FIREWALL_RULE = 'xingmang-upgrade-smoke'
 const PF_ANCHOR = 'com.apple/xingmang-upgrade-smoke'
@@ -375,6 +378,20 @@ function sudo(args, options) {
   return run('/usr/bin/sudo', ['-n', ...args], options)
 }
 
+// mDNSResponder rereads the hosts file when it sees the file written, and a
+// HUP only drops what it has cached; dscacheutil empties the cache in front
+// of it. Writing the same file again is what makes it read the file once more.
+function installMacHostsFile(staged) {
+  sudo(['/bin/cp', staged, '/etc/hosts'])
+  sudo(['/usr/bin/dscacheutil', '-flushcache'], { allowFailure: true })
+  sudo(['/usr/bin/killall', '-HUP', 'mDNSResponder'], { allowFailure: true })
+}
+
+async function resolvesOutsideLoopback(host) {
+  const results = await dns.promises.lookup(host, { all: true }).catch(() => [])
+  return results.some((result) => !/^(?:127\.|::1$)/.test(result.address))
+}
+
 function findAppBundle(directory) {
   const apps = fs.readdirSync(directory).filter((name) => name.endsWith('.app'))
   if (apps.length !== 1) throw new Error(`${directory} 里应当正好有一个 .app，实际有：${apps.join('、') || '没有'}`)
@@ -529,9 +546,7 @@ const macos = {
       [path.join(repository, 'electron'), path.join(repository, 'src', 'renderer-v2')])
     const staged = path.join(work, 'hosts')
     fs.writeFileSync(staged, addHostsBlock(fs.readFileSync('/etc/hosts', 'utf8'), hosts))
-    sudo(['/bin/cp', staged, '/etc/hosts'])
-    sudo(['/usr/bin/dscacheutil', '-flushcache'], { allowFailure: true })
-    sudo(['/usr/bin/killall', '-HUP', 'mDNSResponder'], { allowFailure: true })
+    installMacHostsFile(staged)
     if (addresses.length > 0) {
       sudo(['/sbin/pfctl', '-E'], { allowFailure: true })
       const rules = path.join(work, 'pf.conf')
@@ -540,13 +555,18 @@ const macos = {
     }
     // Every blocked name goes through the system resolver before the app
     // starts: one that still resolves outward means the block did not take.
-    const leaking = []
-    for (const host of hosts) {
-      const results = await dns.promises.lookup(host, { all: true }).catch(() => [])
-      if (results.some((result) => !/^(?:127\.|::1$)/.test(result.address))) leaking.push(host)
-    }
-    if (leaking.length > 0) throw new Error(`hosts 改了但这些域名还解析到外面：${leaking.join('、')}，不敢打开旧版本`)
-    report(`这台 runner 上星芒只连得到本机：hosts 把 ${hosts.length} 个域名指回本机（逐个解析过），${addresses.length} 个地址直接挡掉`)
+    const settled = await waitForHostsBlock(hosts, {
+      resolvesOutward: resolvesOutsideLoopback,
+      retry: (leaking) => {
+        report(`hosts 还没生效，${leaking.length} 个域名解析到外面，重写一遍再问`)
+        installMacHostsFile(staged)
+      },
+      sleep: delay,
+      budgetMs: HOSTS_SETTLE_BUDGET_MS,
+      pollMs: POLL_MS,
+    })
+    const waited = settled.retries > 0 ? `，解析等了 ${Math.round(settled.elapsedMs / 1000)} 秒、hosts 重写 ${settled.retries} 遍才生效` : ''
+    report(`这台 runner 上星芒只连得到本机：hosts 把 ${hosts.length} 个域名指回本机（逐个解析过${waited}），${addresses.length} 个地址直接挡掉`)
     return installed
   },
 
