@@ -5,7 +5,8 @@ import type { CanvasNode } from '../nodes/WorkflowNodes'
 import { buildResourceTree, resourceGroupSelectionIds } from '../components/resource-tree-model'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import { buildCanvasClipboardPayload, canvasClipboardMime, canvasClipboardWorkflow, parseCanvasClipboard, pasteCanvasClipboard, serializeCanvasClipboard } from './clipboard'
-import { buildCanvasClipboardTransfer, canvasClipboardEventAllowed, parseCanvasClipboardTransfer, runCanvasClipboardPaste, writeCanvasClipboardEvent } from './clipboard-transport'
+import { buildCanvasClipboardTransfer, canvasClipboardCopiedHere, canvasClipboardEventAllowed, canvasClipboardOwnerId, parseCanvasClipboardTransfer, runCanvasClipboardPaste, writeCanvasClipboardEvent } from './clipboard-transport'
+import type { CanvasHostKind } from '../host-kind'
 import { layerEditorScopeToken } from '../image-tools/layer-editor-scope'
 import { createEmptyWorkflow, serializeWorkflow } from '../model'
 import { maximumProjectContentBytes, maximumProjectEdges, maximumProjectNodes, utf8ByteLength } from '../lib/canvas-limits'
@@ -46,6 +47,7 @@ function clipboardLifecycle(environment: Record<string, unknown>): () => void {
   return new Function(...Object.keys(environment), ts.transpileModule(`return (${found})();`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText)(...Object.values(environment)) as () => void
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done }); return { promise, resolve } }
+let workspaceSequence = 0
 function fixture() {
   const nodes: CanvasNode[] = [
     { id: 'g', type: 'group', definitionVersion: 1, position: { x: 100, y: 200 }, width: 950, height: 750, selected: true, data: { prompt: '', model: '', status: 'idle' } },
@@ -57,14 +59,23 @@ function fixture() {
   let sequence = 0
   let text = ''
   const host = { inspectClipboardWorkflow: vi.fn<() => Promise<void>>(async () => undefined) }, owner = '62026000-0000-4000-8000-000000000001'
-  const layerEditorOwnerRef = { current: { ownerId: 1, accountId: owner } }, activeProjectIdRef = { current: '11111111-1111-4111-8111-111111111111' }, projectEpochRef = { current: 1 }, projectCanEditRef = { current: true }, closeBusyRef = { current: false }
+  const layerEditorOwnerRef = { current: { ownerId: 1, accountId: owner as string | null } }, activeProjectIdRef = { current: '11111111-1111-4111-8111-111111111111' }, projectEpochRef = { current: 1 }, projectCanEditRef = { current: true }, closeBusyRef = { current: false }
   const writeText = vi.fn(async (value: string) => { text = value }), readText = vi.fn(async () => text)
-  const environment: Record<string, unknown> = { nodes, edges, clipboardRef, buildCanvasClipboardPayload, canvasClipboardMime, canvasClipboardWorkflow, parseCanvasClipboard, serializeCanvasClipboard, buildCanvasClipboardTransfer, runCanvasClipboardPaste, writeCanvasClipboardEvent, pasteCanvasClipboard, canvasNodeDocumentRecord, toWorkflowEdge: (edge: unknown) => edge, toWorkflowNode: (node: CanvasNode) => ({ ...node, kind: node.type }), setBanner, execute, setNodes, nextNodeId: () => `new-${++sequence}`, toCanvasNode: (node: { kind: string }) => ({ ...node, type: node.kind }), getGraphSnapshot: () => ({ nodes, edges }), createEmptyWorkflow, serializeWorkflow, maximumProjectContentBytes, maximumProjectEdges, maximumProjectNodes, utf8ByteLength, activeProject: { name: '当前画布' }, mediaGroupsRef: { current: {} }, layerEditorOwnerRef, activeProjectIdRef, projectEpochRef, layerEditorScopeToken, projectCanEditRef, draftActionsEnabledRef: { current: true }, agentMountedRef: { current: true }, projectTransitionRef: { current: false }, draftRecoveryPendingRef: { current: false }, window: { xingmangCanvasHost: host }, hostBridge: () => host, navigator: { clipboard: { writeText, readText } } }
+  const capabilities = { host: 'web' as CanvasHostKind }, clipboardIdentityRef = { current: { workspaceId: `62026000-0000-4000-8000-${String(++workspaceSequence).padStart(12, '0')}`, copied: null as string | null } }
+  const environment: Record<string, unknown> = { nodes, edges, clipboardRef, buildCanvasClipboardPayload, canvasClipboardMime, canvasClipboardWorkflow, parseCanvasClipboard, serializeCanvasClipboard, buildCanvasClipboardTransfer, runCanvasClipboardPaste, writeCanvasClipboardEvent, pasteCanvasClipboard, canvasNodeDocumentRecord, toWorkflowEdge: (edge: unknown) => edge, toWorkflowNode: (node: CanvasNode) => ({ ...node, kind: node.type }), setBanner, execute, setNodes, nextNodeId: () => `new-${++sequence}`, toCanvasNode: (node: { kind: string }) => ({ ...node, type: node.kind }), getGraphSnapshot: () => ({ nodes, edges }), createEmptyWorkflow, serializeWorkflow, maximumProjectContentBytes, maximumProjectEdges, maximumProjectNodes, utf8ByteLength, activeProject: { name: '当前画布' }, mediaGroupsRef: { current: {} }, layerEditorOwnerRef, activeProjectIdRef, projectEpochRef, layerEditorScopeToken, projectCanEditRef, draftActionsEnabledRef: { current: true }, agentMountedRef: { current: true }, projectTransitionRef: { current: false }, draftRecoveryPendingRef: { current: false }, window: { xingmangCanvasHost: host }, hostBridge: () => host, navigator: { clipboard: { writeText, readText } }, canvasCapabilities: () => capabilities, canvasClipboardOwnerId, canvasClipboardCopiedHere, clipboardIdentityRef }
   environment.closeBusyRef = closeBusyRef
   environment.currentClipboardScope = expression('currentClipboardScope', environment)
   environment.buildSelectionClipboard = expression('buildSelectionClipboard', environment)
   environment.applyClipboardPayload = expression('applyClipboardPayload', environment)
-  return { ...environment, nodes, edges, clipboardRef, setBanner, execute, setNodes, environment, host, owner, layerEditorOwnerRef, activeProjectIdRef, projectEpochRef, projectCanEditRef, closeBusyRef, writeText, readText, text: () => text, copy: expression<(ids: readonly string[], event?: ClipboardEvent) => Promise<boolean>>('copyNodes', environment), paste: expression<(content?: string) => Promise<void>>('pasteSelection', environment), duplicate: expression<(ids: readonly string[]) => void>('duplicateNodes', environment) }
+  return { ...environment, nodes, edges, clipboardRef, setBanner, execute, setNodes, environment, host, owner, capabilities, clipboardIdentityRef, layerEditorOwnerRef, activeProjectIdRef, projectEpochRef, projectCanEditRef, closeBusyRef, writeText, readText, text: () => text, copy: expression<(ids: readonly string[], event?: ClipboardEvent) => Promise<boolean>>('copyNodes', environment), paste: expression<(content?: string) => Promise<void>>('pasteSelection', environment), duplicate: expression<(ids: readonly string[]) => void>('duplicateNodes', environment) }
+}
+/** The desktop host: numeric accounts the kernel never sees, and no clipboard inspection channel. */
+function desktopFixture() {
+  const f = fixture()
+  f.capabilities.host = 'desktop'; f.layerEditorOwnerRef.current.accountId = null
+  Reflect.deleteProperty(f.host, 'inspectClipboardWorkflow')
+  f.nodes.push({ id: 'image', type: 'image-input', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', status: 'idle', result: { kind: 'image', assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}` } } })
+  return f
 }
 
 describe('actual App group copy and selection eligibility', () => {
@@ -150,6 +161,41 @@ describe('actual App group copy and selection eligibility', () => {
     gate.resolve(); await job
     expect(f.execute).toHaveBeenCalledTimes(kind === 'newer-paste' ? 1 : 0)
     if (kind === 'newer-paste') expect(f.execute.mock.calls[0][0].nodes[0].data.prompt).toBe('newer')
+  })
+
+  it('copies on a desktop host under its workspace owner and pastes the same selection back', async () => {
+    const f = desktopFixture()
+    expect(await f.copy(['image'])).toBe(true)
+    expect(JSON.parse(f.text())).toMatchObject({ ownerId: f.clipboardIdentityRef.current.workspaceId })
+    expect(f.clipboardIdentityRef.current.copied).toBe(f.text())
+    await f.paste()
+    expect(f.execute).toHaveBeenCalledOnce()
+    expect(f.execute.mock.calls[0][0].nodes[0].data.result).toMatchObject({ assetId: 'a'.repeat(43) })
+    f.activeProjectIdRef.current = '22222222-2222-4222-8222-222222222222'; f.projectEpochRef.current += 1
+    await f.paste()
+    expect(f.execute).toHaveBeenCalledTimes(2)
+  })
+
+  it('refuses private sources on a desktop host unless the exact text came from this workspace', async () => {
+    const f = desktopFixture(), other = desktopFixture()
+    await f.copy(['image'])
+    const forged = buildCanvasClipboardTransfer({ version: 1, nodes: [{ id: 'image', type: 'image-input', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', result: { kind: 'image', assetId: 'b'.repeat(43), localUrl: `xingmang-asset://image/${'b'.repeat(43)}` } } }], edges: [] }, { ownerId: f.clipboardIdentityRef.current.workspaceId, projectId: null })
+    await f.paste(forged)
+    expect(f.execute).not.toHaveBeenCalled(); expect(f.setBanner).toHaveBeenLastCalledWith(expect.stringContaining('当前客户端核对不了'))
+    await other.paste(f.text())
+    expect(other.execute).not.toHaveBeenCalled(); expect(other.setBanner).toHaveBeenLastCalledWith(expect.stringContaining('其他账号'))
+  })
+
+  it('still pastes source-free nodes from anywhere on a desktop host', async () => {
+    const f = desktopFixture()
+    await f.paste(buildCanvasClipboardTransfer({ version: 1, nodes: [{ id: 'plain', type: 'prompt', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '别处复制的', model: '' } }], edges: [] }, { ownerId: '62026000-0000-4000-8000-000000000009', projectId: null }))
+    expect(f.execute).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a web host without an account UUID from copying', async () => {
+    const f = fixture(); f.layerEditorOwnerRef.current.accountId = null
+    expect(await f.copy(['g'])).toBe(false)
+    expect(f.writeText).not.toHaveBeenCalled(); expect(f.setBanner).toHaveBeenLastCalledWith(expect.stringContaining('尚未核对'))
   })
 
   it('blocks missing originals before any add or selection update', async () => {

@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import * as ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
-import { emptyCanvasAssetPage, type CanvasAssetPage, type CanvasAssetQuery, type CanvasAssetSummary } from '../host'
+import { emptyCanvasAssetPage, type CanvasAssetPage, type CanvasAssetQuery, type CanvasAssetSummary, type CanvasListedAssetSummary } from '../host'
 import { runCanvasAssetMutationBatch, type CanvasAssetMutationResult } from '../components/asset-mutation-batch'
 import type { AssetMutationInput, AssetMutationResult } from '../lib/asset-mutation-contract'
 import { assertAssetCategoryPageFilter } from '../lib/asset-category-contract'
@@ -68,7 +68,7 @@ describe('actual App retained irreversible purge batch callbacks', () => {
     const assetQueryRef = { current: {} as CanvasAssetQuery }, assetQueryGenerationRef = { current: 0 }, assetMutationPendingRef = { current: null as { scope: string; token: object } | null }, agentMountedRef = { current: true }
     const purgeAsset = vi.fn(async (assetId: string) => { if (assetId.endsWith('2')) throw new Error('仍被共享项目引用'); return { assetId, deletedAt: 'now' } })
     const restoreAsset = vi.fn(async (assetId: string) => ({ assetId })), refreshAssets = vi.fn(async () => true)
-    const mutate = actualCallback<(action: 'delete' | 'restore' | 'purge', ids: readonly string[], content?: string) => Promise<CanvasAssetMutationResult>>('mutateCanvasAssets', { assetQueryRef, assetQueryGenerationRef, assetMutationPendingRef, agentMountedRef, currentAssetLibraryScope: () => scope, hostBridge: () => ({ restoreAsset, purgeAsset }), refreshAssets, runCanvasAssetMutationBatch })
+    const mutate = actualCallback<(action: 'delete' | 'restore' | 'purge', ids: readonly string[], content?: string) => Promise<CanvasAssetMutationResult>>('mutateCanvasAssets', { assetQueryRef, assetQueryGenerationRef, assetMutationPendingRef, agentMountedRef, currentAssetLibraryScope: () => scope, hostBridge: () => ({ restoreAsset, purgeAsset }), refreshAssets, runCanvasAssetMutationBatch, directAssetMutations: false })
     const changeQuery = actualCallback<(query: CanvasAssetQuery) => void>('changeAssetQuery', { assetQueryRef, assetQueryGenerationRef, assetMutationPendingRef, setAssetQuery: vi.fn(), refreshAssets })
     return { mutate, changeQuery, assetQueryRef, restoreAsset, purgeAsset, refreshAssets, assetMutationPendingRef, scope(value: string) { scope = value } }
   }
@@ -128,7 +128,7 @@ function recoveryFixture() {
   const assetQueryRef = { current: {} as CanvasAssetQuery }, assetQueryGenerationRef = { current: 0 }, assetMutationPendingRef = { current: null as { scope: string; token: object; controller?: AbortController } | null }, agentMountedRef = { current: true }, draftActionsEnabledRef = { current: true }
   const legacy = vi.fn(async () => { throw new Error('Legacy write must not run') }), manageAssetMutations = vi.fn(), inspectAssetMutationOperation = vi.fn(), bridge = { manageAssetMutations, inspectAssetMutationOperation, renameAsset: legacy, updateAssetMetadata: legacy, deleteAsset: legacy, restoreAsset: legacy, purgeAsset: legacy }
   const submit = vi.fn(async (input: AssetMutationInput, _signal?: AbortSignal) => mutationReceipt(input)), refreshAssets = vi.fn(async () => true), setBanner = vi.fn()
-  const environment = { assetQueryRef, assetQueryGenerationRef, assetMutationPendingRef, agentMountedRef, draftActionsEnabledRef, currentAssetLibraryScope: () => scope, hostBridge: () => bridge, assetMutationRecovery: { submit }, refreshAssets, setBanner }
+  const environment = { assetQueryRef, assetQueryGenerationRef, assetMutationPendingRef, agentMountedRef, draftActionsEnabledRef, currentAssetLibraryScope: () => scope, hostBridge: () => bridge, assetMutationRecovery: { submit }, refreshAssets, setBanner, directAssetMutations: false }
   const apply = actualCallback<(input: AssetMutationInput, signal?: AbortSignal) => Promise<AssetMutationResult>>('submitCanvasAssetMutation', environment)
   const batch = actualCallback<(action: 'delete' | 'restore' | 'purge', ids: readonly string[], content?: string) => Promise<CanvasAssetMutationResult>>('mutateCanvasAssets', { ...environment, submitCanvasAssetMutation: apply, runCanvasAssetMutationBatch })
   const rename = actualCallback<(assetId: string, displayName: string) => Promise<void>>('renameCanvasAsset', { submitCanvasAssetMutation: apply })
@@ -190,5 +190,63 @@ describe('actual App recoverable asset operation callbacks', () => {
     const f = recoveryFixture(); f.refreshAssets.mockResolvedValueOnce(false)
     const result = await f.favorite([id(1)], true)
     expect(result.outcomes[0].state).toBe('succeeded'); expect(f.submit).toHaveBeenCalledOnce(); expect(f.legacy).not.toHaveBeenCalled()
+  })
+})
+
+describe('actual App direct asset writes on a desktop without the recoverable pair', () => {
+  const id = (index: number) => String(index).padStart(43, '0')
+  function asset(index: number): CanvasListedAssetSummary { return { mediaType: 'image', assetId: id(index), mimeType: 'image/png', fileName: 'own.png', localUrl: `xingmang-asset://image/${id(index)}`, thumbnailUrl: `xingmang-asset://image/${id(index)}`, width: 512, height: 512, createdAt: '2026-10-28T00:00:00.000Z', displayName: '原名', favorite: false, tags: [] } }
+  function directFixture() {
+    let scope = 'owner-a:project-a:1', page: CanvasAssetPage = { ...emptyCanvasAssetPage(), items: [asset(1)] }, catalog: CanvasAssetSummary[] = [asset(1)]
+    const assetQueryRef = { current: {} as CanvasAssetQuery }, assetQueryGenerationRef = { current: 0 }, assetMutationPendingRef = { current: null as { scope: string; token: object } | null }, agentMountedRef = { current: true }
+    const journal = vi.fn(async () => { throw new Error('Recoverable journal must not run') })
+    const bridge = {
+      renameAsset: vi.fn(async (input: { assetId: string; displayName: string }) => input),
+      updateAssetMetadata: vi.fn(async (input: { assetId: string; favorite?: boolean; tags?: string[] }) => ({ assetId: input.assetId, favorite: input.favorite ?? false, tags: input.tags ?? [] })),
+      deleteAsset: vi.fn(async (assetId: string) => { if (assetId.endsWith('2')) throw new Error('素材不存在'); return { assetId, deletedAt: '2026-10-28T00:00:00.000Z' } }),
+      restoreAsset: vi.fn(async (assetId: string) => ({ assetId })),
+      purgeAsset: vi.fn(async (assetId: string) => ({ assetId })),
+    }
+    const refreshAssets = vi.fn(async () => true), setBanner = vi.fn()
+    const environment = { assetQueryRef, assetQueryGenerationRef, assetMutationPendingRef, agentMountedRef, currentAssetLibraryScope: () => scope, hostBridge: () => bridge, refreshAssets, setBanner,
+      setAssetPage: (update: (value: CanvasAssetPage) => CanvasAssetPage) => { page = update(page) }, setAssetCatalog: (update: (value: CanvasAssetSummary[]) => CanvasAssetSummary[]) => { catalog = update(catalog) } }
+    const batch = actualCallback<(action: 'delete' | 'restore' | 'purge', ids: readonly string[], content?: string) => Promise<CanvasAssetMutationResult>>('mutateCanvasAssets', { ...environment, submitCanvasAssetMutation: journal, runCanvasAssetMutationBatch, directAssetMutations: true })
+    const rename = actualCallback<(assetId: string, displayName: string) => Promise<void>>('renameCanvasAssetDirectly', environment)
+    const metadata = actualCallback<(assetId: string, input: { favorite?: boolean; tags?: string[] }) => Promise<void>>('updateCanvasAssetMetadataDirectly', environment)
+    return { batch, rename, metadata, bridge, journal, refreshAssets, setBanner, agentMountedRef, page: () => page, catalog: () => catalog, scope(value: string) { scope = value } }
+  }
+  it('moves to and restores from the recycle bin through the original per-asset methods with partial outcomes', async () => {
+    const f = directFixture()
+    const removed = await f.batch('delete', [id(1), id(2), id(3)])
+    expect(removed.outcomes.map((item) => item.state)).toEqual(['succeeded', 'unconfirmed', 'succeeded'])
+    expect(f.bridge.deleteAsset.mock.calls.map(([assetId]) => assetId)).toEqual([id(1), id(2), id(3)]); expect(f.refreshAssets).toHaveBeenCalledOnce()
+    expect((await f.batch('restore', [id(1)])).outcomes[0].state).toBe('succeeded'); expect(f.bridge.restoreAsset).toHaveBeenCalledExactlyOnceWith(id(1))
+    expect(f.journal).not.toHaveBeenCalled()
+  })
+  it('renames, tags and favorites through the original methods with the old desktop notices', async () => {
+    const f = directFixture()
+    await f.rename(id(1), '新名称')
+    expect(f.bridge.renameAsset).toHaveBeenCalledWith({ assetId: id(1), displayName: '新名称' }); expect(f.page().items[0].displayName).toBe('新名称'); expect(f.catalog()[0].displayName).toBe('新名称')
+    expect(f.setBanner).toHaveBeenLastCalledWith('素材名称已更新')
+    await f.metadata(id(1), { tags: ['产品'] }); expect(f.page().items[0].tags).toEqual(['产品']); expect(f.setBanner).toHaveBeenLastCalledWith('素材标签已更新')
+    await f.metadata(id(1), { favorite: true }); expect(f.page().items[0].favorite).toBe(true); expect(f.setBanner).toHaveBeenLastCalledWith('已收藏素材')
+    await f.metadata(id(1), { favorite: false }); expect(f.setBanner).toHaveBeenLastCalledWith('已取消收藏')
+    expect(f.refreshAssets).toHaveBeenCalledTimes(4); expect(f.journal).not.toHaveBeenCalled()
+  })
+  it('keeps the desktop tag limits in front of the original method', async () => {
+    const f = directFixture()
+    for (const tags of [Array.from({ length: 13 }, (_, index) => `标签${index}`), ['长'.repeat(33)], ['产品', '产品']]) await expect(f.metadata(id(1), { tags })).rejects.toThrow('最多 12 个不重复标签，每个不超过 32 个字符')
+    expect(f.bridge.updateAssetMetadata).not.toHaveBeenCalled()
+    await f.metadata(id(1), { tags: Array.from({ length: 12 }, (_, index) => `标签${index}`) }); expect(f.bridge.updateAssetMetadata).toHaveBeenCalledOnce()
+  })
+  it('does not patch a late reply into a library that moved to another project or unmounted', async () => {
+    for (const change of ['scope', 'unmount'] as const) {
+      const f = directFixture(), gate = deferred<{ assetId: string; displayName: string }>()
+      f.bridge.renameAsset.mockImplementationOnce(() => gate.promise)
+      const running = f.rename(id(1), '迟到的名称')
+      if (change === 'scope') f.scope('owner-a:project-b:2'); else f.agentMountedRef.current = false
+      gate.resolve({ assetId: id(1), displayName: '迟到的名称' }); await running
+      expect(f.page().items[0].displayName).toBe('原名'); expect(f.setBanner).not.toHaveBeenCalled(); expect(f.refreshAssets).not.toHaveBeenCalled()
+    }
   })
 })

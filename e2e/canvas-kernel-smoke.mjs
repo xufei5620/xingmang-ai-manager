@@ -353,6 +353,8 @@ const expectedAssertions = [
   'undo-stays-in-project', 'undo-keeps-opened-project',
   // 0.2.22 及更早的旧画布存的工程能打开，图能显示。
   'legacy-project-opens',
+  // 选中带图的节点 Ctrl+C、Ctrl+V 能贴，同一个窗口里换了项目也能贴；素材库能收藏、改名（kernel-v0.1.1）。
+  'copy-paste-nodes', 'asset-library-organize',
 ]
 
 function recordPass(name) {
@@ -561,6 +563,13 @@ async function statusLine(canvas) {
 // screen holds the canvas window under that width.
 async function statusBar(canvas) {
   return evaluateInRenderer(canvas, 'status bar', () => document.querySelector('[aria-label="画布状态"]')?.textContent ?? '')
+}
+
+// 从「更多操作」里打开素材库。快捷键 A 是开关：关窗前素材栏开着，重开后记成开着却没显示出来，这时按 A 第一下反而把它关上。
+async function openAssetLibrary(canvas) {
+  await canvas.getByRole('button', { name: '更多操作' }).click()
+  await canvas.getByRole('button', { name: '打开素材库', exact: true }).click()
+  return canvas.getByRole('complementary', { name: '本地资产' })
 }
 
 function pendingCount(text) {
@@ -809,6 +818,57 @@ async function main() {
     assert.equal(await imageNaturalWidth(canvas, '图像节点素材预览'), 64)
     await capture(canvas, 'legacy-project')
     recordPass('legacy-project-opens')
+
+    beginStage('copy a node with Ctrl+C and paste it here and into another project')
+    // kernel-v0.1.0 在桌面上选中节点按 Ctrl+C 报「当前画布账号尚未核对…」。图像节点带着素材，桌面没有核对剪贴板的通道，
+    // 只认本工作区自己复制出去的那一段，所以同一个窗口里换了项目也得贴得上。
+    await clearSelection(canvas)
+    await nodes(canvas).filter({ hasText: '图像节点' }).first().click({ position: { x: 20, y: 60 } })
+    await canvas.keyboard.press('Control+c')
+    await canvas.getByText(/^已复制 1 个节点到系统剪贴板/).waitFor({ timeout: fixtureReadyTimeoutMs })
+    await clearSelection(canvas)
+    await canvas.keyboard.press('Control+v')
+    await expect(nodes(canvas)).toHaveCount(3, { timeout: fixtureReadyTimeoutMs })
+    await expect(canvas.getByRole('img', { name: '图像节点素材预览' })).toHaveCount(2)
+    await backToCenter(canvas)
+    await openProject(canvas, '项目乙')
+    await expect(nodes(canvas)).toHaveCount(1, { timeout: fixtureReadyTimeoutMs })
+    await clearSelection(canvas)
+    await canvas.keyboard.press('Control+v')
+    await expect(nodes(canvas)).toHaveCount(2, { timeout: fixtureReadyTimeoutMs })
+    await capture(canvas, 'pasted-into-b')
+    recordPass('copy-paste-nodes')
+
+    beginStage('favorite and rename an asset in the library')
+    // kernel-v0.1.0 在桌面上把素材库的收藏、改名、标签、回收关了；kernel-v0.1.1 照旧画布直接改（yoyo 10-28「素材B」）。
+    await backToCenter(canvas)
+    await openProject(canvas, '旧画布的工程')
+    await clearSelection(canvas)
+    const tray = await openAssetLibrary(canvas)
+    const favorite = tray.getByRole('button', { name: /^收藏：/ }).first()
+    await favorite.waitFor({ timeout: fixtureReadyTimeoutMs })
+    await expect(tray.getByText('收藏、改名、标签和回收暂不可用', { exact: false })).toHaveCount(0)
+    const assetName = (await favorite.getAttribute('aria-label')).replace('收藏：', '')
+    // 卡片上的工具条鼠标移上去才出来。
+    const card = tray.getByRole('group', { name: `查看素材详情：${assetName}` })
+    await card.hover()
+    await favorite.click()
+    await tray.getByRole('button', { name: `取消收藏：${assetName}` }).waitFor({ timeout: fixtureReadyTimeoutMs })
+    // 检查器里的素材栏窄，卡片上不放「重命名」，点开卡片在详情里改。
+    await card.click()
+    await tray.getByRole('region', { name: `素材详情：${assetName}` }).getByRole('button', { name: `重命名素材：${assetName}` }).click()
+    const rename = canvas.getByRole('dialog', { name: '重命名素材' })
+    await rename.getByRole('textbox').fill('冒烟改的名字')
+    await rename.getByRole('button', { name: '保存' }).click()
+    await expect(rename).toHaveCount(0, { timeout: fixtureReadyTimeoutMs })
+    // 关窗重开，素材库重新向桌面读一遍，看到的是桌面存下的结果。
+    await closeCanvas(canvas)
+    canvas = await openCanvas(page)
+    await openProject(canvas, '旧画布的工程')
+    await clearSelection(canvas)
+    await (await openAssetLibrary(canvas)).getByRole('button', { name: '取消收藏：冒烟改的名字' }).waitFor({ timeout: fixtureReadyTimeoutMs })
+    await capture(canvas, 'asset-library')
+    recordPass('asset-library-organize')
 
     beginStage('final checks')
     stats = await readFixtureStats()

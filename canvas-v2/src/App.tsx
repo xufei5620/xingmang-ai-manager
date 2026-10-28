@@ -264,7 +264,7 @@ import {
   pasteCanvasClipboard,
   type CanvasClipboardPayload,
 } from './editor/clipboard'
-import { buildCanvasClipboardTransfer, canvasClipboardEventAllowed, runCanvasClipboardPaste, writeCanvasClipboardEvent } from './editor/clipboard-transport'
+import { buildCanvasClipboardTransfer, canvasClipboardCopiedHere, canvasClipboardEventAllowed, canvasClipboardOwnerId, runCanvasClipboardPaste, writeCanvasClipboardEvent } from './editor/clipboard-transport'
 import { maximumProjectContentBytes, maximumProjectEdges, maximumProjectNodes, utf8ByteLength } from './lib/canvas-limits'
 import { groupCanvasNodes, ungroupCanvasNode, validateParentGraph } from './editor/grouping'
 import { RunInspector } from './components/RunInspector'
@@ -1381,6 +1381,9 @@ function CanvasWorkspace({
     apply: (input, signal) => submitAssetCategoryOperation(input, signal), inspect: (input, signal) => inspectAssetCategoryOperation(input, signal),
   })
   const assetMutationSupported = !!hostBridge().manageAssetMutations && !!hostBridge().inspectAssetMutationOperation
+  // 桌面主进程还没有可恢复整理的那两个方法（#1393）。换内核前旧画布的收藏、改名、标签、回收都能用，yoyo 10-28 定「素材B」：
+  // 桌面上缺这两个方法时照旧画布直接调原来的方法，整理不能撤销，回收站的「撤销」照旧。网页和嵌入宿主不退回去。
+  const directAssetMutations = !assetMutationSupported && canvasCapabilities().host === 'desktop'
   const assetMutationRecovery = useAssetMutationRecovery({
     ownerId: creationOwnerId ?? null, active: assetMutationSupported && draftActionsEnabled,
     apply: async (input, signal) => {
@@ -1580,6 +1583,9 @@ function CanvasWorkspace({
     setRunning(activeRunsRef.current.size > 0)
   }, [])
   const clipboardRef = useRef<{ revision: number; controller: AbortController | null; scope: string }>({ revision: 0, controller: null, scope: layerEditorScope })
+  // Outlives project switches on purpose: the old desktop canvas pasted across
+  // projects in one window, and an account switch remounts the whole workspace.
+  const clipboardIdentityRef = useRef<{ workspaceId: string; copied: string | null }>({ workspaceId: crypto.randomUUID(), copied: null })
   // Render-time invalidation also covers account A → B → A before effects run.
   if (clipboardRef.current.scope !== layerEditorScope) {
     clipboardRef.current.controller?.abort(); clipboardRef.current.controller = null
@@ -2938,6 +2944,36 @@ function CanvasWorkspace({
 
   const favoriteCanvasAssets = useCallback((assetIds: readonly string[], favorite: boolean) => submitCanvasAssetMutation({ operationId: crypto.randomUUID(), action: favorite ? 'favorite' : 'unfavorite', assetIds: [...assetIds] }), [submitCanvasAssetMutation])
 
+  // The old desktop canvas's direct writes, kept for a desktop without the
+  // recoverable pair. A reply that lands after the library has moved to another
+  // project or account is not patched into that view; it reads its own page.
+  const renameCanvasAssetDirectly = useCallback(async (assetId: string, displayName: string) => {
+    const scope = currentAssetLibraryScope()
+    const renamed = await hostBridge().renameAsset({ assetId, displayName })
+    if (!agentMountedRef.current || scope !== currentAssetLibraryScope()) return
+    const apply = <T extends CanvasAssetSummary>(asset: T): T => (asset.assetId === renamed.assetId ? { ...asset, displayName: renamed.displayName } : asset) as T
+    setAssetPage((current) => ({ ...current, items: current.items.map(apply) }))
+    setAssetCatalog((current) => current.map(apply))
+    setBanner('素材名称已更新')
+    void refreshAssets()
+  }, [currentAssetLibraryScope, refreshAssets])
+
+  const updateCanvasAssetMetadataDirectly = useCallback(async (assetId: string, input: { favorite?: boolean; tags?: string[] }) => {
+    // The desktop main process still checks the old canvas's tag limits, not the kernel's 20 and 40.
+    const tags = input.tags
+    if (tags && (tags.length > 12 || tags.some((tag) => tag.length > 32) || new Set(tags.map((tag) => tag.toLocaleLowerCase('zh-CN'))).size !== tags.length)) throw new Error('最多 12 个不重复标签，每个不超过 32 个字符')
+    const scope = currentAssetLibraryScope()
+    const updated = await hostBridge().updateAssetMetadata({ assetId, ...input })
+    if (!agentMountedRef.current || scope !== currentAssetLibraryScope()) return
+    const apply = <T extends CanvasAssetSummary>(asset: T): T => (asset.assetId === updated.assetId
+      ? { ...asset, favorite: updated.favorite, tags: [...updated.tags], ...(updated.lastUsedAt ? { lastUsedAt: updated.lastUsedAt } : {}) }
+      : asset) as T
+    setAssetPage((current) => ({ ...current, items: current.items.map(apply) }))
+    setAssetCatalog((current) => current.map(apply))
+    setBanner(input.favorite === true ? '已收藏素材' : input.favorite === false ? '已取消收藏' : '素材标签已更新')
+    void refreshAssets()
+  }, [currentAssetLibraryScope, refreshAssets])
+
   const markCanvasAssetUsed = useCallback(async (assetId: string) => {
     try {
       const updated = await hostBridge().markAssetUsed(assetId)
@@ -2950,7 +2986,7 @@ function CanvasWorkspace({
   }, [])
 
   const mutateCanvasAssets = useCallback(async (action: CanvasAssetMutationAction, assetIds: readonly string[], content = ''): Promise<CanvasAssetMutationResult> => {
-    if (action !== 'purge') {
+    if (action !== 'purge' && !directAssetMutations) {
       const result = await submitCanvasAssetMutation({ operationId: crypto.randomUUID(), action, assetIds: [...assetIds] })
       return { action, outcomes: result.outcomes.map((item) => ({ assetId: item.assetId, state: item.state, message: item.message })) }
     }
@@ -2960,13 +2996,13 @@ function CanvasWorkspace({
     function current() { return agentMountedRef.current && scope === currentAssetLibraryScope() && queryGeneration === assetQueryGenerationRef.current && query === JSON.stringify(assetQueryRef.current) && assetMutationPendingRef.current?.token === token }
     try {
       const bridge = hostBridge()
-      const result = await runCanvasAssetMutationBatch({ action, ids: assetIds, current, perform: (assetId) => bridge.purgeAsset(assetId, content) })
+      const result = await runCanvasAssetMutationBatch({ action, ids: assetIds, current, perform: (assetId) => action === 'delete' ? bridge.deleteAsset(assetId) : action === 'restore' ? bridge.restoreAsset(assetId) : bridge.purgeAsset(assetId, content) })
       // Refresh even when only some writes succeeded. Page totals, tags and
       // recycle-bin membership must all come from the same confirmed query.
       if (current() && !await refreshAssets() && current()) result.refreshError = '素材操作已结束，但列表读取未完成；请刷新核对，未确认项仍保留'
       return result
     } finally { if (assetMutationPendingRef.current?.token === token) assetMutationPendingRef.current = null }
-  }, [currentAssetLibraryScope, refreshAssets, submitCanvasAssetMutation])
+  }, [currentAssetLibraryScope, refreshAssets, submitCanvasAssetMutation, directAssetMutations])
 
   const deleteCanvasAssets = useCallback((assetIds: readonly string[]) => mutateCanvasAssets('delete', assetIds), [mutateCanvasAssets])
   const restoreCanvasAssets = useCallback((assetIds: readonly string[]) => mutateCanvasAssets('restore', assetIds), [mutateCanvasAssets])
@@ -5902,7 +5938,7 @@ function CanvasWorkspace({
     try {
       const payload = buildSelectionClipboard(nodeIds)
       if (!payload) { setBanner('请先选择需要复制的节点'); return false }
-      const text = buildCanvasClipboardTransfer(payload, { ownerId: layerEditorOwnerRef.current.accountId, projectId: activeProjectIdRef.current })
+      const text = buildCanvasClipboardTransfer(payload, { ownerId: canvasClipboardOwnerId(layerEditorOwnerRef.current.accountId, canvasCapabilities().host, clipboardIdentityRef.current.workspaceId), projectId: activeProjectIdRef.current })
       if (event) {
         if (!writeCanvasClipboardEvent(event.clipboardData, text)) throw new Error('浏览器未写入剪贴板，请保持选区并按 Ctrl/Cmd+C 重试')
         event.preventDefault()
@@ -5910,6 +5946,7 @@ function CanvasWorkspace({
         if (!navigator.clipboard?.writeText) throw new Error('浏览器不允许菜单复制，请保持选区，回到画布后按 Ctrl/Cmd+C；创建副本仍可使用')
         await navigator.clipboard.writeText(text)
       }
+      clipboardIdentityRef.current.copied = text
       if (currentClipboardScope() !== scope || clipboardRef.current.revision !== revision) return false
       setBanner(`已复制 ${payload.nodes.length} 个节点到系统剪贴板，可在同一账号的其他画布或新标签页粘贴（含分组子项与内部连线，不恢复原生成任务）`)
       return true
@@ -5964,13 +6001,16 @@ function CanvasWorkspace({
     const current = () => !controller.signal.aborted && clipboardRef.current.revision === revision && currentClipboardScope() === scope && projectCanEditRef.current && cloudBridge === window.xingmangCanvasHost
     try {
       setBanner('正在读取剪贴板并核对选区素材…')
-      await runCanvasClipboardPaste({ ownerId: layerEditorOwnerRef.current.accountId, current,
+      await runCanvasClipboardPaste({ ownerId: canvasClipboardOwnerId(layerEditorOwnerRef.current.accountId, canvasCapabilities().host, clipboardIdentityRef.current.workspaceId), current,
         async read() {
           if (content !== undefined) return content
           if (!navigator.clipboard?.readText) throw new Error('浏览器不允许菜单读取剪贴板，请回到画布后按 Ctrl/Cmd+V；当前没有粘贴')
           return navigator.clipboard.readText()
         },
-        async inspect(payload) {
+        async inspect(payload, text) {
+          // The desktop has no inspection channel; it pastes back only what this
+          // workspace copied, as the old in-window desktop clipboard did.
+          if (!bridge.inspectClipboardWorkflow && canvasClipboardCopiedHere(text, clipboardIdentityRef.current.copied)) return
           if (!bridge.inspectClipboardWorkflow) throw new Error('这些节点带着素材或固定的模型来源，当前客户端核对不了，没有粘贴；可以用「创建副本」')
           await bridge.inspectClipboardWorkflow(canvasClipboardWorkflow(payload), controller.signal)
         }, apply: applyClipboardPayload,
@@ -9336,8 +9376,8 @@ function CanvasWorkspace({
               categoryLoading={assetCategoryState.scope === assetCategoryOwnerScope && assetCategoryState.loading}
               categoryError={assetCategoryState.scope === assetCategoryOwnerScope ? assetCategoryState.error : ''}
               recoverableMutations={assetMutationSupported}
-              mutationWritesBlocked={!assetMutationSupported || !assetMutationRecovery.ready || !assetMutationRecovery.writeAvailable || Boolean(assetMutationRecovery.pending) || assetMutationRecovery.busy}
-              mutationRecoveryNotice={assetMutationSupported ? <AssetMutationRecoveryPanel journal={assetMutationRecovery} onChanged={() => void refreshAssets()} /> : <p role="status">收藏、改名、标签和回收暂不可用。彻底删除仍按原来的确认流程处理。</p>}
+              mutationWritesBlocked={directAssetMutations ? !draftActionsEnabled : !assetMutationSupported || !assetMutationRecovery.ready || !assetMutationRecovery.writeAvailable || Boolean(assetMutationRecovery.pending) || assetMutationRecovery.busy}
+              mutationRecoveryNotice={directAssetMutations ? undefined : assetMutationSupported ? <AssetMutationRecoveryPanel journal={assetMutationRecovery} onChanged={() => void refreshAssets()} /> : <p role="status">收藏、改名、标签和回收暂不可用。彻底删除仍按原来的确认流程处理。</p>}
               onFavoriteMany={assetMutationSupported ? favoriteCanvasAssets : undefined}
               categoryRecoveryPending={Boolean(assetCategoryRecovery.pending)}
               categoryRecoveryNotice={<AssetCategoryRecoveryNotice state={assetCategoryRecovery} onReload={assetCategoryRecovery.reload} />}
@@ -9354,8 +9394,8 @@ function CanvasWorkspace({
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onReadAssetOrigin={hostEntryPoints.assetOrigin ? readCanvasAssetOrigin : undefined}
               onReadDetail={readCanvasAssetDetail}
-              onRename={renameCanvasAsset}
-              onUpdateMetadata={updateCanvasAssetMetadata}
+              onRename={directAssetMutations ? renameCanvasAssetDirectly : renameCanvasAsset}
+              onUpdateMetadata={directAssetMutations ? updateCanvasAssetMetadataDirectly : updateCanvasAssetMetadata}
               onInspectReferences={(assetId) => hostBridge().inspectAssetReferences(assetId, serializeWorkflow(workflowSnapshot()))}
               onCheckRunInputs={async (assetId, retryUnavailable) => {
                 const bridge = hostBridge()

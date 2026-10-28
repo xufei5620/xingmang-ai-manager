@@ -1,4 +1,5 @@
 import { isCanvasPublicAccountId } from '../lib/canvas-account-contract'
+import type { CanvasHostKind } from '../host-kind'
 import { collectAssetReferenceIds } from '../lib/asset-reference-values'
 import { canvasClipboardMime, maximumClipboardBytes, parseCanvasClipboard, serializeCanvasClipboard, type CanvasClipboardPayload } from './clipboard'
 
@@ -33,6 +34,25 @@ export function parseCanvasClipboardTransfer(content: string, ownerId: string | 
   return payload
 }
 
+/**
+ * The desktop hands the kernel no account UUID (its accounts are numeric), so a
+ * copy there is owned by the workspace mount instead. The workspace remounts on
+ * every account change, which retires the id together with the account.
+ */
+export function canvasClipboardOwnerId(accountId: string | null, host: CanvasHostKind, workspaceId: string): string | null {
+  return accountId ?? (host === 'desktop' ? workspaceId : null)
+}
+
+/**
+ * A host that cannot inspect private sources may still take back the exact
+ * selection this workspace copied: every asset and model source in it was
+ * already on this account's canvas. Anything else, even under a matching
+ * owner id, still needs the host's inspection.
+ */
+export function canvasClipboardCopiedHere(text: string, copied: string | null): boolean {
+  return copied !== null && text === copied
+}
+
 /** Browser custom MIME support varies; text/plain is the durable fallback. */
 export function writeCanvasClipboardEvent(data: Pick<DataTransfer, 'setData'> | null, text: string): boolean {
   if (!data) return false
@@ -55,7 +75,7 @@ export async function runCanvasClipboardPaste(options: {
   ownerId: string | null
   current(): boolean
   read(): Promise<string>
-  inspect(payload: CanvasClipboardPayload): Promise<void>
+  inspect(payload: CanvasClipboardPayload, text: string): Promise<void>
   apply(payload: CanvasClipboardPayload): void
 }): Promise<boolean> {
   if (!options.current()) return false
@@ -63,7 +83,7 @@ export async function runCanvasClipboardPaste(options: {
   if (!options.current()) return false
   const payload = parseCanvasClipboardTransfer(text, options.ownerId)
   if (canvasClipboardHasPrivateSources(payload)) {
-    await options.inspect(payload)
+    await options.inspect(payload, text)
     if (!options.current()) return false
   }
   if (!options.current()) return false
