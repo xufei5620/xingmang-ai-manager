@@ -2206,7 +2206,10 @@ export function parseAccountDashboardData(
       quota: 0,
       count: 0,
       tokens: 0,
-      models: {},
+      // Model names come from the server verbatim. A plain object would hand
+      // keys such as "__proto__" or "constructor" a shared built-in, and the
+      // += below would then write onto it for the whole main process.
+      models: Object.create(null) as Record<string, NewApiAccountDashboardMetric>,
     }
     const bucketModel = bucket.models[record.modelName] ?? { quota: 0, count: 0, tokens: 0 }
     bucketModel.quota += record.quota
