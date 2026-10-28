@@ -391,6 +391,8 @@ export interface CodexDesktopPackageProbe {
   source?: CodexDesktopPackageProbeSource
   /** False means the probe could not establish that the package is absent. */
   confirmedAbsent?: boolean
+  /** powershell.exe 自己的失败（超时、退出码、stderr）。只当 Error 的 cause 往下传，进日志、不上屏。 */
+  cause?: unknown
 }
 
 /** Launches the AppsFolder URI through the canonical SystemRoot Explorer. */
@@ -1980,13 +1982,48 @@ export function parseCodexDesktopCombinedProbeJson(output: string): CodexDesktop
   }
 }
 
+/**
+ * powershell.exe 失败时 execFile 的 message 是「Command failed: <整条命令行>\n<stderr>」，
+ * 命令行就是探测脚本本身。以前截前 240 个字，截下来的只有脚本，所以这几条探测不管怎么
+ * 失败，日志里都是同一句；10-28 点更新报错时只能说「没查出是哪一步」。是超时被结束还是
+ * 报错退出，看的是错误自己的字段。
+ *
+ * 结果故意用英文、不带 stderr：它会经卸载报错和检测失败那行上屏，渲染层把英文换成自己的
+ * 中文说法；PowerShell 的 stderr 跟着系统语言，中文系统上是中文，会被原样端上屏。也不用
+ * timeout 这个词，渲染层会把它当成网络超时。完整的错误（含 stderr）挂在探测结果的 cause
+ * 上，只进日志。
+ */
+export function describeCodexDesktopProbeProcessFailure(
+  probe: string,
+  error: unknown,
+  timeoutMs: number,
+): string | null {
+  if (!(error instanceof Error)) return null
+  const message = error.message.trim()
+  // 起不来进程（ENOENT、EPERM）这类没有命令行，原话照旧。
+  if (!message.startsWith('Command failed:')) return message.slice(0, 240) || null
+  const { killed, signal, code } = error as { killed?: unknown; signal?: unknown; code?: unknown }
+  if (killed === true) return `${probe}: PowerShell gave no answer within ${Math.round(timeoutMs / 1000)} s and was stopped`
+  if (typeof signal === 'string' && signal) return `${probe}: PowerShell was ended by ${signal}`
+  if (typeof code === 'number') {
+    // 进程崩溃时退出码是 NTSTATUS（0xC0000142 这类），十六进制才认得出。
+    const hex = code < 0 || code > 255 ? ` (0x${(code >>> 0).toString(16)})` : ''
+    return `${probe}: PowerShell exited with code ${code}${hex}`
+  }
+  return `${probe}: PowerShell failed`
+}
+
 /** 合并脚本整体失败（超时、起不来进程）时三段共用的回退。 */
-export function buildCodexDesktopCombinedProbeFailure(reason: unknown): CodexDesktopCombinedProbe {
-  const message = reason instanceof Error ? reason.message.trim().slice(0, 240) : ''
+export function buildCodexDesktopCombinedProbeFailure(
+  reason: unknown,
+  timeoutMs: number = codexDesktopCombinedProbeTimeoutMs,
+): CodexDesktopCombinedProbe {
   return {
     match: null,
     processes: [],
-    packageProbe: failedCodexDesktopPackageProbe(message || null),
+    packageProbe: failedCodexDesktopPackageProbe(
+      describeCodexDesktopProbeProcessFailure('Codex desktop status probe', reason, timeoutMs),
+    ),
   }
 }
 
@@ -2036,14 +2073,23 @@ export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageP
     })
     return parseCodexDesktopPackageProbeJson(stdout)
   } catch (error) {
-    const message = error instanceof Error ? error.message.trim().slice(0, 240) : ''
     return {
       value: null,
-      error: message || '无法读取 Windows Appx 包信息',
+      error: describeCodexDesktopProbeProcessFailure('Codex desktop package probe', error, codexDesktopSingleProbeTimeoutMs)
+        ?? '无法读取 Windows Appx 包信息',
       source: null,
       confirmedAbsent: false,
+      cause: error,
     }
   }
+}
+
+/**
+ * 查包没有结果时调用方抛的错。message 用探测自己那句（能让客户照着做的那句，或上面的英文
+ * 摘要），powershell.exe 的原始错误挂成 cause，日志里照样看得到退出码和 stderr。
+ */
+export function codexDesktopPackageProbeError(error: string, probe: Pick<CodexDesktopPackageProbe, 'cause'>): Error {
+  return probe.cause === undefined ? new Error(error) : new Error(error, { cause: probe.cause })
 }
 
 export async function inspectCodexDesktopAppVersion(
@@ -2077,7 +2123,7 @@ export async function verifyInstalledCodexDesktop(
 ): Promise<CodexDesktopPackageEntry> {
   const installedProbe = await inspectCodexDesktopPackage()
   if (!installedProbe.value) {
-    throw new Error(installedProbe.error ?? '安装命令完成后仍未检测到 Codex Desktop')
+    throw codexDesktopPackageProbeError(installedProbe.error ?? '安装命令完成后仍未检测到 Codex Desktop', installedProbe)
   }
   const comparison = compareWindowsPackageVersions(installedProbe.value.version, expectedVersion)
   if (comparison === null || comparison !== 0) {
@@ -3476,7 +3522,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     ])
     cancellation?.throwIfCancelled()
     attempt.storeUnavailable = storeAvailable === false
-    if (currentProbe.error) throw new Error(currentProbe.error)
+    if (currentProbe.error) throw codexDesktopPackageProbeError(currentProbe.error, currentProbe)
     const currentPackage = currentProbe.value
     const firstInstall = canAttemptCodexDesktopFirstInstallFallback(
       currentPackage,
@@ -3797,7 +3843,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         return { outcome: 'not-installed', previousVersion: null }
       }
       const processes = await listCodexDesktopProcesses('all', { strict: true })
-      if (probe.error && !processes.length) throw new Error(probe.error)
+      if (probe.error && !processes.length) throw codexDesktopPackageProbeError(probe.error, probe)
       const processPackage = selectCodexDesktopPackage(
         processes
           .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))

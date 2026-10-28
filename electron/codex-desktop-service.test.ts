@@ -1,7 +1,9 @@
 import fs from 'node:fs'
+import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
@@ -63,6 +65,7 @@ import {
   codexDesktopStoreHeartbeatMs,
   shouldTryCodexDesktopStoreUpdate,
   describeCodexDesktopPrimaryMirrorSkip,
+  describeCodexDesktopProbeProcessFailure,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
@@ -1722,6 +1725,57 @@ describe('parseCodexDesktopCombinedProbeJson', () => {
     )
     expect(probes.detectionFailed).toBe(true)
     expect(probes.detectionError).toContain('ETIMEDOUT')
+  })
+})
+
+const execFileAsync = promisify(execFile)
+
+/** A real execFile rejection, so the fields the summary reads are the ones Node actually sets. */
+async function execFileFailure(script: string, timeoutMs = 0): Promise<unknown> {
+  return execFileAsync(process.execPath, ['-e', script], { timeout: timeoutMs, windowsHide: true })
+    .then(() => null, (error: unknown) => error)
+}
+
+describe('describeCodexDesktopProbeProcessFailure', () => {
+  it('says a probe ran out of time instead of quoting the script it ran', async () => {
+    const error = await execFileFailure('setTimeout(() => {}, 30_000)', 200)
+    expect(error).toMatchObject({ killed: true })
+
+    expect(describeCodexDesktopProbeProcessFailure('Codex desktop package probe', error, 8_000))
+      .toBe('Codex desktop package probe: PowerShell gave no answer within 8 s and was stopped')
+    expect(buildCodexDesktopCombinedProbeFailure(error).packageProbe.error)
+      .toBe('Codex desktop status probe: PowerShell gave no answer within 24 s and was stopped')
+  })
+
+  it('gives the exit code and leaves the command line and stderr to the logged cause', async () => {
+    const error = await execFileFailure("process.stderr.write('Get-AppxPackage : 拒绝访问。'); process.exit(1)")
+    expect(error).toMatchObject({ code: 1, stderr: 'Get-AppxPackage : 拒绝访问。' })
+
+    const summary = describeCodexDesktopProbeProcessFailure('Codex desktop package probe', error, 8_000)
+    expect(summary).toBe('Codex desktop package probe: PowerShell exited with code 1')
+    expect(summary).not.toContain(process.execPath)
+  })
+
+  it('reads a crashed PowerShell in hex and names a signal it was ended by', () => {
+    const crashed = Object.assign(new Error('Command failed: powershell.exe -Command $x'), { code: -1073741502, killed: false, signal: null })
+    const ended = Object.assign(new Error('Command failed: powershell.exe -Command $x'), { code: null, killed: false, signal: 'SIGKILL' })
+
+    expect(describeCodexDesktopProbeProcessFailure('probe', crashed, 8_000)).toBe('probe: PowerShell exited with code -1073741502 (0xc0000142)')
+    expect(describeCodexDesktopProbeProcessFailure('probe', ended, 8_000)).toBe('probe: PowerShell was ended by SIGKILL')
+  })
+
+  it('keeps a failure that carries no command line as it is', () => {
+    expect(describeCodexDesktopProbeProcessFailure('probe', new Error('spawn powershell.exe ENOENT'), 8_000)).toBe('spawn powershell.exe ENOENT')
+    expect(describeCodexDesktopProbeProcessFailure('probe', null, 8_000)).toBeNull()
+    expect(describeCodexDesktopProbeProcessFailure('probe', new Error('  '), 8_000)).toBeNull()
+  })
+
+  it('never words a summary as a timeout, which the renderer would read as the network', async () => {
+    const summaries = [
+      describeCodexDesktopProbeProcessFailure('probe', await execFileFailure('setTimeout(() => {}, 30_000)', 200), 8_000),
+      describeCodexDesktopProbeProcessFailure('probe', await execFileFailure('process.exit(3)'), 8_000),
+    ]
+    for (const summary of summaries) expect(summary).not.toMatch(/timed? ?out|超时/i)
   })
 })
 

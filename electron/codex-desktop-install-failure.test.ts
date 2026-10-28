@@ -10,7 +10,12 @@ import {
   isCodexDesktopUnsupportedInstallFailure,
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
-import { CodexDesktopInstallFailure, describeCodexDesktopPrimaryMirrorSkip, toCodexDesktopInstallFailure } from './codex-desktop-service'
+import {
+  CodexDesktopInstallFailure,
+  codexDesktopPackageProbeError,
+  describeCodexDesktopPrimaryMirrorSkip,
+  toCodexDesktopInstallFailure,
+} from './codex-desktop-service'
 
 // 每一类都用 codex-desktop-service.ts / codex-desktop-appx.ts 真会抛出的原话。
 const samples: Record<CodexDesktopInstallFailureReason, string[]> = {
@@ -87,6 +92,31 @@ describe('Codex Desktop install failure wording', () => {
     const logged = failure as CodexDesktopInstallFailure
     expect(logged.detail).toBe(`微软商店这次没装上（商店那边没说原因），国内镜像也没装上：${samples.damaged[0]}`)
     expect(logged.storeExitCode).toBe('0x8a150049')
+  })
+
+  it('keeps what PowerShell failed with when the check before an update gets no answer', () => {
+    // 10-28 点更新报错时日志里的那条命令：以前只记得下它的前 240 个字。
+    const processError = Object.assign(
+      new Error("Command failed: C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo -NoProfile -NonInteractive -Command $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); Import-Module -Name 'Microsoft.PowerShell.Utility', 'Appx' -ErrorAction SilentlyContinue\n"),
+      { code: null, killed: true, signal: 'SIGTERM', stderr: '' },
+    )
+    const summary = 'Codex desktop package probe: PowerShell gave no answer within 8 s and was stopped'
+    const failure = toCodexDesktopInstallFailure(
+      codexDesktopPackageProbeError(summary, { cause: processError }),
+      { storeFailure: null, storeExitCode: null, updating: false },
+    )
+
+    // 客户看到的那句没变，变的只是日志里能看出是哪一步、为什么。
+    expect(failure.message).toBe(buildCodexDesktopInstallFailureMessage('unknown', { storeTried: false, updating: false }))
+    expect(failure).toMatchObject({ reason: 'unknown', detail: summary })
+    expect((failure.cause as Error).cause).toBe(processError)
+  })
+
+  it('passes the package check sentence for another Windows account through without a cause', () => {
+    const sentence = '读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。'
+    const error = codexDesktopPackageProbeError(sentence, {})
+    expect(error.cause).toBeUndefined()
+    expect(toCodexDesktopInstallFailure(error, { storeFailure: null, storeExitCode: null, updating: true })).toBe(error)
   })
 
   it('says the store is missing rather than that it failed when this computer has none', () => {
