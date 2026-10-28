@@ -68,7 +68,7 @@ describe('prepareChatImage', () => {
 describe('chat attachment service', () => {
   it('stores every picked image after all of them were checked', async () => {
     const files = store()
-    const service = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => ['/a.png', '/b.png'], readClipboardImage: () => null })
+    const service = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => ['/a.png', '/b.png'], readClipboardImage: async () => null })
     const assets = await service.pick(7, 4)
     expect(assets).toHaveLength(2)
     expect(files.storeLocalBytes).toHaveBeenCalledTimes(2)
@@ -77,15 +77,15 @@ describe('chat attachment service', () => {
 
   it('stores nothing when the picker is canceled, too many are chosen, or one file is bad', async () => {
     const canceled = store()
-    await expect(createChatAttachmentService({ store: canceled, codec: codec(10), pickFiles: async () => [], readClipboardImage: () => null }).pick(7, 4)).resolves.toEqual([])
+    await expect(createChatAttachmentService({ store: canceled, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null }).pick(7, 4)).resolves.toEqual([])
 
     const crowded = store()
-    await expect(createChatAttachmentService({ store: crowded, codec: codec(10), pickFiles: async () => ['/a', '/b', '/c'], readClipboardImage: () => null }).pick(7, 2))
+    await expect(createChatAttachmentService({ store: crowded, codec: codec(10), pickFiles: async () => ['/a', '/b', '/c'], readClipboardImage: async () => null }).pick(7, 2))
       .rejects.toThrow('还能加 2 张')
 
     let calls = 0
     const mixed = store({ readLocalFile: vi.fn(async () => (++calls === 2 ? Buffer.from('text file contents here!!') : png(10, 10))) })
-    await expect(createChatAttachmentService({ store: mixed, codec: codec(10), pickFiles: async () => ['/a', '/b'], readClipboardImage: () => null }).pick(7, 4))
+    await expect(createChatAttachmentService({ store: mixed, codec: codec(10), pickFiles: async () => ['/a', '/b'], readClipboardImage: async () => null }).pick(7, 4))
       .rejects.toThrow('不是能用的图片')
 
     for (const files of [canceled, crowded, mixed]) expect(files.storeLocalBytes).not.toHaveBeenCalled()
@@ -93,27 +93,27 @@ describe('chat attachment service', () => {
 
   it('rejects an out-of-range remaining count before opening the picker', async () => {
     const pickFiles = vi.fn(async () => ['/a'])
-    const service = createChatAttachmentService({ store: store(), codec: codec(10), pickFiles, readClipboardImage: () => null })
+    const service = createChatAttachmentService({ store: store(), codec: codec(10), pickFiles, readClipboardImage: async () => null })
     for (const remaining of [0, 5, 1.5, Number.NaN]) await expect(service.pick(7, remaining)).rejects.toThrow('最多带 4 张')
     expect(pickFiles).not.toHaveBeenCalled()
   })
 
   it('reads a pasted screenshot from the clipboard, or nothing when it holds no image', async () => {
     const files = store()
-    const empty = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => [], readClipboardImage: () => null })
+    const empty = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null })
     await expect(empty.paste(7)).resolves.toBeNull()
-    const full = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => [], readClipboardImage: () => png(1280, 720) })
+    const full = createChatAttachmentService({ store: files, codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => png(1280, 720) })
     await expect(full.paste(7)).resolves.toMatchObject({ localUrl: expect.stringMatching(/^xingmang-asset:\/\/image\//) })
   })
 
   it('sends only attachment-sized images from the store', async () => {
-    const service = createChatAttachmentService({ store: store(), codec: codec(10), pickFiles: async () => [], readClipboardImage: () => null })
+    const service = createChatAttachmentService({ store: store(), codec: codec(10), pickFiles: async () => [], readClipboardImage: async () => null })
     await expect(service.readDataUri(7, 'a'.repeat(43))).resolves.toMatch(/^data:image\/png;base64,/)
     const large = createChatAttachmentService({
       store: store({ readOwned: vi.fn(async (_userId: number, assetId: string) => ({ asset: asset(assetId), bytes: Buffer.alloc(CHAT_ATTACHMENT_LIMITS.storedBytes + 1) })) }),
       codec: codec(10),
       pickFiles: async () => [],
-      readClipboardImage: () => null,
+      readClipboardImage: async () => null,
     })
     await expect(large.readDataUri(7, 'a'.repeat(43))).rejects.toThrow()
   })

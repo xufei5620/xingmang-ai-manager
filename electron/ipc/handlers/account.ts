@@ -247,7 +247,7 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
     accountService.updateDisplayName(parseAccountDisplayNameUpdateInput(input))
   ))
   registerTrustedHandler('account:copy-reset-password', async (_event, value: unknown) => {
-    sensitiveClipboard.write(parseResetPasswordToCopy(value))
+    await sensitiveClipboard.write(parseResetPasswordToCopy(value))
   })
   registerTrustedHandler('account:change-password', (_event, input: unknown) => {
     const parsed = parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api')

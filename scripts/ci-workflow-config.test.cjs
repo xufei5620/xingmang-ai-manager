@@ -858,6 +858,132 @@ test('setup-node never turns a dependency cache on by itself', () => {
   assert.equal(packageJson.devEngines?.packageManager, undefined, 'devEngines.packageManager would switch on setup-node\'s npm cache in every workflow')
 })
 
+// G21: CodeQL code scanning, report-only for now (codeql.yml header).
+const codeqlWorkflow = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'codeql.yml'), 'utf8'))
+const codeqlJob = codeqlWorkflow.jobs.analyze
+
+function evaluateEventExpression(expression, eventName) {
+  const body = String(expression).trim().replace(/^\$\{\{/, '').replace(/\}\}$/, '')
+  const javascript = body.replace(/github\.event_name/g, JSON.stringify(eventName)).replace(/'([^']*)'/g, (_, text) => JSON.stringify(text))
+  assert.match(javascript.replace(/"[^"]*"/g, ''), /^[\s()&|=!]*$/, `unrecognised expression: ${body}`)
+  return Function(`return (${javascript})`)()
+}
+
+test('code scanning runs nightly on main and on changes to its own setup, never on every pull request', () => {
+  // Every pull request would hold two runners for ten-odd minutes next to the
+  // quality matrix; merges land every five minutes or so.
+  assert.deepEqual(codeqlWorkflow.on.schedule, [{ cron: '23 20 * * *' }])
+  assert.ok(Object.hasOwn(codeqlWorkflow.on, 'workflow_dispatch'))
+  const ownSetup = ['.github/workflows/codeql.yml', 'scripts/codeql-summary.cjs']
+  assert.deepEqual(codeqlWorkflow.on.push, { branches: ['main'], paths: ownSetup })
+  assert.deepEqual(codeqlWorkflow.on.pull_request, { paths: ownSetup })
+  assert.equal(codeqlWorkflow.concurrency.group, '${{ github.workflow }}-${{ github.ref }}')
+  assert.equal(evaluateEventExpression(codeqlWorkflow.concurrency['cancel-in-progress'], 'pull_request'), true)
+  for (const event of ['push', 'schedule', 'workflow_dispatch']) {
+    assert.equal(evaluateEventExpression(codeqlWorkflow.concurrency['cancel-in-progress'], event), false, event)
+  }
+})
+
+test('code scanning only reports: nothing it finds can turn a pull request red or block a merge', () => {
+  // Uploading from a pull request makes GitHub attach a check that fails on new
+  // alerts, so pull request runs keep their results in the log only.
+  const analyze = codeqlJob.steps.find((step) => step.id === 'analyze')
+  assert.equal(evaluateEventExpression(analyze.with.upload, 'pull_request'), 'never')
+  for (const event of ['push', 'schedule', 'workflow_dispatch']) assert.equal(evaluateEventExpression(analyze.with.upload, event), 'always', event)
+  assert.equal(analyze['continue-on-error'], undefined)
+  const protection = JSON.parse(fs.readFileSync(path.join(root, 'docs', 'main-branch-protection.json'), 'utf8'))
+  assert.deepEqual(protection.required_status_checks.checks.map((check) => check.context), ['quality-gate'])
+  assert.doesNotMatch(JSON.stringify(workflow), /codeql/i)
+})
+
+test('code scanning holds only the permission to upload results and runs no repository package', () => {
+  assert.deepEqual(codeqlWorkflow.permissions, { contents: 'read' })
+  assert.deepEqual(codeqlJob.permissions, { contents: 'read', 'security-events': 'write' })
+  assert.equal(codeqlJob.environment, undefined)
+  assert.doesNotMatch(YAML.stringify(codeqlWorkflow), /secrets\./)
+  assert.deepEqual(codeqlJob.strategy.matrix.language, ['actions', 'javascript-typescript'])
+  assert.equal(codeqlJob.strategy['fail-fast'], false)
+  const pins = new Set()
+  for (const step of codeqlJob.steps) {
+    if (step.uses) {
+      assert.match(step.uses, /^[^@]+@[0-9a-f]{40}$/, step.uses)
+      if (step.uses.startsWith('github/codeql-action/')) pins.add(step.uses.split('@')[1])
+    }
+    if (String(step.uses || '').startsWith('actions/checkout@')) assert.equal(step.with?.['persist-credentials'], false)
+    if (String(step.uses || '').startsWith('actions/setup-node@')) assert.equal(step.with?.cache, undefined)
+    for (const line of String(step.run || '').split('\n')) assert.doesNotMatch(line, /^\s*(?:npm|npx|yarn|pnpm|corepack)\b/, line)
+    assert.doesNotMatch(String(step.run || ''), /\$\{\{/, `${step.name || step.uses}: bind values through env`)
+  }
+  // init and analyze must come from the same CodeQL release.
+  assert.equal(pins.size, 1)
+  const init = codeqlJob.steps.find((step) => String(step.uses || '').startsWith('github/codeql-action/init@'))
+  assert.equal(init.with['build-mode'], 'none')
+  assert.equal(init.with.languages, '${{ matrix.language }}')
+  assert.deepEqual(YAML.parse(init.with.config), { 'paths-ignore': ['ui-spec'] })
+  const summary = codeqlJob.steps.at(-1)
+  assert.equal(summary.run, 'node scripts/codeql-summary.cjs "$SARIF_DIRECTORY"')
+  assert.equal(summary.env.SARIF_DIRECTORY, '${{ steps.analyze.outputs.sarif-output }}')
+  assert.equal(codeqlJob.if, "${{ github.event_name != 'schedule' || github.repository == 'xufei5620/xingmang-ai-manager' }}")
+})
+
+test('the code scanning summary lists every finding with its severity, rule and place', () => {
+  const { formatLog, formatMarkdown, summarizeSarif } = require('./codeql-summary.cjs')
+  const sarif = {
+    runs: [{
+      tool: {
+        driver: { name: 'CodeQL', rules: [] },
+        extensions: [{
+          name: 'codeql/javascript-queries',
+          rules: [
+            { id: 'js/command-line-injection', properties: { 'security-severity': '9.8', 'problem.severity': 'error' } },
+            { id: 'js/path-injection', properties: { 'security-severity': '7.5' } },
+            { id: 'js/unused-local-variable', properties: { 'problem.severity': 'recommendation' }, shortDescription: { text: 'Unused variable' } },
+          ],
+        }],
+      },
+      results: [
+        { ruleId: 'js/unused-local-variable', message: { text: '' }, locations: [{ physicalLocation: { artifactLocation: { uri: 'src/b.ts' }, region: { startLine: 3 } } }] },
+        { ruleId: 'js/path-injection', message: { text: 'This path depends on a [user-provided value](1) | here.' }, locations: [{ physicalLocation: { artifactLocation: { uri: 'electron/a.ts' }, region: { startLine: 12 } } }] },
+        { rule: { id: 'js/command-line-injection', toolComponent: { index: 0 } }, message: { text: 'Shell\ncommand' }, locations: [{ physicalLocation: { artifactLocation: { uri: 'electron/z.ts' } } }] },
+        { ruleId: 'js/path-injection', suppressions: [{ kind: 'inSource' }], message: { text: 'suppressed' }, locations: [] },
+      ],
+    }],
+  }
+  assert.deepEqual(summarizeSarif(sarif), [
+    { level: '严重', ruleId: 'js/command-line-injection', location: 'electron/z.ts', message: 'Shell command' },
+    { level: '高', ruleId: 'js/path-injection', location: 'electron/a.ts:12', message: 'This path depends on a user-provided value | here.' },
+    { level: '提示', ruleId: 'js/unused-local-variable', location: 'src/b.ts:3', message: 'Unused variable' },
+  ])
+  const findings = summarizeSarif(sarif)
+  assert.match(formatLog('javascript', findings), /^代码扫描（javascript）：发现 3 条（严重 1，高 1，提示 1）\n {2}\[严重\] js\/command-line-injection {2}electron\/z\.ts {2}Shell command\n/)
+  const markdown = formatMarkdown('javascript', findings)
+  assert.match(markdown, /现在只报不挡/)
+  assert.ok(markdown.includes('| 高 | `js/path-injection` | `electron/a.ts:12` | This path depends on a user-provided value \\| here. |'))
+  assert.equal(formatLog('actions', []), '代码扫描（actions）：没有发现问题\n')
+  assert.throws(() => summarizeSarif({}), /不是 SARIF/)
+})
+
+test('the code scanning summary stops listing after its limit and refuses a scan that left nothing behind', (t) => {
+  const { LISTED_RESULTS_LIMIT, formatLog, formatMarkdown, main } = require('./codeql-summary.cjs')
+  const many = Array.from({ length: LISTED_RESULTS_LIMIT + 5 }, (_, index) => ({ level: '中', ruleId: 'js/x', location: `a.ts:${index + 1}`, message: 'm' }))
+  assert.equal(formatLog('javascript', many).trim().split('\n').length, LISTED_RESULTS_LIMIT + 2)
+  assert.match(formatLog('javascript', many), /另外 5 条没有列出/)
+  assert.match(formatMarkdown('javascript', many), /另外 5 条没有列出/)
+
+  const directory = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'codeql-summary-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  assert.throws(() => main([directory], {}), /没有 \.sarif 文件/)
+  assert.throws(() => main([], {}), /用法/)
+  fs.writeFileSync(path.join(directory, 'actions.sarif'), JSON.stringify({ runs: [{ tool: { driver: { rules: [] } }, results: [] }] }))
+  const summaryFile = path.join(directory, 'summary.md')
+  const written = []
+  main([directory], { GITHUB_STEP_SUMMARY: summaryFile }, (text) => written.push(text))
+  assert.deepEqual(written, ['代码扫描（actions）：没有发现问题\n'])
+  assert.equal(fs.readFileSync(summaryFile, 'utf8'), '### 代码扫描（actions）：没有发现问题\n\n')
+  fs.writeFileSync(path.join(directory, 'broken.sarif'), '{')
+  assert.throws(() => main([directory], {}, () => {}), /读不懂 broken\.sarif/)
+})
+
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
   const macJob = workflow.jobs['macos-test']
   const commands = runSteps('macos-test')

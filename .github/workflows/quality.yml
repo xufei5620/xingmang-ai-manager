@@ -214,7 +214,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
-      # Electron 43 has no install script: `npm ci` leaves its binary out, and
+      # Electron (43 and later) has no install script: `npm ci` leaves its binary out, and
       # the first require('electron') downloads it on the spot in one fetch,
       # with no retry and no timeout. One network blip then failed whichever
       # test file happened to load Electron first: #319's vitest-1 on a GitHub

@@ -1,5 +1,6 @@
+import { textSearchOnlyModel } from '../runtime/text-web-search'
 import type { CanvasMediaGroups } from '../store/canvas-state'
-import { availableImageModelPresets, availableVideoModelPresets, defaultImageModel, imageModelPresets, videoModelPresets } from '../models'
+import { availableImageModelPresets, availableVideoModelPresets, defaultImageModel, knownNonImageModel, knownNonTextModel } from '../models'
 
 export type MediaCapabilityKind = 'image' | 'video' | 'text'
 
@@ -23,7 +24,8 @@ export const sub2ApiCanvasMediaPreferences = {
   textModel: 'gemini-3.7-flash',
 } as const
 
-const legacyDefaultGroupAliases: Record<MediaCapabilityKind, readonly string[]> = {
+// xm 站 2026-10-16 删掉了这些老的默认分组名（桌面 #1004）。按老名字存的工程，老名字不在了就换成现在认出的分组。
+const legacyDefaultGroupAliases: Readonly<Record<MediaCapabilityKind, readonly string[]>> = {
   image: ['生图分组', '图片模型-中转/订阅'],
   video: ['视频分组', '视频模型-中转/订阅'],
   text: ['Gemini', 'Gemini-中转/订阅'],
@@ -46,15 +48,12 @@ function pickPreferredGroup(
   return fallbackToFirst ? availableGroups[0]?.name : undefined
 }
 
-// xm 站 2026-10 改分组本名，图片、视频两个分组去掉了「中转」。老名字删掉以后只能按
-// 名字里的词认；站上同时有好几个分组时，带这个词的不止一个就说明认不准，不认。
+// xm 站 2026-10 改分组本名，图片、视频两个分组去掉了「中转」。老名字删掉以后只能按名字里的词认；
+// 带这个词的分组不止一个就说明认不准，不认（桌面 #1004）。
 function onlyGroupNamed(availableGroups: readonly { name: string }[], word: string): string[] {
   const matches = availableGroups.filter((entry) => entry.name.includes(word))
   return matches.length === 1 ? [matches[0].name] : []
 }
-
-const imagePresetIds = new Set(imageModelPresets.map((preset) => preset.id))
-const videoPresetIds = new Set(videoModelPresets.map((preset) => preset.id))
 
 export function mediaGroupsSignature(mediaGroups: CanvasMediaGroups): string {
   return `${mediaGroups.image ?? ''}\u0000${mediaGroups.video ?? ''}\u0000${mediaGroups.text ?? ''}`
@@ -75,11 +74,21 @@ export function pickAvailableModel(preferred: string | undefined, available: rea
 }
 
 export function availableTextModels(models: readonly string[]): string[] {
-  const filtered = models.filter((id) => !imagePresetIds.has(id) && !videoPresetIds.has(id))
-  return filtered.length > 0 ? filtered : [...models]
+  // Provider purpose describes the whole catalog. Only reject known media
+  // families; unknown relay names can still identify compatible chat models.
+  return [...new Set(models)].filter((id) => !knownNonTextModel(id) && !textSearchOnlyModel(id))
 }
 
-export function availableModelsForKind(kind: MediaCapabilityKind, models: readonly string[]): string[] {
+export function availableModelsForKind(kind: MediaCapabilityKind, models: readonly string[], purposes?: readonly MediaCapabilityKind[]): string[] {
+  if (purposes !== undefined) {
+    if (!purposes.includes(kind)) return []
+    if (kind === 'text') return availableTextModels(models)
+    // A declared purpose applies to a source, not each entry in its catalog.
+    // Preserve unknown relay aliases while rejecting known incompatible families.
+    const available = [...new Set(models)]
+    return kind === 'image' ? available.filter((model) => !knownNonImageModel(model))
+      : available.filter((model) => knownNonImageModel(model) === knownNonTextModel(model))
+  }
   if (kind === 'image') return availableImageModelPresets(models).map((preset) => preset.id)
   if (kind === 'video') return availableVideoModelPresets(models).map((preset) => preset.id)
   return availableTextModels(models)
@@ -98,9 +107,16 @@ export function withResolvedMediaModels(
   videoModels: readonly string[],
   textModels: readonly string[],
 ): CanvasMediaGroups {
-  const imageModel = pickAvailableModel(mediaGroups.imageModel, availableModelsForKind('image', imageModels))
-  const videoModel = pickAvailableModel(mediaGroups.videoModel, availableModelsForKind('video', videoModels))
-  const textModel = pickAvailableModel(mediaGroups.textModel, availableModelsForKind('text', textModels))
+  // Preserve unknown custom model names, without defaulting text requests to
+  // known image/video models from a mixed provider catalog.
+  const preferredImages = availableImageModelPresets(imageModels).map((entry) => entry.id)
+  const preferredVideos = availableVideoModelPresets(videoModels).map((entry) => entry.id)
+  const preferredText = availableTextModels(textModels).filter((id) => /^(gpt-[345]|o[134](?:-|$)|claude-|gemini-)/i.test(id))
+  // A saved choice is part of the document, even after a provider withdraws it.
+  // Availability belongs to preflight; refresh must never select another model.
+  const imageModel = mediaGroups.imageModel || pickAvailableModel(undefined, [...preferredImages, ...imageModels])
+  const videoModel = mediaGroups.videoModel || pickAvailableModel(undefined, [...preferredVideos, ...videoModels])
+  const textModel = mediaGroups.textModel || pickAvailableModel(undefined, [...preferredText, ...availableTextModels(textModels)])
   return {
     ...(mediaGroups.image ? { image: mediaGroups.image } : {}),
     ...(mediaGroups.video ? { video: mediaGroups.video } : {}),
@@ -111,13 +127,23 @@ export function withResolvedMediaModels(
   }
 }
 
-export function preferredMediaGroups(availableGroups: readonly { name: string }[], siteId: 'solov' | 'solov-api' = 'solov'): CanvasMediaGroups {
+export function groupsForCapability<T extends { name: string; purposes?: readonly MediaCapabilityKind[] }>(groups: readonly T[], kind: MediaCapabilityKind): T[] {
+  return groups.filter((group) => group.purposes === undefined || group.purposes.includes(kind))
+}
+
+export function preferredMediaGroups(availableGroups: readonly { name: string; purposes?: readonly MediaCapabilityKind[] }[], siteId: 'solov' | 'solov-api' = 'solov'): CanvasMediaGroups {
   if (availableGroups.length === 0) return {}
+  if (availableGroups.some((group) => group.purposes !== undefined)) {
+    const image = groupsForCapability(availableGroups, 'image')[0]?.name
+    const video = groupsForCapability(availableGroups, 'video')[0]?.name
+    const text = groupsForCapability(availableGroups, 'text')[0]?.name
+    return { ...(image ? { image } : {}), ...(video ? { video } : {}), ...(text ? { text } : {}) }
+  }
   const defaults = siteId === 'solov-api' ? sub2ApiCanvasMediaPreferences : defaultCanvasMediaPreferences
   const image = pickPreferredGroup(availableGroups, defaults.image, siteId === 'solov-api' ? [] : ['生图分组', '图片模型-中转/订阅', '图片模型', 'openai', /图片.*中转/i, ...onlyGroupNamed(availableGroups, '图片')], siteId !== 'solov-api')
   // 视频模型暂未上线。不要把图片分组当作视频分组，否则首次打开画布
   // 会为视频节点准备错误的 API Key。Grok 分组也不认：站上有好几个带 Grok 的，
-  // 认不出视频分组时宁可留空让客户自己选。
+  // 认不出视频分组时宁可留空让客户自己选（桌面 #1004）。
   const video = defaults.video
     ? pickPreferredGroup(availableGroups, defaults.video, ['视频分组', '视频模型-中转/订阅', '视频模型', /视频.*中转/i, ...onlyGroupNamed(availableGroups, '视频')], false)
     : undefined
@@ -139,26 +165,30 @@ export function preferredMediaGroups(availableGroups: readonly { name: string }[
 
 export function withPreferredMediaDefaults(
   current: CanvasMediaGroups,
-  availableGroups: readonly { name: string }[],
+  availableGroups: readonly { name: string; purposes?: readonly MediaCapabilityKind[] }[],
   siteId: 'solov' | 'solov-api' = 'solov',
 ): CanvasMediaGroups {
   const preferred = preferredMediaGroups(availableGroups, siteId)
-  const availableNames = new Set(availableGroups.map((entry) => entry.name))
-  const resolveGroup = (kind: MediaCapabilityKind, value: string | undefined, fallback: string | undefined) => {
-    if (value && availableNames.has(value)) return value
-    if (value && legacyDefaultGroupAliases[kind].includes(value)) return fallback
-    return value ?? fallback
+  // A source in a list that declares purposes (the web's own sources) is the
+  // user's explicit choice and stays even when missing. Only the xm group
+  // list, which declares none, had its default groups renamed. An empty list
+  // says nothing about what was renamed, so a saved name stays until one is read.
+  const renamedDefaults = availableGroups.length > 0 && !availableGroups.some((group) => group.purposes !== undefined)
+  function savedGroup(kind: MediaCapabilityKind, saved: string | undefined, fallback: string | undefined): string | undefined {
+    if (!saved) return fallback
+    if (renamedDefaults && legacyDefaultGroupAliases[kind].includes(saved) && !availableGroups.some((group) => group.name === saved)) return fallback
+    return saved
   }
-  const image = resolveGroup('image', current.image, preferred.image)
-  const video = resolveGroup('video', current.video, preferred.video)
-  const text = resolveGroup('text', current.text, preferred.text)
+  const image = savedGroup('image', current.image, preferred.image)
+  const video = savedGroup('video', current.video, preferred.video)
+  const text = savedGroup('text', current.text, preferred.text)
   return {
     ...(image ? { image } : {}),
     ...(video ? { video } : {}),
     ...(text ? { text } : {}),
-    imageModel: current.imageModel ?? preferred.imageModel,
-    videoModel: current.videoModel ?? preferred.videoModel,
-    textModel: current.textModel ?? preferred.textModel,
+    ...(current.imageModel ? { imageModel: current.imageModel } : {}),
+    ...(current.videoModel ? { videoModel: current.videoModel } : {}),
+    ...(current.textModel ? { textModel: current.textModel } : {}),
   }
 }
 

@@ -1,0 +1,128 @@
+// 桌面 v2 编辑器的用例（桌面 000f9131 的 canvas-v2/src/models.test.ts），#4 搬进内核。
+// 内核有意和 v2 不一样的地方，期望改成内核的行为或退役，改动处写了为什么，汇总见 docs/canvas-kernel-v2-tests.md。
+import { describe, expect, it } from 'vitest'
+import {
+  imageSizeLabel,
+  imageModelPreset,
+  normalizeVideoSeconds,
+  resolveMiniMaxVideoMode,
+  validateImageModelOptions,
+  validateVideoModelOptions,
+  availableVideoModelPresets,
+  presetVideoModels,
+} from './models'
+import { v2EquivalentCapabilities } from './host-capabilities'
+
+describe('canvas media model capabilities', () => {
+  it('does not send unsupported image options to Grok models', () => {
+    const preset = imageModelPreset('grok-imagine-image-2.0')
+    expect(preset).toMatchObject({ supportsSize: false, supportsQuality: false, supportsEdits: true })
+    expect(preset.resolutions).toEqual(['1K'])
+    expect(validateImageModelOptions({
+      model: preset.id,
+      operation: 'generate',
+      size: '1024x1024',
+      quality: 'low',
+    })).toEqual([
+      '模型「Grok Imagine 2.0」不接受尺寸参数',
+      '模型「Grok Imagine 2.0」不接受画质参数',
+    ])
+  })
+
+  it('exposes Gemini 3.1 Flash Image with ratio selection and no edit or quality claim', () => {
+    // 清晰度现在由宿主声明：没有声明的老桌面按 v2 的模型表给，不带宿主能力时是网页那一套。
+    const preset = imageModelPreset('gemini-3.1-flash-image', v2EquivalentCapabilities)
+    expect(preset).toMatchObject({
+      label: 'Gemini 3.1 Flash Image', supportsSize: true, supportsQuality: false, supportsEdits: false,
+      resolutions: ['1K', '2K', '4K'],
+    })
+    expect(preset.sizes).toContain('1280x720')
+    expect(validateImageModelOptions({
+      model: preset.id, operation: 'generate', size: '1280x720',
+    })).toEqual([])
+    expect(validateImageModelOptions({
+      model: preset.id, operation: 'generate', size: '1111x777',
+    })).toContain('模型「Gemini 3.1 Flash Image」不支持这个图片尺寸')
+    expect(validateImageModelOptions({
+      model: preset.id, operation: 'edit', referenceImageCount: 1,
+    })).toContain('模型「Gemini 3.1 Flash Image」不支持图片编辑')
+  })
+
+  it('exposes native clarity tiers only where the provider supports them', () => {
+    expect(imageModelPreset('gpt-image-2').resolutions).toEqual(['1K', '2K', '4K'])
+    for (const model of ['gpt-image-1', 'jimeng_high_aes_general_v21_L', 'grok-imagine-image']) {
+      expect(imageModelPreset(model).resolutions).toEqual(['1K'])
+      expect(validateImageModelOptions({ model, operation: 'generate', imageResolution: '4K' }))
+        .toContain(`模型「${imageModelPreset(model).label}」不支持 4K 清晰度`)
+    }
+  })
+
+  it('rejects invalid GPT Image 2 dimensions before a paid request', () => {
+    expect(validateImageModelOptions({
+      model: 'gpt-image-2',
+      operation: 'generate',
+      size: '1023x1024',
+      quality: 'low',
+    })).toContain('GPT Image 2 的宽高必须都是 16 的倍数')
+  })
+
+  it('validates image edit capability and reference count', () => {
+    expect(validateImageModelOptions({
+      model: 'jimeng_high_aes_general_v21_L',
+      operation: 'edit',
+      referenceImageCount: 0,
+    })).toEqual([
+      '模型「即梦(快·中文强)」不支持图片编辑',
+      '图片编辑至少需要 1 张参考图',
+    ])
+  })
+
+  it('exposes all production video models and applies provider duration rules', () => {
+    // 内核的视频表多了 Seedance，只给声明了 ark-seedance 协议的宿主；老桌面列出来的还是 v2 这五个。
+    expect(availableVideoModelPresets(presetVideoModels, false, v2EquivalentCapabilities).map((preset) => preset.id)).toEqual([
+      'grok-imagine-video',
+      'grok-imagine-video-1.5',
+      'minimax-h3-mini',
+      'minimax-h3-fast',
+      'minimax-h3-base',
+    ])
+    expect(normalizeVideoSeconds(15, 'grok-imagine-video')).toBe('15')
+    expect(normalizeVideoSeconds('5', 'grok-imagine-video')).toBe('5')
+    expect(normalizeVideoSeconds(18, 'grok-imagine-video')).toBeNull()
+    expect(normalizeVideoSeconds('5.5', 'grok-imagine-video')).toBeNull()
+    expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 16 })).toEqual([
+      '视频时长必须在 1-15 秒之间',
+    ])
+    expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 5, size: '1280x720' })).toEqual([])
+    expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 5, size: '111x222' }))
+      .toEqual(['模型「Grok Imagine Video」不支持这个视频比例'])
+    expect(normalizeVideoSeconds('4', 'minimax-h3-mini')).toBeNull()
+    expect(normalizeVideoSeconds('6', 'minimax-h3-mini')).toBe('6')
+  })
+
+  it('derives and validates MiniMax modes from connected media', () => {
+    expect(resolveMiniMaxVideoMode({ imageCount: 0 })).toBe('t2va')
+    expect(resolveMiniMaxVideoMode({ imageCount: 1 })).toBe('i2va')
+    expect(resolveMiniMaxVideoMode({ imageCount: 2 })).toBe('fl2va')
+    expect(resolveMiniMaxVideoMode({ imageCount: 3 })).toBe('ref2va')
+    expect(resolveMiniMaxVideoMode({ audioCount: 1 })).toBe('ref2va')
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', resolution: '720p', aspectRatio: '21:9',
+      imageCount: 9, audioCount: 3,
+    })).toEqual([])
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', imageCount: 1, videoCount: 1,
+    })).toContain('MiniMax H3 当前不支持参考视频（max_videos=0）')
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-base', seconds: 10, mode: 'fl2va', imageCount: 1,
+    })).toContain('FL2VA 需要且只能连接 2 张图片，顺序为首帧、尾帧')
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-fast', seconds: 5, mode: 'i2va', imageCount: 2,
+    })).toContain('I2VA 需要且只能连接 1 张图片')
+  })
+
+  it('labels common image dimensions with user-facing aspect ratios', () => {
+    expect(imageSizeLabel('1024x1024')).toBe('1:1 · 1024x1024')
+    expect(imageSizeLabel('1792x768')).toBe('21:9 · 1792x768')
+  })
+})

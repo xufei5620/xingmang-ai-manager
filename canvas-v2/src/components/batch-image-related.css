@@ -1,0 +1,22 @@
+.batch-image-related-backdrop { position: fixed; inset: 0; z-index: var(--z-modal, 100); display: grid; place-items: center; padding: 12px; background: #0009; }
+.batch-image-related-dialog { display: flex; flex-direction: column; width: min(520px, 100%); max-height: calc(100dvh - 24px); min-height: 0; overflow: hidden; color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid var(--border-strong); border-radius: var(--radius-panel); box-shadow: var(--shadow-floating); font: 14px/1.5 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif; }
+.batch-image-related-dialog header, .batch-image-related-dialog footer { display: flex; flex-shrink: 0; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 18px; }
+.batch-image-related-dialog header { border-bottom: 1px solid var(--border-subtle); }
+.batch-image-related-dialog h2 { margin: 2px 0 0; font-size: 18px; }
+.batch-image-related-dialog small, .batch-image-related-dialog p { color: var(--text-muted); }
+.batch-image-related-body { min-height: 0; padding: 0 18px; overflow-y: auto; overscroll-behavior: contain; }
+.batch-image-related-body ol { max-height: 180px; margin: 12px 0; padding: 8px 12px 8px 36px; overflow-y: auto; background: var(--surface-hover); border-radius: var(--radius-control); }
+.batch-image-related-body li { padding: 5px 0; overflow-wrap: anywhere; }
+.batch-image-related-source { display: flex; align-items: center; gap: 10px; }
+.batch-image-related-source > img, .batch-image-related-source > .media-unavailable { flex: 0 0 44px; width: 44px; height: 44px; min-height: 0; object-fit: contain; border-radius: 4px; }
+.batch-image-related-source > span { min-width: 0; }
+.batch-image-related-body li small, .batch-image-related-body label small { display: block; }
+.batch-image-related-body fieldset { padding: 10px; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
+.batch-image-related-body label { display: flex; align-items: start; gap: 8px; padding: 8px 4px; cursor: pointer; }
+.batch-image-related-body label.is-disabled { color: var(--text-muted); cursor: default; }
+.batch-image-related-body input { flex: 0 0 auto; margin-top: 4px; }
+.batch-image-related-dialog footer { justify-content: flex-end; border-top: 1px solid var(--border-subtle); }
+.batch-image-related-dialog button { min-height: 36px; padding: 7px 12px; color: var(--text-primary); background: var(--surface-hover); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); font: inherit; cursor: pointer; }
+.batch-image-related-dialog button.is-primary { background: var(--accent, #4f46e5); color: white; }
+.batch-image-related-dialog button:focus-visible, .batch-image-related-dialog input:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.batch-image-related-dialog .batch-image-related-error { color: var(--danger); }

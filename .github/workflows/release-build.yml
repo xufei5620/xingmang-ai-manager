@@ -163,7 +163,7 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
-      # Electron 43 的 npm 包不带二进制:release:build 里的 npm test 第一次
+      # Electron 43 起 npm 包不带二进制:release:build 里的 npm test 第一次
       # require('electron') 时才现下,只试一次,网络一抖就红(#319、#796)。这里先
       # 限时、带重试地装好,见 scripts/ci-ensure-electron-binary.cjs。
       - name: Install the Electron binary before the release gate loads it

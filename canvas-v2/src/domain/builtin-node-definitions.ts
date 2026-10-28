@@ -1,3 +1,4 @@
+import { defaultImageTransformRecipe } from '../image-tools/recipe'
 import type { WorkflowNodeData } from '../model'
 import {
   invalidNodeData,
@@ -39,6 +40,11 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
     executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
   }),
   mediaDefinition({
+    type: 'text-generate', version: 1, title: '文字生成', description: '调用文字模型，保留输入并将生成文本传给下游', category: 'generation',
+    ports: [textInput, imageInputs, textOutput], dimensions: { width: 320, height: 360 }, defaultData: { prompt: '', model: '' },
+    executable: true, structural: false, executorKind: 'text', capabilities: [{ media: 'text', operation: 'generate' }],
+  }),
+  mediaDefinition({
     type: 'image-input', version: 1, title: '图片素材', description: '引用本地图片资产', category: 'input',
     ports: [imageOutput], dimensions: { width: 280, height: 340 }, defaultData: { assetId: '' },
     executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'input' }],
@@ -74,8 +80,43 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
     executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'video', operation: 'extract' }],
   }),
   mediaDefinition({
-    type: 'router', version: 1, title: '路由', description: '按媒体类型分流', category: 'flow',
-    ports: [textInput, imageInputs, videoInputs, audioInputs, textOutput, imageOutput, videoOutput, audioOutput], dimensions: { width: 224, height: 182 }, defaultData: { strategy: 'first-available' },
+    type: 'image-crop', version: 1, title: '裁剪图片', description: '调整裁剪范围、旋转翻转与输出尺寸', category: 'transform',
+    ports: [imageInput, imageOutput], dimensions: { width: 320, height: 340 }, defaultData: { imageTransform: defaultImageTransformRecipe('crop') },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'edit' }],
+  }),
+  mediaDefinition({
+    type: 'image-collage', version: 1, title: '拼图', description: '按输入顺序将多张图片拼成一张', category: 'transform',
+    ports: [imageInputs, imageOutput], dimensions: { width: 320, height: 340 }, defaultData: { imageTransform: defaultImageTransformRecipe('collage') },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'edit' }],
+  }),
+  mediaDefinition({
+    type: 'image-grid-split', version: 1, title: '宫格裁剪', description: '分割成独立切片，可单张或整组传给下游', category: 'transform',
+    ports: [imageInput, imageOutput, { ...imageOutput, id: 'out:images', label: '全部切片' }], dimensions: { width: 320, height: 340 }, defaultData: { imageTransform: defaultImageTransformRecipe('grid-split') },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'edit' }],
+  }),
+  mediaDefinition({
+    type: 'image-tile', version: 1, title: '平铺图片', description: '切换连接的贴图预览，处理当前一张，支持交替镜像', category: 'transform',
+    ports: [{ ...imageInput, cardinality: 'many' }, imageOutput], dimensions: { width: 320, height: 340 }, defaultData: { imageTransform: defaultImageTransformRecipe('tile') },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'edit' }],
+  }),
+  mediaDefinition({
+    type: 'image-layer', version: 1, title: '图层合成', description: '调整图层位置、顺序、透明度和混合模式', category: 'transform',
+    ports: [imageInputs, imageOutput], dimensions: { width: 320, height: 340 }, defaultData: { imageTransform: defaultImageTransformRecipe('layer') },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'edit' }],
+  }),
+  mediaDefinition({
+    type: 'image-compare', version: 1, title: '图片对比', description: '滑动、透明、点按与多图并排对比', category: 'transform',
+    ports: [imageInputs, imageOutput], dimensions: { width: 360, height: 320 }, defaultData: {},
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'image-panorama', version: 1, title: '全景预览', description: '浏览等距柱状全景图，拖动查看 360° 视角', category: 'transform',
+    ports: [imageInput, imageOutput], dimensions: { width: 360, height: 320 }, defaultData: {},
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'router', version: 1, title: '路由', description: '按保存连线顺序选择各类输入，上游仍可能计费', category: 'flow',
+    ports: [textInput, imageInputs, videoInputs, audioInputs, textOutput, imageOutput, videoOutput, audioOutput], dimensions: { width: 224, height: 182 }, defaultData: { routerStrategy: { version: 1, strategy: 'first-available' } },
     executable: true, structural: false, executorKind: 'flow', capabilities: [{ media: 'text', operation: 'route' }],
   }),
   mediaDefinition({

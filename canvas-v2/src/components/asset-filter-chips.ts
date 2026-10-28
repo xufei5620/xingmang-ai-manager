@@ -11,13 +11,13 @@ import type { CanvasAssetQuery } from '../host'
  */
 
 export interface AssetFilterChip {
-  id: 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'prompt' | 'runId' | 'nodeId'
+  id: 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'prompt' | 'runId' | 'nodeId' | 'category'
   label: string
   /** Applied over the current query to take this filter off. */
   patch: Partial<CanvasAssetQuery>
 }
 
-type FilterQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'view' | 'prompt' | 'runId' | 'nodeId'>
+type FilterQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'view' | 'prompt' | 'runId' | 'nodeId' | 'categoryId'>
 
 /** A prompt is a paragraph; a chip is a line. */
 function shortPrompt(prompt: string): string {
@@ -35,8 +35,9 @@ const sortNames: Record<string, string> = {
   'name-asc': '名称',
 }
 
-export function activeAssetFilters(query: FilterQuery): AssetFilterChip[] {
+export function activeAssetFilters(query: FilterQuery, categories?: readonly { id: string; name: string }[]): AssetFilterChip[] {
   const chips: AssetFilterChip[] = []
+  if (query.categoryId !== undefined) chips.push({ id: 'category', label: `分类：${query.categoryId === null ? '未分类' : categories?.find((item) => item.id === query.categoryId)?.name || '所选分类'}`, patch: { categoryId: undefined } })
   const search = (query.search ?? '').trim()
   if (search.length > 0) chips.push({ id: 'search', label: `搜索：${search}`, patch: { search: '' } })
   if (typeof query.tag === 'string' && query.tag.length > 0) {

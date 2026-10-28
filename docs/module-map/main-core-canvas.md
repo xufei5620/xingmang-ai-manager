@@ -67,7 +67,7 @@
 
 ## 无限画布 + AI 工作区（全项目唯一运行第三方前端代码且有宿主桥的地方）
 
-> 2026-08-12（PR #85）起**画布再也拿不到 API Key**：Key 只在主进程按账号和分组解析（`chat-credential-coordinator.ts`），全部 AI 调用、产物下载与落盘都在主进程完成，画布只能经 `canvas-host:*` 通道"请求"。这是 I15 的兑现方式：被投毒的画布连 Key 都摸不到，因为它从来没有过。给画布加任何能力前先回答"画布被供应链投毒后，这个能力能干什么"。画布源码在 `canvas-v2/`，`dist-canvas/` 是构建产物不入 git（T13）。
+> 2026-08-12（PR #85）起**画布再也拿不到 API Key**：Key 只在主进程按账号和分组解析（`chat-credential-coordinator.ts`），全部 AI 调用、产物下载与落盘都在主进程完成，画布只能经 `canvas-host:*` 通道"请求"。这是 I15 的兑现方式：被投毒的画布连 Key 都摸不到，因为它从来没有过。给画布加任何能力前先回答"画布被供应链投毒后，这个能力能干什么"。画布源码在 `canvas-v2/`，其中 `src/`、`shared/` 是 xingmang-canvas 内核按 tag 同步进来的副本（`KERNEL_SOURCE.json` 记来源，不要在本仓直接改），`dist-canvas/` 是构建产物不入 git（T13）。
 
 ### 画布窗口与宿主桥
 - `canvas-window.ts` — **画布窗口的总控**：独立 `BrowserWindow`，加固与主窗口同级（`sandbox` / `contextIsolation` / `webviewTag:false` / `navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`（I12）；用自己的 `registerCanvasHandler` + `assertTrustedCanvasSender` 注册全部 `canvas-host:*` 通道，只放行画布窗口自身（I4 的登记例外）；文件读写只走原生对话框，项目工作文件夹也由主进程弹框选；Linux 上打开前先确认渲染进程沙箱真的生效（`linux-renderer-sandbox.ts`），崩溃后自动恢复
@@ -103,6 +103,7 @@
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品；取回成品时另记一笔「请求号 → 片段」（最近 100 条），视频剪辑页重开时按请求号把片段挂回镜头
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + 最后写的 `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写、单文件/总量/账号目录数上限（防被攻破的渲染层换 scope 写满磁盘）；对话数上限与渲染层 `storage.ts` 是有意重复
 - `ai-chat-attachments.ts` — 聊天里附带的图片只从系统选文件框和剪贴板在主进程里取，渲染层给不出任何路径或字节（I15 同一思路）；太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片素材目录
+- `clipboard-image.ts` — 图片进出剪贴板（作品菜单「复制」、聊天粘贴截图）：Electron 44 起只剩按格式异步读写，一律以 `image/png` 进出
 - `chat-key-store.ts` — AI 聊天按分组签发的 Key 的本机缓存（`ChatKeyStore`）：`safeStorage` 加密落盘，`basic_text` 后端时拒绝落盘、只在本次运行内存里留；有账号数、每账号 Key 数上限，支持按账号/分组/Key 失效，并把退役分组名改成新名。由 `chat-credential-coordinator.ts`、`account-key-options.ts` 使用
 
 ### 素材存储与读取

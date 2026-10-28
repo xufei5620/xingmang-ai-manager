@@ -2,6 +2,10 @@ export type CanvasContextTarget = 'node' | 'selection'
 
 export type CanvasContextAction =
   | 'run'
+  | 'rename'
+  | 'save-workshop'
+  | 'batch-images'
+  | `related:${string}`
   | 'locate'
   | 'copy'
   | 'duplicate'
@@ -29,6 +33,9 @@ export interface CanvasContextMenuInput {
   allLocked: boolean
   allDisabled: boolean
   canDisable: boolean
+  canSaveWorkshop?: boolean
+  relatedOptions?: readonly { id: string; type: string; label: string }[]
+  batchImages?: { disabledReason?: string }
 }
 
 /**
@@ -43,7 +50,11 @@ export function canvasContextMenuItems(input: CanvasContextMenuInput): CanvasCon
   if (single && input.executable) {
     items.push({ action: 'run', label: input.running ? '运行中' : '运行此节点' })
   }
-  if (single) items.push({ action: 'locate', label: '定位到此节点' })
+  if (single) {
+    items.push({ action: 'rename', label: '重命名节点' })
+    items.push({ action: 'locate', label: '定位到此节点' })
+  }
+  if (input.canSaveWorkshop) items.push({ action: 'save-workshop', label: single && !input.hasGroup ? '保存节点配置到工坊' : '保存选区到工坊' })
 
   items.push({ action: 'copy', label: '复制', separatorBefore: items.length > 0 })
   items.push({ action: 'duplicate', label: '创建副本' })

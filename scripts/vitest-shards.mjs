@@ -25,6 +25,12 @@ import { createHash } from 'node:crypto'
 // one shard drifts minutes past its siblings. An entry whose file is gone
 // fails scripts/ci-workflow-config.test.cjs rather than quietly weighing
 // nothing.
+//
+// The five canvas-v2/ entries came in with the xingmang-canvas kernel (#1393)
+// and were timed serially in the Linux cloud container, not on windows-latest:
+// they render the whole canvas app, which costs CPU rather than file I/O, so
+// the two platforms should be close. Take their Windows numbers from a shard
+// log the next time the table is re-measured.
 export const measuredSeconds = {
   'electron/external-client-service.test.ts': 170,
   'electron/config-files.test.ts': 169,
@@ -38,6 +44,11 @@ export const measuredSeconds = {
   'electron/system-service.config-write-queue.test.ts': 14,
   'electron/codex-plugin-catalog.test.ts': 13,
   'electron/acceleration-development-backend.test.ts': 13,
+  'canvas-v2/src/image-tools/annotation-app.test.ts': 29,
+  'canvas-v2/src/video-tools/video-app-workflow.test.ts': 27,
+  'canvas-v2/src/editor/asset-placement-app.test.ts': 17,
+  'canvas-v2/src/editor/frame-selection-app.test.ts': 16,
+  'canvas-v2/src/editor/output-image-app.test.ts': 13,
 }
 
 // Per-file setup (transform and import) plus a typical file's tests came to

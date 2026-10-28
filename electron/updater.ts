@@ -278,7 +278,10 @@ export interface UpdaterService {
   getState(): UpdateSnapshot
   startup(): Promise<UpdateSnapshot>
   check(options?: UpdateCheckOptions): Promise<UpdateSnapshot>
-  /** 定时检查：找到新版本且自动更新开着时顺手下载。 */
+  /**
+   * 定时检查：找到新版本且自动更新开着时顺手下载。手里已经下好一版时只看更新目录上有没有比它新的，有才换掉它
+   * 接着下；这时没查成会 reject（快照不动，手里那份照样能装），交给调用方记日志。
+   */
   scheduledCheck(): Promise<UpdateSnapshot>
   /** 自动更新开关刚被打开：已经找到但还没下的版本现在就开始下。 */
   autoUpdateChanged(): Promise<UpdateSnapshot>
@@ -462,6 +465,11 @@ export interface UpdaterRuntime {
   downloadReceivedBytes?: () => number | null
   /** 一个版本下好了（不论随后核对过没过）。宿主拿去记一条日志，见 UpdateDownloadMeasure。*/
   downloadMeasured?: (measure: UpdateDownloadMeasure) => void
+  /**
+   * 手里下好的那一版被更新目录上更新的一版顶掉了（见 refreshDownloaded）：旧的那份不再装，阶段回到
+   * 「有新版本」，接着下新的。宿主拿去记一条日志。
+   */
+  downloadedSuperseded?: (from: string | null, to: string) => void
   /** 见 UpdateInstallMethod。不传＝安装器接手退出（Windows、Mac 的旧行为）。 */
   installMethod?: UpdateInstallMethod
   /**
@@ -1067,6 +1075,8 @@ export function createUpdaterService(
   let checkWatch: { pending: Promise<unknown>; outcome: Promise<unknown>; stop(): void } | null = null
   // check() 每真正开始一次加一。挂住的检查被掐断时只让最新那一次报（见 reportCheckFailure）。
   let latestCheck = 0
+  // 正在拿手里下好的那一版跟更新目录对一对（见 refreshDownloaded）。
+  let refreshingDownloaded = false
   // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
   // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
   const abandonedDownloads = new Set<Promise<unknown>>()
@@ -1189,6 +1199,22 @@ export function createUpdaterService(
     })
   }
 
+  // 手里下好的那一版够不上状态文件定的最低版本：装上它也过不了「必须更新」那道门，还得再升一轮。
+  const downloadedBelowMinimum = () => minimumRequired !== null
+    && isOlderVersion(snapshot.availableVersion ?? '', minimumRequired)
+
+  // 手里下好的那一版这会儿能不能换掉。正在装、开机装正在倒数的不换。Mac 这次运行已经把它交给 Squirrel
+  // 装过一次的也不换：Squirrel 可能已经取走了这一份，之后再装还是它，界面和自动更新记录却会当成装的是新的。
+  // 自动更新关着时换了还得客户自己点下载，手里这份却已经能装，不换；它够不上最低版本时照样换。
+  const mayReplaceDownloaded = () => snapshot.phase === 'downloaded'
+    && !installRequested
+    && !snapshot.launchInstallNotice
+    && !macInstallHandoffRegistered
+    && (autoDownload() || downloadedBelowMinimum())
+
+  // 这一趟检查是在拿手里那一版对比。阶段一离开「已下载」（被撤回了），事件就照平常那样进快照。
+  const probingDownloaded = () => refreshingDownloaded && snapshot.phase === 'downloaded'
+
   const adoptReleaseGuard = (guard: ReleaseGuard) => {
     // 某条线路、某个 CDN 节点给了一份比手上旧的状态文件：撤回名单和放量不跟着它退回去（#1157 第 10 条）。
     if (isOlderReleaseGuard(guard, releaseGuard)) return
@@ -1241,6 +1267,13 @@ export function createUpdaterService(
       && required !== previouslyRequired
       && (snapshot.phase === 'idle' || snapshot.phase === 'not-available' || snapshot.phase === 'error')
     ) void check().catch(() => undefined)
+    // 已经下好的那一版够不上刚定的最低版本：同样不等三小时，马上对一次更新目录，换下够得上的那一版。
+    if (
+      required
+      && required !== previouslyRequired
+      && snapshot.phase === 'downloaded'
+      && downloadedBelowMinimum()
+    ) void scheduledCheck().catch(() => undefined)
     if (
       !installRequested
       && isWithdrawn(snapshot.availableVersion)
@@ -1477,9 +1510,27 @@ export function createUpdaterService(
   }
 
   const eventHandlers: Record<UpdateEventName, (...args: any[]) => void> = {
-    'checking-for-update': () => emit({ phase: 'checking', progress: null, error: null }),
-    'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
+    // 拿手里那一版对比的那一趟，「正在检查」「没有新版本」都不进快照：手里那份照样摆着等装。
+    'checking-for-update': () => {
+      if (probingDownloaded()) return
+      emit({ phase: 'checking', progress: null, error: null })
+    },
+    'update-not-available': (info: UpdateInfo) => {
+      if (probingDownloaded()) return
+      applyInfo('not-available', info)
+    },
     'update-available': (info: UpdateInfo) => {
+      if (probingDownloaded()) {
+        // 一样新（多半就是手里这份）、比它旧的都不换。比它新的顶掉它：旧的那份不再装，下面照找到新版本那样落进快照。
+        if (!mayReplaceDownloaded() || !isOlderVersion(snapshot.availableVersion ?? '', info.version)) return
+        const replaced = snapshot.availableVersion
+        verifiedPackagePath = null
+        try {
+          runtime.downloadedSuperseded?.(replaced, info.version)
+        } catch {
+          // 记日志失败不影响换成新的这一版。
+        }
+      }
       // electron-updater 下载时用的就是发这个事件的那个对象（AppUpdater 把它存在
       // updateInfoAndProvider 里），换个新对象它看不见，只能就地改。
       if (intelMac) Object.assign(info, buildIntelMacUpdateInfo(info))
@@ -1552,6 +1603,8 @@ export function createUpdaterService(
         reportInstallFailure(error)
         return
       }
+      // 拿手里那一版对比时没查成：手里那份照样能装，不能报成「检查更新失败」把它丢了。错误由 refreshDownloaded 抛给调用方记日志。
+      if (probingDownloaded()) return
       clearInstallWatchdog()
       installRequested = false
       // electron-updater 的 error 事件不说自己来自哪一步，只能按当前阶段倒推。
@@ -1679,6 +1732,26 @@ export function createUpdaterService(
     return outcome
   }
 
+  // 查一次；代理连不上时换直连、直连那份更新地址没走通时换回默认地址，各当场再查一次（retrying 在再查之前调）。
+  // 都没查成时抛最后那次的错。
+  async function checkWithFallback(retrying: () => void): Promise<unknown> {
+    try {
+      return await checkWatched()
+    } catch (error) {
+      if (retryWithoutProxy && isProxyConnectionFailure(error)) {
+        let result: unknown
+        await retryOffProxy(async () => {
+          retrying()
+          result = await checkWatched()
+        })
+        return result
+      }
+      if (!feedFallBack(error)) throw error
+      retrying()
+      return await checkWatched()
+    }
+  }
+
   // 挂住和连接超时对客户是一回事：那头没动静了。沿用更新那张表里「超时」那句，界面不多一句新话；
   // code 另记，日志里分得清是看门狗停的。挂住的那次被掐断时只让最新那一次检查说话：之后又开始了
   // 一次的，那一次接回了同一个请求就和它一起报，还没发出请求就会重新发，这里再报只会让「检查更新
@@ -1720,27 +1793,9 @@ export function createUpdaterService(
     manualCheck = options.manual === true
     let result: unknown
     try {
-      result = await checkWatched()
+      result = await checkWithFallback(() => emit({ phase: 'checking', error: null, progress: null }))
     } catch (error) {
-      if (retryWithoutProxy && isProxyConnectionFailure(error)) {
-        try {
-          await retryOffProxy(async () => {
-            emit({ phase: 'checking', error: null, progress: null })
-            result = await checkWatched()
-          })
-        } catch (retryError) {
-          reportCheckFailure(retryError, thisCheck, options.manual === true)
-        }
-      } else if (feedFallBack(error)) {
-        try {
-          emit({ phase: 'checking', error: null, progress: null })
-          result = await checkWatched()
-        } catch (retryError) {
-          reportCheckFailure(retryError, thisCheck, options.manual === true)
-        }
-      } else {
-        reportCheckFailure(error, thisCheck, options.manual === true)
-      }
+      reportCheckFailure(error, thisCheck, options.manual === true)
     } finally {
       manualCheck = false
     }
@@ -2005,6 +2060,39 @@ export function createUpdaterService(
     download().catch((error: unknown) => runtime.reportBackgroundError?.(error))
   }
 
+  // 手里已经下好一版时的检查：拿它跟更新目录对一对。以前这时干脆不查，一直开着不退出的电脑就拿着最早下好的
+  // 那一版，之后发的版本都不知道，退出时、强制更新门里装上的还是它，得再升一轮（0.2.19 排查第 2 条）。
+  // 目录上有比它新的、这会儿又能换（mayReplaceDownloaded）才换成「有新版本」，由调用方接着下。撤回名单、
+  // 分批放量照旧在 isUserWithinRollout 里拦，被拦下的版本对这里同样是「没有」。一样新、没查成都原样留着
+  // 手里那份，「重启并安装」和退出时装照旧；没查成的错误抛给调用方记日志，下一次定时检查再来。
+  const refreshDownloaded = async (): Promise<UpdateSnapshot> => {
+    requireEnabled()
+    if (refreshingDownloaded || !mayReplaceDownloaded()) return cloneSnapshot(snapshot)
+    refreshingDownloaded = true
+    let withdrawn = false
+    try {
+      try { runtime.feedRoute?.prepare() } catch { /* keep the current feed */ }
+      await syncServiceStatus()
+      if (disposed) return cloneSnapshot(snapshot)
+      // 状态文件刚说手里这一版撤回了，withdrawOffer 已经把它收回：下面照平常那样查一次，换下替它的那一版。
+      if (currentPhase() !== 'downloaded') withdrawn = true
+      else if (mayReplaceDownloaded()) {
+        client.allowDowngrade = isWithdrawn(runtime.currentVersion)
+        await checkWithFallback(() => undefined)
+      }
+    } finally {
+      refreshingDownloaded = false
+    }
+    return withdrawn ? check() : cloneSnapshot(snapshot)
+  }
+
+  // 定时检查：手里已经下好一版时只对比（refreshDownloaded），没有时照常查。找到新版本、自动更新开着就接着下。
+  const scheduledCheck = async (): Promise<UpdateSnapshot> => {
+    const checked = currentPhase() === 'downloaded' ? await refreshDownloaded() : await check()
+    if (checked.phase !== 'available' || !autoDownload()) return checked
+    return download()
+  }
+
   return {
     getState: () => cloneSnapshot(snapshot),
     startup() {
@@ -2066,11 +2154,7 @@ export function createUpdaterService(
       return startupPromise
     },
     check,
-    async scheduledCheck() {
-      const checked = await check()
-      if (checked.phase !== 'available' || !autoDownload()) return checked
-      return download()
-    },
+    scheduledCheck,
     async autoUpdateChanged() {
       if (!enabled || snapshot.phase !== 'available' || !autoDownload()) return cloneSnapshot(snapshot)
       return download()

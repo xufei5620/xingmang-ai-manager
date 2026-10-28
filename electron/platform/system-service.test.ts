@@ -19,10 +19,7 @@ function setup(platform = 'win32', packaged = true) {
   }
   let login: ReturnType<App['getLoginItemSettings']> = {
     openAtLogin: false,
-    openAsHidden: false,
     wasOpenedAtLogin: false,
-    wasOpenedAsHidden: false,
-    restoreState: false,
     status: 'not-registered',
     executableWillLaunchAtLogin: false,
     launchItems: [],

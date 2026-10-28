@@ -10,7 +10,16 @@ export interface CanvasShortcutEvent {
   shiftKey?: boolean
   altKey?: boolean
   isComposing?: boolean
+  defaultPrevented?: boolean
   target?: unknown
+}
+export interface CanvasShortcutContext { modalOpen?: boolean }
+export const canvasModalSelector = '[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]'
+
+function isModalTarget(target: unknown): boolean {
+  if (!target || typeof target !== 'object') return false
+  const closest: unknown = Reflect.get(target, 'closest')
+  return typeof closest === 'function' && Boolean(Reflect.apply(closest, target, [canvasModalSelector]))
 }
 
 function isEditableTarget(target: unknown): boolean {
@@ -20,8 +29,12 @@ function isEditableTarget(target: unknown): boolean {
   return element.isContentEditable === true || tagName === 'input' || tagName === 'textarea' || tagName === 'select'
 }
 
-export function resolveCanvasShortcut(event: CanvasShortcutEvent): CanvasShortcut | null {
-  if (event.isComposing || event.altKey || isEditableTarget(event.target)) return null
+export function canvasKeyboardEventBlocked(event: CanvasShortcutEvent, context: CanvasShortcutContext = {}): boolean {
+  return Boolean(event.defaultPrevented || context.modalOpen || isModalTarget(event.target))
+}
+
+export function resolveCanvasShortcut(event: CanvasShortcutEvent, context: CanvasShortcutContext = {}): CanvasShortcut | null {
+  if (canvasKeyboardEventBlocked(event, context) || event.isComposing || event.altKey || isEditableTarget(event.target)) return null
   const modifier = Boolean(event.ctrlKey || event.metaKey)
   const key = event.key.toLowerCase()
   if (!modifier) {

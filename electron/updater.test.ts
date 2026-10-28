@@ -4279,3 +4279,217 @@ describe('downloaded package publisher signature', () => {
     updater.dispose()
   })
 })
+
+describe('a downloaded version the feed has moved past', () => {
+  // What electron-updater's doCheckForUpdates does against a feed that lists `feed.version`: it says it is
+  // checking, runs the version through the rollout hook, then reports it available or not. A download lands
+  // the version the feed lists at that moment.
+  function serveFeed(client: FakeUpdater, feed: { version: string; error?: Error }): void {
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('checking-for-update')
+      if (feed.error) {
+        client.emit('error', feed.error)
+        throw feed.error
+      }
+      const info = updateInfo(feed.version)
+      if (await client.isUserWithinRollout?.(info) === false) {
+        client.emit('update-not-available', info)
+        return { isUpdateAvailable: false }
+      }
+      client.emit('update-available', info)
+      return { isUpdateAvailable: true }
+    })
+    client.downloadUpdate.mockImplementation(async () => {
+      client.emit('update-downloaded', updateInfo(feed.version))
+    })
+  }
+
+  it('swaps it for the newer version at the next scheduled check without flashing a check on screen', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveFeed(client, feed)
+    const superseded = vi.fn()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true, downloadedSuperseded: superseded })
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+
+    feed.version = '1.2.0'
+    const phases: string[] = []
+    service.subscribe((state) => phases.push(`${state.phase} ${state.availableVersion}`))
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.2.0', error: null })
+    expect(phases).toEqual(['available 1.2.0', 'downloading 1.2.0', 'downloaded 1.2.0'])
+    expect(superseded).toHaveBeenCalledWith('1.1.0', '1.2.0')
+    expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('leaves it and its install button alone when the feed has nothing newer or cannot be reached', async () => {
+    const client = new FakeUpdater()
+    const feed: { version: string; error?: Error } = { version: '1.1.0' }
+    serveFeed(client, feed)
+    const superseded = vi.fn()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true, downloadedSuperseded: superseded })
+    await service.scheduledCheck()
+    const phases: string[] = []
+    service.subscribe((state) => phases.push(state.phase))
+
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null })
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+
+    feed.error = Object.assign(new Error('net::ERR_INTERNET_DISCONNECTED'), { code: 'ERR_INTERNET_DISCONNECTED' })
+    await expect(service.scheduledCheck()).rejects.toThrow('ERR_INTERNET_DISCONNECTED')
+    expect(phases).toEqual([])
+    expect(superseded).not.toHaveBeenCalled()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null, failedStep: null })
+    expect(service.install()).toEqual({ accepted: true })
+    service.dispose()
+  })
+
+  it('keeps a failed install on screen until a newer version replaces it', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveFeed(client, feed)
+    client.quitAndInstall.mockImplementation(() => { throw new Error('授权窗口被关掉了') })
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, platform: 'win32', readAutoUpdate: () => true })
+    await service.scheduledCheck()
+    clickInstall(service)
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', failedStep: 'install' })
+
+    await service.scheduledCheck()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', failedStep: 'install' })
+
+    feed.version = '1.2.0'
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.2.0', error: null, failedStep: null })
+    service.dispose()
+  })
+
+  it('keeps to the withdrawn list and the staged rollout, and replaces a downloaded version that is itself withdrawn', async () => {
+    const client = new FakeUpdater()
+    client.isUserWithinRollout = async (info: { stagingPercentage?: number }) => (info.stagingPercentage ?? 100) >= 50
+    const feed = { version: '1.1.0' }
+    serveFeed(client, feed)
+    let status: ServiceStatus = { maintenance: null, badVersions: [], rollout: null }
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true, refreshServiceStatus: async () => status })
+    await service.scheduledCheck()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+
+    feed.version = '1.2.0'
+    status = { maintenance: null, badVersions: [], rollout: { version: '1.2.0', percent: 20 } }
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+    status = { maintenance: null, badVersions: ['1.2.0'], rollout: null }
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+
+    // 手里的 1.1.0 自己被撤回了：收回它，照平常那样查一次，换下替它的那一版。
+    status = { maintenance: null, badVersions: ['1.1.0'], rollout: null }
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.2.0' })
+    service.dispose()
+  })
+
+  it('does not look past it while auto-update is off, unless it falls short of a newly set minimum', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveFeed(client, feed)
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => false })
+    await service.check()
+    await service.download()
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+
+    feed.version = '1.2.0'
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+    expect(client.checkForUpdates).toHaveBeenCalledOnce()
+
+    // 装上手里的 1.1.0 也过不了「必须更新」那道门：马上对一次，摆出要客户点「立即更新」下的 1.2.0。
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    await vi.waitFor(() => expect(service.getState()).toMatchObject({ phase: 'available', availableVersion: '1.2.0', requiredVersion: '1.2.0' }))
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('replaces it as soon as a minimum above it is set, without waiting for the scheduled check', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveFeed(client, feed)
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
+    await service.scheduledCheck()
+
+    feed.version = '1.2.0'
+    // 手里这份够得上的最低版本不用急着对。
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.1.0' })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(client.checkForUpdates).toHaveBeenCalledOnce()
+
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    await vi.waitFor(() => expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.2.0', requiredVersion: '1.2.0' }))
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('never swaps a version that is being installed, counting down to install, or already handed to Squirrel', async () => {
+    const installing = new FakeUpdater()
+    const installingFeed = { version: '1.1.0' }
+    serveFeed(installing, installingFeed)
+    const installingService = createUpdaterService(installing, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
+    await installingService.scheduledCheck()
+    installingFeed.version = '1.2.0'
+    clickInstall(installingService)
+    await expect(installingService.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+    expect(installing.checkForUpdates).toHaveBeenCalledOnce()
+    installingService.dispose()
+
+    const counting = new FakeUpdater()
+    const countingFeed = { version: '1.1.0' }
+    serveFeed(counting, countingFeed)
+    const countingService = createUpdaterService(counting, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
+    await countingService.scheduledCheck()
+    countingFeed.version = '1.2.0'
+    countingService.setLaunchInstallNotice({ version: '1.1.0', title: '星芒AI马上更新', body: '几秒后开始安装', installAt: 5_000 })
+    await expect(countingService.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+    expect(counting.checkForUpdates).toHaveBeenCalledOnce()
+    countingService.dispose()
+
+    const mac = new FakeMacUpdater()
+    const macFeed = { version: '1.1.0' }
+    serveFeed(mac, macFeed)
+    const macService = createUpdaterService(mac, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+      readAutoUpdate: () => true,
+      macInstallHandoff: macInstallHandoffFor(mac),
+    })
+    await macService.scheduledCheck()
+    clickInstall(macService)
+    mac.nativeUpdater.emit('error', new Error('Squirrel could not stage the update'))
+    expect(macService.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', failedStep: 'install' })
+    macFeed.version = '1.2.0'
+    await expect(macService.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', failedStep: 'install' })
+    expect(mac.checkForUpdates).toHaveBeenCalledOnce()
+    macService.dispose()
+  })
+
+  it('keeps the version it holds when an install starts while it is looking', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveFeed(client, feed)
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, readAutoUpdate: () => true })
+    await service.scheduledCheck()
+
+    feed.version = '1.2.0'
+    let answer: () => void = () => undefined
+    client.checkForUpdates.mockImplementationOnce(() => new Promise((resolve) => {
+      answer = () => {
+        client.emit('update-available', updateInfo('1.2.0'))
+        resolve({ isUpdateAvailable: true })
+      }
+    }))
+    const scheduled = service.scheduledCheck()
+    await vi.waitFor(() => expect(client.checkForUpdates).toHaveBeenCalledTimes(2))
+    clickInstall(service)
+    answer()
+    await expect(scheduled).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+    expect(client.quitAndInstall).toHaveBeenCalledOnce()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+})

@@ -65,6 +65,13 @@
 # 里 main 的工作流文件很难再变。排在前一次发布后面时要等那一次跑完才轮到它，真变了它会
 # 停下、说清楚从最新的 main 重新触发，那时什么都还没发。收尾建 Release 时不再指定提交，
 # 挂到这个已有的 tag 上。
+#
+# ## 发出去以后签出处证明
+#
+# publish 成功后，attest 作业给这次真发出去的每个安装包签一份出处证明（build provenance）：
+# 「这个文件是本仓库的 publish-release 在哪个提交上出的」，存在 GitHub 上，签名进 Sigstore 的
+# 公开透明日志，谁拿到安装包都能用 gh attestation verify 核对（docs/RELEASING.md「出处证明」）。
+# 它排在一切之后、不挂环境、不读 secret，失败了客户照常更新，单独重跑它就行，理由见作业上方。
 name: publish-release
 
 on:
@@ -387,7 +394,7 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
-      # Electron 43 的 npm 包不带二进制：release:build 里的 npm test 第一次
+      # Electron 43 起 npm 包不带二进制：release:build 里的 npm test 第一次
       # require('electron') 时才现下，只试一次，网络一抖就红（#319、#796）。这里先
       # 限时、带重试地装好，见 scripts/ci-ensure-electron-binary.cjs。
       - name: Install the Electron binary before the release gate loads it
@@ -1377,3 +1384,71 @@ jobs:
           XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
           XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
         run: node scripts/sync-manager-release-cos.cjs --directory release-artifacts --version "$PACKAGE_VERSION"
+
+  # 出处证明（build provenance，2026-10-28 加，商业级差距报告 G21）：给这次真发出去的每个安装包
+  # 签一份「是本仓库的 publish-release 在哪个提交上出的」的证明。证明存在 GitHub 上，签名记进
+  # Sigstore 的公开透明日志；谁拿到安装包，都能用 gh attestation verify 核对它是不是从这里出来的、
+  # 出来以后有没有被换过（docs/RELEASING.md「出处证明」）。Windows 安装包没有 Authenticode 签名，
+  # 懂行的客户和安全软件厂商问「这个 exe 是不是你们的」，这是能拿出来的凭据。
+  #
+  # 单独成一个作业，排在 publish 后面：
+  #   - 只证明真发出去的那一批：publish 成功（那一下 Approve 放行的就是这一版）才跑，下哪几个平台
+  #     的产物和 cos-sync 一样照 publish 来，Linux 照 publish 当时实际下没下决定。
+  #   - 签证明要的 id-token 写权限只给这个作业。它不装依赖、不读任何 secret，跑的只有 GitHub 官方的
+  #     下载产物和 attest 两个 action。publish 要 npm ci，权限放在那里，任何一个第三方包都能拿它冒签。
+  #   - 它失败不影响客户：这时更新源和发布页都已经换好，只是缺一份证明。单独重跑这个作业（Re-run
+  #     this job）就行，不用再批，不碰更新源；重跑会再签一份，几份都有效。别用 Re-run failed jobs，
+  #     理由和 cos-sync 一样，可能把 publish 带着重跑。
+  #   - 不挂 release 环境：它不读 secret，挂上每次发版就要多批一次。
+  attest:
+    needs: [publish, windows-build, macos-build, linux-build]
+    # 和 cos-sync 一样写 !cancelled()：只发一个平台时被跳过的出包作业不能把它也带着跳过。
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # 向 GitHub 要一张只活几分钟的身份令牌，拿去 Sigstore 换签名证书。
+      id-token: write
+      # 把签好的证明存到这个仓库名下。
+      attestations: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ needs.windows-build.result == 'success' }}
+        with:
+          name: windows-release-${{ needs.windows-build.outputs.version }}
+          path: release-artifacts
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ needs.macos-build.result == 'success' }}
+        with:
+          name: macos-release-${{ needs.macos-build.outputs.version }}
+          path: release-artifacts
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: ${{ needs.publish.outputs.linux == 'true' }}
+        with:
+          pattern: linux-release-*-${{ needs.linux-build.outputs.version }}
+          merge-multiple: true
+          path: release-artifacts
+
+      # 和 publish 上传、复核的是同一组文件（安装包和 Mac 的更新 zip）。清单和 blockmap 不签：清单在
+      # publish 里加了发布者签名、和这里下到的不是同一份字节，blockmap 只是增量下载的索引。
+      - name: List what gets a provenance attestation
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(release-artifacts/*Setup.exe release-artifacts/*.dmg release-artifacts/*.zip release-artifacts/*.deb)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "::error::产物里没有任何安装包，签不了出处证明。更新源和发布页不受影响"
+            exit 1
+          fi
+          sha256sum "${files[@]}"
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            release-artifacts/*Setup.exe
+            release-artifacts/*.dmg
+            release-artifacts/*.zip
+            release-artifacts/*.deb
