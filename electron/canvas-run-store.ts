@@ -14,9 +14,11 @@ import {
   type CanvasRunAssetLineage,
   type CanvasRunAssetManifestEntry,
   type CanvasRunCacheEntry,
+  type CanvasRunCandidate,
   type CanvasRunNodeKind,
   type CanvasRunRecord,
 } from './canvas-run-contract'
+import type { CanvasRunAssetOrigin } from './canvas-run-engine'
 import { isRecord } from './input-guards'
 
 const DEFAULT_MAXIMUM_BYTES = 8 * 1024 * 1024
@@ -122,12 +124,16 @@ function safeCacheEntry(value: unknown): value is CanvasRunCacheEntry {
   if (!CACHEABLE_NODE_KINDS.has(value.nodeKind as CanvasRunNodeKind)) return false
   if (!isIsoDate(value.createdAt) || !isIsoDate(value.lastUsedAt)) return false
   if (value.outputText !== undefined && (typeof value.outputText !== 'string' || value.outputText.length > 100_000)) return false
-  if (value.candidate !== undefined) {
-    if (!isRecord(value.candidate) || !safeIdentifier(value.candidate.candidateId)) return false
-    if (!safeIdentifier(value.candidate.attemptId) || !isIsoDate(value.candidate.createdAt)) return false
-    if (!safeAsset(value.candidate.asset)) return false
-  }
+  if (value.candidate !== undefined && !safeCandidate(value.candidate)) return false
   return value.outputText !== undefined || value.candidate !== undefined
+}
+
+function safeCandidate(value: unknown): value is CanvasRunCandidate {
+  return isRecord(value)
+    && safeIdentifier(value.candidateId)
+    && safeIdentifier(value.attemptId)
+    && isIsoDate(value.createdAt)
+    && safeAsset(value.asset)
 }
 
 function safeManifestEntry(value: unknown): value is CanvasRunAssetManifestEntry {
@@ -403,6 +409,61 @@ export class CanvasRunStore {
         .slice(0, this.cacheRetention)
       if (entry.candidate) this.recordAssetInState(state, entry.candidate.asset, entry.candidate.createdAt)
       await this.writeState(userId, state)
+    })
+  }
+
+  /**
+   * The newest remembered attempt, in any project, that handed out this asset
+   * and that `matches` accepts, while the asset is still owned. The cache keeps
+   * only the latest result per fingerprint, so an older candidate the user
+   * switched back to, or a result copied into a duplicated project, can only be
+   * proven from the run history. The asset itself is read only for the
+   * accepted attempt, not for every attempt that mentions it.
+   */
+  async resolveAssetOrigin(
+    userId: number,
+    assetId: string,
+    matches: (origin: CanvasRunAssetOrigin) => boolean,
+  ): Promise<CanvasRunAssetOrigin | null> {
+    return this.enqueue(userId, async () => {
+      if (!ASSET_ID_PATTERN.test(assetId)) throw new Error('画布资产标识格式错误')
+      const state = await this.readState(userId)
+      const tried = new Set<string>()
+      // parseState does not look inside attempts. Whatever is reused here goes
+      // downstream as a real input, so check every field the reuse rests on.
+      for (const run of state.runs) {
+        for (const node of run.nodes) {
+          if (!Array.isArray(node.attempts)) continue
+          for (const attempt of node.attempts) {
+            if (!isRecord(attempt) || (attempt.state !== 'succeeded' && attempt.state !== 'cached')) continue
+            if (typeof attempt.fingerprint !== 'string' || !FINGERPRINT_PATTERN.test(attempt.fingerprint)) continue
+            if (!Array.isArray(attempt.candidates)) continue
+            const candidate = attempt.candidates.find((entry) => safeCandidate(entry) && entry.asset.assetId === assetId)
+            if (!candidate) continue
+            const key = JSON.stringify([attempt.fingerprint, run.projectId ?? null])
+            if (tried.has(key)) continue
+            tried.add(key)
+            const origin: CanvasRunAssetOrigin = {
+              fingerprint: attempt.fingerprint,
+              ...(run.projectId ? { projectId: run.projectId } : {}),
+              candidate: structuredClone(candidate),
+              ...(typeof attempt.outputText === 'string' ? { outputText: attempt.outputText } : {}),
+            }
+            if (!matches(origin)) continue
+            let owned: { asset: Omit<CanvasRunAsset, 'kind'> }
+            try {
+              owned = await this.assets.readOwned(userId, assetId)
+            } catch {
+              return null
+            }
+            return {
+              ...origin,
+              candidate: { ...origin.candidate, asset: { kind: origin.candidate.asset.kind, ...structuredClone(owned.asset) } },
+            }
+          }
+        }
+      }
+      return null
     })
   }
 

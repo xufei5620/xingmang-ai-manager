@@ -374,9 +374,9 @@ export function SettingsPage({
     conversations: Conversation[],
     overwrite: boolean,
   ) => {
-    const added = chatTransfer
+    const { added, skipped } = chatTransfer
       ? await chatTransfer.importConversations(conversations)
-      : 0
+      : { added: 0, skipped: 0 }
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
       : settingsPatchFrom(preview.settings)
@@ -390,6 +390,7 @@ export function SettingsPage({
     return dataTransferImportMessage({
       fileConversations: conversations.length,
       added,
+      skipped,
       signedIn: Boolean(chatTransfer),
       settingsChanged: Boolean(patch),
     })

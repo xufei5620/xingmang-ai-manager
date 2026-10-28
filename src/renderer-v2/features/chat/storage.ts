@@ -379,22 +379,23 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
   } catch { throw new ChatStorageError(transferInvalidMessage) }
 }
 
+/** 导入对话的结果：added 是导进来的新对话，skipped 是这台电脑存满 50 个、这次放不下的新对话。 */
+export interface ChatImportResult { added: number; skipped: number }
+
 /**
- * 已有的对话不覆盖（同一个对话导两次不会多出一份）；合起来超过 50 个时按最后修改时间
- * 留最近的 50 个。added 是真正留下来的新对话数。
+ * 已有的对话不覆盖（同一个对话导两次不会多出一份）。这台电脑上的对话一个不删
+ * （D02：以前合起来超过 50 个时按修改时间截断，会悄悄删掉本机最老的几个）：
+ * 还有几个空位就导几个，先导最近改过的，放不下的数进 skipped，删掉一些后再导一次就能补上。
  */
-export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace; added: number } {
+export function mergeImportedConversations(state: ChatWorkspace, imported: Conversation[]): { state: ChatWorkspace } & ChatImportResult {
   const present = new Set(state.conversations.map((conversation) => conversation.id))
   const fresh = imported
     .filter((conversation) => !present.has(conversation.id))
     .map((conversation) => conversation.id === state.draftConversation.id ? { ...conversation, id: createId() } : conversation)
-  const conversations = [...state.conversations, ...fresh]
-    .sort((left, right) => right.updatedAt - left.updatedAt)
-    .slice(0, MAX_CONVERSATIONS)
-  const kept = new Set(conversations.map((conversation) => conversation.id))
-  const added = fresh.filter((conversation) => kept.has(conversation.id)).length
-  const activeId = state.activeId && kept.has(state.activeId) ? state.activeId : null
-  return { state: { ...state, conversations, activeId }, added }
+  const room = Math.max(0, MAX_CONVERSATIONS - state.conversations.length)
+  const accepted = [...fresh].sort((left, right) => right.updatedAt - left.updatedAt).slice(0, room)
+  const conversations = [...state.conversations, ...accepted].sort((left, right) => right.updatedAt - left.updatedAt)
+  return { state: { ...state, conversations }, added: accepted.length, skipped: fresh.length - accepted.length }
 }
 
 /**
@@ -435,15 +436,15 @@ export async function importConversationsIntoHistory(
   storage: ChatStorage,
   scope: string,
   imported: Conversation[],
-): Promise<number> {
+): Promise<ChatImportResult> {
   const loaded = await loadChatHistory(api, storage, scope)
   if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
-  const merged = mergeImportedConversations(loaded.state, imported)
-  if (!merged.added) return 0
-  const plan = planHistoryWrite(merged.state, loaded.saved)
+  const { state, added, skipped } = mergeImportedConversations(loaded.state, imported)
+  if (!added) return { added, skipped }
+  const plan = planHistoryWrite(state, loaded.saved)
   if (plan) await api.writeHistory(plan.write)
   loaded.afterFirstSave?.()
-  return merged.added
+  return { added, skipped }
 }
 
 function timeText(value: number): string {

@@ -526,18 +526,33 @@ describe('moving history to another computer', () => {
     expect(() => parseImportedConversations(Array.from({ length: 51 }, () => exported[0]))).toThrow(ChatStorageError)
   })
 
-  it('keeps existing conversations and the 50 most recent overall', () => {
-    const state = workspace(scope, 49)
+  it('keeps every existing conversation and imports only the newest ones that fit', () => {
+    const state = workspace(scope, 48)
     state.conversations.forEach((conversation, index) => { conversation.updatedAt = 1000 + index })
+    state.activeId = state.conversations[0].id
     const same = { ...state.conversations[0], title: 'imported copy' }
     const newer = { ...createConversation(undefined, 'new-1'), updatedAt: 5000 }
     const older = { ...createConversation(undefined, 'old-1'), updatedAt: 1 }
-    const merged = mergeImportedConversations(state, [same, newer, older])
-    expect(merged.added).toBe(1)
+    const oldest = { ...createConversation(undefined, 'old-2'), updatedAt: 0 }
+    const merged = mergeImportedConversations(state, [same, oldest, older, newer])
+    expect(merged.added).toBe(2)
+    expect(merged.skipped).toBe(1)
     expect(merged.state.conversations).toHaveLength(50)
     expect(merged.state.conversations[0].id).toBe('new-1')
+    expect(merged.state.conversations.at(-1)?.id).toBe('old-1')
+    for (const conversation of state.conversations) expect(merged.state.conversations.some((item) => item.id === conversation.id)).toBe(true)
     expect(merged.state.conversations.find((conversation) => conversation.id === state.conversations[0].id)?.title).not.toBe('imported copy')
-    expect(merged.state.conversations.some((conversation) => conversation.id === 'old-1')).toBe(false)
+    expect(merged.state.conversations.some((conversation) => conversation.id === 'old-2')).toBe(false)
+    expect(merged.state.activeId).toBe(state.conversations[0].id)
+  })
+
+  it('imports nothing and deletes nothing when this computer already holds 50 conversations', () => {
+    const state = workspace(scope, 50)
+    state.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index })
+    const merged = mergeImportedConversations(state, [{ ...createConversation(undefined, 'new-1'), updatedAt: 5000 }, state.conversations[3]])
+    expect(merged.added).toBe(0)
+    expect(merged.skipped).toBe(1)
+    expect(merged.state.conversations.map((conversation) => conversation.id)).toEqual(state.conversations.map((conversation) => conversation.id))
   })
 
   it('gives an imported conversation a new id when it collides with the draft', () => {
@@ -554,12 +569,28 @@ describe('moving history to another computer', () => {
     saved.conversations.forEach((conversation, index) => { conversation.updatedAt = 2000 - index * 1000 })
     await createHistoryWriter(files.api, null).save(saved)
     const imported = parseImportedConversations(JSON.parse(JSON.stringify(exportableConversations(workspace('xm-account:9', 0)))))
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toBe(0)
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 0, skipped: 0 })
     const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: 3000, messages: [message()] }
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(1)
-    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toBe(0)
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 1, skipped: 0 })
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 0, skipped: 0 })
     const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
     expect(reopened.state.conversations.map((conversation) => conversation.id)).toEqual(['from-old-computer', 'conversation-0', 'conversation-1'])
+  })
+
+  it('never deletes a saved conversation to make room for imported ones', async () => {
+    const files = memoryFiles()
+    const saved = workspace(scope, 49)
+    saved.conversations.forEach((conversation, index) => { conversation.updatedAt = 1000 + index })
+    await createHistoryWriter(files.api, null).save(saved)
+    const imported = [3, 2, 1].map((index) => ({ ...createConversation(undefined, `from-old-computer-${index}`), updatedAt: 5000 + index, messages: [message()] }))
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 1, skipped: 2 })
+    const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(reopened.state.conversations).toHaveLength(50)
+    expect(reopened.state.conversations[0].id).toBe('from-old-computer-3')
+    expect(new Set(reopened.state.conversations.slice(1).map((conversation) => conversation.id))).toEqual(new Set(saved.conversations.map((conversation) => conversation.id)))
+    files.api.writeHistory.mockClear()
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, imported)).toEqual({ added: 0, skipped: 2 })
+    expect(files.api.writeHistory).not.toHaveBeenCalled()
   })
 
   it('refuses to import over a record it cannot read', async () => {
