@@ -64,6 +64,17 @@ describe('RequiredUpdateGate', () => {
     expect(renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installNeedsAdminPassword: true })} windows={false} actions={actions} />)).not.toContain('管理员')
   })
 
+  it('tells Mac users how to answer the keychain prompt after the restart, and only them', () => {
+    const mac = renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows={false} mac actions={actions} />)
+    expect(mac).toContain('data-testid="required-update-mac-keychain"')
+    expect(mac).toContain('重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。')
+    expect(mac).not.toContain('是否允许更改')
+    for (const html of [
+      renderToStaticMarkup(<RequiredUpdateGate update={snapshot()} windows actions={actions} />),
+      renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ installMethod: 'system-installer' })} windows={false} linux actions={actions} />),
+    ]) expect(html).not.toContain('钥匙串')
+  })
+
   it('shows how much has downloaded, how fast, and how long is left under the progress bar', () => {
     const progress = { percent: 50, bytesPerSecond: 1, transferred: 50 * 1024 ** 2, total: 100 * 1024 ** 2, averageBytesPerSecond: 2 * 1024 ** 2, secondsRemaining: 150 }
     const html = renderToStaticMarkup(<RequiredUpdateGate update={snapshot({ phase: 'downloading', progress })} windows actions={actions} />)

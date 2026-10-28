@@ -17,17 +17,18 @@ import { updateDiskCleanupDetail } from '../../registry/tutorials'
 import { releaseNotesSection } from '../app/release-notes'
 import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from '../app/update-retry'
 import { appReleaseDownloadUrl } from '../../../../electron/app-download-page'
+import { macKeychainUpdateHint } from '../../../../electron/mac-keychain-update-copy'
 import type { V2Bridge, V2Page } from '../../types'
 
 // 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
-// macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」。
+// macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」；那句和跳框、必须更新那层、
+// 自动装的通知共用一份（electron/mac-keychain-update-copy.ts）。
 // 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
 export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
 // 账号不在管理员组时那个窗口要的是管理员密码，只点「是」过不去。
 export const windowsAdminPasswordUpdateHint = 'Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。'
 // Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
 export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
-export const macKeychainUpdateHint = '重启后 Mac 可能弹出钥匙串密码框，输入这台 Mac 的开机密码，点「始终允许」就好。'
 
 /**
  * 设置 › 版本更新最上面那张版本卡（v4 批09，原来是单独的更新页）：当前版本、状态小标签、更新内容、

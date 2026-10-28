@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { BookOpen, Download } from 'lucide-react'
 import type { UpdateDownloadOptions, UpdateSnapshot } from '../../../../electron/ipc-contract'
+import { macKeychainUpdateHint } from '../../../../electron/mac-keychain-update-copy'
 import { userFacingErrorMessage } from '../../business-common'
 import { updateDiskShortfallText } from '../../registry/business'
 import { updateDiskCleanupStepsFor } from '../../registry/tutorials'
@@ -25,11 +26,13 @@ export interface RequiredUpdateActions {
  * 磁盘不够时更新器不下载、也不报错，这层就换成版本更新卡那段「只剩多少、要多少、怎么清理」，
  * 主按钮改成「空间够了，再试一次」；版本更新卡给了「仍要下载」，这里也给，说法相同。
  */
-export function RequiredUpdateGate({ update, windows, linux = false, actions }: {
+export function RequiredUpdateGate({ update, windows, linux = false, mac = false, actions }: {
   update: UpdateSnapshot | null
   windows: boolean
   /** Linux 的清理步骤另有一份（没有「设置 → 存储」，只说文件管理器和回收站）。缺省 = 旧行为。 */
   linux?: boolean
+  /** Mac 装好重开时会弹钥匙串密码框，先说一句怎么点（mac-keychain-update-copy.ts）。缺省 = 旧行为。 */
+  mac?: boolean
   actions: RequiredUpdateActions
 }) {
   const [requested, setRequested] = useState(false)
@@ -102,6 +105,7 @@ export function RequiredUpdateGate({ update, windows, linux = false, actions }: 
         {windows && (update?.installNeedsAdminPassword
           ? <p data-testid="required-update-admin-password">要输入管理员密码；让有管理员账号的人来点，或联系客服。</p>
           : <p>装的时候如果弹出「是否允许更改」，点「是」。</p>)}
+        {mac && <p data-testid="required-update-mac-keychain">{macKeychainUpdateHint}</p>}
         <p data-testid="required-update-versions">现在是 {gate.currentVersion}{gate.availableVersion ? `，将更新到 ${gate.availableVersion}` : ''}</p>
         {gate.percent !== null && <Progress value={gate.percent} label="下载进度" testId="required-update-progress" />}
         {gate.progressDetail && <p className="v2-update-progress-detail" data-testid="required-update-progress-detail">{gate.progressDetail}</p>}
