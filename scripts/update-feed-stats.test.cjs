@@ -8,6 +8,7 @@ const {
   aggregateStats,
   classifyUserAgent,
   collectUpdateFeedStats,
+  collectUsageSince,
   networkOf,
   parseDays,
   parseInstallerPath,
@@ -830,6 +831,28 @@ test('the check-in section says plainly when there is nothing to read or no way 
   assert.match(report, /不能按请求路径分，打卡记录没法数/)
   const grouped = pathless.calls.slice(2).map((call) => JSON.parse(call.init.body))
   assert.equal(grouped.some((payload) => payload.variables.filter.clientRequestPath_like === USAGE_FILTER), false)
+})
+
+test('the rollout check reads the check-ins from the moment the new version went out', async () => {
+  const cloudflare = createCloudflare({ usage: () => [usageRow(usagePath({ app: '0.2.23' }), 2)] })
+  const from = Date.parse('2026-10-07T04:00:20.000Z')
+  const { window, usage } = await collectUsageSince({ token: TOKEN, from, now, fetchImpl: cloudflare.fetchImpl })
+  assert.equal(window.start, Date.parse('2026-10-07T04:00:00.000Z'))
+  assert.equal(window.end, Date.parse('2026-10-08T12:00:00.000Z'))
+  // 只查打卡，不查状态文件、安装包那几项。
+  const filters = cloudflare.calls.slice(2).map((call) => JSON.parse(call.init.body).variables.filter)
+  assert.ok(filters.length > 0)
+  assert.ok(filters.every((filter) => filter.clientRequestPath_like === USAGE_FILTER))
+  assert.equal(filters[0].datetime_geq, '2026-10-07T04:00:00Z')
+  // 一天多一点分成两段查，桩每段都回同一条。
+  assert.equal(usage.records.length, filters.length)
+  assert.ok(usage.records.every((record) => record.app === '0.2.23' && record.weight === 2))
+
+  // 发出去比 Cloudflare 留的还早：只查它留着的那一段。
+  const old = await collectUsageSince({ token: TOKEN, from: Date.parse('2026-09-01T00:00:00.000Z'), now, fetchImpl: createCloudflare().fetchImpl })
+  assert.equal(old.window.clamped, true)
+  const pathless = createCloudflare({ limits: settings({ availableFields: ['count', 'dimensions_userAgent', 'dimensions_clientIP'] }) })
+  assert.equal((await collectUsageSince({ token: TOKEN, from, now, fetchImpl: pathless.fetchImpl })).usage, null)
 })
 
 test('the stats workflow only reads, on demand or once a day, with the read-only analytics token', () => {

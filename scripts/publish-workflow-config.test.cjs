@@ -1870,3 +1870,150 @@ test('both macOS release packages are launched before they reach the publish job
     assert.equal(/secrets\./.test(JSON.stringify(macosJob.steps[index])), false)
   }
 })
+
+// 分批放量是发版的一项输入（商业级差距报告 G02）：原来要人记着在触发之前先跑 service-status，
+// 0.2.20、0.2.21 都忘了，等于全量发。现在由 publish 作业在换清单之前写好。
+const decideRolloutStep = publishJob.steps.find((step) => step.id === 'rollout')
+const uploadRolloutStep = publishJob.steps.find((step) => /Upload the rollout before the manifests switch/.test(step.name || ''))
+const describeRolloutStep = tagJob.steps.find((step) => /Show the approver how far this release will reach/.test(step.name || ''))
+
+test('the rollout is written by the publish job itself, after the installers check out and before the manifests switch', () => {
+  const verify = stepIndex(publishJob, /Verify the uploaded files are downloadable/)
+  const decide = publishJob.steps.indexOf(decideRolloutStep)
+  const upload = publishJob.steps.indexOf(uploadRolloutStep)
+  const manifest = stepIndex(publishJob, /Publish the update manifests/)
+  assert.ok(verify >= 0 && decide > verify, '安装包核对过了才动状态文件：前面停下时线上什么都没变')
+  assert.ok(upload > decide && manifest > upload, '放量必须在换清单之前写好、核对过')
+  assert.equal(decideRolloutStep.env.ROLLOUT, '${{ inputs.rollout }}')
+  assert.match(decideRolloutStep.run, /node scripts\/release-rollout\.cjs plan --version "\$PACKAGE_VERSION" --rollout "\$ROLLOUT"/)
+  // 只在算出来要改时才上传；上传的只有状态文件，传完核对客户读到的就是这一份。
+  assert.equal(uploadRolloutStep.if, "${{ steps.rollout.outputs.write == 'true' }}")
+  const uploads = commandLines(uploadRolloutStep.run).filter((line) => /aws s3 cp/.test(line))
+  assert.equal(uploads.length, 1)
+  assert.match(uploadRolloutStep.run, /"s3:\/\/\$R2_BUCKET\/\$OBJECT_PREFIX\/service-status\.json"/)
+  assert.match(uploadRolloutStep.run, /cmp -s "\$RUNNER_TEMP\/rollout-status\.json" "\$RUNNER_TEMP\/rollout-published\.json"/)
+  // 算的那一步只读：碰不到凭据，也不往线上写。
+  assert.doesNotMatch(JSON.stringify(decideRolloutStep), /secrets\.|aws s3/)
+})
+
+test('the run page shows how far the release will reach before either approval', () => {
+  const plan = tagJob.steps.indexOf(planStep)
+  const describe = tagJob.steps.indexOf(describeRolloutStep)
+  const reserve = tagJob.steps.indexOf(reserveStep)
+  // 判断过这次真要对外发、tag 还没占时就写好；比例写错就停在占 tag 之前。
+  assert.ok(plan >= 0 && describe > plan && reserve > describe)
+  assert.equal(describeRolloutStep.if, "${{ steps.plan.outputs.action != 'none' }}")
+  assert.equal(describeRolloutStep.env.ROLLOUT, '${{ inputs.rollout }}')
+  assert.match(describeRolloutStep.run, /^node scripts\/release-rollout\.cjs describe /)
+  assert.match(describeRolloutStep.run, /--summary "\$GITHUB_STEP_SUMMARY"/)
+})
+
+// 算放量、传状态文件两步真的跑一遍：curl 桩从一个本地「更新目录」取文件，aws 桩把文件写回那个目录
+// （就像传上去马上读得到），并记下传了什么。
+function runRolloutSteps({ rollout = '20: 先推给两成电脑（平时都选这个）', artifacts = ['latest.yml', 'latest-mac.yml'], live = {}, statusCode = null, stale = false }) {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-publish-rollout-'))
+  const binDirectory = path.join(workspace, 'bin')
+  const served = path.join(workspace, 'served')
+  for (const directory of [binDirectory, served, path.join(workspace, 'release-artifacts')]) fs.mkdirSync(directory)
+  fs.symlinkSync(path.join(root, 'scripts'), path.join(workspace, 'scripts'))
+  fs.symlinkSync(path.join(root, 'node_modules'), path.join(workspace, 'node_modules'))
+  for (const name of artifacts) fs.writeFileSync(path.join(workspace, 'release-artifacts', name), manifestText('0.2.23', name))
+  for (const [name, text] of Object.entries(live)) fs.writeFileSync(path.join(served, name), text)
+  const logPath = path.join(workspace, 'commands.log')
+  const outputPath = path.join(workspace, 'github-output')
+  // 带 --write-out 的取法照真的 curl 打出状态码；不带的（--fail）取不到就以非 0 退出。
+  const curlStub = `#!/bin/bash
+output=''
+writeout=''
+while [ "$#" -gt 1 ]; do
+  if [ "$1" = '--output' ]; then output=$2; shift; fi
+  if [ "$1" = '--write-out' ]; then writeout=1; shift; fi
+  shift
+done
+name=$(basename "$1")
+${statusCode ? `if [ "$name" = 'service-status.json' ]; then printf '<html>busy</html>' > "$output"; printf ${statusCode}; exit 0; fi` : ''}
+if [ -f ${JSON.stringify(served)}/"$name" ]; then
+  cp ${JSON.stringify(served)}/"$name" "$output"
+  ${stale ? `[ "$name" = 'service-status.json' ] && printf '{"cached":true}' > "$output"` : ':'}
+  if [ -n "$writeout" ]; then printf 200; fi
+elif [ -n "$writeout" ]; then
+  printf 404
+else
+  exit 22
+fi
+`
+  const awsStub = `#!/bin/bash
+printf 'aws %s\\n' "$*" >> ${JSON.stringify(logPath)}
+cp "$3" ${JSON.stringify(served)}/"$(basename "$4")"
+`
+  for (const [name, body] of [['curl', curlStub], ['aws', awsStub]]) {
+    const executable = path.join(binDirectory, name)
+    fs.writeFileSync(executable, body)
+    fs.chmodSync(executable, 0o755)
+  }
+  const env = {
+    PATH: `${binDirectory}:${path.dirname(process.execPath)}:/usr/bin:/bin`,
+    HOME: workspace,
+    RUNNER_TEMP: workspace,
+    GITHUB_OUTPUT: outputPath,
+    GITHUB_STEP_SUMMARY: path.join(workspace, 'summary.md'),
+    PACKAGE_VERSION: '0.2.23',
+    OBJECT_PREFIX: 'xingmang-manager',
+    R2_ACCOUNT_ID: 'stub',
+    R2_BUCKET: 'stub',
+    PUBLIC_BASE: 'https://updates.example.test/xingmang-manager',
+    ROLLOUT: rollout,
+  }
+  const decided = spawnSync(SHELL_PATH, ['-c', decideRolloutStep.run], { cwd: workspace, encoding: 'utf8', env })
+  const outputs = readOutputs(outputPath)
+  const uploaded = decided.status === 0 && outputs.write === 'true'
+    ? spawnSync(SHELL_PATH, ['-c', uploadRolloutStep.run], { cwd: workspace, encoding: 'utf8', env })
+    : null
+  const statusPath = path.join(served, 'service-status.json')
+  const status = fs.existsSync(statusPath) ? JSON.parse(fs.readFileSync(statusPath, 'utf8')) : null
+  const log = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : ''
+  fs.rmSync(workspace, { recursive: true, force: true })
+  return { decided, uploaded, outputs, status, log }
+}
+
+test('a first release writes two in ten into the live status file and keeps every other switch', posixOnly, () => {
+  const run = runRolloutSteps({
+    live: {
+      'latest.yml': manifestText('0.2.22', 'windows'),
+      'service-status.json': JSON.stringify({ badVersions: ['0.2.10'], minimumVersion: '0.2.22' }),
+    },
+  })
+  assert.equal(run.decided.status, 0, run.decided.stdout + run.decided.stderr)
+  assert.equal(run.outputs.write, 'true')
+  assert.equal(run.uploaded.status, 0, run.uploaded.stdout + run.uploaded.stderr)
+  assert.deepEqual(run.status.rollout, { version: '0.2.23', percent: 20 })
+  assert.deepEqual(run.status.badVersions, ['0.2.10'])
+  assert.equal(run.status.minimumVersion, '0.2.22')
+  assert.match(run.log, /^aws s3 cp \S+rollout-status\.json s3:\/\/stub\/xingmang-manager\/service-status\.json /m)
+  assert.match(run.uploaded.stdout, /客户会用的地址已经读到新的分批放量/)
+
+  // 线上还没有状态文件（404）：从空白开始写。
+  const blank = runRolloutSteps({})
+  assert.equal(blank.uploaded.status, 0, blank.uploaded.stdout + blank.uploaded.stderr)
+  assert.deepEqual(blank.status.rollout, { version: '0.2.23', percent: 20 })
+})
+
+test('a rerun leaves the rollout alone, and anything unreadable stops before the manifests', posixOnly, () => {
+  const paused = JSON.stringify({ rollout: { version: '0.2.23', percent: 0 } })
+  const rerun = runRolloutSteps({ live: { 'latest.yml': manifestText('0.2.23', 'windows'), 'latest-mac.yml': manifestText('0.2.23', 'mac'), 'service-status.json': paused } })
+  assert.equal(rerun.decided.status, 0, rerun.decided.stdout + rerun.decided.stderr)
+  assert.equal(rerun.outputs.write, 'false')
+  assert.equal(rerun.uploaded, null)
+  assert.deepEqual(rerun.status, JSON.parse(paused))
+
+  const busy = runRolloutSteps({ statusCode: 503 })
+  assert.notEqual(busy.decided.status, 0)
+  assert.match(busy.decided.stdout, /::error::读取线上 service-status\.json 失败（HTTP 503）/)
+  assert.equal(busy.log, '')
+
+  // 传上去了，客户会用的地址读回来的却不是这一份（缓存）：停下，不往下换清单。
+  const stale = runRolloutSteps({ stale: true, live: { 'service-status.json': '{}' } })
+  assert.equal(stale.decided.status, 0, stale.decided.stdout + stale.decided.stderr)
+  assert.notEqual(stale.uploaded.status, 0)
+  assert.match(stale.uploaded.stdout, /::error::分批放量传上去了，但客户会用的地址读到的不是这一份/)
+})
