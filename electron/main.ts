@@ -108,6 +108,7 @@ import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
 import { configureRelocatedFolderAccess } from './relocated-folders'
+import { createRemoteFeatureGate } from './remote-feature-gate'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
 import { hiddenWindowNotification, hostNotificationMessage, type PlatformHostNotification } from './platform/notifications'
@@ -1190,6 +1191,9 @@ if (!hasSingleInstanceLock) {
     // Codex 启动时读中文开关的那一下先试着经星芒服务器代取，走不通才照旧连加速（issue #977，
     // codex-desktop-startup-route.ts）。账号服务建得比这里晚，建好以后才换成真的换票。
     let issueCodexStartupTicket: () => Promise<NewApiCodexStartupTicket> = () => Promise.reject(new Error('账号服务尚未就绪'))
+    // 状态文件关掉的功能（商业级差距 G04，remote-features.ts）：跟着更新快照的 featuresOff 变，下面建好更新服务就接上。
+    // 点了才做的事等状态文件这一次读完再看；状态文件的读取跟更新服务一起建，比这里晚，用到时才取。
+    const remoteFeatures = createRemoteFeatureGate({ settled: () => serviceStatusMonitor?.settled() ?? Promise.resolve(null) })
     const accelerationRouting = createAccelerationRouting({
       routes: networkRoutes,
       rootedOptions,
@@ -1282,6 +1286,7 @@ if (!hasSingleInstanceLock) {
       prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
       // Claude Desktop 要从官网下组件，国内直连下不动：从星芒打开时先在后台替他连上加速（#1373）。
       prepareClaudeDesktopLaunch: (context) => claudeDesktopAcceleration.ensureConnected(context),
+      remoteFeatureOff: (feature) => remoteFeatures.isOff(feature),
     })
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
       systemService,
@@ -1469,6 +1474,10 @@ if (!hasSingleInstanceLock) {
       await serviceStatusMonitor.settled()
       return resolveCliModelHints(serviceStatusMonitor.lastKnown(), cliModelsAtLaunch)
     }
+    const unsubscribeRemoteFeatures = updaterService.subscribe((state) => remoteFeatures.update(state.featuresOff ?? []))
+    remoteFeatures.subscribe((features) => runtimeLog.log('info', 'updater', 'features-off.changed',
+      features.length ? `服务状态文件关掉了这几样功能：${features.join('、')}` : '服务状态文件没有关掉的功能了', { features }))
+    remoteFeatures.update(updaterService.getState().featuresOff ?? [])
     let periodicUpdateTimer: NodeJS.Timeout | null = null
     let applicationTray: ApplicationTrayController | null = null
     let trayAcceleration: TrayAccelerationCoordinator | null = null
@@ -2161,6 +2170,7 @@ if (!hasSingleInstanceLock) {
       runtimeLog,
       mainWindow: () => managedMainWindow,
       applicationTray: () => applicationTray,
+      accelerationSuspended: () => remoteFeatures.isOff('acceleration'),
     })
     accelerationExpiry = accelerationServices.accelerationExpiry
     accelerationInterruption = accelerationServices.accelerationInterruption
@@ -2203,8 +2213,10 @@ if (!hasSingleInstanceLock) {
     // 「下好了」的系统通知和首页气泡在能闲时装的 Mac 上多说一句「你不用电脑时星芒也会自己装好」：看的是程序包能不能
     // 免密码换（一次运行里不变）和遥控开没开——遥控开着闲时不装（YK-2，update-install-prompt 的 idleInstallHeldByRemote），
     // 这句就不能说；遥控开关每变一次重算。遥控开着时不去探程序包，省得每条遥控消息都跟着试一次能不能写。
+    // 状态文件关掉了闲时装（remote-features.ts）也不说，跳框器那边同一条（unattended）。
     const refreshIdleInstall = () => {
-      updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && installUnattended(updaterService.getState().installMethod))
+      updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && !remoteFeatures.isOff('mac-idle-install')
+        && installUnattended(updaterService.getState().installMethod))
     }
     const codexRemote = createCodexRemote({
       managerDataDirectory,
@@ -2221,6 +2233,13 @@ if (!hasSingleInstanceLock) {
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
         refreshIdleInstall()
       },
+      suspended: () => remoteFeatures.isOff('codex-remote'),
+    })
+    // 状态文件关掉、放开了哪样：开着的遥控当场停（设置页跟着换那句话），「下好了」那句和托盘加速那一行跟着改。
+    const unsubscribeRemoteFeatureFollowers = remoteFeatures.subscribe(() => {
+      void codexRemote.applyAvailability().catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.suspend.failed', cause))
+      refreshIdleInstall()
+      applicationTray?.updateSnapshot()
     })
     const unregisterIpcHandlers = registerIpcHandlers({
       acceleration: userAcceleration,
@@ -2245,6 +2264,7 @@ if (!hasSingleInstanceLock) {
       peekAccountGroupHints,
       cliModelHints: readCliModelHints,
       hiddenPaymentMethods,
+      remoteFeatures,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
@@ -2426,13 +2446,17 @@ if (!hasSingleInstanceLock) {
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       serviceStatusMonitor?.dispose()
       accelerationNodes?.dispose()
+      unsubscribeRemoteFeatures()
       unsubscribeDesktopNotifications()
       unsubscribeAutoUpdateInstall()
       desktopNotifications.dispose()
     })
     quitCleanup.add('ipc', () => unregisterIpcHandlers())
     // 等你同意的一律拒绝，停掉渠道连接和 Codex 进程；放在 IPC 之后，界面不会再点到它。
-    quitCleanup.add('codex-remote', () => codexRemote.dispose())
+    quitCleanup.add('codex-remote', () => {
+      unsubscribeRemoteFeatureFollowers()
+      codexRemote.dispose()
+    })
     quitCleanup.add('business-services', () => {
       for (const business of businesses.values()) {
         business.chatService.dispose()
@@ -2546,7 +2570,7 @@ if (!hasSingleInstanceLock) {
       getState: () => updaterService.getState(),
       autoUpdate: () => updaterService.autoUpdateEnabled(),
       standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
-      unattended: () => installUnattended(updaterService.getState().installMethod),
+      unattended: () => !remoteFeatures.isOff('mac-idle-install') && installUnattended(updaterService.getState().installMethod),
       elevated: () => windowsCliExecution.highIntegrity === true,
       idleMs: () => powerMonitor.getSystemIdleTime() * 1_000,
       locked: () => powerMonitor.getSystemIdleState(1) === 'locked',
@@ -2810,6 +2834,7 @@ if (!hasSingleInstanceLock) {
         const queue = systemService.inspectInstallationQueue()
         if (queue.activeKey !== null || queue.pendingKeys.length > 0) return 'installing'
         if (paymentWindow.isOpen()) return 'payment'
+        if (remoteFeatures.isOff('tray-release')) return 'feature-off'
         return null
       },
       release: () => releaseRendererProcess(mainWindow.webContents),

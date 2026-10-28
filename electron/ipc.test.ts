@@ -64,6 +64,7 @@ import { registerIpcHandlers } from './ipc'
 import { accelerationStateLogKey } from './ipc/handler-log'
 import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseNodeRuntimeInstallRequest, parseUpdateDownloadOptions } from './ipc/parsers/system'
 import { parseRunningToolsProviders } from './ipc/parsers/tools'
+import { createRemoteFeatureGate } from './remote-feature-gate'
 
 const stubStoredConfig: AppSettings = {
   version: 2,
@@ -1213,6 +1214,25 @@ describe('registerIpcHandlers', () => {
       await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), input)).rejects.toThrow('请先登录星芒账号')
       expect(signedOut.generate).not.toHaveBeenCalled()
       second.dispose()
+    })
+
+    it('refuses a new storyboard or clip while video studio is switched off but still collects one already paid for', async () => {
+      const videoService = videoServiceStub()
+      const chatService = { completeOnce: vi.fn(async () => '{}'), dispose: vi.fn() }
+      const remoteFeatures = createRemoteFeatureGate()
+      remoteFeatures.update(['video-studio'])
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, { chatService } as never, { videoService, remoteFeatures })
+
+      await expect(electronMocks.handlers.get('video-studio:plan')!(trustedEvent(), {
+        requestId: 'plan-1', group: '文字分组', model: 'gpt-6-astra', idea: '一只橘猫回家', shotCount: 1, secondsPerShot: 6, aspect: '9:16', captions: true,
+      })).rejects.toThrow(/^视频剪辑暂时停用了，修好以后会自动恢复。$/)
+      await expect(electronMocks.handlers.get('video:generate')!(trustedEvent(), {
+        requestId: 'video-1', group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6', imageAssetIds: [imageId],
+      })).rejects.toThrow(/^视频剪辑暂时停用了/)
+      expect(chatService.completeOnce).not.toHaveBeenCalled()
+      expect(videoService.generate).not.toHaveBeenCalled()
+      await expect(electronMocks.handlers.get('video:resume')!(trustedEvent(), 'shot-1')).resolves.toEqual(clip)
+      dispose()
     })
 
     it('picks a clip back up by request id for the signed-in account and the asking window only', async () => {
@@ -3748,6 +3768,38 @@ describe('registerIpcHandlers', () => {
     expect(service.installCli).not.toHaveBeenCalled()
     expect(service.launchProvider).not.toHaveBeenCalled()
     expect(service.revealApiKey).not.toHaveBeenCalled()
+  })
+
+  it('refuses the installs and launches the status file switched off before the service hears of them', async () => {
+    const service = serviceStub()
+    const remoteFeatures = createRemoteFeatureGate()
+    remoteFeatures.update(['install:codex', 'launch:codex', 'install:codexDesktop', 'launch:codexDesktop', 'install:opencode', 'launch:workbuddy'])
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, { remoteFeatures })
+    const event = trustedEvent()
+    // 状态文件已经读过：开着的照原来同步往下走，关着的当场抛；同步、异步两种处理器都按被拒算。
+
+    await expect(async () => electronMocks.handlers.get('cli:install')!(event, 'codex')).rejects.toThrow(/^Codex CLI 的安装和更新暂时停用了，修好以后会自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('cli:uninstall')!(event, 'codex', { reinstall: true })).rejects.toThrow(/^Codex CLI 的安装和更新暂时停用了/)
+    await expect(async () => electronMocks.handlers.get('cli:launch')!(event, 'codex', os.homedir())).rejects.toThrow(/^暂时不能从星芒打开 Codex CLI，修好以后会自动恢复。$/)
+    await expect(async () => electronMocks.handlers.get('desktop:install-codex')!(event)).rejects.toThrow(/^Codex 桌面端的安装和更新暂时停用了/)
+    await expect(async () => electronMocks.handlers.get('desktop:launch-codex')!(event, 'open')).rejects.toThrow(/^暂时不能从星芒打开 Codex 桌面端，/)
+    await expect(async () => electronMocks.handlers.get('external-clients:install')!(event, 'opencode')).rejects.toThrow(/^OpenCode 的安装和更新暂时停用了/)
+    await expect(async () => electronMocks.handlers.get('external-clients:launch')!(event, 'workbuddy')).rejects.toThrow(/^暂时不能从星芒打开 WorkBuddy，/)
+    expect(service.installCli).not.toHaveBeenCalled()
+    expect(service.uninstallCli).not.toHaveBeenCalled()
+    expect(service.launchProvider).not.toHaveBeenCalled()
+    expect(service.installCodexDesktop).not.toHaveBeenCalled()
+    expect(service.launchCodexDesktop).not.toHaveBeenCalled()
+    expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.launchExternalClient).not.toHaveBeenCalled()
+
+    // 别的工具照常，放开以后照常。
+    await electronMocks.handlers.get('cli:install')!(event, 'claude')
+    await electronMocks.handlers.get('external-clients:launch')!(event, 'opencode')
+    remoteFeatures.update([])
+    await electronMocks.handlers.get('cli:install')!(event, 'codex')
+    expect(vi.mocked(service.installCli).mock.calls.map(([provider]) => provider)).toEqual(['claude', 'codex'])
+    expect(service.launchExternalClient).toHaveBeenCalledWith('opencode')
   })
 
   it('records failed maintenance calls without logging their arguments', async () => {

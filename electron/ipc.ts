@@ -24,6 +24,7 @@ import type { UpdateSnapshot, UpdaterService } from './updater'
 import type { RelayBackendClient, RelayNotice } from './relay-backend'
 import type { AccountGroupHints } from './managed-cli-groups'
 import type { CliModelHints } from './cli-model-defaults'
+import type { RemoteFeatureGate } from './remote-feature-gate'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -244,6 +245,9 @@ export interface IpcRegistrationOptions {
   // 服务状态文件里的充值方式开关（service-status.ts 的 paymentMethodsOff），这台电脑该藏的付款方式（小写的 type）。
   // 缺省 = 一种也不藏。
   hiddenPaymentMethods?: () => Promise<readonly string[]>
+  // 服务状态文件里关掉的功能（service-status.ts 的 featuresOff，remote-feature-gate.ts）：装工具、打开工具、
+  // 视频剪辑写分镜和出片之前先问一声，关着就拦下，说一句「暂时停用了」。缺省 = 什么都不关。
+  remoteFeatures?: Pick<RemoteFeatureGate, 'assertOn'>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore

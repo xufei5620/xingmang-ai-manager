@@ -949,6 +949,33 @@ describe('codex-remote-service lifecycle', () => {
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
+  // 状态文件关掉了手机遥控（G04）：开着的当场停，手机上收到的跟在电脑上点关一样。
+  it('stops an open channel the moment the computer can no longer offer remote control, and only refreshes when it can', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const before = s.snapshots.length
+    await s.service.applyAvailability()
+    expect(channel.stopped).toBe(0)
+    expect(s.snapshots.length).toBe(before + 1)
+
+    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    const snapshot = await s.service.applyAvailability()
+    expect(channel.texts()).toContain('手机遥控已在电脑上关闭。')
+    expect(channel.stopped).toBe(1)
+    expect(codex.kills).toContain('SIGTERM')
+    expect(snapshot).toMatchObject({ available: false, unavailableReason: '手机遥控暂时停用了，修好以后会自动恢复。', channels: { feishu: { enabled: false } } })
+    expect(s.logs).toContain('remote.channel-suspended')
+    await expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('手机遥控暂时停用了')
+
+    // 放开以后不替他打开，等他自己点。
+    s.unavailable.reason = null
+    expect(await s.service.applyAvailability()).toMatchObject({ available: true, channels: { feishu: { enabled: false } } })
+    expect(s.channels).toHaveLength(1)
+    s.service.dispose()
+    expect(await s.service.applyAvailability()).toBeNull()
+  })
+
   // 星芒退出前跟手机道别（0.2.22 打磨 B8）：只说一句、不停渠道，停渠道和 Codex 仍归 dispose。
   it('says goodbye to the phone before the manager quits and leaves the channel to dispose', async () => {
     const s = await setup()

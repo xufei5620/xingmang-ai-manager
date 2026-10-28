@@ -1131,6 +1131,34 @@ describe('service status from the update feed', () => {
     service.dispose()
   })
 
+  it('carries only the features switched off for this version and package, and keeps them across a failed read', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.23', isPackaged: true, platform: 'darwin', arch: 'arm64' })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push(state.featuresOff))
+    expect(service.getState()).not.toHaveProperty('featuresOff')
+
+    const status = {
+      maintenance: null,
+      featuresOff: [
+        { feature: 'launch:codex' as const, platforms: ['mac'] },
+        { feature: 'video-studio' as const, versions: ['0.2.23'] },
+        { feature: 'install:codex' as const, platforms: ['windows'] },
+        { feature: 'codex-remote' as const, versions: ['0.2.24'] },
+      ],
+    }
+    service.setServiceStatus(status)
+    service.setServiceStatus(status)
+    expect(service.getState().featuresOff).toEqual(['video-studio', 'launch:codex'])
+    // 一次没读到状态文件：关掉的照样关着，坏掉的那条路不能因为这一次又开了。
+    service.setServiceStatus(null)
+    expect(service.getState().featuresOff).toEqual(['video-studio', 'launch:codex'])
+    service.setServiceStatus({ maintenance: null })
+    expect(service.getState().featuresOff).toEqual([])
+    expect(seen).toEqual([['video-studio', 'launch:codex'], []])
+    service.dispose()
+  })
+
   it('does not disturb an update failure the user is looking at', () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })

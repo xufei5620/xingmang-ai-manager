@@ -34,6 +34,7 @@ import {
   buildCodexDesktopWindowsProbes,
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
+  initialCodexDesktopChineseLocale,
   describeCodexDesktopLaunchFailure,
   describeCodexDesktopLaunchWait,
   buildCodexDesktopResetScript,
@@ -2001,6 +2002,17 @@ describe('Codex Desktop launch queueing', () => {
     ]
     for (const request of requests) await expect(request).rejects.toThrow('仅支持 Windows')
     expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('initialCodexDesktopChineseLocale', () => {
+  it('says the Chinese patch is off only for a Codex it starts fresh', () => {
+    const off = { status: 'failed', message: 'Codex 已经打开，中文界面暂时停用了，这次先用英文界面，修好以后会自动恢复。' }
+    expect(initialCodexDesktopChineseLocale({ chineseSuspended: true }, true)).toEqual(off)
+    expect(initialCodexDesktopChineseLocale({ chineseSuspended: true }, false)).toBeUndefined()
+    expect(initialCodexDesktopChineseLocale({}, true)).toBeUndefined()
+    expect(initialCodexDesktopChineseLocale({ injectChinese: true }, true)?.status).toBe('failed')
+    expect(initialCodexDesktopChineseLocale({ injectChinese: true }, false)?.status).toBe('restart-required')
   })
 })
 

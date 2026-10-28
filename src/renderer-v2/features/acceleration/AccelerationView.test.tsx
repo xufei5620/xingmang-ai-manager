@@ -11,7 +11,7 @@ function state(overrides: Partial<AccelerationState> = {}): AccelerationState {
   }
 }
 
-function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void; rememberedLine?: boolean; lines?: AccelerationLine[]; selectedLineId?: string; bundleCheck?: 'checking' | 'damaged' | 'repaired' | null } = {}) {
+function render(current: AccelerationState | null, extra: { error?: string; onViewLog?(): void; rememberedLine?: boolean; lines?: AccelerationLine[]; selectedLineId?: string; bundleCheck?: 'checking' | 'damaged' | 'repaired' | null; suspended?: boolean } = {}) {
   return renderToStaticMarkup(<AccelerationView
     state={current} busy={false} signedIn error={extra.error ?? null}
     onStart={() => undefined} onStartAnyway={() => undefined}
@@ -20,6 +20,7 @@ function render(current: AccelerationState | null, extra: { error?: string; onVi
     rememberedLine={extra.rememberedLine} linesBusy={false} linesError={null}
     onSelectLine={() => undefined} onRefreshLines={() => undefined}
     bundleCheck={extra.bundleCheck} onRecheckBundle={() => undefined} onContactSupport={() => undefined} onRelaunch={() => undefined}
+    suspended={extra.suspended}
   />)
 }
 
@@ -156,6 +157,40 @@ describe('acceleration error wording', () => {
   it('keeps the support button off a strip that is not a failed start', () => {
     const markup = render(null, { error: accelerationFailureMessages['helper-temp'] })
     expect(markup).not.toContain('data-testid="acceleration-error-support"')
+  })
+})
+
+describe('acceleration switched off by the status file', () => {
+  function buttonTag(markup: string, testId: string): string {
+    return markup.match(new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`))?.[0] ?? ''
+  }
+
+  it('greys out connecting and says why while nothing is connected', () => {
+    for (const current of [state(), state({ phase: 'exhausted', remainingSeconds: 0 }), state({ phase: 'error', error: '加速连接失败，请检查线路和网络连接后重试。' })]) {
+      const markup = render(current, { suspended: true })
+      expect(buttonTag(markup, 'acceleration-session-start')).toMatch(/disabled/)
+      expect(markup).toContain('暂时开不了加速')
+      expect(markup).not.toContain('data-testid="acceleration-contact-support"')
+      expect(markup).toContain('data-testid="acceleration-suspended"')
+      expect(markup).toContain('网络加速暂时停用')
+      expect(markup).toContain('修好以后会自动恢复。已经连着的照常用，也能照常停止。')
+    }
+  })
+
+  it('keeps a live session and a failed stop stoppable', () => {
+    const live = render(state({ phase: 'active', connectedAt: '2026-09-20T00:00:00Z', sessionSeconds: 60 }), { suspended: true })
+    expect(buttonTag(live, 'acceleration-session-stop')).not.toMatch(/disabled/)
+    expect(live).toContain('停止加速')
+    expect(live).toContain('data-testid="acceleration-suspended"')
+    const stuck = render(state({ phase: 'stopping', error: '停止加速未完成，请稍后重试。' }), { suspended: true })
+    expect(buttonTag(stuck, 'acceleration-session-stop')).not.toMatch(/disabled/)
+    expect(stuck).toContain('重试停止')
+  })
+
+  it('adds nothing when acceleration is not switched off', () => {
+    const markup = render(state())
+    expect(markup).not.toContain('acceleration-suspended')
+    expect(buttonTag(markup, 'acceleration-session-start')).not.toMatch(/disabled/)
   })
 })
 

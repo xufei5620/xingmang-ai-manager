@@ -11,6 +11,7 @@ import {
   parseServiceStatus,
   parseServiceStatusDocument,
   readServiceStatus,
+  resolveFeaturesOffFor,
   resolveHiddenPaymentMethodsFor,
   resolveKnownIssuesFor,
   resolveMinimumVersionFor,
@@ -447,6 +448,35 @@ describe('known issues and payment method switches', () => {
     expect(resolveHiddenPaymentMethodsFor(undefined, '0.2.23', windows)).toEqual([])
   })
 
+  it('reads feature switches from the fixed list only and switches off only on the versions and packages they name', () => {
+    const status = parseServiceStatus(JSON.stringify({
+      featuresOff: [
+        { feature: ' Video-Studio ', versions: ['0.2.23'], platforms: ['windows'] },
+        { feature: 'install:codexdesktop', platforms: ['mac'] },
+        { feature: 'launch:grok' },
+        // 以后的版本才有的一样、名字相近的、写坏了范围的：整条不管。
+        { feature: 'teleport' },
+        { feature: 'install:gemini' },
+        { feature: 'install' },
+        { feature: 'codex-remote', versions: [] },
+        { feature: 'acceleration', platforms: 'windows' },
+        { versions: ['0.2.23'] },
+        'tray-release',
+      ],
+    }), now)
+    expect(status.featuresOff).toEqual([
+      { feature: 'video-studio', versions: ['0.2.23'], platforms: ['windows'] },
+      { feature: 'install:codexDesktop', platforms: ['mac'] },
+      { feature: 'launch:grok' },
+    ])
+    // 按名单的先后排，跟写的先后无关。
+    expect(resolveFeaturesOffFor(status, '0.2.23', windows)).toEqual(['video-studio', 'launch:grok'])
+    expect(resolveFeaturesOffFor(status, 'v0.2.24', intelMac)).toEqual(['install:codexDesktop', 'launch:grok'])
+    expect(resolveFeaturesOffFor(parseServiceStatus('{}', now), '0.2.23', windows)).toEqual([])
+    expect(resolveFeaturesOffFor(null, '0.2.23', windows)).toEqual([])
+    expect(parseServiceStatus(JSON.stringify({ featuresOff: 'video-studio' }), now).featuresOff).toBeUndefined()
+  })
+
   it('reads back exactly what the publishing script writes', () => {
     const load = createRequire(__filename)
     const { applyStatusChanges } = load('../scripts/service-status.cjs') as {
@@ -455,9 +485,13 @@ describe('known issues and payment method switches', () => {
     let written = applyStatusChanges({}, { 'known-issue': 'recharge：支付宝暂时打不开付款页，请先用微信付款。', 'known-issue-scope': '0.2.23 @windows support' }, now)
     written = applyStatusChanges(written, { 'known-issue': 'all: 今晚 22 点前聊天可能慢一点。' }, now)
     written = applyStatusChanges(written, { 'payment-methods-off': 'alipay@0.2.23@windows wxpay' }, now)
+    written = applyStatusChanges(written, { 'features-off': 'video-studio@0.2.23@windows install:codexDesktop' }, now)
     const status = parseServiceStatusDocument(JSON.stringify(written), now)
     expect(status?.knownIssues).toEqual(written.knownIssues)
     expect(status?.paymentMethodsOff).toEqual(written.paymentMethodsOff)
+    expect(status?.featuresOff).toEqual(written.featuresOff)
+    expect(resolveFeaturesOffFor(status, '0.2.23', windows)).toEqual(['video-studio', 'install:codexDesktop'])
+    expect(resolveFeaturesOffFor(status, '0.2.23', intelMac)).toEqual(['install:codexDesktop'])
     expect(resolveKnownIssuesFor(status, '0.2.23', windows)).toEqual([
       { page: 'recharge', message: '支付宝暂时打不开付款页，请先用微信付款。', action: 'support' },
       { page: 'all', message: '今晚 22 点前聊天可能慢一点。' },

@@ -1,6 +1,7 @@
 import type { AccelerationApi, AccelerationBundleCheck, AccelerationConflictKind, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationPreference, AccelerationPreferenceApi, AccelerationPreferenceUpdate, AccelerationRedemptionResult, AccelerationState, AccelerationUnavailableReason } from './acceleration-contract'
 import { accelerationBonusSeconds, accelerationConflictKinds, accelerationFailure, accelerationFailureMessages, accelerationFailureReason, accelerationTrialSeconds, isAccelerationConflictKind, isAccelerationLineId } from './acceleration-contract'
 import { isRecord } from './input-guards'
+import { accelerationOffMessage, RemoteFeatureOffError } from './remote-features'
 
 export interface AccelerationService extends AccelerationApi, AccelerationPreferenceApi {
   redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
@@ -64,6 +65,11 @@ interface AccelerationServiceOptions {
    * 并提供「重新检查」；不给就是旧口径的「线路准备中」。
    */
   bundleDamaged?: { recheck(): Promise<AccelerationBundleCheck> }
+  /**
+   * 状态文件关掉了网络加速（remote-features.ts）：不再连新的，用户点的、软件替他连的都一样。连着的照常用、
+   * 照常能停，停不掉才是更糟的事。缺省 = 不关。
+   */
+  suspended?: () => boolean
 }
 
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
@@ -356,6 +362,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       if (lineId !== undefined) assertLineId(lineId)
       assertIgnoreConflicts(ignoreConflicts)
       assertCurrent(scope, revision)
+      if (operation === 'start' && options.suspended?.()) throw new RemoteFeatureOffError(accelerationOffMessage)
     } catch (error) { return Promise.reject(error) }
     const expectedRevision = revision
     // A retry that overrides the conflict warning is a different request from

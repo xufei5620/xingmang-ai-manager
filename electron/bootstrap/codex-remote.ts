@@ -13,6 +13,7 @@ import { spawnCodexAppServer } from '../codex-remote-process'
 import { CodexRemoteService } from '../codex-remote-service'
 import { CodexRemoteStore } from '../codex-remote-store'
 import { inspectProviderConfig } from '../config-files'
+import { codexRemoteOffMessage } from '../remote-features'
 import type { RuntimeLogStore } from '../runtime-log'
 import type { WindowsCliExecutionMode } from '../windows-elevation'
 
@@ -29,6 +30,8 @@ export interface CodexRemoteBootstrapOptions {
   /** 起 Codex 排进安装队列（I11，#1407 P3-3）：装、更新、卸载 Codex 时等它做完再起。 */
   enqueueLaunch(launch: () => Promise<AppServerProcess>): Promise<AppServerProcess>
   onStateChanged(snapshot: CodexRemoteSnapshot): void
+  /** 状态文件关掉了手机遥控（remote-features.ts）。它变了要调一次 applyAvailability。缺省 = 不关。 */
+  suspended?(): boolean
 }
 
 const elevatedMessage = '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。'
@@ -68,7 +71,9 @@ export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRe
       const key = inspectProviderConfig('codex', options.providerRoots).apiKey.trim()
       return key ? [key] : []
     },
-    inspectAvailability: () => resolveCodexRemoteAvailability(process.platform, options.windowsExecution),
+    // 管理员身份那句在前：那句告诉他自己能怎么办。
+    inspectAvailability: () => resolveCodexRemoteAvailability(process.platform, options.windowsExecution)
+      ?? (options.suspended?.() ? codexRemoteOffMessage : null),
     checkCodexReady: async () => (await isCodexCliInstalled(options.codexEnv)
       ? null
       : '这台电脑还没装 Codex 命令行工具，先在首页把它装好。'),

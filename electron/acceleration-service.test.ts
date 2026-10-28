@@ -254,6 +254,21 @@ describe('acceleration-service', () => {
     expect(backend.startAcceleration).not.toHaveBeenCalled()
   })
 
+  it('starts nothing new while acceleration is switched off, yet still reads and stops a live session', async () => {
+    const backend = createBackend()
+    let suspended = true
+    const service = createAccelerationService({ getAccountScope: () => scope, backend, suspended: () => suspended })
+    await expect(service.startAcceleration(scope, 'system-proxy')).rejects.toThrow('网络加速暂时停用了，修好以后会自动恢复。')
+    await expect(service.startAutomaticAcceleration(scope, 'codex-desktop', 'system-proxy')).rejects.toThrow('网络加速暂时停用了')
+    expect(backend.startAcceleration).not.toHaveBeenCalled()
+    vi.mocked(backend.getAccelerationState).mockResolvedValue(active())
+    await expect(service.getAccelerationState(scope)).resolves.toMatchObject({ phase: 'active' })
+    await expect(service.stopAcceleration(scope)).resolves.toMatchObject({ phase: 'idle' })
+    expect(backend.stopAcceleration).toHaveBeenCalledOnce()
+    suspended = false
+    await expect(service.startAcceleration(scope, 'system-proxy')).resolves.toMatchObject({ phase: 'active' })
+  })
+
   it('validates the mode before calling the backend', async () => {
     const backend = createBackend()
     const service = createAccelerationService({ getAccountScope: () => scope, backend })

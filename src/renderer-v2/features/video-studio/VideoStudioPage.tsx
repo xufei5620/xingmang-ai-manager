@@ -18,7 +18,8 @@ import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, videoSt
 import { useVideoStudio, type VideoStudioBridge, type VideoStudioController, type VideoStudioOptions } from './useVideoStudio'
 import './video-studio.css'
 
-export type VideoStudioAccess = 'ready' | 'guest' | 'unsupported'
+/** suspended：状态文件关掉了视频剪辑（remote-features.ts），工程照样留在本机。 */
+export type VideoStudioAccess = 'ready' | 'guest' | 'unsupported' | 'suspended'
 
 export interface VideoStudioPageProps {
   bridge: VideoStudioBridge
@@ -41,7 +42,10 @@ export function VideoStudioPage({ bridge, accountScope, site, access, active = t
       <PageHead title="视频剪辑" lead={pageLead} />
       {access === 'guest'
         ? <Empty icon={Clapperboard} title="登录后才能用" description="生成视频用的是星芒账号的额度，先登录。" action={onLogin && <Button variant="primary" onClick={onLogin} testId="video-login">登录</Button>} testId="video-guest" />
-        : <Empty icon={Clapperboard} title="当前账号用不了视频剪辑" description="视频剪辑要用星芒账号里的视频模型，历史账号没有。换成星芒账号登录就能用。" testId="video-unsupported" />}
+        : access === 'suspended'
+          // yoyo 2026-10-28 批的字（「停用改」）。
+          ? <Empty icon={Clapperboard} title="视频剪辑暂时停用" description="你的工程都还在，修好以后会自动恢复。" testId="video-suspended" />
+          : <Empty icon={Clapperboard} title="当前账号用不了视频剪辑" description="视频剪辑要用星芒账号里的视频模型，历史账号没有。换成星芒账号登录就能用。" testId="video-unsupported" />}
     </section>
   }
   return <VideoStudioWorkspace bridge={bridge} accountScope={accountScope} site={site} active={active} onOpenAccount={onOpenAccount} options={options} />

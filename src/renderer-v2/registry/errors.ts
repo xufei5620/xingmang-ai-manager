@@ -41,6 +41,8 @@ export const errors = {
   codexDesktopKnownIssue: { title: 'Codex 这一版打不开', body: '这是 Codex 这一版自己的问题，不是星芒，等微软商店出新版会自动好。急用先点「改用 Codex 命令行版」。', actions: ['重试', '改用 Codex 命令行版', '找客服'] },
   codexDesktopNotStarted: { title: 'Codex 没能打开', body: '先点「重试」；还不行就点「重置 Codex」，重置完会自动再打开一次；还是不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '重置 Codex', '找客服'] },
   pluginCatalogStuck: { title: '插件目录暂时改不动', body: '重启电脑后再试一次；还不行请联系客服。', actions: ['重试', '找客服'] },
+  // yoyo 2026-10-28 批的字（「停用改」）。
+  featureSuspended: { title: '这个功能暂时停用了', body: '我们已经知道这个问题，修好以后会自动恢复，不用重装软件。', actions: ['找客服'] },
   switchUndoFailed: { title: '没能自动恢复原来的设置', body: '到「设置 › 备份迁移」里恢复改用之前的那一份就好。', actions: ['去备份迁移', '找客服'] },
   gitMissing: { title: '这台电脑还没装 Git', body: '装插件要用 Git。到首页「运行环境」点「安装 Git」，装好回来再点「重试」。', actions: ['重试', '找客服'] },
   githubUnreachable: { title: '连不上 GitHub', body: '插件要从 GitHub 下载，这台电脑现在连不上它，已经装好的不受影响。换个网络（比如手机热点）再点「重试」。', actions: ['重试', '找客服'] },

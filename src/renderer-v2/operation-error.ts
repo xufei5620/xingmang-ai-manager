@@ -7,6 +7,7 @@ import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
 import { npmFailureExplainsItself } from '../../electron/npm-failure-reasons'
 import { relayQuotaFailureInMessage } from '../../electron/relay-quota-failure'
+import { isRemoteFeatureOffMessage } from '../../electron/remote-features'
 import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
 
@@ -36,6 +37,9 @@ export interface OperationErrorHint {
  * rule that matches wins, so the narrow, unambiguous tokens come first.
  */
 const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean }> = [
+  // 状态文件关掉了这一样（remote-features.ts，G04）：主进程那句已经说了是哪一样、会自动恢复。这一下什么都没做，
+  // 被下面哪条认成没装上、连不上、要重试都不对，所以排在最前，出口只有「找客服」。
+  { key: 'featureSuspended', match: (message) => isRemoteFeatureOffMessage(message) },
   // 一键改用当前账号失败后连恢复也没做成（account-source-switch.ts）。这句里常带着
   // 网络、权限之类的原因，被下面哪条抢走都会配上一句「不会留下半成品」式的安抚，
   // 所以排在最前，出口直接是「去备份迁移」。只认「自动恢复也没有完成」这半句，不认

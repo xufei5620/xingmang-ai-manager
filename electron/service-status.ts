@@ -4,6 +4,7 @@ import { activeProviderIds } from './catalog'
 import { isCliModelName, type CliModelHint, type CliModelHints } from './cli-model-defaults'
 import { isRecord } from './input-guards'
 import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
+import { remoteFeatureIds, resolveRemoteFeatureId, type RemoteFeatureId } from './remote-features'
 
 /**
  * 更新目录上的一份状态文件（`service-status.json`），给发布者一个不发版就能对
@@ -95,6 +96,12 @@ export interface ServiceStatus {
    */
   paymentMethodsOff?: readonly ServicePaymentMethodOff[]
   /**
+   * 远程关功能（remote-features.ts 那张写死的名单里挑几样）：出了事、还没发版修好之前先关掉，比如视频剪辑、
+   * 手机遥控、某个工具的安装。只能关不能开；认不出的功能名（以后的版本才有的那一样）整条不管。没写、写错的那一条
+   * 不关。0.2.23 起的客户端认。
+   */
+  featuresOff?: readonly ServiceFeatureOff[]
+  /**
    * 发布者改这份文件的时间（GitHub 按钮写的 `updatedAt`），ISO 格式。只拿来比撤回名单和放量哪份更新：
    * 某条线路、某个 CDN 节点给了一份旧的，不让它盖掉本机记着的新的（#1157 第 10 条）。没写、写错、比本机
    * 时钟晚一天以上都当没写。
@@ -130,6 +137,10 @@ export interface ServiceKnownIssue extends KnownIssue, ServiceSwitchScope {}
 export interface ServicePaymentMethodOff extends ServiceSwitchScope {
   /** 站上付款方式的 type（alipay、wxpay、stripe…），比较时不分大小写。 */
   method: string
+}
+
+export interface ServiceFeatureOff extends ServiceSwitchScope {
+  feature: RemoteFeatureId
 }
 
 export const emptyServiceStatus: ServiceStatus = Object.freeze({ maintenance: null, badVersions: [], rollout: null, minimumVersion: null })
@@ -459,6 +470,8 @@ export function parseCliModelHints(value: unknown): CliModelHints | null {
 // 同时挂着的提示和开关用不了几条；上限只防一份写坏的文件塞进一长串。
 const maxKnownIssues = 8
 const maxPaymentMethodsOff = 16
+// 能关的一共二十样，同一样按版本、平台分开写几条也够用。
+const maxFeaturesOff = 32
 const maxSwitchVersions = 20
 // 付款方式的 type 原样来自站上（new-api-client.ts 的 parseTopupInfo 也截在 64 个字）。
 const paymentMethodPattern = /^[A-Za-z0-9_.-]{1,64}$/
@@ -525,6 +538,20 @@ function readPaymentMethodsOff(value: unknown): ServicePaymentMethodOff[] | null
   return switches.length ? switches : null
 }
 
+// 认不出的功能名整条不管：那是以后的版本才有的一样，这台电脑上没有它，也不能拿名字相近的顶上。
+function readFeaturesOff(value: unknown): ServiceFeatureOff[] | null {
+  if (!Array.isArray(value)) return null
+  const switches: ServiceFeatureOff[] = []
+  for (const entry of value.slice(0, maxFeaturesOff)) {
+    if (!isRecord(entry)) continue
+    const feature = resolveRemoteFeatureId(entry.feature)
+    const scope = readSwitchScope(entry)
+    if (!feature || !scope) continue
+    switches.push({ feature, ...scope })
+  }
+  return switches.length ? switches : null
+}
+
 function switchApplies(scope: ServiceSwitchScope, version: string, here: readonly string[]): boolean {
   if (scope.versions && !scope.versions.includes(version.trim().replace(/^v/i, ''))) return false
   return appliesTo(scope.platforms, here)
@@ -549,6 +576,16 @@ export function resolveHiddenPaymentMethodsFor(
 ): string[] {
   const methods = (status?.paymentMethodsOff ?? []).filter((entry) => switchApplies(entry, version, here)).map((entry) => entry.method)
   return [...new Set(methods)]
+}
+
+/** 这台电脑（这一版、这种安装包）要关掉的功能，按 remote-features.ts 名单的先后排。 */
+export function resolveFeaturesOffFor(
+  status: Pick<ServiceStatus, 'featuresOff'> | null | undefined,
+  version: string,
+  here: readonly string[],
+): RemoteFeatureId[] {
+  const off = new Set((status?.featuresOff ?? []).filter((entry) => switchApplies(entry, version, here)).map((entry) => entry.feature))
+  return remoteFeatureIds.filter((feature) => off.has(feature))
 }
 
 /** 解析状态文件；格式不对的部分一律按「没有」处理，永不抛错。 */
@@ -577,6 +614,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
   const minimumVersionPlatforms = minimumVersion ? readReleasePlatforms(parsed.minimumVersionPlatforms) : null
   const knownIssues = readKnownIssues(parsed.knownIssues)
   const paymentMethodsOff = readPaymentMethodsOff(parsed.paymentMethodsOff)
+  const featuresOff = readFeaturesOff(parsed.featuresOff)
   return {
     maintenance: readMaintenance(parsed.maintenance, now),
     badVersions,
@@ -589,6 +627,7 @@ export function parseServiceStatusDocument(text: string, now: Date): ServiceStat
     ...(cliModels ? { cliModels } : {}),
     ...(knownIssues ? { knownIssues } : {}),
     ...(paymentMethodsOff ? { paymentMethodsOff } : {}),
+    ...(featuresOff ? { featuresOff } : {}),
     ...(updatedAt ? { updatedAt } : {}),
   }
 }

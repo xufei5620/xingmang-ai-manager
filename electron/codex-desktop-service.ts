@@ -120,6 +120,7 @@ import {
   type CodexDesktopInstallFailureReason,
 } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
+import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
 
 const execFileAsync = promisify(execFile)
@@ -2646,6 +2647,11 @@ export interface CodexDesktopLaunchOptions {
   /** Enables the short-lived loopback CDP locale patch for a Chinese restart. */
   injectChinese?: boolean
   /**
+   * 状态文件关掉了中文补丁（remote-features.ts 的 codex-desktop-chinese），本来要打的这次不打。新起一个 Codex 时
+   * 说一句「这次先用英文界面」；已经开着、只是叫到前面的，界面没变，不说。
+   */
+  chineseSuspended?: boolean
+  /**
    * Repairs the legacy Desktop permission-mode visibility atom after all
    * running processes have been closed and before the next launch.
    */
@@ -2655,6 +2661,22 @@ export interface CodexDesktopLaunchOptions {
    * 换账号时还在排队的直接出队（#1085）。
    */
   accountWork?: QueuedAccountWork
+}
+
+/**
+ * 这次打开先记下的中文界面结果：要打补丁的先记成没打上，补丁打上了再改。状态文件关掉了补丁的，新起的这个是
+ * 英文界面，说一句；已经开着、只是叫到前面的那个界面没变，不说。
+ */
+export function initialCodexDesktopChineseLocale(
+  launchOptions: Pick<CodexDesktopLaunchOptions, 'injectChinese' | 'chineseSuspended'>,
+  needsFreshActivation: boolean,
+): CodexDesktopLaunchResult['chineseLocale'] {
+  if (launchOptions.injectChinese) {
+    return needsFreshActivation
+      ? { status: 'failed', message: codexDesktopChineseUnverifiedMessage }
+      : { status: 'restart-required', message: '中文设置已保存；当前 Codex 已在运行，请在配置中启用中文界面以重启并应用。' }
+  }
+  return launchOptions.chineseSuspended && needsFreshActivation ? { status: 'failed', message: codexDesktopChineseOffMessage } : undefined
 }
 
 export interface CodexDesktopService {
@@ -4104,11 +4126,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     let activatedViaAppModel = false
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
       && needsFreshActivation
-    let chineseLocale: CodexDesktopLaunchResult['chineseLocale'] = launchOptions.injectChinese
-      ? needsFreshActivation
-        ? { status: 'failed', message: codexDesktopChineseUnverifiedMessage }
-        : { status: 'restart-required', message: '中文设置已保存；当前 Codex 已在运行，请在配置中启用中文界面以重启并应用。' }
-      : undefined
+    let chineseLocale = initialCodexDesktopChineseLocale(launchOptions, needsFreshActivation)
     if (needsFreshActivation) {
       try {
         if (shouldInjectChinese) {
