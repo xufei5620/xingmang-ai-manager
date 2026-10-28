@@ -1,0 +1,295 @@
+# 「旧版升新版」冒烟（商业级差距报告 G13）：在 Windows 和 macOS runner 上装客户手上的正式旧版本
+# （0.2.19，和最新一个正式版），让它从本机的假更新源自己查到、下载、核对、装上这次出的新版本，
+# 再看新版本起来了、接着用旧版本那份数据和设置。步骤和边界见 scripts/upgrade-smoke.cjs 开头和
+# docs/RELEASING.md「旧版升新版冒烟」。
+#
+# 三种跑法：
+#   - package-for-testing.yml 出完发版前那两份包以后调用这里（workflow_call），测的就是要交出去
+#     装的那两份包本身。每发一版都会先出这两份包，所以每一版都会测到。
+#   - 动到更新链路的 PR 自动跑（pull_request），这时现出一份包来测。
+#   - 手动点（workflow_dispatch），同样现出一份包。
+#
+# 现出的包只用来测，名字里写明了，留三天就删；Windows 那份走无签名发布模式（客户拿到的就是这种），
+# Mac 那份是 runner 现场生成的一次性身份签的，绝不能发给客户。
+#
+# 不碰线上：旧版本只从公开的 GitHub Release 下载；更新源是 runner 本机的假源；旧版本和新版本
+# 跑起来以前就断了外网（Windows 用防火墙，Mac 用 hosts 和 pf），断网先自证、跑完也不撤。
+# 本工作流不读任何 secret，不挂 environment，只读权限。
+name: upgrade-smoke
+
+on:
+  pull_request:
+    paths:
+      - electron/updater.ts
+      - electron/auto-update-install.ts
+      - electron/installed-release.ts
+      - electron/update-*.ts
+      - electron/bootstrap/updates.ts
+      - electron/app-settings.ts
+      - electron-builder.config.cjs
+      - build/installer.nsh
+      - package.json
+      - package-lock.json
+      - scripts/upgrade-smoke.cjs
+      - scripts/upgrade-smoke-support.cjs
+      - .github/workflows/upgrade-smoke.yml
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '测哪个平台'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - windows
+          - macos
+  workflow_call:
+    inputs:
+      platforms:
+        description: 'both、windows 或 macos'
+        required: false
+        default: both
+        type: string
+      windows_artifact:
+        description: '同一次运行里已经上传的 Windows 包（artifact 名）；不给就现出一份'
+        required: false
+        default: ''
+        type: string
+      macos_artifact:
+        description: '同一次运行里已经上传的 Mac 包（artifact 名）；不给就现出一份'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # 被 package-for-testing 调用时 github.workflow 是调用方的名字，两个平台各调一次，靠 platforms 分开。
+  group: ${{ github.workflow }}-upgrade-smoke-${{ github.ref }}-${{ inputs.platforms || 'both' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      from: ${{ steps.releases.outputs.from }}
+      released: ${{ steps.releases.outputs.released }}
+    steps:
+      - name: Pick the released versions to upgrade from
+        id: releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # 0.2.19 是强制更新的下限，也是客户里停得最多的一版（10-27 查升不上去时的数据）。
+          OLDEST: '0.2.19'
+        run: |
+          latest="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          latest="${latest#v}"
+          if ! printf '%s' "$latest" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "latest release tag is not a plain version: $latest" >&2
+            exit 1
+          fi
+          if [ "$latest" = "$OLDEST" ]; then
+            echo "from=[\"$OLDEST\"]" >> "$GITHUB_OUTPUT"
+          else
+            echo "from=[\"$OLDEST\",\"$latest\"]" >> "$GITHUB_OUTPUT"
+          fi
+          echo "released=$OLDEST,$latest" >> "$GITHUB_OUTPUT"
+
+  windows-package:
+    needs: versions
+    if: ${{ (inputs.platforms || 'both') != 'macos' && (inputs.windows_artifact || '') == '' }}
+    runs-on: windows-latest
+    timeout-minutes: 60
+    outputs:
+      artifact: ${{ steps.version.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Stamp a version above every release under test
+        id: version
+        shell: bash
+        env:
+          RELEASED: ${{ needs.versions.outputs.released }}
+        run: |
+          current="$(node -p "require('./package.json').version")"
+          version="$(node scripts/upgrade-smoke.cjs test-version --package "$current" --released "$RELEASED")"
+          npm pkg set "version=$version"
+          echo "artifact=upgrade-smoke-windows-$version-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      - run: npm run compile
+
+      - name: Build the unsigned installer the way customers get it (never publishes)
+        timeout-minutes: 20
+        env:
+          XINGMANG_LOCAL_BUILD: '0'
+          XINGMANG_UNSIGNED_RELEASE: '1'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: node node_modules/electron-builder/cli.js --config electron-builder.config.cjs --publish never
+
+      - name: Upload the package under test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: |
+            release/*Setup.exe
+            release/*.blockmap
+            release/latest.yml
+          retention-days: 3
+          if-no-files-found: error
+
+  macos-package:
+    needs: versions
+    if: ${{ (inputs.platforms || 'both') != 'windows' && (inputs.macos_artifact || '') == '' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    outputs:
+      artifact: ${{ steps.version.outputs.artifact }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Stamp a version above every release under test
+        id: version
+        env:
+          RELEASED: ${{ needs.versions.outputs.released }}
+        run: |
+          current="$(node -p "require('./package.json').version")"
+          version="$(node scripts/upgrade-smoke.cjs test-version --package "$current" --released "$RELEASED")"
+          npm pkg set "version=$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "artifact=upgrade-smoke-macos-CI-SIGNED-DO-NOT-PUBLISH-$version-$GITHUB_RUN_ID" >> "$GITHUB_OUTPUT"
+
+      # --ci-temporary-signing 不替调用方编译（见 package-for-testing.yml 同一步的说明）。
+      - run: npm run compile
+
+      - name: Build the macOS package with a throwaway CI identity
+        timeout-minutes: 40
+        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package
+
+      - name: Upload the package under test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.version.outputs.artifact }}
+          path: release-free-ci-${{ steps.version.outputs.version }}/*
+          retention-days: 3
+          if-no-files-found: error
+
+  windows-upgrade:
+    needs: [versions, windows-package]
+    if: >-
+      ${{ !cancelled() && needs.versions.result == 'success' && (inputs.platforms || 'both') != 'macos'
+      && (needs.windows-package.result == 'success' || (needs.windows-package.result == 'skipped' && (inputs.windows_artifact || '') != '')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        from: ${{ fromJSON(needs.versions.outputs.from) }}
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.windows_artifact || needs.windows-package.outputs.artifact }}
+          path: new-release
+
+      - name: Download the old installer customers have
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM_VERSION: ${{ matrix.from }}
+        run: gh release download "v$env:FROM_VERSION" --repo $env:GITHUB_REPOSITORY --pattern "XingMang-AI-Manager-$env:FROM_VERSION-Setup.exe" --dir old-release
+
+      - name: Upgrade the old version to the new one through its own updater
+        timeout-minutes: 30
+        shell: pwsh
+        env:
+          FROM_VERSION: ${{ matrix.from }}
+        run: node scripts/upgrade-smoke.cjs --old-installer "old-release\XingMang-AI-Manager-$env:FROM_VERSION-Setup.exe" --old-version $env:FROM_VERSION --new-release new-release --work "$env:RUNNER_TEMP\upgrade-smoke"
+
+      - name: Keep the app's own logs when the upgrade fails
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-smoke-windows-from-${{ matrix.from }}-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/upgrade-smoke/app-logs
+          retention-days: 7
+          if-no-files-found: ignore
+
+  macos-upgrade:
+    needs: [versions, macos-package]
+    if: >-
+      ${{ !cancelled() && needs.versions.result == 'success' && (inputs.platforms || 'both') != 'windows'
+      && (needs.macos-package.result == 'success' || (needs.macos-package.result == 'skipped' && (inputs.macos_artifact || '') != '')) }}
+    strategy:
+      fail-fast: false
+      matrix:
+        from: ${{ fromJSON(needs.versions.outputs.from) }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.macos_artifact || needs.macos-package.outputs.artifact }}
+          path: new-release
+
+      - name: Download the old disk image customers have
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FROM_VERSION: ${{ matrix.from }}
+        run: gh release download "v$FROM_VERSION" --repo "$GITHUB_REPOSITORY" --pattern "XingMang-AI-Manager-$FROM_VERSION-Apple-Silicon-arm64.dmg" --dir old-release
+
+      - name: Upgrade the old version to the new one through its own updater
+        timeout-minutes: 30
+        env:
+          FROM_VERSION: ${{ matrix.from }}
+        run: node scripts/upgrade-smoke.cjs --old-installer "old-release/XingMang-AI-Manager-$FROM_VERSION-Apple-Silicon-arm64.dmg" --old-version "$FROM_VERSION" --new-release new-release --work "$RUNNER_TEMP/upgrade-smoke"
+
+      - name: Keep the app's own logs when the upgrade fails
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: upgrade-smoke-macos-from-${{ matrix.from }}-logs-${{ github.run_id }}
+          path: ${{ runner.temp }}/upgrade-smoke/app-logs
+          retention-days: 7
+          if-no-files-found: ignore
