@@ -347,6 +347,14 @@ jobs:
         # the backstop for a hang that outlives even that.
         timeout-minutes: 10
         run: node e2e/realm-account-smoke.mjs
+      - name: Verify the desktop canvas end to end with an isolated fixture
+        # D-PR3 (#1393): the only run of the canvas kernel inside the real
+        # desktop host - the packaged dist-canvas over xingmang-canvas://, the
+        # project center, generation through the main process, autosave, copy,
+        # undo across projects and a project the old canvas saved. The script
+        # budgets itself to 5 minutes; this is the backstop.
+        timeout-minutes: 7
+        run: node e2e/canvas-kernel-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       # T-G5: the two smokes below were written, documented and then never wired
       # to anything, so the only thing that ran them was a person who remembered
@@ -423,6 +431,7 @@ jobs:
             artifacts/**/*.png
             artifacts/**/*.json
             output/realm-account-review/*
+            output/canvas-kernel-review/*
           if-no-files-found: ignore
           retention-days: 7
 

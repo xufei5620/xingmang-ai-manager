@@ -770,7 +770,7 @@ UI 已经统一为一个创作库，但底层仍是四套数据源：节点注�
 
 ### 测试和门禁
 
-- `e2e/canvas-editor-smoke.mjs`：真实 Electron renderer 视觉和交互 smoke。
+- `e2e/canvas-kernel-smoke.mjs`：真实 Electron 里把桌面画布点一遍（2026-10-28 起，替代随换内核退役的 `canvas-editor-smoke.mjs`）。
 - `scripts/verify-canvas-provenance.test.cjs`：第三方来源台账门禁。
 - `scripts/verify-canvas-renderer-boundary.test.cjs`：renderer 凭证边界门禁。
 - `docs/CANVAS-THIRD-PARTY.md`：人类可读来源说明。
@@ -845,7 +845,7 @@ npm run test:canvas
 npm test
 npm run compile
 npm run audit:production
-npm run test:canvas:visual
+node e2e/canvas-kernel-smoke.mjs
 git diff --check
 ```
 

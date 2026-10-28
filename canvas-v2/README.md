@@ -16,10 +16,10 @@ npm run build      # tsc + vite，产物在 dist/
 
 浏览器演示模式不读取登录会话、不签发分组 Key，也不执行真实 AI 请求；桌面宿主中的分组协调、主进程运行服务和账号资产隔离才是生产路径。
 
-从仓库根目录运行四视口 Electron 视觉门禁：
+桌面上的端到端冒烟在仓库根目录跑（先 `npm run compile`；只在 Windows 上跑，别的平台打印 SKIP，Windows CI 每次都跑）：
 
 ```bash
-npm run test:canvas:visual
+node e2e/canvas-kernel-smoke.mjs
 ```
 
 ## 当前状态（生态增强 v1）

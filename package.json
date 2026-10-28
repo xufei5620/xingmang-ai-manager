@@ -39,7 +39,6 @@
     "test:v2:browser:e2e": "node --test --test-concurrency=1 e2e/v2-business.test.mjs e2e/v2-local-avatar.test.mjs",
     "canvas:prepare": "tsc -p canvas-v2/tsconfig.json --noEmit && vite build canvas-v2 --config canvas-v2/vite.config.ts && node scripts/copy-canvas-assets.mjs",
     "test:canvas": "vitest run canvas-v2/src",
-    "test:canvas:visual": "node e2e/canvas-editor-smoke.mjs",
     "dev": "cross-env XINGMANG_RENDERER=v2 npm run dev:runtime",
     "predev:runtime": "npm run canvas:prepare && node scripts/prebuild-electron-dev.mjs",
     "dev:runtime": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on -w 1500 tcp:127.0.0.1:5173 dist-electron/platform/entry.js dist-electron/platform/preload.js dist-electron/main.js dist-electron/preload.js dist-electron/canvas-preload.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
