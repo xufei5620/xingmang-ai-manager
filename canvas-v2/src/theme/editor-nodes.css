@@ -188,6 +188,15 @@
 .wf-editor-composer .wf-composer-select { min-height: 30px; border-radius: 6px; font-size: 11px; }
 .wf-editor-composer .wf-composer-send { width: auto; min-width: 92px; height: 32px; padding: 0 10px; display: flex; justify-content: center; gap: 6px; border-radius: 7px; font-size: 11px; white-space: nowrap; }
 .wf-editor-composer .wf-composer-send:disabled { opacity: .5; }
+/* A node's fixed generation source shows up in the composer and in the node body; it
+   takes the composer select's size so it never falls back to the browser default. */
+.wf-source-selection { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--text-secondary); font-size: 11px; }
+.wf-source-selection > span { flex: 0 0 auto; white-space: nowrap; }
+.wf-source-selection > select.wf-model { flex: 1 1 auto; width: auto; min-width: 0; min-height: 30px; margin: 0; padding: 0 var(--space-8); color: var(--text-primary); background: var(--surface-3); border: 1px solid var(--border-subtle); border-radius: 6px; font-size: 11px; }
+.wf-hint { margin: 0; color: var(--text-muted); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.wf-node .wf-source-selection { margin: var(--space-8) var(--space-10) 0; }
+.wf-node .wf-source-selection > select.wf-model { background: var(--surface-input); }
+.wf-node .wf-hint { margin: var(--space-6) var(--space-10) 0; }
 @media (prefers-reduced-motion: reduce) {
   .wf-editor-node .wf-run-node.is-running svg { animation: none; }
 }

@@ -355,6 +355,8 @@ const expectedAssertions = [
   'legacy-project-opens',
   // 选中带图的节点 Ctrl+C、Ctrl+V 能贴，同一个窗口里换了项目也能贴；素材库能收藏、改名（kernel-v0.1.1）。
   'copy-paste-nodes', 'asset-library-organize',
+  // 「生成来源」下拉框有样式；检查器开着时创作库照样点得开（CI 机器的窄窗口也是）；便签改字不算「待更新」（kernel-v0.1.2）。
+  'source-select-styled', 'library-opens-beside-inspector', 'notes-never-pending',
 ]
 
 function recordPass(name) {
@@ -524,17 +526,10 @@ function libraryTab(canvas, name) {
   return canvas.getByRole('navigation', { name: '创作库类型' }).getByRole('button', { name, exact: true })
 }
 
-// 画布窗口窄于 1180px 时（Windows CI 机器的屏幕只有 1024 x 768），检查器开着会把创作库压成一条图标栏，
-// 栏上的页签点了也展不开；照用户的做法先把检查器关掉。
-async function closeInspector(canvas) {
-  const inspector = canvas.getByRole('complementary', { name: '统一检查器' })
-  if (await inspector.isVisible()) await inspector.getByRole('button', { name: /^关闭(节点检查器|运行面板|素材面板)$/ }).click()
-}
-
 // 从左边创作库的「节点」里点一下添加。快速创建的搜索会先列出画布上已有的同名节点，点到的可能是旧的那个。
+// 窗口窄于 1180px 时（Windows CI 机器的屏幕只有 1024 x 768）检查器开着会把创作库压成图标栏，栏上的页签先关检查器再展开。
 async function addNode(canvas, label) {
   await clearSelection(canvas)
-  await closeInspector(canvas)
   const before = await nodes(canvas).count()
   const library = canvas.getByRole('complementary', { name: '创作内容库' })
   if (!await library.getByRole('textbox', { name: '搜索节点' }).isVisible()) await libraryTab(canvas, '节点').click()
@@ -565,7 +560,7 @@ async function statusBar(canvas) {
   return evaluateInRenderer(canvas, 'status bar', () => document.querySelector('[aria-label="画布状态"]')?.textContent ?? '')
 }
 
-// 从「更多操作」里打开素材库。快捷键 A 是开关：关窗前素材栏开着，重开后记成开着却没显示出来，这时按 A 第一下反而把它关上。
+// 从「更多操作」里打开素材库。快捷键 A 是开关：关窗前素材栏开着的话，重开后它照样开着，再按 A 就关上了。
 async function openAssetLibrary(canvas) {
   await canvas.getByRole('button', { name: '更多操作' }).click()
   await canvas.getByRole('button', { name: '打开素材库', exact: true }).click()
@@ -644,6 +639,11 @@ async function main() {
     const resolutions = await canvas.getByRole('combobox', { name: '生成清晰度' }).locator('option').allTextContents()
     assert.deepEqual(resolutions, ['1K', '2K', '4K'])
     recordPass('image-resolutions')
+    // kernel-v0.1.1 的样式表里没有「生成来源」这一行的样式，下拉框是浏览器默认的字号（实测 16px）、没有圆角。
+    const sourceSelect = canvas.getByRole('combobox', { name: '节点生成来源' }).first()
+    await sourceSelect.waitFor({ timeout: fixtureReadyTimeoutMs })
+    assert.deepEqual(await sourceSelect.evaluate((element) => [getComputedStyle(element).fontSize, getComputedStyle(element).borderRadius]), ['11px', '6px'])
+    recordPass('source-select-styled')
 
     beginStage('run the prompt and image nodes together')
     await runAll(canvas)
@@ -730,7 +730,7 @@ async function main() {
     await expect(nodes(canvas)).toHaveCount(7, { timeout: fixtureReadyTimeoutMs })
     await expect(canvas.getByRole('textbox', { name: '备注内容' }).filter({ hasText: 'TODO: 改色' })).toHaveCount(1)
     assert.equal(await imageNaturalWidth(canvas, '图像节点素材预览'), 64)
-    // 便签改过字也算「待更新」（便签不运行，这个数不会自己清），所以下面拿副本自己这时的数作对照。
+    // 拿副本自己这时的待更新数作对照，下面看 A 的改动和运行有没有串过来。
     const copyPending = pendingCount(await statusLine(canvas))
     recordPass('copy-carries-content')
 
@@ -749,8 +749,22 @@ async function main() {
     await nodes(canvas).filter({ hasText: '图像节点' }).first().click({ position: { x: 20, y: 60 } })
     await canvas.getByRole('button', { name: '查看选中节点详情' }).click()
     await canvas.getByText('输入已变化，当前结果待更新。').waitFor({ timeout: fixtureReadyTimeoutMs })
-    await clearSelection(canvas)
     recordPass('stale-after-edit-during-run')
+
+    beginStage('open the library while the inspector is open')
+    // 检查器还开着。窄窗口里（CI 机器就是）创作库这时被压成图标栏；kernel-v0.1.1 点栏上的页签，展开的列表
+    // 被图标栏和画布盖着点不到，kernel-v0.1.2 起先关检查器再展开。宽窗口里两边并排，检查器不动。
+    const inspector = canvas.getByRole('complementary', { name: '统一检查器' })
+    await expect(inspector).toBeVisible()
+    const narrowWindow = await evaluateInRenderer(canvas, 'narrow layout', () => window.matchMedia('(max-width: 1180px)').matches)
+    await libraryTab(canvas, '节点').click()
+    // trial 只做点击前的检查（看得见、没被别的元素挡住），不真的加节点。
+    await canvas.getByRole('complementary', { name: '创作内容库' }).getByRole('button', { name: /^便签 / }).click({ trial: true, timeout: fixtureReadyTimeoutMs })
+    if (narrowWindow) await expect(inspector).toHaveCount(0)
+    else await expect(inspector).toBeVisible()
+    await canvas.getByRole('button', { name: '收起创作库' }).click()
+    await clearSelection(canvas)
+    recordPass('library-opens-beside-inspector')
 
     beginStage('keep the copy out of project A\'s run')
     // F02：旧画布在 A 出图时切到副本，副本跟着显示 A 的「生成中」、混进 A 的候选图。新内核在结果回填前不让离开
@@ -780,6 +794,9 @@ async function main() {
     await createProject(canvas, '项目乙', 'b')
     await writeNote(canvas, '乙的便签')
     await waitForAutosave('项目乙', '乙的便签')
+    // 便签不运行，改了字也没有要重新跑的东西；kernel-v0.1.1 把它算成「1 个待更新」，而且不会自己消。
+    assert.equal(pendingCount(await statusBar(canvas)), 0, 'a note never runs, so writing one leaves nothing pending')
+    recordPass('notes-never-pending')
     await backToCenter(canvas)
     await openProject(canvas, '项目甲')
     await backToCenter(canvas)
