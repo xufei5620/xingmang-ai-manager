@@ -104,11 +104,13 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
   "inferenceGatewayApiKey": "<用户选择的 Key>",
   "inferenceGatewayAuthScheme": "bearer",
   "inferenceCredentialKind": "static",
-  "inferenceModels": ["<所选 Claude 模型 ID>"]
+  "inferenceModels": [{ "name": "<所选 Claude 模型 ID>" }, { "name": "<其他试通了的 Claude 模型 ID>" }]
 }
 ```
 
-当前界面使用 `bearer`；底层模块也验证并支持官方的 `x-api-key` 选项。显式选择 `static` 凭据，避免保留的 helper/SSO 配置接管本次 Key。模型列表使用所选完整 ID；不根据名称推断模型能力。
+当前界面使用 `bearer`；底层模块也验证并支持官方的 `x-api-key` 选项。显式选择 `static` 凭据，避免保留的 helper/SSO 配置接管本次 Key。模型列表使用完整 ID；不根据名称推断模型能力。
+
+`inferenceModels` 就是 Claude Desktop 里的型号菜单：3.6556.2 安装包里清单写满完整型号名时不再问 `/v1/models`，菜单只有清单上的几个，第一个是默认。所以保存时选中的排第一，其余是当前 Key 列着的 `claude-*` 型号（版本新的在前，连同选中的最多 8 个），每个先照 Claude Desktop 的启动检查发一个字（同上面那条，8 秒超时，最多同时 3 个），回得了的才写进去，没通的只进运行日志（`claude-desktop-models.ts`）。只有一个时照旧写成字符串，多个时写成 `{ "name": ... }`，后面那段的开机修复就认不出、不会把它改回一个。检查页的连接自检除了默认型号，还会用 Claude Desktop 启动检查挑的那个型号（有 Haiku 先挑 Haiku，再 Sonnet、Opus）各问一次，那个不通就报那个，和它横幅上点名的是同一个。
 
 ### 开发模式与本地第三方推理
 
@@ -126,7 +128,7 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 
 保存涉及 `configLibrary/<UUID>.json`（上面的 gateway 字段）、`configLibrary/_meta.json`（`entries` 与当前 `appliedId`）、第三方目录的 `claude_desktop_config.json`（`deploymentMode: "3p"`），以及原生和第三方目录的 `developer_settings.json`（`allowDevTools: true`）。为星芒配置维护独立条目，保留用户原有配置列表、MCP、偏好及其他文件内容；重复保存复用本工具关联的配置。所有文件先验证、备份，提交失败尝试回滚，界面只返回路径和结果，不返回凭据。
 
-0.2.12 曾把当前 Key 能用的全部 `claude-*` 型号写进 `inferenceModels`（#685），客户端因此发消息没有回复；#746 起改回只写所选的一个。已经写成多个的，升级后开机由 `claude-desktop-model-repair.ts` 修一次：只认工具箱归属记录认领得到的那份配置，且清单逐项对得上当年的写法（所选在前，其余为去重并按名字排好的 `claude-*`，最多 20 个）、网关地址是星芒的，才改回第一项，其余字段不动并留 `.bak`；认不准的不碰、只记日志。查完记在工具箱数据目录的 `migrations/` 下，不再重复检查。
+0.2.12 曾把当前 Key 能用的全部 `claude-*` 型号不加核对地写进 `inferenceModels`（#685），客户端因此发消息没有回复（推测是启动检查和起标题这类后台小活挑中了中转列着但发不通的型号）；#746 起改回只写所选的一个，0.2.23 起改成上一段那样只多写试通了的。已经写成多个的，升级后开机由 `claude-desktop-model-repair.ts` 修一次：只认工具箱归属记录认领得到的那份配置，且清单逐项对得上当年的写法（所选在前，其余为去重并按名字排好的 `claude-*`，最多 20 个）、网关地址是星芒的，才改回第一项，其余字段不动并留 `.bak`；认不准的不碰、只记日志。查完记在工具箱数据目录的 `migrations/` 下，不再重复检查。
 
 配置保存后需完全退出并重新打开 Claude Desktop；工具箱不强制结束用户正在进行的会话。保存成功只表示本地配置已落盘，不代表正在运行的旧进程已重新加载，也不代表真实推理已通过。此配置可继续在 Claude 原生第三方推理窗口编辑。
 

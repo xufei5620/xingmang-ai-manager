@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { readSafeUtf8FileSync } from './safe-local-data'
 import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
+import { claudeDesktopStartupCheckModel } from './claude-desktop-models'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 const label = 'Claude Desktop 第三方推理配置'
@@ -84,8 +85,24 @@ function field(value: unknown, name: string, maximum = 4096): string {
   return value.trim()
 }
 
+/**
+ * 写进配置的型号清单，第一个是 Claude Desktop 的默认型号。只有一个时照 #746 起的样子写成字符串；好几个时写成
+ * { name } 对象：Claude Desktop 两种都认（3.6556.2 安装包里的配置校验，每项是字符串或带 name 的对象），而开机修复
+ * （repairLegacyModelList）只认 0.2.12 写的那串字符串，这样不会把现在保存的清单当成当年那串收回成一个。
+ */
+export type ClaudeDesktopModelList = string[] | Array<{ name: string }>
+
+export interface ClaudeDesktopGatewayConfig {
+  inferenceProvider: 'gateway'
+  inferenceGatewayBaseUrl: string
+  inferenceGatewayApiKey: string
+  inferenceGatewayAuthScheme: 'bearer' | 'x-api-key'
+  inferenceCredentialKind: 'static'
+  inferenceModels?: ClaudeDesktopModelList
+}
+
 /** Full gateway base URL is preserved; never append a guessed /v1 suffix. */
-export function buildClaudeDesktopGatewayConfig(input: ClaudeDesktopGatewayInput): Record<string, string | string[]> {
+export function buildClaudeDesktopGatewayConfig(input: ClaudeDesktopGatewayInput): ClaudeDesktopGatewayConfig {
   const baseUrl = field(input.baseUrl, '网关地址')
   let parsed: URL
   try { parsed = new URL(baseUrl) } catch { throw new Error(`${label}的网关地址无效`) }
@@ -97,14 +114,14 @@ export function buildClaudeDesktopGatewayConfig(input: ClaudeDesktopGatewayInput
   const authScheme = input.authScheme ?? 'bearer'
   if (authScheme !== 'bearer' && authScheme !== 'x-api-key') throw new Error(`${label}的鉴权方式无效`)
   if (input.models !== undefined && (!Array.isArray(input.models) || input.models.length > 100)) throw new Error(`${label}的模型列表无效`)
-  const models = input.models?.map((model) => field(model, '模型 ID', 512))
+  const models = [...new Set(input.models?.map((model) => field(model, '模型 ID', 512)))]
   return {
     inferenceProvider: 'gateway',
     inferenceGatewayBaseUrl: baseUrl,
     inferenceGatewayApiKey: apiKey,
     inferenceGatewayAuthScheme: authScheme,
     inferenceCredentialKind: 'static',
-    ...(models?.length ? { inferenceModels: [...new Set(models)] } : {}),
+    ...(models.length ? { inferenceModels: models.length === 1 ? models : models.map((name) => ({ name })) } : {}),
   }
 }
 
@@ -196,11 +213,18 @@ function parseOwner(content: string | null, profileDirectory: string): OwnedProf
   return marker as unknown as OwnedProfile
 }
 
-function firstModel(models: unknown): string | null {
-  if (!Array.isArray(models)) return null
-  const first = models[0]
-  const id = typeof first === 'string' ? first : first && typeof first === 'object' && !Array.isArray(first) ? (first as JsonObject).name : null
+function modelName(model: unknown): string | null {
+  const id = typeof model === 'string' ? model : model && typeof model === 'object' && !Array.isArray(model) ? (model as JsonObject).name : null
   return typeof id === 'string' && id.length <= 512 && !/[\x00-\x1f\x7f]/.test(id) ? id : null
+}
+
+function firstModel(models: unknown): string | null {
+  return Array.isArray(models) ? modelName(models[0]) : null
+}
+
+/** 清单里每个型号的名字，字符串、对象两种写法都认；读不出名字的那项跳过。 */
+function modelNames(models: unknown): string[] {
+  return Array.isArray(models) ? models.map(modelName).filter((name): name is string => name !== null) : []
 }
 
 function hasDynamicConfiguration(config: JsonObject): boolean {
@@ -285,7 +309,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
   async function inspectGateway(
     expectedBaseUrl: string,
     belongsToCurrentAccount?: (apiKey: string) => boolean,
-  ): Promise<ExternalClientConnectionStatus & { apiKey: string | null }> {
+  ): Promise<ExternalClientConnectionStatus & { apiKey: string | null; models?: string[] }> {
     let officialLogin = false
     try {
       await options.assertUnmanaged?.()
@@ -311,7 +335,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         && (owner?.id === metadata.appliedId || Boolean(belongsToCurrentAccount))
         && (!belongsToCurrentAccount || belongsToCurrentAccount(apiKey))
       return { configured, configurationReady, model, configurationSource: configured ? 'xingmang' : 'other', configurationError: null,
-        apiKey: configured && typeof apiKey === 'string' ? apiKey : null, ...official }
+        apiKey: configured && typeof apiKey === 'string' ? apiKey : null, models: modelNames(config.inferenceModels), ...official }
     } catch {
       // 官方登录时 Claude Desktop 不读留着的第三方那几份，它们读不懂也不算配置坏了；管理策略在前面已经查过。
       if (officialLogin) return { configured: false, configurationReady: false, model: null, configurationSource: 'other', configurationError: null, apiKey: null, officialAccount: true }
@@ -326,7 +350,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
   function editOwnedGateway(
     expected: { baseUrl: string; apiKey: string },
     field: 'inferenceGatewayBaseUrl' | 'inferenceGatewayApiKey',
-    value: () => string | string[],
+    value: () => string,
     action: string,
     beforeCommit?: () => Promise<void>,
   ): Promise<{ path: string; backups: string[] }> {
@@ -394,16 +418,20 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       return { status: 'repaired', model, backups: saved.backups }
     }),
     inspectConnection: async (expectedBaseUrl: string, belongsToCurrentAccount?: (apiKey: string) => boolean): Promise<ExternalClientConnectionStatus> => {
-      const { apiKey: _apiKey, ...status } = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
+      const { apiKey: _apiKey, models: _models, ...status } = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
       return status
     },
-    /** 主进程内部专用：连接自检要用的网关密钥与模型；不属于当前账号时为 null。 */
+    /**
+     * 主进程内部专用：连接自检要用的网关密钥与模型；不属于当前账号时为 null。model 是默认的那个（清单第一个），
+     * startupCheckModel 是 Claude Desktop 开机检查会挑的那个，清单里有好几个型号时两者可能不同。
+     */
     inspectGatewayCredential: async (
       expectedBaseUrl: string,
       belongsToCurrentAccount?: (apiKey: string) => boolean,
-    ): Promise<{ apiKey: string; model: string } | null> => {
+    ): Promise<{ apiKey: string; model: string; startupCheckModel: string } | null> => {
       const result = await inspectGateway(expectedBaseUrl, belongsToCurrentAccount)
-      return result.configured && result.apiKey && result.model ? { apiKey: result.apiKey, model: result.model } : null
+      if (!result.configured || !result.apiKey || !result.model) return null
+      return { apiKey: result.apiKey, model: result.model, startupCheckModel: claudeDesktopStartupCheckModel(result.models ?? []) ?? result.model }
     },
     /**
      * 换线路用（第四十三批 A）：正在用的就是星芒标记的那一份时，交出它的网关地址、Key 和第一个
@@ -549,7 +577,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       }
       delete nextMetadata.hybridPointer
       // Reuse only the profile recorded by the toolbox; never overwrite a user's selected profile.
-      const nextGateway = { ...previousGateway, ...gateway }
+      const nextGateway: JsonObject = { ...previousGateway, ...gateway }
       for (const key of Object.keys(nextGateway)) {
         if (key.startsWith('bootstrap') || key.startsWith('selfHosted') || /^inference.*(?:helper|oidc)/i.test(key)) delete nextGateway[key]
       }

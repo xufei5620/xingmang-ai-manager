@@ -46,6 +46,13 @@ function fixture() {
   const desktop = createClaudeDesktopConfigService({ dataDirectory, profileDirectory })
   return { dataDirectory, profileDirectory, options, markerPath, desktop }
 }
+// 0.2.12 写的那串是字符串（选中的在前）；现在保存好几个型号写的是 { name } 对象，所以先存一个、再照当年的样子改回去。
+async function saveLegacy(desktop: ReturnType<typeof createClaudeDesktopConfigService>, list: readonly string[] = legacyModels) {
+  const saved = await desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: [list[0]] })
+  const content = JSON.parse(fs.readFileSync(saved.path, 'utf8')) as Record<string, unknown>
+  fs.writeFileSync(saved.path, `${JSON.stringify({ ...content, inferenceModels: list }, null, 2)}\n`, 'utf8')
+  return saved
+}
 function models(filePath: string): unknown {
   return (JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown>).inferenceModels
 }
@@ -59,14 +66,14 @@ afterEach(() => {
 describe('runClaudeDesktopModelRepair', () => {
   it('repairs the 0.2.12 model list once and only reads its own record afterwards', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    const saved = await saveLegacy(f.desktop)
     const report = await runClaudeDesktopModelRepair(f.dataDirectory, f.options)
     expect(report).toEqual({ skipped: false, repaired: 1, backups: 1, unrecognized: [], failures: [] })
     expect(models(saved.path)).toEqual(['claude-sonnet-5'])
     expect(fs.readFileSync(f.markerPath, 'utf8')).toBe('{"version":1,"completed":true}\n')
 
     // Even if a later downgrade writes the list again, the one-time repair stays done.
-    await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    await saveLegacy(f.desktop)
     const again = await runClaudeDesktopModelRepair(f.dataDirectory, f.options)
     expect(again).toMatchObject({ skipped: true, repaired: 0 })
     expect(models(saved.path)).toEqual(legacyModels)
@@ -82,7 +89,7 @@ describe('runClaudeDesktopModelRepair', () => {
 
   it('reports lists it cannot vouch for without touching them and does not look again', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: ['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5'] })
+    const saved = await saveLegacy(f.desktop, ['claude-sonnet-5', 'claude-opus-5-5', 'claude-fable-5'])
     const before = fs.readFileSync(saved.path, 'utf8')
     expect(await runClaudeDesktopModelRepair(f.dataDirectory, f.options)).toMatchObject({ repaired: 0, unrecognized: ['model-list'], failures: [] })
     expect(fs.readFileSync(saved.path, 'utf8')).toBe(before)
@@ -91,7 +98,7 @@ describe('runClaudeDesktopModelRepair', () => {
 
   it('retries a failed write on the next two launches and then stops trying', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    const saved = await saveLegacy(f.desktop)
     commitFailure.remaining = 3
     const first = await runClaudeDesktopModelRepair(f.dataDirectory, f.options)
     expect(first).toMatchObject({ skipped: false, repaired: 0, failures: [expect.stringContaining('未完成')] })
@@ -106,7 +113,7 @@ describe('runClaudeDesktopModelRepair', () => {
 
   it('repairs on a later launch when an earlier attempt could not write', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    const saved = await saveLegacy(f.desktop)
     commitFailure.remaining = 1
     expect(await runClaudeDesktopModelRepair(f.dataDirectory, f.options)).toMatchObject({ repaired: 0, failures: [expect.any(String)] })
     expect(await runClaudeDesktopModelRepair(f.dataDirectory, f.options)).toMatchObject({ repaired: 1, failures: [] })
@@ -116,7 +123,7 @@ describe('runClaudeDesktopModelRepair', () => {
 
   it('still reports a finished repair when its record cannot be written, and settles on the next launch', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    const saved = await saveLegacy(f.desktop)
     recordFailure.enabled = true
     const report = await runClaudeDesktopModelRepair(f.dataDirectory, f.options)
     expect(report).toMatchObject({ skipped: false, repaired: 1, failures: [expect.stringContaining('修复记录')] })
@@ -130,7 +137,7 @@ describe('runClaudeDesktopModelRepair', () => {
   // Windows needs a privilege to create the link; the refusal itself is the same safe-local-data check there.
   it.runIf(process.platform !== 'win32')('retries instead of giving up when the profile cannot be read safely this time', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    const saved = await saveLegacy(f.desktop)
     const real = `${saved.path}.real`
     fs.renameSync(saved.path, real)
     fs.symlinkSync(real, saved.path)
@@ -145,7 +152,7 @@ describe('runClaudeDesktopModelRepair', () => {
 
   it('changes nothing when its own record is damaged', async () => {
     const f = fixture()
-    const saved = await f.desktop.saveGateway({ baseUrl: 'https://xm.solov.cc', apiKey: 'sk-fixture', models: legacyModels })
+    const saved = await saveLegacy(f.desktop)
     fs.mkdirSync(path.dirname(f.markerPath), { recursive: true })
     fs.writeFileSync(f.markerPath, '{"version":1,"attempts":7}\n', 'utf8')
     await expect(runClaudeDesktopModelRepair(f.dataDirectory, f.options)).rejects.toThrow('损坏')
