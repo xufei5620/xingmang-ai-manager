@@ -7,6 +7,7 @@ import {
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
   type CanvasNodeExecutors,
+  type CanvasRunAssetOrigin,
 } from './canvas-run-engine'
 import type {
   CanvasRunAsset,
@@ -15,6 +16,7 @@ import type {
   CanvasRunGraph,
   CanvasRunGraphNode,
   CanvasRunRecord,
+  CanvasRunScope,
 } from './canvas-run-contract'
 import { canvasRunTimelineLimit } from './canvas-run-contract'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
@@ -550,6 +552,198 @@ describe('executeCanvasRun', () => {
 
     await expect(pending).rejects.toThrow('画布运行记录持久化失败：terminal disk error')
     expect(notified.at(-1)).toMatchObject({ type: 'run-terminal', status: 'succeeded' })
+  })
+})
+
+function originResolver(records: readonly CanvasRunRecord[]) {
+  return async (assetId: string, matches: (origin: CanvasRunAssetOrigin) => boolean): Promise<CanvasRunAssetOrigin | null> => {
+    for (const run of records) {
+      for (const entry of run.nodes) {
+        for (const attempt of entry.attempts) {
+          if (attempt.state !== 'succeeded' && attempt.state !== 'cached') continue
+          const candidate = attempt.candidates.find((item) => item.asset.assetId === assetId)
+          if (!candidate) continue
+          const origin = {
+            fingerprint: attempt.fingerprint,
+            ...(run.projectId ? { projectId: run.projectId } : {}),
+            candidate: structuredClone(candidate),
+          }
+          if (matches(origin)) return origin
+        }
+      }
+    }
+    return null
+  }
+}
+
+function adoptionChain(prompt = '一只猫', adopted: { image?: string; video?: string } = {}): CanvasRunGraph {
+  const image = node('image', 'image-generate')
+  const video = node('video', 'video-generate')
+  if (adopted.image) image.data.adoptedAssetId = adopted.image
+  if (adopted.video) video.data.adoptedAssetId = adopted.video
+  return graph(
+    [node('prompt', 'text', prompt), image, video],
+    [edge('prompt', 'image'), edge('image', 'video', 'image')],
+  )
+}
+
+function adoptionHarness() {
+  const cache = new Map<string, CanvasRunCacheEntry>()
+  const records: CanvasRunRecord[] = []
+  const videoInputs: Array<string | undefined> = []
+  let imageCount = 0
+  let videoCount = 0
+  const image = vi.fn(async () => ({ assets: [asset(`image${++imageCount}`.padEnd(43, 'x'))] }))
+  const video = vi.fn(async ({ inputs }: { inputs: { image?: CanvasRunAsset } }) => {
+    videoInputs.push(inputs.image?.assetId)
+    const assetId = `video${++videoCount}`.padEnd(43, 'x')
+    return { assets: [{ kind: 'video' as const, assetId, localUrl: `xingmang-asset://video/${assetId}` }] }
+  })
+  async function run(projectId: string, workflow: CanvasRunGraph, scope: CanvasRunScope = { kind: 'all' }) {
+    const record = await executeCanvasRun(runOptions(workflow, {
+      projectId,
+      runId: `run-${records.length + 1}`,
+      scope,
+      executors: executors({ image, video }),
+      resolveCache: async (fingerprint) => structuredClone(cache.get(fingerprint) ?? null),
+      storeCache: async (entry) => { cache.set(entry.fingerprint, structuredClone(entry)) },
+      resolveAssetOrigin: originResolver(records),
+    }))
+    records.unshift(record)
+    return record
+  }
+  return { cache, records, videoInputs, image, video, run }
+}
+
+function outputAssetId(record: CanvasRunRecord, nodeId: string): string | undefined {
+  return record.nodes.find((entry) => entry.nodeId === nodeId)?.attempts.at(-1)?.candidates[0]?.asset.assetId
+}
+
+function nodeStates(record: CanvasRunRecord): Record<string, string> {
+  return Object.fromEntries(record.nodes.map((entry) => [entry.nodeId, entry.state]))
+}
+
+describe('executeCanvasRun adopted results', () => {
+  it('reuses what a duplicated project shows instead of generating it again (O04)', async () => {
+    const harness = adoptionHarness()
+    const original = await harness.run('project-a', adoptionChain())
+    const shown = { image: outputAssetId(original, 'image'), video: outputAssetId(original, 'video') }
+
+    const copy = await harness.run('project-b', adoptionChain('一只猫', shown))
+    expect(nodeStates(copy)).toEqual({ prompt: 'succeeded', image: 'cached', video: 'cached' })
+    expect(outputAssetId(copy, 'image')).toBe(shown.image)
+    expect(outputAssetId(copy, 'video')).toBe(shown.video)
+    expect(harness.image).toHaveBeenCalledOnce()
+    expect(harness.video).toHaveBeenCalledOnce()
+
+    // The copy now has its own cache entries, so it keeps reusing them after
+    // the history that proved the adoption is gone.
+    harness.records.length = 0
+    const again = await harness.run('project-b', adoptionChain('一只猫', shown))
+    expect(nodeStates(again)).toEqual({ prompt: 'cached', image: 'cached', video: 'cached' })
+    expect(harness.image).toHaveBeenCalledOnce()
+    expect(harness.video).toHaveBeenCalledOnce()
+  })
+
+  it('hands downstream the candidate the user switched back to, not the newest one (O06)', async () => {
+    const harness = adoptionHarness()
+    const first = await harness.run('project-a', adoptionChain())
+    const firstShown = { image: outputAssetId(first, 'image'), video: outputAssetId(first, 'video') }
+    const regenerated = await harness.run('project-a', adoptionChain('一只猫', firstShown), { kind: 'to-node', nodeId: 'image' })
+    expect(outputAssetId(regenerated, 'image')).not.toBe(firstShown.image)
+    expect(harness.image).toHaveBeenCalledTimes(2)
+
+    const switchedBack = await harness.run('project-a', adoptionChain('一只猫', firstShown))
+    expect(nodeStates(switchedBack)).toEqual({ prompt: 'cached', image: 'cached', video: 'cached' })
+    expect(outputAssetId(switchedBack, 'image')).toBe(firstShown.image)
+    expect(outputAssetId(switchedBack, 'video')).toBe(firstShown.video)
+    expect(harness.image).toHaveBeenCalledTimes(2)
+    expect(harness.video).toHaveBeenCalledOnce()
+    expect(harness.videoInputs).toEqual([firstShown.image])
+  })
+
+  it('still generates again once the inputs behind the shown result have changed', async () => {
+    const harness = adoptionHarness()
+    const original = await harness.run('project-a', adoptionChain())
+    const shown = { image: outputAssetId(original, 'image'), video: outputAssetId(original, 'video') }
+
+    const edited = await harness.run('project-b', adoptionChain('一只狗', shown))
+    expect(nodeStates(edited)).toEqual({ prompt: 'succeeded', image: 'succeeded', video: 'succeeded' })
+    expect(outputAssetId(edited, 'image')).not.toBe(shown.image)
+    expect(harness.image).toHaveBeenCalledTimes(2)
+    expect(harness.video).toHaveBeenCalledTimes(2)
+  })
+
+  it('still regenerates the explicit to-node target even when it shows a reusable result', async () => {
+    const harness = adoptionHarness()
+    const original = await harness.run('project-a', adoptionChain())
+    const shown = { image: outputAssetId(original, 'image'), video: outputAssetId(original, 'video') }
+
+    const rerun = await harness.run('project-b', adoptionChain('一只猫', shown), { kind: 'to-node', nodeId: 'image' })
+    expect(nodeStates(rerun)).toEqual({ prompt: 'succeeded', image: 'succeeded' })
+    expect(harness.image).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores the shown result on nodes whose fingerprint already contains it', async () => {
+    const harness = adoptionHarness()
+    const resolveAssetOrigin = vi.fn(originResolver(harness.records))
+    const input = node('input', 'image-input')
+    input.data.adoptedAssetId = 'p'.repeat(43)
+    await executeCanvasRun(runOptions(graph([input]), {
+      projectId: 'project-a',
+      executors: executors({ 'image-input': async () => ({ assets: [asset('p'.repeat(43))] }) }),
+      resolveAssetOrigin,
+    }))
+    expect(resolveAssetOrigin).not.toHaveBeenCalled()
+  })
+
+  it('keeps the cached result when the shown result cannot be looked up', async () => {
+    const image = vi.fn(async () => ({ assets: [asset('n'.repeat(43))] }))
+    const generate = node('image', 'image-generate')
+    generate.data.adoptedAssetId = 'o'.repeat(43)
+    const record = await executeCanvasRun(runOptions(graph([generate]), {
+      executors: executors({ image }),
+      resolveCache: async (fingerprint) => ({
+        version: 1,
+        fingerprint,
+        nodeKind: 'image-generate',
+        candidate: { candidateId: 'cached', attemptId: 'cached-attempt', createdAt: '2026-08-13T00:00:00.000Z', asset: asset('c'.repeat(43)) },
+        createdAt: '2026-08-13T00:00:00.000Z',
+        lastUsedAt: '2026-08-13T00:00:00.000Z',
+      }),
+      resolveAssetOrigin: async () => { throw new Error('run history unavailable') },
+    }))
+    expect(image).not.toHaveBeenCalled()
+    expect(record.nodes[0].state).toBe('cached')
+    expect(outputAssetId(record, 'image')).toBe('c'.repeat(43))
+  })
+
+  it('cancels while the shown result is being looked up without dispatching an executor', async () => {
+    const controller = new AbortController()
+    let lookupStarted!: () => void
+    const started = new Promise<void>((resolve) => { lookupStarted = resolve })
+    let resolveOrigin: ((origin: CanvasRunAssetOrigin | null) => void) | undefined
+    const origin = new Promise<CanvasRunAssetOrigin | null>((resolve) => { resolveOrigin = resolve })
+    const image = vi.fn(async () => ({ assets: [asset()] }))
+    const generate = node('image', 'image-generate')
+    generate.data.adoptedAssetId = 'o'.repeat(43)
+    const pending = executeCanvasRun(runOptions(graph([generate]), {
+      signal: controller.signal,
+      executors: executors({ image }),
+      resolveAssetOrigin: async () => {
+        lookupStarted()
+        return origin
+      },
+    }))
+
+    await started
+    controller.abort(new Error('cancel during adopted lookup'))
+    resolveOrigin?.(null)
+    const record = await pending
+
+    expect(record.status).toBe('cancelled')
+    expect(record.outcome?.cancelled).toEqual(['image'])
+    expect(image).not.toHaveBeenCalled()
   })
 })
 

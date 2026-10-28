@@ -1,8 +1,12 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { parseCanvasStartRunInput } from './canvas-request-parser'
 import { createCanvasRunService } from './canvas-run-service'
-import type { CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord } from './canvas-run-contract'
+import { CanvasRunStore } from './canvas-run-store'
+import type { CanvasRunAsset, CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord } from './canvas-run-contract'
 
 function workflow(): CanvasRunGraph {
   return {
@@ -29,11 +33,70 @@ function memoryStore() {
     },
     resolveCache: async (_userId: number, fingerprint: string) => structuredClone(cache.get(fingerprint) ?? null),
     storeCache: async (_userId: number, entry: CanvasRunCacheEntry) => { cache.set(entry.fingerprint, structuredClone(entry)) },
+    resolveAssetOrigin: async () => null,
     reconcileAssets: async () => [],
   }
 }
 
 describe('createCanvasRunService', () => {
+  it('reuses a duplicated project\'s results from the stored run history instead of paying again (O04)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-service-'))
+    try {
+      const owned = new Map<string, CanvasRunAsset>()
+      const store = new CanvasRunStore({
+        rootDirectory: root,
+        assets: {
+          readOwned: async (_userId, assetId) => {
+            const stored = owned.get(assetId)
+            if (!stored) throw new Error('missing')
+            const { kind: _kind, ...rest } = stored
+            return { asset: rest }
+          },
+        },
+      })
+      let generated = 0
+      const image = vi.fn(async () => {
+        const assetId = `${++generated}`.padStart(43, 'i')
+        const stored = { kind: 'image' as const, assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' }
+        owned.set(assetId, stored)
+        return { assets: [stored] }
+      })
+      const service = createCanvasRunService({
+        store,
+        executors: { text: async ({ node }) => ({ outputText: node.data.prompt }), image, video: async () => ({ assets: [] }) },
+      })
+      function project(adoptedAssetId?: string): CanvasRunGraph {
+        return {
+          nodes: [
+            { id: 'prompt', kind: 'text', definitionVersion: 1, data: { prompt: '一只猫', model: '' } },
+            { id: 'image', kind: 'image-generate', definitionVersion: 1, data: {
+              prompt: '', model: 'gpt-image-2', group: '生图分组', ...(adoptedAssetId ? { adoptedAssetId } : {}),
+            } },
+          ],
+          edges: [{ id: 'e-1', source: 'prompt', sourceHandle: 'out:text', target: 'image', targetHandle: 'in:text' }],
+        }
+      }
+      async function run(projectId: string, graph: CanvasRunGraph) {
+        const handle = await service.start({
+          userId: 7, ownerId: 9, projectId, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
+        })
+        return handle.promise
+      }
+
+      const original = await run('11111111-1111-1111-1111-111111111111', project())
+      const shown = original.nodes.find((entry) => entry.nodeId === 'image')?.attempts[0]?.candidates[0]?.asset.assetId
+      expect(shown).toBeDefined()
+      const copy = await run('22222222-2222-2222-2222-222222222222', project(shown))
+
+      const copied = copy.nodes.find((entry) => entry.nodeId === 'image')
+      expect(copied?.state).toBe('cached')
+      expect(copied?.attempts[0]?.candidates[0]?.asset.assetId).toBe(shown)
+      expect(image).toHaveBeenCalledOnce()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects stale graph revisions before creating paid work', async () => {
     const graph = workflow()
     const text = vi.fn(async () => ({ outputText: 'hello' }))
