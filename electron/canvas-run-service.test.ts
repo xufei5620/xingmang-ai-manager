@@ -6,7 +6,7 @@ import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { parseCanvasStartRunInput } from './canvas-request-parser'
 import { createCanvasRunService } from './canvas-run-service'
 import { CanvasRunStore } from './canvas-run-store'
-import type { CanvasRunAsset, CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord } from './canvas-run-contract'
+import type { CanvasRunAsset, CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
 
 function workflow(): CanvasRunGraph {
   return {
@@ -92,6 +92,84 @@ describe('createCanvasRunService', () => {
       expect(copied?.state).toBe('cached')
       expect(copied?.attempts[0]?.candidates[0]?.asset.assetId).toBe(shown)
       expect(image).toHaveBeenCalledOnce()
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('stops a switched-back candidate whose run history was evicted instead of using the newest one, also after a restart (O06)', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-service-'))
+    try {
+      const owned = new Map<string, CanvasRunAsset>()
+      function openStore() {
+        return new CanvasRunStore({
+          rootDirectory: root,
+          runRetention: 3,
+          assets: {
+            readOwned: async (_userId, assetId) => {
+              const stored = owned.get(assetId)
+              if (!stored) throw new Error('missing')
+              const { kind: _kind, ...rest } = stored
+              return { asset: rest }
+            },
+          },
+        })
+      }
+      let generated = 0
+      const image = vi.fn(async () => {
+        const assetId = `${++generated}`.padStart(43, 'i')
+        const stored = { kind: 'image' as const, assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' }
+        owned.set(assetId, stored)
+        return { assets: [stored] }
+      })
+      function openService() {
+        return createCanvasRunService({
+          store: openStore(),
+          executors: { text: async ({ node }) => ({ outputText: node.data.prompt }), image, video: async () => ({ assets: [] }) },
+        })
+      }
+      function project(adoptedAssetId?: string): CanvasRunGraph {
+        return {
+          nodes: [
+            { id: 'prompt', kind: 'text', definitionVersion: 1, data: { prompt: '一只猫', model: '' } },
+            { id: 'image', kind: 'image-generate', definitionVersion: 1, data: {
+              prompt: '', model: 'gpt-image-2', group: '生图分组', ...(adoptedAssetId ? { adoptedAssetId } : {}),
+            } },
+          ],
+          edges: [{ id: 'e-1', source: 'prompt', sourceHandle: 'out:text', target: 'image', targetHandle: 'in:text' }],
+        }
+      }
+      async function run(service: ReturnType<typeof openService>, projectId: string, graph: CanvasRunGraph, scope: CanvasRunScope = { kind: 'all' }) {
+        const handle = await service.start({
+          userId: 7, ownerId: 9, projectId, graphRevision: computeCanvasGraphRevision(graph), graph, scope,
+        })
+        return handle.promise
+      }
+      function imageOf(record: CanvasRunRecord) {
+        return record.nodes.find((entry) => entry.nodeId === 'image')
+      }
+      const projectId = '11111111-1111-1111-1111-111111111111'
+
+      let service = openService()
+      const first = imageOf(await run(service, projectId, project()))?.attempts[0]?.candidates[0]?.asset.assetId
+      const newest = imageOf(await run(service, projectId, project(first), { kind: 'to-node', nodeId: 'image' }))?.attempts[0]?.candidates[0]?.asset.assetId
+      expect(first).toBeDefined()
+      expect(newest).toBeDefined()
+      expect(newest).not.toBe(first)
+      for (let index = 0; index < 3; index += 1) await run(service, '22222222-2222-2222-2222-222222222222', workflow())
+
+      service = openService()
+      const switchedBack = imageOf(await run(service, projectId, project(first)))
+      expect(switchedBack?.state).toBe('failed')
+      expect(switchedBack?.errorMessage).toContain('找不到你选中的这张图当初的生成记录')
+      expect(switchedBack?.attempts).toEqual([])
+      expect(image).toHaveBeenCalledTimes(2)
+
+      // What the message suggests: picking the newest one runs from the cache.
+      const newestPicked = imageOf(await run(service, projectId, project(newest)))
+      expect(newestPicked?.state).toBe('cached')
+      expect(newestPicked?.attempts[0]?.candidates[0]?.asset.assetId).toBe(newest)
+      expect(image).toHaveBeenCalledTimes(2)
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
