@@ -176,6 +176,8 @@ async function setup(options: {
   spawnGate?: Promise<unknown>
   /** 起出来的每份 Codex 都按这些方法名晚回（FakeCodex.replyGates）。 */
   replyGates?: ReadonlyMap<string, Promise<unknown>>
+  /** 设了就等它好了才交出 Codex 的密钥：模拟读配置读得慢。 */
+  secretsGate?: Promise<unknown>
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -213,7 +215,10 @@ async function setup(options: {
       codex.push(fake)
       return fake as unknown as AppServerProcess
     },
-    readCodexSecrets: async () => [apiKey],
+    readCodexSecrets: async () => {
+      await options.secretsGate
+      return [apiKey]
+    },
     inspectAvailability: () => unavailable.reason,
     checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
@@ -976,6 +981,71 @@ describe('codex-remote-service lifecycle', () => {
     expect(s.channels).toHaveLength(1)
     s.service.dispose()
     expect(await s.service.applyAvailability()).toBeNull()
+  })
+
+  // 打开要先等读设置、读凭据、查 Codex 装没装，那几秒渠道还不算开着，远程关停不到它（R29-06）。
+  it('does not connect a channel that remote control was switched off for while it was still opening', async () => {
+    const s = await setup()
+    const opening = expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('手机遥控暂时停用了，修好以后会自动恢复。')
+    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    await s.service.applyAvailability()
+    await opening
+    expect(s.channels).toHaveLength(0)
+    expect((await s.service.snapshot()).channels.feishu).toMatchObject({ enabled: false, status: { state: 'stopped' } })
+  })
+
+  it('does not connect a channel the manager started quitting for while it was still opening', async () => {
+    const s = await setup()
+    const opening = expect(s.service.setChannelEnabled('feishu', true)).rejects.toThrow('星芒正在退出。')
+    s.service.dispose()
+    await opening
+    expect(s.channels).toHaveLength(0)
+  })
+
+  it('does not hand a channel to the network once it was switched off while reading secrets', async () => {
+    let release: () => void = () => undefined
+    const s = await setup({ secretsGate: new Promise<void>((resolve) => { release = resolve }) })
+    const opening = s.service.setChannelEnabled('feishu', true)
+    await vi.waitFor(() => expect(s.channels).toHaveLength(1))
+    s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    await s.service.applyAvailability()
+    release()
+    expect(await opening).toMatchObject({ available: false, channels: { feishu: { enabled: false } } })
+    expect(s.channels[0].stopped).toBe(1)
+    expect(s.channels[0].handlers).toBeNull()
+    expect(s.logs).not.toContain('remote.channel-started')
+  })
+
+  // 换凭据要先等旧连接停下，再用新凭据连上：远程关落在这一下里，同样不能再连（R29-06）。
+  it('does not reconnect with a new credential once remote control was switched off while the old connection stopped', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    channel.stop = async () => {
+      channel.stopped += 1
+      s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+      await s.service.applyAvailability()
+    }
+    const snapshot = await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
+    expect(s.channels).toHaveLength(1)
+    expect(snapshot).toMatchObject({ available: false, channels: { feishu: { enabled: false, hasCredential: true } } })
+  })
+
+  it('shuts a running channel down cleanly when remote control went off before it could reconnect with a new credential', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    channel.stop = async () => {
+      channel.stopped += 1
+      s.unavailable.reason = '手机遥控暂时停用了，修好以后会自动恢复。'
+    }
+    const snapshot = await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'y'.repeat(16) }), 'cli_abcdef')
+    expect(s.channels).toHaveLength(1)
+    expect(snapshot).toMatchObject({ available: false, task: 'idle', channels: { feishu: { enabled: false } } })
+    expect(codex.kills).toContain('SIGTERM')
+    expect(s.logs).toContain('remote.channel-suspended')
+    // 之后状态文件再来那一下只剩刷新：渠道已经停了，不会再停一遍。
+    await s.service.applyAvailability()
+    expect(channel.stopped).toBe(1)
   })
 
   // 星芒退出前跟手机道别（0.2.22 打磨 B8）：只说一句、不停渠道，停渠道和 Codex 仍归 dispose。
