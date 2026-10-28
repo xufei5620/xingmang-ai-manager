@@ -12,6 +12,7 @@ const {
   applyAccountGroups,
   applyBadVersions,
   applyCliModels,
+  applyFeaturesOff,
   applyKnownIssues,
   applyMinimumVersion,
   applyPaymentMethodsOff,
@@ -208,7 +209,7 @@ test('a staged rollout names a version and a share of machines', () => {
   assert.throws(() => applyRollout(undefined, '0.2.11'), /版本号 空格 百分比/)
   assert.throws(() => applyRollout(undefined, '0.2.11 150'), /最多 100/)
   const next = applyStatusChanges({}, { rollout: '0.2.11 20' }, now)
-  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '型号表：无（客户端用程序自带的）', '分组对照：无（客户端按写死的名字认）', '已知问题提示：无', '充值页藏掉的付款方式：无'])
+  assert.deepEqual(describeStatus(next).slice(1), ['撤回的版本：无', '分批放量：0.2.11 先给 20% 的电脑', '最低版本：无', '换线路时：只改工具配置里的地址', '型号表：无（客户端用程序自带的）', '分组对照：无（客户端按写死的名字认）', '已知问题提示：无', '充值页藏掉的付款方式：无', '关掉的功能：无'])
 })
 
 test('a staged rollout can hold back only some packages and lets the rest through (#1155 item 5)', () => {
@@ -624,3 +625,67 @@ test('the workflow offers the known issue and payment switches and hands them to
     assert.match(build.run, new RegExp(`--${flag} "\\$${variable}"`))
   }
 })
+
+test('features are switched off, put back one by one, rescoped or all put back', () => {
+  const next = applyStatusChanges({ maintenance: null }, { 'features-off': 'video-studio install:CODEXDESKTOP@0.2.23|0.2.24@mac launch:grok' }, now)
+  assert.deepEqual(next.featuresOff, [
+    { feature: 'video-studio' },
+    { feature: 'install:codexDesktop', versions: ['0.2.23', '0.2.24'], platforms: ['mac'] },
+    { feature: 'launch:grok' },
+  ])
+  assert.equal(describeStatus(next)[9], '关掉的功能：video-studio（视频剪辑）、install:codexDesktop（Codex 桌面端的安装和更新）（只给 0.2.23、0.2.24，只给 Mac）、launch:grok（从星芒打开 Grok CLI）（只有 0.2.23 及以后的客户端认）')
+  assert.equal(describeFeaturesLine({ featuresOff: [{ feature: 'install:codex' }] }), '关掉的功能：install:codex（Codex CLI 的安装和更新）（只有 0.2.23 及以后的客户端认）')
+  assert.deepEqual(applyFeaturesOff(next.featuresOff, '-video-studio video-studio@windows -launch:grok'), [
+    { feature: 'install:codexDesktop', versions: ['0.2.23', '0.2.24'], platforms: ['mac'] },
+    { feature: 'video-studio', platforms: ['windows'] },
+  ])
+  assert.equal(applyFeaturesOff(next.featuresOff, '-video-studio -install:codexDesktop -launch:grok'), undefined)
+  assert.equal(applyFeaturesOff(next.featuresOff, ''), next.featuresOff)
+  const cleared = applyStatusChanges(next, { 'features-off': 'none' }, now)
+  assert.equal('featuresOff' in cleared, false)
+  assert.equal(describeStatus(cleared)[9], '关掉的功能：无')
+})
+
+test('a live feature switch the client cannot read is dropped from the preview and the rewrite', () => {
+  const live = [{ feature: 'video-studio', versions: ['0.2.23'] }, { feature: 'teleport' }, { feature: 'codex-remote', platforms: ['bsd'] }, 'acceleration']
+  assert.equal(describeFeaturesLine({ featuresOff: live }), '关掉的功能：video-studio（视频剪辑）（只给 0.2.23）（只有 0.2.23 及以后的客户端认）')
+  assert.deepEqual(applyFeaturesOff(live, 'acceleration'), [{ feature: 'video-studio', versions: ['0.2.23'] }, { feature: 'acceleration' }])
+})
+
+test('feature switches refuse what the client would skip or no client could read', () => {
+  for (const input of ['视频剪辑', 'teleport', 'install:gemini', 'install:', 'video-studio@0.2.22', 'video-studio@0.2.23@0.2.24', 'video-studio@windows@mac', '-video-studio@windows', 'video-studio@bsd', '-teleport']) {
+    assert.throws(() => applyFeaturesOff(undefined, input), StatusInputError, input)
+  }
+})
+
+test('the workflow can switch off exactly the features the client knows', () => {
+  const file = path.join(__dirname, '..', 'electron', 'remote-features.ts')
+  const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText
+  const client = { exports: {} }
+  vm.compileFunction(compiled, ['require', 'module', 'exports'], { filename: file })(require, client, client.exports)
+  const all = client.exports.remoteFeatureIds.join(' ')
+  assert.deepEqual(applyFeaturesOff(undefined, all).map((entry) => entry.feature), [...client.exports.remoteFeatureIds])
+  for (const feature of client.exports.remoteFeatureIds) assert.doesNotMatch(describeFeaturesLine({ featuresOff: [{ feature }] }), /undefined/, feature)
+})
+
+test('the workflow offers the feature switches and hands them to the script in both jobs', () => {
+  const workflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'service-status.yml'), 'utf8'))
+  const inputs = workflow.on.workflow_dispatch.inputs
+  assert.equal(inputs.features_off.type, 'string')
+  assert.equal(inputs.features_off.required, false)
+  assert.ok(Object.keys(inputs).length <= 25)
+  const steps = [
+    workflow.jobs.preview.steps.find((step) => step.name === 'Show the approver what this run would publish'),
+    workflow.jobs.publish.steps.find((step) => step.name === 'Build the new status file'),
+  ]
+  for (const step of steps) {
+    assert.equal(step.env.FEATURES_OFF, '${{ inputs.features_off }}')
+    assert.match(step.run, /--features-off "\$FEATURES_OFF"/)
+  }
+})
+
+function describeFeaturesLine(status) {
+  return describeStatus(status).at(-1)
+}

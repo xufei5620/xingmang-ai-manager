@@ -21,7 +21,9 @@ import {
   inspectWorkspaceWritable,
   shouldCheckWorkspaceWritable,
 } from '../../documents-fallback'
-import { isActiveProviderId, type ProviderId } from '../../catalog'
+import { cliCatalog, isActiveProviderId, type ProviderId } from '../../catalog'
+import { runWhenOn } from '../../remote-feature-gate'
+import { toolLaunchOffMessage } from '../../remote-features'
 import type { CliLaunchMode, CliLaunchResult } from '../../system-service'
 import type { QueuedAccountWork } from '../../account-work-gate'
 import {
@@ -247,14 +249,17 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     const target = parseWorkspace(workspace, stored.workspace)
     const launchMode = parseCliLaunchMode(mode)
     const resumeRecordId = parseCodexResumeRecordId(provider, launchMode, recordId)
-    if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null)
-    return (async () => launchCliInWorkspace(
-      event,
-      provider,
-      target,
-      launchMode,
-      await verifiedCodexResumeSessionId(resumeRecordId, target),
-    ))()
+    // 在问「这个文件夹不建议打开」之前拦：关着的工具不该先弹一个文件夹的问题。
+    return runWhenOn(options.remoteFeatures, `launch:${provider}`, toolLaunchOffMessage(cliCatalog[provider].name), () => {
+      if (resumeRecordId === null) return launchCliInWorkspace(event, provider, target, launchMode, null)
+      return (async () => launchCliInWorkspace(
+        event,
+        provider,
+        target,
+        launchMode,
+        await verifiedCodexResumeSessionId(resumeRecordId, target),
+      ))()
+    })
   })
   function launchCliInWorkspace(
     event: IpcMainInvokeEvent,
@@ -367,9 +372,11 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   }
   registerTrustedHandler('desktop:launch-codex', (event, mode: unknown) => {
     const launchMode = parseDesktopLaunchMode(mode)
-    const accountWork = options.accountWork?.queue()
-    return accountWork
-      ? launchQueued(accountWork, () => service.launchCodexDesktop(launchMode, event.sender, { accountWork }))
-      : service.launchCodexDesktop(launchMode, event.sender)
+    return runWhenOn(options.remoteFeatures, 'launch:codexDesktop', toolLaunchOffMessage('Codex 桌面端'), () => {
+      const accountWork = options.accountWork?.queue()
+      return accountWork
+        ? launchQueued(accountWork, () => service.launchCodexDesktop(launchMode, event.sender, { accountWork }))
+        : service.launchCodexDesktop(launchMode, event.sender)
+    })
   })
 }

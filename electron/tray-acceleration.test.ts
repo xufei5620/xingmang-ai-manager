@@ -76,6 +76,18 @@ describe('tray acceleration menu entry', () => {
     expect(entry({ state: state({ phase: 'error', error: '连'.repeat(60) }) }).statusLabel).toBe('加速：连接未成功，请稍后重试')
   })
 
+  it('greys out connecting while acceleration is switched off but keeps a live session stoppable', () => {
+    const suspended = { statusLabel: '加速：暂时停用，修好后自动恢复', actionLabel: '连接加速', actionEnabled: false, action: 'start' }
+    expect(entry({ suspended: true })).toEqual(suspended)
+    expect(entry({ suspended: true, state: null })).toEqual(suspended)
+    expect(entry({ suspended: true, state: state({ phase: 'error', error: '加速连接失败，请检查线路和网络连接后重试。' }) })).toEqual(suspended)
+    expect(entry({ suspended: true, state: active(600) })).toMatchObject({ actionLabel: '断开加速', actionEnabled: true, action: 'stop' })
+    expect(entry({ suspended: true, state: state({ phase: 'stopping', error: '停止加速未完成，请稍后重试。' }) }))
+      .toMatchObject({ actionLabel: '重试断开', actionEnabled: true, action: 'stop' })
+    expect(entry({ suspended: true, state: state({ phase: 'connecting' }) }).statusLabel).toBe('加速：正在连接')
+    expect(entry({ suspended: true, signedIn: false }).statusLabel).toBe('加速：未登录，登录后可用')
+  })
+
   it('summarizes a classified failure instead of repeating the full on-screen sentence', () => {
     expect(describeTrayAccelerationFailure(accelerationFailure('helper-temp'))).toBe('系统临时文件夹不可用')
     expect(describeTrayAccelerationFailure(accelerationFailure('proxy-locked'))).toBe('系统策略限制，无法修改网络设置')
@@ -126,6 +138,17 @@ describe('tray acceleration coordinator', () => {
     await controller.toggle()
     expect(options.disconnect).toHaveBeenCalledExactlyOnceWith(scope)
     expect(controller.entry()).toMatchObject({ statusLabel: '加速：未连接', action: 'start' })
+  })
+
+  it('asks whether acceleration is switched off each time it builds the row', async () => {
+    let suspended = true
+    const { options, controller } = coordinator({ suspended: () => suspended })
+    controller.observe(state())
+    expect(controller.entry().statusLabel).toBe('加速：暂时停用，修好后自动恢复')
+    await controller.toggle()
+    expect(options.connect).not.toHaveBeenCalled()
+    suspended = false
+    expect(controller.entry()).toMatchObject({ statusLabel: '加速：未连接', actionEnabled: true })
   })
 
   it('does nothing at all when the row is greyed out', async () => {

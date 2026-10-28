@@ -44,6 +44,8 @@ export interface TrayAccelerationInput {
   failure: string | null
   /** 状态读到之后过了多少秒，只用来把剩余时长显示得不至于太陈旧。 */
   elapsedSeconds?: number
+  /** 状态文件关掉了网络加速（remote-features.ts）：不能新连，连着的照常能断。缺省 = 不关。 */
+  suspended?: boolean
 }
 
 const statusPrefix = '加速：'
@@ -51,6 +53,8 @@ const connectLabel = '连接加速'
 const disconnectLabel = '断开加速'
 const retryDisconnectLabel = '重试断开'
 const busyLabel = '处理中…'
+// yoyo 2026-10-28 批的字（「停用改」）。
+const suspendedLabel = '暂时停用，修好后自动恢复'
 
 /**
  * 失败原因在托盘上只有一行的位置，而 accelerationFailureMessages 里每一句都是
@@ -109,6 +113,10 @@ export function buildTrayAccelerationEntry(input: TrayAccelerationInput): TrayAc
     return { statusLabel: `${statusPrefix}${stopping ? '正在断开' : '正在连接'}`, ...busyEntry, action: stopping ? 'stop' : 'start' }
   }
   const state = input.state
+  // 连着、正在连、正在断的照下面走：停不掉才是更糟的事。还没读到状态的也先这么写，反正连不了。
+  if (input.suspended && state?.phase !== 'active' && state?.phase !== 'connecting' && state?.phase !== 'stopping') {
+    return { statusLabel: `${statusPrefix}${suspendedLabel}`, actionLabel: connectLabel, actionEnabled: false, action: 'start' }
+  }
   if (!state) {
     const label = input.failure ? `${statusPrefix}${input.failure}` : `${statusPrefix}正在读取状态`
     return { statusLabel: label, actionLabel: connectLabel, actionEnabled: false, action: 'start' }
@@ -155,6 +163,8 @@ export interface TrayAccelerationCoordinatorOptions {
   disconnect(scope: string): Promise<AccelerationState>
   /** 有任何变化就重建一次菜单，托盘那边照抄余额的做法。 */
   onChanged(): void
+  /** 状态文件关掉了网络加速；它变了由宿主重建菜单（onChanged 那一条）。 */
+  suspended?(): boolean
   now?(): number
   log?(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void
 }
@@ -205,6 +215,7 @@ export function createTrayAccelerationCoordinator(options: TrayAccelerationCoord
       signedIn: options.getAccountScope() !== null,
       state, busy, failure,
       elapsedSeconds: Math.max(0, now() - measuredAt) / 1000,
+      ...(options.suspended?.() ? { suspended: true } : {}),
     })
   }
 

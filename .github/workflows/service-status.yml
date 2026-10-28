@@ -1,6 +1,6 @@
 # 改更新目录上的 service-status.json：打开或关闭「服务正在维护」提示、撤回坏版本、
 # 分批放量、最低版本（强制更新）、换线路时怎么改工具配置、星芒账号的分组对照、各工具的型号表、
-# 已知问题提示、充值页藏掉某种付款方式。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
+# 已知问题提示、充值页藏掉某种付款方式、远程关掉某个功能。要把线上退回旧版本，用 rollback-release 工作流（它会顺带在这里撤回）。
 # 客户端怎么读见 electron/service-status.ts，一步步的操作见 docs/SERVICE-STATUS.md。
 #
 # 只改这次选了或填了的那几项，其余字段照线上原样保留。凭据与正式发布共用
@@ -64,6 +64,10 @@ on:
         required: false
       payment_methods_off:
         description: 充值页藏掉的付款方式（留空不改；写 alipay 藏支付宝、-alipay 放回、none 全部放回；只藏某几版或某个平台写 alipay@0.2.23|0.2.24@windows；名字照站上的 type 写，常见 alipay 支付宝、wxpay 微信；只藏软件里的，网站不受影响；0.2.23 起的客户端认）
+        type: string
+        required: false
+      features_off:
+        description: 远程关功能（留空不改；写 video-studio 关视频剪辑、-video-studio 放开、none 全部放开；工具的安装和打开写 install:codex、launch:codex；只关某几版或某个平台写 video-studio@0.2.23|0.2.24@mac；能写的名字见 docs/SERVICE-STATUS.md「远程关功能」；只能关不能开；0.2.23 起的客户端认）
         type: string
         required: false
 
@@ -157,6 +161,7 @@ jobs:
           KNOWN_ISSUE: ${{ inputs.known_issue }}
           KNOWN_ISSUE_SCOPE: ${{ inputs.known_issue_scope }}
           PAYMENT_METHODS_OFF: ${{ inputs.payment_methods_off }}
+          FEATURES_OFF: ${{ inputs.features_off }}
         run: |
           set -euo pipefail
           node scripts/service-status.cjs \
@@ -176,6 +181,7 @@ jobs:
             --known-issue "$KNOWN_ISSUE" \
             --known-issue-scope "$KNOWN_ISSUE_SCOPE" \
             --payment-methods-off "$PAYMENT_METHODS_OFF" \
+            --features-off "$FEATURES_OFF" \
             --summary "$GITHUB_STEP_SUMMARY"
           echo "批准以后将要发布（按现在线上那一份算）："
           cat "$RUNNER_TEMP/service-status.json"
@@ -289,6 +295,7 @@ jobs:
           KNOWN_ISSUE: ${{ inputs.known_issue }}
           KNOWN_ISSUE_SCOPE: ${{ inputs.known_issue_scope }}
           PAYMENT_METHODS_OFF: ${{ inputs.payment_methods_off }}
+          FEATURES_OFF: ${{ inputs.features_off }}
         run: |
           set -euo pipefail
           node scripts/service-status.cjs \
@@ -307,7 +314,8 @@ jobs:
             --cli-models "$CLI_MODELS" \
             --known-issue "$KNOWN_ISSUE" \
             --known-issue-scope "$KNOWN_ISSUE_SCOPE" \
-            --payment-methods-off "$PAYMENT_METHODS_OFF"
+            --payment-methods-off "$PAYMENT_METHODS_OFF" \
+            --features-off "$FEATURES_OFF"
           echo "将要发布："
           cat "$RUNNER_TEMP/service-status.json"
 

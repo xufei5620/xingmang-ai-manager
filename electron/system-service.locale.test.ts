@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { createCodexDesktopService, type CodexDesktopService } from './codex-desktop-service'
 import { readCodexDesktopLocale } from './codex-desktop-locale'
+import type { RemoteFeatureId } from './remote-features'
 import {
   createSystemService,
   type CodexDesktopLaunchResult,
@@ -39,6 +40,7 @@ function createFixture(options: {
   installed?: boolean
   config?: string
   resources?: boolean
+  remoteFeatureOff?: (feature: RemoteFeatureId) => boolean
 } = {}) {
   // Canonicalize macOS's /var -> /private/var temporary root before using the
   // real safe-local-data writer. The test must not weaken its reparse guard.
@@ -98,6 +100,7 @@ function createFixture(options: {
     providerRoots: { userHome: root, codexHome },
     codexEnv: { CODEX_HOME: codexHome },
     runCommand: vi.fn(async () => { throw new Error('Locale test must not execute host commands') }),
+    ...(options.remoteFeatureOff ? { remoteFeatureOff: options.remoteFeatureOff } : {}),
   })
   const target = { isDestroyed: () => false, send: vi.fn() }
   const readConfig = () => fs.readFileSync(configPath, 'utf8')
@@ -255,6 +258,21 @@ describe('system-service Codex Desktop locale workflow', () => {
     await fixture.service.launchCodexDesktop('open', fixture.target)
 
     expect(fixture.launch).toHaveBeenLastCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: false }))
+  })
+
+  it('opens without the debugging port while the status file has the Chinese patch switched off', async () => {
+    let off = true
+    const fixture = createFixture({ running: false, remoteFeatureOff: (feature) => off && feature === 'codex-desktop-chinese' })
+
+    await fixture.service.setCodexDesktopLocale('zh-CN', fixture.target)
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+    expect(fixture.launch).toHaveBeenLastCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: false, chineseSuspended: true }))
+
+    // 放开以后照他选过的打补丁，选过的中文没被改掉。
+    off = false
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+    expect(fixture.launch).toHaveBeenLastCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: true }))
+    expect(fixture.launch.mock.lastCall?.[2]).not.toHaveProperty('chineseSuspended')
   })
 
   it('persists the runtime-patch consent so a later app start still knows what the user chose', async () => {
