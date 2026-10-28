@@ -416,6 +416,8 @@ describe('configureManagedClis', () => {
     await expect(configureWith(async () => ({ codex: { default: 'gpt-7' } }))).resolves.toMatchObject({ provider: 'codex', model: 'gpt-7' })
     await expect(configureWith(async () => null)).resolves.toMatchObject({ provider: 'codex', model: 'gpt-6-astra' })
     await expect(configureWith(async () => { throw new Error('offline') })).resolves.toMatchObject({ provider: 'codex', model: 'gpt-6-astra' })
+    // #1154 第 3 条：下架名单把账号列着的都写进去了，照旧在账号列着的里挑，登录自动配置不失败。
+    await expect(configureWith(async () => ({ codex: { retired: ['gpt-6-astra', 'gpt-7'] } }))).resolves.toMatchObject({ provider: 'codex', model: 'gpt-6-astra' })
   })
 
   it('reports a missing interactive default without writing an auto-review-only group to config', async () => {

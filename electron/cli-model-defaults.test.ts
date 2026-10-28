@@ -89,6 +89,20 @@ describe('resolveDefaultCliModel', () => {
     expect(resolveDefaultCliModel('codex', ['gpt-6-astra', 'gpt-image-2'], 'gpt-image-2')).toBe('gpt-image-2')
   })
 
+  // #1154 第 3 条：下架名单把账号列着的能对话的型号全写进去了，登录自动配置不该直接失败。
+  it('falls back to what the account lists when the retired list leaves nothing to chat with', () => {
+    const everything = { claude: { retired: ['claude-opus-5', 'claude-sonnet-5'] } }
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-sonnet-5'], undefined, everything)).toBe('claude-opus-5')
+    expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'gpt-5.5'])).toBe('gpt-5.5')
+    expect(resolveDefaultCliModel('codex', ['gpt-5.5', 'gpt-image-2'])).toBe('gpt-5.5')
+    expect(resolveDefaultCliModel('grok', ['grok-4.5'], 'grok-4.6', { grok: { retired: ['grok-4.5', 'grok-4.6'] } })).toBe('grok-4.5')
+    // 还剩一个能对话的就用它，不退回下架的。
+    expect(resolveDefaultCliModel('codex', ['gpt-5.5', 'gpt-6.1-sol'])).toBe('gpt-6.1-sol')
+    expect(resolveDefaultCliModel('claude', ['claude-opus-5', 'claude-sonnet-5'], undefined, { claude: { retired: ['claude-opus-5'] } })).toBe('claude-sonnet-5')
+    // 账号本来就只列了不能对话的，照旧不硬挑。
+    expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'gpt-image-2'])).toBeNull()
+  })
+
   it('keeps swapping a retired Codex model for a model that can chat', () => {
     expect(resolveRetiredCliModelReplacement('codex', 'gpt-5.5', ['dall-e-3', 'gpt-5.4', 'gpt-image-2'])).toBe('gpt-5.4')
   })
@@ -163,7 +177,7 @@ describe('cli model hints from the service status file', () => {
     expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5'], undefined, hints)).toBe('claude-opus-5')
   })
 
-  it('adds published retired models to the bundled ones and never picks them as a default', () => {
+  it('adds published retired models to the bundled ones and picks them only when the account lists nothing else', () => {
     const hints = { claude: { retired: ['claude-opus-5'] }, grok: { retired: ['grok-4.6'] } }
     expect(isRetiredCliModel('claude', 'claude-opus-5', hints)).toBe(true)
     expect(isRetiredCliModel('claude', 'claude-opus-5')).toBe(false)
@@ -171,7 +185,8 @@ describe('cli model hints from the service status file', () => {
     // 新配时 Haiku 是这个分组唯一能用的；开机自动替换不会换成它（resolveRetiredCliModelReplacement）。
     expect(resolveDefaultCliModel('claude', ['claude-haiku-4-5', 'claude-opus-5'], undefined, hints)).toBe('claude-haiku-4-5')
     expect(resolveDefaultCliModel('grok', ['grok-4.6', 'grok-4.7'], undefined, hints)).toBe('grok-4.7')
-    expect(resolveDefaultCliModel('grok', ['grok-4.6'], undefined, hints)).toBeNull()
+    // 账号只列了下架的那个：照旧用它，不让登录自动配置失败（#1154 第 3 条，yoyo 10-28 回「放宽型号」）。
+    expect(resolveDefaultCliModel('grok', ['grok-4.6'], undefined, hints)).toBe('grok-4.6')
   })
 
   it('ignores a published default that the same table retires, and cannot bring back a bundled retired model', () => {
