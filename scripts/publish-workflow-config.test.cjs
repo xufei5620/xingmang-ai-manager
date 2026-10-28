@@ -169,6 +169,52 @@ test('COS synchronization runs as its own job after an approved publish and keep
   assert.equal(workflow.on.release, undefined)
 })
 
+test('provenance is attested for exactly what an approved publish shipped, by a job that installs nothing', () => {
+  // G21：出处证明排在 publish 之后，只证明真发出去的那一批；失败了客户照常更新，单独重跑它就行。
+  const attestJob = workflow.jobs.attest
+  const cosJob = workflow.jobs['cos-sync']
+  assert.deepEqual(attestJob.needs, ['publish', 'windows-build', 'macos-build', 'linux-build'])
+  const runs = (publish) => evaluateCondition(attestJob.if, {
+    needs: { publish, 'windows-build': 'success', 'macos-build': 'skipped', 'linux-build': 'skipped' },
+  })
+  assert.equal(runs('success'), true)
+  for (const result of ['failure', 'skipped', 'cancelled']) assert.equal(runs(result), false, result)
+  // 不挂环境、不读 secret：挂 release 每次发版就要多批一次，读得到 secret 它就不只能签证明了。
+  assert.equal(attestJob.environment, undefined)
+  assert.doesNotMatch(YAML.stringify(attestJob), /secrets\.|aws s3|gh release/)
+  assert.deepEqual(attestJob.permissions, { contents: 'read', 'id-token': 'write', attestations: 'write' })
+  // 签证明的身份令牌只有它拿得到。publish 要 npm ci，放在那里任何一个第三方包都能拿它冒签。
+  const minters = Object.entries(workflow.jobs)
+    .filter(([, job]) => job.permissions?.['id-token'] !== undefined || job.permissions?.attestations !== undefined)
+    .map(([id]) => id)
+  assert.deepEqual(minters, ['attest'])
+  // 不装依赖、不跑仓库里的脚本：只有下载产物、列文件和 GitHub 官方的 attest。
+  for (const step of attestJob.steps) {
+    if (step.uses) assert.match(step.uses, /^actions\/(?:download-artifact|attest)@[0-9a-f]{40}$/, step.uses)
+    for (const line of commandLines(step.run)) assert.doesNotMatch(line, /^\s*(?:npm|npx|yarn|pnpm|corepack|node)\b/, line)
+  }
+  // 下哪几个平台的产物和 cos-sync 一字不差，也就和 publish 实际发的一致：Linux 照 publish 当时
+  // 实际下没下，不看开关。
+  const downloads = (job) => job.steps.filter((step) => /actions\/download-artifact@/.test(String(step.uses || '')))
+  assert.deepEqual(downloads(attestJob), downloads(cosJob))
+  assert.doesNotMatch(YAML.stringify(attestJob), /XINGMANG_PUBLISH_LINUX/)
+  // 签的是 publish 上传、逐字节复核过的那组安装包（blockmap 只是增量下载的索引，不签）。
+  const attest = attestJob.steps.find((step) => /^actions\/attest@/.test(String(step.uses || '')))
+  assert.ok(attestJob.steps.indexOf(attest) > Math.max(...downloads(attestJob).map((step) => attestJob.steps.indexOf(step))))
+  const subjects = String(attest.with['subject-path']).trim().split('\n').map((line) => line.trim())
+  const upload = publishJob.steps.find((step) => /Upload the installers and their blockmaps/.test(step.name || ''))
+  const uploaded = /for file in ([^;]+); do/.exec(upload.run)[1].trim().split(/\s+/)
+  assert.deepEqual(subjects, uploaded.filter((pattern) => !pattern.endsWith('.blockmap')))
+  const listing = attestJob.steps.find((step) => /List what gets a provenance attestation/.test(step.name || ''))
+  assert.ok(attestJob.steps.indexOf(listing) < attestJob.steps.indexOf(attest))
+  assert.ok(String(listing.run).includes(`files=(${subjects.join(' ')})`))
+  // 只签证明，不碰仓库：写不了 tag 和 Release，也不进写更新目录的并发组。
+  assert.equal(attestJob.permissions.contents, 'read')
+  assert.equal(attestJob.concurrency, undefined)
+  // GitHub 托管的签名服务慢也就几十秒，不该占着机器等上一个小时。
+  assert.ok(attestJob['timeout-minutes'] <= 15, String(attestJob['timeout-minutes']))
+})
+
 test('the Windows build job holds no credentials at all', () => {
   // Windows 那一份是无签名发布，出包不需要任何 secret。少一个作业能读到凭据，
   // 「谁能读到证书和 R2 密钥」这个问题就少一个答案。
