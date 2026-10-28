@@ -82,6 +82,7 @@ import {
   type ManagedCliHookTarget,
 } from './cli-hooks'
 import { applyClaudeRelayModelPicker, claudeRelayModelPickerOutdated, claudeRelayModelPickerUpdates, removeClaudeRelayModelPicker } from './claude-model-picker'
+import { projectInstructionsDigest } from './project-instructions'
 import {
   applyCodexRelayModelCatalog,
   codexModelCatalogFileName,
@@ -619,6 +620,35 @@ export const PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS: readonly string[] = [
   '53fe08aa986a74ce1fd0f54c2c6a0835301591f426f10e895a0c3f7dce9f7270',
 ]
 
+/**
+ * 星芒替客户放过、这台电脑上出现过的几样（调用方按 app-settings.ts 的 seededToolDefaults 给这一家挑出来）。
+ * 出现过、现在没有的是客户删的（或者恢复了一份更早的备份），不再补回（0.2.22 第二轮回归第 2、3 条）。
+ * 缺省 = 都没出现过，照旧补。
+ */
+export interface SeededToolDefaults {
+  /** Claude Code settings.json 的备用型号（fallbackModel）。 */
+  claudeFallbackModel?: boolean
+  /** Codex、Grok 配置目录里星芒放的那份「用中文回复」。 */
+  responseLanguage?: boolean
+}
+
+const MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES = 64 * 1024
+
+/**
+ * 这家工具配置目录里那份 AGENTS.md 是星芒放的、客户没改过的（摘要在 PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS
+ * 里）。没有、读不了、是链接、改过的一律算不是。只读。
+ */
+export function managedGlobalResponseLanguagePresent(provider: ProviderId, rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  if (!globalInstructionFileNames(provider).length) return false
+  try {
+    const roots = normalizeProviderConfigRoots(rootsInput)
+    const content = readSafeUtf8FileSync(path.join(providerConfigRoot(provider, roots), 'AGENTS.md'), '工具全局说明', MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES)
+    return content !== null && PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS.includes(projectInstructionsDigest(content))
+  } catch {
+    return false
+  }
+}
+
 function globalInstructionFileNames(provider: ProviderId): readonly string[] {
   switch (provider) {
     case 'codex':
@@ -631,10 +661,13 @@ function globalInstructionFileNames(provider: ProviderId): readonly string[] {
   }
 }
 
-/** 配置目录里一份全局说明都没有时放一份「用中文回复」；已经有了，或者目录读不了，就什么都不放。 */
-function globalResponseLanguagePlans(provider: ProviderId, roots: ProviderConfigRoots): FilePlan[] {
+/**
+ * 配置目录里一份全局说明都没有时放一份「用中文回复」；已经有了，或者目录读不了，就什么都不放。星芒放的那份
+ * 在这台电脑上出现过的（seeded.responseLanguage）也不再放：现在没有就是客户删的。
+ */
+function globalResponseLanguagePlans(provider: ProviderId, roots: ProviderConfigRoots, seeded: SeededToolDefaults = {}): FilePlan[] {
   const names = globalInstructionFileNames(provider)
-  if (!names.length) return []
+  if (!names.length || seeded.responseLanguage === true) return []
   const providerRoot = providerConfigRoot(provider, roots)
   let entries: string[] = []
   try {
@@ -860,6 +893,23 @@ function disableCodexRelayAnalytics(parsed: Record<string, unknown>): void {
   if (analytics.enabled === undefined) analytics.enabled = false
 }
 
+// Codex 桌面端左上角选成「ChatGPT Work」，config.toml 的 [desktop] 里记的是
+// conversationDetailMode = "STEPS_PROSE"。这个模式开着内置浏览器、又没登录 ChatGPT 账号时，开新对话
+// 就在本机报「Work browser access requires an authenticated account」，消息根本没发出去；用密钥接入的
+// 客户全都没登录。客户端要先从 OpenAI 的开关服务读到账号的工作模式策略才查这一项，读没读到看网络，
+// 所以客户看到的是时好时坏（#1353，按 Windows 版 26.1013.4894 的程序核对）。只把这一个值换回 Codex
+// 模式的缺省 STEPS_COMMANDS：没写这个键、写的是另一档 Codex 模式（STEPS_EXECUTION）都不动，
+// 官方账号那份不经过这里。
+//
+// 只在保存配置时换，不进开机补设置（fillCodexRelayTemplateDefaults）：这是客户自己选的值，
+// 开机补完那句提示说的是「自己改过的设置都没动」。
+function leaveCodexDesktopChatGptWorkMode(parsed: Record<string, unknown>): void {
+  const desktop = parsed.desktop
+  if (isJsonRecord(desktop) && desktop.conversationDetailMode === 'STEPS_PROSE') {
+    desktop.conversationDetailMode = 'STEPS_COMMANDS'
+  }
+}
+
 /** 切回 ChatGPT 时只收回本软件写的那一份：整张表恰好就是 `enabled = false`。 */
 function restoreCodexAnalytics(parsed: Record<string, unknown>): void {
   const analytics = parsed.analytics
@@ -974,6 +1024,7 @@ function applyCodexRelayConfig(
   parsed.check_for_update_on_startup = false
   disableCodexRelayAnalytics(parsed)
   dropDeprecatedCodexConfigKeys(parsed)
+  leaveCodexDesktopChatGptWorkMode(parsed)
   const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
   // Before base_url is overwritten: only a table that already points at our relay is ours to rename.
   renameLegacyCodexRelayDisplayName(providerEntry, siteBaseUrl)
@@ -1360,12 +1411,13 @@ export function claudeModelPickerNeedsRefresh(
   availableModels: readonly string[],
   currentModel: string,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  seeded: SeededToolDefaults = {},
 ): boolean {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot('claude', roots)
   const [settingsPath] = providerConfigPaths('claude', roots)
   assertSafeConfigPath(settingsPath, providerRoot, 'file')
-  return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel)
+  return claudeRelayModelPickerOutdated(requireJson(settingsPath, '现有 Claude settings.json'), availableModels, currentModel, seeded.claudeFallbackModel === true)
 }
 
 /**
@@ -2349,6 +2401,7 @@ function createPlans(
   availableModels?: readonly string[],
   cliHook?: CliHookInvocation,
   codexModelCatalog?: string | null,
+  seeded: SeededToolDefaults = {},
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
@@ -2374,7 +2427,7 @@ function createPlans(
         cleanupPeriodDays: MANAGED_CLAUDE_RETENTION_DAYS,
         ...(claudeStatusLineCommand ? { statusLine: claudeStatusLineSetting(claudeStatusLineCommand) } : {}),
       }
-      if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model)
+      if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model, seeded.claudeFallbackModel === true)
       if (cliHook) applyClaudeCliHooks(settings, cliHook)
       // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
       const aside = claudeForeignSettingsAsidePlans(settings, readJson(paths[0]) ?? {}, roots, apiKey)
@@ -2459,10 +2512,11 @@ function createMergePlans(
   availableModels?: readonly string[],
   cliHook?: CliHookInvocation,
   codexModelCatalog?: string | null,
+  seeded: SeededToolDefaults = {},
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels, cliHook)
+    createPlans(provider, apiKey, model, roots, siteBaseUrls, claudeStatusLineCommand, availableModels, cliHook, undefined, seeded)
       .map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
@@ -2492,7 +2546,7 @@ function createMergePlans(
       extendClaudeSessionRetention(parsed)
       if (claudeStatusLineCommand) applyClaudeStatusLine(parsed, claudeStatusLineCommand)
       if (cliHook) applyClaudeCliHooks(parsed, cliHook)
-      if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model)
+      if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model, seeded.claudeFallbackModel === true)
       parsed.model = model
       const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey)
       return [...aside, { path: paths[0], content: jsonContent(parsed) }]
@@ -2588,6 +2642,8 @@ export function saveProviderConfig(
   // 写给 Codex 的型号名单全文（codex-model-catalog.ts）：null = 收回本软件写的那一行，
   // 缺省 = 不动，与从前一致。只有 Codex 看。
   codexModelCatalog?: string | null,
+  // 这台电脑上出现过、客户删了就不再补的几样（见 SeededToolDefaults）。缺省 = 都没出现过，照旧补。
+  seeded: SeededToolDefaults = {},
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -2605,9 +2661,9 @@ export function saveProviderConfig(
   if (statusLineCommand && /\r|\n/.test(statusLineCommand)) throw new Error('状态行命令不能包含换行符')
   const plans = [
     ...(mode === 'merge'
-      ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)
-      : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog)),
-    ...globalResponseLanguagePlans(provider, roots),
+      ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)
+      : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput, statusLineCommand, availableModels, cliHook, codexModelCatalog, seeded)),
+    ...globalResponseLanguagePlans(provider, roots, seeded),
   ]
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
@@ -2878,6 +2934,7 @@ export function planProviderPickerRefresh(
   availableModels: readonly string[],
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   codexModelCatalog?: string | null,
+  seeded: SeededToolDefaults = {},
 ): ProviderPickerPlan {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
@@ -2891,7 +2948,7 @@ export function planProviderPickerRefresh(
   const text = original.slice(byteOrderMark.length)
   switch (provider) {
     case 'claude': {
-      const next = claudeSettingsWithRelayPicker(text, model.trim(), availableModels)
+      const next = claudeSettingsWithRelayPicker(text, model.trim(), availableModels, seeded.claudeFallbackModel === true)
       if (next === 'changed' || next === 'unlocated') return { status: next }
       return next === text ? { status: 'current' } : { status: 'rewrite', file, original, content: `${byteOrderMark}${next}` }
     }
@@ -2937,7 +2994,7 @@ export function applyProviderPickerRefresh(
  * Claude Code 按严格 JSON 读这份文件；改完整份再读一遍，和「原来的内容只改了这几处」逐项比对，
  * 对不上（比如同一个键写了两遍）就当认不出，一个字不动。
  */
-function claudeSettingsWithRelayPicker(text: string, model: string, availableModels: readonly string[]): string | 'changed' | 'unlocated' {
+function claudeSettingsWithRelayPicker(text: string, model: string, availableModels: readonly string[], fallbackSeeded: boolean): string | 'changed' | 'unlocated' {
   let parsed: unknown
   try {
     parsed = JSON.parse(text)
@@ -2947,7 +3004,7 @@ function claudeSettingsWithRelayPicker(text: string, model: string, availableMod
   if (!isJsonObject(parsed)) return 'unlocated'
   if (!sameModelName(typeof parsed.model === 'string' ? parsed.model : null, model)) return 'changed'
   if (parsed.env !== undefined && !isJsonObject(parsed.env)) return 'unlocated'
-  const updates = claudeRelayModelPickerUpdates(parsed, availableModels, model)
+  const updates = claudeRelayModelPickerUpdates(parsed, availableModels, model, fallbackSeeded)
   const edits: Array<{ path: string[]; value: unknown }> = []
   if (updates.defaultModel !== undefined) edits.push({ path: ['env', 'ANTHROPIC_DEFAULT_MODEL'], value: updates.defaultModel })
   if (updates.modelPicker !== undefined) edits.push({ path: ['modelPicker'], value: updates.modelPicker })
@@ -3063,6 +3120,7 @@ function relayTemplateDefaultsPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
   platform: NodeJS.Platform,
+  seeded: SeededToolDefaults,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
@@ -3075,7 +3133,7 @@ function relayTemplateDefaultsPlans(
       const before = cloneTomlRecord(parsed)
       fillCodexRelayTemplateDefaults(parsed, siteBaseUrls.codex, platform)
       dropEmptyCreatedTables(parsed, before)
-      const language = globalResponseLanguagePlans(provider, roots)
+      const language = globalResponseLanguagePlans(provider, roots, seeded)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return language
       const content = tomlContent(parsed)
       return [{ path: snapshots.relay, content }, { path: snapshots.active, content }, ...language]
@@ -3116,7 +3174,7 @@ function relayTemplateDefaultsPlans(
       const before = cloneTomlRecord(parsed)
       fillGrokRelayTemplateDefaults(parsed, siteBaseUrls.grok, defaultModel)
       dropEmptyCreatedTables(parsed, before)
-      const language = globalResponseLanguagePlans(provider, roots)
+      const language = globalResponseLanguagePlans(provider, roots, seeded)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return language
       return [{ path: paths[0], content: tomlContent(parsed) }, ...language]
     }
@@ -3129,11 +3187,12 @@ export function relayTemplateDefaultsPending(
   rootsInput: ProviderConfigRoots,
   siteBaseUrlsInput: Record<ProviderId, string>,
   platform: NodeJS.Platform = process.platform,
+  seeded: SeededToolDefaults = {},
 ): boolean {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
-  return relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform).length > 0
+  return relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform, seeded).length > 0
 }
 
 /**
@@ -3150,11 +3209,12 @@ export function fillRelayTemplateDefaults(
   siteBaseUrlsInput: Record<ProviderId, string>,
   hooks: NativeConfigWriteHooks = {},
   platform: NodeJS.Platform = process.platform,
+  seeded: SeededToolDefaults = {},
 ): NativeConfigSaveResult | null {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
-  const plans = relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform)
+  const plans = relayTemplateDefaultsPlans(provider, roots, siteBaseUrlsInput, platform, seeded)
   if (plans.length === 0) return null
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

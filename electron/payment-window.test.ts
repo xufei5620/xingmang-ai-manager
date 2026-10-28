@@ -21,6 +21,7 @@ import {
   paymentFormLimits,
   paymentPageOpenTimeoutMs,
   paymentWindowShowFallbackMs,
+  resolvePaymentAppLaunchScheme,
   validatePaymentForm,
   validatePaymentUrl,
   waitForPaymentPage,
@@ -41,6 +42,10 @@ function paymentForm(overrides: Partial<NewApiPaymentForm> = {}): NewApiPaymentF
     ...overrides,
   }
 }
+
+// 乐风码付收银台画完二维码后跳的那种地址（#1458），付款码那串换成了假的。
+const alipayAppLaunchUrl = 'alipays://platformapi/startapp?saId=10000007&clientVersion=3.7.0.0718&qrcode=https%3A%2F%2Fqr.alipay.com%2Ffake'
+const weixinAppLaunchUrl = 'weixin://wxpay/bizpayurl?pr=fake'
 
 function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader' | 'iconPath'> = {}) {
   const windowEvents = new Map<string, (...args: any[]) => void>()
@@ -195,6 +200,27 @@ describe('payment navigation policy', () => {
     expect(isAllowedPaymentNavigationUrl('http://pay.example.com/result', origins)).toBe(false)
     expect(isAllowedPaymentNavigationUrl('https://pay.example.com.evil.test/', origins)).toBe(false)
     expect(isAllowedPaymentNavigationUrl('javascript:alert(1)', origins)).toBe(false)
+  })
+
+  it('never lets the Alipay or WeChat app-launch links through', () => {
+    expect(isAllowedPaymentNavigationUrl(alipayAppLaunchUrl, origins)).toBe(false)
+    expect(isAllowedPaymentNavigationUrl(weixinAppLaunchUrl, origins)).toBe(false)
+  })
+
+  it('names only the scheme of an Alipay or WeChat app-launch link', () => {
+    expect(resolvePaymentAppLaunchScheme(alipayAppLaunchUrl)).toBe('alipays')
+    expect(resolvePaymentAppLaunchScheme('alipay://platformapi/startapp?saId=10000007')).toBe('alipay')
+    expect(resolvePaymentAppLaunchScheme(weixinAppLaunchUrl)).toBe('weixin')
+    expect(resolvePaymentAppLaunchScheme('ALIPAYS://platformapi/startapp')).toBe('alipays')
+  })
+
+  it('treats every other blocked address as an unexpected navigation', () => {
+    expect(resolvePaymentAppLaunchScheme('https://attacker.example/')).toBeNull()
+    expect(resolvePaymentAppLaunchScheme('https://qr.alipay.com/abc')).toBeNull()
+    expect(resolvePaymentAppLaunchScheme('alipays.evil.test://x')).toBeNull()
+    expect(resolvePaymentAppLaunchScheme('javascript:alert(1)')).toBeNull()
+    expect(resolvePaymentAppLaunchScheme('file:///C:/Windows/System32/calc.exe')).toBeNull()
+    expect(resolvePaymentAppLaunchScheme('not a url')).toBeNull()
   })
 })
 
@@ -447,7 +473,7 @@ describe('createPaymentWindowController', () => {
     const harness = createHarness(new Error('network down'))
 
     await expect(harness.controller.open(paymentForm())).rejects.toThrow(
-      '支付页面打开失败，请稍后重试',
+      '支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。',
     )
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.controller.isOpen()).toBe(false)
@@ -464,7 +490,7 @@ describe('createPaymentWindowController', () => {
 
     const failure: unknown = await harness.controller.open(paymentForm()).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(Error)
-    expect(failure instanceof Error && failure.message).toBe('支付页面打开失败，请稍后重试')
+    expect(failure instanceof Error && failure.message).toBe('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。')
     expect(failure instanceof Error && failure.cause).toEqual({ code: 'ERR_CONNECTION_RESET' })
     // The failure log still tells a cut connection apart from a certificate or a lookup.
     expect(classifyNetworkFailure(failure)).toBe('refused')
@@ -738,13 +764,47 @@ describe('payment page opening', () => {
     expect(harness.onTerminalState).not.toHaveBeenCalled()
   })
 
+  // #1458：乐风码付的收银台 302 落地、画完二维码以后，还会把页面跳去 alipays:// 拉起支付宝 App。
+  // 这一跳照旧被拦下，原来那次加载随之报 ERR_ABORTED；收银台已经提交了，不能因此报打不开、关掉窗口。
+  it.each([
+    ['alipays', alipayAppLaunchUrl],
+    ['weixin', weixinAppLaunchUrl],
+  ])('keeps the cashier open after it tries to launch the %s app and its load is aborted', async (_scheme, launchUrl) => {
+    const reader = vi.fn(async (): Promise<NewApiTopupOrderStatus> => 'pending')
+    const load = deferred<void>()
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    harness.window.loadURL.mockReturnValueOnce(load.promise)
+    const opening = harness.controller.open(paymentForm())
+
+    const landing = { preventDefault: vi.fn() }
+    harness.webContentsEvents.get('will-redirect')!(landing, 'https://pay.example.com/pay/USR1')
+    expect(landing.preventDefault).not.toHaveBeenCalled()
+    harness.webContentsEvents.get('did-navigate')!({}, 'https://pay.example.com/pay/USR1')
+    await expect(opening).resolves.toBeUndefined()
+
+    const launch = { preventDefault: vi.fn() }
+    harness.webContentsEvents.get('will-navigate')!(launch, launchUrl)
+    expect(launch.preventDefault).toHaveBeenCalledOnce()
+    expect(harness.onBlockedNavigation).toHaveBeenCalledExactlyOnceWith(launchUrl)
+    load.reject(Object.assign(new Error('ERR_ABORTED (-3) loading \'https://pay.example.com/submit?channel=alipay\''), { code: 'ERR_ABORTED', errno: -3 }))
+
+    await vi.advanceTimersByTimeAsync(paymentWindowShowFallbackMs)
+    expect(harness.window.show).toHaveBeenCalledOnce()
+    expect(harness.window.destroy).not.toHaveBeenCalled()
+    expect(harness.window.close).not.toHaveBeenCalled()
+    expect(harness.controller.isOpen()).toBe(true)
+    expect(harness.onTerminalState).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(3_000)
+    expect(reader).toHaveBeenCalled()
+  })
+
   it('closes a page that never starts and reports it as a timeout', async () => {
     const harness = createHarness()
     harness.window.loadURL.mockReturnValueOnce(new Promise(() => undefined))
     const failure = harness.controller.openUrl('https://pay.example.com/cashier').catch((error: unknown) => error)
     await vi.advanceTimersByTimeAsync(paymentPageOpenTimeoutMs)
     const error = await failure
-    expect(error instanceof Error && error.message).toBe('支付页面打开失败，请稍后重试')
+    expect(error instanceof Error && error.message).toBe('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。')
     expect(error instanceof Error && error.cause).toEqual({ code: 'ERR_TIMED_OUT' })
     expect(classifyNetworkFailure(error)).toBe('timeout')
     expect(harness.window.destroy).toHaveBeenCalledOnce()

@@ -53,7 +53,7 @@ export function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery 
     endDate: parseOptionalAccountUsageText(value.endDate, '结束日期', 10),
     timezone: parseOptionalAccountUsageText(value.timezone, '时区', 128),
   }) : {}
-  for (const [id, label] of [[value.apiKeyId, 'Key ID'], [value.groupId, '分组 ID']] as const) {
+  for (const [id, label] of [[value.apiKeyId, '密钥 ID'], [value.groupId, '分组 ID']] as const) {
     if (id !== undefined && (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) throw new Error(`${label}格式错误`)
   }
   if (value.billingType !== undefined && value.billingType !== 0 && value.billingType !== 1) throw new Error('计费来源格式错误')

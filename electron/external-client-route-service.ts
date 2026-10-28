@@ -11,9 +11,13 @@ import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
+import { resolveClaudeDesktopModels } from './claude-desktop-models'
+import { buildGatewayMessagesProbe, runConnectionProbe } from './connection-check'
 import { type ExternalClientCheckResult, runExternalClientCheck } from './external-client-connection'
 import {
+  type DesktopAppUpdateRequest,
   type ExternalClientConfigResult,
+  type ExternalClientInstallProgress,
   externalClientNames,
   type ExternalClientRuntimeStatus,
   type ExternalClientSourceSwitchResult,
@@ -89,6 +93,9 @@ function sameRouteUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
 }
 
+// 保存 Claude Desktop 配置时试一个型号最多等多久。试的那几个不通只是菜单里少一个，不值得照自检默认的 20 秒等。
+const claudeDesktopModelProbeTimeoutMs = 8_000
+
 /** 外部客户端要用、但归别处管的那一样，由 createSystemService 传进来。 */
 export interface ExternalClientRouteServiceDependencies {
   /** 查这把密钥在当前站能用哪些型号（带缓存；保存配置前要绕过缓存现查）。 */
@@ -102,7 +109,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   const {
     serviceOptions, windowsExecutionMode, platform, providerRoots, runtimeLog, externalOwnership, relayRouting,
     activeRelaySite, inspectNativeProviderConfig, executeCommand, downloadFetch, installationQueue,
-    desktopBucketDownloads, assertInstallDiskSpace, withDownloadAcceleration, credentialFailureReason, toolRouteNow,
+    desktopBucketDownloads, latestMacosDesktopVersions, assertInstallDiskSpace, withDownloadAcceleration, credentialFailureReason, toolRouteNow,
     scheduleToolRouteTimer,
   } = context
   const {
@@ -117,6 +124,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     fetch: downloadFetch,
     withDownloadRoute: (operation) => withDownloadAcceleration(null, operation),
     bucketDownloads: desktopBucketDownloads,
+    ...(latestMacosDesktopVersions ? { latestMacosDesktopVersions } : {}),
     assertDiskSpace: assertInstallDiskSpace,
     onWingetUnavailable: (reason) => runtimeLog?.log('warn', 'install', 'external-client.winget-unavailable', '桌面客户端无法一键安装：系统 winget 不可用', { reason }),
     // 首页只说「部分软件安装记录无法读取」；是哪几条、为什么，客服在反馈报告里看这一行。
@@ -151,6 +159,9 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   let newestExternalScanSaved = 0
   // 这次运行里替客户端换成过几回 Key（#1113、已知37）：保存配置后台那一眼换成了，界面要重读。
   let externalKeysFollowed = 0
+  // 保存配置后台那一眼正在跑的那一轮，和跑着时又有人叫过（见 followManagedKeysNow）。
+  let followingManagedKeys: Promise<void> | null = null
+  let followManagedKeysAgain = false
   // 这次运行里替哪个账号的哪个客户端换过线路，记着原来的地址和那把 Key（只在主进程内存里）：
   // 换完又回到原来那份（推测是客户端退出时把旧配置写了回去），要能在日志里说出来。
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
@@ -254,6 +265,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       configurationError: described?.configurationError ?? null,
       model: credential?.model ?? described?.model ?? null,
       apiKey: credential?.apiKey ?? null,
+      ...(credential?.startupCheckModel ? { startupCheckModel: credential.startupCheckModel } : {}),
       ...(described?.officialAccount ? { officialAccount: true } : {}),
     }, activeSite.id, { fetch: serviceOptions.relayFetch })
   }
@@ -284,12 +296,13 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   function getLastExternalClients(): ExternalClientStatus[] | null {
     return latestExternalClients
   }
-  async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus> {
-    const status = await externalClientRuntime.install(tool, (event) => {
+  async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget, request?: DesktopAppUpdateRequest): Promise<ExternalClientStatus> {
+    function forward(event: ExternalClientInstallProgress) {
       if (!target.isDestroyed()) {
         try { target.send('external-clients:install-progress', event) } catch { /* Installation continues if the renderer exits. */ }
       }
-    })
+    }
+    const status = await (request ? externalClientRuntime.install(tool, forward, request) : externalClientRuntime.install(tool, forward))
     const described = await describeExternalClient(status)
     // 就地替换而不是追加：这份快照的顺序就是反馈报告与界面读到的顺序。
     latestExternalClients = latestExternalClients?.some((entry) => entry.tool === tool)
@@ -358,13 +371,23 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
         assertContext()
         if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
+        // Claude Desktop 的型号菜单就是写进去的那份清单。选中的排第一当默认，其余 Claude 型号照它开机检查那条
+        // 请求各发一个字，试通了才放进去（claude-desktop-models.ts）：0.2.12 把列着的全写进去（#685），里面有发不
+        // 通的，客户那边就型号被拒、发消息没回复；#746 起只写一个，客户又在 Claude Desktop 里换不了型号。
+        const baseUrl = activeSite.providerBaseUrls.claude
+        const selection = await resolveClaudeDesktopModels(model, models, async (candidate) => (await runConnectionProbe(
+          buildGatewayMessagesProbe(externalClientNames.claudeDesktop, baseUrl, candidate, apiKey),
+          { fetch: serviceOptions.relayFetch, timeoutMs: claudeDesktopModelProbeTimeoutMs },
+        )).ok)
+        assertContext()
+        runtimeLog?.log('info', 'config', 'external-client.claude-desktop.models', 'Claude Desktop 型号菜单只放试通了的型号', {
+          models: selection.models.length, rejected: selection.rejected,
+        })
         const gateway = await claudeDesktopConfig(status, assertContext)
-        // 只写客户选中的那一个型号。0.2.12 曾把当前 Key 能用的全部 claude-* 型号都写进去（#685），
-        // 客户 Mac 上 Claude Desktop 随即提示型号被拒、发消息没回复，退回只写一个（0.2.8 的做法）就好了。
-        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
+        const input = { baseUrl, apiKey, authScheme: 'bearer' as const, models: selection.models }
         const result = await gateway.saveGateway(input)
         assertContext()
-        if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey, keySource)
+        if (owner) await externalOwnership.write(tool, owner, baseUrl, apiKey, keySource)
         const connection = await verifySavedExternalClient(tool, status)
         return { tool, model, path: result.path, files: result.files, backups: result.backups,
           outcome: 'configured', message: result.warnings.join(' '),
@@ -610,12 +633,31 @@ export function createExternalClientRouteService(context: ServiceContext, depend
    * 星芒刚替某个工具换了 Key（保存配置那一下）：马上看一眼外部客户端要不要跟上，不等下次检测。先只看缓存和工具配置，
    * 没有要跟的不为它盘点一遍本机客户端。这一轮是后台做的，界面手上还是换之前那份（换账号时首页在同步工具之前就读过
    * 客户端），换成了叫一声让它重读。
+   *
+   * 换账号时同步到 Claude Code、Codex 是连着保存两家，各叫一次这里。以前两轮各跑各的：后一轮在前一轮换完之前就记下
+   * 了计数，两轮都看到「变了」，界面重读两次（#1413 的用例在 Mac CI 上偶发红）。现在一轮跑着时再叫，只记一笔「跑完
+   * 再看一遍」，后一家刚写的 Key 照样跟上，从头到尾只叫一次。
    */
   async function followManagedKeysNow(): Promise<void> {
-    if (!await managedKeyFollowTarget()) return
+    if (followingManagedKeys) {
+      followManagedKeysAgain = true
+      return followingManagedKeys
+    }
+    followingManagedKeys = followManagedKeyRounds()
+    return followingManagedKeys
+  }
+  async function followManagedKeyRounds(): Promise<void> {
     const before = externalKeysFollowed
-    await scanExternalClients()
-    if (externalKeysFollowed !== before) serviceOptions.onToolRouteFollowed?.()
+    try {
+      do {
+        followManagedKeysAgain = false
+        if (await managedKeyFollowTarget()) await scanExternalClients()
+      } while (followManagedKeysAgain)
+    } finally {
+      // 最后一次看完和这里之间没有 await：之后再叫的另起一轮，不会挂在一个已经不再回头看的轮次上。
+      followingManagedKeys = null
+      if (externalKeysFollowed !== before) serviceOptions.onToolRouteFollowed?.()
+    }
   }
   /**
    * 把客户端那份换成借的那个工具现在的 Key（#1113），只换 Key，地址、型号和别的设置都不动。全都对上才换：

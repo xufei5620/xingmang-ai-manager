@@ -56,7 +56,16 @@ describe('desktop update notification content', () => {
     expect(updateDesktopNotification(update({ ...linux, phase: 'downloaded' }), false)?.body).toBe('新版 0.2.0 已经下好，到「设置 › 版本更新」点「安装新版本」就能装上。')
     expect(updateDesktopNotification(update(linux), true)?.body).toBe('新版 0.2.0 正在后台下载，下好后到「设置 › 版本更新」点「安装新版本」。')
     expect(updateDesktopNotification(update(linux), false)?.body).toBe('版本 0.2.0 已可下载。')
-    expect(updateDesktopNotification(update({ phase: 'downloaded' }), true)?.body).toContain('关掉软件或下次打开时自动装上')
+    expect(updateDesktopNotification(update({ phase: 'downloaded' }), true)?.body).toBe('新版 0.2.0 已经下好，可以现在装，也可以关掉软件或下次打开时再装。')
+  })
+
+  // 下好以后 3 秒就跳框问要不要装（update-install-prompt.ts），通知不能再说「不打断你现在用」；
+  // 能闲时装的 Mac 多说一句，跟跳框里那句一个意思（0.2.22 发版前回归检查第 6 条）。
+  it('mentions the idle install on a Mac that can install without a prompt', () => {
+    expect(updateDesktopNotification(update({ phase: 'downloaded', idleInstall: true }), true)?.body)
+      .toBe('新版 0.2.0 已经下好，可以现在装，也可以关掉软件或下次打开时再装。你不用电脑时星芒也会自己装好。')
+    expect(updateDesktopNotification(update({ phase: 'downloaded', idleInstall: true }), false)?.body).toBe('版本 0.2.0 已下载，可在「设置 › 版本更新」重启并安装。')
+    expect(updateDesktopNotification(update({ idleInstall: true }), true)?.body).not.toContain('自己装好')
   })
 })
 
@@ -171,7 +180,7 @@ describe('auto-update wording', () => {
     const available = updateDesktopNotification(update(), true)!
     expect(available.body).toBe('新版 0.2.0 正在后台下载，下好后关掉软件时自动装上。')
     const downloaded = updateDesktopNotification(update({ phase: 'downloaded' }), true)!
-    expect(downloaded.body).toContain('自动装上')
+    expect(downloaded.body).toContain('可以现在装')
     expect(downloaded.body).not.toContain('重启并安装')
   })
 
@@ -202,7 +211,7 @@ describe('auto-update wording', () => {
   it('reads the auto-update switch through the controller', () => {
     const { controller, runtime } = fixture({ readAutoUpdate: () => true })
     controller.handleUpdate(update({ phase: 'downloaded' }))
-    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('自动装上') }))
+    expect(runtime.create).toHaveBeenCalledWith(expect.objectContaining({ body: expect.stringContaining('可以现在装') }))
   })
 })
 
@@ -218,7 +227,7 @@ describe('Windows account outside the administrators group', () => {
       expect(downloaded.body).not.toContain('自动装上')
     }
     // 管理员账号照旧。
-    expect(updateDesktopNotification(update({ phase: 'downloaded', installNeedsAdminPassword: false }), true)!.body).toContain('自动装上')
+    expect(updateDesktopNotification(update({ phase: 'downloaded', installNeedsAdminPassword: false }), true)!.body).toContain('可以现在装')
   })
 
   it('does not promise an install while the update is still downloading', () => {

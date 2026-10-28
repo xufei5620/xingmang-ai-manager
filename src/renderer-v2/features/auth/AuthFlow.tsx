@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState, type FocusEvent, type ReactNode } from 'react'
-import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info, KeyRound, LogIn, Mail, RefreshCw, UserPlus } from 'lucide-react'
+import { ArrowRight, CircleAlert, Copy, ExternalLink, Eye, EyeOff, Headset, Info, KeyRound, LogIn, Mail, RefreshCw, RotateCcw, UserPlus } from 'lucide-react'
 import type { AccountLoginResult, AccountStatus, LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { Button, Dialog, Input, Segment } from '../../ui'
 import { sessionOnlyLoginNotice } from '../app/remembered-login'
+import { currentWindowOs } from '../app/window-os'
 import { useLatestRequest } from '../../latest-request'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authErrorMessage, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationStatusFailure, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, passwordChangeOutcomeUnknown, registrationStatusFailure, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
@@ -20,6 +21,11 @@ type RetryableAction = typeof retryableActions[number]
 function isRetryableAction(action: string): action is RetryableAction {
   return (retryableActions as readonly string[]).includes(action)
 }
+const passwordResetNotice = '密码已重设，已自动登录'
+const tempPasswordSignedInMessage = '新密码没设上，你已经用下面这个临时密码登录了。先复制存好，再点「继续」进软件；以后可以在「个人中心 › 账号安全」里改密码。'
+const tempPasswordLoginMessage = '新密码没设上，你的账号现在用的是下面这个临时密码。复制它去登录，登录后可以在「个人中心 › 账号安全」里再改。'
+const unconfirmedPasswordMessage = '没能确认新密码有没有设上。新密码已经替你填好，点「登录」试一下；登不上就点「找回密码」重新来一次。'
+const sessionLostMessage = '刚才的登录没有保持住，账号和密码已经替你填好，再点一次「登录」就行。'
 /** 红字下面那排出口按什么给：哪一步、为什么失败；没网那种等网络回来后红字换成提示，出口留着。 */
 interface FailureExit {
   action: string
@@ -46,6 +52,8 @@ export interface AuthFlowProps {
   onAuthenticated: (result: AccountLoginResult, options?: { rememberError?: string; notice?: string }) => void
   onClose: () => void
   onHelp?: () => void
+  /** 重开星芒。Mac 钥匙串这次没放行时红字下面给「重新打开星芒」：重开后系统会再问一次。 */
+  onRelaunch?: () => void
   /** Local connection settings remain reachable before the first successful login. */
   connectionSettings?: (onBusyChange: (busy: boolean) => void) => ReactNode
   /** 服务正在维护时的提示。登录框是模态的，会盖住角落里那条，所以在框里再放一份。 */
@@ -54,7 +62,7 @@ export interface AuthFlowProps {
   sessionOnly?: boolean
 }
 
-export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, connectionSettings, notice, sessionOnly = false }: AuthFlowProps) {
+export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdentifier = '', initialSiteId = 'solov', initialInviteCode = '', onAuthenticated, onClose, onHelp, onRelaunch, connectionSettings, notice, sessionOnly = false }: AuthFlowProps) {
   const [api] = useState(() => providedApi ?? getAuthApi())
   const [mode, setMode] = useState<AuthMode>(initialMode)
   const [siteId, setSiteId] = useState<AccountSiteId>(initialMode === 'register' ? 'solov' : initialSiteId)
@@ -217,7 +225,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     epoch.invalidate(); setPassword(''); clearRecoveredPassword(); leaveTwoFactor(); onClose()
   }
   const showFailure = (reason: unknown, action: string) => {
-    const result = authFailure(reason, action, navigator.onLine)
+    const result = authFailure(reason, action, navigator.onLine, currentWindowOs())
     setError(result.message); setFailure({ action, kind: result.kind, message: result.message }); setBrowserAuthentication(requiresBrowserAuthentication(reason))
   }
   const run = async (action: string, work: (isCurrent: () => boolean) => Promise<void>) => {
@@ -244,23 +252,33 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       if (current()) await finishLogin(result, { ...login, remember }, current)
     })
   }
+  // 退回登录框，账号和这次该用的密码都填好。找回密码那几步留下的临时密码一并清掉。
+  const returnToLogin = (account: string, secret: string) => {
+    leaveTwoFactor(); setMode('login'); setIdentifier(account); setPassword(secret); loginTouched.current = true
+    setRecoveryStep(1); setRecoveryText(''); clearRecoveredPassword()
+  }
+  // 临时密码还有效、这次登录也还在：把它亮出来，点「继续」进软件。
+  const keepTempPassword = (result: AccountLoginResult, error: string) => {
+    leaveTwoFactor(); setRecovered(result); setTempShown(true); setReveal(false); setMessage(tempPasswordSignedInMessage); setError(error)
+  }
   const finishLogin = async (result: AccountLoginResult, login: LoginAttempt, current: () => boolean) => {
     let password = login.password
     let notice = login.notice ?? `欢迎回来，${result.account.username}`
     if (login.newPassword) {
-      // 这时已经用临时密码登上了。改失败就把临时密码亮出来：账号此刻认的就是它，客户不会被锁在外面。
+      // 这时已经用临时密码登上了。改失败不等于新密码没设上，先弄清楚账号现在认哪个（settleNewPassword）。
       try { await api.changePassword({ originalPassword: login.password, newPassword: login.newPassword }) }
       catch (reason) {
-        if (current()) {
-          leaveTwoFactor(); setRecovered(result); setTempShown(true); setReveal(false)
-          setMessage('新密码没设上，你已经用下面这个临时密码登录了。先复制存好，再点「继续」进软件；以后可以在「个人中心 → 账号安全」里改密码。')
-          setError(authErrorMessage(reason, '设新密码'))
-        }
+        if (current()) await settleNewPassword(result, { ...login, newPassword: login.newPassword }, reason, current)
         return
       }
       password = login.newPassword
-      notice = '密码已重设，已自动登录'
+      notice = passwordResetNotice
     }
+    // 进软件、记密码之前问一次主进程还登没登着：登录可能已经被服务端结束了，界面不能照着
+    // 刚才那次登录的结果硬摆成已登录（2026-10-27）。
+    const live = await api.session().catch(() => null)
+    if (!current()) return
+    if (!sessionMatchesLogin(live, result, login.siteId)) { returnToLogin(login.username, password); setMessage(sessionLostMessage); return }
     let rememberError: string | undefined
     // 没法安全保存时，本机以前记住的那份密码读不到也写不进，但别顺手把它删了：
     // 系统密码保管恢复以后它还能用。
@@ -269,6 +287,34 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
     }
     if (current()) { setPassword(''); leaveTwoFactor(); clearRecoveredPassword(); onAuthenticated(result, { rememberError, notice }) }
+  }
+  // 改密码报了失败，不等于新密码没设上：服务端可能已经改好了，只是回话没到，或者这次登录在改的
+  // 半路被结束了（2026-10-27 就是这样：密码已改，软件却记住了临时密码）。先弄清楚账号现在认哪个
+  // 密码，再说话、再记。拿不准的时候什么也不记。
+  const settleNewPassword = async (result: AccountLoginResult, login: LoginAttempt & { newPassword: string }, reason: unknown, current: () => boolean) => {
+    const changeFailure = authFailure(reason, '设新密码', navigator.onLine)
+    const live = await api.session().catch(() => null)
+    if (!current()) return
+    const signedIn = sessionMatchesLogin(live, result, login.siteId)
+    // 服务端明说没改、登录也还在：账号认的还是临时密码。
+    if (signedIn && !passwordChangeOutcomeUnknown(changeFailure.kind)) { keepTempPassword(result, changeFailure.message); return }
+    const attempt: LoginAttempt = { username: login.username, password: login.newPassword, siteId: login.siteId, remember: login.remember, notice: passwordResetNotice }
+    let confirmed: AccountLoginResult
+    try { confirmed = await api.login({ username: attempt.username, password: attempt.password, siteId: attempt.siteId }) }
+    catch (probe) {
+      if (!current()) return
+      if (isTwoFactorChallenge(probe) && attempt.siteId === 'solov') { twoFactorLogin.current = attempt; setTwoFactorCode(''); setTwoFactor({ backup: false }); return }
+      if (authFailure(probe, '登录', navigator.onLine).kind === 'credentials') {
+        // 新密码登不上：确实没设上，账号认的还是临时密码。
+        if (signedIn) keepTempPassword(result, changeFailure.message)
+        else { leaveTwoFactor(); setTempShown(true); setReveal(false); setMessage(tempPasswordLoginMessage); setError(changeFailure.message) }
+        return
+      }
+      returnToLogin(attempt.username, attempt.password); showFailure(probe, '登录'); setMessage(unconfirmedPasswordMessage)
+      return
+    }
+    // 新密码登得上：它已经生效了，照改成功那样进软件、记住它。
+    if (current()) await finishLogin(confirmed, attempt, current)
   }
   const submitTwoFactor = () => {
     const login = twoFactorLogin.current
@@ -403,7 +449,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
           return
         }
         // 连登录都没成：密码还是那串临时的，亮出来让客户照老办法去登录。
-        if (current()) { setTempShown(true); setReveal(false); setMessage('新密码没设上，你的账号现在用的是下面这个临时密码。复制它去登录，登录后可以在「个人中心 → 账号安全」里再改。') }
+        if (current()) { setTempShown(true); setReveal(false); setMessage(tempPasswordLoginMessage) }
         throw reason
       }
       if (current()) await finishLogin(result, attempt, current)
@@ -413,7 +459,13 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const continueWithTempPassword = () => {
     const result = recovered
     if (!result) return
-    void run('登录', async (current) => { await finishLogin(result, { username: recoveryEmail.trim(), password: newPassword, siteId, remember, notice: tempLoginNotice }, current) })
+    void run('登录', async (current) => {
+      // 临时密码登上的那次登录可能已经被结束了：没登着就不进软件，改成拿临时密码重新登。
+      const live = await api.session().catch(() => null)
+      if (!current()) return
+      if (!sessionMatchesLogin(live, result, siteId)) { setRecovered(null); setMessage(tempPasswordLoginMessage); return }
+      await finishLogin(result, { username: recoveryEmail.trim(), password: newPassword, siteId, remember, notice: tempLoginNotice }, current)
+    })
   }
   // 「先不设」之后直接拿临时密码登录，省掉回登录框再填一遍。没登上就照原来「前往登录」那样退回登录框，
   // 账号和临时密码都替他填好（临时密码这时还没人记下来，清掉就找不回了），红字和出口跟着过去。
@@ -471,6 +523,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     failure.kind === 'code' && mode === 'register' && status?.emailVerificationEnabled && <Button key="code" size="xs" icon={Mail} disabled={busy || Boolean(registerCooldown.seconds)} onClick={sendVerification} testId="auth-exit-code">{registerCooldown.seconds ? `${registerCooldown.seconds} 秒后重新获取` : '重新获取验证码'}</Button>,
     failure.kind === 'taken' && mode === 'register' && <Button key="login" size="xs" icon={LogIn} disabled={busy} onClick={() => changeMode('login', normalizeEmail(registration.email))} testId="auth-exit-login">用这个邮箱去登录</Button>,
     failure.kind === 'taken' && mode === 'register' && <Button key="forgot" size="xs" icon={KeyRound} disabled={busy} onClick={() => goRecovery(normalizeEmail(registration.email))} testId="auth-exit-forgot">找回密码</Button>,
+    failure.kind === 'keychain' && onRelaunch && <Button key="relaunch" size="xs" icon={RotateCcw} disabled={busy} onClick={onRelaunch} testId="auth-exit-relaunch">重新打开星芒</Button>,
     onHelp && <Button key="help" size="xs" variant="ghost" icon={Headset} disabled={busy} onClick={onHelp} testId="auth-exit-help">找客服</Button>,
   ].filter(Boolean) : []
 

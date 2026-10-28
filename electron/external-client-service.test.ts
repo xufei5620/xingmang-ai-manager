@@ -628,14 +628,56 @@ describe('external client system-service integration', () => {
     for (const [file, content] of snapshots) expect(fs.readFileSync(file, 'utf8')).toBe(content)
   })
 
-  it('writes only the selected model for Claude Desktop even when the key lists more Claude models', async () => {
+  // 中转对某个型号回「无可用渠道」：它不进 Claude Desktop 的型号菜单，其余照它开机检查那条请求试通了的才进。
+  function messagesFetch(f: ReturnType<typeof fixture>, failing: readonly string[], onProbe?: (model: string) => void) {
+    f.relayFetch.mockImplementation(async (url, init) => {
+      if (!String(url).endsWith('/v1/messages')) {
+        return Response.json({ data: [{ id: 'claude-opus-5-5' }, { id: selectedModel }, { id: 'gpt-5.4' }, { id: 'claude-fable-5' }, { id: 'claude-haiku-4-5' }] })
+      }
+      const model = (JSON.parse(String(init?.body)) as { model: string }).model
+      onProbe?.(model)
+      return failing.includes(model)
+        ? Response.json({ error: { message: `当前分组 default 下对于模型 ${model} 无可用渠道` } }, { status: 503 })
+        : Response.json({ id: 'msg_fixture', type: 'message', role: 'assistant', model, content: [{ type: 'text', text: 'H' }], stop_reason: 'max_tokens' })
+    })
+  }
+
+  it('offers Claude Desktop the picked model first plus the other Claude models that answer its launch check', async () => {
     const f = fixture()
-    f.relayFetch.mockImplementationOnce(async () => Response.json({
-      data: [{ id: 'claude-opus-5-5' }, { id: selectedModel }, { id: 'gpt-5.4' }, { id: 'claude-fable-5' }],
-    }))
+    const probed: string[] = []
+    messagesFetch(f, ['claude-fable-5'], (model) => probed.push(model))
+    const result = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    expect(JSON.parse(fs.readFileSync(result.path, 'utf8')).inferenceModels).toEqual([
+      { name: selectedModel }, { name: 'claude-opus-5-5' }, { name: 'claude-haiku-4-5' },
+    ])
+    expect(result).toMatchObject({ model: selectedModel, connectionVerified: true })
+    expect(result.connection).toMatchObject({ ok: true, model: selectedModel })
+    // 先试三个候选，保存后的复测问默认型号，再照 Claude Desktop 的挑法问它开机检查会挑的 Haiku。
+    expect(probed.slice(0, 3).sort()).toEqual(['claude-fable-5', 'claude-haiku-4-5', 'claude-opus-5-5'])
+    expect(probed.slice(3)).toEqual([selectedModel, 'claude-haiku-4-5'])
+    for (const [url, init] of f.relayFetch.mock.calls.filter(([url]) => String(url).endsWith('/v1/messages'))) {
+      expect(url).toBe('https://xm.solov.cc/v1/messages')
+      expect(JSON.parse(String(init?.body))).toMatchObject({ max_tokens: 1, messages: [{ role: 'user', content: '.' }] })
+    }
+    expect(f.runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'external-client.claude-desktop.models', expect.any(String), {
+      models: 3, rejected: ['claude-fable-5'],
+    })
+    expect(JSON.stringify(f.runtimeLog.log.mock.calls)).not.toContain(selectedKey)
+  })
+
+  it('keeps only the picked model for Claude Desktop when none of the others answer', async () => {
+    const f = fixture()
+    messagesFetch(f, ['claude-opus-5-5', 'claude-fable-5', 'claude-haiku-4-5'])
     const result = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
     expect(JSON.parse(fs.readFileSync(result.path, 'utf8')).inferenceModels).toEqual([selectedModel])
-    expect(result.model).toBe(selectedModel)
+    expect(result).toMatchObject({ model: selectedModel, connectionVerified: true })
+  })
+
+  it('writes nothing into Claude Desktop when the account changes while the other models are being tried', async () => {
+    const f = fixture()
+    messagesFetch(f, [], () => f.setUser(18))
+    await expect(f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })).rejects.toThrow('账号已变化')
+    expect(targetFiles(f.directory)).toEqual([])
   })
 
   for (const platform of ['win32', 'darwin', 'linux'] as const) {
@@ -1588,6 +1630,28 @@ describe('external clients follow the tool into the account the customer switche
     expect((await f.service.scanExternalClients()).find((client) => client.tool === 'claudeDesktop'))
       .toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
     expect(JSON.stringify(f.runtimeLog.log.mock.calls)).not.toMatch(/sk-claude-code|solov\.cc/)
+  })
+
+  it('asks the window to reload once when both synced tools follow at the same time', async () => {
+    const f = fixture({ managedKeys: true })
+    await connectFirstAccount(f)
+    // 保存 Claude Code 后台那一眼停在盘点客户端，Codex 也保存完、也叫过那一眼才放行：两轮一定撞上
+    // （上面那条在 Mac CI 上是碰巧撞上，#1413）。
+    let release = () => {}
+    const held = new Promise<void>((resolve) => { release = resolve })
+    vi.mocked(f.runtime.scan).mockImplementation(async () => {
+      await held
+      return structuredClone(f.runtimeStatuses)
+    })
+
+    expect((await switchToSecond(f)).failed).toEqual([])
+    release()
+    await followed(f)
+    await vi.waitFor(() => expect(f.routeFollowed).toHaveBeenCalled(), { timeout: 10_000 })
+    // 再检测一次：排在后台那几轮后面，它们都跑完了才回来。
+    await f.service.scanExternalClients()
+    expect(f.routeFollowed).toHaveBeenCalledTimes(1)
+    expect(keyLogs(f).filter(([, , event]) => event === 'external-client.key.followed')).toHaveLength(1)
   })
 
   it('moves Claude Desktop back when the customer switches back and syncs Claude Code again', async () => {

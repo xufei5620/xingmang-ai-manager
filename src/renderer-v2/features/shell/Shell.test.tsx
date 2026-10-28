@@ -31,6 +31,36 @@ describe('renderer-v2 sidebar update badge', () => {
   })
 })
 
+describe('renderer-v2 sidebar update entry and settings dot', () => {
+  function sidebar(props: Partial<Parameters<typeof Shell>[0]> = {}) {
+    const markup = renderToStaticMarkup(createElement(Shell, { activePage: 'home', platform: 'win', account: { signedIn: true, displayName: '星芒用户' }, adapter: {}, children: null, ...props }))
+    return markup.slice(markup.indexOf('data-testid="sidebar-pinned"'), markup.indexOf('data-testid="account-entry"'))
+  }
+
+  it('puts the gold entry right above 设置 and dots 设置 while a new version is around', () => {
+    const markup = sidebar({ update: 'ready', updateEntry: { label: '重启并安装新版', title: '新版 v0.2.23 已经下好，点一下装上，装好自动打开', install: true } })
+    expect(markup).toMatch(/data-testid="nav-update"[^>]*>.*<span>重启并安装新版<\/span><\/button>.*data-testid="nav-settings"/)
+    expect(markup).toContain('class="v2-nav-item v2-nav-update"')
+    expect(markup).toContain('title="新版 v0.2.23 已经下好，点一下装上，装好自动打开"')
+    expect(markup).toContain('aria-label="设置，有新版本"')
+    expect(markup).toContain('<i class="v2-nav-dot" title="有新版本" aria-hidden="true" data-testid="nav-settings-update"></i>')
+  })
+
+  it('skips the hover sentence when it only repeats the label', () => {
+    const markup = sidebar({ update: 'available', updateEntry: { label: '有新版本 v0.2.23', title: '有新版本 v0.2.23', install: false } })
+    expect(markup).toMatch(/<button[^>]*aria-label="有新版本 v0\.2\.23"[^>]*data-testid="nav-update"/)
+    expect(markup).not.toMatch(/data-testid="nav-update"[^>]*title=/)
+    expect(markup).not.toMatch(/<button[^>]*title="有新版本 v0\.2\.23"/)
+  })
+
+  it('leaves the sidebar as it was without a new version', () => {
+    const markup = sidebar()
+    expect(markup).not.toContain('nav-update')
+    expect(markup).not.toContain('v2-nav-dot')
+    expect(markup).toContain('aria-label="设置"')
+  })
+})
+
 describe('renderer-v2 shell keyboard landmarks', () => {
   it('offers a skip link to a focusable main region and a polite page announcement', () => {
     const markup = render()
@@ -157,6 +187,11 @@ describe('renderer-v2 v4 sidebar', () => {
     const low = renderShell({ account: { signedIn: true, displayName: '星芒用户', runway: { usableUsd: 3, days: 2, low: true } } })
     expect(low).toContain('aria-label="充值，余额低"')
     expect(low).toContain('data-testid="nav-recharge-low">余额低</small>')
+    // 钱包已经是 $0 的不再说「低」，首页顶上那条已经说了是 $0。
+    const empty = renderShell({ account: { signedIn: true, displayName: '星芒用户', runway: { usableUsd: 0, days: 0, low: true, empty: true } } })
+    expect(empty).toContain('aria-label="充值，余额为零"')
+    expect(empty).toContain('data-testid="nav-recharge-low">余额为零</small>')
+    expect(empty).toContain('余额已经用完，充值后才能用')
     const recharge = renderShell({ activePage: 'account', accountTab: 'recharge' })
     expect(recharge).toMatch(/class="v2-nav-item is-active"[^>]*data-testid="nav-recharge"/)
     expect(recharge).not.toContain('v2-account-entry is-active')
@@ -212,7 +247,8 @@ describe('renderer-v2 v4 status bar', () => {
     expect(markup).toContain('data-testid="statusbar-node">Node.js 24.11.0</span>')
     expect(markup).toContain('data-testid="statusbar-tools">已装 3 个工具</button>')
     expect(markup).toContain('data-testid="statusbar-version">v0.2.19 · 有新版本</button>')
-    expect(bar({ version: '0.2.19', update: 'ready' })).toContain('v0.2.19 · 重启后更新')
+    // 下好了不说「重启后更新」：缩在托盘的人关窗口不算重启（「侧栏改」第 3 条）。
+    expect(bar({ version: '0.2.19', update: 'ready' })).toContain('v0.2.19 · 新版已下好，点这里安装')
     expect(bar({ version: '0.2.19' })).toContain('>v0.2.19</button>')
   })
 

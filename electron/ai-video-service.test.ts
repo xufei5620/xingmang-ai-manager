@@ -38,6 +38,7 @@ function setup(
     dnsLookup?: (hostname: string) => Promise<readonly string[]>
     requestTimeoutMs?: number
     maximumPollOutageMs?: number
+    onRequestStarted?: () => (() => void) | undefined
   } = {},
 ) {
   const credentials = {
@@ -100,6 +101,7 @@ function setup(
       dnsLookup: options.dnsLookup ?? publicDnsLookup,
       ...(options.requestTimeoutMs ? { requestTimeoutMs: options.requestTimeoutMs } : {}),
       ...(options.maximumPollOutageMs ? { maximumPollOutageMs: options.maximumPollOutageMs } : {}),
+      ...(options.onRequestStarted ? { onRequestStarted: options.onRequestStarted } : {}),
     }),
   }
 }
@@ -506,6 +508,48 @@ describe('createAiVideoService', () => {
     })).rejects.toThrow('当前分组「生图分组」不提供模型')
     expect(fetchImpl).not.toHaveBeenCalled()
     expect(tasks.upsert).not.toHaveBeenCalled()
+  })
+
+  it('asks for a balance refresh once each paid wait ends, but not for a request that never reached the server', async () => {
+    const stored: StoredAiVideoTask = {
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_earlier', group: '生图分组', model: 'grok-imagine-video',
+      requestId: 'earlier-request', createdAt: '2026-08-14T00:00:00.000Z',
+    }
+    let pollsHang = false
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_paid', status: 'queued' })
+      if (url.endsWith('/content')) return mp4Response()
+      if (pollsHang) return new Promise<Response>(() => undefined)
+      return jsonResponse({ id: url.includes('video_earlier') ? 'video_earlier' : 'video_paid', status: 'completed' })
+    }) as unknown as typeof fetch
+    const finished = vi.fn()
+    const started = vi.fn(() => finished)
+    const { service, credentials } = setup(fetchImpl, { pending: [stored], onRequestStarted: started })
+    const request = { group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5' }
+
+    await expect(service.generate(41, { ...request, requestId: 'paid' })).resolves.toMatchObject({ taskId: 'video_paid' })
+    expect(finished).toHaveBeenCalledOnce()
+
+    credentials.resolveCredential.mockResolvedValueOnce({
+      userId: 7, group: '生图分组', models: ['gpt-image-2'], keyCreated: false,
+      apiKey: 'sk-secret-never-return', keyId: 1, keyName: 'video',
+    })
+    await expect(service.generate(41, { ...request, requestId: 'never-sent' })).rejects.toThrow('不提供模型')
+    expect(finished).toHaveBeenCalledOnce()
+
+    // The page picking an earlier paid request back up ends a paid wait too.
+    await expect(service.resumeRequest(41, 7, 'earlier-request')).resolves.toMatchObject({ taskId: 'video_earlier' })
+    expect(finished).toHaveBeenCalledTimes(2)
+
+    // 「停止」 ends the wait on a request the server already took, and the money is already gone.
+    pollsHang = true
+    const stopped = service.generate(41, { ...request, requestId: 'stopped' })
+    await vi.waitFor(() => expect(vi.mocked(fetchImpl).mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(2))
+    expect(service.cancel(41, 'stopped')).toEqual({ canceled: true, mayStillComplete: true })
+    await expect(stopped).rejects.toThrow('服务端可能仍在生成视频')
+    expect(finished).toHaveBeenCalledTimes(3)
+    expect(started).toHaveBeenCalledTimes(4)
   })
 
   it('stops before paid dispatch when the save location cannot be written', async () => {

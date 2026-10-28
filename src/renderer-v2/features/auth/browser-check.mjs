@@ -253,13 +253,92 @@ test('recovery shows the temporary password when the change fails after signing 
     await page.getByTestId('auth-message').filter({ hasText: '新密码没设上' }).waitFor()
     assert.equal(await page.getByTestId('forgot-finish').count(), 0)
     assert.equal(await page.getByTestId('forgot-back-login').count(), 0)
-    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
+    // 说不清是什么错，先拿新密码试登一次：登不上，才说新密码没设上。
+    const probed = await calls(page)
+    assert.deepEqual(probed.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login'])
+    assert.equal(probed.at(-1).input.password, 'my-own-password')
     await page.getByTestId('forgot-continue').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'authenticated'))
     const recorded = await calls(page)
-    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login', 'remember', 'authenticated', 'notice'])
     assert.equal(recorded.find((item) => item.method === 'remember').input, null)
     assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
+  } finally { await page.close() }
+})
+
+// 2026-10-27：密码其实已经改好，这次登录却在改的半路被服务端结束了，改密码报了失败。
+// 以前软件说「新密码没设上」、记住临时密码、把界面摆成已登录；现在拿新密码试登一次，登上了就照改成功处理。
+test('recovery keeps the new password when the change failed only because the login was ended halfway', async () => {
+  const page = await open('scenario=recovery&changeLost=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-remember').check()
+    await page.getByTestId('forgot-set-submit').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login', 'remember', 'authenticated', 'notice'])
+    assert.deepEqual(recorded.filter((item) => item.method === 'login').map((item) => item.input.password), ['new-test-password', 'my-own-password'])
+    assert.deepEqual(recorded.find((item) => item.method === 'remember').input, { identifier: 'person@example.test', password: 'my-own-password' })
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '密码已重设，已自动登录')
+    assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
+  } finally { await page.close() }
+})
+
+test('recovery takes a refusal the server spelled out at its word, and continuing does not enter once that login has ended', async () => {
+  const page = await open('scenario=recovery&changeRefused=1')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('forgot-continue').waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '已经用下面这个临时密码登录了' }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
+    await page.evaluate(() => window.authHarness.endSession())
+    await page.getByTestId('forgot-continue').click()
+    await page.getByTestId('forgot-finish').waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '复制它去登录' }).waitFor()
+    assert.equal(await page.getByTestId('forgot-new-password').inputValue(), 'new-test-password')
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password'])
+    await page.getByTestId('forgot-finish').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((item) => item.method === 'notice'))
+    const recorded = await calls(page)
+    assert.deepEqual(recorded.map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login', 'remember', 'authenticated', 'notice'])
+    assert.equal(recorded.at(-4).input.password, 'new-test-password')
+    assert.equal(recorded.find((item) => item.method === 'notice').input, '已用临时密码登录，记得改成自己的密码')
+  } finally { await page.close() }
+})
+
+test('recovery remembers nothing and hands over to the login form when it cannot tell which password took', async () => {
+  const page = await open('scenario=recovery&changeFail=1&probeFail=timeout')
+  try {
+    await reachNewPasswordStep(page)
+    await page.getByTestId('forgot-set-password').fill('my-own-password')
+    await page.getByTestId('forgot-set-confirm').fill('my-own-password')
+    await page.getByTestId('forgot-remember').check()
+    await page.getByTestId('forgot-set-submit').click()
+    await page.getByTestId('login-dialog').waitFor()
+    await page.getByTestId('auth-message').filter({ hasText: '没能确认新密码有没有设上' }).waitFor()
+    await page.getByTestId('auth-error').waitFor()
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'my-own-password')
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login'])
+  } finally { await page.close() }
+})
+
+test('login stays in the dialog with the password kept when the main process is no longer signed in at the end', async () => {
+  const page = await open('sessionLost=1')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-remember').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-message').filter({ hasText: '刚才的登录没有保持住' }).waitFor()
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-password')
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login'])
   } finally { await page.close() }
 })
 
@@ -957,6 +1036,32 @@ test('a network failure on login names proxy software and offers retry and suppo
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'help', 'login', 'remember', 'authenticated', 'notice'])
   } finally { await page.close() }
+})
+
+// Mac 钥匙串弹框被拒：红字教怎么点，给「重新打开星芒」；Windows 上同一个错照旧是原来那句、没有这颗按钮。
+test('a refused Mac keychain explains the prompt and offers to reopen the app', async () => {
+  const page = await open('keychainRefused=1&os=mac')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: 'Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。' }).waitFor()
+    assert.equal(await page.getByTestId('auth-exit-retry').count(), 0)
+    await page.getByTestId('auth-exit-help').waitFor()
+    await page.getByTestId('auth-exit-relaunch').filter({ hasText: '重新打开星芒' }).click()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login', 'relaunch'])
+  } finally { await page.close() }
+  const windows = await open('keychainRefused=1&os=win')
+  try {
+    await windows.getByTestId('login-account').fill('fixture-member')
+    await windows.getByTestId('login-password').fill('fixture-password')
+    await windows.getByTestId('auth-agree').check()
+    await windows.getByTestId('login-submit').click()
+    await windows.getByTestId('auth-error').filter({ hasText: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。' }).waitFor()
+    assert.equal(await windows.getByTestId('auth-exit-relaunch').count(), 0)
+    await windows.getByTestId('auth-exit-help').waitFor()
+  } finally { await windows.close() }
 })
 
 test('a login without network waits for the network and then says to try again', async () => {

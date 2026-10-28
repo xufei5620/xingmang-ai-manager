@@ -148,7 +148,7 @@ describe('renderer-v2 home tool line status', () => {
     const markup = render({}, undefined, { toolRouteStatus: { serverSwitching: true, outage: { id: 1, reason: 'reset', appReachable: true } } })
     expect(markup).toContain('data-testid="home-route-server-switching"')
     expect(markup).toContain('服务端正在切换线路，稍等几分钟')
-    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒管理工具能连上，但 AI 工具会连不上。.*重新检测/)
+    expect(markup).toMatch(/data-testid="home-route-outage"[^>]*>.*星芒管理工具本身能连上。.*重新检测/)
   })
 
   it('says once that the Cloudflare line is in use after a hijack', () => {
@@ -502,6 +502,19 @@ describe('renderer-v2 home before the startup scan finishes', () => {
     expect(disabled(markup, 'tool-codex-primary')).toBe(false)
   })
 
+  // 停在等账号那一轮的那次「打开」只占自己那张卡（0.2.22 打磨 B4），别的工具不陪它等；
+  // 正常在开的那次照旧把别人按住。
+  it('lets the other tools open while one launch waits on the account round after the scan', () => {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    const bootstrap = { phase: 'configuring' as const, label: '正在更新连接', percent: 65, scope: 'scope', connectedKeyChanges: ['claude' as const] }
+    const waiting = render({ 'launch:claude': { label: '正在打开工具', log: [] } }, undefined, { snapshot: base, loading: false, account, bootstrap })
+    expect(disabled(waiting, 'tool-claude-primary')).toBe(true)
+    expect(disabled(waiting, 'tool-codex-primary')).toBe(false)
+    expect(disabled(waiting, 'tool-grok-primary')).toBe(false)
+    const opening = render({ 'launch:codex': { label: '正在打开工具', log: [] } }, undefined, { snapshot: base, loading: false, account, bootstrap })
+    expect(disabled(opening, 'tool-grok-primary')).toBe(true)
+  })
+
   it.each(['official', 'manual'] as const)('keeps an existing %s connection openable during another account sync after the scan', (source) => {
     const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
     const current = { ...base, config: { ...base.config, rememberedWorkspace: 'D:\\projects\\my-project', providers: {
@@ -662,6 +675,39 @@ describe('renderer-v2 home account key bootstrap notice', () => {
     expect(markup).not.toContain('分组')
     // Re-syncing cannot enable a tool on the account, so the banner offers no button for it.
     expect(markup).not.toContain('>重新同步<')
+    // Without onHelp the card keeps the old primary and the banner offers nothing (0.2.22 打磨 B5 缺省 = 旧行为).
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*确认连接</)
+    expect(markup).not.toContain('找客服')
+  })
+
+  // 账号没开通的只有客服能开（主路卡点 F5）：横幅给「找客服」，卡片主按钮也换成它，「确认连接」点进去的配置框帮不上忙。
+  it('offers support instead of the configuration dialog for a tool the account has not enabled', () => {
+    const failure = { provider: 'grok' as const, message: '分组不存在、不可用或名称重复，请确认账号可用分组' }
+    const markup = render({}, undefined, {
+      snapshot: keylessSnapshot('grok'),
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [failure] }),
+      },
+      onBootstrapRetry: () => undefined,
+      onHelp: () => undefined,
+    })
+    expect(markup).toContain('data-testid="home-bootstrap-support"')
+    expect(markup).not.toContain('>重新同步<')
+    expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*找客服</)
+    expect(markup).not.toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*确认连接</)
+    // A tool whose failure can be retried keeps both: resync for it, support for the one the account lacks.
+    const mixed = render({}, undefined, {
+      snapshot: keylessSnapshot('grok'),
+      bootstrap: {
+        phase: 'verifying', label: 'Key 同步完成，部分工具待处理', percent: 100, scope: 'scope',
+        result: bootstrapResult({ failed: [failure, { provider: 'claude', message: '当前分组未返回可用模型' }] }),
+      },
+      onBootstrapRetry: () => undefined,
+      onHelp: () => undefined,
+    })
+    expect(mixed).toContain('>重新同步<')
+    expect(mixed).toContain('data-testid="home-bootstrap-support"')
   })
 
   it('keeps the original wording when the failure is not a network one', () => {
@@ -2120,5 +2166,76 @@ describe('renderer-v2 home v4 top cards', () => {
     expect(markup).toContain('没装上：下载超时，已撤回')
     expect(markup).toMatch(/data-testid="tool-grok-primary"[^>]*>(?:<[^>]+>)*重试/)
     expect(markup).toContain('data-testid="tool-grok-why"')
+  })
+})
+
+describe('renderer-v2 home desktop app updates on macOS', () => {
+  const codexDesktop = {
+    installed: true, version: '26.930.31730', appVersion: '26.930.31730', path: '/Applications/ChatGPT.app', installDirectory: '/Applications/ChatGPT.app',
+    running: false, detectionFailed: false, detectionError: null, mirrorVersion: '26.1003.2', mirrorUpdateAvailable: true, mirrorError: null,
+    latestVersion: '26.1003.2', updateAvailable: true, updateState: 'available', updateCheck: 'checked', updateError: null,
+    uninstall: { available: false, reason: null, manualCommand: null },
+  }
+  function macSnapshot(): ToolboxSnapshot {
+    const base = snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus })
+    return {
+      ...base,
+      platform: {
+        platform: 'macos', isMac: true, nodeRuntimeInstall: 'external', pythonRuntimeInstall: 'external',
+        cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' },
+        codexDesktop: { install: 'managed', launch: true, uninstall: false, windowsStore: false },
+      },
+      system: { ...base.system, desktopApps: { codex: codexDesktop } },
+    } as unknown as ToolboxSnapshot
+  }
+  const opencode = {
+    tool: 'opencode', installed: true, version: '1.18.30', path: '/Applications/OpenCode.app', installDirectory: '/Applications', running: false,
+    installSupported: true, launchSupported: true, detectionError: null, installHint: null,
+    configured: true, configurationReady: true, model: 'fixture-model', configurationSource: 'xingmang', configurationError: null,
+    latestVersion: '1.18.34', updateAvailable: true,
+  } as unknown as HomeProps['externalClients'][number]
+  function row(markup: string, tool: string): string {
+    const start = markup.indexOf(`data-testid="tool-row-${tool}"`)
+    expect(start, `没有渲染出 ${tool} 那一行`).toBeGreaterThan(-1)
+    const next = markup.indexOf('data-testid="tool-row-', start + 1)
+    return markup.slice(start, next === -1 ? undefined : next)
+  }
+  const noop = () => undefined
+
+  it('offers the exact bucket version on the Codex desktop row and on a Mac client row', () => {
+    const markup = render({}, undefined, { snapshot: macSnapshot(), externalClients: [opencode], onUpdateDesktopApp: noop })
+    expect(row(markup, 'codexDesktop')).toContain('可更新到 v26.1003.2')
+    expect(row(markup, 'opencode')).toContain('data-testid="tool-opencode-update"')
+    expect(row(markup, 'opencode')).toContain('可更新到 v1.18.34')
+    // Without a way to update it, the client row says nothing about a newer version.
+    const offline = render({}, undefined, { snapshot: macSnapshot(), externalClients: [opencode] })
+    expect(row(offline, 'opencode')).not.toContain('可更新到')
+    const current = { ...opencode, version: '1.18.34', updateAvailable: false } as typeof opencode
+    expect(row(render({}, undefined, { snapshot: macSnapshot(), externalClients: [current], onUpdateDesktopApp: noop }), 'opencode')).not.toContain('可更新到')
+  })
+
+  it('leads the progress line with the target version while a desktop app updates', () => {
+    const jobs = {
+      opencode: { label: '正在下载 OpenCode 1.18.34', log: [], cancellable: true },
+      codexDesktop: { label: '正在下载 Codex 桌面端 26.1003.2', log: [], cancellable: true },
+    }
+    const markup = render(jobs, undefined, {
+      snapshot: macSnapshot(), externalClients: [opencode], onUpdateDesktopApp: noop,
+      desktopUpdateTargets: { opencode: '1.18.34', codexDesktop: '26.1003.2' },
+    })
+    expect(row(markup, 'opencode')).toContain('更新到 v1.18.34 · 正在下载 OpenCode 1.18.34')
+    expect(row(markup, 'codexDesktop')).toContain('更新到 v26.1003.2 · 正在下载 Codex 桌面端 26.1003.2')
+    expect(row(markup, 'opencode')).not.toContain('data-testid="tool-opencode-update"')
+  })
+
+  it('says the old version is still there after a failed update, next to the reason button', () => {
+    const markup = render({}, undefined, {
+      snapshot: macSnapshot(), externalClients: [opencode], onUpdateDesktopApp: noop,
+      desktopUpdateFailures: { opencode: {}, codexDesktop: {} }, onShowDesktopUpdateFailure: noop,
+    })
+    for (const tool of ['opencode', 'codexDesktop']) {
+      expect(row(markup, tool), tool).toContain('没更新成，旧版还在，照常能用')
+      expect(row(markup, tool), tool).toContain(`data-testid="tool-${tool}-why"`)
+    }
   })
 })

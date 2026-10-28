@@ -16,7 +16,7 @@ import { requiredString } from './common'
 // clamp to 100 regardless of what is sent).
 export function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
   if (value === undefined) return {}
-  if (!isRecord(value)) throw new Error('Key 查询参数格式错误')
+  if (!isRecord(value)) throw new Error('密钥查询参数格式错误')
   const page = value.page
   if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
     throw new Error('页码格式错误')
@@ -40,7 +40,7 @@ export function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
 // defense even though the value here is numeric, not a path string).
 export function parseAccountRevokeKeyId(value: unknown): number {
   if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER) {
-    throw new Error('Key ID 格式错误')
+    throw new Error('密钥 ID 格式错误')
   }
   return value
 }
@@ -93,8 +93,8 @@ export function parseManagedCliConfigurationInput(value: unknown): AccountManage
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
 // 名称上限(rc.24 controller/token.go);expiredTime -1 = 永不过期哨兵。
 export function parseAccountKeyCreateInput(value: unknown, sub2Api = false): AccountKeyCreateInput {
-  if (!isRecord(value)) throw new Error('Key 信息格式错误')
-  const name = requiredString(value.name, 'Key 名称', sub2Api ? 100 : 50)
+  if (!isRecord(value)) throw new Error('密钥信息格式错误')
+  const name = requiredString(value.name, '密钥名称', sub2Api ? 100 : 50)
   if (typeof value.unlimitedQuota !== 'boolean') throw new Error('额度类型格式错误')
   if (
     typeof value.remainQuota !== 'number'
@@ -114,7 +114,7 @@ export function parseAccountKeyCreateInput(value: unknown, sub2Api = false): Acc
   }
   return {
     name,
-    group: requiredString(value.group, 'Key 分组', 128),
+    group: requiredString(value.group, '密钥分组', 128),
     remainQuota: value.remainQuota,
     unlimitedQuota: value.unlimitedQuota,
     expiredTime: value.expiredTime,
@@ -122,7 +122,7 @@ export function parseAccountKeyCreateInput(value: unknown, sub2Api = false): Acc
 }
 
 export function parseAccountKeyUpdateInput(value: unknown, sub2Api = false): AccountKeyUpdateInput {
-  if (!isRecord(value)) throw new Error('Key 信息格式错误')
+  if (!isRecord(value)) throw new Error('密钥信息格式错误')
   return {
     ...parseAccountKeyCreateInput(value, sub2Api),
     id: parseAccountRevokeKeyId(value.id),
@@ -130,7 +130,7 @@ export function parseAccountKeyUpdateInput(value: unknown, sub2Api = false): Acc
 }
 
 export function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConfigurationInput {
-  if (!isRecord(value)) throw new Error('账号 Key 配置信息格式错误')
+  if (!isRecord(value)) throw new Error('账号密钥配置信息格式错误')
   if (!isActiveProviderId(value.provider)) throw new Error('未知的 CLI 类型')
   const mode = value.mode
   if (mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')

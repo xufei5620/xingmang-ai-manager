@@ -38,6 +38,20 @@ test('keeps the canvas renderer source free of credential-bearing request paths'
   }
 })
 
+// The main window's AI pages follow the same rule as the canvas (I15): every
+// relay request, and the key it carries, stays in the main process. The video
+// studio also runs a third-party muxer in a worker thread, so a page or worker
+// that grows its own credential-bearing request must fail here, not in review.
+test('keeps the main window video studio and chat pages free of credential-bearing request paths', () => {
+  const directories = ['video-studio', 'chat'].map((name) => path.join(projectRoot, 'src', 'renderer-v2', 'features', name))
+  const files = directories.flatMap((directory) => sourceFiles(directory))
+  assert.ok(files.some((file) => file.endsWith('compose-worker.ts')), 'the video studio worker must be scanned')
+  for (const file of files) {
+    const content = fs.readFileSync(file, 'utf8')
+    for (const pattern of forbidden) assert.doesNotMatch(content, pattern, `${path.relative(projectRoot, file)} violates the renderer boundary`)
+  }
+})
+
 // CI sets this after building, so a missing build fails instead of skipping.
 const distRequired = process.env.XINGMANG_REQUIRE_CANVAS_DIST === '1'
 

@@ -44,6 +44,11 @@ describe('tutorial illustrations', () => {
     expect(renderedText(kind)).not.toContain('Gemini')
   })
 
+  // #1399 起聊天输入框底部只有模式和模型，没有分组按钮。
+  it('draws the chat compose bar without a group menu', () => {
+    expect(renderedText('chat')).not.toContain('分组')
+  })
+
   it('names the runtimes the way the home runtime card lists them', () => {
     expect(renderedText('install')).toContain('Node.js · Python')
   })

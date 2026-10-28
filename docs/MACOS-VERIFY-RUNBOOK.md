@@ -74,8 +74,9 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' npm
 
 现在 CI 已经会真的启动一次打包后的 `.app`（`e2e/macos-launch-smoke.mjs`），这一条仍然要人工做一遍：
 CI 跑的是临时身份签出的包，且它只看进程有没有活下来。两种芯片的包都会被启动：出包的 runner 是 Apple
-芯片，Intel 版在那里经 Rosetta 启动（`--arch x64`）；每个 PR 另在 GitHub 的 Intel 机器上原生出包、原生
-启动一次（`quality.yml` 的 `macos-intel`）。0.2.19 之前 Intel 版发出去前从没被启动过。
+芯片，Intel 版在那里经 Rosetta 启动（`--arch x64`）；每次合进 `main`、以及动了打包相关文件的 PR，另在
+GitHub 的 Intel 机器上原生出包、原生启动一次（`quality.yml` 的 `macos-intel`，哪些文件算打包相关见
+`scripts/ci-change-scope.cjs`）。0.2.19 之前 Intel 版发出去前从没被启动过。
 
 **算通过**：应用正常起来，进到登录界面。
 **不通过**：先别发 macOS 包，告诉我，并把崩溃报告里 `Termination Reason` 那几行一起发过来。
@@ -161,7 +162,7 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 2. `manifest.json` 里的 `arch` 要和这个包的架构一致（arm64 包里写 `arm64`，x64 包里写 `x64`）。两个包拿错资源正是分架构构建最容易出的错。
 3. 在应用里打开加速，确认线路列表能出来、能连上；停止后再启动一次。
 
-CI 也跑这条路径（2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥）：`package-for-testing` 出的 Mac 测试包和 PR 上的 `macos-release-rehearsal` 排练都带线路。它们用 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；想在真机上先验上面三条，下载 `package-for-testing` 的包就行，不必为此在发布 Mac 上另出一份。正式发给客户的包仍按本手册用发布身份出。
+CI 也跑这条路径（2026-09-19 节点入仓以后，`--ci-temporary-signing` 不再与这两个参数互斥）：`package-for-testing` 出的 Mac 测试包和 `quality` 的 `macos-release-rehearsal` 排练（每次合进 `main` 都跑，PR 上只在动了打包相关文件时跑）都带线路。它们用 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；想在真机上先验上面三条，下载 `package-for-testing` 的包就行，不必为此在发布 Mac 上另出一份。正式发给客户的包仍按本手册用发布身份出。
 
 ---
 

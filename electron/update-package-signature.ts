@@ -19,8 +19,21 @@ export const updateSigningPublicKeys: readonly string[] = [
 ]
 // update-signing-keys:end
 
-/** Field that publish-release adds to every `files[]` entry of latest.yml. */
+/** Field that publish-release adds to every `files[]` entry of latest.yml and the two Linux manifests. */
 export const UPDATE_SIGNATURE_FIELD = 'xingmangSignature'
+
+/**
+ * Which platforms' unsigned-channel updates must carry the publisher signature.
+ * Windows has no Authenticode signature; a Linux .deb is opened as root by the
+ * system installer and dpkg checks no signature of its own (Debian and Ubuntu
+ * ship `no-debsig`). Both manifests sit in the bucket next to the package, so
+ * without this a leaked upload credential reaches every client's next update.
+ * macOS is left out: Squirrel.Mac already checks the Apple signature against
+ * the publisher certificate the installed app pins.
+ */
+export function shouldVerifyUpdateSignature(platform: NodeJS.Platform): boolean {
+  return platform === 'win32' || platform === 'linux'
+}
 
 // The signed text binds the version as well as the file: without it an old,
 // genuinely signed installer could be re-announced under a higher version number.

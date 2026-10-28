@@ -17,6 +17,11 @@
   --surface-card-shadow: var(--sh-1);
   --surface-dialog-background: var(--pop);
   --surface-toast-background: var(--toast);
+  /* The sidebar's update entry is gold in both themes. Light's primary is navy,
+     so the entry borrows dark's primary gold and keeps dark text on it. */
+  --nav-update-bg: linear-gradient(180deg,#F0D7A1,#D8B06A);
+  --nav-update-tx: #17130B;
+  --nav-update-sh: inset 0 1px 0 rgba(255,255,255,.45), 0 1px 2px rgba(0,0,0,.25);
 }
 
 /* UI v4.0 has no skins: the main window paints only by data-theme and never

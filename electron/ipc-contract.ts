@@ -35,10 +35,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
+export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -558,6 +558,8 @@ export interface AiChatGroupSummary {
   ratio: number | string
   /** 没选过分组时默认用这个（主进程按 Codex 那把 Key 的认法挑的，站上改了本名也跟得上）；缺省 = 不是。 */
   recommended?: boolean
+  /** 图片分组：出图时优先用它（主进程按写死的名字和分组对照里「画图」那一项认的）；缺省 = 不是。 */
+  image?: boolean
 }
 
 export interface AiChatPreparedGroup {
@@ -686,7 +688,7 @@ export interface AiChatCancelResult {
 }
 
 /**
- * 主窗口出一段 AI 视频（video:generate），对话页和视频剪辑页共用。参考图可以是对话里选的图片
+ * 主窗口出一段 AI 视频（video:generate），现在只有视频剪辑页在用。参考图可以是对话里选的图片
  * （chat:pick-images 回的编号），它们和出的图片在同一个作品库里。不收账号、项目这类字段：账号按
  * 当前登录算，片段存进全局作品库。
  */
@@ -855,7 +857,8 @@ export interface XingmangInvokeContract {
     ExternalClientConfigResult
   >
   scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [force?: boolean, options?: ExternalClientScanOptions], ExternalClientStatus[]>
-  installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
+  /** request 只有 Mac 上首页「可更新到 v…」那一下才传：换掉装着的那一份（见 DesktopAppUpdateRequest）。 */
+  installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId, request?: DesktopAppUpdateRequest], ExternalClientStatus>
   /** 中止正在进行的客户端安装;Windows 上已经交给系统去装的那一步会被拒绝并给出原因。 */
   cancelExternalClientInstall: IpcInvokeDefinition<'external-clients:cancel-install', [tool: ExternalToolId], InstallCancelResult>
   launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
@@ -944,7 +947,13 @@ export interface XingmangInvokeContract {
   cleanUninstallLeftovers: IpcInvokeDefinition<'cli:clean-uninstall-leftovers', [provider: ProviderId], CliLeftoverCleanupResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>
-  installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [], CodexDesktopInstallResult>
+  /** request 同 installExternalClient，只有 Mac 上的更新才传。 */
+  installCodexDesktop: IpcInvokeDefinition<'desktop:install-codex', [request?: DesktopAppUpdateRequest], CodexDesktopInstallResult>
+  /**
+   * Mac 拦住星芒换别家 App 时（「App 管理」没允许星芒），打开系统设置里那一页。地址写死在主进程；
+   * 不是 Mac 返回 false。
+   */
+  openAppManagementSettings: IpcInvokeDefinition<'desktop:open-app-management-settings', [], boolean>
   /** 中止正在进行的安装或更新;已经开始装 MSIX 时会被拒绝并给出原因。 */
   cancelCodexDesktopInstall: IpcInvokeDefinition<'desktop:cancel-install-codex', [], InstallCancelResult>
   uninstallCodexDesktop: IpcInvokeDefinition<'desktop:uninstall-codex', [], ToolUninstallResult>
@@ -1492,6 +1501,7 @@ export const ipcInvokeChannels = {
   checkCliUpdate: 'cli:check-update',
   getCodexSetupStatus: 'setup:codex-status',
   installCodexDesktop: 'desktop:install-codex',
+  openAppManagementSettings: 'desktop:open-app-management-settings',
   cancelCodexDesktopInstall: 'desktop:cancel-install-codex',
   uninstallCodexDesktop: 'desktop:uninstall-codex',
   resetCodexDesktop: 'desktop:reset-codex',

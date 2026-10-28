@@ -2,6 +2,7 @@
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import type { WebContents } from 'electron'
 import { loadAccountGroupHints, markRecommendedChatGroup } from '../../managed-cli-groups'
+import { markImageChatGroups } from '../../ai-chat-protocol'
 import { parseAiChatHistoryScope, parseAiChatHistoryWrite } from '../../ai-chat-history-store'
 import { requiredString } from '../parsers/common'
 import { parseAiChatImageInput, parseAiChatStartInput } from '../parsers/ai-chat'
@@ -15,7 +16,8 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
       options.chatCredentials.listGroups(),
       loadAccountGroupHints(automaticProvisioning),
     ])
-    return markRecommendedChatGroup(groups, accountService.getActiveSiteId?.(), hints)
+    // 图片分组也标出来（含分组对照里改过的本名），渲染层出图时照它优先挑，同主进程给图片分组列模型的认法。
+    return markImageChatGroups(markRecommendedChatGroup(groups, accountService.getActiveSiteId?.(), hints), hints?.image)
   })
   registerTrustedHandler('chat:prepare-group', (_event, group: unknown) => {
     if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')

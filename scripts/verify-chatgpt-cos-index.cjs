@@ -10,9 +10,14 @@ function validateOfficialIndex(value, selection = 'all', location = {}) {
   for (const entry of Object.values(manifest.platforms)) {
     if (entry.artifact.url !== `${publicBaseUrl}/${entry.artifact.key}` || entry.license && entry.license.url !== `${publicBaseUrl}/${entry.license.key}`) throw new Error('官方最新索引下载地址与固定存储桶不一致')
   }
-  // Producer validation enforces the selected Windows architecture's matching
-  // package version, license key, size and source verification; this presence
-  // check catches a prior job dropped by a later shared-version transition.
+  // Producer validation enforces each Windows architecture's license key, size
+  // and source verification, and that no entry is newer than the shared version.
+  // An architecture may still be on its previous package after every selected
+  // job succeeded: it is waiting for OpenAI to ship the package its metadata
+  // already names (package-pending, checkedAt untouched), or the official version
+  // moved on between the serialized jobs. Neither is a failed sync. The waiting
+  // job itself fails once its entry is a day old, and the next scheduled run
+  // catches up the other case, so this presence check does not repeat either.
   return { platforms: ids, windowsLicenses: ids.filter(id => id.startsWith('windows-')).length }
 }
 

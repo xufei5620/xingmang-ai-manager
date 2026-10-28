@@ -179,6 +179,8 @@ export interface IpcRegistrationOptions {
   /** 见 electron/proxy-bypass.ts；不传 = 不绕（测试与旧调用方）。 */
   bypassBrokenProxy?(): Promise<ProxyBypassOutcome>
   openNetworkSettings?(kind: NetworkSettingsKind): Promise<boolean>
+  /** Mac 上打开系统设置的「App 管理」那一页（macos-desktop-app-update.ts 的固定地址）；不传 = 不是 Mac。 */
+  openAppManagementSettings?(): Promise<boolean>
   relaunchApp?(): Promise<boolean>
   /**
    * 更新页「确认重启安装」（带 askIfInstalling）前问一句有没有工具在装（已知31）：false = 客户点了
@@ -239,6 +241,9 @@ export interface IpcRegistrationOptions {
   // 服务状态文件里的型号表（service-status.ts 的 cliModels）：登录后签 Key、写配置时挑默认型号先看它。
   // 缺省 = 只用程序自带的那份（cli-model-defaults.ts）。
   cliModelHints?: () => Promise<CliModelHints | null>
+  // 服务状态文件里的充值方式开关（service-status.ts 的 paymentMethodsOff），这台电脑该藏的付款方式（小写的 type）。
+  // 缺省 = 一种也不藏。
+  hiddenPaymentMethods?: () => Promise<readonly string[]>
   // 撤销一把设了限制、工具正在用的 Key 时记下的限制（managed-key-replacement-store.ts），
   // 换新时照抄。缺省用内存版：测试与预览不落盘。
   keyReplacements?: ManagedKeyReplacementStore
@@ -252,7 +257,7 @@ export interface IpcRegistrationOptions {
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
   chatAttachments?: ChatAttachmentService
-  // 对话页和视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
+  // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot

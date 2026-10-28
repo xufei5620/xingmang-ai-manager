@@ -62,17 +62,33 @@ function uniqueModels(models: readonly string[]): string[] {
   return [...new Set(models)]
 }
 
+// 账号模型列表里混着只能画图、出视频、转语音、算向量的型号，还有服务端专用的 codex-auto-review，拿来对话、改代码
+// 都答不了。列表按字母排，它们常排在前面（codex-auto-review、dall-e）。只拦站上常见的这几类，认不出的照旧当能对话。
+const nonInteractiveCliModelPatterns = [
+  /(?:^|\/)codex[-_]auto[-_]review(?:$|[-_:/])/i,
+  /(?:^|\/)minimax-h\d/i,
+  /(?:^|[-_./:])(?:image|imagen|imagine|dall-e|jimeng|seedream|video|sora|veo|kling|vidu|seedance|hailuo|embeddings?|tts|whisper|transcribe|moderation)(?:$|[-_./:\d])/i,
+]
+
+/**
+ * 不能拿来对话、改代码的型号（生图、视频、语音、向量、服务端审查）。挑默认时绕开它们，远端型号表把默认、上一代
+ * 写成它们也不认，发布工作流那边同样拦（scripts/service-status.cjs，#1154 第 3 条）。客户自己选的不拦。
+ */
+export function isNonInteractiveCliModel(model: string): boolean {
+  return nonInteractiveCliModelPatterns.some((pattern) => pattern.test(model))
+}
+
 /**
  * 合并规则：下架名单两份取并集（远端不能把程序认定下架的型号救回来）；默认型号远端的优先，但远端写的
- * 默认也在下架名单上时不认；远端换了默认，程序自带的默认就排进上一代，账号还没上新默认时先退回它。
+ * 默认也在下架名单上、或者是不能对话的型号时不认；远端换了默认，程序自带的默认就排进上一代，账号还没上新默认时先退回它。
  */
 function cliModelTable(provider: ProviderId, hints?: CliModelHints | null): CliModelTable {
   const bundled = bundledCliModels[provider]
   const hint = hints?.[provider]
   if (!hint) return bundled
   const retired = uniqueModels([...bundled.retired, ...(hint.retired ?? [])])
-  const preferred = hint.default && !retired.includes(hint.default) ? hint.default : bundled.default
-  const previous = uniqueModels([...(hint.previous ?? []), bundled.default, ...bundled.previous])
+  const preferred = hint.default && !retired.includes(hint.default) && !isNonInteractiveCliModel(hint.default) ? hint.default : bundled.default
+  const previous = uniqueModels([...(hint.previous ?? []).filter((model) => !isNonInteractiveCliModel(model)), bundled.default, ...bundled.previous])
     .filter((model) => model !== preferred && !retired.includes(model))
   return { default: preferred, previous, retired }
 }
@@ -140,6 +156,14 @@ function claudeTier(model: string): number {
   return Math.max(...claudeTiers.map((tier, index) => parts.includes(tier) ? index : -1))
 }
 
+/**
+ * Claude 型号按版本新到旧排，版本一样时 Opus > Sonnet > Haiku，再一样照原来的先后。Claude Desktop 的型号
+ * 菜单放哪几个、怎么排用它（claude-desktop-models.ts）：分组里型号多到放不下时，先舍掉老的。
+ */
+export function sortClaudeModelsNewestFirst(models: readonly string[]): string[] {
+  return [...models].sort((left, right) => compareNewerFirst(left, right) || claudeTier(right) - claudeTier(left))
+}
+
 function knownCliModel(table: CliModelTable, offered: readonly string[]): string | undefined {
   return [table.default, ...table.previous].find((model) => offered.includes(model))
 }
@@ -158,7 +182,7 @@ function sameFamilyCliModel(table: CliModelTable, offered: readonly string[], re
 
 /**
  * 新配工具、打开前劝换、配置窗口预选用哪个型号。preferred 是原来设的那个：账号还列着就留着，不列了就按它的系列挑。
- * 默认、上一代、同系列都挑不到时，Claude Code 按 Opus > Sonnet > Haiku 挑，别家照旧取列表第一个。
+ * 默认、上一代、同系列都挑不到时，Claude Code 按 Opus > Sonnet > Haiku 挑，别家取列表里第一个能对话的。
  */
 export function resolveDefaultCliModel(
   provider: ProviderId,
@@ -171,16 +195,15 @@ export function resolveDefaultCliModel(
   const offered = models.filter((model) => !table.retired.includes(model))
   const known = knownCliModel(table, offered)
   if (known) return known
-  if (provider === 'codex') {
-    // The model endpoint sorts IDs alphabetically, which puts service-only
-    // auto-review models first. Keep explicit choices, but never infer one as
-    // the interactive default when the preferred model is unavailable.
-    return offered.find((model) => !/(?:^|\/)codex[-_]auto[-_]review(?:$|[-_:/])/i.test(model)) ?? null
-  }
-  const close = sameFamilyCliModel(table, offered, preferred)
+  // The model endpoint sorts IDs alphabetically, which puts service-only
+  // auto-review and image models first. Keep explicit choices, but never infer
+  // one as the interactive default when the preferred model is unavailable.
+  const interactive = offered.filter((model) => !isNonInteractiveCliModel(model))
+  if (provider === 'codex') return interactive[0] ?? null
+  const close = sameFamilyCliModel(table, interactive, preferred)
   if (close) return close
-  if (provider === 'claude') return [...offered].sort((left, right) => claudeTier(right) - claudeTier(left) || compareNewerFirst(left, right))[0] ?? null
-  return offered[0] ?? null
+  if (provider === 'claude') return [...interactive].sort((left, right) => claudeTier(right) - claudeTier(left) || compareNewerFirst(left, right))[0] ?? null
+  return interactive[0] ?? null
 }
 
 /**

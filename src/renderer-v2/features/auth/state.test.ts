@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
+import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -205,6 +205,18 @@ describe('v2 auth recovery boundaries', () => {
     expect(full).toContain('移除一个不用的')
     expect(full).not.toMatch(/安全存储|退出软件/)
   })
+  it('tells a Mac customer how to answer the keychain prompt only when the keychain refused', () => {
+    const generic = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。'
+    const refused = new Error("Error invoking remote method 'account:login': RealmAccountError: 账号安全存储不可用：系统加密服务没有放行，原记录未修改")
+    expect(authFailure(refused, '登录', true, 'mac')).toEqual({ message: macKeychainRefusedMessage, kind: 'keychain' })
+    expect(macKeychainRefusedMessage).toBe('Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。')
+    // Windows 没有钥匙串，Linux 存不了时只留在内存里、不报这句；平台还不知道时也不猜是 Mac。
+    for (const os of ['win', 'linux', undefined] as const) expect(authFailure(refused, '登录', true, os)).toEqual({ message: generic, kind: 'support' })
+    // 钥匙串好好的、是文件读不出来：重开也没用，不叫客户去点「始终允许」。
+    expect(authFailure(new Error('账号安全存储不可用，原记录未修改'), '登录', true, 'mac')).toEqual({ message: generic, kind: 'support' })
+    // 没网时主进程根本走不到这一步；真撞上了也先说存储，不说网络。
+    expect(authFailure(refused, '登录', false, 'mac').kind).toBe('keychain')
+  })
   it('keeps the reason the server gave instead of asking the user to try again later', () => {
     expect(authErrorMessage(new Error('User has been banned'), '登录')).toBe('该账号已被封禁，请联系客服')
     expect(authErrorMessage(new Error('New user registration has been disabled by administrator'), '注册')).toBe('当前暂未开放注册，请联系客服')
@@ -355,6 +367,29 @@ describe('recovery new password', () => {
     expect(validateNewPassword('my-own-password', 'my-own-passwor').confirm).toBe('两次密码不一致')
     // Passwords are forwarded exactly as typed, so surrounding spaces count toward the length.
     expect(validateNewPassword(' 1234567', ' 1234567')).toEqual({})
+  })
+})
+
+describe('recovery password change outcome', () => {
+  const login = { account: { userId: 7, username: 'sleet', group: 'default', role: 1, quota: 0, usedQuota: 0 }, accessExpiresAt: null, siteId: 'solov' as const }
+  it('counts only the very account just signed in, on the same source, as still signed in', () => {
+    expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov' }, login, 'solov')).toBe(true)
+    expect(sessionMatchesLogin({ authenticated: true, account: login.account }, login, 'solov')).toBe(true)
+    expect(sessionMatchesLogin({ authenticated: false, account: null, siteId: 'solov' }, login, 'solov')).toBe(false)
+    expect(sessionMatchesLogin(null, login, 'solov')).toBe(false)
+    expect(sessionMatchesLogin({ authenticated: true, account: { ...login.account, userId: 8 }, siteId: 'solov' }, login, 'solov')).toBe(false)
+    expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov-api' }, login, 'solov')).toBe(false)
+  })
+  it('does not take a change that lost its login halfway or got no answer as proof the new password was not set', () => {
+    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试")
+    const unanswered = new Error(`Error invoking remote method 'account:change-password': Error: ${networkFailureMessages.timeout}（修改密码请求失败）`)
+    expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
+    expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)
+    expect(passwordChangeOutcomeUnknown(authFailure(new Error('x'), '设新密码', false).kind)).toBe(true)
+  })
+  it('trusts a refusal the server spelled out', () => {
+    expect(passwordChangeOutcomeUnknown(authFailure(new Error('HTTP 429 Too Many Requests'), '设新密码').kind)).toBe(false)
+    expect(passwordChangeOutcomeUnknown(authFailure(new Error('此账号需要两步验证'), '设新密码').kind)).toBe(false)
   })
 })
 

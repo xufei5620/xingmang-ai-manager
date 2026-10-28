@@ -5,7 +5,9 @@ import { transpileModule, ModuleKind } from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
 import { accelerationEntryMode, accelerationWorkerArgument } from './acceleration-worker-entry'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice } from './linux-launch-guard'
-import { hasDisallowedPackagedDebugSwitch } from './security'
+import { formatRelaunchedWithout, launchArgumentRelaunchEnvironmentKey, takeLaunchArgumentRelaunch } from './launch-argument-relaunch'
+import { loginLaunchArgument } from './login-launch'
+import { resolvePackagedLaunchArguments } from './security'
 import { uninstallCleanupArgument, uninstallCleanupEntryMode } from './uninstall-cleanup-entry'
 
 interface EntryIdentity {
@@ -27,6 +29,7 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32', identi
     done(0)
   })
   const appExit = vi.fn((code: number) => events.push(`app:exit:${code}`))
+  const relaunch = vi.fn((options: { args: string[] }) => events.push(`relaunch:${options.args.join(' ')}`))
   const showErrorBox = vi.fn((title: string) => events.push(`dialog:${title}`))
   const removed: string[] = []
   const env: Record<string, string> = { HOME: '/home/alice', ...identity.env }
@@ -47,7 +50,8 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32', identi
     require(name: string) {
       if (name === '../acceleration-worker-entry') return { accelerationEntryMode }
       if (name === '../linux-launch-guard') return { linuxLaunchRefusal, linuxLaunchRefusalNotice }
-      if (name === '../security') return { hasDisallowedPackagedDebugSwitch }
+      if (name === '../security') return { resolvePackagedLaunchArguments }
+      if (name === '../launch-argument-relaunch') return { formatRelaunchedWithout, launchArgumentRelaunchEnvironmentKey, takeLaunchArgumentRelaunch }
       if (name === '../uninstall-cleanup-entry') return { uninstallCleanupEntryMode }
       if (name === '../uninstall-cleanup') return { startUninstallCleanup }
       if (name === 'electron') {
@@ -59,6 +63,7 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32', identi
             setPath: (name: string, value: string) => events.push(`path:${name}=${value}`),
             whenReady: () => Promise.resolve(),
             exit: appExit,
+            relaunch,
           },
           dialog: { showErrorBox },
         }
@@ -73,7 +78,7 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32', identi
       return {}
     },
   })
-  return { loaded, exit, appExit, showErrorBox, removed, env, setActivationPolicy, isolateAccelerationElectronProfile, startUninstallCleanup, events }
+  return { loaded, exit, appExit, relaunch, showErrorBox, removed, env, setActivationPolicy, isolateAccelerationElectronProfile, startUninstallCleanup, events }
 }
 
 describe('packaged acceleration worker entry', () => {
@@ -190,5 +195,70 @@ describe('packaged launch switch guard', () => {
     const result = runEntry(['app', '--remote-debugging-port=9222'], false, 'win32')
     expect(result.loaded).toEqual(['./desktop-entry'])
     expect(result.exit).not.toHaveBeenCalled()
+  })
+})
+
+describe('packaged Windows launch allowlist', () => {
+  it('starts again without the switches it does not know, keeping the rest in order', () => {
+    const result = runEntry(['app.exe', '--disable-gpu', 'xingmang://open', loginLaunchArgument, '/Lang=en'], false, 'win32', { packaged: true })
+
+    expect(result.relaunch).toHaveBeenCalledExactlyOnceWith({ args: ['xingmang://open', loginLaunchArgument] })
+    expect(result.env[launchArgumentRelaunchEnvironmentKey]).toBe('disable-gpu,lang')
+    expect(result.exit).toHaveBeenCalledExactlyOnceWith(0)
+    expect(result.loaded).toEqual([])
+    expect(result.events).toEqual([`relaunch:xingmang://open ${loginLaunchArgument}`])
+  })
+
+  it('opens the relaunched desktop and takes the marker out of the environment', () => {
+    const result = runEntry(['app.exe', 'xingmang://open', loginLaunchArgument], false, 'win32', {
+      packaged: true,
+      env: { [launchArgumentRelaunchEnvironmentKey]: 'disable-gpu,lang' },
+    })
+
+    expect(result.loaded).toEqual(['./desktop-entry'])
+    expect(result.relaunch).not.toHaveBeenCalled()
+    expect(result.exit).not.toHaveBeenCalled()
+    expect(launchArgumentRelaunchEnvironmentKey in result.env).toBe(false)
+  })
+
+  it('exits instead of starting again when a relaunched process still carries an unknown switch', () => {
+    const result = runEntry(['app.exe', '--disable-gpu'], false, 'win32', {
+      packaged: true,
+      env: { [launchArgumentRelaunchEnvironmentKey]: 'disable-gpu' },
+    })
+
+    expect(result.exit).toHaveBeenCalledExactlyOnceWith(1)
+    expect(result.relaunch).not.toHaveBeenCalled()
+    expect(result.loaded).toEqual([])
+  })
+
+  it('exits a helper launch that carries an unknown switch instead of relaunching it', () => {
+    const cleanup = runEntry(['app.exe', uninstallCleanupArgument, '--disable-gpu'], false, 'win32', { packaged: true })
+    expect(cleanup.exit).toHaveBeenCalledExactlyOnceWith(1)
+    expect(cleanup.startUninstallCleanup).not.toHaveBeenCalled()
+    expect(cleanup.relaunch).not.toHaveBeenCalled()
+
+    const worker = runEntry(['app.exe', accelerationWorkerArgument, '--user-data-dir=C:\\Temp\\p', '--lang=en'], true, 'win32', { packaged: true })
+    expect(worker.exit).toHaveBeenCalledExactlyOnceWith(1)
+    expect(worker.loaded).toEqual([])
+    expect(worker.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('opens the packaged worker with its private profile as before', () => {
+    const result = runEntry(['app.exe', accelerationWorkerArgument, '--user-data-dir=C:\\Temp\\p'], true, 'win32', { packaged: true })
+    expect(result.loaded).toEqual(['../acceleration-development-worker'])
+    expect(result.relaunch).not.toHaveBeenCalled()
+  })
+
+  it.each(['darwin', 'linux'])('leaves switches outside the blocklist alone on %s', (platform) => {
+    const result = runEntry(['app', '--disable-gpu'], false, platform, { packaged: true, effectiveUid: 1000 })
+    expect(result.loaded).toEqual(['./desktop-entry'])
+    expect(result.relaunch).not.toHaveBeenCalled()
+  })
+
+  it('leaves development runs free to take any switch', () => {
+    const result = runEntry(['app', '--disable-gpu'], false, 'win32')
+    expect(result.loaded).toEqual(['./desktop-entry'])
+    expect(result.relaunch).not.toHaveBeenCalled()
   })
 })

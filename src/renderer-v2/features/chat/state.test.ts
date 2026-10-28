@@ -66,6 +66,14 @@ describe('v2 chat request transitions', () => {
     expect(pickChatGroup([], { current: 'GPT', mode: 'text', groups })).toBe('')
   })
 
+  it('prefers the image group the main process marks once the image group is renamed', () => {
+    const groups = [{ name: 'default', ratio: 1 }, { name: 'GPT', ratio: 1 }, { name: '画图', ratio: 2, image: true }]
+    expect(pickChatGroup(['default', 'GPT', '画图'], { current: '', mode: 'image', groups })).toBe('画图')
+    expect(pickChatGroup(['default', 'GPT', '画图'], { current: '', mode: 'text', groups })).toBe('GPT')
+    // Without the mark a renamed image group is only one more group, billed by ratio.
+    expect(pickChatGroup(['default', '画图'], { current: '', mode: 'image', groups: groups.map(({ image: _image, ...group }) => group) })).toBe('default')
+  })
+
   it('follows the group the main process recommends once the managed GPT group is renamed', () => {
     const renamed = [{ name: 'default' }, { name: 'GPT 主力', recommended: true as const }, { name: 'GPT-官方API直连' }, { name: 'GPT' }]
     const candidates = renamed.map((group) => group.name)
@@ -250,7 +258,7 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': RealmAccountError: 请先登录账号"))).toBe('请先登录账号')
     expect(chatErrorMessage('请先登录星芒账号')).toBe('请先登录星芒账号')
     // 真的失效了照旧归到「请重新登录」。
-    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后准备分组')
+    expect(chatErrorMessage(new Error("Error invoking remote method 'chat:prepare-group': Error: 登录已过期"))).toBe('当前登录或密钥已失效，请重新登录后重试')
   })
 
   it('keeps the main process quota sentences and offers the matching account page', () => {

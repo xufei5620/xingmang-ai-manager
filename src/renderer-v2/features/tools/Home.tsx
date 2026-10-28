@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ArrowRight, BookOpen, Check, ChevronRight, Download, FolderOpen, Info, MessageSquare, Play, Plug, Plus, RefreshCw, RotateCcw, TriangleAlert, X, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, AccountSourceTarget, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount, ProviderId } from '../../../../electron/ipc-contract'
 import { presentExternalClients } from './external-model'
+import { desktopUpdateFailedLine, externalUpdateTarget, type DesktopUpdateTool } from './desktop-update'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, ListRow, PageHead, Pill, Progress, Skeleton, ToolCard, toastDurationMs, useToast, type MenuItem, type MenuNote } from '../../ui'
@@ -27,7 +28,7 @@ import { RuntimeInstallHint } from './RuntimeInstallHint'
 import { elevatedInstallShortNotice, homeNodeElevationNotice } from './elevation-notice'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { toolRouteHijackShownMs, toolRouteHomeTexts, toolRouteLabel, type RelayToolRouteStatus } from './route-label'
-import { buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
+import { balanceRunwayEmpty, buildBalanceRunway, type BalanceRunway } from '../app/balance-runway'
 import { useRestartPending } from './restart-reminder'
 import { RuntimeRestartDialog } from './RuntimeRestartDialog'
 import { OfficialQuotaDialog } from './OfficialQuotaDialog'
@@ -140,12 +141,27 @@ export interface HomeProps {
    */
   bootstrap?: (AccountBootstrapProgress & { scope: string; result?: AccountBootstrapResult; finishedAt?: number; error?: string; quiet?: boolean }) | null
   onBootstrapRetry?(): void
+  /**
+   * 「账号未开通」只有客服能开（主路卡点 F5）：横幅加「找客服」，卡片主按钮也换成它，都打开帮助框里的客服二维码；
+   * 缺省 = 不给那颗按钮、主按钮照旧「确认连接」（旧行为）。
+   */
+  onHelp?(): void
   /** 首页点「安装」没装上的工具和原因（App 记的，重新检测或再装一次就清掉）；缺省 = 没有。 */
   installFailures?: Partial<Record<ToolId, { reason: string }>>
   /** 卡片上的「看原因」：把那次的错误框再打开；缺省 = 不给这颗按钮。 */
   onShowInstallFailure?(tool: ToolId): void
   /** 正在装的那一次是更新、回到推荐版本还是退回；缺省 = 只写进度。 */
   installIntents?: Partial<Record<ToolId, ToolInstallIntent>>
+  /**
+   * Mac 上 Claude Desktop、OpenCode 那一行的「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）；缺省 = 不给这个链接（旧行为）。
+   * Codex 桌面端那一行照旧走 onInstall(…, 'update')。
+   */
+  onUpdateDesktopApp?(tool: ExternalToolId, version: string): void
+  /** Mac 上桌面端正在更新到哪一版：进度那一行开头写「更新到 v…」；缺省 = 只写进度。 */
+  desktopUpdateTargets?: Partial<Record<DesktopUpdateTool, string>>
+  /** Mac 上桌面端没更新成的那几个：卡片写「没更新成，旧版还在，照常能用」和「看原因」；缺省 = 没有。 */
+  desktopUpdateFailures?: Partial<Record<DesktopUpdateTool, unknown>>
+  onShowDesktopUpdateFailure?(tool: DesktopUpdateTool): void
   /** 「还差重启一次电脑」那条提醒的「现在重启」；缺省 = 首页不摆这条（旧行为：挂在页顶）。 */
   restart?: () => Promise<void>
   /**
@@ -382,6 +398,11 @@ function installIntentPrefix(intent: ToolInstallIntent | undefined): string {
   return `${verb} v${intent.version.replace(/^v/, '')} · `
 }
 
+/** Mac 上桌面端正在更新：进度那一行开头同命令行工具的「更新到 v… · 」。 */
+function desktopUpdatePrefix(target: string | undefined): string {
+  return target ? installIntentPrefix({ kind: 'update', version: target }) : ''
+}
+
 function versionText(version: string | null | undefined): string {
   return version ? `v${version.replace(/^v/, '')}` : '版本暂未识别'
 }
@@ -606,14 +627,15 @@ export function Home(props: HomeProps) {
     return () => window.clearTimeout(timer)
   }, [hijackUntil])
   const routeTexts = toolRouteHomeTexts(props.toolRouteStatus, routeClock)
-  // 命令行工具和 Codex 桌面端的「打开」一次只放一个（App.tsx 的 launchRequest）。外接客户端的打开不算：
-  // 主进程里它们和别人互不等待（I11 的登记例外），那一行只看自己那家的打开（#1085）。
-  const launchBusy = toolRegistry.some((tool) => jobs[`launch:${tool.id}`])
   const launchWaitingForAccount = useCallback((provider: ProviderId): boolean => {
     const tool = tools.find((entry) => entry.provider === provider)
     if (!tool || tool.source === 'official' || tool.source === 'manual') return false
     return accountKeyChangeInProgress(props.bootstrap ?? null, provider)
   }, [props.bootstrap, tools])
+  // 命令行工具和 Codex 桌面端的「打开」一次只放一个（useToolLaunch 的 launchRequest）。外接客户端的打开不算：
+  // 主进程里它们和别人互不等待（I11 的登记例外），那一行只看自己那家的打开（#1085）。停在等账号那一轮的
+  // 那次「打开」也不算（最长 3 分钟，0.2.22 打磨 B4）：它只占自己那张卡，别的工具照常能开。
+  const launchBusy = toolRegistry.some((tool) => jobs[`launch:${tool.id}`] && !launchWaitingForAccount(providerFor(tool.id)))
   // 开机先摆的是上次的检测结果（cachedAt），真结果还在路上。这时只放开「打开」这一类：
   // 点下去配置现读、工具由主进程现找、目录现查，用不上这份旧结果。「安装」「重新配置」
   // 「确认连接」照旧等真结果；账号这一轮要换 Key 的那一家也等，免得带着旧 Key 打开。
@@ -675,6 +697,7 @@ export function Home(props: HomeProps) {
     // 工具自己都读不了的文件，里面读出来的 Key、来源都不作数，排在那些判断前面先说。
     const broken = config && settled ? brokenConfigOf(config, tool.provider) : null
     const installFailure = !tool.status.installed && !installJob && !tool.error ? props.installFailures?.[tool.id] ?? null : null
+    const updateFailure = tool.id === 'codexDesktop' && tool.status.installed && !installJob && !tool.error && props.desktopUpdateFailures?.codexDesktop !== undefined
     const status = installJob ? 'installing' as const : tool.error ? 'detectionFailed' as const : !tool.status.installed ? 'missing' as const
       : configUnavailable ? 'configUnavailable' as const
       : broken ? 'configBroken' as const
@@ -714,9 +737,10 @@ export function Home(props: HomeProps) {
     const waitingForAccount = openable && launchWaitingForAccount(tool.provider)
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
       : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? installFailure ? '重试' : manualInstall ? '安装指南' : '安装'
-      : openable ? '打开' : '确认连接'
+      : openable ? '打开' : status === 'notEnabled' && props.onHelp ? '找客服' : '确认连接'
     const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
-      : !openable ? props.onConfigure(tool.id)
+      // 账号没开通的，「确认连接」点进去是配置框，帮不上忙：换成去找客服（主路卡点 F5）。
+      : !openable ? status === 'notEnabled' && props.onHelp ? props.onHelp() : props.onConfigure(tool.id)
       : startsFresh ? props.onLaunchInNewFolder?.(tool.id, true) : props.onLaunch(tool.id, lastWorkspace?.path)
     const primaryDisabled = Boolean(switchJob || repairJob) || waitingForScan || waitingForAccount || launchBusy || (bootstrapBusy && !tool.configured && !configUnavailable)
     // 文件坏了时读出来的来源不作数（见 brokenConfigOf），不说成官方账号。
@@ -727,7 +751,7 @@ export function Home(props: HomeProps) {
     const routeLabel = config && !broken && !ownershipPending ? toolRouteLabel(config, tool.source) : null
     const sourceLabel = sourceChipLabels[tool.source === 'official' || tool.source === 'manual' ? tool.source : 'account']
     return { installJob, launchJob, switchJob, repairJob, job, config, configUnavailable, status, zeroBalance, broken, ccSwitch, foreignKey, shadowed, openable,
-      hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
+      hooksStale, hooksDetail, hooksAutoRepaired, hooksMissing, installFailure, updateFailure, opensWorkspace, workspaces, lastWorkspace, startsFresh, manualInstall,
       elevationHint, waitingForScan, waitingForAccount, primaryLabel, primary, primaryDisabled, officialLine, officialPending, routeLabel, sourceLabel,
       ownershipPending }
   }
@@ -896,9 +920,10 @@ export function Home(props: HomeProps) {
     // 中间那行：进行中的写进度；出了问题写原因；没装写一句介绍；装好写线路、模型和版本。
     const line = tool.status.installed ? versionLine(tool, state) : null
     const detail = state.switchJob ? null
-      : installJob ? `${installIntentPrefix(props.installIntents?.[tool.id])}${installJob.label}`
+      : installJob ? `${props.installIntents?.[tool.id] ? installIntentPrefix(props.installIntents[tool.id]) : desktopUpdatePrefix(tool.id === 'codexDesktop' ? props.desktopUpdateTargets?.codexDesktop : undefined)}${installJob.label}`
       : job?.label ?? tool.error
       ?? (state.installFailure ? `没装上：${state.installFailure.reason.replace(/[。.\s]+$/, '')}，已撤回`
+        : state.updateFailure ? desktopUpdateFailedLine
         : status === 'configBroken' && state.broken ? brokenConfigDetails[state.broken]
         : status === 'configChanged' ? configChangedDetail
         : status === 'codexShadowed' ? codexShadowedDetail
@@ -909,13 +934,14 @@ export function Home(props: HomeProps) {
         : status === 'ready' && state.hooksMissing ? nodeMissing ? cliHooksMissingWithoutRuntimeDetail : cliHooksMissingDetail
         : !tool.status.installed ? state.elevationHint ?? homeToolBlurbs[tool.id]
         : tool.id === 'codexDesktop' ? tool.versionAdvice?.blockedReason ?? null : null)
-    const metaTone = state.installFailure || status === 'detectionFailed' || status === 'configBroken' ? 'bad' as const
+    const metaTone = state.installFailure || state.updateFailure || status === 'detectionFailed' || status === 'configBroken' ? 'bad' as const
       : ['configChanged', 'ccSwitch', 'codexShadowed', 'cliHooksStale', 'otherSiteKey', 'otherAccountKey'].includes(status) ? 'warn' as const : undefined
     const meta = detail ?? line?.text ?? ''
     // 底下左边：切换中写在做什么；正常的是来源牌；出问题的是彩色小牌；没装的是灰字「未安装」。
     const badge = state.switchJob ? <span className="v2-tool-card-busy" role="status"><Spinner />{`${state.switchJob.label}…`}</span>
       : installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
       : state.installFailure && props.onShowInstallFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowInstallFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>看原因</Button>
+      : state.updateFailure && props.onShowDesktopUpdateFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowDesktopUpdateFailure?.('codexDesktop')} testId={`tool-${tool.id}-why`}>看原因</Button>
       : status === 'missing' ? <span className="v2-tool-card-off">{statusText}</span>
       : (status === 'ready' && !state.zeroBalance) || status === 'official' ? sourceMenu(tool, state)
         : statusPill
@@ -965,15 +991,20 @@ export function Home(props: HomeProps) {
     const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? manualInstall ? '安装指南' : downloadUrl ? '去官网下载' : tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '确认连接'
     const primary = () => manualInstall ? props.onNavigate('tutorial', macDesktopTutorialTopic) : downloadUrl ? props.onOpenExternalDownload?.(downloadUrl) : tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
     const unsupported = tool.disabled && !manualInstall && !downloadUrl
+    // Mac 上星芒换得了、存储桶里有更新的那一版：同命令行工具，卡片下面一行「可更新到 v…」。
+    const updateTarget = !job && props.onUpdateDesktopApp ? externalUpdateTarget(tool.status) : null
+    const updateFailed = !job && tool.status.installed && !tool.status.detectionError && props.desktopUpdateFailures?.[tool.id] !== undefined
     // 一键装不了（去官网下载、暂不支持）时，中间那行照旧写主进程给的那句该怎么办，不换成介绍。
-    const meta = job?.label ?? (status === 'missing' ? (downloadUrl || unsupported) && tool.status.installHint ? tool.status.installHint : homeToolBlurbs[tool.id]
+    const jobLabel = job && job === installJob ? `${desktopUpdatePrefix(props.desktopUpdateTargets?.[tool.id])}${job.label}` : job?.label
+    const meta = jobLabel ?? (updateFailed ? desktopUpdateFailedLine : status === 'missing' ? (downloadUrl || unsupported) && tool.status.installHint ? tool.status.installHint : homeToolBlurbs[tool.id]
       // 里面已经有一份别家的配置、只是没配全（Claude Desktop 的第三方推理）时，照旧写那一句，不笼统说没连上。
       : status === 'unconfigured' && tool.status.configurationSource !== 'other' && !tool.status.configurationError && !tool.status.detectionError ? unconfiguredDetail : tool.detail)
-    const metaTone = status === 'detectionFailed' || tool.status.configurationError ? 'bad' as const : undefined
+    const metaTone = status === 'detectionFailed' || tool.status.configurationError || updateFailed ? 'bad' as const : undefined
     // 只有 Claude Desktop 有两种登录可切；WorkBuddy、OpenCode 的来源牌不可点，额度从哪扣写在悬停说明里。
     const switchable = tool.id === 'claudeDesktop' && Boolean(props.onSwitchExternalSource) && !job
       && (status === 'official' || (status === 'ready' && tool.status.configurationSource === 'xingmang'))
     const badge = installJob ? typeof installJob.percent === 'number' ? undefined : <span className="v2-tool-card-busy" role="status"><Spinner label={installJob.label} /></span>
+      : updateFailed && props.onShowDesktopUpdateFailure ? <Button variant="ghost" size="sm" onClick={() => props.onShowDesktopUpdateFailure?.(tool.id)} testId={`tool-${tool.id}-why`}>看原因</Button>
       : status === 'missing' ? <span className="v2-tool-card-off">{statuses.tool.missing[0]}</span>
       : switchable ? externalSourceMenu(tool, status === 'official')
       : status === 'ready' && tool.status.configurationSource === 'xingmang' ? <span className="v2-source-chip is-static" title="额度从当前账号的余额里扣" data-testid={`tool-${tool.id}-source`}>{sourceChipLabels.account}</span>
@@ -983,8 +1014,10 @@ export function Home(props: HomeProps) {
       : installJob ? null
         : <Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(launchJob)} disabled={externalBusy || unsupported || Boolean(switchJob)} title={unsupported ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
           icon={tool.action === 'install' && !unsupported && !manualInstall ? Download : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>
+    const link = updateTarget ? <button type="button" className="xm-tool-card-link" onClick={() => props.onUpdateDesktopApp?.(tool.id, updateTarget)} data-testid={`tool-${tool.id}-update`}>
+      <RefreshCw size={12} aria-hidden="true" /><span>{`可更新到 ${versionText(updateTarget)}`}</span></button> : undefined
     return <ToolCard key={tool.id} tool={tool.id} off={!tool.status.installed && !installJob && !tool.status.detectionError} meta={meta} metaTone={metaTone} metaTitle={meta}
-      badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
+      link={link} badge={badge} actions={actions} progress={typeof installJob?.percent === 'number' ? installJob.percent : undefined}
       menu={tool.status.installed && !job ? [
         // 配置入口只留「…」菜单这一处；主按钮已经是「确认连接」时菜单里不再重复，换成「打开」（还没连上也能先打开看看）。
         ...(tool.action === 'configure'
@@ -1095,11 +1128,16 @@ export function Home(props: HomeProps) {
   const bootstrapNeedsAction = Boolean(bootstrapResult && (bootstrapFailed.length || bootstrapWarnings.length || bootstrapResult.networkBlocked))
   if (bootstrapResult && bootstrapNoticeWanted && bootstrapNeedsAction) {
     const configuredText = bootstrapResult.configured.length ? `${configuredKeysText(keyTargetsLabel(bootstrapResult.configured))}。` : ''
+    // 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
+    // 没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。
+    const retryWanted = Boolean(props.onBootstrapRetry) && (bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate))
+    // 账号没开通的只有客服能开（主路卡点 F5）：那句后面给「找客服」，开帮助框里的客服二维码；两种失败都有就两颗都给。
+    const supportWanted = Boolean(props.onHelp) && bootstrapFailed.some((entry) => isAccountNotEnabledFailure(entry.message))
     alerts.push(<HomeNotice key="bootstrap-result" tone="warn" role="status" testId="home-bootstrap-result" icon={<TriangleAlert size={15} aria-hidden="true" />}
-      // 账号没开通的工具点多少次「重新同步」都一样，只剩这种失败时不给这个按钮。证书被换掉的那句叫客户点它，
-      // 没写成的只是没装的工具时 failed、warnings 都是空的，按钮照样要给。
-      action={(bootstrapFailed.some((entry) => !isAccountNotEnabledFailure(entry.message)) || bootstrapWarnings.length > 0 || (bootstrapResult.networkBlocked && bootstrapResult.networkBlockedByCertificate)) && props.onBootstrapRetry
-        ? <Button size="xs" variant="secondary" onClick={props.onBootstrapRetry}>重新同步</Button> : undefined}>
+      action={retryWanted || supportWanted ? <>
+        {retryWanted && <Button size="xs" variant="secondary" onClick={props.onBootstrapRetry}>重新同步</Button>}
+        {supportWanted && <Button size="xs" variant="secondary" onClick={props.onHelp} testId="home-bootstrap-support">找客服</Button>}
+      </> : undefined}>
       {bootstrapResult.networkBlocked ? networkBlockedNotice(bootstrapResult) : [configuredText, bootstrapFailed.map((entry) => keySyncFailureText(entry.provider, entry.message)).join('；'), bootstrapWarnings.join('；')].filter(Boolean).join(' ')}
     </HomeNotice>)
   }
@@ -1165,7 +1203,8 @@ export function Home(props: HomeProps) {
 
   // 余额卡：金额、订阅、按最近用量还能用几天、近 7 天花费。
   const runwayLine = props.supportsUsage === false ? '请在官方网站查看消费记录。'
-    : usageError || (runway?.days != null ? `按最近用量${runwayDaysText(runway.days)}`
+    : usageError || (balanceRunwayEmpty(runway) ? '余额已经用完'
+      : runway?.days != null ? `按最近用量${runwayDaysText(runway.days)}`
       : runway && runway.usableUsd === null ? null
       : usage ? balance ? '最近 7 天暂无用量' : '读到余额后显示还能用多久'
       : account ? '正在读取用量' : props.accountRestoring ? '登录恢复后自动显示用量' : '登录后查看用量')

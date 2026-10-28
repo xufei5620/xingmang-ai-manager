@@ -14,4 +14,4 @@ export type AppToast = ReturnType<typeof useToast>
 export type Perform = (label: string, work: () => Promise<unknown>, tool?: ToolId) => Promise<void>
 
 /** 等用户点头的确认框（Confirm）：点了确认那颗才做 work，做成了才关，没做成照旧开着、能重试。 */
-export interface PendingConfirmation { title: string; body: ReactNode; label: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }
+export interface PendingConfirmation { title: string; body: ReactNode; label: string; /** 不做的那颗按钮的字；缺省 = 「取消」。 */ cancelLabel?: string; danger?: boolean; /** 失败时「复制路径」要复制哪个工具的安装目录；与工具无关的确认不填。 */ tool?: ToolId; work(): Promise<void> }

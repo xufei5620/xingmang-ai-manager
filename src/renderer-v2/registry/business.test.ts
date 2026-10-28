@@ -31,6 +31,7 @@ import {
   updateInstallNote,
   updateInstallActionLabel,
   updateNewVersion,
+  updateSidebarEntry,
   updateStatusLabel,
   withdrawnVersionAdvice,
 } from './business';
@@ -340,7 +341,11 @@ describe('renderer-v2 update bubble on the updates page', () => {
 
 describe('renderer-v2 auto-update bubble wording', () => {
   it('tells the user what happens next when auto-update is on', () => {
-    expect(autoUpdateBubbleBody('downloaded', true)).toContain('关掉软件或下次打开时自动装上');
+    expect(autoUpdateBubbleBody('downloaded', true)).toBe('已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。');
+    // 能闲时装的 Mac 多说一句；没下好、关了自动更新的都不说。
+    expect(autoUpdateBubbleBody('downloaded', true, undefined, undefined, true)).toBe('已经下好了，可以现在装，也可以关掉软件或下次打开时自动装上。你不用电脑时星芒也会自己装好。');
+    expect(autoUpdateBubbleBody('downloading', true, undefined, undefined, true)).not.toContain('自己装好');
+    expect(autoUpdateBubbleBody('downloaded', false, undefined, undefined, true)).toBe('查看更新内容和安装状态。');
     expect(autoUpdateBubbleBody('downloading', true)).toContain('正在后台下载');
     expect(autoUpdateBubbleBody('downloaded', false)).toBe('查看更新内容和安装状态。');
   });
@@ -459,5 +464,31 @@ describe('renderer-v2 wording when the system installer takes over (Linux)', () 
     const rollback = { phase: 'available', currentVersion: '0.2.10', availableVersion: '0.2.9', rollback: true, currentVersionWithdrawn: true } as const;
     expect(withdrawnVersionAdvice({ ...rollback, installMethod: linux })).toContain('再点「安装新版本」');
     expect(withdrawnVersionAdvice(rollback)).toContain('再点「重启并安装」');
+  });
+});
+
+describe('renderer-v2 sidebar update entry', () => {
+  const base = { currentVersion: '0.2.22', availableVersion: '0.2.23', rollback: false, currentVersionWithdrawn: false, error: null, progress: null } as const;
+
+  it('names the new version while it is only offered and the progress while it downloads, both leading to the version card', () => {
+    expect(updateSidebarEntry({ ...base, phase: 'available' })).toEqual({ label: '有新版本 v0.2.23', title: '有新版本 v0.2.23', install: false });
+    const downloading = { ...base, phase: 'downloading', progress: { percent: 45.8, bytesPerSecond: 1, transferred: 45, total: 100 } } as const;
+    expect(updateSidebarEntry(downloading)).toEqual({ label: '正在下载新版 45%', title: '正在下载新版 45%', install: false });
+    expect(updateSidebarEntry({ ...downloading, progress: null })?.label).toBe('正在下载新版');
+  });
+
+  it('asks to restart and install once the new version is downloaded, without promising a reopen on Linux', () => {
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded' })).toEqual({ label: '重启并安装新版', title: '新版 v0.2.23 已经下好，点一下装上，装好自动打开', install: true });
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded', installMethod: 'system-installer' })).toEqual({ label: '安装新版本', title: '新版 v0.2.23 已经下好，点一下装上', install: true });
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded', availableVersion: null })?.title).toBe('新版已经下好，点一下装上，装好自动打开');
+  });
+
+  it('stays away when nothing is new, a step failed or the offer goes back to an older release', () => {
+    for (const phase of ['idle', 'checking', 'not-available', 'disabled', 'cancelled'] as const) expect(updateSidebarEntry({ ...base, phase })).toBeNull();
+    expect(updateSidebarEntry({ ...base, phase: 'downloaded', error: { code: 'UPDATE_ERROR', message: '更新程序未能启动' } })).toBeNull();
+    expect(updateSidebarEntry({ ...base, phase: 'error', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时' } })).toBeNull();
+    expect(updateSidebarEntry({ ...base, phase: 'available', availableVersion: '0.2.21', rollback: true, currentVersionWithdrawn: true })).toBeNull();
+    expect(updateSidebarEntry({ ...base, phase: 'available', availableVersion: '0.2.22' })).toBeNull();
+    expect(updateSidebarEntry(null)).toBeNull();
   });
 });

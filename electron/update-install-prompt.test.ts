@@ -64,7 +64,7 @@ interface Harness {
   options: UpdateInstallPrompterOptions
   state: {
     snapshot: UpdateSnapshot; idleMs: number; locked: boolean; now: number; windowVisible: boolean; standardAccount: boolean | null; attempted: string | null
-    remote: boolean; video: boolean; renderer: boolean
+    remote: boolean; video: boolean; renderer: boolean; payment: boolean
   }
   timers: Array<{ callback: () => void; ms: number; cancelled: boolean }>
   asks: Array<{ prompt: InstallPrompt; signal: AbortSignal; answer(value: InstallPromptAnswer): void }>
@@ -77,7 +77,7 @@ interface Harness {
 function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInstallPrompterOptions> = {}): Harness {
   const state: Harness['state'] = {
     snapshot: snapshot(), idleMs: 0, locked: false, now: 1_000, windowVisible: false, standardAccount: false, attempted: null,
-    remote: false, video: false, renderer: false,
+    remote: false, video: false, renderer: false, payment: false,
   }
   const timers: Harness['timers'] = []
   const asks: Harness['asks'] = []
@@ -100,6 +100,7 @@ function harness(platform: NodeJS.Platform = 'darwin', patch: Partial<UpdateInst
     remoteControlActive: () => state.remote,
     videoWorking: () => state.video,
     rendererBusy: () => state.renderer,
+    paymentWindowOpen: () => state.payment,
     attempted: (version) => state.attempted === version,
     ask: (prompt, signal) => new Promise<InstallPromptAnswer>((resolve) => {
       // Electron closes an aborted message box as if the cancel button was pressed.
@@ -671,6 +672,69 @@ describe('createUpdateInstallPrompter', () => {
     test.state.idleMs = PROMPT_QUIET_INPUT_MS
     await test.runTimers()
     expect(test.asks).toHaveLength(1)
+    prompter.dispose()
+  })
+
+  it('holds the question while a payment window is open, a reply is streaming or a video is being made', async () => {
+    const test = harness('win32', { unattended: () => false })
+    const prompter = createUpdateInstallPrompter(test.options)
+    // Scanning a payment code or waiting for a reply leaves the mouse alone long enough to look like a pause.
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    test.state.payment = true
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.timers.map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+    expect(test.events.filter((event) => event === 'install.prompt.held-work')).toHaveLength(1)
+
+    test.state.payment = false
+    test.state.renderer = true
+    await test.runTimers()
+    test.state.renderer = false
+    test.state.video = true
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    // One line per kind of work it waited for.
+    expect(test.events.filter((event) => event === 'install.prompt.held-work')).toHaveLength(3)
+
+    test.state.video = false
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.installedNow).toEqual([])
+    prompter.dispose()
+  })
+
+  it('goes back to waiting for a pause in typing once the work is done', async () => {
+    const test = harness('win32', { unattended: () => false })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.renderer = true
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.timers.map((timer) => timer.ms)).toEqual([IDLE_POLL_MS])
+
+    test.state.renderer = false
+    test.state.idleMs = 0
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.timers.map((timer) => timer.ms)).toEqual([PROMPT_POLL_MS])
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    prompter.dispose()
+  })
+
+  it('holds the question when it cannot tell whether a payment window is open', async () => {
+    const test = harness('win32', {
+      unattended: () => false,
+      paymentWindowOpen: () => { throw new Error('payment window state unavailable') },
+    })
+    const prompter = createUpdateInstallPrompter(test.options)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    prompter.observe(test.state.snapshot)
+    await test.runTimers()
+    expect(test.asks).toHaveLength(0)
+    expect(test.events).toContain('install.prompt.held-work')
     prompter.dispose()
   })
 

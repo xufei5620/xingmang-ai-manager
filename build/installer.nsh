@@ -11,6 +11,8 @@
 #      补建在当前用户桌面和开始菜单里的图标。
 #   6. customUnWelcomePage：卸载欢迎页上的「同时清除登录记录和聊天记录」勾选框（默认不勾）。
 #   7. 装到 Program Files 以外时，把安装目录改成只有管理员能改（见 XINGMANG_INSTALL_DIRECTORY_SDDL）。
+#   8. 升级时旧版本的卸载程序挪不走旧文件：先去掉清单里已经不在的项（customInit），还是没挪走
+#      就用中文说清楚、给「重试」（customUnInstallCheck），不再停在模板那句英文上。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -241,15 +243,87 @@
         WriteRegDWORD SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Count" $R2
       ${EndIf}
     FunctionEnd
+
+    # 升级时模板先跑旧版本的卸载程序（带 --updated），它按清单把每一项挪开，挪不动就把挪开的
+    # 放回去、以退出码 2 放弃。0.2.22 及更早的卸载程序把「清单里有、目录里已经没了」也当成挪不动，
+    # 那个文件不会自己回来，于是这台电脑以后每次升级都停在同一处。所以在跑旧卸载程序之前，先把
+    # 清单里已经不在的那几项删掉：卸载程序读到空项就跳过，升级和真卸载都一样。
+    #
+    # 只删注册表里的记录，不碰任何文件；按旧卸载程序将要用的 InstallLocation 去看，模板也是读它
+    # 来决定把哪个目录交给旧卸载程序。
+    Function xingmangForgetMissingInstalledEntries
+      Push $R0
+      Push $R1
+      Push $R2
+      Push $R3
+      ReadRegStr $R0 SHELL_CONTEXT "${INSTALL_REGISTRY_KEY}" InstallLocation
+      ClearErrors
+      ReadRegDWORD $R1 SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "Count"
+      ${If} $R0 != ""
+      ${AndIfNot} ${Errors}
+        StrCpy $R2 0
+        ${DoWhile} $R2 < $R1
+          ClearErrors
+          ReadRegStr $R3 SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "$R2"
+          ${IfNot} ${Errors}
+          ${AndIf} $R3 != ""
+          ${AndIfNot} ${FileExists} "$R0\$R3"
+            DeleteRegValue SHELL_CONTEXT "${XINGMANG_INSTALLED_ENTRIES_KEY}" "$R2"
+          ${EndIf}
+          IntOp $R2 $R2 + 1
+        ${Loop}
+      ${EndIf}
+      Pop $R3
+      Pop $R2
+      Pop $R1
+      Pop $R0
+    FunctionEnd
+
+    # 旧版本的卸载程序还是没把旧文件挪开时（退出码不是 0），模板只弹一句英文「Failed to uninstall
+    # old application files. Please try running the installer again.: 2」就退出：客户看不懂，也没有
+    # 下一步，而更新器拉起的静默升级里这是客户唯一能看到的东西。这里换成中文说清楚，给「重试」。
+    # 走到这里旧卸载程序已经把挪开的放回去了，旧版本原样能用；点「取消」跟模板一样以 2 退出。
+    #
+    # 重试前把还开着的星芒强行关掉：模板自己靠 PowerShell 找安装目录下的进程，PowerShell 用不了的
+    # 电脑上退回按名字找，而按整台电脑安装时那一句不带强制，缩在托盘里的星芒关不掉。taskkill 用
+    # 系统目录里的绝对路径（I14）；不带 /T，星芒打开的命令行窗口是客户在用的，不跟着关。
+    #
+    # 旧卸载程序根本没起来（文件没了、被策略拦了）时跟模板一样，当没有旧版本，照常装。
+    Function xingmangHandleOldUninstallResult
+      xingmangOldUninstallCheck:
+        ${If} ${Errors}
+          DetailPrint "旧版本的卸载程序没能启动。"
+          Return
+        ${EndIf}
+        ${If} $R0 == 0
+          Return
+        ${EndIf}
+        DetailPrint "旧版本的卸载程序没能挪开旧文件。"
+        DetailPrint "（排查用代码：$R0）"
+        MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION|MB_TOPMOST|MB_SETFOREGROUND "新版本这次没装上：旧版本的文件被别的程序占着，挪不走。旧版本没动，照样能用。$\r$\n$\r$\n点「重试」会先关掉还开着的星芒，再装一次。$\r$\n$\r$\n还是不行：先暂时退出 360、火绒、电脑管家这类安全软件，再点「重试」；再不行就重启电脑后重新安装。" IDRETRY xingmangOldUninstallRetry
+        SetErrorLevel 2
+        Quit
+      xingmangOldUninstallRetry:
+        nsExec::Exec `"$SYSDIR\taskkill.exe" /F /IM "${APP_EXECUTABLE_FILENAME}"`
+        Pop $R0
+        # 被结束的进程占着的文件要等它真退了才放开。
+        Sleep 1000
+        Push "SHELL_CONTEXT"
+        Call uninstallOldVersion
+        Goto xingmangOldUninstallCheck
+    FunctionEnd
   !endif
 
   !ifdef BUILD_UNINSTALLER
     # 把一个顶层条目挪进 $PLUGINSDIR\old-install（升级路径专用）。
     # 入栈 "\条目名"，出栈 0 表示成功，否则是挪不动的那个文件的完整路径。
+    # 清单里有、目录里已经没了的算成功：没有东西要挪，当成挪不动的话以后每次升级都卡在这一项。
     Function un.xingmangMoveAside
       Exch $R0
       Push $R1
-      ${If} ${FileExists} "$INSTDIR$R0\*.*"
+      ${IfNot} ${FileExists} "$INSTDIR$R0"
+        StrCpy $R1 0
+      ${ElseIf} ${FileExists} "$INSTDIR$R0\*.*"
         # 目录不能整个改名：里面只要有一个文件被占用就会失败，所以按上游
         # 的办法逐个文件改名（正在运行的 exe/dll 是允许改名的）。
         CreateDirectory "$PLUGINSDIR\old-install$R0"
@@ -558,6 +632,14 @@
     Push $INSTDIR
     Call xingmangLockInstallDirectory
   !endif
+  # 同样赶在模板执行旧的卸载程序之前，见 xingmangForgetMissingInstalledEntries。
+  Call xingmangForgetMissingInstalledEntries
+!macroend
+
+# 模板跑完旧版本的卸载程序后在这里看结果（installUtil.nsh 的 handleUninstallResult）；定义了这个宏，
+# 模板自己那句英文提示就不再出现，见 xingmangHandleOldUninstallResult。
+!macro customUnInstallCheck
+  Call xingmangHandleOldUninstallResult
 !macroend
 
 # electron-builder 的卸载界面第一页是 MUI_UNPAGE_WELCOME；定义了这个宏就由这里

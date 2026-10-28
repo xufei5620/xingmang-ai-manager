@@ -14,6 +14,7 @@ import {
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
   NewApiNetworkError,
+  NewApiSessionChangedError,
   NewApiTwoFactorExpiredError,
   NewApiTwoFactorRequiredError,
   parseTwoFactorChallenge,
@@ -49,6 +50,7 @@ import {
   parseTopupInfo,
   parseTopupOrdersPage,
   readRefusedAfterRefreshMessage,
+  type NewApiClientOptions,
   type NewApiFetch,
 } from './new-api-client'
 import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
@@ -187,9 +189,12 @@ function usableGroupsResponse(): Response {
 // Logs a fresh client in against a throwaway mock and hands back both, so
 // balance/CLI-key tests can start from an authenticated session without
 // repeating the login boilerplate.
-async function authenticatedClient(fetchImpl: ReturnType<typeof vi.fn<NewApiFetch>>) {
+async function authenticatedClient(
+  fetchImpl: ReturnType<typeof vi.fn<NewApiFetch>>,
+  options: Omit<NewApiClientOptions, 'baseUrl' | 'fetchImpl'> = {},
+) {
   fetchImpl.mockResolvedValueOnce(loginResponse())
-  const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+  const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, ...options })
   await client.login({ username: 'tester', password: 'correct horse battery staple' })
   fetchImpl.mockClear()
   return client
@@ -2753,9 +2758,9 @@ describe('revokeKey', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
 
-    await expect(client.revokeKey(1.5)).rejects.toThrow('Key ID 格式错误')
-    await expect(client.revokeKey(0)).rejects.toThrow('Key ID 格式错误')
-    await expect(client.revokeKey(-1)).rejects.toThrow('Key ID 格式错误')
+    await expect(client.revokeKey(1.5)).rejects.toThrow('密钥 ID 格式错误')
+    await expect(client.revokeKey(0)).rejects.toThrow('密钥 ID 格式错误')
+    await expect(client.revokeKey(-1)).rejects.toThrow('密钥 ID 格式错误')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -2827,7 +2832,7 @@ describe('createKey', () => {
       unlimitedQuota: true,
       expiredTime: -1,
     }))
-      .rejects.toThrow('Key 名称不能超过 50 个字符')
+      .rejects.toThrow('密钥名称不能超过 50 个字符')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -3041,7 +3046,7 @@ describe('updateKey', () => {
       unlimitedQuota: true,
       expiredTime: -1,
     }))
-      .rejects.toThrow('Key ID 格式错误')
+      .rejects.toThrow('密钥 ID 格式错误')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
@@ -3940,22 +3945,26 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
   })
 
   it('keeps the session when the refresh endpoint is rate limited or in maintenance', async () => {
-    for (const refreshFailure of [
-      () => new Response('', { status: 429 }),
-      () => jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 }),
-      () => new Response('<html>maintenance</html>', { status: 503, headers: { 'content-type': 'text/html' } }),
-    ]) {
+    // A 5xx may have come after the server rotated the cookie, so it gets the
+    // one catch-up refresh too (see the lost-answer block below); a 429 does not.
+    for (const [refreshFailure, refreshCalls] of [
+      [() => new Response('', { status: 429 }), 1],
+      [() => jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 }), 2],
+      [() => new Response('<html>maintenance</html>', { status: 503, headers: { 'content-type': 'text/html' } }), 2],
+    ] as const) {
       const fetchImpl = vi.fn<NewApiFetch>()
-      const client = await authenticatedClient(fetchImpl)
+      const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0 })
       fetchImpl
         .mockResolvedValueOnce(statusResponse())
         .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+        .mockResolvedValueOnce(refreshFailure())
         .mockResolvedValueOnce(refreshFailure())
 
       const error = await client.getBalance().catch((caught: unknown) => caught)
       expect(error).toBeInstanceOf(Error)
       expect(error).not.toBeInstanceOf(NewApiAuthenticationError)
       expect(client.isAuthenticated()).toBe(true)
+      expect(fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/user/auth/refresh')).toHaveLength(refreshCalls)
     }
   })
 
@@ -4064,6 +4073,259 @@ describe('silent 401 refresh-and-retry (withSession)', () => {
     await expect(client.provisionCliKey()).rejects.toThrow('已达到 Key 数量上限')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(client.isAuthenticated()).toBe(true)
+  })
+})
+
+// rc.44 hands out a new refresh cookie on every refresh and still honours the
+// old one for 30 seconds afterwards (it answers with the same new cookie);
+// after that, the old one coming back is treated as stolen and the whole login
+// is revoked. A refresh whose answer is lost on the way back therefore has to
+// be repeated with the same old cookie inside that window (10-27 排查).
+describe('refresh whose answer was lost (catch-up inside the replay window)', () => {
+  // What fetch hands back once the time limit aborted it: no answer came,
+  // though the request may well have reached the server.
+  function abortedFetch(): Promise<Response> {
+    return Promise.reject(new DOMException('This operation was aborted', 'AbortError'))
+  }
+
+  function rotatedResponse(): Response {
+    return jsonResponse(
+      { success: true, message: '', data: { access_token: 'rotated-token', access_expires_at: null } },
+      {},
+      ['refresh_token=cookie-value-2; Path=/; HttpOnly'],
+    )
+  }
+
+  function sessionRevokedResponse(headers: Record<string, string> = {}): Response {
+    return jsonResponse({ success: false, code: 'AUTH_SESSION_REVOKED', message: 'Unauthorized' }, { status: 401, headers })
+  }
+
+  function accessExpiredResponse(): Response {
+    return jsonResponse({ success: false, code: 'AUTH_TOKEN_EXPIRED', message: 'Unauthorized' }, { status: 401 })
+  }
+
+  function refreshCalls(fetchImpl: ReturnType<typeof vi.fn<NewApiFetch>>) {
+    return fetchImpl.mock.calls.filter(([url]) => new URL(String(url)).pathname === '/api/user/auth/refresh')
+  }
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('refreshes once more with the same old cookie when the answer never came, and keeps the login', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(accessExpiredResponse())
+      .mockImplementationOnce(abortedFetch)
+      .mockResolvedValueOnce(rotatedResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
+
+    const balance = await client.getBalance()
+
+    expect(balance.quota).toBe(1_000_000)
+    expect(client.isAuthenticated()).toBe(true)
+    const refreshes = refreshCalls(fetchImpl)
+    expect(refreshes).toHaveLength(2)
+    for (const [, init] of refreshes) {
+      expect((init?.headers as Record<string, string>).Cookie).toBe('refresh_token=cookie-value-1')
+    }
+    expect(client.getPersistableSession()).toEqual({ userId: 42, cookies: ['refresh_token=cookie-value-2'] })
+    expect(log).toHaveBeenCalledExactlyOnceWith('info', 'session.refresh.retried', expect.any(String), expect.objectContaining({ failure: 'timeout' }))
+  })
+
+  it.each([
+    ['a connection reset mid-flight', () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }) }))],
+    ['a gateway timeout page', () => Promise.resolve(new Response('<html>504</html>', { status: 504, headers: { 'content-type': 'text/html' } }))],
+    ['a server error after the rotation', () => Promise.resolve(jsonResponse({ success: false, code: 'AUTH_INTERNAL_ERROR', message: 'Internal Server Error' }, { status: 500 }))],
+  ])('catches up after %s', async (_name, lostAnswer) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0 })
+    fetchImpl.mockImplementationOnce(lostAnswer).mockResolvedValueOnce(rotatedResponse())
+
+    await client.refreshAccessToken()
+
+    expect(refreshCalls(fetchImpl)).toHaveLength(2)
+    expect(client.getPersistableSession()?.cookies).toEqual(['refresh_token=cookie-value-2'])
+  })
+
+  it.each([
+    ['the refresh was rate limited', () => Promise.resolve(new Response('', { status: 429 }))],
+    ['the address could not be resolved', () => Promise.reject(Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('getaddrinfo ENOTFOUND xm.test.internal'), { code: 'ENOTFOUND' }) }))],
+  ])('does not catch up when %s', async (_name, failure) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl.mockImplementationOnce(failure).mockResolvedValueOnce(rotatedResponse())
+
+    await expect(client.refreshAccessToken()).rejects.toBeInstanceOf(Error)
+
+    expect(refreshCalls(fetchImpl)).toHaveLength(1)
+    expect(client.isAuthenticated()).toBe(true)
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('catches up only once and keeps the login when that answer is lost too', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl.mockImplementationOnce(abortedFetch).mockImplementationOnce(abortedFetch).mockResolvedValueOnce(rotatedResponse())
+
+    const error = await client.refreshAccessToken().catch((caught: unknown) => caught)
+
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect((error as NewApiNetworkError).reason).toBe('timeout')
+    expect(refreshCalls(fetchImpl)).toHaveLength(2)
+    expect(client.isAuthenticated()).toBe(true)
+    expect(client.getPersistableSession()?.cookies).toEqual(['refresh_token=cookie-value-1'])
+    expect(log).toHaveBeenCalledExactlyOnceWith('warn', 'session.refresh.retried', expect.any(String), expect.objectContaining({ failure: 'timeout', retryFailure: 'timeout' }))
+  })
+
+  it('shares one refresh and one catch-up between callers that arrive together', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0 })
+    fetchImpl.mockImplementationOnce(abortedFetch).mockResolvedValueOnce(rotatedResponse())
+
+    await Promise.all([client.refreshAccessToken(), client.refreshAccessToken(), client.refreshAccessToken()])
+
+    expect(refreshCalls(fetchImpl)).toHaveLength(2)
+    expect(client.getPersistableSession()?.cookies).toEqual(['refresh_token=cookie-value-2'])
+  })
+
+  it('does not present the old cookie again once the replay window is nearly over', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    vi.useFakeTimers({ now: new Date('2026-10-27T07:00:00Z'), toFake: ['Date'] })
+    fetchImpl.mockImplementationOnce(() => {
+      vi.setSystemTime(Date.now() + 21_000)
+      return abortedFetch()
+    }).mockResolvedValueOnce(rotatedResponse())
+
+    await expect(client.refreshAccessToken()).rejects.toBeInstanceOf(NewApiNetworkError)
+
+    expect(refreshCalls(fetchImpl)).toHaveLength(1)
+    expect(client.isAuthenticated()).toBe(true)
+    expect(log).toHaveBeenCalledExactlyOnceWith('warn', 'session.refresh.lost', expect.any(String), { failure: 'timeout', elapsedMs: 21_000 })
+  })
+
+  it('does not catch up for a login that ended while it waited', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 50 })
+    fetchImpl.mockImplementationOnce(abortedFetch).mockResolvedValueOnce(rotatedResponse())
+
+    const pending = client.refreshAccessToken().catch((caught: unknown) => caught)
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1))
+    client.logout()
+
+    expect(await pending).toBeInstanceOf(NewApiSessionChangedError)
+    expect(refreshCalls(fetchImpl)).toHaveLength(1)
+  })
+
+  it('keeps the outcome when the log callback throws', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn(() => { throw new Error('log store is gone') })
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl.mockImplementationOnce(abortedFetch).mockResolvedValueOnce(rotatedResponse())
+
+    await client.refreshAccessToken()
+
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(client.getPersistableSession()?.cookies).toEqual(['refresh_token=cookie-value-2'])
+  })
+
+  it('logs one line naming the request, the server code and the request id when the server ends the login', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    const requestId = '20261027145500000000000AbCdEfGh'
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(accessExpiredResponse())
+      .mockResolvedValueOnce(sessionRevokedResponse({ 'X-Oneapi-Request-Id': requestId }))
+
+    await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+
+    expect(client.isAuthenticated()).toBe(false)
+    expect(refreshCalls(fetchImpl)).toHaveLength(1)
+    expect(log).toHaveBeenCalledExactlyOnceWith('warn', 'session.ended', expect.any(String), {
+      trigger: '账号余额查询',
+      refusedBy: '登录状态续期',
+      code: 'AUTH_SESSION_REVOKED',
+      message: expect.any(String),
+      status: 401,
+      requestId,
+    })
+    const logged = JSON.stringify(log.mock.calls)
+    expect(logged).not.toContain('cookie-value')
+    expect(logged).not.toContain('test-access-token-abc')
+  })
+
+  it('names the retried request when it is refused again right after a refresh', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(accessExpiredResponse())
+      .mockResolvedValueOnce(rotatedResponse())
+      .mockResolvedValueOnce(sessionRevokedResponse())
+
+    await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+
+    expect(client.isAuthenticated()).toBe(false)
+    expect(log).toHaveBeenCalledExactlyOnceWith('warn', 'session.ended', expect.any(String), expect.objectContaining({
+      trigger: '账号余额查询',
+      refusedBy: '账号余额查询',
+      code: 'AUTH_SESSION_REVOKED',
+    }))
+  })
+
+  it('says in that line when an earlier refresh lost its answer and could not catch up', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl.mockImplementationOnce(abortedFetch).mockImplementationOnce(abortedFetch)
+    await expect(client.refreshAccessToken()).rejects.toBeInstanceOf(NewApiNetworkError)
+    log.mockClear()
+    fetchImpl.mockResolvedValueOnce(sessionRevokedResponse())
+
+    await expect(client.refreshAccessToken()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+
+    expect(client.isAuthenticated()).toBe(false)
+    expect(log).toHaveBeenCalledExactlyOnceWith('warn', 'session.ended', expect.any(String), expect.objectContaining({
+      trigger: null,
+      refusedBy: '登录状态续期',
+      code: 'AUTH_SESSION_REVOKED',
+      lostRefreshFailure: 'timeout',
+      lostRefreshRetried: true,
+      lostRefreshAgoMs: expect.any(Number),
+    }))
+  })
+
+  it('forgets an earlier lost answer once a later refresh goes through', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const log = vi.fn()
+    const client = await authenticatedClient(fetchImpl, { lostRefreshRetryDelayMs: 0, log })
+    fetchImpl.mockImplementationOnce(abortedFetch).mockImplementationOnce(abortedFetch)
+    await expect(client.refreshAccessToken()).rejects.toBeInstanceOf(NewApiNetworkError)
+    fetchImpl.mockResolvedValueOnce(rotatedResponse())
+    await client.refreshAccessToken()
+    log.mockClear()
+    fetchImpl.mockResolvedValueOnce(sessionRevokedResponse())
+
+    await expect(client.refreshAccessToken()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+
+    const [, , , detail] = log.mock.calls[0]
+    expect(detail).not.toHaveProperty('lostRefreshFailure')
+  })
+
+  it('rejects a catch-up delay outside 0 to 10 seconds', () => {
+    for (const lostRefreshRetryDelayMs of [-1, 10_001, 1.5]) {
+      expect(() => createNewApiClient({ baseUrl: testBaseUrl, lostRefreshRetryDelayMs })).toThrow(TypeError)
+    }
   })
 })
 

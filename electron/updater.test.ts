@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -1099,6 +1099,35 @@ describe('service status from the update feed', () => {
     service.setServiceStatus(null)
     expect(service.getState().serviceMaintenance).toBeNull()
     expect(seen).toEqual([{ message: '升级中' }, null])
+    service.dispose()
+  })
+
+  it('carries only the known issues for this version and package, and keeps them across a failed read', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.23', isPackaged: true, platform: 'win32', arch: 'x64' })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push(state.knownIssues))
+    expect(service.getState()).not.toHaveProperty('knownIssues')
+
+    const status = {
+      maintenance: null,
+      knownIssues: [
+        { page: 'recharge' as const, message: '支付宝暂时打不开，请先用微信付款。', action: 'support' as const, versions: ['0.2.23'], platforms: ['windows'] },
+        { page: 'home' as const, message: '只给 Mac', platforms: ['mac'] },
+        { page: 'all' as const, message: '只给 0.2.24', versions: ['0.2.24'] },
+      ],
+    }
+    service.setServiceStatus(status)
+    service.setServiceStatus(status)
+    const shown = [{ page: 'recharge', message: '支付宝暂时打不开，请先用微信付款。', action: 'support' }]
+    expect(service.getState().knownIssues).toEqual(shown)
+    // 一次没读到状态文件：先这样绕过去的那句话不收起来，免得客户当成已经修好了。
+    service.setServiceStatus(null)
+    expect(service.getState().knownIssues).toEqual(shown)
+    // 读到了、发布者撤掉了，才收起来。
+    service.setServiceStatus({ maintenance: null })
+    expect(service.getState().knownIssues).toEqual([])
+    expect(seen).toEqual([shown, []])
     service.dispose()
   })
 
@@ -2527,6 +2556,103 @@ describe('disk space before downloading an update', () => {
   })
 })
 
+describe('how much one update download actually received', () => {
+  const MB = 1024 ** 2
+  const manifest = (files: Array<{ url: string; size?: number }>) => ({
+    ...updateInfo(),
+    files: files.map((file) => ({ sha512: 'x', ...file })),
+  })
+
+  function measuredService(runtime: Partial<UpdaterRuntime> = {}) {
+    const client = new FakeUpdater()
+    // 宿主那份计数从开机就在涨：检查那一下已经收过几 KB，下载只算开始以后的。
+    let received = 5_000
+    const measures: UpdateDownloadMeasure[] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      downloadReceivedBytes: () => received,
+      downloadMeasured: (measure) => { measures.push(measure) },
+      ...runtime,
+    })
+    client.emit('update-available', manifest([{ url: 'setup.exe', size: 116 * MB }]))
+    const receive = (bytes: number) => { received += bytes }
+    const finish = () => client.emit('update-downloaded', { ...manifest([{ url: 'setup.exe', size: 116 * MB }]), downloadedFile: '/cache/setup.exe' })
+    return { client, service, measures, receive, finish }
+  }
+
+  it('reads the size of the package that was actually downloaded from the manifest', () => {
+    const mac = manifest([{ url: 'Xingmang-1.1.0-arm64-mac.zip', size: 90 * MB }, { url: 'Xingmang-1.1.0-arm64.dmg', size: 120 * MB }])
+    expect(resolveDownloadedPackageBytes(mac, '/cache/Xingmang-1.1.0-arm64-mac.zip')).toBe(90 * MB)
+    expect(resolveDownloadedPackageBytes(manifest([{ url: 'setup.exe', size: 116 * MB }]), 'C:\\cache\\installer.exe')).toBe(116 * MB)
+    expect(resolveDownloadedPackageBytes(mac, '/cache/other.zip')).toBeNull()
+    expect(resolveDownloadedPackageBytes(manifest([{ url: 'setup.exe' }]), '/cache/setup.exe')).toBeNull()
+    expect(resolveDownloadedPackageBytes(manifest([{ url: 'setup.exe', size: 116 * MB }]), '')).toBeNull()
+    expect(resolveDownloadedPackageBytes(manifest([{ url: 'setup.exe', size: 116 * MB }]), undefined)).toBeNull()
+  })
+
+  it('reports the bytes received since the download started next to the package size', async () => {
+    const { client, service, measures, receive, finish } = measuredService()
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      receive(12 * MB)
+      finish()
+    })
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded' })
+    expect(measures).toEqual([{
+      version: '1.1.0',
+      packageBytes: 116 * MB,
+      receivedBytes: 12 * MB,
+      retried: false,
+      elapsedMs: expect.any(Number),
+    }])
+    service.dispose()
+  })
+
+  it('counts the retry off the proxy into the same download', async () => {
+    const { client, service, measures, receive, finish } = measuredService({
+      retryWithoutProxy: async () => {},
+      restoreProxy: async () => {},
+    })
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      receive(3 * MB)
+      throw proxyConnectionError()
+    })
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      receive(116 * MB)
+      finish()
+    })
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded' })
+    expect(measures).toEqual([expect.objectContaining({ receivedBytes: 119 * MB, packageBytes: 116 * MB, retried: true })])
+    service.dispose()
+  })
+
+  it('still reports a finished download when the host cannot count the bytes', async () => {
+    for (const downloadReceivedBytes of [undefined, () => null, () => { throw new Error('guard gone') }]) {
+      const { client, service, measures, finish } = measuredService({ downloadReceivedBytes })
+      client.downloadUpdate.mockImplementationOnce(async () => { finish() })
+      await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded' })
+      expect(measures).toEqual([expect.objectContaining({ packageBytes: 116 * MB, receivedBytes: null })])
+      service.dispose()
+    }
+  })
+
+  it('reports nothing for a download that failed and keeps going when the report throws', async () => {
+    const failed = measuredService()
+    failed.client.downloadUpdate.mockImplementationOnce(async () => {
+      failed.receive(40 * MB)
+      throw new Error('net::ERR_CONNECTION_RESET')
+    })
+    await expect(failed.service.download()).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+    expect(failed.measures).toEqual([])
+    failed.service.dispose()
+
+    const throwing = measuredService({ downloadMeasured: () => { throw new Error('log store closed') } })
+    throwing.client.downloadUpdate.mockImplementationOnce(async () => { throwing.finish() })
+    await expect(throwing.service.download()).resolves.toMatchObject({ phase: 'downloaded', error: null })
+    throwing.service.dispose()
+  })
+})
+
 describe('download progress smoothing', () => {
   it('waits for a few seconds of samples before reporting a speed', () => {
     let samples = recordDownloadProgressSample([], { at: 0, transferred: 0 })
@@ -3805,6 +3931,26 @@ describe('Windows account outside the administrators group', () => {
     client.emit('checking-for-update')
     client.emit('update-downloaded', updateInfo('1.1.0'))
     expect(service.getState()).toMatchObject({ phase: 'downloaded', installNeedsAdminPassword: true })
+    service.dispose()
+  })
+})
+
+describe('Mac that installs while idle', () => {
+  it('leaves the field out until the host says so, then keeps it across checks', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const seen: Array<boolean | undefined> = []
+    service.subscribe((state) => { seen.push(state.idleInstall) })
+    expect('idleInstall' in service.getState()).toBe(false)
+    service.setIdleInstall(false)
+    expect(seen).toEqual([])
+
+    service.setIdleInstall(true)
+    service.setIdleInstall(true)
+    expect(seen).toEqual([true])
+    client.emit('checking-for-update')
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', idleInstall: true })
     service.dispose()
   })
 })

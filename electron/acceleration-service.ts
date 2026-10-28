@@ -30,6 +30,11 @@ export interface AccelerationService extends AccelerationApi, AccelerationPrefer
    * 据此决定要不要推迟关机、先把系统代理还原；只读内存，不碰后台进程。
    */
   hasPossibleSession(): boolean
+  /**
+   * 后台进程正在等上一个星芒交出网络设置，这期间读加速状态最多要等半分钟（acceleration-development-host.ts 的
+   * awaitingPreviousOwner）。只读内存，不碰后台进程；没有后台进程或它不报这一项的都是 false。
+   */
+  awaitingPreviousOwner(): boolean
   onAccountChanged(): Promise<void>
   dispose(): Promise<void>
 }
@@ -42,6 +47,7 @@ interface AccelerationServiceOptions {
    */
   backend?: AccelerationApi & {
     startAutomaticAcceleration?(scope: string, mode: AccelerationMode, lineId?: string): Promise<AccelerationState>
+    awaitingPreviousOwner?(): boolean
   }
   /**
    * 每产出一个状态就通知一次。托盘那一行（tray-acceleration.ts）靠它跟上加速页
@@ -488,6 +494,9 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     ...(bundleDamaged ? { recheckAccelerationBundle: () => bundleDamaged.recheck() } : {}),
     hasPossibleSession() {
       return possibleSessions.size > 0
+    },
+    awaitingPreviousOwner() {
+      try { return backend?.awaitingPreviousOwner?.() === true } catch { return false }
     },
     stopAll() {
       revision += 1

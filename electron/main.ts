@@ -39,12 +39,15 @@ import { createRealmBusinesses } from './bootstrap/ai-services'
 import { createDiagnostics } from './bootstrap/diagnostics'
 import { createQuitCleanup } from './bootstrap/lifecycle'
 import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/network-routes'
+import { startCodexPayloadWatch } from './bootstrap/codex-payload-watch'
+import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
+import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
-import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
+import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
 import { createRendererRelease, type RendererRelease, type RendererReleaseLogEvent } from './renderer-release'
@@ -81,6 +84,7 @@ import { createMainStallMonitor, createUsageStatsReporter } from './usage-stats-
 import { activeProviderIds, cliCatalog, isProviderId } from './catalog'
 import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
+import { applicationSecurityResponseHeaders } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
@@ -100,18 +104,18 @@ import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
 import { createAccountStartupGate } from './account-startup-gate'
 import { createAccountRestoreRetry } from './account-restore-retry'
-import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { RuntimeLogStore } from './runtime-log'
 import { hostNotifier } from './platform/host-notification-bridge'
-import { hiddenWindowNotification, hostNotificationMessage } from './platform/notifications'
+import { hiddenWindowNotification, hostNotificationMessage, type PlatformHostNotification } from './platform/notifications'
 import { attachPrivacyChangeListener } from './platform/privacy-change-bridge'
 import { attachProxyBypassState } from './platform/proxy-bypass-bridge'
 import { attachTrayAvailability } from './platform/tray-availability-bridge'
 import { networkSettingsTarget } from './proxy-bypass'
+import { macosAppManagementSettingsUrl } from './macos-desktop-app-update'
 import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
@@ -123,7 +127,7 @@ import {
 } from './macos-install-location'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
-import { createPaymentWindowController } from './payment-window'
+import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
@@ -313,7 +317,7 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
       callback({ error: -6 })
       return
     }
-    callback({ path: target })
+    callback({ path: target, headers: applicationSecurityResponseHeaders() })
   })
 }
 
@@ -981,6 +985,12 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       arch: process.arch,
     })
+    const relaunchedWithout = launchArgumentsRelaunchedWithout()
+    if (relaunchedWithout) {
+      // 正常的启动方式都列在 security.ts 的白名单里。客户日志里出现这一条，说明有一种
+      // 没想到的启动方式：是正常的就补进白名单，不是的话多半是有人改过快捷方式。
+      runtimeLog.log('warn', 'main', 'launch-arguments.relaunched', '启动参数里有不认识的开关，已去掉后重新打开', { switches: relaunchedWithout })
+    }
     logDisplayCrash = (details, recordError) => {
       runtimeLog.log('error', 'display', 'gpu.gone', '显卡进程异常退出', { reason: details.reason, exitCode: details.exitCode })
       if (recordError) runtimeLog.exception('display', 'gpu.record.failed', recordError)
@@ -1156,6 +1166,18 @@ if (!hasSingleInstanceLock) {
     }
     let readAccountSiteId: () => string = () => 'solov'
     let readExternalClientAccountId: () => string | null = () => null
+    // Codex 有个对话太大、要客户新开对话的那条提示（codex-payload-limit.ts）：系统服务放进设置快照，下面开始盯会话记录。
+    const codexPayloadNotices = createCodexPayloadNoticeBoard()
+    // 客户正看着星芒时角落那张卡就够了，不另弹系统通知（同付款到账那条）。主窗口建得比这里晚，用到时才读。
+    function notifyCodexPayload(event: PlatformHostNotification, eventKey: string): void {
+      try {
+        const main = managedMainWindow
+        const watching = Boolean(main && !main.isDestroyed() && main.isVisible() && !main.isMinimized() && main.isFocused())
+        if (!watching) hostNotifier()({ event, eventKey })
+      } catch (cause) {
+        runtimeLog.exception('network', 'codex-payload.notify-failed', cause)
+      }
+    }
     let readCurrentManagedCliKeys: () => Promise<readonly StoredManagedCliKey[]> = async () => []
     let readOtherManagedCliKeyAccounts: () => Promise<readonly { owner: string; keys: readonly StoredManagedCliKey[] }[]> = async () => []
     let readBillingAccountScope: () => string = () => 'xm-account:guest'
@@ -1201,6 +1223,8 @@ if (!hasSingleInstanceLock) {
       cliModelHints: readCliModelHints,
       // 改完界面重读设置和配置：首页的线路标签、重开提示都在那里面。
       onToolRouteFollowed: () => notifyRelayRouteChanged(),
+      onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
+      codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,
       runtimeLog,
       sweepInstallLeftovers,
@@ -1262,6 +1286,19 @@ if (!hasSingleInstanceLock) {
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
       systemService,
       readAccountSiteId: () => readAccountSiteId(),
+    })
+    const codexPayloadWatch = startCodexPayloadWatch({
+      managerDataDirectory,
+      codexHome: codexContext.codexHome,
+      runtimeLog,
+      readAccountSiteId: () => readAccountSiteId(),
+      routes: networkRoutes,
+      systemService,
+      notices: codexPayloadNotices,
+      notifyHost: (kind, eventKey) => notifyCodexPayload(
+        kind === 'nearing' ? 'codexPayloadNearing' : kind === 'too-large' ? 'codexPayloadLineTwoTooLarge' : 'codexPayloadTooLarge',
+        eventKey,
+      ),
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -1400,7 +1437,7 @@ if (!hasSingleInstanceLock) {
     let updateAccount: WindowsElevationCapability | null = null
     // 退出时自动装写下的「试过了」：Mac 关机抢在安装器装完之前时撤回（见 onPowerOff）。
     let quitInstallAttempt: QuitInstallAttempt | null = null
-    const { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch } = updateFeed.createUpdater({
+    const { updaterService, serviceStatusMonitor, accelerationNodes, cliModelsAtLaunch, hiddenPaymentMethods } = updateFeed.createUpdater({
       managerDataDirectory,
       runtimeLog,
       systemService,
@@ -1538,6 +1575,13 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('updater', 'pending.record-failed', cause)
       })
     }
+    // 装的时候弹不弹窗口（Mac 闲时装的前提）：解符号链接、试两处能不能写，跳框器每两秒问一次，
+    // 同一种装法一分钟内只算一次（0.2.22 性能体检第 7 条）。
+    const installUnattended = memoizeUnattendedInstall((installMethod) => canInstallUnattended({
+      platform: process.platform,
+      installMethod,
+      bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
+    }))
     // 自动更新：上一次运行已经下好的版本，这次一打开就装上（见 auto-update-install.ts）。
     let launchInstallTried = false
     // Windows 上开机自启、窗口没打开过、开机时没装的那一版（'window'）：等第一次打开窗口再装。
@@ -1615,11 +1659,7 @@ if (!hasSingleInstanceLock) {
       if (!version) return
       launchInstallTried = true
       const accelerationActive = acceleration?.hasPossibleSession() === true
-      const unattended = canInstallUnattended({
-        platform: process.platform,
-        installMethod: state.installMethod,
-        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
-      })
+      const unattended = installUnattended(state.installMethod)
       const mode = resolveLaunchInstallMode({ platform: process.platform, launchedAtLogin, windowShown: mainWindowShown, accelerationActive, unattended })
       if (mode === 'skip' || mode === 'window') {
         if (mode === 'window') launchInstallAwaitingWindow = version
@@ -1682,6 +1722,9 @@ if (!hasSingleInstanceLock) {
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
       if (!scope || !acceleration) return false
+      // 加速在等上一个星芒交出网络设置时读状态要陪着等最多半分钟：这里只问开没开（绕不绕代理、导出诊断），
+      // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。
+      if (acceleration.awaitingPreviousOwner()) return true
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
@@ -1749,7 +1792,7 @@ if (!hasSingleInstanceLock) {
           }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
           if (siteId === 'solov') {
             void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
-            // 对话页、视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
+            // 视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
             void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
           }
         }
@@ -1773,6 +1816,8 @@ if (!hasSingleInstanceLock) {
       }),
       ...createSpendSpikeRecordStore(managerDataDirectory),
       emptyRecord: createEmptyBalanceRecordStore(managerDataDirectory),
+      // 客户正看着星芒（新手引导、首页都在说余额为零，付款窗口开着也算）时余额用完那条先不弹，等窗口不在前台时读到余额再说。
+      holdEmptyNotice: () => BrowserWindow.getFocusedWindow() !== null,
     })
     // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
@@ -1973,6 +2018,12 @@ if (!hasSingleInstanceLock) {
         assertReady: accounts.assertReady,
       }, tradeNo),
       onBlockedNavigation: (targetUrl) => {
+        // 收银台想拉起支付宝、微信 App：正常行为，扫码付款不受影响。只记协议名，后面那串带着付款码。
+        const scheme = resolvePaymentAppLaunchScheme(targetUrl)
+        if (scheme) {
+          runtimeLog.log('info', 'payment', 'navigation.blocked', '付款页想拉起支付 App，已拦下，不影响扫码付款', { scheme })
+          return
+        }
         let origin = 'invalid-url'
         try {
           origin = new URL(targetUrl).origin
@@ -2149,6 +2200,12 @@ if (!hasSingleInstanceLock) {
       onChange: () => applicationTray?.updateSnapshot(),
     })
     // 手机遥控 Codex：每次打开星芒都从关着开始，客户在设置里点了才连飞书、微信。
+    // 「下好了」的系统通知和首页气泡在能闲时装的 Mac 上多说一句「你不用电脑时星芒也会自己装好」：看的是程序包能不能
+    // 免密码换（一次运行里不变）和遥控开没开——遥控开着闲时不装（YK-2，update-install-prompt 的 idleInstallHeldByRemote），
+    // 这句就不能说；遥控开关每变一次重算。遥控开着时不去探程序包，省得每条遥控消息都跟着试一次能不能写。
+    const refreshIdleInstall = () => {
+      updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && installUnattended(updaterService.getState().installMethod))
+    }
     const codexRemote = createCodexRemote({
       managerDataDirectory,
       runtimeLog,
@@ -2158,9 +2215,11 @@ if (!hasSingleInstanceLock) {
       codexEnv: rootedOptions.codexExtensions.env,
       providerRoots: rootedOptions.system.providerRoots,
       windowsExecution: windowsCliExecution,
+      enqueueLaunch: (launch) => systemService.enqueueCodexRemoteLaunch(launch),
       onStateChanged: (snapshot) => {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
+        refreshIdleInstall()
       },
     })
     const unregisterIpcHandlers = registerIpcHandlers({
@@ -2185,6 +2244,7 @@ if (!hasSingleInstanceLock) {
       accountGroupHints: readAccountGroupHints,
       peekAccountGroupHints,
       cliModelHints: readCliModelHints,
+      hiddenPaymentMethods,
       keyReplacements: createManagedKeyReplacementStore({ filePath: path.join(managerDataDirectory, 'managed-key-replacements.json') }),
       chatKeyStore,
       chatCredentials,
@@ -2253,6 +2313,14 @@ if (!hasSingleInstanceLock) {
         await shell.openExternal(target)
         return true
       },
+      ...(process.platform === 'darwin'
+        ? {
+            openAppManagementSettings: async () => {
+              await shell.openExternal(macosAppManagementSettingsUrl)
+              return true
+            },
+          }
+        : {}),
       onSettingsChanged: (update) => {
         if (update.hardwareAcceleration !== undefined) {
           // 用户对显示方式做了选择（设置页开关，或兼容提示里的两颗按钮）：之前的崩溃
@@ -2326,6 +2394,7 @@ if (!hasSingleInstanceLock) {
       codexRemoteKeepAwake.dispose()
     })
     quitCleanup.add('routes', () => {
+      codexPayloadWatch.dispose()
       unsubscribeRelayRoute()
       unsubscribeToolRoutes()
       systemService.disposeToolRoutes?.()
@@ -2399,14 +2468,16 @@ if (!hasSingleInstanceLock) {
     managedMainWindow = mainWindow
     mainWindow.once('show', () => {
       mainWindowShown = true
-      // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。
-      dropBackgroundInstall()
       startupQuiet.end('window-shown')
       // Windows 上开机时没装、等着窗口的那一版：用户点开了窗口，人就在电脑前，先预告再装。
       const awaiting = launchInstallAwaitingWindow
       launchInstallAwaitingWindow = null
       if (awaiting) startLaunchInstall(awaiting, 'window')
     })
+    // 后台装到一半用户点开了窗口（托盘、系统通知）：装好重新打开时窗口照常出来。开机自启那次的后台装
+    // 和 Mac 的闲时装（多半是窗口开过又缩回去以后才装）都算，所以挂在每一次显示上，不只第一次
+    // （0.2.22 发版前回归检查第 5 条）。
+    mainWindow.on('show', dropBackgroundInstall)
     // Mac 的安装器打开新版本时会把它切到前台（ShipIt 用 NSWorkspaceLaunchDefault）：没有窗口，
     // 菜单栏却换成了星芒的，这时按 Command + Q 退出的是星芒。后台装完重新拉起、窗口留在
     // 菜单栏的这一次，把前台还给刚才在用的程序。
@@ -2475,11 +2546,7 @@ if (!hasSingleInstanceLock) {
       getState: () => updaterService.getState(),
       autoUpdate: () => updaterService.autoUpdateEnabled(),
       standardAccount: () => updateAccount === null ? null : updateAccount === 'standard',
-      unattended: () => canInstallUnattended({
-        platform: process.platform,
-        installMethod: updaterService.getState().installMethod,
-        bundlePath: installLocation ? null : resolveMacAppBundlePath(process.execPath),
-      }),
+      unattended: () => installUnattended(updaterService.getState().installMethod),
       elevated: () => windowsCliExecution.highIntegrity === true,
       idleMs: () => powerMonitor.getSystemIdleTime() * 1_000,
       locked: () => powerMonitor.getSystemIdleState(1) === 'locked',
@@ -2490,12 +2557,14 @@ if (!hasSingleInstanceLock) {
       accelerationActive: () => acceleration?.hasPossibleSession() === true,
       // 遥控开着就不在闲时重启：重开以后不会自己连回去，人在外面也开不了（YK-2）。
       remoteControlActive: () => codexRemote.hasEnabledChannel(),
-      // 对话页、视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
+      // 视频剪辑页、画布出的视频，连同登录时接着取回来的：重启会打断，交给服务端的照样扣钱。
       videoWorking: () => [...businesses.values()].some((business) => (
         business.videoService.hasActiveRequests() || business.chatVideoService.hasActiveRequests()
       )),
       // 视频剪辑的拼片在界面里跑，主进程看不到，跟对话出字、开着的对话框一起由界面报忙闲（#1411）。
       rendererBusy: () => mainRendererRelease?.rendererBusy === true,
+      // 跳框时会把主窗口叫到最前面，点了「现在安装」付款页跟着关掉；付款窗口开着就先不问（同托盘省内存那条）。
+      paymentWindowOpen: () => paymentWindow.isOpen(),
       attempted: (version) => pendingUpdateRecord.attemptedVersion === version || pendingUpdateRecord.quitAttemptedVersion === version,
       ask: async (prompt, signal) => {
         if (mainWindow.isDestroyed()) return 'later'
@@ -2542,6 +2611,8 @@ if (!hasSingleInstanceLock) {
       },
       log: (level, event, message, detail) => runtimeLog.log(level, 'updater', event, message, detail),
     })
+    // 「下好了」那句要不要带「你不用电脑时星芒也会自己装好」（见 refreshIdleInstall）：开机算一次，之后跟着遥控开关变。
+    refreshIdleInstall()
     const unsubscribeUpdateInstallPrompt = updaterService.subscribe((state) => updateInstallPrompter.observe(state))
     updateInstallPrompter.observe(updaterService.getState())
     // 账号是不是管理员问出来之前不跳框，问出来再看一遍。
@@ -2567,7 +2638,7 @@ if (!hasSingleInstanceLock) {
           buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
-          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 → 启动关闭」里改）',
+          checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 › 启动关闭」里改）',
           checkboxChecked: false,
         })
         const decision = trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
@@ -2694,7 +2765,8 @@ if (!hasSingleInstanceLock) {
         // 日志里打开 Codex 时自动连的那一次只有「已连接」、没有「已断开」：它是重开星芒时在这里收回的，日志里却一个字都没留。
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
         // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
-        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle()])
+        // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
+        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle(), codexRemote.farewell()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
@@ -2871,7 +2943,11 @@ if (!hasSingleInstanceLock) {
         removeManagedTools: () => removeMacManagedTools(undefined, report),
         trashItem: (target) => shell.trashItem(target),
         prepareQuit: async () => { await lifecycle.prepareUpdateQuit() },
-        abortQuit: () => { lifecycle.abortUpdateQuit() },
+        abortQuit: () => {
+          lifecycle.abortUpdateQuit()
+          // 退出前已经跟手机说过「星芒关了」，没退成要补一句（打磨 B8）。
+          void codexRemote.quitAborted().catch(() => undefined)
+        },
         removeUpdaterCache: () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
         clearLoginRecords: async () => {
           // 界面的本地存储由 Chromium 开着，先让它自己清，免得退出时把刚删的写回来。
@@ -2911,7 +2987,11 @@ if (!hasSingleInstanceLock) {
           }
         })
       },
-      abort: () => { lifecycle.abortUpdateQuit() },
+      abort: () => {
+        lifecycle.abortUpdateQuit()
+        // 安装器没启动起来（Windows 提权框点了「否」、包不在了）：星芒还开着，退出前跟手机说的「星芒关了」要补一句（打磨 B8）。
+        void codexRemote.quitAborted().catch(() => undefined)
+      },
     }
     const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
     applicationTray = !trayHostAvailable ? null : createApplicationTray({

@@ -314,14 +314,14 @@ export function buildConnectionProbe(
     return blocked({
       layer: 'unconfigured',
       summary: `还没有给 ${name} 写入星芒配置`,
-      nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检',
+      nextStep: '在首页给这个工具写入星芒密钥，写完再回来自检',
     })
   }
   if (!inspection.hasApiKey) {
     return blocked({
       layer: 'unconfigured',
-      summary: `${name} 的配置里还没有 API Key`,
-      nextStep: '先在首页登录星芒账号并写入 Key，再回来自检',
+      summary: `${name} 的配置里还没有密钥`,
+      nextStep: '先在首页登录星芒账号并写入密钥，再回来自检',
     })
   }
   if (!inspection.actualBaseUrl) {
@@ -340,7 +340,7 @@ export function buildConnectionProbe(
     return blocked({
       layer: 'config',
       summary: `${name} 的配置与当前账号不是同一套，已取消自检`,
-      nextStep: '在首页重新写入一次星芒 Key，再回来自检',
+      nextStep: '在首页重新写入一次星芒密钥，再回来自检',
     })
   }
   if (!inspection.matchesRelay) {
@@ -349,7 +349,7 @@ export function buildConnectionProbe(
     return blocked({
       layer: 'config',
       summary: `${name} 当前的配置没有指向星芒服务`,
-      nextStep: '自检只会向星芒服务发请求。请先在首页把这个工具重新写入一次星芒 Key',
+      nextStep: '自检只会向星芒服务发请求。请先在首页把这个工具重新写入一次星芒密钥',
     })
   }
   // 星芒自己发的请求用的是这张表的地址和 Key，当然通；可 Codex 本体不认写在
@@ -509,7 +509,7 @@ export function classifyConnectionResponse(
       ok: false,
       layer: 'credential',
       summary: `密钥被拒绝（HTTP ${status}），可能已被禁用`,
-      nextStep: '到「个人中心 → 密钥管理」看这个工具的密钥是否还有效，必要时重新写入',
+      nextStep: '到「个人中心 › 密钥管理」看这个工具的密钥是否还有效，必要时重新写入',
     }
   }
   if (status === 402) return outOfQuota(status)
@@ -634,7 +634,7 @@ function serviceUnavailable(status: number): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'service',
     summary: `服务暂时不可用（HTTP ${status}），多半在维护或线路繁忙`,
-    nextStep: '你这边不用做任何改动，Key 和配置都不用动，稍后再自检一次就行',
+    nextStep: '你这边不用做任何改动，密钥和配置都不用动，稍后再自检一次就行',
   }
 }
 
@@ -653,7 +653,7 @@ function webPageInsteadOfApi(): LayerOutcome & { ok: boolean } {
     ok: false,
     layer: 'network',
     summary: networkFailureMessages.intercepted,
-    nextStep: '在浏览器里完成上网认证，或改用手机热点后再自检一次；Key 和配置都不用动',
+    nextStep: '在浏览器里完成上网认证，或改用手机热点后再自检一次；密钥和配置都不用动',
   }
 }
 
@@ -676,7 +676,7 @@ function keyQuotaExhausted(name: string, status: number): LayerOutcome & { ok: b
     ok: false,
     layer: 'quota',
     summary: `${name} 的额度用完了（HTTP ${status}），这是给这个工具设的上限`,
-    nextStep: '到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
+    nextStep: '到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
   }
 }
 

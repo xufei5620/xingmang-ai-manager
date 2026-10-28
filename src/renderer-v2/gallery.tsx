@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Archive, Check, Download, FolderOpen, Info, Plus, Settings, Trash2 } from 'lucide-react';
+import { Archive, Check, Download, FolderOpen, Info, Plus, Settings } from 'lucide-react';
 import { BalanceTierProvider, BrandIcon, Button, Card, Confirm, Dialog, Drawer, Empty, Input, Kbd, ListRow, Logo, Menu, Notice, PageHead, Pill, Popover, Progress, SearchInput, Segment, Select, SessionRow, SettingRow, Skeleton, Switch, Table, Tabs, Textarea, ToastProvider, ToolCard, ToolRow, Toolbar, useReducedMotion, useToast } from './ui';
 import './gallery.css';
 import { Coachmark, Tooltip } from './ui';

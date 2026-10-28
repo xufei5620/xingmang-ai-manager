@@ -187,6 +187,47 @@ describe('runExternalClientCheck', () => {
     expect(JSON.stringify(result)).not.toContain(apiKey)
   })
 
+  it('also asks with the model Claude Desktop checks at launch when it is not the default one', async () => {
+    const sent: string[] = []
+    const failing = new Set<string>()
+    const recorder: typeof globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const model = (JSON.parse(String(init?.body)) as { model: string }).model
+      sent.push(model)
+      return failing.has(model)
+        ? Response.json({ error: { message: `模型 ${model} 不存在` } }, { status: 404 })
+        : generation()(url, init)
+    }) as typeof globalThis.fetch
+    const ok = await check(recorder, desktopInput({ startupCheckModel: 'claude-haiku-4-5' }))
+    expect(sent).toEqual(['claude-opus-5-5', 'claude-haiku-4-5'])
+    expect(ok).toMatchObject({ ok: true, model: 'claude-opus-5-5', summary: '当前账号的密钥和模型 claude-opus-5-5 都可用' })
+
+    // 默认的通、开机检查挑的那个不通：Claude Desktop 会弹「型号被拒」，这里也照实报那一个。
+    sent.length = 0
+    failing.add('claude-haiku-4-5')
+    expect(await check(recorder, desktopInput({ startupCheckModel: 'claude-haiku-4-5' })))
+      .toMatchObject({ ok: false, layer: 'model', status: 404, model: 'claude-haiku-4-5' })
+    expect(sent).toEqual(['claude-opus-5-5', 'claude-haiku-4-5'])
+
+    // 默认的就不通：先报默认的，不再多问一次。
+    sent.length = 0
+    failing.add('claude-opus-5-5')
+    expect(await check(recorder, desktopInput({ startupCheckModel: 'claude-haiku-4-5' }))).toMatchObject({ ok: false, model: 'claude-opus-5-5' })
+    expect(sent).toEqual(['claude-opus-5-5'])
+
+    // 同一个型号只问一次；别的客户端不看它。
+    sent.length = 0
+    failing.clear()
+    await check(recorder, desktopInput({ startupCheckModel: 'claude-opus-5-5' }))
+    expect(sent).toEqual(['claude-opus-5-5'])
+    let calls = 0
+    const counted: typeof globalThis.fetch = (async () => {
+      calls += 1
+      return Response.json({ data: [{ id: 'gpt-5.4' }] })
+    }) as typeof globalThis.fetch
+    expect(await check(counted, { startupCheckModel: 'claude-haiku-4-5' })).toMatchObject({ ok: true, model: 'gpt-5.4' })
+    expect(calls).toBe(1)
+  })
+
   it('reports an empty balance that Claude Desktop shows as rejected credentials', async () => {
     // new-api 查模型清单不走计费：余额不足时清单照样 200，这条消息却回 403。Claude Desktop 把
     // 网关检查的 403 一律说成「The provider rejected your credentials」，这里要说出真正的原因。

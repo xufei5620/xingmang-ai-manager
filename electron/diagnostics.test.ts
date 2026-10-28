@@ -2410,7 +2410,7 @@ describe('diagnostics', () => {
     expect(item?.summary).toContain('用户文件夹、软件数据文件夹、Claude Code 配置文件夹')
     expect(item?.summary).toContain('被搬到了 D 盘')
     expect(item?.summary).toContain('C 盘搬家')
-    expect(item?.summary).toContain('写入 Key、保存设置、记录日志都可能失败')
+    expect(item?.summary).toContain('写入密钥、保存设置、记录日志都可能失败')
     expect(item?.summary).not.toMatch(/AppData|junction|联接|符号链接/)
     expect(item?.details).toMatchObject({ relocated: 1, to1: 'D 盘' })
     // 搬过去的路径带着用户名，报告的脱敏认不出它，所以压根不写进去。

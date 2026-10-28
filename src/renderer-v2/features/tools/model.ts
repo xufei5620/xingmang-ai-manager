@@ -42,6 +42,11 @@ export interface ToolPresentation {
   updateAvailable: boolean
   currentVersion: string | null
   latestVersion: string | null
+  /**
+   * Codex 桌面端的 latestVersion 就是点「更新」会装上的那一版：Mac 上以星芒存储桶为准、从桶里装（yoyo 2026-10-27
+   * 「桌面端更新改」），首页写「可更新到 v…」。缺省 = 不是（Windows 上商店和国内镜像可能不是同一版），只写「更新」。
+   */
+  updateTargetExact?: boolean
   /** 已验证版本名单(N1)对这一行的建议;Codex 桌面端与没有名单的工具为 null。 */
   versionAdvice: CliVersionAdvice | null
   /** 本工具最近一次更新前的版本、还能退回去时给出;缺省 = 没有可退的版本。 */
@@ -435,6 +440,7 @@ export function presentTools(
       configDirectoryReady: config.dataDirectoryExists === true,
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice, revertVersion,
+      ...(id === 'codexDesktop' && snapshot.platform.isMac ? { updateTargetExact: true } : {}),
       error: status.detectionFailed ? detectionFailureMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
@@ -561,7 +567,7 @@ export interface ToolUpdateOffer {
  * 首页那颗「更新」其实会装回推荐版本，引导不该把这说成「版本旧了」。
  */
 export function toolUpdateOffer(
-  tool: Pick<ToolPresentation, 'id' | 'status' | 'updateAvailable' | 'latestVersion' | 'versionAdvice' | 'error'>,
+  tool: Pick<ToolPresentation, 'id' | 'status' | 'updateAvailable' | 'latestVersion' | 'versionAdvice' | 'error' | 'updateTargetExact'>,
 ): ToolUpdateOffer | null {
   if (!tool.status.installed || tool.error) return null
   const advice = tool.versionAdvice
@@ -572,7 +578,7 @@ export function toolUpdateOffer(
     return { version: recommended, target: recommended, newer: advice?.recommendedIsNewer === true, knownIssue, manualHint }
   }
   if (!tool.updateAvailable || (advice?.pinned && advice.recommendedVersion)) return null
-  return { version: null, target: tool.id === 'codexDesktop' ? null : tool.latestVersion, newer: true, knownIssue, manualHint }
+  return { version: null, target: tool.id === 'codexDesktop' && !tool.updateTargetExact ? null : tool.latestVersion, newer: true, knownIssue, manualHint }
 }
 
 /**

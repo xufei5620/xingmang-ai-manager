@@ -1,25 +1,29 @@
 #!/usr/bin/env node
-// 给 Windows 更新清单 latest.yml 加发布者签名（Ed25519），给 publish-release 与
+// 给 Windows 更新清单 latest.yml 和 Linux 的两份清单（latest-linux.yml、
+// latest-linux-arm64.yml）加发布者签名（Ed25519），给 publish-release 与
 // rollback-release 两个工作流调用：
 //
-//   sign --manifest <latest.yml>
+//   sign --manifest <清单>
 //     用环境变量 XINGMANG_UPDATE_SIGNING_KEY（Ed25519 私钥，PKCS8 DER 的 base64）给
 //     files[] 里每一项加上 xingmangSignature 字段，原地写回。签之前先确认这把私钥
 //     对应的公钥就在客户端内置的名单里（electron/update-package-signature.ts）——
 //     secret 里放错一把钥匙，签出来的包每一台新客户端都会拒装，这一步就是挡它的。
 //
-//   verify --manifest <latest.yml>
+//   verify --manifest <清单>
 //     用客户端内置的公钥逐项验签，任何一项不过都失败。
 //
-//   rollback --manifest <备份的 latest.yml> --release-dir <目录>
+//   rollback --manifest <备份的清单> --release-dir <目录>
 //     回退用。备份已经带签名的：验签即可。备份是加签名之前发的老版本、一项签名都
 //     没有的：必须和 GitHub Release 上同版本的安装包逐项对上 SHA-512 才补签——
 //     备份清单和 R2 上的安装包在同一个桶里，拿到上传密钥的人两个都能换；GitHub
 //     Release 不在那个桶里，是独立的第二个来源。对不上就失败，绝不替桶里的东西背书。
 //
-// 为什么只签 Windows：macOS 的更新包由 Squirrel.Mac 按已装应用的指定要求验苹果代码
-// 签名，指定要求钉着我们发布证书的指纹，那张证书的私钥同样只在 release 环境里。再加
-// 一道 Ed25519 挡的是同一件事，却多了一种把 Mac 更新弄坏的方式。
+// 为什么签 Linux：deb 由系统安装程序以 root 装，dpkg 自己不验任何签名（Debian、Ubuntu
+// 默认 no-debsig），清单又和 deb 同放一个桶，跟 Windows 是同一个缺口。
+//
+// 为什么不签 macOS：更新包由 Squirrel.Mac 按已装应用的指定要求验苹果代码签名，指定
+// 要求钉着我们发布证书的指纹，那张证书的私钥同样只在 release 环境里。再加一道
+// Ed25519 挡的是同一件事，却多了一种把 Mac 更新弄坏的方式。
 //
 // 签的内容与 electron/update-package-signature.ts 的 buildUpdateSignaturePayload
 // 必须逐字一致，两边由 electron/update-package-signature.test.ts 钉在一起。
@@ -75,15 +79,15 @@ function loadSigningKey(encoded) {
   return key
 }
 
-function readDocument(text) {
+function readDocument(text, name) {
   // parseLatestMetadata 做完整的结构校验；这里另外拿一份可改写的文档，改完其余内容
   // 原样保留，electron-updater 读到的除了多出的签名字段之外一个字节都不变。
-  const metadata = parseLatestMetadata(text, 'latest.yml')
+  const metadata = parseLatestMetadata(text, name)
   const document = YAML.parseDocument(text, { uniqueKeys: true })
-  if (document.errors.length > 0) throw new UpdateSignatureError('latest.yml 不是有效的 YAML')
+  if (document.errors.length > 0) throw new UpdateSignatureError(`${name} 不是有效的 YAML`)
   const files = document.get('files')
   if (!YAML.isSeq(files) || files.items.length !== metadata.files.length) {
-    throw new UpdateSignatureError('latest.yml 的 files 结构不对')
+    throw new UpdateSignatureError(`${name} 的 files 结构不对`)
   }
   return { metadata, document, items: files.items }
 }
@@ -93,35 +97,35 @@ function entrySignature(item) {
   return typeof value === 'string' && value.trim() ? value.trim() : null
 }
 
-function signManifestText(text, privateKey, pinnedKeys) {
+function signManifestText(text, privateKey, pinnedKeys, name = 'latest.yml') {
   const derived = exportPublicKey(privateKey)
   if (!pinnedKeys.includes(derived)) {
     throw new UpdateSignatureError(`${KEY_ENV} 对应的公钥不在客户端内置名单里，签出来的包客户端会拒装。公钥是：${derived}`)
   }
-  const { metadata, document, items } = readDocument(text)
+  const { metadata, document, items } = readDocument(text, name)
   items.forEach((item, index) => {
     const file = metadata.files[index]
     const payload = buildPayload(metadata.version, file.rawUrl, file.sha512)
     item.set(SIGNATURE_FIELD, sign(null, Buffer.from(payload, 'utf8'), privateKey).toString('base64'))
   })
   const signed = document.toString()
-  verifyManifestText(signed, pinnedKeys)
+  verifyManifestText(signed, pinnedKeys, name)
   return signed
 }
 
 /** 逐项验签；返回验过的项数。有一项没签或签错就抛错。 */
-function verifyManifestText(text, pinnedKeys) {
+function verifyManifestText(text, pinnedKeys, name = 'latest.yml') {
   if (pinnedKeys.length === 0) throw new UpdateSignatureError('客户端里还没有内置任何更新签名公钥')
   const keys = pinnedKeys.map(publicKeyObject)
-  const { metadata, items } = readDocument(text)
+  const { metadata, items } = readDocument(text, name)
   items.forEach((item, index) => {
     const file = metadata.files[index]
     const signature = entrySignature(item)
-    if (!signature) throw new UpdateSignatureError(`latest.yml 的 ${file.relativePath} 没有发布者签名`)
+    if (!signature) throw new UpdateSignatureError(`${name} 的 ${file.relativePath} 没有发布者签名`)
     const bytes = Buffer.from(signature, 'base64')
     const data = Buffer.from(buildPayload(metadata.version, file.rawUrl, file.sha512), 'utf8')
     if (bytes.length !== 64 || !keys.some((key) => verify(null, data, key, bytes))) {
-      throw new UpdateSignatureError(`latest.yml 的 ${file.relativePath} 签名校验不通过`)
+      throw new UpdateSignatureError(`${name} 的 ${file.relativePath} 签名校验不通过`)
     }
   })
   return items.length
@@ -137,14 +141,14 @@ function sha512Base64(file) {
  * 上找不到同名安装包，原样退回，missing 是缺的文件名）。对不上、只签了一部分、签名
  * 不对都直接失败：那是备份被动过的迹象。
  */
-function prepareRollbackText(text, { releaseDir, privateKey, pinnedKeys }) {
-  const { metadata, items } = readDocument(text)
+function prepareRollbackText(text, { releaseDir, privateKey, pinnedKeys, name = 'latest.yml' }) {
+  const { metadata, items } = readDocument(text, name)
   const signedCount = items.filter((item) => entrySignature(item) !== null).length
   if (signedCount === items.length) {
-    verifyManifestText(text, pinnedKeys)
+    verifyManifestText(text, pinnedKeys, name)
     return { text, action: 'verified' }
   }
-  if (signedCount > 0) throw new UpdateSignatureError('备份的 latest.yml 只有一部分文件带签名，可能被改过，不能用来回退')
+  if (signedCount > 0) throw new UpdateSignatureError(`备份的 ${name} 只有一部分文件带签名，可能被改过，不能用来回退`)
   for (const file of metadata.files) {
     const name = path.basename(file.relativePath)
     const local = path.join(releaseDir, name)
@@ -158,7 +162,7 @@ function prepareRollbackText(text, { releaseDir, privateKey, pinnedKeys }) {
       throw new UpdateSignatureError(`${name} 和 GitHub Release 上同名文件的 SHA-512 不一致，备份可能被换过，不能补签`)
     }
   }
-  return { text: signManifestText(text, privateKey, pinnedKeys), action: 'signed' }
+  return { text: signManifestText(text, privateKey, pinnedKeys, name), action: 'signed' }
 }
 
 function parseArguments(argv) {
@@ -174,16 +178,18 @@ function parseArguments(argv) {
 
 function main(argv, env = process.env) {
   const { command, options } = parseArguments(argv)
-  if (!options.manifest) throw new UpdateSignatureError('用法：update-manifest-signature.cjs sign|verify|rollback --manifest <latest.yml> [--release-dir <目录>]')
+  if (!options.manifest) throw new UpdateSignatureError('用法：update-manifest-signature.cjs sign|verify|rollback --manifest <清单> [--release-dir <目录>]')
   const text = fs.readFileSync(options.manifest, 'utf8')
+  // 工作流把清单原名放在各自的目录里（release-artifacts/、restore/），报错时说的是哪一份。
+  const name = path.basename(options.manifest)
   const pinnedKeys = readPinnedPublicKeys()
   if (command === 'sign') {
-    fs.writeFileSync(options.manifest, signManifestText(text, loadSigningKey(env[KEY_ENV]), pinnedKeys))
+    fs.writeFileSync(options.manifest, signManifestText(text, loadSigningKey(env[KEY_ENV]), pinnedKeys, name))
     console.log(`已给 ${options.manifest} 签名`)
     return
   }
   if (command === 'verify') {
-    console.log(`${options.manifest}：${verifyManifestText(text, pinnedKeys)} 个文件签名校验通过`)
+    console.log(`${options.manifest}：${verifyManifestText(text, pinnedKeys, name)} 个文件签名校验通过`)
     return
   }
   if (command === 'rollback') {
@@ -192,10 +198,11 @@ function main(argv, env = process.env) {
       releaseDir: options['release-dir'],
       privateKey: loadSigningKey(env[KEY_ENV]),
       pinnedKeys,
+      name,
     })
     fs.writeFileSync(options.manifest, result.text)
     if (result.action === 'unsigned') {
-      console.log(`::warning::GitHub Release 上找不到 ${result.missing}，这份老版本备份没法补签，原样退回。接上验签那一版（0.2.18）起的 Windows 客户端只装带签名的包，它们会停在被撤回的版本上，并看到「这个版本有已知问题」`)
+      console.log(`::warning::GitHub Release 上找不到 ${result.missing}，这份老版本备份没法补签，原样退回。认签名的客户端（Windows 0.2.18 起、Linux 全部）只装带签名的包，它们会停在被撤回的版本上，并看到「这个版本有已知问题」`)
       return
     }
     console.log(result.action === 'signed' ? '老版本备份已核对 GitHub Release 并补签' : '备份本来就带签名，校验通过')

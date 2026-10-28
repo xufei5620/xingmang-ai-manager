@@ -50,8 +50,8 @@ describe('switchAccountSource', () => {
   })
 
   it('restores the preference the tool had before, not a guessed one', async () => {
-    const { deps, steps } = dependencies({ wasOfficial: () => false, writeAccountConfig: async () => { throw new Error('对应分组 Key 未就绪') } })
-    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow('改用当前账号没有完成：对应分组 Key 未就绪。已恢复到切换前的配置。')
+    const { deps, steps } = dependencies({ wasOfficial: () => false, writeAccountConfig: async () => { throw new Error('对应分组密钥未就绪') } })
+    await expect(switchAccountSource(deps, 'codex', 'account')).rejects.toThrow('改用当前账号没有完成：对应分组密钥未就绪。已恢复到切换前的配置。')
     expect(steps).toContain('preference:false')
   })
 
@@ -97,11 +97,11 @@ describe('switchAccountSource', () => {
   it('keeps the switch and passes on the quota advice when the quota ran out', async () => {
     const { deps, steps } = dependencies({ checkConnection: async () => ({
       ...check(false, 'quota', 'Codex 的额度用完了（HTTP 401），这是给这个工具设的上限', { status: 401, detail: '该令牌额度已用尽' }),
-      nextStep: '到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
+      nextStep: '到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度，调好后再自检一次',
     }) })
     const result = await switchAccountSource(deps, 'codex', 'account')
     expect(steps).not.toContain('restore:backup-1')
-    expect(result.message).toContain('不过Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「个人中心 → 密钥管理」的「每个工具的额度上限」里调高这个工具的额度')
+    expect(result.message).toContain('不过Codex 的额度用完了（HTTP 401），这是给这个工具设的上限。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高这个工具的额度')
     expect(result.message).not.toContain('密钥被拒绝')
   })
 

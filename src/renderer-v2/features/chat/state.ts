@@ -135,15 +135,17 @@ function groupRatio(value: number | string | undefined): number {
 const imageGroupNames = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
 /**
  * 同一个模型好几个分组都有时，按哪个分组计费（yoyo 10-25 定的次序）：这段对话正在用的分组 → 出图挑图片分组、
- * 聊天挑推荐分组 → 价格倍率低的 → 后台列的先后。candidates 已经按后台列的先后排好。
+ * 聊天挑推荐分组 → 价格倍率低的 → 后台列的先后。candidates 已经按后台列的先后排好。图片分组认主进程在分组列表上
+ * 标的（含服务状态文件分组对照里改过的本名），写死的名字照认。
  */
-export interface ChatGroupContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio'>>)[]; site?: ChatSite }
+export interface ChatGroupContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio' | 'image'>>)[]; site?: ChatSite }
 export function pickChatGroup(candidates: readonly string[], context: ChatGroupContext & { current: string; mode: ChatMode }): string {
   if (!candidates.length) return ''
   if (context.current && candidates.includes(context.current)) return context.current
   const recommended = recommendedChatGroup(context.groups, context.site)
+  const imageGroup = (name: string) => imageGroupNames.has(name) || context.groups.some((group) => group.name === name && group.image === true)
   const preferred = context.mode === 'image'
-    ? candidates.find((name) => imageGroupNames.has(name))
+    ? candidates.find(imageGroup)
     : candidates.find((name) => name === recommended)
   if (preferred) return preferred
   const ratioOf = (name: string) => groupRatio(context.groups.find((group) => group.name === name)?.ratio)
@@ -363,8 +365,8 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 本来就是说给客户听的话原样上屏，必须排在下面按字面猜的几条前面：从没登录过时主进程说
   // 「请先登录星芒账号」，里面有「登录」两个字，以前被 /登录|密钥/ 改成「已失效，请重新登录」。
   if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^这个模型不能照着图片改/.test(message)) return message
-  if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值或更换可用分组后重试'
-  if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后准备分组'
+  if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值后重试'
+  if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后重试'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
   if (/model.*unavailable|model.*permission|模型.*权限|模型.*不可用/i.test(message)) return '当前模型不可用，请选择其他模型后重试'
   if (/timeout|timed.?out|超时|network|连接|ECONN/i.test(message)) return '请求未完成，请检查网络后重试'

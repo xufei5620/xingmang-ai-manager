@@ -6,6 +6,7 @@ import {
   defaultAppSettings,
   mergeAppSettings,
   normalizeAppSettings,
+  offeredModelUpgradeKey,
   readAppSettings,
   setOfficialProvider,
   updateAppSettings,
@@ -721,6 +722,37 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('offeredModelUpgrades')
   })
 
+  // #1154 第 2 条：远端默认型号能带 : / @ +、最长 128 个字，照原样记的话读回来被丢掉，每次开机都再问。
+  it('keeps the offered upgrade record for a remote default the record cannot spell out', async () => {
+    expect(offeredModelUpgradeKey('claude', 'claude-opus-5-5')).toBe('claude:claude-opus-5-5')
+    expect(offeredModelUpgradeKey('codex', 'gpt-6.1_sol')).toBe('codex:gpt-6.1_sol')
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    const awkward = ['anthropic/claude-opus-6', 'vendor:gpt-7', 'model@2026+fast', `m${'x'.repeat(127)}`]
+    const keys = awkward.map((model) => offeredModelUpgradeKey('claude', model))
+    for (const key of keys) {
+      expect(key).toMatch(/^claude:sha256-[0-9a-f]{64}$/)
+      await updateAppSettings(filePath, { version: 2, offeredModelUpgrades: [key] })
+    }
+    expect(new Set(keys).size).toBe(awkward.length)
+    expect(readAppSettings(filePath).offeredModelUpgrades).toEqual(keys)
+    expect(offeredModelUpgradeKey('codex', 'anthropic/claude-opus-6')).not.toBe(keys[0])
+  })
+
+  it('only ever adds to the seeded tool defaults and drops entries it does not know', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('seededToolDefaults')
+    await updateAppSettings(filePath, { version: 2, seededToolDefaults: ['codex:response-language'] })
+    await updateAppSettings(filePath, { version: 2, seededToolDefaults: ['claude:fallbackModel', 'codex:response-language'] })
+    await updateAppSettings(filePath, { version: 2, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath).seededToolDefaults).toEqual(['claude:fallbackModel', 'codex:response-language'])
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), seededToolDefaults: ['vscode:login-prompt', 'gemini:anything', 42] }), 'utf8')
+    expect(readAppSettings(filePath).seededToolDefaults).toEqual(['vscode:login-prompt'])
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), seededToolDefaults: 'claude:fallbackModel' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('seededToolDefaults')
+  })
+
   it('keeps the crash reporting notice marker once set without touching the reporting switch', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())
@@ -829,5 +861,67 @@ describe('startup settings normalization', () => {
     expect(result.written).toBe(true)
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toMatchObject({ version: 2, workspace: 'D:\\Legacy' })
     expect((await normalizeAppSettings(filePath)).written).toBe(false)
+  })
+})
+
+describe('settings read cache (0.2.22 性能体检第 8 条)', () => {
+  it('serves repeated reads of an unchanged file without reopening it', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'dark', uiSkin: 'aurora' })), 'utf8')
+    const first = readAppSettings(filePath)
+    expect(first).toMatchObject({ theme: 'dark', uiSkin: 'aurora' })
+
+    const opened = vi.spyOn(fs, 'openSync')
+    const second = readAppSettings(filePath)
+    expect(opened).not.toHaveBeenCalled()
+    expect(second).toEqual(first)
+    // 给出去的是副本：调用方改了拿到的对象，不能改到缓存里。
+    expect(second).not.toBe(first)
+    second.theme = 'light'
+    expect(readAppSettings(filePath).theme).toBe('dark')
+  })
+
+  it('reads the file again after it is rewritten in place', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'dark' })), 'utf8')
+    expect(readAppSettings(filePath).theme).toBe('dark')
+
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'light', largeText: true })), 'utf8')
+    expect(readAppSettings(filePath)).toMatchObject({ theme: 'light', largeText: true })
+  })
+
+  it('reads again after an atomic rewrite that keeps the same byte length', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ uiSkin: 'mist' }))
+    expect(readAppSettings(filePath).uiSkin).toBe('mist')
+
+    // 「mist」和「dawn」一样长：大小和路径都没变，靠换了 inode 认出来。
+    await writeAppSettings(filePath, settings({ uiSkin: 'dawn' }))
+    expect(readAppSettings(filePath).uiSkin).toBe('dawn')
+  })
+
+  it('does not hide a damaged primary behind the cache', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ theme: 'dark', uiSkin: 'obsidian' }))
+    await writeAppSettings(filePath, settings({ theme: 'light', uiSkin: 'aurora' }))
+    expect(readAppSettings(filePath)).toMatchObject({ theme: 'light', uiSkin: 'aurora' })
+
+    fs.writeFileSync(filePath, '{ broken', 'utf8')
+    expect(readAppSettings(filePath)).toMatchObject({ theme: 'dark', uiSkin: 'obsidian' })
+  })
+
+  // Why this is safe: the cache only ever holds content that passed the full
+  // safe read once, and it is keyed on the lstat identity of a plain, singly
+  // linked file. Swapping the file for a symbolic link (or any other kind of
+  // entry) changes that identity, so the next read goes through the full
+  // validation again and rejects the link exactly as it did before the cache.
+  it.runIf(process.platform !== 'win32')('stops serving the cache once the file becomes a symbolic link', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify(settings({ theme: 'dark' })), 'utf8')
+    expect(readAppSettings(filePath, 'D:\\Workspace').theme).toBe('dark')
+
+    fs.renameSync(filePath, `${filePath}.moved`)
+    fs.symlinkSync(`${filePath}.moved`, filePath)
+    expect(readAppSettings(filePath, 'D:\\Workspace')).toEqual(defaultAppSettings('D:\\Workspace'))
   })
 })

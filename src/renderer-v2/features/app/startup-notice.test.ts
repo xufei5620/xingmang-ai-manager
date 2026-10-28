@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { claudeDesktopRepairedNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, startupNoticesShown, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, usageStatsNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
+import { claudeDesktopRepairedNotice, codexPayloadNotice, toolTemplateFilledNotice, crashReportingNotice, displayCompatNotice, displayRelaunchNotice, settingsSaveNotice, startupCheckFailure, startupCheckLogContext, releaseNoteHeadline, startupDiagnosticsIssues, startupNoticesShown, toolRouteRestartNotice, unexpectedExitNotice, updatedNotice, usageStatsNotice, vaultRecoveredNotice, withStartupNotice, withoutStartupNotice } from './startup-notice'
 
 describe('startup check notices', () => {
   it('keeps the backend sentence as the body so support still sees the original wording', () => {
@@ -346,5 +346,55 @@ describe('toolRouteRestartNotice', () => {
   it('has no button when nothing can be restarted, and nothing to say without a tool', () => {
     expect(toolRouteRestartNotice({ id: 1, grok: 'running' })).not.toHaveProperty('action')
     expect(toolRouteRestartNotice({ id: 1 })).toBeNull()
+  })
+
+  it('says why Codex moved when a conversation was too large for line 1, with the same steps below', () => {
+    const notice = toolRouteRestartNotice({ id: 1, cause: 'payload-too-large', codex: { cli: true, desktop: null, canRestartDesktop: false } })
+    expect(notice?.title).toBe('Codex 里这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2，请重开 Codex 后继续。')
+    expect(notice?.items).toEqual([
+      'Codex 还开着：新建对话就走新线路，已经打开的对话要退出 Codex 再打开。',
+      '如果在 VS Code 等编辑器里用着 Codex，新建对话就走新线路，已经打开的对话要重新加载窗口。',
+    ])
+  })
+})
+
+describe('codexPayloadNotice', () => {
+  const newConversation = '请新开一个对话继续；对话里的截图和大文件会让体积变大很快。这时让 Codex 压缩对话也不管用，压缩同样要先把整段对话发上去。'
+
+  it('asks for a new conversation on line 1 and says why the line was not changed', () => {
+    const base = '这个对话已经超过 100MB，线路 1 发不出去，在这个对话里发什么都会失败。'
+    expect(codexPayloadNotice({ id: 1, kind: 'locked' })).toEqual({
+      id: 'codex-payload',
+      failure: false,
+      tone: 'warn',
+      title: 'Codex 里这个对话太大，线路 1 发不出去',
+      body: `${base}${newConversation}你在设置里选了只用线路 1，所以没有自动换线路。`,
+      action: { label: '知道了', dismiss: true },
+    })
+    expect(codexPayloadNotice({ id: 1, kind: 'unreachable' }).body).toBe(`${base}${newConversation}线路 2 这会儿也连不上，所以没能帮你换过去。`)
+    expect(codexPayloadNotice({ id: 1, kind: 'unfollowed' }).body).toBe(`${base}${newConversation}`)
+  })
+
+  it('asks for a new conversation when it is too large for line 2 as well', () => {
+    expect(codexPayloadNotice({ id: 1, kind: 'too-large' })).toMatchObject({
+      tone: 'warn',
+      title: 'Codex 里这个对话太大，发不出去了',
+      body: `这个对话已经超过线路 2 的上限，在这个对话里发什么都会失败。${newConversation}`,
+    })
+  })
+
+  it('warns early in a neutral tone', () => {
+    expect(codexPayloadNotice({ id: 1, kind: 'nearing' })).toMatchObject({
+      tone: 'neutral',
+      title: 'Codex 里有个对话快到线路 1 的上限了',
+      body: '对话越聊越大，超过 100MB 后线路 1 就发不出去了。建议手上这件事做完就新开一个对话；截图和大文件会让体积变大很快。',
+    })
+  })
+
+  it('keeps addresses, status codes and file or command names out of the words', () => {
+    for (const kind of ['locked', 'unreachable', 'unfollowed', 'too-large', 'nearing'] as const) {
+      const notice = codexPayloadNotice({ id: 1, kind })
+      expect(`${notice.title}${notice.body}`).not.toMatch(/413|payload|rollout|compact|\/|solov|Cloudflare|CF|WebSocket|256/i)
+    }
   })
 })

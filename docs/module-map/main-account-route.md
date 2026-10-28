@@ -16,11 +16,12 @@
 - `site-runtime.ts` — 把站点 id 换成固定的运行时定义（站点、realm、后端、账号 origin、AI 地址），并核对四个工具的地址和账号是同一个 origin。它只走 `requireRelaySite`：未知或退役的 id 一律抛错，绝不退回 xm 客户端。main.ts 只用到 `requireSiteRuntimeDefinition`（推断：`createSiteRuntime`、`requireXmSiteRuntimeDefinition` 除测试外未见引用）
 
 ## 应用线路（管理工具自己的请求）
-- `relay-route-controller.ts` — **「自动」线路怎么定**：每站一条应用线路，切不切只看健康检查（`probeRelayLineHealth`），请求慢或超时不算线路坏了。先走的那条连续 3 次不通、备用那条通了才切；退到备用后，先走的那条连续 10 分钟都通才切回；两次切换至少隔 5 分钟。开机先用上次存下的结论（`relay-route-lines.json`，只存线路 id 和原因，不存地址）。星芒账号第一次开机时直连没通，马上定在线路1（#963）；唤醒、网络恢复、点「重新检测」时两条一起查（#1053）
+- `relay-route-controller.ts` — **「自动」线路怎么定**：每站一条应用线路，切不切只看健康检查（`probeRelayLineHealth`），请求慢或超时不算线路坏了。先走的那条连续 3 次不通、备用那条通了才切；退到备用后，先走的那条连续 10 分钟都通才切回；两次切换至少隔 5 分钟。开机先用上次存下的结论（`relay-route-lines.json`，只存线路 id 和原因，不存地址）。星芒账号第一次开机时直连没通，马上定在线路1（#963）；唤醒、网络恢复、点「重新检测」时两条一起查（#1053）。Codex 有个对话在线路1 上太大发不出去时，`holdDirect` 查一次线路2、通了当场换过去，24 小时不切回线路1（`holds` 也存在 `relay-route-lines.json`，老版本不认它）；线路2 自己坏了照旧退回线路1
 - `relay-line-fetch.ts` — 包在 fetch 外面，把星芒自己的请求（账号、余额、AI 对话/画图/视频）换到当前线路的地址。调用方照旧按线路1 写死地址，所以 `sub2api-relay-backend.ts` 不用改。选「自动」时，网络层失败就当场换另一条重发一次，规则分三种：会改数据的请求（下单、建密钥、AI 生成）只在肯定没送到服务器时才重发，防止重复扣费；只读请求等 4 秒还没回应头，就在另一条上并发一次；失败只报给控制器去查，不直接改线路。`createRelayObservedFetch` 给写配置前查模型、做自检用：不换地址，不重发，只上报
 
 ## 工具线路（只有星芒账号，写进 AI 工具配置的那条）
-- `tool-route-controller.ts` — **工具线路控制器**（xm 三线路）。候选按优先级排：洛杉矶 `direct` → 香港 `direct-hk`（占位，永远选不上，也不进 `RelayEndpointId`、设置、IPC 和落盘）→ CF `primary`。降级条件是连续 3 轮不通，或判成劫持 1 次（全新安装还没查出结论时，第一次没通、CF 通了就切，查出结论前不落盘，#963）；服务端说在处理整体故障时，先等 5 分钟。回升的冷却期按 7 天内的失败次数定（0 / 1 / 6 / 24 小时）。它和应用线路分开管，因为管理工具走 Chromium 连得上，不等于 Node 里跑的命令行工具也连得上。状态单独存在 `tool-route-state.json`，不碰老版本还要读的 `relay-route-lines.json`
+- `tool-route-controller.ts` — **工具线路控制器**（xm 三线路）。候选按优先级排：洛杉矶 `direct` → 香港 `direct-hk`（占位，永远选不上，也不进 `RelayEndpointId`、设置、IPC 和落盘）→ CF `primary`。降级条件是连续 3 轮不通，或判成劫持 1 次（全新安装还没查出结论时，第一次没通、CF 通了就切，查出结论前不落盘，#963）；服务端说在处理整体故障时，先等 5 分钟。回升的冷却期按 7 天内的失败次数定（0 / 1 / 6 / 24 小时）。它和应用线路分开管，因为管理工具走 Chromium 连得上，不等于 Node 里跑的命令行工具也连得上。状态单独存在 `tool-route-state.json`，不碰老版本还要读的 `relay-route-lines.json`。`holdDirect`：Codex 对话在 CF 上太大发不出去时查一次洛杉矶，通了就换，不等三轮、不看切换间隔，不给 CF 记失败
+- `codex-payload-limit.ts` — **Codex 对话太大（413）帮客户换线路**：盯 `CODEX_HOME/sessions` 下的会话记录（每个文件只读新写进的末尾，一次最多 256KB，只读单链接普通文件、不跟符号链接），认出一轮结束那行里「413 Payload Too Large」和报错里的地址。地址是线路1 的：星芒账号叫工具线路、历史账号叫应用线路换到线路2，Codex 配置跟过去再提示重开；锁了只用线路1、线路2 不通、配置跟不过去的提示新开对话；地址是线路2 的只提示新开对话。同一个会话只处理一次（`codex-payload-sessions.json`），线路1 上记录过了 80MB 提前提醒一次。日志只记会话 ID、站点、线路和记录大小（`relay.route.payload-too-large`）。接线在 `bootstrap/codex-payload-watch.ts`
 - `tool-route-probe.ts` — 工具线路的探测：一条线路要在工具实际会走的每条路径上都通才算通，路径包括无代理、系统代理和各处设的 HTTPS_PROXY / ALL_PROXY。哪条线路都不能全通时，以无代理路径为准。底层探测在 `tool-path-probe.ts`
 - `route-failure-classifier.ts` — 探测没通时贴标签：normal / proxy / unknown / hijack。IP 只用来解释原因，不用来判通不通。CF 线路对照 Cloudflare 公布的地址段；fake-ip 和私网地址算本机代理接管；状态文件读不到一律算 unknown，不判劫持
 - `route-status-file.ts` — 读服务端发布的线路状态文件 `/xm-route-status.json`，里面有：各直连域名指向哪台入口、有没有被切到 CF、合法 IP、是否在处理故障、香港开没开。它只经应用线路、按本站线路自己的 origin 显式去读（不去退役别名），照 I10 做了超时、16KB 上限、不跟重定向。读不到不算线路失败，结果缓存 10 分钟。注意和更新目录里的 `service-status.json` 是两份文件
@@ -93,12 +94,13 @@
 
 ## 计费、充值、订阅、公告
 - `payment-window.ts` — 充值和订阅付款用的独立窗口。后端给的付款表单、URL、二维码都先校验；页面导航只放行白名单 origin 和回调域 `api.solov.cc`（I12）；只有后端查到的订单状态才算付款成功。关了窗口还会在后台继续问 15 分钟
+- `payment-methods-off.ts` — 充值方式开关（`service-status.ts` 的 `paymentMethodsOff`）：从充值信息里去掉这台电脑该藏的付款方式，页面开着时才被藏掉的、点付款时拦下。只藏软件里的，站上不动
 - `payment-status-reader.ts` — 查订单状态前，先把订单绑到下单时的站点、用户和会话代数上；任何一样变了就报 STALE，不再问
 - `subscription-summary.ts` — 回答「当前账号有没有一份现在就能扣的订阅、还剩多少、哪天到期」。买了订阅的客户钱包常常是 0，所以首页、低余额通知和托盘读的是这同一个判断。它进渲染包，不许依赖 node 或 electron（I6）
 - `announcement-read-store.ts` — 公告已读标记的本地存储，只认 `xm-account:<userId>` 这个范围。IPC 传进来的参数先校验格式和条数（I5）；文件坏了就报错并保留原件，不拿空数组覆盖
 
 ## 服务状态文件与发版安全网
-- `service-status.ts` — 读更新目录上的 `service-status.json`，地址从安装包里的 `app-update.yml` 推出来。里面有维护提示、撤回版本、分批放量、最低版本、换线路的改写方式、xm 分组对照、型号表。这份文件只能让客户端少做事或多说一句；读不到就当没有，绝不拖慢启动。平时 15 分钟读一次，维护期间 5 分钟一次（I10：超时 + 16KB 上限）
+- `service-status.ts` — 读更新目录上的 `service-status.json`，地址从安装包里的 `app-update.yml` 推出来。里面有维护提示、撤回版本、分批放量、最低版本、换线路的改写方式、xm 分组对照、型号表、已知问题提示、充值方式开关。这份文件只能让客户端少做事或多说一句；读不到就当没有，绝不拖慢启动。平时 15 分钟读一次，维护期间 5 分钟一次（I10：超时 + 16KB 上限）
 - `release-guard-store.ts` — 把最近一次读成功的撤回名单和放量比例记到本地 `release-guard.json`（#1055），开机先用它。不记最低版本。读回来的内容用状态文件同一个解析器重新校验
 
 ## 星芒 AI 技能与画图 MCP

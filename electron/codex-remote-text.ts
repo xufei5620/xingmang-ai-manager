@@ -13,10 +13,14 @@ export const remoteMessages = {
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   unsupported: '暂时只支持文字消息。',
-  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、帮助。\nCodex 要运行命令时会先问你，回「同意」或「拒绝」。',
+  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
   idleClosed: '4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
+  quitting: '电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。',
+  quitAborted: '电脑上的星芒没关成，遥控还开着，可以接着用。',
+  stalled: '这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。',
   codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',
+  permissionsRefused: 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
   staleApprovalCard: '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。',
 } as const
 

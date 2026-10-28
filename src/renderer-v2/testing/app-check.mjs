@@ -209,6 +209,29 @@ for (const [label, query, url] of [
   } finally { await page.close() }
 })
 
+// 账号没开通某个工具（签密钥时服务端说分组不可用）：横幅和卡片都给「找客服」，开的是帮助框里的客服二维码，
+// 不再把人送进帮不上忙的配置框（0.2.22 打磨 B5，主路卡点 F5）。
+test('a tool the account has not enabled sends the customer to support from the banner and the card', async () => {
+  const page = await open('allInstalled=1&notEnabled=grok')
+  try {
+    const banner = page.getByTestId('home-bootstrap-result')
+    await banner.waitFor()
+    await expect(banner).toContainText('Grok CLI：当前账号还不能用，需要的话请联系客服开通')
+    await expect(banner.getByRole('button', { name: '重新同步', exact: true })).toHaveCount(0)
+    await page.getByTestId('home-bootstrap-support').click()
+    const dialog = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+    await dialog.waitFor()
+    await dialog.locator('[data-modal-close]').click()
+    await expect(dialog).toHaveCount(0)
+    const primary = page.getByTestId('tool-grok-primary')
+    await expect(primary).toHaveText('找客服')
+    await primary.click()
+    await dialog.waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('customer support returns to the default QR and browser destination after historical account logout', async () => {
   const page = await open('sub2api=1')
   try {
@@ -3426,8 +3449,9 @@ test('a tool whose account key changes this startup keeps waiting for the scan w
 })
 
 // 账号 Key 同步还没问完服务端时，说不准这一轮要不要给谁换 Key，「打开」先等着；
-// 问完了、谁都不用换，检测没跑完也能打开。
-test('an applied route migration blocks home and native launch after scanning until configuration finishes', async () => {
+// 问完了、谁都不用换，检测没跑完也能打开。托盘、快捷键这时点的「打开」等那一轮写完就自己接着开，
+// 不再只说一句「请稍后再打开」（0.2.22 打磨 B4）。
+test('an applied route migration holds home and native launch after scanning, then opens by itself once configuration finishes', async () => {
   const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1&mergeRoute=1')
   try {
     await page.getByTestId('home-cached-scan').waitFor()
@@ -3438,20 +3462,53 @@ test('an applied route migration blocks home and native launch after scanning un
     await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
     await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
     await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
-    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    await waitForToast(page, '正在连接账号，好了会自动打开。')
     const shortcutNumber = await page.evaluate(async () => {
       const { tools } = await import('/src/renderer-v2/registry/tools.ts')
       return tools.filter((entry) => !entry.hidden?.('win')).findIndex((entry) => entry.id === 'claude') + 1
     })
     await page.keyboard.press(`Control+${shortcutNumber}`)
-    await waitForToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    // Claude 停在等账号那一轮，别的工具不陪它等：Codex 这时照常能开，开完 Claude 还在等。
+    await expect(page.getByTestId('tool-codex-primary')).toBeEnabled()
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli' && entry.args[0] === 'codex'))
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli' && entry.args[0] === 'claude').length), 0)
+    await expect(page.getByTestId('tool-claude-primary')).toBeDisabled()
     await page.evaluate(() => window.v2Test.releaseConfigSave())
+    // 那一轮写完，托盘点的那次自己接着打开；快捷键按的那下叠在它上面，不再开一次、也不再说一遍。
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli' && entry.args[0] === 'claude'))
+    await assertNoToast(page, '正在连接账号，好了会自动打开。')
+    await assertNoToast(page, '正在同步这个工具的账号连接，请稍后再打开。')
     await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
     const configured = await page.evaluate(async () => (await window.xingmang.getConfig()).providers.claude)
     assert.equal(configured.actualBaseUrl, configured.baseUrl)
     await page.getByTestId('tool-claude-primary').click()
-    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli' && entry.args[0] === 'claude').length)).toBe(2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 等着的那一轮没写成：首页横幅说原因，等着的那次「打开」把同一句弹一下、不带着旧密钥打开（0.2.22 打磨 B4）。
+test('a native launch waiting on the account round stays closed and repeats the failure when the round fails', async () => {
+  const page = await open('allInstalled=1&cachedScan=1&restoreDirectRoute=1&mergeRoute=1')
+  try {
+    await page.getByTestId('home-cached-scan').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'syncManagedCliKeys'))
+    await page.evaluate(() => { window.v2Test.holdNextConfigSave(); window.v2Test.releaseScan() })
+    await page.getByTestId('home-cached-scan').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureManagedCliKeys' && entry.args[0].providers.includes('claude')))
+    await page.evaluate(() => window.v2Test.emit('onLaunchTool', 'claude'))
+    await waitForToast(page, '正在连接账号，好了会自动打开。')
+    await page.evaluate(() => window.v2Test.releaseConfigSave('密钥没写进配置文件'))
+    await page.getByTestId('home-bootstrap-error').waitFor()
+    await page.waitForFunction(() => window.__v2Toasts.entries.some((entry) => entry.text.startsWith('密钥没写好：')))
+    const bannerText = await page.getByTestId('home-bootstrap-error').textContent()
+    const toastText = await page.evaluate(() => window.__v2Toasts.entries.find((entry) => entry.text.startsWith('密钥没写好：')).text)
+    assert.ok(bannerText.startsWith(toastText), `提示「${toastText}」要和横幅「${bannerText}」说同一句`)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length), 0)
+    await expect(page.getByTestId('tool-claude-primary')).toBeEnabled()
     await clean(page)
   } finally { await page.close() }
 })
@@ -3708,7 +3765,7 @@ test('tools switched to a saved account open right away instead of waiting for a
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
     await page.getByTestId('tool-claude-primary').click()
     await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length)).toBe(2)
-    assert.equal(await page.getByText('正在同步这个工具的账号连接，请稍后再打开。').count(), 0)
+    await assertNoToast(page, '正在连接账号，好了会自动打开。')
     await clean(page)
   } finally { await page.close() }
 })
@@ -4983,6 +5040,88 @@ test('a Windows account outside the administrators group is told an administrato
   } finally { await page.close() }
 })
 
+// 0.2.19 把侧栏「更多 › 更新」并进了「设置」最后一项，客户找不到在哪更新（yoyo 2026-10-27「侧栏改」）：下好了
+// 侧栏「设置」上面多一项金色的「重启并安装新版」，状态栏版本号、气泡上的「重启并安装」都直接弹确认框；
+// 侧栏那项关不掉，气泡关掉满一天再出一次；没开自动下载时气泡上直接给「下载更新」。
+test('a downloaded update is one click from the install confirmation in the sidebar, the status bar and the bubble', async () => {
+  const closedAt = new Date('2026-10-27T05:00:00Z')
+  const page = await open('', closedAt)
+  try {
+    await page.getByTestId('page-home').waitFor()
+    // 设置页和版本卡挂上时各自再读一次状态：让它读回最后推过来的那份。
+    await page.evaluate(() => {
+      const original = window.xingmang.getUpdateState
+      window.__updateState = null
+      window.xingmang.getUpdateState = async () => window.__updateState ? { ...window.__updateState } : original()
+    })
+    const emit = (patch) => page.evaluate((value) => {
+      window.__updateState = value
+      window.v2Test.emit('onUpdateState', value)
+    }, {
+      phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true, autoUpdateSupported: true, ...patch,
+    })
+    const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
+    const settings = page.getByTestId('page-settings')
+    async function confirmOpensAndClose() {
+      await dialog.waitFor()
+      await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
+      await dialog.waitFor({ state: 'detached' })
+      await page.getByTestId('nav-home').click()
+      await page.getByTestId('page-home').waitFor()
+    }
+    await emit({})
+    const entry = page.getByTestId('nav-update')
+    await expect(entry).toHaveText('重启并安装新版')
+    await expect(entry).toHaveAttribute('title', '新版 v0.1.32 已经下好，点一下装上，装好自动打开')
+    await expect(page.getByTestId('nav-settings')).toHaveAttribute('aria-label', '设置，有新版本')
+    await page.getByTestId('nav-settings-update').waitFor()
+    // 侧栏那一项紧挨在「设置」上面。
+    assert.equal(await page.getByTestId('sidebar-pinned').evaluate((pinned) => [...pinned.querySelectorAll('[data-testid^="nav-"]')].map((item) => item.dataset.testid).join(',')), 'nav-update,nav-settings,nav-settings-update')
+    await entry.click()
+    await confirmOpensAndClose()
+
+    await expect(page.getByTestId('statusbar-version')).toHaveText('v0.1.31 · 新版已下好，点这里安装')
+    await page.getByTestId('statusbar-version').click()
+    await confirmOpensAndClose()
+
+    const bubble = page.locator('.v2-notification')
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+    await bubble.getByTestId('update-bubble-install').getByText('重启并安装', { exact: true }).waitFor()
+    await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
+    await bubble.getByTestId('update-bubble-install').click()
+    await confirmOpensAndClose()
+
+    // 气泡关掉一天之内不再出，满一天再出；侧栏那一项一直在。
+    await bubble.getByRole('button', { name: '关闭', exact: true }).click()
+    await expect.poll(() => bubble.count()).toBe(0)
+    await page.clock.setFixedTime(new Date(closedAt.getTime() + 23 * 60 * 60 * 1000))
+    await emit({})
+    await expect(entry).toHaveText('重启并安装新版')
+    assert.equal(await bubble.count(), 0)
+    await page.clock.setFixedTime(new Date(closedAt.getTime() + 24 * 60 * 60 * 1000 + 1000))
+    await emit({})
+    await bubble.getByText('更新已下载', { exact: true }).waitFor()
+
+    // 没开自动下载、还没下：侧栏写新版本号、点了去版本更新卡，气泡上直接给「下载更新」。
+    await emit({ phase: 'available', autoUpdateSupported: false })
+    await expect(entry).toHaveText('有新版本 v0.1.32')
+    await expect(page.getByTestId('statusbar-version')).toHaveText('v0.1.31 · 有新版本')
+    await bubble.getByTestId('update-bubble-download').click()
+    await expect(entry).toHaveText('正在下载新版')
+    await entry.click()
+    await settings.getByTestId('page-updates').waitFor()
+    assert.equal(await dialog.count(), 0)
+
+    // 失败交给气泡和版本卡说，侧栏那一项和小点都收起来。
+    await emit({ phase: 'error', failedStep: 'download', error: { code: 'ETIMEDOUT', message: '连接更新服务器超时，请检查网络后再试。' } })
+    await expect.poll(() => entry.count()).toBe(0)
+    assert.equal(await page.getByTestId('nav-settings-update').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 星芒这次本身就带着管理员权限在跑（自带 Administrator 没开管理员批准模式、关了 UAC、右键「以管理员
 // 身份运行」）：装 Node.js、Codex 桌面端、装更新都不弹授权窗口，首页、检查页和重启并安装确认框都不说
 // 会弹（已知19）。首页那段在只用 Codex 桌面端时只去掉弹窗半句，「一般不用单独点」照旧。没带管理员权限的照旧说。
@@ -5082,6 +5221,37 @@ test('a maintenance notice from the update feed reaches signed-out users, includ
     await corner.getByText(/预计 23:00 恢复/).waitFor()
     await emit(undefined)
     await corner.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 已知问题提示（状态文件的 knownIssues）：跟维护提示挤同一个角落，按这一页挑一条；按钮只去软件里的固定去处。
+test('a known issue from the update feed shows on its page with its button, and the one for every page elsewhere', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-home').waitFor()
+    await page.evaluate(() => window.v2Test.emit('onUpdateState', {
+      phase: 'idle', currentVersion: '0.2.23', availableVersion: null, releaseName: null, releaseNotesText: null,
+      checkedAt: null, progress: null, error: null, failedStep: null, development: true, serviceMaintenance: null,
+      knownIssues: [
+        { page: 'all', message: '今晚 22 点前聊天可能慢一点。' },
+        { page: 'settings', message: '设置里的加速开关暂时点不动。', action: 'update' },
+      ],
+    }))
+    const notice = page.getByTestId('known-issue-notice')
+    await notice.getByText('我们已经知道这个问题', { exact: true }).waitFor()
+    await notice.getByText(/今晚 22 点前聊天可能慢一点。 这不是你这边的问题/).waitFor()
+    assert.equal(await notice.getByRole('button', { name: '查看更新' }).count(), 0)
+    await page.getByTestId('nav-settings').click()
+    await notice.getByText(/设置里的加速开关暂时点不动。/).waitFor()
+    await notice.getByTestId('known-issue-notice-update').click()
+    const settings = page.getByTestId('page-settings')
+    await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
+    // 关掉这一页的那条，角落换成每一页都挂的那条。
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await notice.getByText(/今晚 22 点前聊天可能慢一点。/).waitFor()
+    await notice.getByRole('button', { name: '关闭', exact: true }).click()
+    await notice.waitFor({ state: 'detached' })
     await clean(page)
   } finally { await page.close() }
 })

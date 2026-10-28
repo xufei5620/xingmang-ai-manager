@@ -263,6 +263,8 @@ interface ExternalToolInspection extends ExternalClientConnectionStatus {
 export interface ExternalToolProbeCredential {
   apiKey: string
   model: string
+  /** 只有 Claude Desktop 有：它开机检查挑的那个型号（claude-desktop-models.ts），可能不是默认的 model。 */
+  startupCheckModel?: string
 }
 
 /** Read only the effective global configuration; never return its key or URL. */

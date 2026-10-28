@@ -17,14 +17,18 @@ import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { CodexRemoteStore } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 import {
+  belongsToOtherTurn,
   buildApprovalRequest,
   buildThreadStartParams,
   collectCredentialSecrets,
   CodexRemoteService,
   generateApprovalNonce,
   generatePairingCode,
+  grantRequestedPermissions,
   isStaleInbound,
   nextApprovalNumber,
+  permissionsShowInFull,
+  readRequestedPermissions,
   validateRemoteWorkspace,
 } from './codex-remote-service'
 
@@ -53,6 +57,8 @@ class FakeCodex extends EventEmitter {
   readonly stderr = new EventEmitter()
   readonly written: Array<Record<string, unknown>> = []
   readonly kills: string[] = []
+  /** 按方法名设了就等它好了才回：模拟 Codex 的回执比别的消息晚到。 */
+  readonly replyGates = new Map<string, Promise<unknown>>()
   private turns = 0
   private readonly replies = new Map<string, (message: Record<string, unknown>) => void>()
   readonly stdin = {
@@ -99,13 +105,19 @@ class FakeCodex extends EventEmitter {
       return
     }
     if (typeof id !== 'string') return
-    if (message.method === 'initialize') this.send({ id, result: { userAgent: 'codex' } })
-    if (message.method === 'thread/start') this.send({ id, result: { thread: { id: 'th-1' } } })
+    let reply: Record<string, unknown> | null = null
+    if (message.method === 'initialize') reply = { id, result: { userAgent: 'codex' } }
+    if (message.method === 'thread/start') reply = { id, result: { thread: { id: 'th-1' } } }
     if (message.method === 'turn/start') {
       this.turns += 1
-      this.send({ id, result: { turn: { id: `tu-${this.turns}`, status: 'inProgress' } } })
+      reply = { id, result: { turn: { id: `tu-${this.turns}`, status: 'inProgress' } } }
     }
-    if (message.method === 'turn/interrupt') this.send({ id, result: {} })
+    if (message.method === 'turn/interrupt') reply = { id, result: {} }
+    if (!reply) return
+    const gate = typeof message.method === 'string' ? this.replyGates.get(message.method) : undefined
+    const answer = reply
+    if (gate) void gate.then(() => this.send(answer))
+    else this.send(answer)
   }
 }
 
@@ -151,10 +163,20 @@ interface Setup {
   workspace: string
   store: CodexRemoteStore
   logs: string[]
+  logDetails: Array<{ event: string; detail?: Record<string, unknown> }>
   unavailable: { reason: string | null }
 }
 
-async function setup(options: { workspace?: boolean; credential?: boolean; codexProblem?: string; root?: string } = {}): Promise<Setup> {
+async function setup(options: {
+  workspace?: boolean
+  credential?: boolean
+  codexProblem?: string
+  root?: string
+  /** 设了就等它好了才把 Codex 交出去：模拟 Codex 起得慢。 */
+  spawnGate?: Promise<unknown>
+  /** 起出来的每份 Codex 都按这些方法名晚回（FakeCodex.replyGates）。 */
+  replyGates?: ReadonlyMap<string, Promise<unknown>>
+} = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
   const workspace = path.join(home, 'projects', 'demo')
@@ -166,6 +188,7 @@ async function setup(options: { workspace?: boolean; credential?: boolean; codex
   const codex: FakeCodex[] = []
   const snapshots: CodexRemoteSnapshot[] = []
   const logs: string[] = []
+  const logDetails: Setup['logDetails'] = []
   const unavailable = { reason: null as string | null }
   const service = new CodexRemoteService({
     store,
@@ -178,10 +201,15 @@ async function setup(options: { workspace?: boolean; credential?: boolean; codex
     appVersion: '0.2.21',
     homeDirectory: home,
     platform: 'darwin',
-    log: (_level, event) => { logs.push(event) },
+    log: (_level, event, detail) => {
+      logs.push(event)
+      logDetails.push({ event, ...(detail ? { detail } : {}) })
+    },
     randomInt: () => 42,
     spawnCodex: async () => {
+      await options.spawnGate
       const fake = new FakeCodex()
+      for (const [method, gate] of options.replyGates ?? []) fake.replyGates.set(method, gate)
       codex.push(fake)
       return fake as unknown as AppServerProcess
     },
@@ -190,7 +218,7 @@ async function setup(options: { workspace?: boolean; credential?: boolean; codex
     checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
   })
-  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, unavailable }
+  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable }
 }
 
 async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
@@ -217,6 +245,28 @@ function cardClick(peer: RemotePeer, request: Pick<RemoteApprovalRequest, 'appro
   return { kind: 'approval', peer, direct, approvalId: request.approvalId, nonce: request.nonce, decision }
 }
 
+/** What Codex 0.164.0 sends for plain read/write roots: the legacy lists, then the same paths again as `entries`. */
+function codexPermissions(read: string[] | null, write: string[] | null, network: boolean | null = null): Record<string, unknown> {
+  return {
+    network: network === null ? null : { enabled: network },
+    fileSystem: {
+      read,
+      write,
+      entries: [
+        ...(read ?? []).map((entry) => ({ path: { type: 'path', path: entry }, access: 'read' })),
+        ...(write ?? []).map((entry) => ({ path: { type: 'path', path: entry }, access: 'write' })),
+      ],
+    },
+  }
+}
+
+const wholeDiskWrite = {
+  network: null,
+  fileSystem: { read: null, write: null, entries: [{ path: { type: 'special', value: { kind: 'root' } }, access: 'write' }] },
+}
+
+const permissionsRefusedText = 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+
 const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
 
 afterEach(() => {
@@ -238,6 +288,17 @@ describe('codex-remote-service helpers', () => {
     const nonces = new Set(Array.from({ length: 50 }, () => generateApprovalNonce()))
     expect(nonces.size).toBe(50)
     for (const nonce of nonces) expect(nonce).toMatch(/^[A-Za-z0-9_-]{16}$/)
+  })
+
+  it('tells a late message of a stopped turn from the running one', () => {
+    expect(belongsToOtherTurn('tu-2', [], 'tu-1')).toBe(true)
+    expect(belongsToOtherTurn('tu-2', [], 'tu-2')).toBe(false)
+    // 新一轮的编号还没回来：只有停掉过的那几轮认得出来，别的照旧算这一轮的。
+    expect(belongsToOtherTurn(null, ['tu-1'], 'tu-1')).toBe(true)
+    expect(belongsToOtherTurn(null, ['tu-1'], 'tu-2')).toBe(false)
+    // 老版本 Codex 不带编号：只能按对话认。
+    expect(belongsToOtherTurn('tu-2', ['tu-1'], undefined)).toBe(false)
+    expect(belongsToOtherTurn('tu-2', ['tu-1'], '')).toBe(false)
   })
 
   it('pads pairing codes to six digits', () => {
@@ -296,6 +357,73 @@ describe('codex-remote-service helpers', () => {
     const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
     expect(change.summary).toContain('另外还有 5 个文件')
+  })
+})
+
+describe('codex-remote-service permission requests', () => {
+  const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [] }
+
+  it('shows and grants exactly the plain paths of a permission request', () => {
+    const permissions = codexPermissions(['/Users/alice/ref'], ['/Users/alice/projects/out'], true)
+    const requested = readRequestedPermissions(permissions)
+    expect(requested).toEqual({ network: true, read: ['/Users/alice/ref'], write: ['/Users/alice/projects/out'] })
+    expect(requested && grantRequestedPermissions(requested)).toEqual({
+      network: { enabled: true },
+      fileSystem: { read: ['/Users/alice/ref'], write: ['/Users/alice/projects/out'] },
+    })
+    expect(buildApprovalRequest('9', 'nonce-nine', 'other', { permissions }, [], display).summary)
+      .toBe('联网\n写：~/projects/out\n读：~/ref')
+    expect(permissionsShowInFull(permissions, display)).toBe(true)
+    // The legacy lists alone (older Codex) mean the same thing.
+    expect(readRequestedPermissions({ network: null, fileSystem: { read: null, write: ['/Users/alice/out'] } }))
+      .toEqual({ network: false, read: [], write: ['/Users/alice/out'] })
+  })
+
+  it('refuses permission requests that carry anything the phone cannot show', () => {
+    const shown = '/Users/alice/projects/out'
+    function withEntries(read: string[] | null, write: string[] | null, entries: unknown[]): Record<string, unknown> {
+      return { network: null, fileSystem: { read, write, entries } }
+    }
+    const pathEntry = (entry: string, access: string) => ({ path: { type: 'path', path: entry }, access })
+    const refused: unknown[] = [
+      null,
+      'write everything',
+      wholeDiskWrite,
+      withEntries(null, null, [{ path: { type: 'glob_pattern', pattern: '/Users/alice/**' }, access: 'write' }]),
+      withEntries(null, null, [{ path: { type: 'special', value: { kind: 'project_roots', subpath: null } }, access: 'write' }]),
+      // Shown as read, asked as write.
+      withEntries([shown], null, [pathEntry(shown, 'write')]),
+      // One more path than the card lists.
+      withEntries(null, [shown], [pathEntry(shown, 'write'), pathEntry('/etc', 'write')]),
+      withEntries(null, [shown], [pathEntry(shown, 'write'), pathEntry('/Users/alice/.ssh', 'deny')]),
+      // The card lists a path the request itself (entries win) does not ask for.
+      withEntries(null, [shown], []),
+      withEntries(null, [shown], [{ ...pathEntry(shown, 'write'), recursive: true }]),
+      { ...codexPermissions(null, [shown]), fileSystem: { ...codexPermissions(null, [shown]).fileSystem as object, globScanMaxDepth: 3 } },
+      { ...codexPermissions(null, [shown]), fileSystem: { ...codexPermissions(null, [shown]).fileSystem as object, extra: [] } },
+      { ...codexPermissions(null, [shown]), macos: { accessibility: true } },
+      { network: { enabled: true, domains: ['*'] }, fileSystem: null },
+      { network: null, fileSystem: { read: null, write: [42] } },
+      { network: null, fileSystem: { read: null, write: [''] } },
+      { network: null, fileSystem: { read: null, write: shown } },
+      // Nothing to show: the card would be blank.
+      { network: { enabled: false }, fileSystem: null },
+      codexPermissions([], []),
+      codexPermissions(null, Array.from({ length: 21 }, (_, index) => `/Users/alice/projects/f${index}`)),
+    ]
+    for (const permissions of refused) {
+      expect(readRequestedPermissions(permissions)).toBeNull()
+      expect(permissionsShowInFull(permissions, display)).toBe(false)
+    }
+    expect(buildApprovalRequest('9', 'nonce-nine', 'other', { permissions: wholeDiskWrite }, [], display).summary).toBe('')
+  })
+
+  it('refuses a permission request whose list would be cut short on the card', () => {
+    const fits = codexPermissions(null, Array.from({ length: 20 }, (_, index) => `/Users/alice/projects/f${index}`))
+    expect(permissionsShowInFull(fits, display)).toBe(true)
+    const long = codexPermissions(null, Array.from({ length: 20 }, (_, index) => `/Users/alice/projects/${'deep/'.repeat(20)}f${index}`))
+    expect(readRequestedPermissions(long)).not.toBeNull()
+    expect(permissionsShowInFull(long, display)).toBe(false)
   })
 })
 
@@ -451,6 +579,49 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts()).toContain('现在没有在处理的任务。'))
   })
 
+  // 一轮一小时没任何动静就当 Codex 卡死（0.2.22 打磨 C2，yoyo 10-27「停改」）：请它停下、告诉手机，之后能开新的一轮。
+  it('stops a turn that shows no progress for an hour and tells the phone to say it again', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    // Codex 还在出声：五十分钟后一条通知，计时跟着重新起算。
+    await vi.advanceTimersByTimeAsync(50 * 60_000)
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '还在看', phase: 'commentary' } })
+    await vi.advanceTimersByTimeAsync(50 * 60_000)
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
+    expect(s.logs).toContain('remote.turn-stalled')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    expect(channel.texts()).not.toContain('已停止。')
+    channel.handlers?.onInbound(text(alice, '再来一次'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+  })
+
+  it('counts a pending approval as progress: it expires on its own ten minutes later and the stall clock restarts from it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await vi.advanceTimersByTimeAsync(55 * 60_000)
+    const asked = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    // 审批十分钟没人回先按原有规则自己过期（第 65 分钟），这一轮照旧跑着、不算卡死。
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
+    await vi.waitFor(() => expect(channel.texts()).toContain('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    // 问审批算一次动静：卡死从第 55 分钟再数一小时（第 115 分钟），不是从开始数的第 60 分钟。
+    await vi.advanceTimersByTimeAsync(49 * 60_000)
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(60_000)
+    await vi.waitFor(() => expect(codex.requests('turn/interrupt')).toHaveLength(1))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
+  })
+
   it('reports a failed turn with the redacted reason', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -467,6 +638,106 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('意外退出'))
     channel.handlers?.onInbound(text(alice, '再试一次'))
     await vi.waitFor(() => expect(s.codex).toHaveLength(2))
+  })
+
+  it('logs the redacted tail of what Codex wrote to stderr when it dies', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.stderr.emit('data', `panic: config.toml is broken\nusing key ${apiKey}\n`)
+    codex.emit('exit', 1, null)
+    await vi.waitFor(() => expect(s.logs).toContain('remote.codex-exited'))
+    const detail = s.logDetails.find((entry) => entry.event === 'remote.codex-exited')?.detail
+    expect(detail).toMatchObject({ code: 1 })
+    expect(String(detail?.stderr)).toContain('panic: config.toml is broken')
+    expect(String(detail?.stderr)).not.toContain(apiKey)
+  })
+
+  // #1407 P3-1：起 Codex 要一会儿，这期间电脑上关了遥控。话不能再交给 Codex（交了就扣钱、只读命令先跑），
+  // 起好的那份 Codex 也不能留着没人管。
+  it('hands nothing to a Codex that finishes starting after the remote was switched off, and stops it', async () => {
+    let release!: () => void
+    const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('收到，Codex 开始处理。'))
+    await s.service.setChannelEnabled('feishu', false)
+    release()
+    await vi.waitFor(() => expect(s.codex[0]?.kills.length ?? 0).toBeGreaterThan(0))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
+    expect(s.logs).toContain('remote.codex-start-abandoned')
+    expect(s.logs).not.toContain('remote.codex-start-failed')
+    expect(channel.texts()).not.toContain('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。')
+  })
+
+  it('hands nothing to a Codex that finishes starting after the manager began quitting, and stops it', async () => {
+    let release!: () => void
+    const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('收到，Codex 开始处理。'))
+    s.service.dispose()
+    release()
+    await vi.waitFor(() => expect(s.codex[0]?.kills.length ?? 0).toBeGreaterThan(0))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
+  })
+
+  it('does not start the turn when the remote is switched off while the thread is being opened', async () => {
+    let releaseThread!: () => void
+    const threadGate = new Promise<void>((resolve) => { releaseThread = resolve })
+    const s = await setup({ replyGates: new Map([['thread/start', threadGate]]) })
+    const channel = await enabledAndPaired(s)
+    // 微信也开着，Codex 就不会跟着飞书一起停，thread/start 的回执照样回来。
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    await s.service.setChannelEnabled('weixin', true)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    // thread/start 已经发出去、回执还在路上时关掉遥控。
+    await vi.waitFor(() => expect(s.codex[0]?.requests('thread/start').length ?? 0).toBe(1))
+    const codex = s.codex[0]
+    await s.service.setChannelEnabled('feishu', false)
+    releaseThread()
+    await threadGate
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(codex.kills).toHaveLength(0)
+    expect(codex.requests('turn/start')).toHaveLength(0)
+  })
+
+  // #1407 P3-2：「停止」以后上一轮迟到的审批和结束通知，在新一轮的编号还没回来时，不能挂到新一轮头上。
+  it('declines a late approval and ignores a late finish of a stopped turn while the next turn is still starting', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('running'))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    let release!: () => void
+    codex.replyGates.set('turn/start', new Promise<void>((resolve) => { release = resolve }))
+    channel.handlers?.onInbound(text(alice, '换个做法'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    const late = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, turnId: 'tu-1', command: 'rm -rf build' })
+    await expect(late).resolves.toMatchObject({ result: { decision: 'decline' } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    expect(approvalsSent(channel)).toHaveLength(0)
+    expect(s.logs).toContain('remote.approval-other-turn')
+    release()
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('running'))
+    expect(channel.texts().filter((entry) => entry === '已停止。')).toHaveLength(1)
+    const current = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, turnId: 'tu-2' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    channel.handlers?.onInbound(text(alice, '同意'))
+    await expect(current).resolves.toMatchObject({ result: { decision: 'accept' } })
+  })
+
+  it('declines an approval that names a turn other than the running one', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('running'))
+    const asked = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, turnId: 'tu-9' })
+    await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
+    expect(approvalsSent(channel)).toHaveLength(0)
   })
 })
 
@@ -628,6 +899,44 @@ describe('codex-remote-service approvals', () => {
   })
 })
 
+describe('codex-remote-service permission approvals', () => {
+  function permissionRequest(permissions: unknown): Record<string, unknown> {
+    return { threadId: 'th-1', turnId: 'tu-1', itemId: 'p', cwd: '/tmp', reason: '要写结果', startedAtMs: 0, environmentId: null, permissions }
+  }
+
+  it('declines a request the phone cannot show without asking, says why, and spends no approval number', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect((await codex.ask('item/permissions/requestApproval', permissionRequest(wholeDiskWrite))).result)
+      .toEqual({ permissions: {}, scope: 'turn' })
+    await vi.waitFor(() => expect(channel.texts()).toContain(permissionsRefusedText))
+    expect(approvalsSent(channel)).toHaveLength(0)
+    expect(s.logs).toContain('remote.permissions-refused')
+    const next = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0].approvalId).toBe('1')
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await next).result).toEqual({ decision: 'decline' })
+  })
+
+  it('grants only the paths the card listed, not the entries Codex sent alongside', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const out = path.join(s.workspace, 'out')
+    const answer = codex.ask('item/permissions/requestApproval', permissionRequest(codexPermissions(null, [out], true)))
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    // The workspace is a real folder here, so its separators are this machine's.
+    expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'other', summary: `联网\n写：${path.join('~', 'projects', 'demo', 'out')}` })
+    channel.handlers?.onInbound(text(alice, '同意'))
+    expect((await answer).result).toEqual({
+      permissions: { network: { enabled: true }, fileSystem: { read: null, write: [out] } },
+      scope: 'turn',
+    })
+  })
+})
+
 describe('codex-remote-service lifecycle', () => {
   it('says goodbye and stops everything when switched off on the computer', async () => {
     const s = await setup()
@@ -638,6 +947,58 @@ describe('codex-remote-service lifecycle', () => {
     expect(channel.stopped).toBe(1)
     expect(codex.kills).toContain('SIGTERM')
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  // 星芒退出前跟手机道别（0.2.22 打磨 B8）：只说一句、不停渠道，停渠道和 Codex 仍归 dispose。
+  it('says goodbye to the phone before the manager quits and leaves the channel to dispose', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.farewell()
+    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。'])
+    expect(channel.stopped).toBe(0)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
+    s.service.dispose()
+    await vi.waitFor(() => expect(channel.stopped).toBe(1))
+  })
+
+  // 主窗口 prepareToQuit 的清理预算是 2 秒（window-lifecycle），道别要在它之前放手。
+  it('does not let a stuck channel hold the quit for more than one and a half seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    channel.send = () => new Promise(() => undefined)
+    let done = false
+    const farewell = s.service.farewell().then(() => { done = true })
+    await vi.advanceTimersByTimeAsync(1_499)
+    expect(done).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    await farewell
+    expect(done).toBe(true)
+  })
+
+  // 退出没退成（装更新的安装器没启动、Mac 卸载移不进废纸篓）：说过「关了」的渠道补一句「没关成」，没说过的不补。
+  it('tells the phone the remote is still on when the quit was aborted after the goodbye', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.farewell()
+    await s.service.quitAborted()
+    expect(channel.texts()).toEqual(['电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。', '电脑上的星芒没关成，遥控还开着，可以接着用。'])
+    // 补过一次就清账：下一次没说「关了」的退出被撤回，不再补。
+    await s.service.quitAborted()
+    expect(channel.texts()).toHaveLength(2)
+  })
+
+  it('says nothing on an aborted quit when no goodbye went out', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.service.quitAborted()
+    expect(channel.texts()).toEqual([])
+  })
+
+  it('says nothing on quit when no channel is on', async () => {
+    const s = await setup()
+    await s.service.farewell()
+    expect(s.channels).toHaveLength(0)
   })
 
   it('tells the idle update install whether any channel is on, through switch-off and the four-hour close', async () => {

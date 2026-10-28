@@ -17,7 +17,7 @@
 // 0.2.18 起 Windows 走洛杉矶线路时更新和状态文件都改读 xm-direct.solov.cc，Cloudflare
 // 看不到，口径写在报告里。
 //
-// 每天打卡（匿名使用统计）：0.2.22 起开着这一项的客户端每天最多发成一条，内容整个写在更新目录 stats/
+// 每天打卡（匿名使用统计）：0.2.23 起开着这一项的客户端每天最多发成一条，内容整个写在更新目录 stats/
 // 下面的地址里（electron/usage-stats.ts），一天一条就是一台电脑。这一项不查 IP，只按地址分；
 // Windows 走洛杉矶线路的也先发到这里，补上面数不到的那一块。
 const { compareReleaseVersions } = require('./update-release-utils.cjs')
@@ -32,7 +32,7 @@ const INSTALLER_PATH = /^\/xingmang-manager\/XingMang-AI-Manager-(\d{1,6}\.\d{1,
 // electron-updater 每次查更新都先读更新清单：Windows 是 latest.yml，Mac 是 latest-mac.yml。
 const MANIFEST_PATH_PATTERN = '/xingmang-manager/latest%.yml'
 const MANIFEST_PATH = /^\/xingmang-manager\/latest(-mac)?\.yml$/
-// 每天打卡（匿名使用统计，electron/usage-stats.ts 的 buildUsageStatsPath）：0.2.22 起的星芒开着这项时
+// 每天打卡（匿名使用统计，electron/usage-stats.ts 的 buildUsageStatsPath）：0.2.23 起的星芒开着这项时
 // 每天最多发成一条，内容整个写在地址里。下面几张缩写表和那边一一对应，改一边要改另一边；
 // 两边的测试都读 scripts/fixtures/usage-stats-path.txt 这份样例，对不上当场就红。
 const USAGE_PATH_PATTERN = '/xingmang-manager/stats/v1/%'
@@ -1214,7 +1214,7 @@ function renderUsageScope(usage) {
     '',
     '### 打卡的口径',
     '',
-    '- 只有 0.2.22 起、开着这一项、这天开过星芒的电脑。0.2.21 及更早的不发，亲手关掉的不发，所以和上面按状态文件数的不是同一批电脑，不能直接比。',
+    '- 只有 0.2.23 起、开着这一项、这天开过星芒的电脑。0.2.22 及更早的不发，亲手关掉的不发，所以和上面按状态文件数的不是同一批电脑，不能直接比。',
     '- 先发到 updatesnew.shenfengwl.fun，连不上才发洛杉矶那份（xm-direct.solov.cc）。那份的 /xingmang-manager/ 是 nginx 原样转发到这里的'
       + '（服务端 10-17 核过），所以也记在这里。一天最多试 3 次，一直连不上的电脑那天缺一条。',
     '- 只有打包好的正式版发，开发版、自己编的版本和 GitHub Actions 里真装真开的都不发。',
@@ -1230,12 +1230,12 @@ function renderUsageSection(usage) {
   const lines = ['', '## 每天打卡（匿名使用统计）', '']
   if (!usage) return [...lines, '这个套餐的 Cloudflare 统计不能按请求路径分，打卡记录没法数。']
   lines.push(
-    '0.2.22 起的星芒开着「匿名使用统计」（设置 → 隐私数据，默认开）时，每天最多发成一条：版本、系统、装了哪些工具、'
+    '0.2.23 起的星芒开着「匿名使用统计」（设置 → 隐私数据，默认开）时，每天最多发成一条：版本、系统、装了哪些工具、'
       + '安装和更新出没出错、卡住几次，不带账号和电脑编号。一天只发成一条是客户端自己保证的，所以一天一条就是一台电脑。'
       + 'Windows 走线路2 的也先发到这里，和上面那几节不一样，数得到。',
   )
   if (usage.records.length) lines.push(...renderUsageDay(usage), ...renderUsageRates(usage))
-  else lines.push('', '这段时间没有认得出的打卡记录：0.2.22 还没发出去，或者装了的都关了这一项。')
+  else lines.push('', '这段时间没有认得出的打卡记录：0.2.23 还没发出去，或者装了的都关了这一项。')
   lines.push(...renderUsageScope(usage))
   return lines
 }

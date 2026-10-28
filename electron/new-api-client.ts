@@ -7,7 +7,7 @@ import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
-import { carryRequestDiagnostics, noteRequestDiagnostics, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
+import { carryRequestDiagnostics, noteRequestDiagnostics, requestDiagnosticsOf, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
 import { parseNewApiUsagePricing } from './usage-pricing-parser'
 import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
 import { isRecord } from './input-guards'
@@ -51,6 +51,11 @@ const redirectStatuses = new Set([301, 302, 303, 307, 308])
 // 超时、服务报错都不影响本机退出，所以等得比普通请求短得多，也不需要读多大的应答。
 const serverLogoutTimeoutMs = 3_000
 const serverLogoutMaxResponseBytes = 16 * 1024
+// 续期没等到回话时补续的那一次（refreshAllowingLostAnswer）：先等这么一下再发。服务器换了凭据以后，
+// 旧凭据只在 30 秒内还认（rc.44 service/auth_token.go 的 RefreshReplayWindow），所以从第一次发出算起
+// 最晚这么久还没发出补续就不补了，留 10 秒给它走到服务器。
+const defaultLostRefreshRetryDelayMs = 2_000
+const lostRefreshRetryLatestMs = 20_000
 
 const statusPath = '/api/status'
 // Callers that arrive together (focus, login, a balance tick) share one read.
@@ -149,6 +154,14 @@ export interface NewApiClientOptions {
   // the proxy decision (and which session the next request goes through);
   // this client only decides which failures may be replayed safely.
   retryOffProxy?: (failure: NewApiRetryOffProxyFailure) => Promise<boolean>
+  // Main process only. The few session events a feedback report needs to
+  // explain a sign-out: a refresh whose answer was lost and the catch-up that
+  // followed, and the login ending because the server refused it. Details
+  // carry request labels, status codes, server codes and request ids only,
+  // never a credential (I13).
+  log?(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void
+  // 续期没等到回话、补续之前等多久（毫秒，0 到 10000）。只给测试缩短用。
+  lostRefreshRetryDelayMs?: number
 }
 
 export interface NewApiRetryOffProxyFailure {
@@ -1010,6 +1023,20 @@ export class NewApiAuthenticationError extends Error {
   }
 }
 
+// 服务器回 401 时是哪个请求、回的 code（AUTH_SESSION_REVOKED、AUTH_TOKEN_EXPIRED 这类），只给「登录结束」
+// 那一行日志用。挂在 WeakMap 里不加字段，理由同 request-diagnostics.ts：错误会交给渲染层、被测试按字段比对。
+const authRefusals = new WeakMap<NewApiAuthenticationError, { request: string; code: string | null }>()
+
+// code 是服务器回的，外部可控：认得出的短串才记，免得往日志里塞任意内容。
+const serverCodePattern = /^[A-Z][A-Z0-9_]{0,63}$/
+
+function authRefusal(label: string, envelope: Record<string, unknown> | null, message: string): NewApiAuthenticationError {
+  const error = new NewApiAuthenticationError(message)
+  const code = envelope && typeof envelope.code === 'string' && serverCodePattern.test(envelope.code) ? envelope.code : null
+  authRefusals.set(error, { request: label, code })
+  return error
+}
+
 /** Only emitted by the password login endpoint after a definitive rejection. */
 export class NewApiLoginRejectedError extends NewApiAuthenticationError {
   constructor() {
@@ -1200,6 +1227,26 @@ function mayReplayOffProxy(init: PerformRequestInit, reason: NetworkFailureReaso
   return (init.idempotent ?? init.method === 'GET') || reason === 'proxy'
 }
 
+// 续期请求可能已经到了服务器、凭据已经换了，只是回话没到手的几种失败：等满了没回、连接半路断了、
+// 网关或服务自己回了 5xx（rc.44 换完凭据再出错也回 500）。解析不出地址、证书不对、被门户拦下、代理
+// 没放行的根本没送到；服务回了 401、429 这类话的，是收到了也答了。这些都不补续。
+const lostAnswerReasons: ReadonlySet<NetworkFailureReason> = new Set(['timeout', 'refused', 'serviceUnavailable'])
+
+function refreshAnswerMayBeLost(error: unknown): boolean {
+  if (error instanceof NewApiNetworkError) return lostAnswerReasons.has(error.reason)
+  if (error instanceof NewApiAuthenticationError) return false
+  const status = requestDiagnosticsOf(error)?.status
+  return status !== undefined && status >= 500
+}
+
+// 日志里给一次续期失败的分类：网络那一类按 reason，服务回了话的按状态码。
+function refreshFailureKind(error: unknown): string {
+  if (error instanceof NewApiNetworkError) return error.reason
+  if (error instanceof NewApiAuthenticationError) return 'unauthorized'
+  const status = requestDiagnosticsOf(error)?.status
+  return status !== undefined ? `http-${status}` : 'other'
+}
+
 async function performRequest(
   ctx: RequestContext,
   pathName: string,
@@ -1331,7 +1378,7 @@ function readEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly s
   const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
   const detail = sanitizeUpstreamDetail(displayServerMessage(envelope, serverMessage), secrets)
   if (raw.status === 401) {
-    throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
+    throw authRefusal(label, envelope, detail || '登录状态已失效，请重新登录')
   }
   assertServiceAvailable(raw, detail)
   if (!envelope) {
@@ -1493,7 +1540,7 @@ function readLegacyBusinessEnvelope(
   const dataMessage = envelope && typeof envelope.data === 'string' ? envelope.data : ''
   const detail = sanitizeUpstreamDetail(displayServerMessage(envelope, message === 'error' ? dataMessage : message), secrets)
   if (raw.status === 401) {
-    throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
+    throw authRefusal(label, envelope, detail || '登录状态已失效，请重新登录')
   }
   assertServiceAvailable(raw, detail)
   if (!envelope) {
@@ -2639,6 +2686,70 @@ export function parseCliKeySecret(payload: unknown): string | null {
   return trimmed.startsWith('sk-') ? trimmed : `sk-${trimmed}`
 }
 
+/**
+ * Lets one piece of work hold a client's login alone. changePassword is the
+ * only exclusive user; every other authenticated request is shared.
+ */
+export interface SessionRequestGate {
+  /** Waits while an exclusive piece of work is queued or running, then runs alongside the other shared ones. */
+  shared<T>(work: () => Promise<T>): Promise<T>
+  /** Holds new shared work back at once, waits for the shared work already running, then runs alone. */
+  exclusive<T>(work: () => Promise<T>): Promise<T>
+}
+
+// Why a password change must run alone (rc.44 controller/user.go UpdateSelf):
+// the server changes the password and bumps the user's auth version, then
+// sends the security notification mail synchronously, and only after that
+// advances this login to the new version. Any request carrying this login's
+// credential in between answers 401; the silent refresh that follows finds
+// the version mismatch and revokes the whole login (service/auth_session.go
+// RefreshLoginSession -> user_security_changed). The password has still
+// changed, but the change request itself then fails because its login is
+// gone. 2026-10-27 a customer resetting their password lost the login this
+// way: the balance read the app starts right after signing in landed in that
+// gap, and the app went on to remember the temporary password.
+//
+// Writer-preferring on purpose: once a change is queued, new shared work
+// waits behind it, so a steady trickle of reads can neither keep the change
+// from starting nor slip in while it runs, and when that work does start it
+// reads the access token the change handed back instead of 401-ing on the
+// superseded one and spending a refresh. Shared work never nests inside other
+// shared work in this client (helpers such as loadUsableGroups take the
+// session they are given), which is what keeps the drain from waiting on
+// itself.
+export function createSessionRequestGate(): SessionRequestGate {
+  let running = 0
+  let drained: Array<() => void> = []
+  let held: Promise<void> | null = null
+  async function shared<T>(work: () => Promise<T>): Promise<T> {
+    while (held) await held
+    running += 1
+    try { return await work() }
+    finally {
+      running -= 1
+      if (running === 0) {
+        const waiting = drained
+        drained = []
+        for (const resolve of waiting) resolve()
+      }
+    }
+  }
+  async function exclusive<T>(work: () => Promise<T>): Promise<T> {
+    while (held) await held
+    let release = (): void => undefined
+    const hold = new Promise<void>((resolve) => { release = resolve })
+    held = hold
+    try {
+      if (running > 0) await new Promise<void>((resolve) => { drained.push(resolve) })
+      return await work()
+    } finally {
+      if (held === hold) held = null
+      release()
+    }
+  }
+  return { shared, exclusive }
+}
+
 // new-api (this module) is the first relay backend and, per AGENTS.md's
 // multi-backend plan, currently the only one -- so every flag is true. See
 // relay-backend.ts's RelayBackendCapabilities for what a future backend
@@ -2671,6 +2782,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const maxResponseBytes = options.maxResponseBytes ?? defaultMaxResponseBytes
   if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes <= 0) {
     throw new TypeError('New-Api 客户端响应上限必须是正整数')
+  }
+  const lostRefreshRetryDelayMs = options.lostRefreshRetryDelayMs ?? defaultLostRefreshRetryDelayMs
+  if (!Number.isInteger(lostRefreshRetryDelayMs) || lostRefreshRetryDelayMs < 0 || lostRefreshRetryDelayMs > 10_000) {
+    throw new TypeError('New-Api 客户端补续等待必须是 0 到 10000 毫秒的整数')
   }
   const ctx: RequestContext = {
     fetchImpl: options.fetchImpl ?? fetch,
@@ -2723,6 +2838,16 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   let authAttemptGeneration = 0
   const sessionOwners = new WeakMap<InternalSession, number>()
   let refreshInFlight: { current: InternalSession; promise: Promise<InternalSession> } | null = null
+  // Every request that carries this login's credential goes through here; see
+  // createSessionRequestGate for why a password change has to run alone.
+  const requestGate = createSessionRequestGate()
+  // 这次登录最近一次续期没等到回话、也没补续成：哪一刻发的、怎么失败的、补续发没发。登录结束那一行日志
+  // 带上它，看得出是不是旧凭据过了 30 秒才又拿去用。续期成功、换了登录都清掉。
+  let lostRefresh: { sentAt: number; failure: string; retried: boolean } | null = null
+
+  const log = (level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void => {
+    try { options.log?.(level, event, message, detail) } catch { /* 记日志失败不影响登录 */ }
+  }
 
   // Every reassignment of `session` funnels through here so onSessionChange
   // (the active-session notification hook) can never be
@@ -2732,6 +2857,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     if (replaceOwner) {
       ownerGeneration += 1
       authAttemptGeneration += 1
+      lostRefresh = null
     }
     restoredProfile = null
     session = next
@@ -2793,6 +2919,62 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
   }
 
+  // 续期请求到了服务器、凭据也换了，回话却丢在路上（等满了没回、连接半路断了、网关回了 5xx），手里就
+  // 还是旧凭据。服务器只在换完以后 30 秒内还认它，照样发回同一把新凭据（rc.44 model/user_session.go 的
+  // RotateUserSessionRefresh）；过了 30 秒再拿去就当被盗，整个登录当场作废。下一次续期常在几分钟后，网络
+  // 一抖客户就会被退出来。所以这里在 30 秒内拿同一份旧凭据补续一次：服务器没换过的照常换，换过的
+  // 发回同一把。只补一次；同时要续期的请求共用 refreshCurrentSession 的这一次，不会并发续期。等的这一下
+  // 里登录换了、退了，就不补。开机恢复不走这里，它有自己的补试（realm-account-service.ts 的
+  // restoreAllowingOneTimeout）。
+  const refreshAllowingLostAnswer = async (current: InternalSession): Promise<InternalSession> => {
+    const sentAt = Date.now()
+    try {
+      const refreshed = await performRefresh(current)
+      lostRefresh = null
+      return refreshed
+    } catch (error) {
+      if (!refreshAnswerMayBeLost(error)) throw error
+      const failure = refreshFailureKind(error)
+      await new Promise<void>((resolve) => { setTimeout(resolve, lostRefreshRetryDelayMs) })
+      if (session !== current) throw error
+      const elapsedMs = Date.now() - sentAt
+      if (elapsedMs > lostRefreshRetryLatestMs) {
+        lostRefresh = { sentAt, failure, retried: false }
+        log('warn', 'session.refresh.lost', '续期没等到回话，已过补续时限，这次不补', { failure, elapsedMs })
+        throw error
+      }
+      try {
+        const refreshed = await performRefresh(current)
+        lostRefresh = null
+        log('info', 'session.refresh.retried', '续期没等到回话，补续成功', { failure, elapsedMs })
+        return refreshed
+      } catch (retryError) {
+        if (session === current) lostRefresh = { sentAt, failure, retried: true }
+        log('warn', 'session.refresh.retried', '续期没等到回话，补续也没成', { failure, elapsedMs, retryFailure: refreshFailureKind(retryError) })
+        throw retryError
+      }
+    }
+  }
+
+  // 服务器不认这次登录、本机跟着结束登录时记一行：以前不记，反馈报告里只看得到前后几次失败，看不出为什么
+  // 结束。记的是先被拒的是哪个请求（trigger）、最后拒掉登录的是哪个请求、服务器回的状态码、code 和请求
+  // 编号，以及之前有没有续期没等到回话。不记任何凭据（I13）。要在 setSession(null) 之前调，它会清掉 lostRefresh。
+  const logSessionEnded = (trigger: NewApiAuthenticationError | null, refusal: NewApiAuthenticationError): void => {
+    const refused = authRefusals.get(refusal)
+    log('warn', 'session.ended', '服务器不认这次登录了，本机已结束登录', {
+      trigger: trigger ? authRefusals.get(trigger)?.request ?? null : null,
+      refusedBy: refused?.request ?? null,
+      code: refused?.code ?? null,
+      message: refusal.message,
+      ...requestDiagnosticsOf(refusal),
+      ...(lostRefresh ? {
+        lostRefreshAgoMs: Date.now() - lostRefresh.sentAt,
+        lostRefreshFailure: lostRefresh.failure,
+        lostRefreshRetried: lostRefresh.retried,
+      } : {}),
+    })
+  }
+
   const persistRotation = async (refreshed: InternalSession): Promise<void> => {
     try {
       await options.onCredentialRotation?.({ userId: refreshed.userId, cookies: [...refreshed.cookies] })
@@ -2810,7 +2992,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     if (refreshInFlight?.current === current) return refreshInFlight.promise
     const promise = (async () => {
       try {
-        const refreshed = await performRefresh(current)
+        const refreshed = await refreshAllowingLostAnswer(current)
         assertCurrentOwner(current)
         if (session !== current) return requireSession()
         try { await persistRotation(refreshed) } catch (error) {
@@ -2873,7 +3055,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       assertCurrentOwner(failedSession)
       if (error instanceof NewApiCredentialPersistenceError) throw error
       if (!(error instanceof NewApiAuthenticationError)) throw error
-      if (session === failedSession) setSession(null)
+      if (session === failedSession) {
+        logSessionEnded(originalError, error)
+        setSession(null)
+      }
       throw originalError
     }
     try {
@@ -2884,13 +3069,18 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       assertCurrentOwner(refreshed)
       if (retryError instanceof NewApiAuthenticationError) {
         if (keepSessionOnRefusal) throw carryRequestDiagnostics(retryError, new Error(readRefusedAfterRefreshMessage))
-        if (session === refreshed) setSession(null)
+        if (session === refreshed) {
+          logSessionEnded(originalError, retryError)
+          setSession(null)
+        }
       }
       throw retryError
     }
   }
 
-  const withSession = async <T>(
+  // Ungated body of withSession. Only changePassword calls it directly, from
+  // inside its own exclusive hold.
+  const runWithSession = async <T>(
     run: (current: InternalSession) => Promise<T>,
     allowSessionClear = false,
     keepSessionOnRefusal = false,
@@ -2906,6 +3096,14 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       return await retryAfterSilentRefresh(current, run, error, allowSessionClear, keepSessionOnRefusal)
     }
   }
+
+  // The session is read after the gate opens, not before: work that waited
+  // out a password change must use the access token the change handed back.
+  const withSession = <T>(
+    run: (current: InternalSession) => Promise<T>,
+    allowSessionClear = false,
+    keepSessionOnRefusal = false,
+  ): Promise<T> => requestGate.shared(() => runWithSession(run, allowSessionClear, keepSessionOnRefusal))
 
   // getUsage, getDashboard, getTasks and listKeys: a 401 that survives a
   // successful refresh fails only that read (retryAfterSilentRefresh).
@@ -3621,7 +3819,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   })
 
   const revealKey = (id: number): Promise<string> => withSession(async (current) => {
-    if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
+    if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
     const raw = await performRequest(
       ctx,
       tokenKeyPath(id),
@@ -3640,7 +3838,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // callable directly by other main-process code and its own tests, so
       // the guard belongs here too rather than solely at the IPC boundary
       // (I5) -- id goes straight into a URL path segment below.
-      if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
+      if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
       const raw = await performRequest(
         ctx,
         tokenIdPath(id),
@@ -3656,8 +3854,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // 50 is AddToken/UpdateToken's own server-side name cap (rc.24).
   function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): { name: string; group: string } {
     const name = input.name.trim()
-    if (!name) throw new Error('请输入 Key 名称')
-    if (name.length > 50) throw new Error('Key 名称不能超过 50 个字符')
+    if (!name) throw new Error('请输入密钥名称')
+    if (name.length > 50) throw new Error('密钥名称不能超过 50 个字符')
     const group = input.group.trim()
     if (!group || group.length > 128) throw new Error('请选择有效分组')
     if (!input.unlimitedQuota && (!Number.isInteger(input.remainQuota) || input.remainQuota < 0)) {
@@ -3697,7 +3895,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const updateKey = (input: NewApiAccountKeyUpdateInput): Promise<void> => (
     withSession(async (current) => {
-      if (!Number.isInteger(input.id) || input.id <= 0) throw new Error('Key ID 格式错误')
+      if (!Number.isInteger(input.id) || input.id <= 0) throw new Error('密钥 ID 格式错误')
       const { name, group } = validateKeyEditorInput(input)
       await assertUsableGroup(current, group)
       // UpdateToken 是整体覆盖(见 NewApiClientService.updateKey 的注释):
@@ -3744,8 +3942,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
-  const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => (
-    withSession(async (current) => {
+  // Runs alone on this login (createSessionRequestGate): nothing else may
+  // reach the server between the change and the server moving this login to
+  // the new auth version.
+  const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => requestGate.exclusive(() => (
+    runWithSession(async (current) => {
       const originalPassword = input.originalPassword
       const newPassword = input.newPassword
       // Not trimmed: both must be forwarded exactly as typed, same reasoning
@@ -3787,7 +3988,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       if (bundle && session === current) setSession({ ...current, accessToken: bundle.accessToken }, false)
       return { changed: true }
     })
-  )
+  ))
 
   const listLoginSessions = (): Promise<NewApiLoginSession[]> => (
     withSession(async (current) => {
@@ -3887,7 +4088,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         : buildAccountKeyName(current.profile.username, group))) || requested
       const names = name === requested || chat ? [requested] : [requested, name]
       if (group) {
-        if (group.length > 128) throw new Error('CLI Key 分组格式错误')
+        if (group.length > 128) throw new Error('CLI 密钥分组格式错误')
         await assertUsableGroup(current, group)
         const records = await listAllTokenRecords(current)
         // 两边只复用自己这一边签过的：对话认对话的名字；工具认它以前的固定名、「用户名-分组」，
@@ -3938,16 +4139,19 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // comment. Mirrors withSession's original clear-only-on-401 semantics: a
   // transient network/timeout error here must not spuriously log the user
   // out, only a definitive "this credential is dead" from the server should.
-  const refreshAccessToken = async (): Promise<void> => {
+  const refreshAccessToken = (): Promise<void> => requestGate.shared(async () => {
     const current = requireSession()
     try {
       await refreshCurrentSession(current)
     } catch (error) {
       assertCurrentOwner(current)
-      if (error instanceof NewApiAuthenticationError && session === current) setSession(null)
+      if (error instanceof NewApiAuthenticationError && session === current) {
+        logSessionEnded(null, error)
+        setSession(null)
+      }
       throw error
     }
-  }
+  })
 
   const getPersistableSession = (): NewApiPersistableSession | null => (
     session ? { userId: session.userId, cookies: [...session.cookies] } : null
@@ -4017,7 +4221,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // 续一次再试；续过还是 401，就是那个服务自己拒了，照普通失败抛，不走 withSession 那条「再 401 就清掉
   // 登录」的路：代取服务坏了，只该让 Codex 退回加速，不能连带把客户登出。续期本身被 new-api 拒了照旧
   // 抛登录失效，但这里也不清登录，留给下一次账号请求按老规矩处理。
-  const issueCodexStartupTicket = async (): Promise<NewApiCodexStartupTicket> => {
+  const issueCodexStartupTicket = (): Promise<NewApiCodexStartupTicket> => requestGate.shared(async () => {
     const label = 'Codex 中文启动凭证'
     const request = (current: InternalSession): Promise<NewApiRawResponse> => performRequest(
       ctx,
@@ -4036,7 +4240,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
     if (raw.status === 401) throw new Error(`${label}被拒绝`)
     return parseCodexStartupTicket(unwrapEnvelope(raw, label, [current.accessToken]))
-  }
+  })
 
   const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
     if (session) return true

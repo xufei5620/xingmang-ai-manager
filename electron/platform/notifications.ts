@@ -36,6 +36,10 @@ export type PlatformHostNotification =
   | 'hiddenToMenuBar'
   | 'hiddenToPanel'
   | 'paymentSettled'
+  | 'codexPayloadSwitched'
+  | 'codexPayloadTooLarge'
+  | 'codexPayloadLineTwoTooLarge'
+  | 'codexPayloadNearing'
 
 export interface NotificationMessage {
   title: string
@@ -266,6 +270,28 @@ const hostMessages: Record<
     kind: null,
     title: '付款已到账',
     body: '刚才那笔订单已到账，余额和订阅已更新。',
+  },
+  // Codex 有个对话太大、发不出去（codex-payload-limit.ts）。客户这会儿多半正对着 Codex 一遍遍重试，星芒角落那张
+  // 卡看不见，所以另发一条；归「终端里没回上」那个开关管。点开回到星芒，那张卡上写着怎么办。
+  codexPayloadSwitched: {
+    kind: 'cliTrouble',
+    title: 'Codex 的对话已换到线路 2',
+    body: '这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2。完全退出 Codex 再打开，就能接着聊。',
+  },
+  codexPayloadTooLarge: {
+    kind: 'cliTrouble',
+    title: 'Codex 里这个对话太大，发不出去了',
+    body: '这个对话已经超过 100MB，线路 1 发不出去。请新开一个对话继续，点这里看原因。',
+  },
+  codexPayloadLineTwoTooLarge: {
+    kind: 'cliTrouble',
+    title: 'Codex 里这个对话太大，发不出去了',
+    body: '请新开一个对话继续，点这里看原因。',
+  },
+  codexPayloadNearing: {
+    kind: 'cliTrouble',
+    title: 'Codex 里有个对话快到线路 1 的上限了',
+    body: '超过 100MB 后线路 1 就发不出去了，建议做完手上这件事就新开一个对话。',
   },
 }
 

@@ -46,9 +46,9 @@ export const officialAccountNotes: Record<ActiveProviderId, string | null> = {
 // (resolveCliCommand 的 argv 始终为空),用户自己开终端敲的和点按钮得到的是同一个东西。
 // Codex 桌面端是图形界面,没有要敲的命令,所以这张表只覆盖命令行工具。
 export const firstRunHints: Record<ActiveProviderId, ToolFirstRun> = {
-  claude: { command: 'claude', prompt: '用中文介绍一下这个项目是做什么的,再指出最值得先读的三个文件。' },
-  codex: { command: 'codex', prompt: '用中文说明把这个项目跑起来需要哪些步骤,越具体越好。' },
-  grok: { command: 'grok', prompt: '用中文讲讲这个项目的主要功能,并给我一条改进建议。' },
+  claude: { command: 'claude', prompt: '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。' },
+  codex: { command: 'codex', prompt: '用中文说明把这个项目跑起来需要哪些步骤，越具体越好。' },
+  grok: { command: 'grok', prompt: '用中文讲讲这个项目的主要功能，并给我一条改进建议。' },
 };
 
 // 新手引导第一步默认选中、标「推荐」的那一个（第十一批候选 1，协调者拍板）。

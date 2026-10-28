@@ -87,6 +87,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'cli:check-update': { label: 'CLI 单项更新检查', log: 'normal', account: 'none' },
   'setup:codex-status': { label: 'Codex 初始化状态检测', log: 'quiet-success', account: 'none' },
   'desktop:install-codex': { label: 'Codex 桌面端安装', log: 'normal', account: 'none' },
+  'desktop:open-app-management-settings': { label: '打开「App 管理」设置', log: 'normal', account: 'none' },
   'desktop:cancel-install-codex': { log: 'normal', account: 'none' },
   'desktop:uninstall-codex': { label: 'Codex 桌面端卸载', log: 'normal', account: 'none' },
   'desktop:reset-codex': { label: 'Codex 桌面端重置', log: 'normal', account: 'none' },

@@ -31,7 +31,7 @@ type ToolDef = {
   id: ProviderId | 'codexDesktop'        // ProviderId 来自 electron/catalog.ts,不再放宽成 string
   name: string                      // 显示名，如 'Claude Code'
   vendor: string                    // 'Anthropic'
-  brandIcon: string                 // '@lobehub/icons' 导出名：'Claude' | 'OpenAI' | 'Gemini' | 'Grok'
+  brandIcon: string                 // BrandIcon 认的名字（图形在 ui/vendor-icons.tsx）：'Claude' | 'OpenAI' | 'Gemini' | 'Grok'
   kind: 'cli' | 'desktop'
   install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed'|'store'; mac?: 'external'; linux?: 'unavailable' }  // pkg 由 catalog.ts 的 cliCatalog 派生
   requires: ('node' | 'python')[]

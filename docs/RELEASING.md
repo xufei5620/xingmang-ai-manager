@@ -86,7 +86,7 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 
 两条路径的最后一步都一样：产物校验之前，六个文件会被改成带芯片名的发行名（`XingMang-AI-Manager-<版本号>-Apple-Silicon-arm64.*` 与 `…-Intel-x64.*`），`latest-mac.yml` 的引用同步改写。上传时保持这些名字不变——架构后缀是 electron-updater 分架构下载的依据，手工改名会让一部分 Mac 更新到另一个架构的包。
 
-CI 上也走这条带线路的路径。`--ci-temporary-signing` 与两个加速参数在 2026-09-19 节点入仓之前互斥，之后不再互斥（见 `scripts/run-macos-free-build.cjs` 的 `parseFreeMacBuildArguments` 和 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）：`package-for-testing` 出的 Mac 测试包、PR 上 `quality` 的 `macos-release-rehearsal` 排练，都先在 runner 上用 `scripts/prepare-acceleration-bundle.cjs` 现场准备两个架构的资源，再带上这两个参数出包。它们由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布的包仍按本节用发布身份出（`publish-release` 的 `macos-build` 也是带着这两个参数跑 `dist:mac:free`）。`quality` 里的 `macos-test` 与 `macos-intel` 两个作业出的包仍不带线路。
+CI 上也走这条带线路的路径。`--ci-temporary-signing` 与两个加速参数在 2026-09-19 节点入仓之前互斥，之后不再互斥（见 `scripts/run-macos-free-build.cjs` 的 `parseFreeMacBuildArguments` 和 [`CI-PACKAGING.md`](CI-PACKAGING.md) 4.4）：`package-for-testing` 出的 Mac 测试包、`quality` 的 `macos-release-rehearsal` 排练（每次合进 `main` 都跑，PR 上只在动了打包相关文件时跑，名单见 `scripts/ci-change-scope.cjs`），都先在 runner 上用 `scripts/prepare-acceleration-bundle.cjs` 现场准备两个架构的资源，再带上这两个参数出包。它们由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布的包仍按本节用发布身份出（`publish-release` 的 `macos-build` 也是带着这两个参数跑 `dist:mac:free`）。`quality` 里的 `macos-test` 与 `macos-intel` 两个作业出的包仍不带线路。
 
 本次使用官方 Mihomo v1.19.29，内核、资源准备 JSON 和生成的五文件目录仍保存在仓库外，节点来源可使用仓库固定配置。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
 
@@ -186,9 +186,9 @@ npm view electron time --json --registry=https://registry.npmjs.org/ | Select-St
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留更新能力但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
-- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。2026-09-25 起这条通道也跟着「自动更新」开关走（`electron/main.ts` 的 `unsignedAutoUpdate: true`，yoyo 同意）：开着时查到新版本就在后台下，关着时只提示、用户点了才下；下好以后都不当场装，什么时候装见第 6 节。每次下完都按更新清单的 SHA-512 重新校验安装包，Windows 再核发布者签名（第 5 节「更新包签名」），校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
+- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。2026-09-25 起这条通道也跟着「自动更新」开关走（`electron/main.ts` 的 `unsignedAutoUpdate: true`，yoyo 同意）：开着时查到新版本就在后台下，关着时只提示、用户点了才下；下好以后都不当场装，什么时候装见第 6 节。每次下完都按更新清单的 SHA-512 重新校验安装包，Windows 和 Linux 再核发布者签名（第 5 节「更新包签名」），校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
 - 记下本次出包的 commit（`git rev-parse HEAD`）。发布完成后要用它打 `v<版本号>` 的附注 tag，见第 5 节。
-- 0.2.19 起每一版都分批放量：触发发布**之前**先用 service-status 把「分批放量」设成 `<版本号> 20`，发出去观察一天，没问题再全部放开。步骤见第 5 节「分批放量（0.2.19 起每次都做）」。这一版要配合服务端做旧版本不认的改动（删分组、改名这类）时，先后顺序另有规矩，见第 5 节「服务端要做旧版本不认的改动时」。
+- 0.2.19 起每一版都分批放量：触发发布**之前**先用 service-status 把「分批放量」设成 `<版本号> 20`，发出去观察一天，没问题再全部放开。步骤见第 5 节「分批放量（0.2.19 起每次都做）」。快修通道（第 5 节「热修版本」）另有规矩：客户正卡着的全量推送＋强制更新，不设放量。这一版要配合服务端做旧版本不认的改动（删分组、改名这类）时，先后顺序另有规矩，见第 5 节「服务端要做旧版本不认的改动时」。
 
 更新地址可按需通过环境变量覆盖：
 
@@ -290,7 +290,7 @@ git push origin v0.2.6
 
 上面第 1~7 步都可以交给 `.github/workflows/publish-release.yml` 做，只有「在真机上装一遍验收」搬不走。手工路径没有作废，两条都能用。
 
-0.2.19 起，点 Run workflow 之前先把这一版的分批放量设好（见下面「分批放量（0.2.19 起每次都做）」）。顺序反了，从上传完成那一刻起，所有自动检查更新的电脑都会拿到新版本。
+0.2.19 起，点 Run workflow 之前先把这一版的分批放量设好（见下面「分批放量（0.2.19 起每次都做）」）。顺序反了，从上传完成那一刻起，所有自动检查更新的电脑都会拿到新版本。快修通道里客户正卡着的那种有意全量推，不设放量，见下面「热修版本」。
 
 工作流在 Actions 页面选 **publish-release**，点 Run workflow，填两项：
 
@@ -317,7 +317,7 @@ git push origin v0.2.6
 - 上一次触发占了 tag、没发出去就取消了（补进来重出包），合进修复后从 main 重新触发：tag 会挪到新的 commit 上。挪之前同样要确认那一版没有 Release、线上清单都比它旧。
 - `changes/unreleased/` 里还有没汇总的分片：直接停下，不查 tag、不出包，怎么补收见第 3 节。只选 `linux` 而 Linux 开关没开时不查：main 上平时总有分片，只出包给自己装的那种运行不该被挡。
 - 这一步报「GitHub 不让在 … 上建 …」：触发之后、轮到它之前，main 又合进了改工作流的提交。什么都还没发，从最新的 main 重新触发就好。
-- 正式发布要从 main 触发，从别的分支或 tag 触发直接拒绝，免得 tag 占在一个发不出去的 commit 上。只选 `linux` 而 Linux 开关没开时不占 tag。
+- 正式发布要从 main 触发，从别的分支或 tag 触发直接拒绝，免得 tag 占在一个发不出去的 commit 上。唯一的例外是热修分支 `hotfix/<这次的版本号>`，见下面「热修版本」。只选 `linux` 而 Linux 开关没开时不占 tag。
 - 出包期间有人把 tag 删了：上传前那道关检查都过了以后先补建，再往线上传；补建不了就停下，线上什么都不改。
 - 取消之后改了版本号再发，旧版本号的 tag 会留在仓库里，指向一个没发出去的 commit。它不影响发布；要清理就在仓库的 Tags 页面手动删掉。
 
@@ -329,9 +329,35 @@ git push origin v0.2.6
 
 **上传那一段和回滚、维护开关排队。** publish 作业与 `rollback-release`、`service-status`、`acceleration-nodes` 共用 `update-feed` 并发组（#492）：三者都是先读线上清单或状态、再写回去，同时跑会互相盖掉。所以批第二次之前如果它显示 Pending，是另一条正在写更新目录，等它跑完就轮到这里。出包那两段不在组里，不会被挡。
 
+#### 热修版本（快修通道：上一版加一两个提交单独发）
+
+2026-10-27 定（0.2.22：0.2.21 加上 #1405，修支付宝充值时支付窗口打不开）；同一天产品所有者把这条路定成**快修通道**（不发版、直接换掉客户电脑上的程序文件那条路，防篡改检查和签名有意挡着，不做）。什么时候用：客户正卡着一个问题，修复已经合进 main，main 上却还有一批没在真机上验过的改动，不能跟着一起出去。目标是从决定发到客户收到不超过半天：0.2.22 从定版提交（北京时间 10:20）到发出去（12:16）不到两小时，12:22 强制更新生效，13:16 教程站下载页换好。
+
+上一版发出去以后 main 还没合过别的改动时不用切分支，直接从 main 照常发，下面四条规矩照样用。
+
+**规矩（四条）**
+
+- **只带这一个修复。** 一两个提交，不捎带别的，顺手的小改动也不带，留给 main 的下一版。
+- **自动检查全绿。** 修复本身照常走 PR、CI 绿了才合进 main。热修分支推上去不跑 CI，但 Windows 出包门禁会把全部测试在 Windows 上重跑一遍（0.2.22 约 50 分钟），Mac 出包约 15 分钟，哪一个红了都不发。
+- **真机只验出事的那条路。** 不另出测试包，第一次批准后出的包就是验收包：Windows、Mac 各装一台，只走客户卡住的那一条（0.2.22 是用支付宝充 10 元），过了再批第二次。不跑整份回归清单。
+- **推多少看客户卡得多死。**
+  - 客户正卡着、不升就用不了（付不了钱、装不上、打不开工具、签不出密钥这类）：**全量推送＋强制更新**（产品所有者 2026-10-27 定，0.2.22 就是这样发的）。不设分批放量；Windows、Mac 真机都过了，再用 service-status 把「最低版本」设成这一版（下面第 6 步）。
+  - 只是想早点送到、不升也还能用：照下面「分批放量」先放两成（触发前填 `<新版本号> 20`），半天没有新问题就填 `none` 全放，不设最低版本。
+
+**步骤**
+
+1. 从上一版的 tag 切 `hotfix/<新版本号>`，只 cherry-pick 要带的提交；版本号改成新版本号，`changelog:collect` 汇总、把两个标题改成新版本号。`release-notes.md` 这一节的第一条是「怎么装这个更新」，照抄上一版那一节的第一条，一字不差（加一条 `000-` 分片，或者汇总后直接补上都行）。main 原本要给下一版用的版本号就此让给热修，main 下一次定版用再下一个号（0.2.22 让给热修以后，main 上那一批改叫 0.2.23）。
+2. **把 main 的 `.github/workflows/` 整个照搬过来**，一字不差：工作流用的令牌建不了「工作流文件和 main 对不上」的提交上的 tag（见上面「触发时就占 tag」），对不上的话 `release-tag` 那一步就停。工作流调用的脚本和钉住工作流的测试要一起搬，不然 Windows 出包门禁重跑全部测试时会红：0.2.22 搬了 12 个文件（4 个工作流、`scripts/ci-*`、`scripts/run-release-build.cjs` 和钉住它们的测试，见提交 `1ad8fe1c`），测试里钉着 main 才有、这个分支没有的功能的那几处去掉（那次去掉了视频剪辑那一个浏览器套件）。程序本身的代码一行不动。照搬以后到 `release-tag` 跑完之前，main 不要合改工作流的 PR；别的 PR 照常合，main 不用冻结。
+3. 产品所有者亲手把 `hotfix/<新版本号>` 加进 **Settings → Environments → release → Deployment branches and tags**（Add deployment branch or tag rule，Ref type 选 Branch，填分支全名）。这是临时放宽「只有 main 的代码拿得到发布凭据」那道限制，所以要他亲手加、发完亲手删。`cos-sync` 环境不用加，第 7 步从 main 补传。
+4. 只放两成的，先照「分批放量」第 1、2 步设好放量；全量推的这一步跳过。然后从 `hotfix/<新版本号>` 分支点 Run workflow（Use workflow from 选这个分支），版本号填新版本号，平台选 `both`（Linux 开关打开以后选 `all`）。
+5. 第一次批准以后等两个出包作业跑绿，从这次运行的 Artifacts 下载 `windows-release-<版本号>` 和 `macos-release-<版本号>`，各装一台测试电脑，只验出事的那条路，过了再批第二次。
+6. 上传跑完，这次运行会显示红叉：那是发布作业后面的 `cos-sync` 被环境拒掉了，**客户已经收到**，看 publish 作业是绿的、GitHub Release 建好了就行。全量推的，Windows、Mac 真机都过了，跑 service-status，「最低版本」填新版本号，其余留空。批之前运行页面会打一条黄色提示「包出来还不满一天」，提示里只提到服务端先改了那种情况；快修通道两个平台真机都过了的，照常批。批完照「分批放量」第 2 步打开两个地址，核对 `minimumVersion` 都是新版本号。强制更新管得到谁、管不到谁见 `docs/SERVICE-STATUS.md`「强制更新（最低版本）」：0.2.11 及以后、开着窗口的电脑当场被拦去更新；窗口一直缩在托盘里的照旧停着（#1380）；0.2.10 及更早不认最低版本。
+7. 补传 COS、刷新教程站：从 main 跑一次 `sync-published-manager-cos`，「标签」填 `v<新版本号>`（0.2.22 传了 43 分钟）。它跑绿以后马上跑一次教程站的 `sites`：打开 https://github.com/xufei5620/codex-tutorial-cn/actions/workflows/sites.yml → **Run workflow** → 分支选 `main` → **Run workflow**；一两分钟后打开下载页按 Ctrl+F5，Windows、Mac 的下载都应该是新版本。不点的话要等教程站下一次定时运行（一天约 3 次），这段时间新客户下到的还是上一版。
+8. 收尾：产品所有者删掉第 3 步加的那条规则。往 main 提一个 PR，把这一版的 `CHANGELOG.md` 那一节并进去，删掉 main 上已经随这一版发出去的那几个分片（0.2.22 是 #1466）；main 上别的分片要是也写了这个修复（0.2.22 时还有一条写着「不会再报支付页面打开失败」），把那半句改掉（客户看得到的字，照常先给产品所有者看），免得下一版的更新说明再说一遍。`release-notes.md` 那一节这时并不进去：门禁要它的第一节是「未发布」或 `package.json` 的版本号，main 还停在上一版的版本号上。留到 main 下一次定版，`changelog:collect` 汇总出新的一节以后，把 `git show v<热修版本号>:release-notes.md` 里那一节原样插在新一节和上一版之间。
+
 #### 分批放量（0.2.19 起每次都做）
 
-0.2.18 是全量发的：2026-10-10 核过线上的 `service-status.json`，只有 `badVersions` 和 `updatedAt`，没有 `rollout`。从 0.2.19 起，每一版先只自动推给大约两成电脑，观察一天没问题再全部放开。下面拿 `0.2.19` 举例。每一步都是在 GitHub Actions 里点一次、在 release 环境批一次，批只有产品所有者能点。各项是什么意思、客户看到什么，见 `docs/SERVICE-STATUS.md`「分批放量」。
+0.2.18 是全量发的：2026-10-10 核过线上的 `service-status.json`，只有 `badVersions` 和 `updatedAt`，没有 `rollout`。从 0.2.19 起，每一版先只自动推给大约两成电脑，观察一天没问题再全部放开（快修通道例外，见上面「热修版本」）。下面拿 `0.2.19` 举例。每一步都是在 GitHub Actions 里点一次、在 release 环境批一次，批只有产品所有者能点。各项是什么意思、客户看到什么，见 `docs/SERVICE-STATUS.md`「分批放量」。
 
 1. **触发 publish-release 之前**：Actions → **service-status** → Run workflow，「分批放量」填 `0.2.19 20`，「维护提示」保持 `keep: 不改`，其余全部留空。停在 Waiting 时 Review deployments → 勾 release → Approve and deploy，等它跑绿，日志里写「分批放量：0.2.19 先给 20% 的电脑」。
    提前设不碍事：客户端只在更新清单给出的版本号和放量里写的版本号相同时才按比例拦（`electron/updater.ts` 的 `decideUpdateOffer`），线上还是 0.2.18 时这一项什么都不改变。这时也没有发版在等批准，不会碰上下面「忘了先设」那种排队。
@@ -393,7 +419,7 @@ git push origin v0.2.6
 | `R2_BUCKET` | 桶名 | 上传 |
 | `R2_ACCESS_KEY_ID` | R2 凭据 | 上传 |
 | `R2_SECRET_ACCESS_KEY` | R2 凭据 | 上传 |
-| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名 |
+| `XINGMANG_UPDATE_SIGNING_KEY` | 更新包签名私钥（Ed25519，PKCS8 DER 的 base64），生成方法见下面「更新包签名」 | 上传前给 Windows 和 Linux 的清单签名、回退时补签；`acceleration-nodes` 给在线加速节点签名 |
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
@@ -406,14 +432,14 @@ R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整�
 
 #### 更新包签名
 
-Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一个 R2 桶里：只凭清单里的 SHA-512，拿到 R2 上传密钥的人把安装包和清单一起换掉，校验照样通过。所以发布时再加一道我们自己的签名：
+Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一个 R2 桶里：只凭清单里的 SHA-512，拿到 R2 上传密钥的人把安装包和清单一起换掉，校验照样通过。Linux 一样：deb 交给系统安装程序以 root 装，dpkg 自己不验签（Debian、Ubuntu 默认 `no-debsig`），`latest-linux.yml`、`latest-linux-arm64.yml` 也和 deb 同放一个桶。所以发布时再加一道我们自己的签名：
 
-- `publish` 作业在上传之前用 `XINGMANG_UPDATE_SIGNING_KEY` 给 `latest.yml` 的每个文件签名（`scripts/update-manifest-signature.cjs sign`），签的是「版本号 + 文件地址 + SHA-512」，签名写在该文件那一项的 `xingmangSignature` 字段里。签之前先确认这把私钥对应的公钥在客户端内置名单里（`electron/update-package-signature.ts` 的 `updateSigningPublicKeys`），对不上直接失败，免得发出一版全体新客户端都拒装的包。
-- 客户端（接上验签的那一版起）下载完先核 SHA-512，再核这个签名；缺签名、签名不对、本机没配公钥，一律拒装。老客户端不认这个字段，照旧能升上来。
+- `publish` 作业在上传之前用 `XINGMANG_UPDATE_SIGNING_KEY` 给 `latest.yml` 和 Linux 两份清单的每个文件签名（`scripts/update-manifest-signature.cjs sign`），签的是「版本号 + 文件地址 + SHA-512」，签名写在该文件那一项的 `xingmangSignature` 字段里。签之前先确认这把私钥对应的公钥在客户端内置名单里（`electron/update-package-signature.ts` 的 `updateSigningPublicKeys`），对不上直接失败，免得发出一版全体新客户端都拒装的包。
+- 客户端（Windows 从接上验签的 0.2.18 起，Linux 从第一次对外发的那一版起）下载完先核 SHA-512，再核这个签名；缺签名、签名不对、本机没配公钥，一律拒装。老客户端不认这个字段，照旧能升上来。线上的清单发完后各自再下载验一次签。
 - 私钥只在 release 环境的 secret 里，从不进桶。所以就算 R2 上传密钥泄露，别人传上去的包也签不出客户端认的签名。
 - macOS 不签：Squirrel.Mac 已经按已装应用钉住的发布证书验苹果签名，那张证书的私钥同样只在 release 环境里，再加一道挡的是同一件事。
-- Linux 的两份清单（`latest-linux.yml`、`latest-linux-arm64.yml`）还不签，客户端也只在 Windows 上验签（`electron/main.ts`）。Linux 的 deb 同样没有代码签名，第一次对外发之前要把它也接上。
-- 回退（`rollback-release`）时，备份清单本来就带签名的只验签；加签名之前发的老版本备份没有签名，要和 GitHub Release 上同版本的安装包逐字节对上才补签。GitHub Release 上找不到那个安装包时原样退回并给一条黄色提示：老客户端照样退得回去，认签名的新客户端停在被撤回的版本上。
+- Linux 的 deb 本身不另签：dpkg 装包时不看包内签名，签了也没人核；更新这条路由上面的清单签名挡住，客户第一次从教程站下载的 deb 和 Windows 安装包一样，没有发布者签名可核。客户端认不认签名由 `update-package-signature.ts` 的 `shouldVerifyUpdateSignature` 决定。
+- 回退（`rollback-release`）时，Windows 和 Linux 的备份清单本来就带签名的只验签；加签名之前发的老版本备份没有签名，要和 GitHub Release 上同版本的安装包（`*Setup.exe` / `*.deb`）逐字节对上才补签。Linux 从第一次对外发起就带签名，正常只走验签。GitHub Release 上找不到那个安装包时原样退回并给一条黄色提示：老客户端照样退得回去，认签名的新客户端停在被撤回的版本上。
 
 **生成密钥（只做一次，在产品所有者自己的电脑上做）。** 私钥绝不能出现在聊天、工单、邮件或仓库里。
 

@@ -1,4 +1,4 @@
-import { describeToolRouteRestartHint, offersToolRouteDesktopRestart, toolRouteRestartHintTitle, type ToolRouteRestartHint } from '../../../../electron/running-tools'
+import { codexPayloadRestartHintTitle, describeToolRouteRestartHint, offersToolRouteDesktopRestart, toolRouteRestartHintTitle, type CodexPayloadNotice, type CodexPayloadNoticeKind, type ToolRouteRestartHint } from '../../../../electron/running-tools'
 import type { AppSettingsV2, InstalledRelease, PlatformCapabilities, ProviderId, SettingsSaveIssue, UnexpectedExitNotice, WindowCapabilities } from '../../../../electron/ipc-contract'
 import type { PageId } from '../../registry/pages'
 import { tools } from '../../registry/tools'
@@ -12,12 +12,12 @@ import { firstProblemAnchor } from './row-focus'
  * （CI 的原生冒烟正是这样被挡住的）。用户自己点「检查更新」「运行检查」时
  * 走的是各页面自己的失败提示，不经过这里，照常报错。
  */
-export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'usage-stats' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'
+export type StartupCheckId = 'update' | 'diagnostics' | 'appearance' | 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'usage-stats' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart' | 'codex-payload'
 /**
  * `vault-recovered`、`updated`、`settings-save`、两条显示方式的提示与错误报告告知不是应用
  * 跑出来的检查，是一次性要告诉用户的事，没有「失败」这一面。
  */
-export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'usage-stats' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart'>
+export type StartupCheckFailureId = Exclude<StartupCheckId, 'vault-recovered' | 'updated' | 'settings-save' | 'display-compat' | 'display-relaunch' | 'crash-reporting' | 'usage-stats' | 'unexpected-exit' | 'template-filled' | 'claude-desktop-repaired' | 'route-restart' | 'codex-payload'>
 
 /**
  * 有的提示要把人带到某一页，有的要直接把登录弹出来（账号页在未登录时才等价于登录），
@@ -339,7 +339,8 @@ export function claudeDesktopRepairedNotice(
 /**
  * 连接线路因为连不上换了，开着的工具要重开才走新线路（xm 三线路 C10，主进程 followToolRoutes 定的
  * 要说哪几样、24 小时一次；历史账号是整份写入跟过去以后 noteRouteFollowRestart 定的，#1061 第 2 条）。一样一句；Codex 桌面端在 Windows 上开着时给现成的「帮我重开」，别的
- * 只能客户自己重开，关掉叉就行。
+ * 只能客户自己重开，关掉叉就行。Codex 有个对话在线路 1 上太大、换到线路 2 的（codex-payload-limit.ts）只换标题，
+ * 下面照样是 Codex 那几句。
  */
 export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotice | null {
   const items = describeToolRouteRestartHint(hint)
@@ -348,10 +349,52 @@ export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotic
     id: 'route-restart',
     failure: false,
     tone: 'neutral',
-    title: toolRouteRestartHintTitle,
+    title: hint.cause === 'payload-too-large' ? codexPayloadRestartHintTitle : toolRouteRestartHintTitle,
     body: '',
     items,
     ...(offersToolRouteDesktopRestart(hint) ? { action: { label: '帮我重开', restartCodexDesktop: true as const } } : {}),
+  }
+}
+
+const codexPayloadNewConversation = '请新开一个对话继续；对话里的截图和大文件会让体积变大很快。这时让 Codex 压缩对话也不管用，压缩同样要先把整段对话发上去。'
+const codexPayloadReasons: Partial<Record<CodexPayloadNoticeKind, string>> = {
+  locked: '你在设置里选了只用线路 1，所以没有自动换线路。',
+  unreachable: '线路 2 这会儿也连不上，所以没能帮你换过去。',
+}
+
+/**
+ * Codex 有个对话太大、发不出去，又没换成线路（主进程 codex-payload-limit.ts）：要客户新开对话，说清为什么连压缩也
+ * 不行、为什么没换线路。线路 1 上快到上限时提前说一次。都只是告知，一颗「知道了」。
+ */
+export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
+  const action = { label: '知道了', dismiss: true as const }
+  if (notice.kind === 'nearing') {
+    return {
+      id: 'codex-payload',
+      failure: false,
+      tone: 'neutral',
+      title: 'Codex 里有个对话快到线路 1 的上限了',
+      body: '对话越聊越大，超过 100MB 后线路 1 就发不出去了。建议手上这件事做完就新开一个对话；截图和大文件会让体积变大很快。',
+      action,
+    }
+  }
+  if (notice.kind === 'too-large') {
+    return {
+      id: 'codex-payload',
+      failure: false,
+      tone: 'warn',
+      title: 'Codex 里这个对话太大，发不出去了',
+      body: `这个对话已经超过线路 2 的上限，在这个对话里发什么都会失败。${codexPayloadNewConversation}`,
+      action,
+    }
+  }
+  return {
+    id: 'codex-payload',
+    failure: false,
+    tone: 'warn',
+    title: 'Codex 里这个对话太大，线路 1 发不出去',
+    body: `这个对话已经超过 100MB，线路 1 发不出去，在这个对话里发什么都会失败。${codexPayloadNewConversation}${codexPayloadReasons[notice.kind] ?? ''}`,
+    action,
   }
 }
 

@@ -6,6 +6,7 @@ import * as TOML from '@iarna/toml'
 import {
   buildCodexApiKeyAuth,
   canLaunchManagedProvider,
+  claudeModelPickerNeedsRefresh,
   claudeRootConfigTrustsFolder,
   codexConfigTrustsFolder,
   geminiCliCompatibleModel,
@@ -17,6 +18,7 @@ import {
   claudeForeignSettingsSnapshotName,
   moveClaudeForeignSettingsAside,
   restoreClaudeForeignSettings,
+  planProviderPickerRefresh,
   rewriteManagedCliHooks,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
@@ -51,6 +53,7 @@ import {
   PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS,
   inspectCodexWorkspacePermissionsText,
   inspectHomeFolderTrust,
+  managedGlobalResponseLanguagePresent,
   managedProviderLaunchBlockedMessage,
   moveClaudeConsoleKeyAside,
   moveClaudeConsoleKeyAsideTexts,
@@ -1185,6 +1188,43 @@ describe('native CLI configuration files', () => {
 
     switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).notify).toEqual(['notify-send', 'Codex'])
+  })
+
+  it('switches the Codex desktop out of ChatGPT Work when saving a relay key and gives the official account its own choice back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(snapshots.active), { recursive: true })
+    fs.writeFileSync(snapshots.active, '[desktop]\nlocaleOverride = "zh-CN"\nconversationDetailMode = "STEPS_PROSE"\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    for (const file of [snapshots.active, snapshots.relay]) {
+      expect(asRecord(TOML.parse(fs.readFileSync(file, 'utf8')))?.desktop).toEqual({
+        localeOverride: 'zh-CN',
+        conversationDetailMode: 'STEPS_COMMANDS',
+      })
+    }
+
+    // With a ChatGPT login the Work mode does work, so the official profile keeps it.
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(asRecord(asRecord(TOML.parse(fs.readFileSync(snapshots.active, 'utf8')))?.desktop)?.conversationDetailMode).toBe('STEPS_PROSE')
+  })
+
+  it('leaves the other Codex desktop modes alone and never adds a mode the customer did not pick', () => {
+    function savedDesktop(existing: string | null): unknown {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      if (existing !== null) {
+        fs.mkdirSync(path.dirname(configPath), { recursive: true })
+        fs.writeFileSync(configPath, existing, 'utf8')
+      }
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+      return asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))?.desktop
+    }
+
+    expect(savedDesktop('[desktop]\nconversationDetailMode = "STEPS_EXECUTION"\n')).toEqual({ conversationDetailMode: 'STEPS_EXECUTION' })
+    expect(savedDesktop('[desktop]\nlocaleOverride = "zh-CN"\n')).toEqual({ localeOverride: 'zh-CN' })
+    expect(savedDesktop(null)).toBeUndefined()
   })
 
   it('writes no hooks at all when none are given', () => {
@@ -3215,6 +3255,26 @@ describe('switching a provider back to the official subscription account', () =>
     expect((JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>).fallbackModel).toEqual(['claude-opus-5-5'])
   })
 
+  it('does not put Claude fallback models back on save once they have been on this computer and the customer deleted them', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const models = ['claude-haiku-5-5', 'claude-opus-5', 'claude-opus-5-5', 'claude-sonnet-5-5']
+    const seeded = { claudeFallbackModel: true }
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-5-5', 'reset', roots, {}, providerBaseUrls, undefined, models)
+    const { fallbackModel: _deleted, ...settings } = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(configPath, JSON.stringify(settings, null, 2), 'utf8')
+
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5-5', 'merge', roots, {}, providerBaseUrls, undefined, models, undefined, undefined, seeded)
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('fallbackModel')
+    saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5-5', 'reset', roots, {}, providerBaseUrls, undefined, models, undefined, undefined, seeded)
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).not.toHaveProperty('fallbackModel')
+    expect(claudeModelPickerNeedsRefresh(models, 'claude-sonnet-5-5', roots, seeded)).toBe(false)
+    expect(planProviderPickerRefresh('claude', 'claude-sonnet-5-5', models, roots, undefined, seeded)).toEqual({ status: 'current' })
+    // Without the record it looks like settings an older version wrote, and the menu refresh fills them in.
+    expect(claudeModelPickerNeedsRefresh(models, 'claude-sonnet-5-5', roots)).toBe(true)
+  })
+
   it('leaves the Claude model menu untouched when no model list is supplied', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -4330,6 +4390,19 @@ describe('bringing an older account config up to the current template', () => {
     expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
   })
 
+  it('leaves the Codex desktop mode the customer picked alone at startup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const picked = `${fs.readFileSync(snapshots.active, 'utf8')}\n[desktop]\nconversationDetailMode = "STEPS_PROSE"\n`
+    writeFile(snapshots.active, picked)
+
+    expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
+    expect(fs.readFileSync(snapshots.active, 'utf8')).toBe(picked)
+  })
+
   it('writes nothing when the config already has every template key', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -4594,6 +4667,41 @@ describe('the global reply language Codex and Grok read', () => {
 
   it('lists the instructions it writes among the published versions', () => {
     expect(PUBLISHED_GLOBAL_RESPONSE_LANGUAGE_DIGESTS).toContain(projectInstructionsDigest(MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS))
+  })
+
+  it('does not place it again once it has been on this computer and the customer deleted it', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const seeded = { responseLanguage: true }
+    for (const provider of ['codex', 'grok'] as const) {
+      saveProviderConfig(provider, 'sk-fixture', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+      const placed = path.join(configDirectory(provider, roots), 'AGENTS.md')
+      fs.rmSync(placed)
+
+      const saved = saveProviderConfig(provider, 'sk-other', testModels[provider], 'merge', roots, {}, providerBaseUrls, undefined, undefined, undefined, undefined, seeded)
+      expect(saved.files).not.toContain(placed)
+      saveProviderConfig(provider, 'sk-other', testModels[provider], 'reset', roots, {}, providerBaseUrls, undefined, undefined, undefined, undefined, seeded)
+      expect(relayTemplateDefaultsPending(provider, roots, providerBaseUrls, process.platform, seeded)).toBe(false)
+      expect(fillRelayTemplateDefaults(provider, roots, providerBaseUrls, {}, process.platform, seeded)).toBeNull()
+      expect(fs.existsSync(placed)).toBe(false)
+    }
+  })
+
+  it('recognises only its own untouched instructions', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    expect(managedGlobalResponseLanguagePresent('codex', roots)).toBe(false)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    expect(managedGlobalResponseLanguagePresent('codex', roots)).toBe(true)
+    // Windows line endings from an editor that only re-saved it still count as the same text.
+    const placed = path.join(configDirectory('codex', roots), 'AGENTS.md')
+    fs.writeFileSync(placed, MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS.replace(/\n/g, '\r\n'), 'utf8')
+    expect(managedGlobalResponseLanguagePresent('codex', roots)).toBe(true)
+    fs.writeFileSync(placed, `${MANAGED_GLOBAL_RESPONSE_LANGUAGE_INSTRUCTIONS}- 回答尽量短。\n`, 'utf8')
+    expect(managedGlobalResponseLanguagePresent('codex', roots)).toBe(false)
+    writeFile(path.join(configDirectory('grok', roots), 'AGENTS.md'), 'Always answer in English.\n')
+    expect(managedGlobalResponseLanguagePresent('grok', roots)).toBe(false)
+    expect(managedGlobalResponseLanguagePresent('claude', roots)).toBe(false)
   })
 })
 

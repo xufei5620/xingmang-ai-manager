@@ -924,6 +924,47 @@ describe('development acceleration worker host', () => {
       })
     })
 
+    it('says it is waiting for the previous instance only for as long as it waits', async () => {
+      await withJournal(async (directory) => {
+        const owned = ownedWorker()
+        const healthy = new FakeWorker()
+        mocks.fork.mockReturnValueOnce(owned).mockReturnValueOnce(healthy)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+        expect(host.awaitingPreviousOwner()).toBe(false)
+        const recovery = host.recover()
+        await until(() => owned.sent.length > 0)
+        // An ordinary launch is not the half-minute wait.
+        expect(host.awaitingPreviousOwner()).toBe(false)
+        answerOwned(owned)
+        await settle()
+        expect(host.awaitingPreviousOwner()).toBe(true)
+        await fs.rm(accelerationProxyJournalPath(directory))
+        owned.emit('exit', 0)
+        await tick()
+        await until(() => mocks.fork.mock.calls.length === 2)
+        await recovery
+        expect(host.awaitingPreviousOwner()).toBe(false)
+        await host.dispose()
+      })
+    })
+
+    it('stops saying it waits once it gives up', async () => {
+      await withJournal(async (directory) => {
+        const owned = ownedWorker()
+        mocks.fork.mockReturnValueOnce(owned)
+        const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+        const recovery = host.recover().catch((error: unknown) => error)
+        await until(() => owned.sent.length > 0)
+        answerOwned(owned)
+        await settle()
+        expect(host.awaitingPreviousOwner()).toBe(true)
+        owned.emit('exit', 0)
+        await host.dispose()
+        await recovery
+        expect(host.awaitingPreviousOwner()).toBe(false)
+      })
+    })
+
     it('never launches a new helper while the one that failed is still on its way out', async () => {
       await withJournal(async (directory) => {
         const owned = ownedWorker()

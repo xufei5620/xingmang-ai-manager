@@ -123,6 +123,7 @@ function serviceStub(): SystemService {
     checkExternalClientConnection: vi.fn() as never,
     inspectInstallationQueue: vi.fn(() => ({ activeKey: null, pendingKeys: [] })),
     onInstallationQueueChange: vi.fn(() => () => undefined),
+    enqueueCodexRemoteLaunch: vi.fn() as never,
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
@@ -245,6 +246,7 @@ function updaterStub(): UpdaterService {
     setServiceStatus: vi.fn(),
     setLaunchInstallNotice: vi.fn(),
     setInstallNeedsAdminPassword: vi.fn(),
+    setIdleInstall: vi.fn(),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
   }
@@ -1317,6 +1319,76 @@ describe('registerIpcHandlers', () => {
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
       dispose()
     })
+
+    it('caps paid clip submissions per window the way the canvas does, without holding up another window', async () => {
+      const videoService = videoServiceStub()
+      const finish: Array<() => void> = []
+      videoService.generate.mockImplementation(() => new Promise<typeof storedClip>((resolve) => { finish.push(() => resolve(storedClip)) }))
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoService })
+      const generate = electronMocks.handlers.get('video:generate')!
+      const input = (requestId: string) => ({ requestId, group: '视频分组', model: 'grok-video', prompt: '海浪', seconds: '6' })
+      const event = trustedEvent(undefined, 17)
+
+      const running = Array.from({ length: 20 }, (_, index) => generate(event, input(`video-${index}`)))
+      await vi.waitFor(() => expect(videoService.generate).toHaveBeenCalledTimes(20))
+      await expect(generate(event, input('video-20'))).rejects.toThrow('当前生成任务过多，请等待已有任务完成')
+      expect(videoService.generate).toHaveBeenCalledTimes(20)
+
+      const elsewhere = generate(trustedEvent(undefined, 18), input('video-elsewhere'))
+      await vi.waitFor(() => expect(videoService.generate).toHaveBeenCalledTimes(21))
+
+      for (const resolve of finish.splice(0)) resolve()
+      await expect(Promise.all([...running, elsewhere])).resolves.toHaveLength(21)
+      const again = generate(event, input('video-again'))
+      await vi.waitFor(() => expect(videoService.generate).toHaveBeenCalledTimes(22))
+      for (const resolve of finish.splice(0)) resolve()
+      await expect(again).resolves.toEqual(clip)
+      dispose()
+    })
+
+    it('moves whole clips in and out one at a time per window and turns a flood away instead of holding every copy', async () => {
+      const reads: Array<() => void> = []
+      const videoAssets = {
+        readOwned: vi.fn(() => new Promise<{ asset: typeof storedClip, bytes: Buffer }>((resolve) => {
+          reads.push(() => resolve({ asset: storedClip, bytes: Buffer.from('ftyp-bytes') }))
+        })),
+        storeComposed: vi.fn(async () => ({ ...storedClip, taskId: undefined })),
+        resolveOwnedFilePath: vi.fn(async () => '/unused'),
+        saveAs: vi.fn(async () => true),
+      }
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { videoAssets })
+      const readClip = electronMocks.handlers.get('video:read-clip')!
+      const storeExport = electronMocks.handlers.get('video-studio:store-export')!
+      const event = trustedEvent(undefined, 17)
+
+      const first = readClip(event, clipId)
+      const second = readClip(event, clipId)
+      await vi.waitFor(() => expect(videoAssets.readOwned).toHaveBeenCalledOnce())
+      const elsewhere = readClip(trustedEvent(undefined, 18), clipId)
+      await vi.waitFor(() => expect(videoAssets.readOwned).toHaveBeenCalledTimes(2))
+
+      reads[0]!()
+      await expect(first).resolves.toEqual(Buffer.from('ftyp-bytes'))
+      await vi.waitFor(() => expect(videoAssets.readOwned).toHaveBeenCalledTimes(3))
+
+      const queued = Array.from({ length: 12 }, () => readClip(event, clipId))
+      await expect(readClip(event, clipId)).rejects.toThrow('操作队列已满，请稍后重试')
+      await expect(storeExport(event, new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112]))).rejects.toThrow('操作队列已满，请稍后重试')
+      expect(videoAssets.readOwned).toHaveBeenCalledTimes(3)
+      expect(videoAssets.storeComposed).not.toHaveBeenCalled()
+
+      // Closing the window drops everything still waiting in its line.
+      const destroyed = vi.mocked(event.sender.once).mock.calls.find(([name]) => name === 'destroyed')?.[1]
+      ;(destroyed as () => void)()
+      await expect(second).rejects.toThrow('操作队列已关闭')
+      await expect(Promise.allSettled(queued)).resolves.toEqual(queued.map(() => expect.objectContaining({ status: 'rejected' })))
+      expect(videoAssets.readOwned).toHaveBeenCalledTimes(3)
+
+      reads[1]!()
+      await expect(elsewhere).resolves.toEqual(Buffer.from('ftyp-bytes'))
+      reads[2]!()
+      dispose()
+    })
   })
 
   it('exports portable settings with the renderer conversations and nothing account-bound', async () => {
@@ -1664,6 +1736,22 @@ describe('registerIpcHandlers', () => {
 
     const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; recommended?: boolean }>
     expect(groups.filter((group) => group.recommended).map((group) => group.name)).toEqual(['GPT 主力'])
+  })
+
+  it('marks the image chat groups, following the published group map', async () => {
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov' as const })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const chatCredentials = {
+      listGroups: vi.fn(async () => ['default', 'GPT', '画图', '图片模型'].map((name) => ({ name, description: '', ratio: 1 }))),
+      prepareGroup: vi.fn(),
+      resolveCredential: vi.fn(),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { chatCredentials } as never, {
+      accountGroupHints: async () => ({ image: ['画图'] }),
+    })
+
+    const groups = await electronMocks.handlers.get('chat:list-groups')!(trustedEvent()) as Array<{ name: string; image?: boolean }>
+    expect(groups.filter((group) => group.image).map((group) => group.name)).toEqual(['画图', '图片模型'])
   })
 
   it('leaves every chat group unmarked when nothing names the Codex group', async () => {
@@ -3336,6 +3424,34 @@ describe('registerIpcHandlers', () => {
     expect(service.switchExternalClientSource).toHaveBeenCalledOnce()
   })
 
+  it('passes only a well-formed Mac update request on to the desktop installs', async () => {
+    const service = serviceStub()
+    register(service)
+    const event = trustedEvent()
+    const request = { update: true, closeRunning: true }
+    await electronMocks.handlers.get('external-clients:install')!(event, 'opencode', request)
+    expect(service.installExternalClient).toHaveBeenLastCalledWith('opencode', event.sender, request)
+    await electronMocks.handlers.get('desktop:install-codex')!(event, { update: true, closeRunning: false })
+    expect(service.installCodexDesktop).toHaveBeenLastCalledWith(event.sender, { update: true, closeRunning: false })
+    const malformed = [null, 'update', ['update'], {}, { update: false, closeRunning: true }, { update: true }, { update: true, closeRunning: 'yes' }, { update: true, closeRunning: true, path: '/Applications/Other.app' }]
+    for (const input of malformed) {
+      expect(() => electronMocks.handlers.get('external-clients:install')!(event, 'opencode', input)).toThrow('更新参数格式错误')
+      expect(() => electronMocks.handlers.get('desktop:install-codex')!(event, input)).toThrow('更新参数格式错误')
+    }
+    expect(service.installExternalClient).toHaveBeenCalledOnce()
+    expect(service.installCodexDesktop).toHaveBeenCalledOnce()
+  })
+
+  it('opens the App Management settings only where the host knows how', async () => {
+    register()
+    await expect(electronMocks.handlers.get('desktop:open-app-management-settings')!(trustedEvent())).resolves.toBe(false)
+    const openAppManagementSettings = vi.fn(async () => true)
+    register(undefined, undefined, undefined, undefined, undefined, undefined, {}, { openAppManagementSettings })
+    await expect(electronMocks.handlers.get('desktop:open-app-management-settings')!(trustedEvent())).resolves.toBe(true)
+    expect(openAppManagementSettings).toHaveBeenCalledOnce()
+    expect(() => electronMocks.handlers.get('desktop:open-app-management-settings')!(trustedEvent('https://untrusted.example/'))).toThrow('已拒绝')
+  })
+
   it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {
     const service = serviceStub()
     register(service)
@@ -3522,7 +3638,7 @@ describe('registerIpcHandlers', () => {
     register(service)
     const handler = electronMocks.handlers.get('models:list-configured')!
 
-    expect(() => handler(trustedEvent(), 'grok')).toThrow('未读取到已保存的 API Key')
+    expect(() => handler(trustedEvent(), 'grok')).toThrow('未读取到已保存的密钥')
     expect(service.fetchAvailableModels).not.toHaveBeenCalled()
   })
 
@@ -6217,8 +6333,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('account:list-keys')!
 
-      expect(() => handler(trustedEvent(), 'nope')).toThrow('Key 查询参数格式错误')
-      expect(() => handler(trustedEvent(), null)).toThrow('Key 查询参数格式错误')
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('密钥查询参数格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('密钥查询参数格式错误')
     })
 
     it('rejects a non-integer or out-of-range page', () => {
@@ -6937,12 +7053,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
-      await expect(handler(trustedEvent(), 'nope')).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), 1.5)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), 0)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), -1)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), null)).rejects.toThrow('Key ID 格式错误')
-      await expect(handler(trustedEvent(), undefined)).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), 'nope')).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), 1.5)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), 0)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), -1)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), null)).rejects.toThrow('密钥 ID 格式错误')
+      await expect(handler(trustedEvent(), undefined)).rejects.toThrow('密钥 ID 格式错误')
     })
 
     it('never reaches the account service -- and never the real production client -- when validation fails', async () => {
@@ -7275,10 +7391,52 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })).rejects.toThrow(/^支付通道暂时异常，没有扣款，请联系客服。$/)
 
       // 网络打不开支付页、账号中途变了，各有各的下一步，不能一起吞成「联系客服」。
-      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试'))
+      vi.mocked(paymentWindow.openUrl).mockRejectedValueOnce(new Error('支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。'))
       await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
         planId: 3, provider: 'stripe',
-      })).rejects.toThrow(/^支付页面打开失败，请稍后重试$/)
+      })).rejects.toThrow(/^支付页面打开失败，请稍后重试。这次没有扣款，「我的订单」里多出来的订单放着就行。$/)
+    })
+
+    it('hides switched-off payment methods from the recharge page and refuses them if the page still shows one', async () => {
+      const accountService = accountServiceStub()
+      const hiddenPaymentMethods = vi.fn(async () => ['alipay', 'stripe'])
+      const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { hiddenPaymentMethods })
+      vi.mocked(accountService.getTopupInfo).mockResolvedValue({
+        onlineTopupEnabled: true, stripeTopupEnabled: true, creemTopupEnabled: false, waffoPancakeTopupEnabled: false,
+        redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null,
+        paymentMethods: [
+          { name: '支付宝', type: 'AliPay', provider: 'epay', color: null, icon: null, minTopup: 0 },
+          { name: '微信', type: 'wxpay', provider: 'epay', color: null, icon: null, minTopup: 0 },
+        ],
+        minTopup: 1, amountOptions: [10], discounts: {}, topupLink: null,
+      })
+
+      await expect(electronMocks.handlers.get('account:get-topup-info')!(trustedEvent())).resolves.toMatchObject({
+        paymentMethods: [{ name: '微信', type: 'wxpay' }],
+      })
+      // 页面是开关打开之前读的，还摆着支付宝：点下去在这里拦住，不走进那条坏掉的路。
+      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+        amount: 10, paymentMethod: 'alipay',
+      })).rejects.toThrow(/^这种付款方式暂时停用了，请换一种付款方式。$/)
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).rejects.toThrow(/^这种付款方式暂时停用了，请换一种付款方式。$/)
+      expect(accountService.createTopupPayment).not.toHaveBeenCalled()
+      expect(accountService.createSubscriptionPayment).not.toHaveBeenCalled()
+      expect(paymentWindow.open).not.toHaveBeenCalled()
+      expect(paymentWindow.openUrl).not.toHaveBeenCalled()
+
+      // 状态文件读不到只是不藏，充值照常。
+      hiddenPaymentMethods.mockRejectedValue(new Error('status file unreadable'))
+      vi.mocked(accountService.createTopupPayment).mockResolvedValue({
+        action: 'https://pay.example.com/submit', allowedOrigin: 'https://pay.example.com', method: 'POST', fields: [{ name: 'sign', value: 'signed' }], tradeNo: 'trade-3',
+      })
+      await expect(electronMocks.handlers.get('account:get-topup-info')!(trustedEvent())).resolves.toMatchObject({
+        paymentMethods: [{ type: 'AliPay' }, { type: 'wxpay' }],
+      })
+      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+        amount: 10, paymentMethod: 'alipay',
+      })).resolves.toEqual({ opened: true, tradeNo: 'trade-3' })
     })
 
     it('rejects malformed subscription payment inputs before dispatch', async () => {
@@ -7864,7 +8022,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('account:copy-key')!
 
       for (const value of ['42', 0, -1, 1.5, null, undefined]) {
-        await expect(handler(trustedEvent(), value)).rejects.toThrow('Key ID 格式错误')
+        await expect(handler(trustedEvent(), value)).rejects.toThrow('密钥 ID 格式错误')
       }
       expect(accountService.revealKey).not.toHaveBeenCalled()
       expect(electronMocks.writeText).not.toHaveBeenCalled()
@@ -7880,7 +8038,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
       const handler = electronMocks.handlers.get('account:reveal-key')!
 
-      await expect(handler(trustedEvent(), '77')).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), '77')).rejects.toThrow('密钥 ID 格式错误')
       expect(managedCliKeys.read).not.toHaveBeenCalled()
       expect(accountService.revealKey).not.toHaveBeenCalled()
     })
@@ -7996,7 +8154,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent(), {
         provider: 'codex', keyId: 88, model: 'gpt-5.6-sol', mode: 'merge',
-      })).rejects.toThrow('所选 Key 当前不支持该模型')
+      })).rejects.toThrow('所选密钥当前不支持该模型')
       for (const input of [
         { provider: 'unknown', keyId: 88, model: 'm', mode: 'merge' },
         { provider: 'codex', keyId: '88', model: 'm', mode: 'merge' },

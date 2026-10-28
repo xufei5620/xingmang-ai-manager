@@ -16,7 +16,7 @@
 请按以下步骤执行：
 1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git checkout main && git pull
 2. 读 docs/AGENT-RUNBOOK.md，严格按它的流程执行
-3. 从任务索引 Issue #27 里挑一个适合这台机器、且未被认领、依赖已满足、
+3. 从 GitHub 上开着的 issue 里挑一个适合这台机器、且未被认领、依赖已满足、
    非 needs-decision 的任务，认领后开始做
 
 注意：标了 serial-only 的任务，动手前必须确认没有别人正在改同一批文件。
@@ -35,7 +35,7 @@
 
 ```
 仓库：https://github.com/xufei5620/xingmang-ai-manager
-任务索引：https://github.com/xufei5620/xingmang-ai-manager/issues/27
+待办（开着的 issue）：https://github.com/xufei5620/xingmang-ai-manager/issues
 ```
 
 ---
@@ -125,7 +125,7 @@ node -e "console.log(process.platform)"   # win32 → win，darwin → mac
 
 ### 1. 看有哪些任务适合你
 
-**任务索引是 GitHub Issue #27**，先看它了解全貌。然后按你的环境筛选：
+**待办就是 GitHub 上开着的 issue**，按你的环境筛选：
 
 ```bash
 # 看所有开着的任务
@@ -194,24 +194,27 @@ npm test
 ```bash
 gh pr create \
   --title "[<用户名>·<ai>·<端>] <类型>: <描述>" \
-  --body "Closes #<编号>
+  --body "<哪边做的，如 Claude-mac 做的>
 
-## 提交来源
-- 开发者：@<用户名>
-- AI：Claude Code / Codex
-- 环境：<Windows/macOS>（本地）
+## Before
+<改之前看到什么、哪里不对>
 
-## 改动内容
-<做了什么>
+## After
+<改之后看到什么>
 
-## 验证方式
-- [x] npm run typecheck 通过
-- [x] npm test（平台：___，失败数 前___ / 后___）
-- [x] 手工验证：___"
+<一句话说明为什么这么改>
+
+## How
+<改了哪些文件、关键做法>
+
+Fixes #<编号>
+
+## 自查
+<npm run typecheck、npm test（平台：___）各自结尾的汇总行原样贴上>"
 ```
 
 `<类型>`：`feat` / `fix` / `docs` / `refactor` / `test` / `chore` / `perf`
-`Closes #<编号>` 会在 PR 合并时自动关掉对应 issue。
+`Fixes #<编号>` 会在 PR 合并时自动关掉对应 issue；只修了一部分写 `Refs #<编号>`。正文结构以 `.github/pull_request_template.md` 为准。
 
 ### 8. 回到第 1 步，领下一个
 
@@ -267,7 +270,7 @@ gh pr create \
 
 ## 建议的起手顺序（第一周）
 
-（2026-08-10 校准：本节曾列的历史起手顺序——#5、#2、#37 #38、#30 及其串行约束——已全部完成并删除。当前待办看 GitHub 上开着的 issue；任务索引 #27 只更新到 2026-10-08，`HANDOFF.md` 停在 2026-09-18，两者都以 issue 列表本身为准。）
+（2026-08-10 校准：本节曾列的历史起手顺序——#5、#2、#37 #38、#30 及其串行约束——已全部完成并删除。当前待办看 GitHub 上开着的 issue。原来的任务索引 #27 只更新到 2026-10-08，已不再用；`HANDOFF.md` 停在 2026-09-18，已挪进 `docs/archive/`。）
 
 ---
 

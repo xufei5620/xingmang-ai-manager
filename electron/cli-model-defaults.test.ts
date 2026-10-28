@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isCliModelName, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement } from './cli-model-defaults'
+import { isCliModelName, isNonInteractiveCliModel, isRetiredCliModel, resolveClaudeFallbackModels, resolveCliModelDefault, resolveCliModelUpgrade, resolveDefaultCliModel, resolveNewestModelOfFamily, resolveRetiredCliModelReplacement, sortClaudeModelsNewestFirst } from './cli-model-defaults'
 
 describe('resolveDefaultCliModel', () => {
   it('selects the Codex product default regardless of model endpoint ordering', () => {
@@ -77,6 +77,20 @@ describe('resolveDefaultCliModel', () => {
 
   it('keeps the Codex fallback as it was', () => {
     expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'deepseek-v4-flash', 'gpt-5.4'], 'gpt-5.5')).toBe('deepseek-v4-flash')
+  })
+
+  // #1154 第 3 条：列表按字母排，dall-e、gpt-image 排在能对话的型号前面。
+  it('never infers an image, embedding or speech model as the default', () => {
+    expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'dall-e-3', 'gpt-5.4', 'gpt-image-2'])).toBe('gpt-5.4')
+    expect(resolveDefaultCliModel('codex', ['gpt-image-2', 'text-embedding-3-large', 'tts-1'])).toBeNull()
+    expect(resolveDefaultCliModel('grok', ['grok-code-fast-1', 'grok-imagine-image'], 'grok-imagine-video')).toBe('grok-code-fast-1')
+    expect(resolveDefaultCliModel('claude', ['dall-e-3', 'deepseek-v4-flash'])).toBe('deepseek-v4-flash')
+    // 客户自己选的、账号还列着的照旧留着。
+    expect(resolveDefaultCliModel('codex', ['gpt-6-astra', 'gpt-image-2'], 'gpt-image-2')).toBe('gpt-image-2')
+  })
+
+  it('keeps swapping a retired Codex model for a model that can chat', () => {
+    expect(resolveRetiredCliModelReplacement('codex', 'gpt-5.5', ['dall-e-3', 'gpt-5.4', 'gpt-image-2'])).toBe('gpt-5.4')
   })
 })
 
@@ -213,6 +227,53 @@ describe('resolveNewestModelOfFamily', () => {
   it('returns null when nothing in the list shares the family', () => {
     expect(resolveNewestModelOfFamily(['gpt-5.4', 'gpt-6-astra'], 'gpt-5.6-sol')).toBeNull()
     expect(resolveNewestModelOfFamily([], 'gpt-5.6-sol')).toBeNull()
+  })
+})
+
+describe('sortClaudeModelsNewestFirst', () => {
+  it('orders Claude models by version first and by Opus, Sonnet, Haiku within a version', () => {
+    expect(sortClaudeModelsNewestFirst([
+      'claude-haiku-4-5',
+      'claude-sonnet-5-5',
+      'claude-3-5-sonnet-20241022',
+      'claude-opus-4-8',
+      'claude-opus-5-5',
+      'claude-sonnet-4-6',
+    ])).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-opus-4-8', 'claude-sonnet-4-6', 'claude-haiku-4-5', 'claude-3-5-sonnet-20241022'])
+  })
+
+  it('leaves the input list untouched', () => {
+    const models = ['claude-haiku-4-5', 'claude-opus-5-5']
+    sortClaudeModelsNewestFirst(models)
+    expect(models).toEqual(['claude-haiku-4-5', 'claude-opus-5-5'])
+  })
+})
+
+describe('isNonInteractiveCliModel', () => {
+  it('recognizes the image, video, speech, embedding and review-only models relays list', () => {
+    for (const name of [
+      'codex-auto-review', 'vendor/codex_auto_review', 'gpt-image-2', 'gpt-image-2.5-flare', 'dall-e-3', 'gemini-3.1-flash-image', 'imagen-4.0-generate-001',
+      'grok-imagine-image', 'grok-imagine-video-1.5', 'jimeng_high_aes_general_v21_L', 'minimax-h3-fast', 'sora-2', 'veo-3',
+      'text-embedding-3-large', 'tts-1', 'gpt-4o-mini-tts', 'whisper-1', 'gpt-4o-transcribe', 'omni-moderation-latest',
+    ]) {
+      expect(isNonInteractiveCliModel(name)).toBe(true)
+    }
+  })
+
+  it('leaves chat models alone', () => {
+    for (const name of [
+      'gpt-6-astra', 'gpt-5.6-sol', 'claude-opus-5-5', 'claude-haiku-4-5', 'grok-4.6', 'grok-code-fast-1', 'deepseek-v4-flash',
+      'qwen3-max', 'minimax-m2', 'codex-custom', 'openai/gpt-7', 'kimi-k2-turbo',
+    ]) {
+      expect(isNonInteractiveCliModel(name)).toBe(false)
+    }
+  })
+
+  it('ignores a remote default or previous model that cannot chat', () => {
+    expect(resolveCliModelDefault('codex', { codex: { default: 'gpt-image-2' } })).toBe('gpt-6-astra')
+    expect(resolveCliModelDefault('grok', { grok: { default: 'grok-imagine-image' } })).toBe('grok-4.6')
+    const hints = { codex: { default: 'gpt-7', previous: ['text-embedding-3-large', 'gpt-6.1-sol'] } }
+    expect(resolveDefaultCliModel('codex', ['gpt-6.1-sol', 'text-embedding-3-large'], undefined, hints)).toBe('gpt-6.1-sol')
   })
 })
 

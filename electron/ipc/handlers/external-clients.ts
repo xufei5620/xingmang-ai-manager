@@ -1,6 +1,6 @@
 // 主窗口业务通道的处理器：WorkBuddy、Claude Desktop、OpenCode 三个外部客户端的检测、安装、打开、切换登录。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
-import { isExternalToolId } from '../../external-client-contract'
+import { isExternalToolId, parseDesktopAppUpdateRequest } from '../../external-client-contract'
 import { parseExternalClientScanOptions } from '../parsers/system'
 import { externalClientDetectionFailures } from './detection-failures'
 import type { IpcHandlerContext } from './context'
@@ -15,9 +15,10 @@ export function registerExternalClientHandlers(ctx: IpcHandlerContext): void {
     logDetectionFailures(externalClientDetectionFailures(statuses))
     return statuses
   })
-  registerTrustedHandler('external-clients:install', (_event, tool: unknown) => {
+  registerTrustedHandler('external-clients:install', (_event, tool: unknown, request: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
-    return service.installExternalClient(tool, _event.sender)
+    const update = parseDesktopAppUpdateRequest(request)
+    return update ? service.installExternalClient(tool, _event.sender, update) : service.installExternalClient(tool, _event.sender)
   })
   registerTrustedHandler('external-clients:cancel-install', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')

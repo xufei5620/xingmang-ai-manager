@@ -7,6 +7,7 @@
 // 这里只 import system-service.ts 的类型。
 import fs from 'node:fs'
 import os from 'node:os'
+import { offeredModelUpgradeKey, type SeededToolDefault } from './app-settings'
 import { activeProviderIds, type ProviderId, providerIds } from './catalog'
 import { type CcSwitchLeftover, inspectCcSwitchInstalled, resolveCcSwitchLeftover } from './cc-switch-leftover'
 import { buildClaudeStatusLineCommand } from './claude-status-line'
@@ -49,6 +50,7 @@ import {
   inspectCodexModelCatalogOnDisk,
   inspectManagedCliHookTargets,
   inspectRetiredGeminiIntegrations,
+  managedGlobalResponseLanguagePresent,
   type NativeConfigInspection,
   type NativeConfigSummary,
   planProviderModelReplace,
@@ -60,10 +62,11 @@ import {
   type RetiredGeminiIntegrations,
   rewriteManagedCliHooks,
   saveProviderConfig,
+  type SeededToolDefaults,
   takeBackCodexModelCatalog,
   toNativeConfigSummary,
 } from './config-files'
-import { ensureEditorClaudeLoginPromptDisabled } from './editor-claude-login-prompt'
+import { type EditorId, ensureEditorClaudeLoginPromptDisabled } from './editor-claude-login-prompt'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { isReplacedManagedKey, type StoredManagedCliKey } from './managed-cli-key-store'
 import {
@@ -683,10 +686,6 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     }
   }
 
-  function cliHooksStale(provider: ProviderId): boolean {
-    return managedCliHooksState(provider).stale
-  }
-
   /**
    * 打开 Grok 之前复核一遍星芒写的那几条钩子：Grok 换了 shell、或指向旧位置，就先修好再开，
    * 与 Codex「打开前先修」同一个路数。这是客户点了「打开」才做的，不是开机静默改文件；
@@ -784,12 +783,61 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   /**
-   * 写完 Claude Code 配置顺手在 VS Code、Cursor 的用户设置里关掉 Claude Code 插件的登录页
-   * （editor-claude-login-prompt.ts）。补不上只记日志，不算这次保存或补设置失败。
+   * 星芒替客户往客户自己的文件里放的几样，这台电脑上出现过哪些（app-settings.ts 的 seededToolDefaults）。出现过、
+   * 现在没有的是客户删的，或者恢复了一份更早的备份，不再补回（0.2.22 第二轮回归第 2、3 条）。
    */
-  function disableEditorClaudeLoginPrompt(): void {
+  function seededToolDefaults(): readonly SeededToolDefault[] {
+    return store.read().seededToolDefaults ?? []
+  }
+
+  function seededFor(provider: ProviderId): SeededToolDefaults {
+    const seeded = seededToolDefaults()
+    return {
+      claudeFallbackModel: provider === 'claude' && seeded.includes('claude:fallbackModel'),
+      responseLanguage: (provider === 'codex' && seeded.includes('codex:response-language'))
+        || (provider === 'grok' && seeded.includes('grok:response-language')),
+    }
+  }
+
+  // 记不下只少记一笔：客户删掉以后下次可能又补回去，不算这次保存失败。
+  async function rememberSeededToolDefaults(entries: readonly SeededToolDefault[]): Promise<void> {
+    const seeded = seededToolDefaults()
+    const fresh = entries.filter((entry) => !seeded.includes(entry))
+    if (!fresh.length) return
     try {
-      for (const result of ensureEditorClaudeLoginPromptDisabled({ platform, userHome: providerRoots.userHome })) {
+      await store.update({ version: 2, seededToolDefaults: fresh })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'seeded-defaults.remember-failed', '没能记下星芒放过的设置', { entries: fresh, reason: credentialFailureReason(error) })
+    }
+  }
+
+  /** 写完这家工具的配置看一眼：星芒放的那几样在不在，在就记下。读不了的当这次没看见。 */
+  async function noteSeededToolDefaults(provider: ProviderId): Promise<void> {
+    const present: SeededToolDefault[] = []
+    if (provider === 'claude') {
+      try {
+        if (!claudeFallbackModelMissing(providerRoots)) present.push('claude:fallbackModel')
+      } catch { /* 读不了的 settings.json 由检测和保存那边报。 */ }
+    }
+    if (provider === 'codex' && managedGlobalResponseLanguagePresent('codex', providerRoots)) present.push('codex:response-language')
+    if (provider === 'grok' && managedGlobalResponseLanguagePresent('grok', providerRoots)) present.push('grok:response-language')
+    await rememberSeededToolDefaults(present)
+  }
+
+  /**
+   * 写完 Claude Code 配置顺手在 VS Code、Cursor 的用户设置里关掉 Claude Code 插件的登录页
+   * （editor-claude-login-prompt.ts）。补不上只记日志，不算这次保存或补设置失败。这一项在哪家编辑器里出现过
+   * （星芒补的或者客户自己写的）就记下，之后那家不再看也不再补。
+   */
+  async function disableEditorClaudeLoginPrompt(): Promise<void> {
+    const seeded = seededToolDefaults()
+    const skipped: EditorId[] = []
+    if (seeded.includes('vscode:login-prompt')) skipped.push('vscode')
+    if (seeded.includes('cursor:login-prompt')) skipped.push('cursor')
+    const present: SeededToolDefault[] = []
+    try {
+      for (const result of ensureEditorClaudeLoginPromptDisabled({ platform, userHome: providerRoots.userHome }, {}, skipped)) {
+        if (result.outcome === 'added' || result.outcome === 'present') present.push(result.editor === 'vscode' ? 'vscode:login-prompt' : 'cursor:login-prompt')
         if (result.outcome === 'added') {
           runtimeLog?.log('info', 'config', 'editor-login-prompt.disabled', '已在编辑器设置里关掉 Claude Code 插件的登录页', { editor: result.editor })
         } else if (result.outcome === 'unreadable') {
@@ -804,6 +852,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     } catch (error) {
       runtimeLog?.log('warn', 'config', 'editor-login-prompt.failed', '没能在编辑器设置里关掉 Claude Code 插件的登录页', { reason: credentialFailureReason(error) })
     }
+    await rememberSeededToolDefaults(present)
   }
 
   async function saveConfig(
@@ -851,11 +900,11 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
-      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
+      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的密钥属于其他账号，请使用当前账号重新配置')
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
-      if (!apiKey) throw new Error('请先填写 API Key')
+      if (!apiKey) throw new Error('请先填写密钥')
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
-      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
+      if (!availableModels.includes(model)) throw new Error(`当前密钥不支持模型 ${model}，请重新检测并选择可用模型`)
       // 在 assertUnchanged 之前解析：找 node 要读 PATH，不该夹在「校验没变」和写入之间。
       const statusLineCommand = await resolveClaudeStatusLineCommand(payload.provider)
       const cliHook = await resolveCliHookInvocation()
@@ -876,9 +925,9 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         // 不会留下「配置已是当前账号、官方 Key 还在抢道」的半切换状态（#477）。
         const movedConsoleKey = payload.provider === 'claude' && moveOfficialCredentialsAside()
         try {
-          result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog)
+          result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls, statusLineCommand, availableModels, cliHook, codexModelCatalog, seededFor(payload.provider))
         } catch (error) {
-          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方 Key 暂时收在一边，切回官方账号时会放回')
+          if (movedConsoleKey) throw withCredentialUndo(error, restoreOfficialCredentialsNow, '原来登录留下的官方密钥暂时收在一边，切回官方账号时会放回')
           throw error
         }
       } catch (error) {
@@ -900,7 +949,8 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       }
       // 整份模板刚按当前版本写过一遍，记下版本号，开机补缺省项那条路就不会再来一次。
       await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner, relayTemplateRevision)
-      if (payload.provider === 'claude' && !previewOnboarding) disableEditorClaudeLoginPrompt()
+      if (!previewOnboarding) await noteSeededToolDefaults(payload.provider)
+      if (payload.provider === 'claude' && !previewOnboarding) await disableEditorClaudeLoginPrompt()
       if (shadowRepair) runtimeLog?.log('info', 'config', 'codex-provider.auto-repaired', '开机时把 Codex 认不出的连接设置改好了，原来的设置已备份', { provider: payload.provider })
       // 客服从日志看得出工具配置是什么时候、从哪条线路换到哪条的：只记线路 id，不记地址。
       if (followedRoute) {
@@ -956,10 +1006,10 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       const before = inspectNativeProviderConfig(provider)
       if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
       const apiKey = before.apiKey?.trim() ?? ''
-      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的密钥属于其他账号，已保留原配置')
       const activeSite = providerRelaySite(provider, before)
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
-      if (!availableModels.includes(to)) throw new Error(`当前 API Key 不支持模型 ${to}`)
+      if (!availableModels.includes(to)) throw new Error(`当前密钥不支持模型 ${to}`)
       // 要问一遍 Codex 命令行是哪一版，放在「校验没变」之前，同 saveConfig。
       const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, to) : undefined
       assertOwner()
@@ -989,18 +1039,19 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       const before = inspectNativeProviderConfig(provider)
       if (configOwnership.read(provider, before, owner) !== 'account') throw new Error('已有工具配置的来源未经确认，已保留原配置')
       const apiKey = before.apiKey?.trim() ?? ''
-      if (!before.matchesRelay || !apiKey) throw new Error('已保存的 Key 属于其他账号，已保留原配置')
+      if (!before.matchesRelay || !apiKey) throw new Error('已保存的密钥属于其他账号，已保留原配置')
       const activeSite = providerRelaySite(provider, before)
       const availableModels = await fetchAvailableModels(apiKey, { site: activeSite })
-      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}`)
+      if (!availableModels.includes(model)) throw new Error(`当前密钥不支持模型 ${model}`)
       const codexModelCatalog = provider === 'codex' ? await resolveCodexModelCatalog(availableModels, model) : undefined
       assertOwner()
       if (activeRelaySite().id !== activeSite.id) throw new Error('账号已变化，这次不刷新')
       if (!sameNativeConfigSnapshot(before, inspectNativeProviderConfig(provider))) throw new Error('工具配置在模型检测期间发生变化，已保留现有配置')
-      const plan = planProviderPickerRefresh(provider, model, availableModels, providerRoots, codexModelCatalog)
+      const plan = planProviderPickerRefresh(provider, model, availableModels, providerRoots, codexModelCatalog, seededFor(provider))
       if (plan.status === 'current') return
       if (plan.status !== 'rewrite') throw new Error(plan.status === 'changed' ? '工具里的型号已经改了，这次不刷新' : '工具配置里找不到型号菜单写在哪，这次不刷新')
       applyProviderPickerRefresh(provider, plan, providerRoots)
+      await noteSeededToolDefaults(provider)
     })
   }
 
@@ -1030,14 +1081,14 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     identity: (provider) => modelCheckTarget(provider, false)?.identity ?? null,
     listModels: (apiKey) => fetchAvailableModels(apiKey, { bypassCache: true }),
     pickerOutdated: (provider, models, model) => provider === 'claude'
-      ? claudeModelPickerNeedsRefresh(models, model, providerRoots)
+      ? claudeModelPickerNeedsRefresh(models, model, providerRoots, seededFor('claude'))
       : codexModelCatalogOutdated(models, model),
     refreshPicker: (provider, model, assertCurrent) => refreshToolPicker(provider, model, assertCurrent),
     replaceModel: (provider, from, to, assertCurrent) => replaceToolModel(provider, from, to, assertCurrent),
     ...(serviceOptions.cliModelHints ? { modelHints: serviceOptions.cliModelHints } : {}),
-    upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(`${provider}:${model}`),
+    upgradeOffered: (provider, model) => (store.read().offeredModelUpgrades ?? []).includes(offeredModelUpgradeKey(provider, model)),
     markUpgradeOffered: async (provider, model) => {
-      await store.update({ version: 2, offeredModelUpgrades: [`${provider}:${model}`] })
+      await store.update({ version: 2, offeredModelUpgrades: [offeredModelUpgradeKey(provider, model)] })
     },
     log: (level, event, message, detail) => runtimeLog?.log(level, 'config', event, message, detail),
   })
@@ -1141,13 +1192,15 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
           // 已经齐了（多半是新模板写的，只是记录里还没有版本号）就只记版本号，不留备份。
           // 真要补才先做一份与保存配置同样的整套备份，「设置 › 备份迁移」里能找回补之前的样子；
           // 备份不成就不补。
-          const pending = relayTemplateDefaultsPending(provider, providerRoots, site.providerBaseUrls)
+          const seeded = seededFor(provider)
+          const pending = relayTemplateDefaultsPending(provider, providerRoots, site.providerBaseUrls, process.platform, seeded)
           if (pending) backup?.(provider)
-          const result = pending ? fillRelayTemplateDefaults(provider, providerRoots, site.providerBaseUrls) : null
+          const result = pending ? fillRelayTemplateDefaults(provider, providerRoots, site.providerBaseUrls, {}, process.platform, seeded) : null
           // 补的都是指纹之外的键，来源记录照旧是当前账号，只把版本号往前挪。
           await configOwnership.write(provider, inspectNativeProviderConfig(provider), 'account', owner, relayTemplateRevision)
+          await noteSeededToolDefaults(provider)
           // 第 5 版：编辑器设置不在工具配置目录里，不算进上面的「补齐」，每份配置跟着版本号只做这一次。
-          if (provider === 'claude') disableEditorClaudeLoginPrompt()
+          if (provider === 'claude') await disableEditorClaudeLoginPrompt()
           return result !== null
         })
         if (wrote) {
@@ -1263,7 +1316,13 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   async function syncClaudeFallbackModels(backup: ((provider: ProviderId) => void) | undefined, round: TemplateFillRound, stopped: AbortSignal): Promise<void> {
     if (!round.providers.includes('claude')) return
     const target = modelCheckTarget('claude', true)
-    if (!target || !claudeFallbackModelMissing(providerRoots)) return
+    if (!target) return
+    if (!claudeFallbackModelMissing(providerRoots)) {
+      await rememberSeededToolDefaults(['claude:fallbackModel'])
+      return
+    }
+    // 出现过、现在没了：客户删的，或者恢复了一份更早的备份（0.2.22 第二轮回归第 2 条），不补。
+    if (seededFor('claude').claudeFallbackModel) return
     const loadHints = serviceOptions.cliModelHints
     const hints = loadHints ? await unlessStopped(() => loadHints().catch(() => null), stopped) : null
     if (isRetiredCliModel('claude', target.model, hints)) return

@@ -159,6 +159,8 @@ if (query.has('codexAuthBroken')) { config.providers.codex.codexAuthBroken = tru
 if (query.has('claudeBroken')) config.providers.claude = { ...config.providers.claude, configBroken: true, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
 // ?claudeUnconfigured：Claude Code 装好了、还没写上当前账号的密钥（刚装完，开机那一轮同步还没做完）。
 if (query.has('claudeUnconfigured')) config.providers.claude = { ...config.providers.claude, exists: false, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
+// ?notEnabled=grok：这个工具装好了还没写密钥，开机那一轮给它签密钥时服务端说账号没开通它（分组不可用）。
+for (const provider of Object.keys(config.providers) as ProviderId[]) if (query.get('notEnabled') === provider) config.providers[provider] = { ...config.providers[provider], exists: false, hasApiKey: false, matchesRelay: false, actualBaseUrl: '', model: '', configurationOwnership: 'missing' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
   config.providers.claude = { ...configValue, configurationOwnership: 'manual' }
@@ -470,12 +472,12 @@ const methods = {
   checkProviderConnection: async (provider) => {
     const base = { provider, siteId: 'solov', detail: null as string | null, status: 200 as number | null, durationMs: 12, checkedAt: new Date().toISOString() }
     if (provider === 'grok') {
-      return { ...base, ok: false, layer: 'unconfigured' as const, summary: '还没有给 Grok CLI 写入星芒配置', nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检', endpoint: null, model: null, status: null }
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: '还没有给 Grok CLI 写入星芒配置', nextStep: '在首页给这个工具写入星芒密钥，写完再回来自检', endpoint: null, model: null, status: null }
     }
     // 密钥层失败一次，重写 Key 之后再测就该是正常的——这正是「重新写入密钥」
     // 按钮要证明的那条路。
     if (query.has('connectionCredential') && provider === 'claude' && !keyRewritten.has('claude')) {
-      return { ...base, ok: false, layer: 'credential' as const, summary: '密钥被拒绝（HTTP 401）', nextStep: '到「个人中心 → 密钥管理」看这个工具的密钥是否还有效，必要时重新写入', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'invalid_api_key', status: 401 }
+      return { ...base, ok: false, layer: 'credential' as const, summary: '密钥被拒绝（HTTP 401）', nextStep: '到「个人中心 › 密钥管理」看这个工具的密钥是否还有效，必要时重新写入', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: 'invalid_api_key', status: 401 }
     }
     if (query.has('connectionFailure') && provider === 'claude') {
       return { ...base, ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「个人中心」确认这个工具对应的套餐仍在有效期内，再点一次「重新写入密钥」重新签发', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503 }
@@ -825,6 +827,10 @@ const methods = {
     for (const provider of input.providers) {
       if (query.has('bootstrapPartial') && provider === 'claude' && window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length === 1) {
         failed.push({ provider, message: 'Claude 分组暂时不可用' })
+        continue
+      }
+      if (query.get('notEnabled') === provider) {
+        failed.push({ provider, message: '分组不存在、不可用或名称重复，请确认账号可用分组' })
         continue
       }
       keyRewritten.add(provider)

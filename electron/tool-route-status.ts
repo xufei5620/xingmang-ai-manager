@@ -93,6 +93,7 @@ const reportChangeReasons: Readonly<Record<Exclude<ToolRouteChangeReason, 'recov
   failed: '没连上',
   hijack: '的地址被指到了别处',
   incident: '服务端在处理故障',
+  'payload-too-large': '上有个 Codex 对话太大、发不出去',
 }
 
 // 按这台电脑的时区说，和「星芒 AI 网络」那一项的应用线路换线时间同一个写法。

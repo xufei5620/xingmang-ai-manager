@@ -6,6 +6,7 @@ import { safeStorage } from 'electron'
 import { commandEnvironment } from '../command-runner'
 import { isCodexCliInstalled, resolveCodexCommand } from '../codex-extensions'
 import type { ProviderConfigRoots } from '../codex-home'
+import type { AppServerProcess } from '../codex-remote-app-server'
 import type { CodexRemoteSnapshot } from '../codex-remote-channel'
 import { createRemoteChannelAdapter } from '../codex-remote-channels'
 import { spawnCodexAppServer } from '../codex-remote-process'
@@ -25,18 +26,27 @@ export interface CodexRemoteBootstrapOptions {
   codexEnv: NodeJS.ProcessEnv
   providerRoots: ProviderConfigRoots
   windowsExecution: { mode: WindowsCliExecutionMode; highIntegrity?: boolean }
+  /** 起 Codex 排进安装队列（I11，#1407 P3-3）：装、更新、卸载 Codex 时等它做完再起。 */
+  enqueueLaunch(launch: () => Promise<AppServerProcess>): Promise<AppServerProcess>
   onStateChanged(snapshot: CodexRemoteSnapshot): void
 }
 
 const elevatedMessage = '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。'
+const unconfirmedMessage = '没能确认星芒是不是以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒再试。'
 
-/** Windows 上只有确认是普通权限（same-user 且不是高完整性）才许开。 */
+/**
+ * Windows 上只有确认是普通权限才许开：same-user，并且读出了完整性标签、低于高完整性（#1407 P2-5）。
+ * 标签读不出来时 highIntegrity 是缺省，这时的 same-user 确认不了不是管理员：令牌类型 default 也包括自带
+ * Administrator、关了 UAC 的电脑；两步都探测失败时是按普通用户兜底（windows-elevation 2026-09-23 的产品决定，
+ * 为了让命令行工具照常能装能开），遥控不跟着放行。
+ */
 export function resolveCodexRemoteAvailability(
   platform: NodeJS.Platform,
   execution: { mode: WindowsCliExecutionMode; highIntegrity?: boolean },
 ): string | null {
   if (platform !== 'win32') return null
-  return execution.mode === 'same-user' && execution.highIntegrity !== true ? null : elevatedMessage
+  if (execution.mode !== 'same-user' || execution.highIntegrity === true) return elevatedMessage
+  return execution.highIntegrity === false ? null : unconfirmedMessage
 }
 
 export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRemoteService {
@@ -49,11 +59,11 @@ export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRe
     appVersion: options.appVersion,
     homeDirectory: options.homeDirectory,
     log: (level, event, detail) => options.runtimeLog.log(level, 'codex-remote', event, `手机遥控：${event}`, detail),
-    spawnCodex: () => spawnCodexAppServer({
+    spawnCodex: () => options.enqueueLaunch(() => spawnCodexAppServer({
       env,
       // 只在普通权限下才会走到这里（resolveCodexRemoteAvailability），所以按 same-user 认 Codex。
       resolveCommand: () => resolveCodexCommand(env, undefined, undefined, 'same-user'),
-    }),
+    })),
     readCodexSecrets: async () => {
       const key = inspectProviderConfig('codex', options.providerRoots).apiKey.trim()
       return key ? [key] : []

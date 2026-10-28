@@ -58,9 +58,14 @@ import { isRecord } from './input-guards'
 //   answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
+// - A permission request is only put to the user when every part of it fits on
+//   the card, and "accept" grants exactly the paths the card listed.
 // - Approval numbers keep counting across restarts, and every button carries a
 //   per-request random nonce: a card left in the chat history from an earlier
 //   request or an earlier run can never answer a newer one.
+// - Only the turn running now may ask: a late request from a stopped or
+//   finished turn is declined, and nothing reaches Codex once the turn it was
+//   meant for has been switched off.
 // - Text that leaves the machine is redacted (I13) and capped.
 
 const pairingTtlMs = 10 * 60_000
@@ -78,8 +83,19 @@ const maxFileLines = 20
 const seenMessageLimit = 512
 const secretsTtlMs = 60_000
 const shutdownSendTimeoutMs = 1500
+/**
+ * 星芒退出前跟手机道别最多等这么久（打磨 B8）：退出不能被一条消息拖住。要比主窗口 prepareToQuit 那 2 秒的
+ * 清理预算（window-lifecycle 的 quitCleanupBudgetMs）短，不然道别还没放手，退出那边先记一条「清理超时」。
+ */
+const farewellTimeoutMs = shutdownSendTimeoutMs
+/** 一轮多久没任何动静就当它卡死（打磨 C2，yoyo 10-27「停改」）：Codex 不出声这一轮永远不结束，手机上发什么都是「上一件还没做完」。 */
+const turnStallMs = 60 * 60_000
 /** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
 const maxApprovalNumber = 9999
+/** 每个渠道记住最近结束的这么多轮的编号，它们迟到的审批和通知都不认（belongsToOtherTurn）。 */
+const maxRetiredTurns = 16
+/** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
+const maxStderrLogLength = 1000
 
 const developerInstructions = [
   'You are being driven remotely from a phone chat through the Xingmang desktop app.',
@@ -123,6 +139,16 @@ export function nextApprovalNumber(last: number): number {
 /** 只对这一条审批有效的随机串，放进有按钮渠道的按钮里（16 个字符，飞书按钮值里放得下）。 */
 export function generateApprovalNonce(): string {
   return randomBytes(12).toString('base64url')
+}
+
+/**
+ * 这次审批、这条通知是不是别的那一轮的（#1407 P3-2）。手机上「停止」以后上一轮的审批和结束通知可能晚到，
+ * 这时下一轮的编号可能还没从 Codex 回来：只按对话对得上，就会挂到新一轮头上，手机上点一下「同意」，
+ * 批的是已经停掉的那一轮的命令。不带编号的（老版本 Codex）照旧只按对话认。
+ */
+export function belongsToOtherTurn(currentTurnId: string | null, retiredTurnIds: readonly string[], turnId: unknown): boolean {
+  if (typeof turnId !== 'string' || !turnId) return false
+  return currentTurnId ? turnId !== currentTurnId : retiredTurnIds.includes(turnId)
 }
 
 /** 渠道开启前 1 分钟以上、或 10 分钟以前发的消息不算：星芒关着时发的指令不该在下次打开时突然执行。 */
@@ -192,20 +218,86 @@ function displayPath(value: string, options: ApprovalDisplayOptions): string {
   return remoteDisplayPath(value, options.homeDirectory, options.platform)
 }
 
-function describePermissions(permissions: unknown, options: ApprovalDisplayOptions): string {
-  if (!isRecord(permissions)) return ''
-  const lines: string[] = []
-  if (isRecord(permissions.network) && permissions.network.enabled === true) lines.push('联网')
-  if (isRecord(permissions.fileSystem)) {
-    for (const [key, verb] of [['write', '写'], ['read', '读']] as const) {
-      const entries = permissions.fileSystem[key]
-      if (!Array.isArray(entries)) continue
-      for (const entry of entries.slice(0, maxFileLines)) {
-        if (typeof entry === 'string') lines.push(`${verb}：${displayPath(entry, options)}`)
-      }
-    }
+/** 一份权限申请里手机上逐条显示、同意后也只授予的那几样。 */
+export interface RequestedPermissions {
+  network: boolean
+  read: string[]
+  write: string[]
+}
+
+/** null 和缺省都算没要；其余的只认非空字符串数组。 */
+function readPathList(value: unknown): string[] | null {
+  if (value === null || value === undefined) return []
+  if (!Array.isArray(value)) return null
+  return value.every((entry): entry is string => typeof entry === 'string' && entry.length > 0) ? value : null
+}
+
+function hasOnlyKeys(record: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.entries(record).every(([key, value]) => allowed.includes(key) || value === null || value === undefined)
+}
+
+/**
+ * Codex (checked against 0.164.0) also spells the legacy read/write roots as
+ * `entries`, and the protocol prefers `entries` when both are present. An
+ * `entries` list is only accepted when it is exactly those same plain paths
+ * with the same access, so nothing the phone does not show (the whole disk, a
+ * glob, a deny rule) can ride along on one "同意".
+ */
+function entriesMirrorPaths(entries: unknown, read: readonly string[], write: readonly string[]): boolean {
+  if (entries === null || entries === undefined) return true
+  if (!Array.isArray(entries)) return false
+  const listed = { read: new Set<string>(), write: new Set<string>() }
+  for (const entry of entries) {
+    if (!isRecord(entry) || !hasOnlyKeys(entry, ['path', 'access']) || !isRecord(entry.path)) return false
+    const target = entry.path
+    if (target.type !== 'path' || !hasOnlyKeys(target, ['type', 'path']) || typeof target.path !== 'string') return false
+    if (entry.access === 'read' && read.includes(target.path)) listed.read.add(target.path)
+    else if (entry.access === 'write' && write.includes(target.path)) listed.write.add(target.path)
+    else return false
   }
+  return read.every((entry) => listed.read.has(entry)) && write.every((entry) => listed.write.has(entry))
+}
+
+/**
+ * 权限申请拆成手机上能一条条显示的样子（严重-2 / #1407 P2-3）。显示不全的申请整份不认，返回 null，
+ * 由调用方直接拒：带着显示不出来的字段（整个硬盘、通配、扫描深度、以后协议新加的项）、路径超过一屏能列的条数，
+ * 或者什么都没要（手机上会是一张空白卡片）。
+ */
+export function readRequestedPermissions(permissions: unknown): RequestedPermissions | null {
+  if (!isRecord(permissions) || !hasOnlyKeys(permissions, ['network', 'fileSystem'])) return null
+  let network = false
+  if (permissions.network !== null && permissions.network !== undefined) {
+    if (!isRecord(permissions.network) || !hasOnlyKeys(permissions.network, ['enabled'])) return null
+    network = permissions.network.enabled === true
+  }
+  let read: string[] = []
+  let write: string[] = []
+  const fileSystem = permissions.fileSystem
+  if (fileSystem !== null && fileSystem !== undefined) {
+    if (!isRecord(fileSystem) || !hasOnlyKeys(fileSystem, ['read', 'write', 'entries'])) return null
+    const readList = readPathList(fileSystem.read)
+    const writeList = readPathList(fileSystem.write)
+    if (!readList || !writeList || readList.length + writeList.length > maxFileLines) return null
+    if (!entriesMirrorPaths(fileSystem.entries, readList, writeList)) return null
+    read = [...readList]
+    write = [...writeList]
+  }
+  if (!network && read.length === 0 && write.length === 0) return null
+  return { network, read, write }
+}
+
+function describePermissions(requested: RequestedPermissions, options: ApprovalDisplayOptions): string {
+  const lines: string[] = []
+  if (requested.network) lines.push('联网')
+  for (const entry of requested.write) lines.push(`写：${displayPath(entry, options)}`)
+  for (const entry of requested.read) lines.push(`读：${displayPath(entry, options)}`)
   return lines.join('\n')
+}
+
+/** 这份权限申请能不能在手机上一字不落地显示出来：不能就不问人，直接拒，截断了再问等于让人签看不全的字。 */
+export function permissionsShowInFull(permissions: unknown, options: ApprovalDisplayOptions): boolean {
+  const requested = readRequestedPermissions(permissions)
+  return requested !== null && redactRemoteText(describePermissions(requested, options), options).length <= maxSummaryLength
 }
 
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
@@ -230,7 +322,10 @@ export function buildApprovalRequest(
     const grantRoot = stringField(params.grantRoot)
     if (grantRoot) lines.push(`可写范围：${displayPath(grantRoot, options)}`)
     summary = lines.join('\n')
-  } else summary = describePermissions(params.permissions, options)
+  } else {
+    const requested = readRequestedPermissions(params.permissions)
+    summary = requested ? describePermissions(requested, options) : ''
+  }
   const cwd = stringField(params.cwd)
   const reason = stringField(params.reason)
   return {
@@ -243,12 +338,19 @@ export function buildApprovalRequest(
   }
 }
 
-/** 只放行请求里要的那几样，形状照 GrantedPermissionProfile。 */
-export function grantRequestedPermissions(permissions: unknown): Record<string, unknown> {
-  if (!isRecord(permissions)) return {}
+/**
+ * 同意以后只授予手机上显示过的那几样，形状照 GrantedPermissionProfile。只给旧的 read / write 两张表、
+ * 不带 entries：协议在没有 entries 时才看这两张表，给出去的就是显示过的那几条路径。
+ */
+export function grantRequestedPermissions(requested: RequestedPermissions): Record<string, unknown> {
   const granted: Record<string, unknown> = {}
-  if (isRecord(permissions.network)) granted.network = permissions.network
-  if (isRecord(permissions.fileSystem)) granted.fileSystem = permissions.fileSystem
+  if (requested.network) granted.network = { enabled: true }
+  if (requested.read.length > 0 || requested.write.length > 0) {
+    granted.fileSystem = {
+      read: requested.read.length > 0 ? [...requested.read] : null,
+      write: requested.write.length > 0 ? [...requested.write] : null,
+    }
+  }
   return granted
 }
 
@@ -258,6 +360,8 @@ interface TurnState {
   lastMessage: string | null
   error: string | null
   stoppedByUser: boolean
+  /** 上一次有动静起算的「卡死」计时；每条通知、每次问审批都重新起算（noteTurnProgress）。 */
+  stallTimer: NodeJS.Timeout | null
 }
 
 interface ChannelRuntime {
@@ -275,6 +379,8 @@ interface ChannelRuntime {
   outbox: Promise<void>
   threadId: string | null
   turn: TurnState | null
+  /** 最近结束的几轮的编号（retireTurn）。 */
+  retiredTurnIds: string[]
 }
 
 interface PendingApproval {
@@ -301,6 +407,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     outbox: Promise.resolve(),
     threadId: null,
     turn: null,
+    retiredTurnIds: [],
   }
 }
 
@@ -319,6 +426,8 @@ export class CodexRemoteService {
   private codexStarting: Promise<CodexAppServerClient> | null = null
   private secrets: readonly string[] = []
   private secretsReadAt = 0
+  /** farewell() 已经说过「星芒关了」的渠道：退出没退成时要补一句（quitAborted）。 */
+  private readonly farewellSaid = new Set<RemoteChannelId>()
   private disposed = false
 
   constructor(private readonly options: CodexRemoteServiceOptions) {
@@ -473,10 +582,6 @@ export class CodexRemoteService {
     return this.emit()
   }
 
-  async readChannelCredential(channel: RemoteChannelId): Promise<string | null> {
-    return this.options.store.readCredential(channel)
-  }
-
   /**
    * 保存（或清掉）渠道凭据。换了账号（accountLabel 变了）或清掉凭据时一并解绑：飞书的 open_id
    * 按应用分，换个应用同一个人编号也不一样。渠道开着就重启一次，让它用新凭据。
@@ -505,8 +610,42 @@ export class CodexRemoteService {
   }
 
   /**
+   * 星芒要退出了（主窗口的 prepareToQuit，排在 dispose 前面）：开着遥控、绑着人的渠道各发一句「星芒关了」，
+   * 最多等 1.5 秒（打磨 B8）。dispose 在 will-quit 里同步调、来不及等网络，所以道别只能放在这一步；发不出去就算了，
+   * 退出不等它。Windows 关机那条路不经过这里，关机不为一条消息推迟。
+   */
+  async farewell(): Promise<void> {
+    if (this.disposed) return
+    const sends = remoteChannelIds.map((id) => this.runtimes[id]).filter((runtime) => runtime.enabled && runtime.adapter).map(async (runtime) => {
+      const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
+      if (!peer) return
+      await this.sendText(runtime, remoteMessages.quitting, peer)
+      this.farewellSaid.add(runtime.id)
+    })
+    if (!sends.length) return
+    await Promise.race([Promise.all(sends), new Promise((resolve) => setTimeout(resolve, farewellTimeoutMs).unref?.())])
+  }
+
+  /**
+   * 退出没退成（装更新的安装器没启动起来——Windows 上在系统提权框点了「否」、Mac 卸载移不进废纸篓）：
+   * farewell() 已经跟手机说过「星芒关了」，可星芒还开着、遥控照常收消息，得补一句，不然手机那头
+   * 以为遥控停了。只补给说过「关了」的渠道，退出真走掉了这里不会被调。
+   */
+  async quitAborted(): Promise<void> {
+    if (this.disposed) return
+    const ids = [...this.farewellSaid]
+    this.farewellSaid.clear()
+    await Promise.all(ids.map(async (id) => {
+      const runtime = this.runtimes[id]
+      if (!runtime.enabled || !runtime.adapter) return
+      const peer = runtime.peer ?? (await this.boundPeer(id))
+      if (peer) await this.sendText(runtime, remoteMessages.quitAborted, peer)
+    }))
+  }
+
+  /**
    * 星芒退出（will-quit 里同步调）：等你同意的一律拒绝，停掉定时器、渠道连接和 Codex 进程。
-   * 退出时来不及等网络，不跟手机道别；下次手机上发消息不会有人理，直到在电脑上重新打开。
+   * 这里来不及等网络，道别那句在 farewell() 里已经发过；下次手机上发消息不会有人理，直到在电脑上重新打开。
    */
   dispose(): void {
     if (this.disposed) return
@@ -516,7 +655,7 @@ export class CodexRemoteService {
       const runtime = this.runtimes[id]
       runtime.enabled = false
       this.clearPairing(runtime)
-      runtime.turn = null
+      this.clearTurn(runtime)
       if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
       runtime.idleTimer = null
       const adapter = runtime.adapter
@@ -627,12 +766,53 @@ export class CodexRemoteService {
     const turn = runtime.turn
     if (!turn) return
     turn.stoppedByUser = true
-    runtime.turn = null
+    this.clearTurn(runtime)
+    if (turn.id) this.retireTurn(runtime, turn.id)
     if (turn.id && runtime.threadId && this.codex?.running) {
       await this.codex.request('turn/interrupt', { threadId: runtime.threadId, turnId: turn.id }, 10_000).catch(() => {
         this.options.log('warn', 'remote.interrupt-failed', { channel: runtime.id })
       })
     }
+  }
+
+  /** 停掉、做完的这一轮记下编号：它迟到的审批、通知都不认（belongsToOtherTurn）。 */
+  private retireTurn(runtime: ChannelRuntime, turnId: string): void {
+    if (runtime.retiredTurnIds.includes(turnId)) return
+    runtime.retiredTurnIds.push(turnId)
+    if (runtime.retiredTurnIds.length > maxRetiredTurns) runtime.retiredTurnIds.shift()
+  }
+
+  /** 起 Codex、开对话都要等一会儿；等完了这一轮还要不要接着交给 Codex。 */
+  private turnStillWanted(runtime: ChannelRuntime, turn: TurnState): boolean {
+    return !this.disposed && runtime.enabled && runtime.turn === turn && !turn.stoppedByUser
+  }
+
+  /** 这一轮结束了（做完、停掉、Codex 没了、星芒退出）：连它的「卡死」计时一起收掉。 */
+  private clearTurn(runtime: ChannelRuntime): void {
+    const turn = runtime.turn
+    if (turn?.stallTimer) clearTimeout(turn.stallTimer)
+    if (turn) turn.stallTimer = null
+    runtime.turn = null
+  }
+
+  /**
+   * 这一轮刚有动静（开始、Codex 发来通知、问审批）：「卡死」计时重新起算。一小时没再动，就当 Codex 卡死了：
+   * 等你同意的一律拒绝、请 Codex 停下，告诉手机一句，之后再发消息就能开新的一轮（打磨 C2）。
+   */
+  private noteTurnProgress(runtime: ChannelRuntime): void {
+    const turn = runtime.turn
+    if (!turn) return
+    if (turn.stallTimer) clearTimeout(turn.stallTimer)
+    turn.stallTimer = setTimeout(() => {
+      turn.stallTimer = null
+      if (runtime.turn !== turn || this.disposed) return
+      this.options.log('warn', 'remote.turn-stalled', { channel: runtime.id })
+      void this.abandonTurn(runtime)
+        .then(() => this.sendText(runtime, remoteMessages.stalled))
+        .then(() => { this.touch(runtime); this.emitSoon() })
+        .catch(() => undefined)
+    }, turnStallMs)
+    turn.stallTimer.unref?.()
   }
 
   private touch(runtime: ChannelRuntime, delayMs = idleTimeoutMs): void {
@@ -867,25 +1047,32 @@ export class CodexRemoteService {
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       return
     }
-    const turn: TurnState = { id: null, finalAnswer: null, lastMessage: null, error: null, stoppedByUser: false }
+    const turn: TurnState = { id: null, finalAnswer: null, lastMessage: null, error: null, stoppedByUser: false, stallTimer: null }
     runtime.turn = turn
+    this.noteTurnProgress(runtime)
     this.emitSoon()
     await this.sendText(runtime, remoteMessages.received)
     let client: CodexAppServerClient
     try {
       client = await this.ensureCodex()
     } catch (error) {
+      // 起 Codex 的这一会儿，电脑上关了遥控或者星芒在退出：这一轮已经收掉了，起到一半的 Codex 也由 ensureCodex 收了。
+      if (runtime.turn !== turn) return
       this.options.log('error', 'remote.codex-start-failed', { reason: error instanceof Error ? error.name : 'unknown' })
-      if (runtime.turn === turn) runtime.turn = null
+      this.clearTurn(runtime)
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       this.emitSoon()
       return
     }
+    // 起 Codex、开对话都要等，每等完一次都看看这一轮还要不要（#1407 P3-1）：话一交给 Codex 就开始扣钱，
+    // 只读命令也会先跑，事后再补一次打断已经晚了。
+    if (!this.turnStillWanted(runtime, turn)) return
     try {
       if (!runtime.threadId) {
         const started = await client.request('thread/start', buildThreadStartParams(workspace))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 没有开出新对话')
+        if (!this.turnStillWanted(runtime, turn)) return
         runtime.threadId = thread
       }
       const threadId = runtime.threadId
@@ -894,15 +1081,16 @@ export class CodexRemoteService {
         input: [{ type: 'text', text, text_elements: [] }],
       })
       const turnId = isRecord(result) && isRecord(result.turn) ? stringField(result.turn.id) : null
-      if (runtime.turn === turn && turnId) turn.id = turnId
-      else if (turn.stoppedByUser && turnId) {
-        // 「停止」比 Codex 回执先到：现在有编号了，补一次打断。
+      if (turnId && this.turnStillWanted(runtime, turn)) turn.id = turnId
+      else if (turnId) {
+        // 「停止」、关遥控比 Codex 回执先到：现在有编号了，补一次打断，它迟到的审批也不认。
+        this.retireTurn(runtime, turnId)
         await client.request('turn/interrupt', { threadId, turnId }, 10_000).catch(() => undefined)
       }
       this.emitSoon()
     } catch (error) {
       if (runtime.turn !== turn) return
-      runtime.turn = null
+      this.clearTurn(runtime)
       runtime.threadId = null
       this.options.log('warn', 'remote.turn-start-failed', { channel: runtime.id })
       await this.sendText(runtime, turnFailedMessage(truncateRemoteText(errorMessage(error, ''), maxReasonLength)))
@@ -923,11 +1111,20 @@ export class CodexRemoteService {
           await client.start({
             onNotification: (method, params) => this.onNotification(method, params),
             onServerRequest: (method, params) => this.onServerRequest(method, params),
-            onExit: (detail) => this.onCodexExit(client, detail.expected, detail.code),
+            onExit: (detail) => this.onCodexExit(client, detail),
           })
         } catch (error) {
+          const stderr = this.stderrDetail(client.lastStderr)
+          if (stderr.stderr) this.options.log('warn', 'remote.codex-start-stderr', stderr)
           await client.stop()
           throw error
+        }
+        // 起 Codex 的这一会儿，电脑上可能已经把遥控全关了、星芒在退出。这时 stopCodex 还看不到这一份，
+        // 不在这里收掉，它就一直开着没人管，留到下次关遥控或退出（#1407 P3-1）。
+        if (this.disposed || !this.hasEnabledChannel()) {
+          this.options.log('info', 'remote.codex-start-abandoned')
+          await client.stop()
+          throw new Error('手机遥控已经关了')
         }
         this.codex = client
         await this.refreshSecrets(true)
@@ -950,17 +1147,23 @@ export class CodexRemoteService {
     if (client) await client.stop()
   }
 
-  private onCodexExit(client: CodexAppServerClient, expected: boolean, code: number | null): void {
+  /** Codex 的 stderr 尾巴，脱敏、截短后进日志：它起不来、半路退出时，客服只能从这里看出原因（#1407 P3-6）。 */
+  private stderrDetail(stderr: string): RemoteChannelLogDetail {
+    const text = redactRemoteText(stderr.trim(), this.redaction()).slice(-maxStderrLogLength)
+    return text ? { stderr: text } : {}
+  }
+
+  private onCodexExit(client: CodexAppServerClient, detail: { expected: boolean; code: number | null; stderrTail: string }): void {
     if (this.codex === client) this.codex = null
     this.fileChanges.clear()
-    if (expected) return
-    this.options.log('warn', 'remote.codex-exited', { code })
+    if (detail.expected) return
+    this.options.log('warn', 'remote.codex-exited', { code: detail.code, ...this.stderrDetail(detail.stderrTail) })
     for (const id of remoteChannelIds) {
       const runtime = this.runtimes[id]
       for (const entry of this.pendingFor(id)) entry.settle('decline')
       runtime.threadId = null
       if (runtime.turn) {
-        runtime.turn = null
+        this.clearTurn(runtime)
         void this.sendText(runtime, turnFailedMessage('电脑上的 Codex 意外退出了，再发一次试试。'))
       }
     }
@@ -975,6 +1178,10 @@ export class CodexRemoteService {
   private onNotification(method: string, params: unknown): void {
     if (!isRecord(params)) return
     const runtime = this.runtimeByThread(params.threadId)
+    // 停掉的上一轮迟到的通知：不算这一轮的动静，它的回答、报错、结束也都不往这一轮上记。
+    if (runtime?.turn && belongsToOtherTurn(runtime.turn.id, runtime.retiredTurnIds, params.turnId)) return
+    // 这一轮的任何通知都算有动静（item/agentMessage/delta 这类不另处理的也算）。
+    if (runtime?.turn) this.noteTurnProgress(runtime)
     if (method === 'item/started' || method === 'item/completed') {
       const item = isRecord(params.item) ? params.item : null
       if (!item) return
@@ -1004,8 +1211,9 @@ export class CodexRemoteService {
     const turn = runtime.turn
     if (!turn) return
     const turnId = stringField(turnPayload.id)
-    if (turn.id && turnId && turn.id !== turnId) return
-    runtime.turn = null
+    if (belongsToOtherTurn(turn.id, runtime.retiredTurnIds, turnId)) return
+    this.clearTurn(runtime)
+    if (turn.id) this.retireTurn(runtime, turn.id)
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     let reply: string | null
     if (turnPayload.status === 'completed') reply = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
@@ -1028,10 +1236,8 @@ export class CodexRemoteService {
         return { decision: await this.requestApproval('file-change', params) }
       case 'item/permissions/requestApproval': {
         const decision = await this.requestApproval('other', params)
-        return {
-          permissions: decision === 'accept' && isRecord(params) ? grantRequestedPermissions(params.permissions) : {},
-          scope: 'turn',
-        }
+        const requested = decision === 'accept' && isRecord(params) ? readRequestedPermissions(params.permissions) : null
+        return { permissions: requested ? grantRequestedPermissions(requested) : {}, scope: 'turn' }
       }
       case 'item/tool/requestUserInput':
         // 手机上答不了 Codex 的选择题；空着交回去，Codex 会按没有回答继续。
@@ -1077,17 +1283,25 @@ export class CodexRemoteService {
     const peer = runtime?.peer
     if (!runtime || !threadId || !peer || !runtime.turn || runtime.turn.stoppedByUser || !runtime.adapter) return 'decline'
     const turn = runtime.turn
+    if (belongsToOtherTurn(turn.id, runtime.retiredTurnIds, params.turnId)) {
+      this.options.log('info', 'remote.approval-other-turn', { channel: runtime.id, kind })
+      return 'decline'
+    }
+    this.noteTurnProgress(runtime)
     await this.refreshSecrets()
+    const display = { homeDirectory: this.options.homeDirectory, platform: this.platform, secrets: this.secrets }
+    if (kind === 'other' && !permissionsShowInFull(params.permissions, display)) {
+      // 手机上显示不全的权限申请不问人：问了，客户点的「同意」也不是对着他看到的那些点的。
+      this.options.log('info', 'remote.permissions-refused', { channel: runtime.id })
+      if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
+      return 'decline'
+    }
     const id = await this.allocateApprovalId()
     // 读密钥、记编号的这一会儿，这一轮可能已经被停掉、渠道已经关了：不再问人。
     if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
     const nonce = generateApprovalNonce()
     const itemId = stringField(params.itemId)
-    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], {
-      homeDirectory: this.options.homeDirectory,
-      platform: this.platform,
-      secrets: this.secrets,
-    })
+    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], display)
     const decision = new Promise<RemoteApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return

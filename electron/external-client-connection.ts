@@ -60,6 +60,11 @@ export interface ExternalClientProbeInput {
   apiKey: string | null
   /** Claude Desktop 选的是官方登录：额度走客户自己的订阅，没有星芒这边可测的。缺省 = 不是。 */
   officialAccount?: boolean
+  /**
+   * Claude Desktop 开机检查拿哪个型号发那一个字（claude-desktop-models.ts）。清单里有好几个型号时它不一定是默认的
+   * model：有 Haiku 就先挑 Haiku。缺省 = 和 model 是同一个。
+   */
+  startupCheckModel?: string | null
 }
 
 /**
@@ -160,7 +165,14 @@ export async function runExternalClientCheck(
   siteId: string,
   dependencies: ConnectionProbeDependencies = {},
 ): Promise<ExternalClientCheckResult> {
-  const report = await runConnectionProbe(buildExternalClientProbe(input), dependencies)
+  const defaultReport = await runConnectionProbe(buildExternalClientProbe(input), dependencies)
+  // 默认型号通了，Claude Desktop 开机检查挑的又是另一个时再照它问一次：它弹不弹「型号被拒」看的是那一个。
+  // 那个不通就报那一条，结论里的型号也是它，和 Claude Desktop 横幅上点名的是同一个。
+  const startupModel = input.tool === 'claudeDesktop' ? input.startupCheckModel : null
+  const report = defaultReport.ok && startupModel && startupModel !== defaultReport.model
+    ? await runConnectionProbe(buildExternalClientProbe({ ...input, model: startupModel }), dependencies)
+      .then((startup) => startup.ok ? defaultReport : startup)
+    : defaultReport
   const success = report.ok ? describeSuccess(input.tool, report.model) : null
   return {
     tool: input.tool,

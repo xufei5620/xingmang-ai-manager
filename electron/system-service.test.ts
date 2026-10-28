@@ -1282,11 +1282,18 @@ describe('createSystemService', () => {
     expect(f.running).not.toHaveBeenCalled()
   })
 
-  function withoutClaudeFallbackModels(roots: { userHome: string; codexHome: string }): void {
-    // 备用型号以前没有：老版本写的配置。
+  function deleteClaudeFallbackModels(roots: { userHome: string; codexHome: string }): void {
     const [settingsPath] = providerConfigPaths('claude', roots)
     const { fallbackModel: _written, ...settings } = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
     fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`)
+  }
+
+  function withoutClaudeFallbackModels(roots: { userHome: string; codexHome: string }): void {
+    // 备用型号以前没有：老版本写的配置，星芒那时也没记过它在这台电脑上出现过（retiredClaudeFixture 的设置文件）。
+    deleteClaudeFallbackModels(roots)
+    const settingsPath = path.join(path.dirname(roots.userHome), 'settings.json')
+    const { seededToolDefaults: _seen, ...settings } = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(settingsPath, JSON.stringify(settings), 'utf8')
   }
 
   function claudeFallbackModels(roots: { userHome: string; codexHome: string }): unknown {
@@ -1335,6 +1342,46 @@ describe('createSystemService', () => {
     expect(claudeFallbackModels(f.roots)).toEqual(['claude-haiku-4-5'])
     expect(f.running).not.toHaveBeenCalled()
     expect(f.fetchModels.mock.calls.length).toBe(requests)
+  })
+
+  it('does not put back Claude Code fallback models the customer deleted, at startup or on the next save', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(claudeFallbackModels(f.roots)).toEqual(['claude-opus-5', 'claude-sonnet-5'])
+    // 客户（或客服）把备用型号整行删了，或者恢复了一份 0.2.22 以前的备份。
+    deleteClaudeFallbackModels(f.roots)
+    const requests = f.fetchModels.mock.calls.length
+    const backup = vi.fn()
+
+    expect(await f.service.fillToolTemplateDefaults!(backup)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(claudeFallbackModels(f.roots)).toBeUndefined()
+    expect(f.running).not.toHaveBeenCalled()
+    expect(f.fetchModels.mock.calls.length).toBe(requests)
+    expect(backup).not.toHaveBeenCalled()
+
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    expect(claudeFallbackModels(f.roots)).toBeUndefined()
+    expect(f.configuredModel()).toBe('claude-opus-5')
+  })
+
+  it('remembers fallback models it finds at startup so a later deletion sticks', async () => {
+    const f = retiredClaudeFixture()
+    f.hints.value = null
+    await f.service.saveConfig({ provider: 'claude', apiKey: 'sk-claude', model: 'claude-opus-5-5', mode: 'merge' }, false, undefined, { source: 'account', automatic: false })
+    // 设置是客户自己写的备用型号，星芒还没记过。
+    withoutClaudeFallbackModels(f.roots)
+    const [settingsPath] = providerConfigPaths('claude', f.roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    fs.writeFileSync(settingsPath, JSON.stringify({ ...settings, fallbackModel: ['claude-haiku-4-5'] }))
+
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    deleteClaudeFallbackModels(f.roots)
+    expect(await f.service.fillToolTemplateDefaults!(() => undefined)).toEqual({ filled: [] })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(claudeFallbackModels(f.roots)).toBeUndefined()
+    expect(f.running).not.toHaveBeenCalled()
   })
 
   it('owes the swap while Claude Code may be open and makes it on a later try once it is closed', async () => {
@@ -2171,7 +2218,7 @@ describe('createSystemService', () => {
     const relayFetch = vi.fn<typeof fetch>()
     const service = createService({ providerRoots, getRelaySiteId: () => 'solov-api', relayFetch })
     await expect(service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false))
-      .rejects.toThrow('已保存的 Key 属于其他账号')
+      .rejects.toThrow('已保存的密钥属于其他账号')
     expect(relayFetch).not.toHaveBeenCalled()
   })
 
@@ -2317,7 +2364,7 @@ describe('createSystemService', () => {
       apiKey: 'sk-model-check',
       model: 'gpt-unsupported',
       mode: 'reset',
-    }, true)).rejects.toThrow('当前 API Key 不支持模型 gpt-unsupported')
+    }, true)).rejects.toThrow('当前密钥不支持模型 gpt-unsupported')
 
     await expect(service.saveConfig({
       provider: 'codex',

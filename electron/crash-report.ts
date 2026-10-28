@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { redactSecretShapes } from './redaction-patterns'
+import { SECRET_FIELD_NAME, redactSecretShapes } from './redaction-patterns'
 import { redactHomeDirectory } from './startup-log'
 
 /**
@@ -70,6 +70,10 @@ const MAX_MESSAGE_LENGTH = 2_048
 const MAX_CONTEXT_LENGTH = 1_024
 const MAX_FRAMES = 60
 
+// The same names the shared table recognises; the value here also stops at a
+// closing bracket, since a stack trace wraps payloads in `(…)` and `{…}`.
+const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;)\\]}]+)`, 'gi')
+
 /**
  * Everything leaving this process goes through here first. The three classes
  * of payload we must never ship are credentials (a relay key in an error
@@ -84,7 +88,7 @@ export function redactCrashText(value: string, homeDirectory: string): string {
   return redactSecretShapes(redactHomeDirectory(value, homeDirectory))
     // The optional quote after the key name is what `redactCommandText` lacks:
     // a stack trace carrying a serialized payload spells it `"api_key":"..."`.
-    .replace(/((?:api[_-]?key|authorization|token|secret|password|cookie|credential)["']?\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;)\]}]+)/gi, '$1[REDACTED]')
+    .replace(CRASH_SECRET_FIELD, '$1[REDACTED]')
     .replace(/([?&](?:api[_-]?key|token|key)=)[^&\s]+/gi, '$1[REDACTED]')
     // Other users' profiles, and this user's own when the home directory is
     // spelled differently than os.homedir() reports it (a junction, a mapped
