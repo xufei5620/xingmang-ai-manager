@@ -1,5 +1,5 @@
 import type { CanvasMediaGroups } from '../store/canvas-state'
-import type { CanvasRunGraph, CanvasRunScope } from '../host'
+import type { CanvasGroupSummary, CanvasRunGraph, CanvasRunScope } from '../host'
 import { selectCanvasRunNodeIds } from '../runtime/run-preflight'
 
 export interface GroupCatalogSnapshot<T> {
@@ -48,6 +48,13 @@ export function missingCanvasMediaGroups(selected: CanvasMediaGroups, available:
 
 export function groupDropdownKeyOpens(key: string): boolean {
   return key === ' ' || key === 'Enter' || key === 'ArrowDown' || key === 'ArrowUp' || key === 'F4'
+}
+
+export function canvasGroupDisplayName(name: string | null | undefined, groups: readonly CanvasGroupSummary[]): string {
+  if (!name) return '未配置'
+  const entry = groups.find((group) => group.name === name)
+  if (!entry) return '来源不可用'
+  return entry.purposes !== undefined ? entry.description.trim() || '未命名来源' : entry.name
 }
 
 export function missingCanvasRunGroups(graph: CanvasRunGraph, scope: CanvasRunScope, available: readonly { name: string }[]): string[] {

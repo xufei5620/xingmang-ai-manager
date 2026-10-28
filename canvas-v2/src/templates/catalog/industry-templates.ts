@@ -199,7 +199,7 @@ const dramaScriptParse: CanvasTemplate = {
   variables: [
     { id: 'script', label: '剧本', type: 'text', required: true, target: { nodeId: 'script', path: 'prompt' } },
   ],
-  requirements: [],
+  requirements: [{ media: 'text', operation: 'generate' }],
   featured: true,
   provenance: { kind: 'xingmang-original' },
 }

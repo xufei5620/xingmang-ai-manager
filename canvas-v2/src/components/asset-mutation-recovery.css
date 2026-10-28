@@ -1,0 +1,24 @@
+.xm-asset-recovery { display: grid; gap: 10px; min-width: 0; margin: 12px 0; padding: 14px; border: 1px solid #45403a; border-radius: 12px; background: #242221; color: #e4e0da; font-size: 12px; line-height: 1.6; }
+.xm-asset-recovery-actions, .xm-asset-recovery-tools, .xm-asset-recovery-undo { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.xm-asset-recovery-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 8px; list-style: none; cursor: pointer; }
+.xm-asset-recovery-heading::-webkit-details-marker { display: none; }
+.xm-asset-recovery-disclosure[open] > :not(summary) { margin-top: 10px; }
+.xm-asset-recovery-heading > span:first-of-type { grid-row: 2; grid-column: 1 / -1; min-width: 0; font-size: 11px; }
+.xm-asset-recovery-heading .xm-asset-recovery-toggle { grid-column: 2; grid-row: 1; min-width: 0; font-size: 11px; color: #efc4a2; }
+.xm-asset-recovery-toggle::after { content: '⌄'; margin-left: 5px; }
+.xm-asset-recovery-disclosure[open] .xm-asset-recovery-toggle::after { content: '⌃'; }
+.xm-asset-recovery-heading > span, .xm-asset-recovery-original small, .xm-asset-recovery-explanation { color: #b9b1a8; }
+.xm-asset-recovery button { border: 1px solid #5d5147; border-radius: 7px; background: #352c26; color: #efc4a2; padding: 5px 9px; font: inherit; cursor: pointer; }
+.xm-asset-recovery button:disabled { opacity: .5; cursor: default; }
+.xm-asset-recovery button:focus-visible, .xm-asset-recovery select:focus-visible, .xm-asset-recovery-heading:focus-visible { outline: 2px solid #e3ac80; outline-offset: 2px; }
+.xm-asset-recovery-select { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 8px; }
+.xm-asset-recovery-select select { min-width: 0; max-width: 100%; border: 1px solid #504942; border-radius: 7px; padding: 6px; background: #1d1c1b; color: #e4e0da; font: inherit; }
+.xm-asset-recovery-original { display: grid; gap: 3px; overflow-wrap: anywhere; }
+.xm-asset-recovery-result p, .xm-asset-recovery-explanation, .xm-asset-recovery-error { margin: 0; }
+.xm-asset-recovery-result details { margin: 6px 0; }
+.xm-asset-recovery-result ul { display: grid; gap: 6px; max-height: 220px; overflow-y: auto; margin: 8px 0; padding: 0; list-style: none; }
+.xm-asset-recovery-result li { display: grid; gap: 2px; border-top: 1px solid #393530; padding-top: 5px; overflow-wrap: anywhere; }
+.xm-asset-recovery-result li span { color: #c9bfb5; }
+.xm-asset-recovery-undo { border-top: 1px solid #45403a; margin-top: 8px; padding-top: 8px; }
+.xm-asset-recovery-undo span { flex: 1; min-width: 160px; color: #c9bfb5; }
+.xm-asset-recovery-error { color: #efb5a8; overflow-wrap: anywhere; }

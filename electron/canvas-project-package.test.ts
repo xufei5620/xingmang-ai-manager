@@ -97,6 +97,9 @@ describe('canvas project package', () => {
       result: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' },
       settings: { videoMode: 'auto' }, candidateAssetIds: [assetId],
       latestAttemptDurationMs: 8_123,
+      // The xingmang-canvas kernel's six (#1393); the validator has taken them since #1425.
+      dirty: true, imageCandidateCount: 2, videoCandidateCount: 4, outputText: '生成的文字', textWebSearch: true,
+      promptReferences: [{ start: 0, end: 2, presetId: 'preset-1', version: 1, name: '预设', prompt: '多行' }],
     }
     // Every declared field must be represented in the sample, so a new schema
     // field cannot slip past this test either.

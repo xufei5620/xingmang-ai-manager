@@ -1,3 +1,7 @@
+import { canvasImageModelResolutions, type CanvasCapabilityProfile } from './host-capabilities'
+import { supportedImageRequestResolutions } from './runtime/image-request-parameters'
+import { arkSeedanceVideoDefaults, arkSeedanceVideoDurationRange, arkSeedanceVideoModels } from './lib/video-request-protocol'
+
 // 图像模型能力预设 —— UI 最终只显示当前分组 /v1/models 返回值与本表
 // 的交集，因此预设存在不等于当前账号一定可用。事实来源:
 // docs/RECON-image-generation.md(2026-08-12, xm.solov.cc 生产全链路实测,
@@ -8,8 +12,8 @@
 // - 尺寸按模型区分:gpt-image-1 只认三种固定值;gpt-image-2 任意但宽高
 //   必须都是 16 的倍数(预设已全部满足);即梦用常规 1024
 // - 即梦返回的 CDN URL 24 小时过期,UI 要提示尽快下载转存
-// - Gemini 3.1 Flash Image 通过 Chat Completions 返回内嵌图片，size
-//   在主进程转换为 aspect_ratio，不支持 Images API 编辑
+// - 独立站通过 Images 兼容接口提交；Gemini 原生高分辨率参数尚未接入。
+//   分辨率能力以共享 wire builder 为准，事实更新见 docs/image-resolution-support.md。
 
 export interface ImageModelPreset {
   id: string
@@ -27,6 +31,14 @@ export interface ImageModelPreset {
 }
 
 export type ImageResolution = '1K' | '2K' | '4K'
+
+const gptImage2ResolutionNote = 'GPT Image 2 的 4K 为实验性输出，仅部分比例可用；大于 3,686,400 像素的输出可能更不稳定'
+const geminiResolutionNote = 'Gemini 支持原生 2K/4K，但当前接入通道尚未实现对应参数，暂仅开放 1K'
+const unknownModelResolutionNote = '当前接入通道尚未实现此模型的 2K/4K 参数，暂仅开放 1K；其他参数兼容性请以服务实际支持为准'
+// These describe what this kernel's request builder does with the model. A
+// host that works out image sizes itself does something else (#4).
+const requestBuilderResolutionNotes: ReadonlySet<string> = new Set([gptImage2ResolutionNote, geminiResolutionNote, unknownModelResolutionNote])
+
 export const imageResolutionOptions: readonly { value: ImageResolution; label: string }[] = [
   { value: '1K', label: '1K' },
   { value: '2K', label: '2K' },
@@ -43,7 +55,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     ],
     supportsSize: true,
     supportsQuality: true,
-    resolutions: ['1K', '2K', '4K'],
+    resolutions: supportedImageRequestResolutions('gpt-image-2'),
+    resolutionNote: gptImage2ResolutionNote,
     supportsEdits: true,
   },
   {
@@ -55,7 +68,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     ],
     supportsSize: true,
     supportsQuality: false,
-    resolutions: ['1K', '2K', '4K'],
+    resolutions: supportedImageRequestResolutions('gemini-3.1-flash-image'),
+    resolutionNote: geminiResolutionNote,
     supportsEdits: false,
   },
   {
@@ -116,22 +130,62 @@ export const defaultImageSize = '1024x1024'
 export const defaultImageQuality = 'low'
 export const defaultImageResolution: ImageResolution = '1K'
 
-export function availableImageModelPresets(models: readonly string[]): ImageModelPreset[] {
-  const available = new Set(models)
-  return imageModelPresets.filter((preset) => available.has(preset.id))
+export function availableImageModelPresets(models: readonly string[], includeUnknown = false): ImageModelPreset[] {
+  const available = new Set(models.filter((model) => !knownNonImageModel(model)))
+  const known = imageModelPresets.filter((preset) => available.has(preset.id))
+  return includeUnknown ? [...known, ...[...available].filter((id) => !imageModelPresets.some((preset) => preset.id === id)).map((id) => imageModelPreset(id))] : known
 }
 
-/** 未知(手输)模型按 gpt-image-2 的形状处理,由服务端校验兜底。 */
-export function imageModelPreset(id: string): ImageModelPreset {
-  return imageModelPresets.find((preset) => preset.id === id) ?? {
+/** Provider purpose covers a catalog, not each entry in a mixed model list. */
+export function knownVideoModel(model: string): boolean {
+  const name = model.split('/').at(-1)!.toLowerCase()
+  return videoModelPresets.some((preset) => preset.id.toLowerCase() === name) || /^(grok-imagine-video(?:-|$)|minimax-h3(?:-|$)|sora(?:-|$))/.test(name) || name.includes('seedance')
+}
+
+export function knownNonImageModel(model: string): boolean {
+  const name = model.split('/').at(-1)!.toLowerCase()
+  if (imageModelPresets.some((preset) => preset.id.toLowerCase() === name)) return false
+  if (knownVideoModel(model)) return true
+  if (/(?:^|[-_.])image(?:[-_.]|$)/.test(name)) return false
+  return /^(?:gpt-(?:3[.-]|4(?:[.o-]|$)|5(?:[.-]|$)|6(?:[.-]|$))|o[134](?:-|$)|claude-|gemini-|deepseek-|grok-(?:[234](?:[.-]|$)|code)|text-embedding-|whisper-)/.test(name)
+}
+
+/** Shared by text selection and request validation; unknown relay aliases remain allowed. */
+export function knownNonTextModel(model: string): boolean {
+  const name = model.split('/').at(-1)!.toLowerCase()
+  return imageModelPresets.some((preset) => preset.id.toLowerCase() === name)
+    || knownVideoModel(model)
+    || /^(?:gpt-image(?:-|$)|grok-imagine-image(?:[.-]|$))/.test(name)
+}
+
+/** Unknown models keep legacy size compatibility without advertising unimplemented resolution tiers. */
+function requestBuilderImageModelPreset(id: string): ImageModelPreset {
+  const known = imageModelPresets.find((preset) => preset.id === id)
+  if (known) return known
+  if (supportedImageRequestResolutions(id).includes('2K')) return { ...imageModelPresets[0], id, label: id }
+  return {
     id,
     label: id,
     sizes: imageModelPresets[0].sizes,
     supportsSize: true,
     supportsQuality: true,
-    resolutions: ['1K', '2K', '4K'],
+    resolutions: supportedImageRequestResolutions(id),
     supportsEdits: true,
+    resolutionNote: unknownModelResolutionNote,
   }
+}
+
+/**
+ * A model's preset. With a host profile its resolutions are the ones the host
+ * declares, and a host that works out image sizes itself gets no note about
+ * how this kernel's request builder sizes them.
+ */
+export function imageModelPreset(id: string, capabilities?: CanvasCapabilityProfile): ImageModelPreset {
+  const preset = requestBuilderImageModelPreset(id)
+  if (!capabilities) return preset
+  const { resolutionNote, ...rest } = preset
+  const noteApplies = resolutionNote !== undefined && (capabilities.imageResolutions.kernelRequestSizes || !requestBuilderResolutionNotes.has(resolutionNote))
+  return { ...rest, resolutions: canvasImageModelResolutions(id, capabilities), ...(noteApplies ? { resolutionNote } : {}) }
 }
 
 /** 画质档位与费用/耗时提示(实测矩阵的口径,给 UI 直接展示)。 */
@@ -163,7 +217,7 @@ export function imageSizeLabel(size: string): string {
 export interface VideoModelPreset {
   id: string
   label: string
-  provider: 'grok' | 'minimax-h3'
+  provider: 'grok' | 'minimax-h3' | 'ark-seedance' | 'unknown'
   minimumSeconds: number
   maximumSeconds: number
   defaultSeconds: number
@@ -229,7 +283,7 @@ export const videoModelPresets: readonly VideoModelPreset[] = [
   },
   {
     id: 'grok-imagine-video-1.5',
-    label: 'Grok Imagine Video 1.5 · 1080p',
+    label: 'Grok Imagine Video 1.5',
     provider: 'grok',
     minimumSeconds: 1,
     maximumSeconds: 15,
@@ -280,6 +334,12 @@ export const videoModelPresets: readonly VideoModelPreset[] = [
     sizes: [],
     defaultSize: '1280x736',
   },
+  ...arkSeedanceVideoModels.map((id): VideoModelPreset => ({
+    id, label: 'Seedance 2.0 Mini · Ark 原生', provider: 'ark-seedance',
+    minimumSeconds: arkSeedanceVideoDurationRange.min, maximumSeconds: arkSeedanceVideoDurationRange.max,
+    defaultSeconds: Number(arkSeedanceVideoDefaults.seconds),
+    supportsImage: true, supportsVideo: true, supportsAudio: true, sizes: [], defaultSize: 'auto',
+  })),
 ]
 
 export const presetVideoModels: readonly string[] = videoModelPresets.map((preset) => preset.id)
@@ -287,12 +347,24 @@ export const defaultVideoModel = videoModelPresets[0].id
 export const defaultVideoSeconds = videoModelPresets[0].defaultSeconds
 export const defaultVideoSize = videoModelPresets[0].defaultSize
 
-export function availableVideoModelPresets(models: readonly string[]): VideoModelPreset[] {
+// Seedance needs the host's Ark video interface; the v2-era desktop had none
+// and never listed it (#4). Without a host profile, every preset is offered.
+function videoModelPresetOffered(preset: VideoModelPreset, capabilities?: CanvasCapabilityProfile): boolean {
+  return !capabilities || (preset.provider !== 'ark-seedance' && preset.provider !== 'unknown') || capabilities.video.protocols.has('ark-seedance')
+}
+
+export function availableVideoModelPresets(models: readonly string[], includeUnknown = false, capabilities?: CanvasCapabilityProfile): VideoModelPreset[] {
   const available = new Set(models)
-  return videoModelPresets.filter((preset) => available.has(preset.id))
+  const known = videoModelPresets.filter((preset) => available.has(preset.id))
+  const presets = includeUnknown ? [...known, ...[...available].filter((id) => !videoModelPresets.some((preset) => preset.id === id)).map(videoModelPreset)] : known
+  return presets.filter((preset) => videoModelPresetOffered(preset, capabilities))
 }
 
 export function videoModelPreset(id: string): VideoModelPreset {
+  if (!videoModelPresets.some((preset) => preset.id === id) && id.toLowerCase().includes('seedance')) return {
+    id, label: `${id}（协议待确认）`, provider: 'unknown', minimumSeconds: 1, maximumSeconds: 15,
+    defaultSeconds: defaultVideoSeconds, supportsImage: false, supportsVideo: false, supportsAudio: false, sizes: [], defaultSize: 'auto',
+  }
   return videoModelPresets.find((preset) => preset.id === id) ?? {
     id,
     label: id,
@@ -348,9 +420,9 @@ export function validateImageModelOptions(input: {
   quality?: string
   imageResolution?: string
   referenceImageCount?: number
-}): string[] {
+}, capabilities?: CanvasCapabilityProfile): string[] {
   const errors: string[] = []
-  const preset = imageModelPreset(input.model)
+  const preset = imageModelPreset(input.model, capabilities)
   if (!input.model.trim()) errors.push('请选择图像模型')
   if (input.operation === 'edit' && !preset.supportsEdits) errors.push(`模型「${preset.label}」不支持图片编辑`)
   if (input.operation === 'edit' && (input.referenceImageCount ?? 0) < 1) errors.push('图片编辑至少需要 1 张参考图')
@@ -400,6 +472,8 @@ export function validateVideoModelOptions(input: {
 }): string[] {
   const errors: string[] = []
   const preset = videoModelPreset(input.model)
+  if (preset.provider === 'ark-seedance') return ['Ark Seedance 请通过网页画布的完整运行服务提交，以核对原生协议和私有参考素材']
+  if (preset.provider === 'unknown') return ['此视频模型的协议尚未确认，不能按 Grok 或 MiniMax 参数提交']
   const imageCount = input.imageCount ?? 0
   const videoCount = input.videoCount ?? 0
   const audioCount = input.audioCount ?? 0

@@ -1,5 +1,3 @@
-import { defaultCharacterSheetPrompt } from './character-sheet-prompt'
-
 export interface CanvasPromptPreset {
   id: string
   title: string
@@ -9,7 +7,8 @@ export interface CanvasPromptPreset {
   provenance: 'xingmang-original'
 }
 
-export const builtinPromptPresets: readonly CanvasPromptPreset[] = [
+/** Published v1 wording is immutable; retain it when publishing newer presets. */
+export const builtinPromptPresetsV1: readonly CanvasPromptPreset[] = [
   {
     id: 'xingmang-product-studio',
     title: '商品棚拍',
@@ -84,7 +83,13 @@ export const builtinPromptPresets: readonly CanvasPromptPreset[] = [
   },
   {
     id: 'xingmang-story-character-card', title: '叙事角色定妆', description: '上下分栏多视图角色资产图：头顶三视图 + 无头站姿三视图。',
-    prompt: defaultCharacterSheetPrompt,
+    // This publication must not change when the character-sheet editor's
+    // current defaults evolve. Its complete v1 body is retained here.
+    prompt: [
+      '生成角色的多视图；上下板块展示，上方板块占画面1/3，纯色背景。\n上方板块：展示角色头部肖像特写三视图（正面、半侧面、背面）；\n下方板块：展示角色脖子以下站立三视图（正面、半侧面、背面），严禁展示头部，仅展示脖子到鞋这部分区域站立三视图。\n同一角色身份、发型、服装、配色在六视图中完全一致。柔和均匀柔光。不生成文字、标注、水印、装饰分割线。',
+      '韩系年轻少女，浅金色凌乱短发，发丝柔软蓬松，几缕碎发自然贴在脸颊，淡骨相韩式脸型，无辜大圆灰瞳眼睛，水光冷白皮，韩式水光肌，面部精细水光高光，鼻梁高光、鼻尖高光、面中苹果肌高光、唇珠高光，淡韩式伪素颜妆容，淡腮红，精致洋娃娃五官。身穿长款淡黄色小鸡毛绒连帽卫衣，帽子带有鸡嘴巴造型，帽内衬白色毛绒，脚踝穿着堆堆袜，小黄鸭拖鞋。纯白色背景。',
+      '3D漫剧写实厚涂风。',
+    ].join('\n\n'),
     tags: ['漫剧', '角色', '定妆', '多视图'], provenance: 'xingmang-original',
   },
   {
@@ -94,12 +99,14 @@ export const builtinPromptPresets: readonly CanvasPromptPreset[] = [
   },
 ]
 
+export const builtinPromptPresets = builtinPromptPresetsV1
+
 export const promptPresetMime = 'application/x-xingmang-prompt-preset'
 
 export function searchPromptPresets(query: string): readonly CanvasPromptPreset[] {
   const normalized = query.trim().toLocaleLowerCase('zh-CN')
   if (!normalized) return builtinPromptPresets
   return builtinPromptPresets.filter((preset) => (
-    `${preset.title} ${preset.description} ${preset.tags.join(' ')}`.toLocaleLowerCase('zh-CN').includes(normalized)
+    `${preset.title} ${preset.description} ${preset.prompt} ${preset.tags.join(' ')}`.toLocaleLowerCase('zh-CN').includes(normalized)
   ))
 }

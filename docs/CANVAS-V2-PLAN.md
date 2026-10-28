@@ -2,6 +2,8 @@
 
 > 当前实现与安全架构记录，更新于 2026-08-13。历史上的 M0 三节点方案已经被本版本取代；与本文冲突时以代码和测试为准。
 
+> **2026-10-28 起被内核同步取代（#1393，随 0.2.23）**：`canvas-v2/src/`、`canvas-v2/shared/` 换成私有仓库 xingmang-canvas 的内核，按版本 tag 由 `scripts/sync-canvas-kernel.mjs` 同步进来，`canvas-v2/KERNEL_SOURCE.json` 记下 tag、提交号和每个文件的哈希，`scripts/verify-canvas-kernel-source.test.cjs` 核对；本地紧急补丁登记进 `localPatches`，两周内回到 xingmang-canvas（AGENTS.md T13）。下文描述的是换内核之前本仓自研的那一版，主进程那一半（宿主桥、运行引擎、素材库、I15 边界）仍然有效；画布界面和内核内部结构以 xingmang-canvas 为准。
+
 ## 1. 产品定位
 
 无限画布是星芒 AI 管理工具箱内的本地媒体生产工作台。用户通过节点、类型化端口和连线组织提示词、图片、视频与结果，而不是在浏览器中保存供应商凭据或直接请求生产接口。

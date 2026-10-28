@@ -4,6 +4,7 @@ export type ComposerToolbarField =
   | 'model'
   | 'quality'
   | 'imageResolution'
+  | 'imageCandidateCount'
   | 'size'
   | 'seconds'
   | 'videoMode'
@@ -22,6 +23,7 @@ export function composerToolbarFields(kind: string, model: string): ComposerTool
     if (preset.supportsQuality) fields.push('quality')
     fields.push('imageResolution')
     if (preset.supportsSize) fields.push('size')
+    fields.push('imageCandidateCount')
     return fields
   }
   if (videoKinds.has(kind)) {
@@ -48,6 +50,7 @@ export function composerFieldLabel(field: ComposerToolbarField, kind = ''): stri
   if (field === 'model') return '模型'
   if (field === 'quality') return '画质'
   if (field === 'imageResolution') return '清晰度'
+  if (field === 'imageCandidateCount') return '生成数量'
   if (field === 'seconds') return '时长'
   if (field === 'videoMode') return '模式'
   if (field === 'videoResolution') return '分辨率'

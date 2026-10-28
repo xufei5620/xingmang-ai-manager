@@ -1,0 +1,123 @@
+/* Keep the graph quiet until a wire is selected or inspected. Media type is
+   then shared by the wire, its arrow, and the matching socket. */
+.react-flow__edge .wf-edge-group {
+  --wf-edge-current: var(--canvas-edge);
+}
+
+.react-flow__edge .wf-edge-group.is-active,
+.react-flow__edge:focus-visible .wf-edge-group {
+  --wf-edge-current: var(--wf-edge-tone);
+}
+
+.react-flow__edge .wf-edge-group .wf-edge {
+  stroke: var(--wf-edge-current);
+  stroke-width: 1.5px;
+  opacity: .8;
+  transition: stroke 120ms ease, stroke-width 120ms ease, opacity 120ms ease;
+}
+
+.react-flow__edge .wf-edge-group.is-active .wf-edge,
+.react-flow__edge:focus-visible .wf-edge-group .wf-edge {
+  stroke-width: 2.2px;
+  opacity: 1;
+}
+
+.react-flow__edge .wf-edge-arrow {
+  stroke: var(--wf-edge-current);
+  pointer-events: none;
+}
+
+.react-flow__edge .wf-edge-group .react-flow__edge-interaction {
+  cursor: pointer;
+  pointer-events: stroke;
+}
+
+.react-flow__edge .wf-edge-group .wf-edge-flow {
+  stroke: var(--wf-edge-tone);
+  filter: none;
+}
+
+.react-flow__edge.is-drop-target .wf-edge-group .wf-edge {
+  stroke: var(--accent);
+  stroke-width: 2.4px;
+}
+
+.wf-edge-toolbar.wf-edge-toolbar-polished {
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 11px;
+  background: var(--surface-floating-strong);
+  white-space: nowrap;
+}
+
+.wf-edge-toolbar-polished .wf-edge-type {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 32px;
+  border-right: 1px solid var(--border-subtle);
+}
+
+.wf-edge-toolbar-polished .wf-edge-type i {
+  width: 6px;
+  height: 6px;
+  background: var(--wf-edge-tone);
+  border-radius: 50%;
+}
+
+.wf-edge-toolbar.wf-edge-toolbar-polished button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 32px;
+  width: auto;
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 7px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.wf-edge-toolbar-polished button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.wf-edge-toolbar-polished .wf-edge-disconnect:hover,
+.wf-edge-toolbar-polished .wf-edge-disconnect:focus-visible {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, var(--surface-2));
+}
+
+.react-flow .wf-port {
+  width: 9px;
+  height: 9px;
+  border-width: 2px;
+  transition: box-shadow 120ms ease, opacity 120ms ease;
+}
+
+.react-flow .wf-port:hover:not(.is-connect-blocked),
+.react-flow .wf-port:focus-visible {
+  box-shadow: 0 0 0 1px currentColor, 0 0 0 5px color-mix(in srgb, currentColor 18%, transparent);
+}
+
+.react-flow .wf-port.is-connect-target {
+  box-shadow: 0 0 0 1px var(--surface-2), 0 0 0 4px color-mix(in srgb, currentColor 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-flow__edge .wf-edge-group .wf-edge,
+  .react-flow .wf-port { transition: none; }
+  .react-flow__edge .wf-edge-group .wf-edge-flow { animation: none; }
+}
+
+@media (forced-colors: active) {
+  .react-flow__edge .wf-edge-group { --wf-edge-current: CanvasText; }
+  .react-flow__edge .wf-edge-group.is-active { --wf-edge-current: Highlight; }
+  .wf-edge-toolbar-polished .wf-edge-type i { background: CanvasText; }
+}
