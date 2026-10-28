@@ -540,6 +540,23 @@ export class CodexRemoteService {
     return this.emit()
   }
 
+  /**
+   * 能不能开变了（状态文件关掉或放开了手机遥控，remote-features.ts）：现在不能开了，开着的渠道当场停掉，
+   * 手机上收到的跟在电脑上点关一样；又能开了不替他打开，只让界面跟上。
+   */
+  async applyAvailability(): Promise<CodexRemoteSnapshot | null> {
+    if (this.disposed) return null
+    if (this.options.inspectAvailability()) {
+      for (const id of remoteChannelIds) {
+        const runtime = this.runtimes[id]
+        if (!runtime.enabled) continue
+        await this.disableChannel(runtime, remoteMessages.closedOnComputer)
+        this.options.log('info', 'remote.channel-suspended', { channel: id })
+      }
+    }
+    return this.emit()
+  }
+
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')

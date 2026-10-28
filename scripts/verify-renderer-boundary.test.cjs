@@ -63,6 +63,8 @@ const valueImportable = [
   'electron/redaction-patterns',
   'electron/relay-quota-failure',
   'electron/relay-sites',
+  // 状态文件关掉的功能（G04）：停用那几句主进程拼、界面照它认出来；功能名单界面也要。只 import 类型。
+  'electron/remote-features',
   'electron/running-tools',
   'electron/subscription-summary',
   // 「换成新版 Node.js」要和主进程用同一把尺子判断 Node.js 认不认证书（第十八批 4）。

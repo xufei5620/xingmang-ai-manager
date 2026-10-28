@@ -2,7 +2,8 @@ import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runt
 import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
-import { isOlderReleaseGuard, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
+import type { RemoteFeatureId } from './remote-features'
+import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
@@ -131,6 +132,11 @@ export interface UpdateSnapshot {
    * 界面按页挑着摆在右上角。跟维护提示一样放在更新快照里：没登录也收得到。可选＝没有或旧快照。
    */
   knownIssues?: readonly KnownIssue[]
+  /**
+   * 状态文件里给这一版、这种安装包关掉的功能（service-status.ts 的 featuresOff，版本和平台已经筛过）。
+   * 主进程各处照它拦，界面照它把入口先灰掉、说一句。同已知问题，没登录也收得到。可选＝没有或旧快照。
+   */
+  featuresOff?: readonly RemoteFeatureId[]
   /**
    * 发布者在状态文件里撤回了本机正在用的这个版本。界面据此说「这个版本有已知问题」，
    * 更新器据此允许装一个更低的版本号（退回上一个好版本）。
@@ -993,6 +999,7 @@ function cloneSnapshot(snapshot: UpdateSnapshot): UpdateSnapshot {
     installedRelease: cloneInstalledRelease(snapshot.installedRelease),
     serviceMaintenance: snapshot.serviceMaintenance ? { ...snapshot.serviceMaintenance } : null,
     ...(snapshot.knownIssues ? { knownIssues: snapshot.knownIssues.map((issue) => ({ ...issue })) } : {}),
+    ...(snapshot.featuresOff ? { featuresOff: [...snapshot.featuresOff] } : {}),
     launchInstallNotice: snapshot.launchInstallNotice ? { ...snapshot.launchInstallNotice } : null,
   }
 }
@@ -1236,9 +1243,12 @@ export function createUpdaterService(
       patch.serviceMaintenance = maintenance
     }
     // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就收起「先这样绕过去」那句，客户会当成已经修好了。
+    // 关掉的功能同理：一次没读到就放出来，坏掉的那条路又开了。
     if (status) {
       const knownIssues = resolveKnownIssuesFor(status, runtime.currentVersion, releasePlatforms)
       if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
+      const featuresOff = resolveFeaturesOffFor(status, runtime.currentVersion, releasePlatforms)
+      if (JSON.stringify(featuresOff) !== JSON.stringify(snapshot.featuresOff ?? [])) patch.featuresOff = featuresOff
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn

@@ -36,7 +36,13 @@ interface AccelerationViewProps {
   onRecheckBundle?(): void
   onContactSupport?(): void
   onRelaunch?(): void
+  /** 状态文件关掉了网络加速（remote-features.ts）：没连着时主按钮灰掉，连着的照常能停。缺省 = 没关。 */
+  suspended?: boolean
 }
+
+// yoyo 2026-10-28 批的字（「停用改」）。
+const suspendedTitle = '网络加速暂时停用'
+const suspendedBody = '修好以后会自动恢复。已经连着的照常用，也能照常停止。'
 
 // 客户看到的是「加速开不了」，要说清是本机文件的事、能自己怎么修。不写「重新安装会
 // 保留聊天记录和设置」：安装器是否保留还没实测过。
@@ -93,7 +99,7 @@ function describePhase(phase: AccelerationPhase | undefined, signedIn: boolean) 
  * 设置 › 网络加速最上面那张游戏加速卡（v4 批09，原来是一整页）。剩余免费时长、线路、开关、
  * 冲突和加速文件坏了的提示都留着；地球动画、三格详情去掉，计时规则在「使用帮助」里。
  */
-export function AccelerationView({ state, busy, signedIn, error, preview, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onRefreshLines, bundleCheck, onRecheckBundle, onContactSupport, onRelaunch }: AccelerationViewProps) {
+export function AccelerationView({ state, busy, signedIn, error, preview, onStart, onStartAnyway, onStop, onRefresh, onLogin, onHelp, onViewLog, lines, selectedLineId, rememberedLine, linesBusy, linesError, onSelectLine, onRefreshLines, bundleCheck, onRecheckBundle, onContactSupport, onRelaunch, suspended = false }: AccelerationViewProps) {
   // 点过「开启加速」、又回到准备就绪还挂着出错条：状态写「上次没连上」，再点「开启加速」或「重新检查」就恢复。
   const [startTried, setStartTried] = useState(false)
 
@@ -112,6 +118,8 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   const bundleDamaged = signedIn && unavailable && state?.unavailableReason === 'bundle-damaged'
   const damagedNotice = bundleDamaged ? bundleDamagedNotice(bundleCheck) : null
   const exhausted = phase === 'exhausted'
+  // 关掉了只拦新连：连着的、正在连、正在停的照下面走，停不掉才是更糟的事。
+  const blocked = signedIn && suspended && !active && !stopRetry && !transitioning
   const failedStart = startTried && phase === 'idle' && Boolean(notice) && !busy
   useEffect(() => { if (phase === 'active') setStartTried(false) }, [phase])
   function start() { setStartTried(true); onStart() }
@@ -119,7 +127,7 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   function refresh() { setStartTried(false); onRefresh() }
   // 免费时长用完：不再给换线路；主按钮直接去「帮助与客服」。连着的时候线路按钮照样摆着，写的是连上的那条，只是点不了。
   const linePickerShown = signedIn && !exhausted
-  const contactInstead = exhausted && signedIn && Boolean(onContactSupport)
+  const contactInstead = exhausted && signedIn && Boolean(onContactSupport) && !blocked
   const lineLocked = active || phase === 'connecting' || phase === 'stopping' || busy
   const connected = active || phase === 'stopping'
   const displayLine = connected ? state?.line : lines.find(line => line.id === selectedLineId)
@@ -140,8 +148,8 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
   ]
   const remaining = signedIn ? state?.remainingSeconds ?? null : null
   const phaseLabel = bundleDamaged ? '加速文件损坏' : failedStart ? '上次没连上' : describePhase(phase, signedIn)
-  const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : contactInstead ? '联系客服' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开启加速'
-  const actionDisabled = signedIn && !contactInstead && (busy || transitioning || unavailable || exhausted || !state)
+  const actionLabel = !signedIn ? '登录领取免费体验' : stopRetry ? '重试停止' : active ? '停止加速' : phase === 'connecting' ? '正在连接…' : phase === 'stopping' ? '正在停止…' : blocked ? '暂时开不了加速' : contactInstead ? '联系客服' : exhausted ? '免费体验已用完' : bundleDamaged ? '暂时开不了加速' : unavailable ? '线路准备中' : !state ? '正在读取状态…' : '开启加速'
+  const actionDisabled = signedIn && !contactInstead && (busy || transitioning || unavailable || exhausted || !state || blocked)
   const quotaNote = !signedIn ? '每个账号可领取 20 分钟免费体验' : active ? '按实际连接时长计时，停止后保留剩余额度' : exhausted ? '免费体验已经用完，后续服务请联系客服' : bundleDamaged ? '修好之前不计时' : unavailable ? '服务准备完成后即可开启，当前不消耗时长' : '连接成功才计时，随时停止，剩余下次继续'
   const action = !signedIn ? onLogin : active || stopRetry ? onStop : contactInstead && onContactSupport ? onContactSupport : start
   // 说明行的后半句：知道还剩多少就写多少，不知道（没登录、用完、准备中、文件坏了）照旧说计时规则。
@@ -181,6 +189,8 @@ export function AccelerationView({ state, busy, signedIn, error, preview, onStar
       </div>
       <Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : contactInstead ? ArrowUpRight : Power} loading={signedIn && !contactInstead && (busy || transitioning)} disabled={actionDisabled} onClick={action} testId={active || stopRetry ? 'acceleration-session-stop' : contactInstead ? 'acceleration-contact-support' : 'acceleration-session-start'}>{actionLabel}</Button>
     </div>
+
+    {suspended && <Notice tone="warn" testId="acceleration-suspended" title={suspendedTitle} body={suspendedBody} />}
 
     {conflicts.length > 0 && <Notice tone="warn" testId="acceleration-conflict" title={accelerationConflictNotice}
       body={`${conflicts.map(kind => accelerationConflictDescriptions[kind]).join('；')}。关掉之后再点「开启加速」会重新检测。`}

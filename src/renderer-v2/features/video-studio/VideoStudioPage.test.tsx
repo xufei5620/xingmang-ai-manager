@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
 import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioStorageKey, type VideoStudioProject } from './project'
 import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
-import { VideoStudioPage } from './VideoStudioPage'
+import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
 
 // 只渲染首屏：effect 不跑，所以这里不会读模型、不会发任何请求。
 function unused(): never { throw new Error('not expected during a static render') }
@@ -31,7 +31,7 @@ function storageWith(scope: string, project: VideoStudioProject | null): VideoSt
   return { getItem: (key) => key === videoStudioStorageKey(scope) ? raw : null, setItem: () => undefined }
 }
 
-function render(access: 'ready' | 'guest' | 'unsupported', project: VideoStudioProject | null = null) {
+function render(access: VideoStudioAccess, project: VideoStudioProject | null = null) {
   return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined}
     options={{ storage: storageWith('solov:7', project) }} />)
 }
@@ -59,6 +59,15 @@ describe('VideoStudioPage', () => {
     const markup = render('unsupported')
     expect(markup).toContain('data-testid="video-unsupported"')
     expect(markup).toContain('当前账号用不了视频剪辑')
+    expect(markup).not.toContain('data-testid="video-login"')
+    expect(markup).not.toContain('data-testid="video-idea-input"')
+  })
+
+  it('says the page is switched off for now and that the projects are still there', () => {
+    const markup = render('suspended')
+    expect(markup).toContain('data-testid="video-suspended"')
+    expect(markup).toContain('视频剪辑暂时停用')
+    expect(markup).toContain('你的工程都还在，修好以后会自动恢复。')
     expect(markup).not.toContain('data-testid="video-login"')
     expect(markup).not.toContain('data-testid="video-idea-input"')
   })

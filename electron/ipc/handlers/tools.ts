@@ -3,6 +3,8 @@
 import { cliCatalog, isActiveProviderId } from '../../catalog'
 import { parseDesktopAppUpdateRequest } from '../../external-client-contract'
 import { isInstallCancelledError } from '../../install-cancellation'
+import { runWhenOn } from '../../remote-feature-gate'
+import { toolInstallOffMessage } from '../../remote-features'
 import { parseNodeRuntimeInstallRequest } from '../parsers/system'
 import { parseCliInstallVersion, parseCliUninstallOptions, parseCodexDesktopLocale } from '../parsers/tools'
 import type { IpcHandlerContext } from './context'
@@ -67,6 +69,7 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const requestedVersion = parseCliInstallVersion(version)
     const providerName = cliCatalog[provider].name
+    await options.remoteFeatures?.assertOn(`install:${provider}`, toolInstallOffMessage(providerName))
     options.runtimeLog.log('info', 'maintenance', 'cli.install.started', `开始安装或更新 ${providerName}`, {
       provider,
       ...(requestedVersion ? { requestedVersion } : {}),
@@ -98,6 +101,8 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     const uninstallOptions = parseCliUninstallOptions(input)
     const providerName = cliCatalog[provider].name
+    // 「换成星芒装的」是先卸后装：装那一半关着时连卸也不做，不然客户手上的那份没了、新的又装不上。
+    if (uninstallOptions.reinstall) await options.remoteFeatures?.assertOn(`install:${provider}`, toolInstallOffMessage(providerName))
     options.runtimeLog.log('info', 'maintenance', 'cli.uninstall.started', `开始卸载 ${providerName}`, {
       provider,
       ...(uninstallOptions.reinstall ? { reinstall: true } : {}),
@@ -129,7 +134,9 @@ export function registerToolHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('setup:codex-status', () => service.inspectCodexSetupStatus())
   registerTrustedHandler('desktop:install-codex', (event, request: unknown) => {
     const update = parseDesktopAppUpdateRequest(request)
-    return update ? service.installCodexDesktop(event.sender, update) : service.installCodexDesktop(event.sender)
+    return runWhenOn(options.remoteFeatures, 'install:codexDesktop', toolInstallOffMessage('Codex 桌面端'), () => (
+      update ? service.installCodexDesktop(event.sender, update) : service.installCodexDesktop(event.sender)
+    ))
   })
   registerTrustedHandler('desktop:open-app-management-settings', async () => await options.openAppManagementSettings?.() ?? false)
   registerTrustedHandler('desktop:cancel-install-codex', () => {

@@ -1,5 +1,6 @@
 import { useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
 import type { AccountSessionState, AccountSourceTarget, ExternalToolId, PlatformCapabilities } from '../../../../electron/ipc-contract'
+import { isRemoteFeatureOffMessage } from '../../../../electron/remote-features'
 import type { LatestRequest } from '../../latest-request'
 import { operationFailureFrom } from '../../business-common'
 import { operationTargetOf, presentOperationFailure } from '../../operation-error'
@@ -403,7 +404,8 @@ export function useToolInstall(options: ToolInstallOptions) {
       if (!mounted.current) return
       setOperationError(failure)
       // 第一次装没装上：卡片上留一句原因和「看原因」。Codex 桌面端装不上时错误框里有自己的出路（去商店），卡片照旧。
-      if (!wasInstalled && id !== 'codexDesktop') {
+      // 状态文件关掉了安装的（remote-features.ts）不留：根本没开始装，「已撤回」说的不是这回事。
+      if (!wasInstalled && id !== 'codexDesktop' && !isRemoteFeatureOffMessage(failure.message)) {
         const reason = presentOperationFailure(failure)?.title ?? failure.message.replace(/[。.\s]+$/, '')
         setInstallFailures((current) => ({ ...current, [id]: { reason, failure } }))
       }
