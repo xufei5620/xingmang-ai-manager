@@ -23,6 +23,17 @@ function task(taskId = 'video_123'): StoredAiVideoTask {
   }
 }
 
+// 测上限的用例把上限前那些条直接写进文件，只让越过上限的那一条经过 store。一条条经
+// store 存满就是一百次带路径检查和刷盘的原子写，Windows CI 上一次几十到三百多毫秒，
+// 整条用例撞过 30 秒（#1513 的 vitest-1）。
+function seedState(root: string, state: Record<string, unknown>): string {
+  const directory = path.join(root, 'user-7')
+  fs.mkdirSync(directory, { recursive: true })
+  const filePath = path.join(directory, 'video-tasks.json')
+  fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, 'utf8')
+  return filePath
+}
+
 describe('AiVideoTaskStore', () => {
   it('persists pending tasks per account without credentials or remote URLs', async () => {
     const { root, store } = fixture()
@@ -191,10 +202,19 @@ describe('AiVideoTaskStore', () => {
   })
 
   it('keeps only the newest finished requests', async () => {
-    const { store } = fixture()
-    for (let index = 0; index <= MAXIMUM_FINISHED_VIDEO_TASKS; index += 1) {
-      await store.finish({ userId: 7, taskId: `video-${index}`, requestId: `request-${index}` }, { assetId: String(index).padStart(43, 'a') })
-    }
+    const { root, store } = fixture()
+    const newest = MAXIMUM_FINISHED_VIDEO_TASKS
+    seedState(root, {
+      version: AI_VIDEO_TASK_VERSION, userId: 7, tasks: [],
+      // Newest first, the order the store writes them in and trims by.
+      finished: Array.from({ length: MAXIMUM_FINISHED_VIDEO_TASKS }, (_, offset) => {
+        const index = newest - 1 - offset
+        return { requestId: `request-${index}`, taskId: `video-${index}`, assetId: String(index).padStart(43, 'a'), finishedAt: '2026-10-26T00:00:00.000Z' }
+      }),
+    })
+    // Exactly at the limit nothing is dropped yet.
+    await expect(store.findFinished(7, 'request-0')).resolves.toMatchObject({ taskId: 'video-0' })
+    await store.finish({ userId: 7, taskId: `video-${newest}`, requestId: `request-${newest}` }, { assetId: String(newest).padStart(43, 'a') })
     await expect(store.findFinished(7, 'request-0')).resolves.toBeNull()
     await expect(store.findFinished(7, 'request-1')).resolves.toMatchObject({ taskId: 'video-1' })
     await expect(store.findFinished(7, `request-${MAXIMUM_FINISHED_VIDEO_TASKS}`)).resolves.toMatchObject({ taskId: `video-${MAXIMUM_FINISHED_VIDEO_TASKS}` })
@@ -252,14 +272,22 @@ describe('AiVideoTaskStore', () => {
 
   it('keeps only the newest unclear requests and drops a damaged one on its own', async () => {
     const { root, store } = fixture()
-    await store.upsert(task('video-waiting'))
-    for (let index = 0; index <= MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS; index += 1) await store.markUnconfirmed(7, `request-${index}`)
+    const newest = MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS
+    const filePath = seedState(root, {
+      version: AI_VIDEO_TASK_VERSION, userId: 7, tasks: [task('video-waiting')],
+      // Newest first, the order the store writes them in and trims by.
+      unconfirmed: Array.from({ length: MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS }, (_, offset) => ({
+        requestId: `request-${newest - 1 - offset}`, submittedAt: '2026-10-28T00:00:00.000Z',
+      })),
+    })
+    // Exactly at the limit nothing is dropped yet.
+    await expect(store.findUnconfirmed(7, 'request-0')).resolves.toMatchObject({ requestId: 'request-0' })
+    await store.markUnconfirmed(7, `request-${newest}`)
     await expect(store.findUnconfirmed(7, 'request-0')).resolves.toBeNull()
     await expect(store.findUnconfirmed(7, `request-${MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS}`)).resolves.toMatchObject({ requestId: `request-${MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS}` })
 
     // A request id is whatever the page sent; one that looks like an endpoint must not condemn the paid tasks.
     await store.markUnconfirmed(7, 'https://evil.example/relay')
-    const filePath = path.join(root, 'user-7', 'video-tasks.json')
     const state = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { unconfirmed: Record<string, unknown>[] }
     state.unconfirmed.push({ requestId: 'request-undated', submittedAt: 'yesterday' })
     fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, 'utf8')
