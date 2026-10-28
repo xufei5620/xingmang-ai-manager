@@ -7,6 +7,7 @@ const { spawnSync } = require('node:child_process')
 const { Arch } = require('builder-util')
 const packageVersion = require('./package.json').version
 const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
+const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
@@ -269,6 +270,13 @@ module.exports = {
       const result = spawnSync(process.execPath, [path.join(__dirname, 'scripts/build-macos-system-proxy.cjs')], { stdio: 'inherit', shell: false })
       if (result.error || result.status !== 0) throw new Error('Mac 系统代理组件编译失败。')
     }
+  },
+  // Runs on linux-unpacked before fpm turns it into the deb; see
+  // scripts/linux-payload-modes.cjs for why the Electron 45 payload needs it.
+  // Windows and macOS payloads are left byte-for-byte as they were.
+  afterPack: async (context) => {
+    if (context.electronPlatformName !== 'linux') return
+    await ensureNoGroupOrOtherWrite(context.appOutDir)
   },
   publish: {
     provider: 'generic',

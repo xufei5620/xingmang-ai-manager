@@ -26,5 +26,8 @@
   `network-failure.ts` 认的两句 Electron 原句（`Attempted to redirect, but redirect policy was 'error'`、`Redirect was cancelled`）
   在 45 的二进制里还在。realm-account-smoke 在 Linux 上走到打开画布那步会被拒，是 Playwright 在 Linux 上总给 Electron 加
   `--no-sandbox`，画布按设计拒绝打开；这个冒烟只在 Windows CI 跑。
+- Linux 安装包：Electron 45 的 Linux 原包（zip）里文件权限是 0666/0777（43、44 是 0644/0755），electron-builder 原样带进
+  linux-unpacked，打出的 deb 装进 /opt 后人人可写，`verify-linux-deb.cjs` 当场拦下。新增 `scripts/linux-payload-modes.cjs`，
+  在 `afterPack` 里只对 Linux 去掉组写和其他人写（符号链接不跟），Windows、Mac 的包不动；本机重打 x64 deb 两道校验都过。
 - 还欠着、升 46 前要做：`safeStorage` 的同步接口在 45 报弃用、46 删除，各处加密存储要换成异步写法（`docs/RELEASING.md` 记了）。
   45 新带的 Windows 崩溃辅助文件 `electron_wer.dll` 只在调了 `crashReporter.start()` 时才注册，本程序没开（G05），不影响。

@@ -45,6 +45,7 @@ const macPackagingFiles = new Set([
   'e2e/macos-launch-smoke.mjs',
   'scripts/update-release-utils.cjs',
   'scripts/linux-artifact-names.cjs',
+  'scripts/linux-payload-modes.cjs',
   'scripts/electron-fuse-hardening.cjs',
   'scripts/prepare-acceleration-bundle.cjs',
   'scripts/stage-acceleration-bundle.cjs',
