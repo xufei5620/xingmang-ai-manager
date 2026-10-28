@@ -260,7 +260,13 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 // key) is loaded and becomes the first save, which is the whole migration. The
 // source keys are removed only after that save succeeded; a failed save keeps
 // them for the next attempt. Once migrated, a missing file store stays empty.
+// An import running for this account is waited out first (runHistoryImport).
 export async function loadChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
+  await settleHistoryImports(scope)
+  return readChatHistory(api, storage, scope)
+}
+
+async function readChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
   let snapshot: AiChatHistorySnapshot
   try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: unreadableHistory, saved: null } }
   if (snapshot.index === null) {
@@ -283,6 +289,30 @@ export async function loadChatHistory(api: { readHistory: (scope: string) => Pro
 const inFlightSaves = new Set<Promise<void>>()
 export async function settleHistoryWrites(): Promise<void> {
   while (inFlightSaves.size) await Promise.allSettled([...inFlightSaves])
+}
+
+// Imports still merging into an account's files (R28-2). The main process puts
+// a read behind the writes it has already been sent, not behind the one an
+// import has yet to send: a chat page opened meanwhile loaded the record the
+// import was replacing, and its next autosave deleted the imported
+// conversations again. loadChatHistory waits for these instead.
+const importsInFlight = new Map<string, Promise<unknown>>()
+
+/**
+ * Runs an import into this account's history; loadChatHistory for the account
+ * waits until it is done, and imports for one account run one at a time. work
+ * starts on a microtask, after it is registered, so a chat page that remounts
+ * synchronously inside it already waits.
+ */
+export function runHistoryImport<T>(scope: string, work: () => Promise<T>): Promise<T> {
+  const run = (importsInFlight.get(scope) ?? Promise.resolve()).catch(() => undefined).then(work)
+  importsInFlight.set(scope, run)
+  void run.catch(() => undefined).then(() => { if (importsInFlight.get(scope) === run) importsInFlight.delete(scope) })
+  return run
+}
+
+async function settleHistoryImports(scope: string): Promise<void> {
+  for (let running = importsInFlight.get(scope); running; running = importsInFlight.get(scope)) await running.catch(() => undefined)
 }
 
 // One save runs at a time; a save requested meanwhile only replaces the
@@ -427,9 +457,9 @@ export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWork
 
 /**
  * Reads this account's record the same way the chat page does, merges the
- * imported conversations and saves once. The caller unmounts the chat page and
- * waits on settleHistoryWrites first, so nothing else writes this account's
- * history in between.
+ * imported conversations and saves once. The caller runs it inside
+ * runHistoryImport, unmounts the chat page and waits on settleHistoryWrites
+ * first, so nothing else reads or writes this account's history in between.
  */
 export async function importConversationsIntoHistory(
   api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; writeHistory: (input: AiChatHistoryWrite) => Promise<void> },
@@ -437,7 +467,8 @@ export async function importConversationsIntoHistory(
   scope: string,
   imported: Conversation[],
 ): Promise<ChatImportResult> {
-  const loaded = await loadChatHistory(api, storage, scope)
+  // Not loadChatHistory: inside runHistoryImport that would wait on itself.
+  const loaded = await readChatHistory(api, storage, scope)
   if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
   const { state, added, skipped } = mergeImportedConversations(loaded.state, imported)
   if (!added) return { added, skipped }

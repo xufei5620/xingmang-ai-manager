@@ -9659,3 +9659,52 @@ test('sections on the check page sit 16 apart, the rows in a card reach its edge
     await clean(page)
   } finally { await page.close() }
 })
+
+// R28-2：「搬到新电脑」导入还没写完就点进聊天页，聊天页以前读到的是导入前那一份，
+// 打一个字自动保存就把刚导入的对话又删了。现在聊天页等导入写完再读。
+async function chatHistoryCalls(page, method) {
+  return page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).length, method)
+}
+test('a chat page opened while an import is still saving waits for it and keeps the imported conversation', async () => {
+  const page = await open('chatImport')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await page.evaluate(() => window.v2Test.holdNextChatHistoryRead())
+    await settings.getByTestId('settings-transfer-import').click()
+    await expect.poll(() => chatHistoryCalls(page, 'readAiChatHistory')).toBe(1)
+    await page.getByTestId('nav-chat').click()
+    await expect(page.getByTestId('page-chat')).toHaveAttribute('data-loading', 'true')
+    assert.equal(await chatHistoryCalls(page, 'readAiChatHistory'), 1)
+    await page.evaluate(() => window.v2Test.releaseChatHistoryRead())
+    await waitForToast(page, '导入了 1 个对话。')
+    await page.getByTestId('chat-conversation-from-old-computer').waitFor()
+    await page.getByTestId('chat-composer-input').fill('接着聊')
+    await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('接着聊')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the chat page on screen when an import lands reads it again instead of saving over it', async () => {
+  const page = await open('chatImport')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await page.evaluate(() => window.v2Test.holdNextImport())
+    await settings.getByTestId('settings-transfer-import').click()
+    await expect.poll(() => chatHistoryCalls(page, 'importAppData')).toBe(1)
+    await page.getByTestId('nav-chat').click()
+    const input = page.getByTestId('chat-composer-input')
+    await input.fill('导入前打的字')
+    await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('导入前打的字')
+    await page.evaluate(() => window.v2Test.releaseImport())
+    await waitForToast(page, '导入了 1 个对话。')
+    await page.getByTestId('chat-conversation-from-old-computer').waitFor()
+    await expect(input).toHaveValue('导入前打的字')
+    await input.fill('导入后接着打')
+    await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('导入后接着打')
+    assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
+    await clean(page)
+  } finally { await page.close() }
+})

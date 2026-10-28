@@ -363,6 +363,25 @@ test('the Windows required job tests and compiles the default renderer v2', () =
   assert.match(String(packageSteps[flagCheckIndex].run), /dist\/renderer-v2\.flag/)
 })
 
+// The two canvas boundary gates skip their dist-canvas half wherever no build
+// exists, and every `npm test` in CI runs before a build. The packaging job is
+// the one place that builds the canvas the smokes load, so the gates run there,
+// told that a missing build is a failure (#1393).
+test('the Windows packaging job checks the built canvas against both boundary gates', () => {
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const compileIndex = packageSteps.findIndex((step) => step.run === 'npm run compile')
+  const gateIndex = packageSteps.findIndex((step) => step.name === 'Verify the built canvas carries no credentials or network calls of its own')
+
+  assert.notEqual(gateIndex, -1, 'the built canvas must be checked somewhere in CI')
+  assert.ok(compileIndex < gateIndex, 'the gates need the compiled dist-canvas')
+  const step = packageSteps[gateIndex]
+  assert.equal(step.env?.XINGMANG_REQUIRE_CANVAS_DIST, '1')
+  assert.ok(step['timeout-minutes'] > 0)
+  for (const gate of ['scripts/verify-canvas-renderer-boundary.test.cjs', 'scripts/verify-canvas-network-boundary.test.cjs']) {
+    assert.ok(String(step.run).includes(gate), `${gate} must run against the build`)
+  }
+})
+
 test('splitting the Windows job did not drop a suite it used to run', () => {
   // The split is a wall-clock change and nothing else, so the shards have to
   // add up to exactly what the one job ran. vitest --shard partitions the
