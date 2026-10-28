@@ -40,6 +40,18 @@
 - 发布说明里会致谢报告者；如果你不希望被提及，请在报告里说明。
 - 我们不设漏洞赏金。
 
+## 核对安装包的来源
+
+2026 年 10 月 28 日以后发布的版本，每个安装包都带 GitHub 的出处证明（artifact attestation）。
+装了 GitHub CLI 并登录过（`gh auth login`）的话，可以这样核对一个安装包是不是由本仓库的
+发版工作流构建、之后有没有被改动过：
+
+```
+gh attestation verify <安装包文件> --repo xufei5620/xingmang-ai-manager --signer-workflow xufei5620/xingmang-ai-manager/.github/workflows/publish-release.yml
+```
+
+这之后发布的版本核对不通过，请先别安装，并按上面的方式私密报告给我们。
+
 ## 不在本仓库范围内的问题
 
 - **第三方命令行工具自身的漏洞**：Claude Code、Codex CLI、Grok CLI

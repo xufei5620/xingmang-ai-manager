@@ -457,6 +457,21 @@ Windows 安装包没有数字签名，`latest.yml` 又和安装包放在同一�
 
 **换钥匙**：`updateSigningPublicKeys` 可以同时放几把。先把新公钥加进去发一版，等大部分人升上去之后再把 secret 换成新私钥，最后再从名单里删掉旧公钥。在线加速节点（`docs/GLOBAL-ACCELERATION.md`「在线换节点」）用的是同一把钥匙、同一份名单，换钥匙时一起换：secret 换成新私钥以后，再跑一次 `acceleration-nodes` 用新钥匙重签线上那份。
 
+#### 出处证明
+
+2026-10-28 起（商业级差距报告 G21），`publish` 成功后同一次运行里的 `attest` 作业给这次真发出去的每个安装包（`*Setup.exe`、`*.dmg`、Mac 的更新 `*.zip`、`*.deb`）签一份出处证明（GitHub artifact attestation，SLSA build provenance）：「这个文件是本仓库的 `publish-release` 在哪个提交上出的」。证明存在 GitHub 上，签名记进 Sigstore 的公开透明日志。它和上面的更新包签名管的是两件事：更新包签名让客户端拒装别人换过的包；出处证明让任何人在客户端之外也能核对一个安装包是不是从这里出来的，懂行的客户、安全软件厂商问「这个 exe 是不是你们的」时拿得出凭据。
+
+- 怎么核对（要装 GitHub CLI 并先 `gh auth login`，随便一个 GitHub 账号都行）：
+
+  ```
+  gh attestation verify XingMang-AI-Manager-0.2.23-Setup.exe --repo xufei5620/xingmang-ai-manager --signer-workflow xufei5620/xingmang-ai-manager/.github/workflows/publish-release.yml
+  ```
+
+  通过时会列出出包的提交和工作流运行；文件被改过一个字节、或者不是这条工作流出的，都会失败。签好的证明也列在 <https://github.com/xufei5620/xingmang-ai-manager/attestations>。
+- `attest` 不挂环境、不读 secret、不装依赖，签证明要的 `id-token: write` 只给它一个作业（`scripts/publish-workflow-config.test.cjs` 钉住）；不多一次批准。
+- 它排在最后，失败了客户照常更新：更新源和发布页这时都已经换好，只是缺一份证明。到运行页面单独重跑 `attest` 这一个作业（Re-run this job），别点 Re-run failed jobs，理由和下面的 `cos-sync` 一样。重跑会再签一份，几份都有效。
+- 只给这之后发的版本签。之前发的版本没有证明，不补。
+
 ### 可选的 COS 国内文件分发同步
 
 配置 `XINGMANG_COS_SYNC_ENABLED=true` 及受限的 COS 上传凭据后，publish 作业建好 GitHub Release，同一次运行里单独的 `cos-sync` 作业接着把本次完整发布产物同步到 COS：挂 `cos-sync` 环境，不多一次批准，最长跑 330 分钟。它失败不影响更新源和 GitHub Release；到运行页面单独重跑 `cos-sync` 这一个作业（Re-run this job），已经传好的文件不再上传。别点 Re-run failed jobs：运行里还有别的作业红着时，它会把 publish 也带着重跑、再要一次批准。`cos-sync` 只同步 publish 当时实际发了的平台，之后改了 Linux 开关再重跑也不会多出 Linux。同步没传完时这条工作流的下一次发布会排队等它；着急就在上一次运行页面点 Cancel workflow 停掉同步，新版本同步完会把 COS 的 latest 换成新版。独立工作流也可以定时同步官方 ChatGPT 安装包。环境、权限、文件校验、断网重试、全球加速与首次运行步骤见 [COS-SYNC.md](COS-SYNC.md)。
