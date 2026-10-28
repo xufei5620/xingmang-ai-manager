@@ -11,6 +11,7 @@ const FILE_LABEL = 'AI 视频任务记录'
 const MAXIMUM_FILE_BYTES = 2 * 1024 * 1024
 export const MAXIMUM_VIDEO_TASKS = 200
 export const MAXIMUM_FINISHED_VIDEO_TASKS = 100
+export const MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS = 100
 export const AI_VIDEO_TASK_VERSION = 2
 const MAXIMUM_PROMPT_LENGTH = 2_000
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
@@ -60,11 +61,26 @@ export interface FinishedAiVideoTask {
 
 export type FinishedAiVideoAsset = Pick<FinishedAiVideoTask, 'assetId' | 'width' | 'height' | 'durationSeconds'>
 
+/**
+ * A paid request that left this machine without a task id coming back. It is
+ * written before the POST goes out, so a dropped reply, a 5xx, a stop pressed
+ * mid-submit and even the app being killed all leave it behind. The server may
+ * already have accepted (and charged for) the clip, but without a task id
+ * there is nothing to poll. A reopened video studio asks for its shot here and
+ * must hear "unclear, maybe paid" rather than "never sent": the latter puts
+ * the shot back to "not generated" and the next click pays a second time.
+ */
+export interface UnconfirmedAiVideoRequest {
+  requestId: string
+  submittedAt: string
+}
+
 interface AiVideoTaskState {
   version: typeof AI_VIDEO_TASK_VERSION
   userId: number
   tasks: StoredAiVideoTask[]
   finished: FinishedAiVideoTask[]
+  unconfirmed: UnconfirmedAiVideoRequest[]
 }
 
 export interface AiVideoTaskStoreOptions {
@@ -165,6 +181,13 @@ function readFinished(value: unknown): FinishedAiVideoTask | null {
   }
 }
 
+function readUnconfirmed(value: unknown): UnconfirmedAiVideoRequest | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  const entry = value as Partial<UnconfirmedAiVideoRequest>
+  if (!safeString(entry.requestId, 160) || typeof entry.submittedAt !== 'string' || Number.isNaN(Date.parse(entry.submittedAt))) return null
+  return { requestId: entry.requestId, submittedAt: entry.submittedAt }
+}
+
 function parseState(content: string, userId: number): AiVideoTaskState {
   const value = JSON.parse(content) as Partial<AiVideoTaskState>
   const version = (value as { version?: unknown }).version
@@ -179,18 +202,26 @@ function parseState(content: string, userId: number): AiVideoTaskState {
   // legitimately quote a URL; it is never fetched, and it is already persisted
   // verbatim beside the asset. Scanning it here would let one such prompt
   // condemn the whole file and lose every task waiting to be resumed.
-  const scanned = JSON.stringify({ ...value, finished: undefined, tasks: tasks.map((task) => ({ ...task, prompt: undefined })) })
+  const scanned = JSON.stringify({ ...value, finished: undefined, unconfirmed: undefined, tasks: tasks.map((task) => ({ ...task, prompt: undefined })) })
   if (secretOrEndpoint.test(scanned)) {
     throw new Error('AI 视频任务记录包含凭据或远程地址')
   }
-  // A bad entry among the finished ones only means one shot cannot find its
-  // clip again. It is dropped on its own and must not condemn the tasks above,
-  // which are still waiting on money already spent.
+  // A bad entry among the finished or unconfirmed ones only means one shot
+  // cannot find its clip again. It is dropped on its own and must not condemn
+  // the tasks above, which are still waiting on money already spent.
   const finished = (Array.isArray(value.finished) ? value.finished : [])
     .map(readFinished)
     .filter((entry): entry is FinishedAiVideoTask => entry !== null && !secretOrEndpoint.test(JSON.stringify(entry)))
     .slice(0, MAXIMUM_FINISHED_VIDEO_TASKS)
-  return { version: AI_VIDEO_TASK_VERSION, userId, tasks: tasks as StoredAiVideoTask[], finished }
+  const unconfirmed = (Array.isArray(value.unconfirmed) ? value.unconfirmed : [])
+    .map(readUnconfirmed)
+    .filter((entry): entry is UnconfirmedAiVideoRequest => entry !== null && !secretOrEndpoint.test(JSON.stringify(entry)))
+    .slice(0, MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS)
+  return { version: AI_VIDEO_TASK_VERSION, userId, tasks: tasks as StoredAiVideoTask[], finished, unconfirmed }
+}
+
+function emptyState(userId: number): AiVideoTaskState {
+  return { version: AI_VIDEO_TASK_VERSION, userId, tasks: [], finished: [], unconfirmed: [] }
 }
 
 export class AiVideoTaskStore {
@@ -242,6 +273,8 @@ export class AiVideoTaskStore {
         throw new Error('AI 视频待恢复任务已达 200 条上限，未覆盖已有任务记录')
       }
       state.tasks = [structuredClone(task), ...state.tasks.filter((entry) => entry.taskId !== task.taskId)]
+      // The task id is in hand: the request is no longer unclear.
+      state.unconfirmed = state.unconfirmed.filter((entry) => entry.requestId !== task.requestId)
       await this.write(task.userId, state)
       reservations.delete(reservationId)
       if (reservations.size === 0) this.reservations.delete(task.userId)
@@ -298,6 +331,44 @@ export class AiVideoTaskStore {
     })
   }
 
+  /**
+   * About to send a paid request: remember it until the task id comes back, in
+   * case it never does. Answers whether an earlier attempt under the same id was
+   * already unclear: the video studio resubmits such a shot under its old id,
+   * and that earlier attempt may have been paid for whatever becomes of this one.
+   */
+  async markUnconfirmed(userId: number, requestId: string): Promise<boolean> {
+    const entry = readUnconfirmed({ requestId, submittedAt: this.now().toISOString() })
+    if (!entry) throw new Error('AI 视频请求标识格式错误')
+    return this.enqueue(userId, async () => {
+      const state = await this.read(userId)
+      const earlier = state.unconfirmed.some((existing) => existing.requestId === requestId)
+      state.unconfirmed = [entry, ...state.unconfirmed.filter((existing) => existing.requestId !== requestId)]
+        .slice(0, MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS)
+      await this.write(userId, state)
+      return earlier
+    })
+  }
+
+  /** The request never got through (stopped before sending, or the server turned it down): nothing was paid. */
+  async clearUnconfirmed(userId: number, requestId: string): Promise<void> {
+    if (!safeString(requestId, 160)) return
+    return this.enqueue(userId, async () => {
+      const state = await this.read(userId)
+      if (!state.unconfirmed.some((entry) => entry.requestId === requestId)) return
+      state.unconfirmed = state.unconfirmed.filter((entry) => entry.requestId !== requestId)
+      await this.write(userId, state)
+    })
+  }
+
+  async findUnconfirmed(userId: number, requestId: string): Promise<UnconfirmedAiVideoRequest | null> {
+    if (!safeString(requestId, 160)) return null
+    return this.enqueue(userId, async () => {
+      const entry = (await this.read(userId)).unconfirmed.find((candidate) => candidate.requestId === requestId)
+      return entry ? structuredClone(entry) : null
+    })
+  }
+
   async findFinished(userId: number, requestId: string): Promise<FinishedAiVideoTask | null> {
     if (!safeString(requestId, 160)) return null
     return this.enqueue(userId, async () => {
@@ -319,7 +390,7 @@ export class AiVideoTaskStore {
     const filePath = this.filePath(userId)
     try {
       const content = await readSafeUtf8File(filePath, FILE_LABEL, MAXIMUM_FILE_BYTES)
-      return content === null ? { version: AI_VIDEO_TASK_VERSION, userId, tasks: [], finished: [] } : parseState(content, userId)
+      return content === null ? emptyState(userId) : parseState(content, userId)
     } catch {
       try {
         const backup = `${filePath}.corrupt-${this.now().getTime()}-${this.randomUUID()}.bak`
@@ -327,7 +398,7 @@ export class AiVideoTaskStore {
       } catch {
         // Unsafe or missing state is left untouched and ignored.
       }
-      return { version: AI_VIDEO_TASK_VERSION, userId, tasks: [], finished: [] }
+      return emptyState(userId)
     }
   }
 
@@ -337,8 +408,8 @@ export class AiVideoTaskStore {
     ensureSafeDataDirectory(directory, FILE_LABEL)
     // Older builds read only `tasks` and drop the rest when they write, which
     // costs nothing but the shots they never knew to look for.
-    const { finished, ...rest } = state
-    const content = `${JSON.stringify(finished.length ? state : rest, null, 2)}\n`
+    const { finished, unconfirmed, ...rest } = state
+    const content = `${JSON.stringify({ ...rest, ...(finished.length ? { finished } : {}), ...(unconfirmed.length ? { unconfirmed } : {}) }, null, 2)}\n`
     if (Buffer.byteLength(content, 'utf8') > MAXIMUM_FILE_BYTES) throw new Error('AI 视频任务记录超过安全上限')
     await writeAtomicSafeUtf8File(this.filePath(userId), content, FILE_LABEL)
   }

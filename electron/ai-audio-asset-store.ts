@@ -1,7 +1,7 @@
 import path from 'node:path'
 import fs from 'node:fs'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
-import { assertNoReparseComponents, ensureSafeDataDirectory, removeSafeDataFile } from './safe-local-data'
+import { assertNoReparseComponents, ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeBinaryFile } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
@@ -9,6 +9,9 @@ import { inspectIsoBmffMediaMetadata, inspectWaveDurationSeconds } from './media
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 
 const FILE_LABEL = 'AI 音频资产'
+// 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
+// 下的结果给 0o644，不用原子写默认的 0o600。
+const SAVED_COPY_FILE_MODE = 0o644
 const DEFAULT_MAXIMUM_AUDIO_BYTES = 128 * 1024 * 1024
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
@@ -350,7 +353,8 @@ export class AiAudioAssetStore {
     if (!target) return false
     await authorize?.()
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('音频另存地址无效')
-    await fs.promises.writeFile(target, owned.bytes).catch(() => { throw new Error('音频另存失败，请检查目标目录写入权限') })
+    await writeAtomicSafeBinaryFile(target, owned.bytes, '音频另存文件', { mode: SAVED_COPY_FILE_MODE })
+      .catch(() => { throw new Error('音频另存失败，请检查目标目录写入权限') })
     return true
   }
 
