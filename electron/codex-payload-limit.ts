@@ -329,7 +329,13 @@ export function createCodexRolloutWatcher(options: CodexRolloutWatcherOptions) {
 
 /** 处理过（413）、提前提醒过的会话：会话 ID → 时刻。 */
 export interface CodexPayloadState {
+  /** 线路 1 上报 413、处理过的。 */
   handled: Record<string, number>
+  /**
+   * 线路 2 上也报了 413、提示过新开对话的。跟线路 1 分开记（R29-02）：记在一起时，线路 1 上处理过、换到线路 2
+   * 的对话再超，就一声不吭。存下的记录以前没有这一项，读出来是空的。
+   */
+  handledDirect: Record<string, number>
   warned: Record<string, number>
 }
 
@@ -368,6 +374,10 @@ function isRouteSite(siteId: string): siteId is RelayRouteSiteId {
   return siteId === 'solov' || siteId === 'solov-api'
 }
 
+function copyState(state: CodexPayloadState): CodexPayloadState {
+  return { handled: { ...state.handled }, handledDirect: { ...state.handledDirect }, warned: { ...state.warned } }
+}
+
 function pruneSessions(records: Record<string, number>, at: number): Record<string, number> {
   const kept = Object.entries(records)
     .filter(([, recordedAt]) => recordedAt <= at && at - recordedAt < rememberedSessionMs)
@@ -377,7 +387,8 @@ function pruneSessions(records: Record<string, number>, at: number): Record<stri
 }
 
 /**
- * 认出一次 413 以后怎么办（需求三）：同一个会话只处理、只提示一次。
+ * 认出一次 413 以后怎么办（需求三）：同一个会话在每条线路上只处理、只提示一次；线路 2 上提示过新开对话的，
+ * 回到线路 1 再报也不管（线路 2 都发不出去，线路 1 更不行，再换一次线只会让客户白重开一次 Codex）。
  * - 地址是线路 2：已经超过线路 2 的上限，只提示新开对话。
  * - 地址是线路 1：设置里选了只用线路 1，只提示；「自动」的站线路 2 查得通就换过去、让 Codex 跟过去、提示重开，
  *   查不通只提示；已经在线路 2 上了（换线以前开的对话），提示重开。
@@ -385,12 +396,12 @@ function pruneSessions(records: Record<string, number>, at: number): Record<stri
  */
 export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDependencies) {
   const now = dependencies.now ?? Date.now
-  let state: CodexPayloadState = { handled: {}, warned: {} }
+  let state: CodexPayloadState = { handled: {}, handledDirect: {}, warned: {} }
   try {
     const saved = dependencies.readState()
-    if (saved) state = { handled: { ...saved.handled }, warned: { ...saved.warned } }
+    if (saved) state = copyState(saved)
   } catch {
-    state = { handled: {}, warned: {} }
+    state = { handled: {}, handledDirect: {}, warned: {} }
   }
   let writing: Promise<void> = Promise.resolve()
 
@@ -398,14 +409,16 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
     try { dependencies.log?.(level, event, message, detail) } catch { /* 记日志失败不影响别的 */ }
   }
 
-  function seen(sessionId: string): boolean {
-    return Object.hasOwn(state.handled, sessionId)
+  /** 线路 2 上提示过新开对话的，哪条线路再报都不管（见上）。 */
+  function seen(sessionId: string, line: RelayEndpointId): boolean {
+    if (Object.hasOwn(state.handledDirect, sessionId)) return true
+    return line === 'primary' && Object.hasOwn(state.handled, sessionId)
   }
 
   function record(field: keyof CodexPayloadState, sessionId: string): void {
     const at = now()
     state = { ...state, [field]: pruneSessions({ ...state[field], [sessionId]: at }, at) }
-    const copy: CodexPayloadState = { handled: { ...state.handled }, warned: { ...state.warned } }
+    const copy = copyState(state)
     // 一个写完再写下一个。存不下最多重启以后同一个对话再提示一次。
     writing = writing.then(() => dependencies.writeState(copy)).catch(() => {
       log('warn', 'codex-payload.persist-failed', '处理过的 Codex 对话没有记下来，重启后可能再提示一次', {})
@@ -435,8 +448,8 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
       // 不是星芒的线路（官方账号、别家中转）。
       if (!endpoint) return
       const activeSiteId = dependencies.activeSiteId()
-      if (endpoint.siteId !== activeSiteId || seen(event.sessionId)) return
-      record('handled', event.sessionId)
+      if (endpoint.siteId !== activeSiteId || seen(event.sessionId, endpoint.endpointId)) return
+      record(endpoint.endpointId === 'direct' ? 'handledDirect' : 'handled', event.sessionId)
       const action = await decide(endpoint.siteId, endpoint.endpointId)
       if (action !== 'switched' && action !== 'already') notify(action)
       log('info', 'relay.route.payload-too-large', action === 'switched'
@@ -453,7 +466,7 @@ export function createCodexPayloadLimitService(dependencies: CodexPayloadLimitDe
     },
     largeSession(event: CodexLargeSessionEvent): void {
       if (dependencies.warnNearing === false || event.rolloutBytes < codexPayloadNearingBytes) return
-      if (seen(event.sessionId) || Object.hasOwn(state.warned, event.sessionId)) return
+      if (seen(event.sessionId, 'primary') || Object.hasOwn(state.warned, event.sessionId)) return
       const siteId = dependencies.activeSiteId()
       if (!isRouteSite(siteId) || !dependencies.codexOnRelay() || dependencies.toolLine(siteId) !== 'primary') return
       record('warned', event.sessionId)
@@ -483,7 +496,7 @@ export function parseCodexPayloadState(text: string): CodexPayloadState | null {
   let value: unknown
   try { value = JSON.parse(text) } catch { return null }
   if (!isRecord(value) || value.version !== 1) return null
-  return { handled: parseSessions(value.handled), warned: parseSessions(value.warned) }
+  return { handled: parseSessions(value.handled), handledDirect: parseSessions(value.handledDirect), warned: parseSessions(value.warned) }
 }
 
 /** 存处理过、提醒过的会话（codex-payload-sessions.json）。读坏了当没有：最多同一个对话再提示一次。 */
