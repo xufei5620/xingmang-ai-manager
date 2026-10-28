@@ -232,8 +232,14 @@ async function readDatasetLimits(client, zoneTag) {
 // 统计结束在这一分钟的开头，往前推 days 天；比 Cloudflare 留的更早的部分截掉。
 function planWindow(now, days, limits) {
   const end = Math.floor(now.getTime() / 60000) * 60000
+  return planWindowSince(now, end - days * 24 * 60 * 60 * 1000, limits)
+}
+
+// 从 from 那一分钟的开头统计到现在这一分钟的开头（放量体检从新版发出去那一刻算起）。
+function planWindowSince(now, from, limits) {
+  const end = Math.floor(now.getTime() / 60000) * 60000
   const earliest = now.getTime() - limits.notOlderThanMs + RETENTION_MARGIN_MS
-  const requested = end - days * 24 * 60 * 60 * 1000
+  const requested = Math.floor(from / 60000) * 60000
   const start = Math.max(requested, Math.ceil(earliest / 60000) * 60000)
   if (start >= end) throw new StatsError('Cloudflare 留的统计太短，查不出任何一段')
   const pieces = []
@@ -1296,6 +1302,19 @@ async function collectUpdateFeedStats({ token, days, now = new Date(), fetchImpl
   return renderReport(aggregateStats(pieces, limits.withIp), window, limits, days, downloads, usage)
 }
 
+/**
+ * 放量体检（scripts/rollout-health.cjs）用：从 from 起到现在的每天打卡。这个套餐的统计不能按请求路径分时
+ * usage 是 null，和 renderReport 的约定一样。
+ */
+async function collectUsageSince({ token, from, now = new Date(), fetchImpl = fetch }) {
+  const client = createApiClient(validateToken(token), fetchImpl)
+  const zoneTag = await resolveZoneId(client)
+  const limits = await readDatasetLimits(client, zoneTag)
+  const window = planWindowSince(now, from, limits)
+  const spec = usageQuery(limits)
+  return { window, usage: spec ? summarizeUsage(await queryWindow(client, zoneTag, limits, window, spec), window) : null }
+}
+
 function parseArguments(argv) {
   if (argv.length === 0) return {}
   if (argv.length === 2 && argv[0] === '--days') return { days: argv[1] }
@@ -1321,6 +1340,7 @@ module.exports = {
   aggregateStats,
   classifyUserAgent,
   collectUpdateFeedStats,
+  collectUsageSince,
   parseDays,
   networkOf,
   parseInstallerPath,
