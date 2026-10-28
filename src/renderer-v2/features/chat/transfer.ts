@@ -1,11 +1,11 @@
 import type { XingmangApi } from '../../../../electron/ipc-contract'
 import type { Conversation } from './state'
-import { exportableConversations, importConversationsIntoHistory, loadChatHistory, settleHistoryWrites, type ChatStorage } from './storage'
+import { exportableConversations, importConversationsIntoHistory, loadChatHistory, settleHistoryWrites, type ChatImportResult, type ChatStorage } from './storage'
 
 /** 设置页「搬到新电脑」里聊天记录那一半，只在登录后才有（聊天记录按账号分开存）。 */
 export interface ChatTransfer {
   exportConversations: () => Promise<unknown[]>
-  importConversations: (conversations: Conversation[]) => Promise<number>
+  importConversations: (conversations: Conversation[]) => Promise<ChatImportResult>
 }
 
 export type ChatTransferBridge = Pick<XingmangApi, 'readAiChatHistory' | 'writeAiChatHistory'>
@@ -29,7 +29,7 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
       return exportableConversations(loaded.state)
     },
     async importConversations(conversations) {
-      if (!conversations.length) return 0
+      if (!conversations.length) return { added: 0, skipped: 0 }
       unmountChat()
       await settleHistoryWrites()
       return importConversationsIntoHistory(api, storage, scope, conversations)
