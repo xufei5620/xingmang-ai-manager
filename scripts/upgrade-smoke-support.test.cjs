@@ -38,6 +38,7 @@ const {
   setWindowsAsarIntegrity,
   sha512Base64,
   swapAsarText,
+  waitForHostsBlock,
 } = require('./upgrade-smoke-support.cjs')
 const { parseLatestMetadata } = require('./update-release-utils.cjs')
 const { verifyManifestText, signManifestText } = require('./update-manifest-signature.cjs')
@@ -282,6 +283,54 @@ test('addHostsBlock and removeHostsBlock put the hosts file back the way it was'
   assert.equal(removeHostsBlock(blocked), original.replace(/\r\n/g, '\n'))
   assert.equal(removeHostsBlock('127.0.0.1 localhost'), '127.0.0.1 localhost')
   assert.throws(() => removeHostsBlock('# xingmang-upgrade-smoke begin\n127.0.0.1 a\n'), /没有结尾/)
+})
+
+// A resolver that keeps answering from outside for each name until the round
+// given for it, on a clock that only the waits move.
+function hostsResolverScene(outwardUntilRound) {
+  const scene = { clock: 0, round: 0, retries: 0, asked: [], leaked: [] }
+  scene.options = {
+    resolvesOutward: async (host) => {
+      scene.asked.push(`${scene.round}:${host}`)
+      return scene.round < (outwardUntilRound[host] || 0)
+    },
+    retry: (leaking) => {
+      scene.leaked.push(leaking)
+      scene.retries += 1
+      scene.round += 1
+    },
+    sleep: async (milliseconds) => {
+      scene.clock += milliseconds
+    },
+    budgetMs: 60_000,
+    pollMs: 2000,
+    now: () => scene.clock,
+  }
+  return scene
+}
+
+test('waitForHostsBlock goes on at once when the hosts file already took', async () => {
+  const scene = hostsResolverScene({})
+  assert.deepEqual(await waitForHostsBlock(['xm.solov.cc', 'api.solov.cc'], scene.options), { retries: 0, elapsedMs: 0 })
+  assert.equal(scene.retries, 0)
+  assert.deepEqual(scene.asked, ['0:xm.solov.cc', '0:api.solov.cc'])
+})
+
+test('waitForHostsBlock redoes the change until a whole round answers loopback only', async () => {
+  const scene = hostsResolverScene({ 'xm.solov.cc': 1, 'api.solov.cc': 2 })
+  assert.deepEqual(await waitForHostsBlock(['xm.solov.cc', 'api.solov.cc'], scene.options), { retries: 2, elapsedMs: 4000 })
+  assert.equal(scene.retries, 2)
+  assert.deepEqual(scene.leaked, [['xm.solov.cc', 'api.solov.cc'], ['api.solov.cc']])
+  // A name that stopped leaking is still asked again in every later round.
+  assert.deepEqual(scene.asked, ['0:xm.solov.cc', '0:api.solov.cc', '1:xm.solov.cc', '1:api.solov.cc', '2:xm.solov.cc', '2:api.solov.cc'])
+})
+
+test('waitForHostsBlock fails with the names still leaking once the budget is spent', async () => {
+  const scene = hostsResolverScene({ 'xm.solov.cc': Infinity, 'api.solov.cc': 1 })
+  await assert.rejects(waitForHostsBlock(['xm.solov.cc', 'api.solov.cc'], scene.options),
+    (error) => /重写 30 遍、等了 60 秒，这些域名还解析到外面：xm\.solov\.cc，不敢打开旧版本/.test(error.message))
+  assert.equal(scene.retries, 30)
+  assert.equal(scene.clock, 60_000)
 })
 
 test('the version records read the way the apps write them', () => {

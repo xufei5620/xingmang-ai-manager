@@ -384,6 +384,34 @@ function removeHostsBlock(text) {
   return source.slice(0, begin) + source.slice(end + HOSTS_BLOCK_END.length + 1)
 }
 
+/**
+ * Resolves every blocked name until a whole round answers loopback only.
+ * On macOS the hosts file and the HUP reach mDNSResponder on its own queue
+ * after the calls that made them have returned, and an answer it fetches from
+ * outside in that window stays in its cache. The run of 2026-10-28
+ * (40730079976) checked straight away and found every name still resolving
+ * outward, while the other runs found none. So a round with a leak redoes the
+ * change (`retry`, handed the names that leaked: write the file again, flush,
+ * HUP) and every name is asked again; after `budgetMs` the names still
+ * leaking fail the run as before.
+ */
+async function waitForHostsBlock(hosts, { resolvesOutward, retry, sleep, budgetMs, pollMs, now = Date.now }) {
+  const started = now()
+  for (let retries = 0; ; retries += 1) {
+    const leaking = []
+    for (const host of hosts) {
+      if (await resolvesOutward(host)) leaking.push(host)
+    }
+    const elapsedMs = now() - started
+    if (leaking.length === 0) return { retries, elapsedMs }
+    if (elapsedMs >= budgetMs) {
+      throw new Error(`hosts 改了，重写 ${retries} 遍、等了 ${Math.round(elapsedMs / 1000)} 秒，这些域名还解析到外面：${leaking.join('、')}，不敢打开旧版本`)
+    }
+    retry(leaking)
+    await sleep(pollMs)
+  }
+}
+
 function readVersionField(text, field) {
   try {
     const value = JSON.parse(String(text))
@@ -589,4 +617,5 @@ module.exports = {
   setWindowsAsarIntegrity,
   sha512Base64,
   swapAsarText,
+  waitForHostsBlock,
 }
