@@ -244,6 +244,26 @@ describe('executeCanvasRun', () => {
     expect(JSON.stringify(record)).not.toContain('Users')
   })
 
+  it('does not leave a fast-failing executor rejection unhandled while the processing stage is persisted', async () => {
+    // Persisting a stage really writes to disk, so the executor's rejection
+    // lands before the engine gets round to awaiting it. Node treats that as
+    // unhandled and main.ts forwards it to crash reporting.
+    const unhandled = vi.fn()
+    process.on('unhandledRejection', unhandled)
+    try {
+      const record = await executeCanvasRun(runOptions(graph([node('clip', 'video')]), {
+        executors: executors({ video: async () => { throw new Error('当前账号暂不支持视频生成') } }),
+        persistRecord: () => new Promise<void>((resolve) => setTimeout(resolve, 5)),
+      }))
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      expect(record.outcome).toMatchObject({ failed: ['clip'] })
+      expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '当前账号暂不支持视频生成' })
+    } finally {
+      process.off('unhandledRejection', unhandled)
+    }
+    expect(unhandled).not.toHaveBeenCalled()
+  })
+
   it('rejects missing nodes and cycles before dispatching executors', async () => {
     const text = vi.fn(async () => ({ outputText: 'unused' }))
     await expect(executeCanvasRun(runOptions(graph([node('a', 'text')], [edge('ghost', 'a')]), {
