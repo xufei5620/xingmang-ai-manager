@@ -8,9 +8,12 @@ import {
   type MouseEvent,
   type VideoHTMLAttributes,
 } from 'react'
-import { ChevronLeft, ChevronRight, ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ImageOff, Maximize, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X, ZoomIn, ZoomOut } from 'lucide-react'
 import type { AssetRef } from '../model'
 import { videoCoverCache } from '../library/video-cover'
+import { resolveCanvasAssetDisplayUrl } from '../asset-display-url'
+import { mediaPreviewFitZoom, mediaPreviewFocusIndex, mediaPreviewStepZoom } from './media-lightbox-model'
+import '../theme/editor-lightbox.css'
 
 interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   src: string
@@ -38,7 +41,7 @@ export function SafeImage({ src, fallbackSrc, fallbackLabel = '素材不可用',
       </span>
     )
   }
-  return <img {...imageProps} className={className} src={activeSrc} onError={(event) => { setFailedSrc(activeSrc); onError?.(event) }} />
+  return <img {...imageProps} className={className} src={resolveCanvasAssetDisplayUrl(activeSrc)} onError={(event) => { setFailedSrc(activeSrc); onError?.(event) }} />
 }
 
 interface VideoCoverImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
@@ -88,7 +91,7 @@ export function VideoCoverImage({ thumbnailUrl, videoUrl, fallbackLabel = '视�
     <img
       {...props}
       className={className}
-      src={usable ? thumbnailUrl : cover as string}
+      src={resolveCanvasAssetDisplayUrl(usable ? thumbnailUrl : cover as string)}
       onError={() => setThumbnailFailed(true)}
     />
   )
@@ -190,7 +193,7 @@ export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', cl
       {...videoProps}
       ref={ref}
       className={canvasPlayback ? 'wf-canvas-video-el' : className}
-      src={src}
+      src={resolveCanvasAssetDisplayUrl(src)}
       preload="metadata"
       controls={canvasPlayback ? false : controls}
       style={canvasPlayback ? undefined : style}
@@ -265,7 +268,7 @@ async function readAudioWaveform(src: string): Promise<AudioWaveform> {
   const cached = waveformCache.get(src)
   if (cached) return cached
   const request = (async () => {
-    const response = await fetch(src, { cache: 'force-cache' })
+    const response = await fetch(resolveCanvasAssetDisplayUrl(src) ?? '', { cache: 'force-cache', credentials: 'same-origin', redirect: 'error' })
     if (!response.ok) throw new Error(`音频素材读取失败：${response.status}`)
     const declaredBytes = Number(response.headers.get('content-length'))
     if (Number.isFinite(declaredBytes) && declaredBytes > maximumWaveformBytes) throw new Error('音频过大，已跳过波形解码')
@@ -363,7 +366,7 @@ export function AudioPreview({ src, className, muted: mutedProp, autoPlay, ...pr
         {...audioProps}
         ref={audioRef}
         className="media-audio-element"
-        src={src}
+        src={resolveCanvasAssetDisplayUrl(src)}
         preload="metadata"
         autoPlay={autoPlay}
         muted={muted}
@@ -428,10 +431,63 @@ interface MediaLightboxProps {
 }
 
 export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, onRename, onPrevious, onNext }: MediaLightboxProps) {
+  const dialogRef = useRef<HTMLDivElement>(null)
+  const closeRef = useRef<HTMLButtonElement>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [natural, setNatural] = useState<{ url: string; width: number; height: number } | null>(null)
+  const [viewport, setViewport] = useState({ width: 0, height: 0 })
+  const [manualZoom, setManualZoom] = useState<number | null>(null)
+  const open = Boolean(asset?.localUrl)
+  const dimensions = natural?.url === asset?.localUrl ? natural : asset?.width && asset.height ? { width: asset.width, height: asset.height } : null
+  const fitZoom = dimensions ? mediaPreviewFitZoom(dimensions, viewport) : 1
+  const zoom = manualZoom ?? fitZoom
+
+  useEffect(() => {
+    if (!open) return
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    closeRef.current?.focus({ preventScroll: true })
+    const keepFocusInside = (event: FocusEvent) => {
+      const dialog = dialogRef.current
+      if (!dialog || !(event.target instanceof Node) || dialog.contains(event.target)) return
+      // A nested rename/asset dialog may legitimately take focus. Only the
+      // foremost visible modal owns it; native video controls keep native Tab.
+      const modals = [...document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"], [role="alertdialog"][aria-modal="true"]')].filter((element) => element.getClientRects().length > 0)
+      if (modals.at(-1) === dialog) closeRef.current?.focus({ preventScroll: true })
+    }
+    document.addEventListener('focusin', keepFocusInside)
+    return () => {
+      document.removeEventListener('focusin', keepFocusInside)
+      if (previous?.isConnected) previous.focus({ preventScroll: true })
+    }
+  }, [open])
+
+  useEffect(() => {
+    setManualZoom(null)
+  }, [asset?.localUrl])
+
+  useEffect(() => {
+    const element = viewportRef.current
+    if (!open || !element) return
+    const update = () => setViewport({ width: Math.max(1, element.clientWidth - 32), height: Math.max(1, element.clientHeight - 32) })
+    update()
+    const observer = new ResizeObserver(update)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [open, asset?.kind])
+
+  useEffect(() => {
+    const element = viewportRef.current
+    if (!element) return
+    element.scrollLeft = Math.max(0, (element.scrollWidth - element.clientWidth) / 2)
+    element.scrollTop = Math.max(0, (element.scrollHeight - element.clientHeight) / 2)
+  }, [zoom, dimensions?.width, dimensions?.height])
+
   useEffect(() => {
     if (!asset) return undefined
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') return onClose()
+      if (event.defaultPrevented) return
+      if (event.target instanceof Element && event.target.closest('[aria-modal="true"]') !== dialogRef.current) return
+      if (event.key === 'Escape') { event.preventDefault(); return onClose() }
       // Arrow keys belong to a focused video's scrubber while it has focus;
       // stepping the viewer is only safe when they are not being used to seek.
       const active = document.activeElement
@@ -444,9 +500,17 @@ export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, o
   }, [asset, onClose, onPrevious, onNext])
 
   if (!asset?.localUrl) return null
+  const previewUrl = asset.localUrl
   const mediaLabel = asset.kind === 'video' ? '视频预览' : asset.kind === 'audio' ? '音频预览' : '图片预览'
   return (
-    <div className="media-lightbox" role="dialog" aria-modal="true" aria-label={title || mediaLabel} onMouseDown={(event) => {
+    <div ref={dialogRef} tabIndex={-1} className="media-lightbox media-lightbox-enhanced" role="dialog" aria-modal="true" aria-label={title || mediaLabel} onKeyDown={(event) => {
+      if (event.key !== 'Tab') return
+      if (document.activeElement instanceof HTMLMediaElement) return
+      const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), video[controls], audio[controls], [tabindex]:not([tabindex="-1"])') ?? [])].filter((element) => element.getClientRects().length > 0)
+      const target = mediaPreviewFocusIndex(focusable.length, focusable.indexOf(document.activeElement as HTMLElement), event.shiftKey)
+      if (target !== null) { event.preventDefault(); focusable[target].focus() }
+      else if (focusable.length === 0) event.preventDefault()
+    }} onMouseDown={(event) => {
       if (event.target === event.currentTarget) onClose()
     }}>
       <div className="media-lightbox-toolbar">
@@ -466,9 +530,23 @@ export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, o
             <MoreHorizontal size={18} />
           </button>
         )}
-        <button type="button" title="关闭预览" aria-label="关闭媒体预览" onClick={onClose}><X size={18} /></button>
+        <button ref={closeRef} type="button" title="关闭预览 (Esc)" aria-label="关闭媒体预览" onClick={onClose}><X size={18} /></button>
       </div>
-      {asset.kind === 'image' && <SafeImage className="media-lightbox-image" src={asset.localUrl} alt={title || '图片大图预览'} />}
+      {asset.kind === 'image' && <>
+        <div className="media-lightbox-zoom" role="toolbar" aria-label="图片缩放">
+          <button type="button" title="缩小" aria-label="缩小图片" disabled={!dimensions || zoom <= 0.01} onClick={() => setManualZoom(mediaPreviewStepZoom(zoom, -1))}><ZoomOut size={16} /></button>
+          <output aria-label="图片缩放比例">{Math.round(zoom * 100)}%</output>
+          <button type="button" title="放大" aria-label="放大图片" disabled={!dimensions || zoom >= 4} onClick={() => setManualZoom(mediaPreviewStepZoom(zoom, 1))}><ZoomIn size={16} /></button>
+          <button type="button" className="is-text" aria-pressed={manualZoom === null} disabled={!dimensions} onClick={() => setManualZoom(null)}><Maximize size={14} />适配</button>
+          <button type="button" className="is-text" aria-pressed={manualZoom === 1} disabled={!dimensions} onClick={() => setManualZoom(1)}>100%</button>
+          <span>放大后可滚动查看细节</span>
+        </div>
+        <div ref={viewportRef} className="media-lightbox-image-viewport" tabIndex={0} role="region" aria-label="图片预览区域，可滚动查看放大后的细节">
+          <div className="media-lightbox-image-stage">
+            <SafeImage key={previewUrl} className="media-lightbox-image" src={previewUrl} alt={title || '图片大图预览'} draggable={false} style={dimensions ? { width: dimensions.width * zoom, height: dimensions.height * zoom } : undefined} onLoad={(event) => setNatural({ url: previewUrl, width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight })} />
+          </div>
+        </div>
+      </>}
       {asset.kind === 'video' && <ViewportVideo className="media-lightbox-video" src={asset.localUrl} aria-label={title || '视频放大预览'} controls autoPlay />}
       {asset.kind === 'audio' && <div className="media-lightbox-audio"><Music2 size={32} /><AudioPreview src={asset.localUrl} /></div>}
     </div>

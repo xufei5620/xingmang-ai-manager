@@ -28,6 +28,11 @@ const sourceAllowances = {
     counts: { fetch: 1 },
     reason: '画音频波形：先用 isLocalCanvasAssetUrl 确认是本地素材（xingmang-asset:），再读它的字节',
   },
+  // 放宽：yoyo 10-28 亲手回「OpenCV放行同意」，只给这一个文件，个数钉死。
+  'canvas-v2/src/vendor/opencv-grabcut/runtime/opencv-grabcut-2b3586b4fe00ea68120073e8902655b27997b6a61951074fd78a2df1ff74d6a5.js': {
+    counts: { fetch: 1, XMLHttpRequest: 5 },
+    reason: '随内核带进来的 OpenCV 抠图运行时（OpenCV 4.13.0 由 Emscripten 4.0.20 生成，WASM=0，来源见 docs/canvas-third-party.json）：这几处是 Emscripten 读外部文件用的通用代码，这份构建不读任何外部文件；画布 CSP 的 connect-src 只放行 xingmang-asset:，想连也连不出去',
+  },
 }
 
 function codeFiles(directory, { includeTests }) {

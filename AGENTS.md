@@ -26,7 +26,7 @@
 
 **内置的几块能力**：
 - **星芒账号**（2026-08）：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值，登录后自动签发 CLI Key 并写进 CLI 配置。历史账号站 `api.solov.cc` 走 sub2api（`sub2api-*`），两个账号域由 `realm-account*` 隔开。
-- **无限画布 + AI 工作区**（2026-08）：本仓自研的节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。
+- **无限画布 + AI 工作区**（2026-08）：节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。画布内核来自私有仓库 xingmang-canvas（0.2.23 起，#1393），按版本 tag 由同步脚本搬进 `canvas-v2/`，**不要在本仓直接改**（见 T13）。
 - **线路自动切换与游戏加速**：客户端在线路1、线路2 之间自己切（`relay-route-controller.ts` / `relay-line-fetch.ts`）；游戏加速是本机 Mihomo 系统代理（`acceleration-*`，见 `docs/GLOBAL-ACCELERATION.md`）。
 
 **技术栈**：Electron 45 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 两个账号后端（`xm.solov.cc` 是 new-api 生产实例，版本会跟上游漂移；`api.solov.cc` 是 sub2api），new-api 端点事实见 `docs/RECON-new-api.md`。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，第一版功能已做完（不带加速），发布开关还关着，见 `docs/LINUX.md`。
@@ -194,9 +194,11 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token（线上 rc.40 起还要先 `POST /api/verify` 换一次性凭证，放进 PUT 的 `X-Security-Proof` 头）、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层（`features/auth/state.ts`）与主进程各有一份密码长度等字面量。legacy 树不 import electron，所以那边只能重复；renderer-v2 能值导入 `valueImportable` 名单上的主进程模块（I6），要合成一份就把常量放进名单上的零依赖模块。
 
 **T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
-画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git。改画布行为只改 `canvas-v2/`，**不要**改 `dist-canvas/` 里的产物文件。
+画布**源码**在 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成的**构建产物**，不入 git，**不要**改产物文件。
 
-另一半同样容易踩错：**`canvas-v2/` 里没有任何出网代码**。渲染层的执行器（`canvas-v2/src/engine/executors.ts`）只是把请求交给宿主桥，真正的 HTTP、凭据解析、产物落盘全在主进程（`ai-image-service.ts` / `ai-chat-service.ts` / `chat-credential-coordinator.ts`）。想加一种新的生成能力，**主进程那侧才是要动的地方**；在渲染层直接 `fetch` relay 会绕开 I15 的全部边界，PR #85 已经把那条老路径删掉了，不要重新长出来。
+`canvas-v2/src/` 和 `canvas-v2/shared/` 是 xingmang-canvas 内核的同步副本：`scripts/sync-canvas-kernel.mjs <xingmang-canvas 克隆> <tag>` 写入，`canvas-v2/KERNEL_SOURCE.json` 记下 tag、提交号和每个文件的哈希，`scripts/verify-canvas-kernel-source.test.cjs` 逐个文件核对。**要改画布行为，先在 xingmang-canvas 改、打 tag，再同步进来。** 桌面自有的只有 `canvas-v2/index.html`（CSP）、`vite.config.ts`（配色接回 UI v4、宿主类型）、`tsconfig.json`、`package.json` 和锁文件、`README.md`，同步脚本不碰它们。紧急修复才许本地打补丁：登记进 `KERNEL_SOURCE.json` 的 `localPatches`（理由、xingmang-canvas 那边的 issue 或 PR、14 天内到期），当天在 xingmang-canvas 开对应 PR，两周内回到那边，再同步一次把补丁清掉；不这样做就会重演 xingmang-canvas 漏掉 #1004 的那种分叉。xingmang-canvas 的 CI 每天反过来拉本仓核对 `canvas-v2/` 是不是某个 tag 的原样，过期的补丁在那边变红。
+
+另一半同样容易踩错：**`canvas-v2/` 里除了登记过的 OpenCV 抠图运行时，没有任何出网代码**（那份是 Emscripten 的通用加载代码，不读外部文件，CSP 也不放行它连网，见 `docs/CANVAS-THIRD-PARTY.md`）。渲染层的执行器（`canvas-v2/src/engine/executors.ts`）只是把请求交给宿主桥，真正的 HTTP、凭据解析、产物落盘全在主进程（`ai-image-service.ts` / `ai-chat-service.ts` / `chat-credential-coordinator.ts`）。想加一种新的生成能力，**主进程那侧才是要动的地方**；在渲染层直接 `fetch` relay 会绕开 I15 的全部边界，PR #85 已经把那条老路径删掉了，不要重新长出来。
 
 这条边界有自动门禁兜底：`scripts/verify-canvas-renderer-boundary.test.cjs` 扫描画布渲染层源码，出现 `Authorization:` / `Bearer ${` / `.apiKey` / `getAuthToken` 等模式即失败；`verify-canvas-network-boundary.test.cjs` 不许画布源码和产物出现 `/api/`，`fetch` / `XMLHttpRequest` / `WebSocket` 等只许出现在它登记过的地方；`verify-canvas-provenance.test.cjs` 守第三方来源清单。三者都在 `npm test` 里，前两道的产物那一半由 Windows 打包作业构建完再跑。
 
@@ -223,7 +225,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 - **字符串用单引号**
 - 缩进 2 空格
 - **禁止 `as any` / `@ts-ignore` / `eslint-disable`**（门禁钉住；`@ts-expect-error` 只许出现在测试里，用来钉住「这个调用本该编译不过」）
-- 门禁不看 `canvas-v2/`：画布整体暂不改动，风格同理。
+- 门禁不看 `canvas-v2/`：它是 xingmang-canvas 内核的同步副本，跟的是那边的风格（见 T13）。
 
 **函数与命名**
 - **模块顶层一律用 `function` 声明，不用箭头函数**（门禁钉住，非测试文件 0 例外）。测试文件里 `const fixture = () => ({ … })` 这类夹具构造器不在约束内，是既有写法。`let` 声明的箭头函数插槽（夹具里把 Promise 的 resolve 暴露出去）也不在约束内。

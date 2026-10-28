@@ -1,0 +1,19 @@
+.tile-input-selector { display: flex; gap: 7px; align-items: center; min-width: 0; }
+.tile-input-selector > label { min-width: 0; flex: 1; display: flex; gap: 5px; flex-direction: column; font-size: 10px; color: #a6b4c0; }
+.tile-input-selector select { width: 100%; min-width: 0; color: #e3ece9; background: #151d25; border: 1px solid #39464c; border-radius: 7px; padding: 6px; }
+.tile-input-selector button { flex: none; }
+.tile-input-selector > span { white-space: nowrap; font-size: 10px; color: #9aaab3; }
+.tile-input-unavailable { padding: 10px 12px; color: #e6bc94; background: #332a20; border-radius: 8px; font-size: 11px; line-height: 1.5; }
+.tile-viewport { min-height: 0; display: flex; flex: 1; flex-direction: column; gap: 10px; padding: 16px; overflow: auto; }
+.tile-viewport-toolbar, .tile-viewport-toolbar > div { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.tile-viewport-toolbar { justify-content: space-between; }
+.tile-viewport-toolbar > span { display: flex; gap: 7px; align-items: center; color: #96aaa4; font-size: 11px; }
+.tile-viewport-toolbar output { min-width: 42px; text-align: center; font-variant-numeric: tabular-nums; }
+.tile-viewport-stage { min-height: 260px; height: 65dvh; flex: 1 0 260px; overflow: hidden; position: relative; touch-action: none; background-color: #151c22; background-repeat: repeat; border: 1px solid #39464b; border-radius: 10px; outline-offset: -3px; }
+.tile-viewport-stage.is-ready { cursor: grab; }
+.tile-viewport-stage.is-ready:active { cursor: grabbing; }
+.tile-viewport-stage > p { display: grid; place-items: center; position: absolute; inset: 0; color: #acb9c5; padding: 20px; text-align: center; }
+.tile-viewport-loader { width: 1px; height: 1px; opacity: 0; pointer-events: none; position: absolute; }
+.tile-viewport-note { margin: 0; color: #98a8b5; line-height: 1.6; font-size: 11px; }
+.tile-preview-selector { padding: 12px 16px 0; }
+@media (max-width: 600px) { .tile-viewport { padding: 10px; } .tile-viewport-toolbar > div { gap: 5px; } .tile-viewport-toolbar button { min-height: 34px; } .tile-viewport-stage { height: 55dvh; flex-basis: 220px; min-height: 220px; } }

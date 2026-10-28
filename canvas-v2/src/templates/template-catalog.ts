@@ -1,4 +1,4 @@
-import { imageModelPresets } from '../models'
+import { templateImageModelCompatibility } from './template-catalog-image-options'
 import type { CanvasTemplate, CanvasTemplateIndustry } from './template-types'
 
 export const canvasTemplateIndustries: readonly { id: CanvasTemplateIndustry; label: string }[] = [
@@ -14,6 +14,7 @@ export const canvasTemplateIndustries: readonly { id: CanvasTemplateIndustry; la
 export interface CanvasTemplateEstimate {
   imageRequests: number
   videoRequests: number
+  textRequests: number
   paidRequests: number
 }
 
@@ -25,7 +26,8 @@ export interface CanvasTemplateCompatibility {
 export function estimateCanvasTemplate(template: CanvasTemplate): CanvasTemplateEstimate {
   const imageRequests = template.workflow.nodes.filter((node) => ['image-generate', 'image-edit'].includes(node.type)).length
   const videoRequests = template.workflow.nodes.filter((node) => node.type === 'video-generate').length
-  return { imageRequests, videoRequests, paidRequests: imageRequests + videoRequests }
+  const textRequests = template.workflow.nodes.filter((node) => ['text-generate', 'drama-parse'].includes(node.type)).length
+  return { imageRequests, videoRequests, textRequests, paidRequests: imageRequests + videoRequests + textRequests }
 }
 
 export function searchCanvasTemplates(templates: readonly CanvasTemplate[], query: string): CanvasTemplate[] {
@@ -41,24 +43,32 @@ export function canvasTemplateCompatibility(
   template: CanvasTemplate,
   imageModels: readonly string[],
   videoModels: readonly string[],
+  textModels: readonly string[] = [],
 ): CanvasTemplateCompatibility {
   const reasons: string[] = []
   for (const requirement of template.requirements) {
+    if (requirement.media === 'text') {
+      if (requirement.operation === 'generate' && textModels.length === 0) reasons.push('当前文字来源没有可用模型')
+      continue
+    }
     if (requirement.media === 'video') {
       if (requirement.operation === 'generate' && videoModels.length === 0) reasons.push('当前视频分组没有可用模型')
       continue
     }
-    const presets = imageModels.map((id) => imageModelPresets.find((preset) => preset.id === id)).filter(Boolean)
-    const compatible = presets.some((preset) => {
-      if (!preset) return false
-      if (requirement.operation === 'edit' && !preset.supportsEdits) return false
-      if (requirement.options?.includes('size') && !preset.supportsSize) return false
-      if (requirement.options?.includes('quality') && !preset.supportsQuality) return false
-      return true
-    })
-    if (!compatible) reasons.push(requirement.operation === 'edit' ? '当前生图分组没有可编辑图片的模型' : '当前生图分组没有满足模板参数的模型')
+    const imageNodes = template.workflow.nodes.filter((node) => requirement.operation === 'edit' ? node.type === 'image-edit' : ['image', 'image-generate'].includes(node.type))
+    const configurations: readonly Readonly<Record<string, unknown>>[] = imageNodes.length > 0 ? imageNodes.map((node) => node.config) : [{}]
+    for (const config of configurations) {
+      const explicitModel = typeof config.model === 'string' ? config.model.trim() : ''
+      const candidates = explicitModel ? imageModels.filter((model) => model === explicitModel) : imageModels
+      const inspected = candidates.map((model) => templateImageModelCompatibility(model, requirement.operation, config, requirement.options))
+      if (inspected.some((entry) => entry.available)) continue
+      const explanation = inspected.length > 0
+        ? [...new Set(inspected.flatMap((entry) => entry.reasons))].join('；')
+        : explicitModel ? `模板指定的模型「${explicitModel}」不属于当前生图分组` : '当前生图分组没有可用图像模型'
+      reasons.push(`${explanation}。请显式选择兼容模型或在画布中调整图片比例/清晰度，也可先保存待配置骨架；不会自动更改模板参数`)
+    }
   }
-  return { available: reasons.length === 0, reasons }
+  return { available: reasons.length === 0, reasons: [...new Set(reasons)] }
 }
 
 export function groupCanvasTemplatesByIndustry(templates: readonly CanvasTemplate[]): ReadonlyMap<CanvasTemplateIndustry, CanvasTemplate[]> {

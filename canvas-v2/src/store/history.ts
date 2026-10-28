@@ -29,6 +29,9 @@ export function applyCanvasCommand(
   now: number = Date.now(),
 ): CanvasHistoryState {
   const present = reduceCanvasDocument(history.present, command)
+  // A stored project is a separate editing session. Undo must never restore
+  // the previous project's graph into the newly opened project's save target.
+  if (command.type === 'replace-document' && command.resetHistory) return createCanvasHistory(present)
   if (present === history.present) return history
   if (command.type === 'set-viewport') {
     const viewport = { ...present.viewport }

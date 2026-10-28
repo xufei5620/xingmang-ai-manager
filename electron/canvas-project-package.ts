@@ -153,8 +153,9 @@ function validateWorkflowNode(value: unknown, assetIds: Set<string>, nodeIds: Se
   // whose node carried either field failed to save. `latestAttemptDurationMs`
   // is accepted on old files only; the renderer no longer writes or restores it.
   // The xingmang-canvas kernel adds the last six keys (dirty … textWebSearch).
-  // They are accepted one release before the kernel ships so a rollback to
-  // that release can still open what the kernel saved (#1392).
+  // #1392 meant to accept them one release before the kernel shipped, so a
+  // rollback could still open what the kernel saved; both went out in 0.2.23
+  // instead, and 0.2.22 rejects a project carrying any of them (docs/RELEASING.md §8).
   assertAllowedKeys(value.data, [
     'prompt', 'model', 'group', 'quality', 'size', 'imageResolution', 'seconds', 'result', 'settings', 'candidateAssetIds', 'latestAttemptDurationMs',
     'dirty', 'imageCandidateCount', 'videoCandidateCount', 'outputText', 'promptReferences', 'textWebSearch',

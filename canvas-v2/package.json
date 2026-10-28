@@ -2,7 +2,7 @@
   "name": "xingmang-canvas-v2",
   "private": true,
   "version": "0.1.0",
-  "description": "星芒无限画布 v2 —— 节点式 AI 媒体工作流(暂居主仓 canvas-v2/,最终落点待定,见 docs/CANVAS-V2-PLAN.md)",
+  "description": "星芒无限画布：内核来自 xingmang-canvas，按 tag 由 scripts/sync-canvas-kernel.mjs 同步进来，用主仓根目录的依赖构建（#1393）",
   "type": "module",
   "scripts": {
     "dev": "vite",

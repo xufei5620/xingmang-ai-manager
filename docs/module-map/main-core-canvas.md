@@ -67,7 +67,7 @@
 
 ## 无限画布 + AI 工作区（全项目唯一运行第三方前端代码且有宿主桥的地方）
 
-> 2026-08-12（PR #85）起**画布再也拿不到 API Key**：Key 只在主进程按账号和分组解析（`chat-credential-coordinator.ts`），全部 AI 调用、产物下载与落盘都在主进程完成，画布只能经 `canvas-host:*` 通道"请求"。这是 I15 的兑现方式：被投毒的画布连 Key 都摸不到，因为它从来没有过。给画布加任何能力前先回答"画布被供应链投毒后，这个能力能干什么"。画布源码在 `canvas-v2/`，`dist-canvas/` 是构建产物不入 git（T13）。
+> 2026-08-12（PR #85）起**画布再也拿不到 API Key**：Key 只在主进程按账号和分组解析（`chat-credential-coordinator.ts`），全部 AI 调用、产物下载与落盘都在主进程完成，画布只能经 `canvas-host:*` 通道"请求"。这是 I15 的兑现方式：被投毒的画布连 Key 都摸不到，因为它从来没有过。给画布加任何能力前先回答"画布被供应链投毒后，这个能力能干什么"。画布源码在 `canvas-v2/`，其中 `src/`、`shared/` 是 xingmang-canvas 内核按 tag 同步进来的副本（`KERNEL_SOURCE.json` 记来源，不要在本仓直接改），`dist-canvas/` 是构建产物不入 git（T13）。
 
 ### 画布窗口与宿主桥
 - `canvas-window.ts` — **画布窗口的总控**：独立 `BrowserWindow`，加固与主窗口同级（`sandbox` / `contextIsolation` / `webviewTag:false` / `navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`（I12）；用自己的 `registerCanvasHandler` + `assertTrustedCanvasSender` 注册全部 `canvas-host:*` 通道，只放行画布窗口自身（I4 的登记例外）；文件读写只走原生对话框，项目工作文件夹也由主进程弹框选；Linux 上打开前先确认渲染进程沙箱真的生效（`linux-renderer-sandbox.ts`），崩溃后自动恢复

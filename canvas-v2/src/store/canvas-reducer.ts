@@ -12,6 +12,12 @@ function samePosition(left: { x: number; y: number }, right: { x: number; y: num
 
 export function reduceCanvasDocument(document: CanvasDocumentState, command: CanvasCommand): CanvasDocumentState {
   switch (command.type) {
+    case 'replace-graph': {
+      const nodeIds = new Set(command.nodes.map((node) => node.id)), edgeIds = new Set(command.edges.map((edge) => edge.id))
+      if (nodeIds.size !== command.nodes.length || edgeIds.size !== command.edges.length) throw new Error('图层接入包含重复节点或连线标识')
+      if (command.edges.some((edge) => !nodeIds.has(edge.source) || !nodeIds.has(edge.target))) throw new Error('图层接入指向不存在的节点')
+      return { ...document, nodes: structuredClone(command.nodes), edges: structuredClone(command.edges), revision: nextRevision(document) }
+    }
     case 'add-nodes': {
       const existingNodeIds = new Set(document.nodes.map((node) => node.id))
       const existingEdgeIds = new Set(document.edges.map((edge) => edge.id))

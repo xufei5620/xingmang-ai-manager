@@ -1,0 +1,31 @@
+.asset-category-select-row { display: flex; flex: 0 0 auto; align-items: flex-end; gap: 7px; min-width: 0; }
+.asset-category-select-row > label { display: grid; flex: 1; gap: 5px; min-width: 0; font-size: 12px; color: var(--text-secondary, var(--xm-muted, #aab4c3)); }
+.asset-category-select-row select { width: 100%; min-width: 0; min-height: 32px; padding: 5px 8px; border: 1px solid var(--border-strong, #3e4755); border-radius: 7px; background: var(--surface-2, #202630); color: var(--text-primary, #e4e9ef); font: inherit; }
+.asset-category-manage-button { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; gap: 5px; min-height: 32px; padding: 5px 8px; border: 1px solid var(--border-strong, #3e4755); border-radius: 7px; background: var(--surface-2, #202630); color: var(--text-primary, #e4e9ef); font: inherit; font-size: 12px; cursor: pointer; }
+.asset-category-select-row button:disabled, .asset-category-select-row select:disabled { opacity: .55; cursor: default; }
+.asset-category-reading { display: inline-flex; align-items: center; gap: 4px; color: var(--text-secondary, #aab4c3); font-size: 11px; }
+.asset-category-reading svg { animation: asset-category-spin 1s linear infinite; }
+.asset-tray-category-controls { display: grid; flex: 0 0 auto; gap: 5px; min-width: 0; margin: 0 10px 8px; }
+.asset-tray-category-controls > small { font-size: 11px; color: var(--text-secondary, #aab4c3); overflow-wrap: anywhere; }
+.asset-tray-category-controls > p { margin: 0; font-size: 11px; color: var(--danger, #f4a4a4); }
+.asset-category-overlay { position: fixed; z-index: 1600; inset: 0; display: grid; place-items: center; padding: 18px; background: #090d16b8; }
+.asset-category-dialog { display: grid; width: min(100%, 520px); max-height: min(88dvh, 760px); min-height: 0; gap: 14px; padding: 18px; overflow-y: auto; border: 1px solid var(--border-strong, #424d5d); border-radius: 12px; background: var(--surface-1, #171d27); color: var(--text-primary, #e4e9ef); box-shadow: 0 24px 80px #0007; font-size: 13px; }
+.asset-category-dialog > header, .asset-category-dialog > footer, .asset-category-dialog-row { display: flex; align-items: center; justify-content: space-between; gap: 9px; min-width: 0; }
+.asset-category-dialog h3, .asset-category-dialog p { margin: 0; }
+.asset-category-dialog small, .asset-category-dialog p { color: var(--text-secondary, #aab4c3); line-height: 1.6; }
+.asset-category-dialog button { min-height: 30px; padding: 5px 10px; border: 1px solid var(--border-strong, #424d5d); border-radius: 6px; background: var(--surface-2, #252d39); color: inherit; cursor: pointer; font: inherit; }
+.asset-category-dialog button:disabled { opacity: .5; cursor: default; }
+.asset-category-dialog input { min-width: 0; width: 100%; min-height: 34px; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--border-strong, #424d5d); border-radius: 6px; background: var(--surface-2, #252d39); color: inherit; font: inherit; }
+.asset-category-dialog button.is-primary { background: var(--accent, #ad7656); border-color: transparent; color: #fff; }
+.asset-category-dialog button.is-danger { color: #f4a4a4; }
+.asset-category-dialog [role="alert"] { color: #f4a4a4; }
+.asset-category-dialog-list { display: grid; gap: 6px; padding: 0; margin: 0; list-style: none; }
+.asset-category-dialog-list > li { padding: 8px; border: 1px solid var(--border, #333d4a); border-radius: 7px; overflow-wrap: anywhere; }
+.asset-category-dialog-row > strong { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.asset-category-dialog-row > div { display: flex; flex: 0 0 auto; gap: 5px; }
+.asset-category-dialog-review { display: grid; gap: 7px; padding: 10px; border: 1px solid var(--border-strong, #424d5d); border-radius: 7px; }
+.asset-category-dialog-status { display: flex; align-items: center; gap: 6px; }
+.asset-category-move-result { max-height: 160px; overflow-y: auto; margin: 0; padding-left: 22px; }
+@keyframes asset-category-spin { to { transform: rotate(360deg); } }
+@media (max-width: 480px) { .asset-category-overlay { padding: 10px; } .asset-category-dialog { padding: 13px; gap: 11px; } .asset-category-manage-button > span { display: none; } .asset-category-dialog-row { align-items: flex-start; flex-wrap: wrap; } }
+@media (prefers-reduced-motion: reduce) { .asset-category-reading svg { animation: none; } }

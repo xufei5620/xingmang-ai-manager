@@ -1,0 +1,20 @@
+.image-tool-dialog .crop-preset-panel { flex: none; min-height: 34px; border: 1px solid #38454c; border-radius: 10px; background: #101a20; overflow: hidden; }
+.image-tool-dialog .crop-preset-toggle { width: 100%; justify-content: flex-start; border: 0; border-radius: 0; background: transparent; }
+.crop-preset-toggle span { flex: 1; text-align: left; }
+.crop-preset-content { padding: 10px; display: grid; gap: 10px; min-width: 0; }
+.crop-preset-content > p, .crop-preset-list > p { margin: 0; color: #9caebc; line-height: 1.6; }
+.crop-preset-save { display: grid; gap: 7px; }
+.crop-preset-save label { display: grid; gap: 5px; }
+.crop-preset-search { display: flex !important; align-items: center; gap: 6px; }
+.crop-preset-search input { min-width: 0; flex: 1; }
+.crop-preset-list { display: grid; gap: 5px; max-height: 200px; overflow: auto; }
+.image-tool-dialog .crop-preset-list button { display: grid; justify-content: start; text-align: left; min-width: 0; }
+.crop-preset-list strong, .crop-preset-list small, .crop-preset-selected span { overflow-wrap: anywhere; }
+.crop-preset-list small { color: #96a6b4; }
+.image-tool-dialog .crop-preset-list button[aria-pressed="true"] { border-color: #85d6c0; background: #203a36; }
+.crop-preset-selected { display: grid; gap: 7px; color: #b6e7d9; }
+.crop-preset-pagination { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 5px; color: #99a9b7; }
+.image-tool-dialog .crop-preset-pagination button { padding: 5px 7px; font-size: 11px; }
+.crop-preset-content .crop-preset-notice { color: #a2dbc8; }
+.crop-preset-content .image-tool-error { overflow-wrap: anywhere; }
+.crop-preset-content .image-tool-error button { margin-top: 6px; }

@@ -4,6 +4,12 @@
   --canvas-bg: #0e1013;
   --canvas-grid: rgba(205, 214, 227, 0.18);
   --canvas-edge: #8b93ad;
+  /* 文字节点联网搜索的开关和结果框。两套主题暂时同色，照搬原来写死在 styles.css 里的值（#4）。 */
+  --text-search-active-text: #d8d4ff;
+  --text-search-active-border: #7465cc;
+  --text-search-active-surface: #7970d426;
+  --text-search-result-surface: #090d1480;
+  --text-search-result-link: #b7b0ff;
   --surface-1: #15181d;
   --surface-2: #1b1f25;
   --surface-3: #20252d;
@@ -133,6 +139,12 @@
   --canvas-bg: #eef1f3;
   --canvas-grid: rgba(50, 65, 74, 0.2);
   --canvas-edge: #7d84a3;
+  /* 文字节点联网搜索的开关和结果框。两套主题暂时同色，照搬原来写死在 styles.css 里的值（#4）。 */
+  --text-search-active-text: #d8d4ff;
+  --text-search-active-border: #7465cc;
+  --text-search-active-surface: #7970d426;
+  --text-search-result-surface: #090d1480;
+  --text-search-result-link: #b7b0ff;
   --surface-1: #ffffff;
   --surface-2: #f7f9fa;
   --surface-3: #edf1f3;

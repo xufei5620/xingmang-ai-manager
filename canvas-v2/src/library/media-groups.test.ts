@@ -1,194 +1,103 @@
 import { describe, expect, it } from 'vitest'
-import {
-  availableTextModels,
-  defaultCanvasMediaPreferences,
-  sub2ApiCanvasMediaPreferences,
-  mediaGroupsEqual,
-  mediaGroupsSignature,
-  pickAvailableModel,
-  preferredMediaGroups,
-  preferredModelForNodeType,
-  withPreferredMediaDefaults,
-  withResolvedMediaModels,
-} from './media-groups'
+import { availableModelsForKind, availableTextModels, groupsForCapability, preferredMediaGroups, withPreferredMediaDefaults, withResolvedMediaModels } from './media-groups'
+import { imageModelPresets, videoModelPresets } from '../models'
 
-describe('media group defaults', () => {
-  it('treats model changes as a real configuration change without re-preparing groups', () => {
-    expect(mediaGroupsSignature({ image: '生图分组', video: 'grok', imageModel: 'a' }))
-      .toBe(mediaGroupsSignature({ image: '生图分组', video: 'grok', imageModel: 'b' }))
-    expect(mediaGroupsEqual(
-      { image: '生图分组', imageModel: 'gpt-image-2' },
-      { image: '生图分组', imageModel: 'gemini-3.1-flash-image' },
-    )).toBe(false)
+describe('provider purpose and model defaults', () => {
+  it('prefers recognized image and text models in a shared provider catalog', () => {
+    const models = ['gpt-4o-mini', 'gpt-image-1']
+    expect(withResolvedMediaModels({ image: 'source', text: 'source' }, models, [], models)).toEqual({ image: 'source', text: 'source', imageModel: 'gpt-image-1', textModel: 'gpt-4o-mini' })
+    expect(availableModelsForKind('image', models, ['image', 'text'])).toEqual(['gpt-image-1'])
   })
 
-  it('keeps a preferred model when the group still offers it', () => {
-    expect(pickAvailableModel('gpt-image-2', ['gemini-3.1-flash-image', 'gpt-image-2'])).toBe('gpt-image-2')
-    expect(pickAvailableModel('gone', ['gpt-image-2'])).toBe('gpt-image-2')
-    expect(pickAvailableModel(undefined, [])).toBeUndefined()
+  it.each([
+    { kind: 'image' as const, expected: ['gpt-image-1', 'unknown-relay-alias'] },
+    { kind: 'video' as const, expected: ['grok-imagine-video', 'unknown-relay-alias'] },
+    { kind: 'text' as const, expected: ['gpt-4o-mini', 'unknown-relay-alias', 'whisper-1'] },
+  ])('filters known wrong-purpose entries from explicitly multi-purpose $kind catalogs', ({ kind, expected }) => {
+    const models = ['gpt-4o-mini', 'gpt-image-1', 'grok-imagine-video', 'unknown-relay-alias', 'whisper-1', 'gpt-image-1', 'unknown-relay-alias']
+    const original = [...models]
+    expect(availableModelsForKind(kind, models, ['image', 'video', 'text'])).toEqual(expected)
+    expect(availableModelsForKind(kind, models, [kind])).toEqual(expected)
+    expect(availableModelsForKind(kind, models, [])).toEqual([])
+    expect(models).toEqual(original)
   })
 
-  it('lists chat models by excluding known image and video presets', () => {
-    expect(availableTextModels(['gpt-image-2', 'grok-imagine-video', 'gpt-5.4'])).toEqual(['gpt-5.4'])
-    expect(availableTextModels(['gpt-image-2'])).toEqual(['gpt-image-2'])
+  it('retains preset inference without an explicit purpose and rejects a purpose absent from the source', () => {
+    const models = ['gpt-4o-mini', 'gpt-image-1', 'grok-imagine-video', 'unknown-relay-alias']
+    expect(availableModelsForKind('image', models)).toEqual(['gpt-image-1'])
+    expect(availableModelsForKind('video', models)).toEqual(['grok-imagine-video'])
+    expect(availableModelsForKind('text', models)).toEqual(['gpt-4o-mini', 'unknown-relay-alias'])
+    expect(availableModelsForKind('image', models, ['video', 'text'])).toEqual([])
+    expect(availableModelsForKind('video', models, ['image', 'text'])).toEqual([])
+    expect(availableModelsForKind('text', models, ['image', 'video'])).toEqual([])
   })
 
-  it('fills new image and video nodes from the configured defaults', () => {
-    const groups = { imageModel: 'gpt-image-2', videoModel: 'minimax-h3-mini', textModel: 'gpt-5.4' }
-    expect(preferredModelForNodeType('image-generate', groups)).toBe('gpt-image-2')
-    expect(preferredModelForNodeType('video-generate', groups)).toBe('minimax-h3-mini')
-    expect(preferredModelForNodeType('prompt', groups)).toBeUndefined()
-    expect(preferredModelForNodeType('drama-parse', groups)).toBe('gpt-5.4')
+  it('retains custom models only for explicitly declared purposes', () => {
+    const models = ['custom-drawing', 'gpt-image-1']
+    expect(availableModelsForKind('image', models, ['image'])).toEqual(models)
+    expect(availableModelsForKind('text', models, ['image'])).toEqual([])
+    expect(availableModelsForKind('image', models)).toEqual(['gpt-image-1'])
   })
 
-  it('uses the existing NewAPI defaults on the legacy site', () => {
-    expect(preferredMediaGroups([
-      { name: 'GPT-image2' },
-      { name: '图片模型-中转/订阅' },
-      { name: '视频模型-中转/订阅' },
-      { name: 'Gemini-中转/订阅' },
-      { name: 'openai' },
-      { name: '生图分组' },
-      { name: 'grok' },
-      { name: '视频分组' },
-      { name: '对话分组' },
-      { name: 'Gemini' },
-    ])).toEqual({
-      image: '图片模型-中转/订阅',
-      video: '视频模型-中转/订阅',
-      text: 'Gemini-中转/订阅',
-      imageModel: defaultCanvasMediaPreferences.imageModel,
-      videoModel: defaultCanvasMediaPreferences.videoModel,
-      textModel: defaultCanvasMediaPreferences.textModel,
-    })
+  it('filters known media from text-purpose mixed catalogs while preserving custom chat aliases', () => {
+    const media = [...imageModelPresets, ...videoModelPresets].map(model => model.id)
+    const custom = ['custom-chat', 'provider/my-text-model', 'image-reasoning-chat', 'gpt-4o-mini']
+    const models = [...media, 'relay/GPT-IMAGE-2', 'openai/gpt-image-1.5', 'xai/grok-imagine-image-2.0', 'minimax-h3-unknown-tier', ...custom, 'custom-chat']
+    expect(availableTextModels(models)).toEqual(custom)
+    expect(availableModelsForKind('text', models, ['text'])).toEqual(custom)
+    expect(availableModelsForKind('text', models, ['image', 'text', 'video'])).toEqual(custom)
+    expect(availableModelsForKind('text', models)).toEqual(custom)
   })
 
-  it('selects exact Sub2API defaults and never initializes a video group', () => {
-    const groups = [{ name: 'GPT-image2' }, { name: 'Gemini' }, { name: '视频模型-中转/订阅' }]
-    expect(preferredMediaGroups(groups, 'solov-api')).toEqual({ image: 'GPT-image2', text: 'Gemini', imageModel: 'gpt-image-2', textModel: 'gemini-3.7-flash', videoModel: '' })
-    expect(sub2ApiCanvasMediaPreferences.video).toBe('')
-    expect(preferredMediaGroups([{ name: '其他组' }], 'solov-api').image).toBeUndefined()
+  it('does not resurrect a non-text model when the entire catalog has known media capabilities', () => {
+    const models = ['gpt-image-1', 'gpt-image-2', 'grok-imagine-video', 'minimax-h3-base']
+    expect(availableTextModels(models)).toEqual([])
+    expect(availableModelsForKind('text', models, ['text'])).toEqual([])
+    expect(withResolvedMediaModels({ text: 'mixed-source' }, [], [], models)).toEqual({ text: 'mixed-source' })
+    // A persisted choice remains visible as unavailable; never silently select a
+    // different model or rewrite a user's project after a catalog refresh.
+    expect(withResolvedMediaModels({ text: 'mixed-source', textModel: 'gpt-image-1' }, [], [], models)).toEqual({ text: 'mixed-source', textModel: 'gpt-image-1' })
   })
 
-  it('falls back to nearby groups when the preferred names are missing', () => {
-    expect(preferredMediaGroups([
-      { name: '生图分组' },
-      { name: 'grok' },
-      { name: '对话分组' },
-    ])).toMatchObject({ image: '生图分组', text: '对话分组' })
+  it('preserves an explicit available model choice and uses custom-only catalogs', () => {
+    expect(withResolvedMediaModels({ imageModel: 'custom-drawing' }, ['custom-drawing', 'gpt-image-1'], [], ['custom-chat']).imageModel).toBe('custom-drawing')
+    expect(withResolvedMediaModels({}, ['custom-drawing'], [], ['custom-chat'])).toEqual({ imageModel: 'custom-drawing', textModel: 'custom-chat' })
   })
 
-  it('does not pretend an image group is a text group', () => {
-    expect(preferredMediaGroups([
-      { name: '生图分组' },
-      { name: '视频分组' },
-    ]).text).toBeUndefined()
+  it('prefers a recognized text model before an unclassified model', () => {
+    expect(withResolvedMediaModels({}, [], [], ['custom-unknown', 'gpt-image-1', 'gpt-4o-mini']).textModel).toBe('gpt-4o-mini')
   })
 
-  it('fills missing text defaults without overwriting an existing project selection', () => {
-    expect(withPreferredMediaDefaults(
-      { image: '生图分组', video: '视频分组' },
-      [{ name: '生图分组' }, { name: '视频分组' }, { name: 'Gemini' }],
-    )).toEqual({
-      image: '生图分组',
-      video: '视频分组',
-      text: 'Gemini',
-      imageModel: defaultCanvasMediaPreferences.imageModel,
-      videoModel: defaultCanvasMediaPreferences.videoModel,
-      textModel: defaultCanvasMediaPreferences.textModel,
-    })
-    expect(withPreferredMediaDefaults(
-      { image: 'openai', video: 'grok', text: '对话分组', videoModel: 'grok-imagine-video' },
-      [{ name: 'openai' }, { name: 'grok' }, { name: '对话分组' }, { name: 'Gemini' }],
-    )).toMatchObject({
-      image: 'openai',
-      video: 'grok',
-      text: '对话分组',
-      videoModel: 'grok-imagine-video',
-    })
+  it('does not fabricate models or select sources with incompatible purposes', () => {
+    const groups = [{ name: 'image-source', purposes: ['image'] as const }, { name: 'chat-source', purposes: ['text'] as const }]
+    expect(preferredMediaGroups(groups)).toEqual({ image: 'image-source', text: 'chat-source' })
+    expect(groupsForCapability(groups, 'video')).toEqual([])
+    expect(withResolvedMediaModels({}, [], [], [])).toEqual({})
   })
 
-  it('migrates historical default groups when the production names changed', () => {
-    expect(withPreferredMediaDefaults(
-      { image: '生图分组', video: '视频分组', text: 'Gemini' },
-      [
-        { name: '图片模型-中转/订阅' },
-        { name: '视频模型-中转/订阅' },
-        { name: 'Gemini-中转/订阅' },
-      ],
-    )).toMatchObject({
-      image: '图片模型-中转/订阅',
-      text: 'Gemini-中转/订阅',
-    })
+  it('retains a saved model after it is withdrawn rather than switching generation', () => {
+    const saved = { image: 'source', imageModel: 'gpt-image-1', textModel: 'retired-chat' }
+    expect(withResolvedMediaModels(saved, ['gpt-image-2'], [], ['gpt-4o-mini'])).toEqual(saved)
+    expect(withResolvedMediaModels(saved, [], [], [])).toEqual(saved)
   })
 
-  // xm 站 2026-10 改名后的分组，老名字删掉以后站上剩下的就是这些。
-  const renamedGroups = [
-    { name: 'default' },
-    { name: 'Claude-MAX' },
-    { name: 'Claude-ANTI' },
-    { name: 'Claude AWS-B' },
-    { name: 'Claude-KIRO(高缓)' },
-    { name: 'GPT' },
-    { name: 'GPT-官方API直连' },
-    { name: 'Grok' },
-    { name: 'Grok-官方API直连' },
-    { name: 'Gemini' },
-    { name: '图片模型' },
-    { name: '视频模型' },
-  ]
-
-  it('recognizes the renamed image and video groups once the old names are gone', () => {
-    expect(preferredMediaGroups(renamedGroups)).toMatchObject({
-      image: '图片模型',
-      video: '视频模型',
-      text: 'Gemini',
-    })
+  it('retains explicit sources when disabled, missing or their declared purpose changes', () => {
+    const saved = { image: '生图分组', video: 'removed-source', text: 'changed-purpose', imageModel: 'saved-image' }
+    const groups = [{ name: 'new-image', purposes: ['image'] as const }, { name: 'changed-purpose', purposes: ['video'] as const }]
+    expect(withPreferredMediaDefaults(saved, groups)).toEqual(saved)
   })
 
-  it('keeps the old group names first while both names exist', () => {
-    expect(preferredMediaGroups([
-      ...renamedGroups,
-      { name: '图片模型-中转/订阅' },
-      { name: '视频模型-中转/订阅' },
-      { name: 'Gemini-中转/订阅' },
-    ])).toMatchObject({
-      image: '图片模型-中转/订阅',
-      video: '视频模型-中转/订阅',
-      text: 'Gemini-中转/订阅',
-    })
+  it('swaps a renamed default group only once a group list without purposes has been read', () => {
+    const saved = { image: '生图分组', video: '视频分组', text: 'Gemini' }
+    expect(withPreferredMediaDefaults(saved, [])).toEqual(saved)
+    expect(withPreferredMediaDefaults(saved, [{ name: '图片模型' }, { name: '视频模型' }, { name: 'Gemini-3' }])).toEqual({ image: '图片模型', video: '视频模型', text: 'Gemini-3' })
+    expect(withPreferredMediaDefaults(saved, [{ name: '生图分组' }, { name: '视频模型' }])).toMatchObject({ image: '生图分组', video: '视频模型' })
   })
 
-  it('moves a project saved with the old names to the renamed groups', () => {
-    expect(withPreferredMediaDefaults(
-      { image: '图片模型-中转/订阅', video: '视频模型-中转/订阅', text: 'Gemini-中转/订阅' },
-      renamedGroups,
-    )).toMatchObject({
-      image: '图片模型',
-      video: '视频模型',
-      text: 'Gemini',
-    })
-  })
-
-  it('recognizes an image or video group by name only when exactly one group carries the word', () => {
-    expect(preferredMediaGroups([{ name: 'Gemini' }, { name: '星芒图片' }, { name: '星芒视频' }]))
-      .toMatchObject({ image: '星芒图片', video: '星芒视频' })
-    expect(preferredMediaGroups([{ name: 'Gemini' }, { name: '视频-A' }, { name: '视频-B' }]).video)
-      .toBeUndefined()
-  })
-
-  it('never prepares a Grok group for video nodes', () => {
-    const withoutVideo = renamedGroups.filter((group) => group.name !== '视频模型')
-    expect(preferredMediaGroups(withoutVideo).video).toBeUndefined()
-    expect(preferredMediaGroups([{ name: 'grok' }, { name: 'Gemini' }]).video).toBeUndefined()
-  })
-
-  it('repairs a stale default model after the group changes', () => {
-    expect(withResolvedMediaModels(
-      { image: '生图分组', imageModel: 'gone' },
-      ['gpt-image-2'],
-      [],
-      [],
-    )).toEqual({ image: '生图分组', imageModel: 'gpt-image-2' })
+  it('fills only empty fields and resolves defaults from the actual prepared catalog', () => {
+    const groups = [{ name: 'source', purposes: ['image', 'text'] as const }]
+    const filled = withPreferredMediaDefaults({ imageModel: '' }, groups)
+    expect(filled).toEqual({ image: 'source', text: 'source' })
+    expect(withResolvedMediaModels(filled, ['gpt-4o-mini', 'gpt-image-1'], [], ['gpt-4o-mini'])).toEqual({ image: 'source', text: 'source', imageModel: 'gpt-image-1', textModel: 'gpt-4o-mini' })
   })
 })
