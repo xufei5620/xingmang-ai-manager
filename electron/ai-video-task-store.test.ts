@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_FINISHED_VIDEO_TASKS, type StoredAiVideoTask } from './ai-video-task-store'
+import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_FINISHED_VIDEO_TASKS, MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS, type StoredAiVideoTask } from './ai-video-task-store'
 
 const roots: string[] = []
 
@@ -223,5 +223,49 @@ describe('AiVideoTaskStore', () => {
     await store.upsert(task())
     const state = JSON.parse(fs.readFileSync(path.join(root, 'user-7', 'video-tasks.json'), 'utf8')) as Record<string, unknown>
     expect(Object.keys(state).sort()).toEqual(['tasks', 'userId', 'version'])
+  })
+
+  it('remembers a request sent without a task id until it is cleared or its task is recorded', async () => {
+    const { root, store } = fixture()
+    const now = () => new Date('2026-10-28T00:00:00.000Z')
+    const dated = new AiVideoTaskStore({ rootDirectory: root, now })
+    await dated.markUnconfirmed(7, 'request-1')
+    await dated.markUnconfirmed(7, 'request-2')
+
+    const reopened = new AiVideoTaskStore({ rootDirectory: root })
+    await expect(reopened.findUnconfirmed(7, 'request-1')).resolves.toEqual({ requestId: 'request-1', submittedAt: '2026-10-28T00:00:00.000Z' })
+    await expect(reopened.findUnconfirmed(8, 'request-1')).resolves.toBeNull()
+    await expect(reopened.findUnconfirmed(7, 'bad\u0000id')).resolves.toBeNull()
+    await expect(reopened.markUnconfirmed(7, 'bad\u0000id')).rejects.toThrow('请求标识格式错误')
+
+    // The task id came back: the request is no longer unclear, in the same write that records the task.
+    const reservation = await store.reserve(7)
+    await store.commitReservation(reservation, task())
+    await expect(store.findUnconfirmed(7, 'request-1')).resolves.toBeNull()
+    await store.clearUnconfirmed(7, 'request-2')
+    await expect(store.findUnconfirmed(7, 'request-2')).resolves.toBeNull()
+    const state = JSON.parse(fs.readFileSync(path.join(root, 'user-7', 'video-tasks.json'), 'utf8')) as Record<string, unknown>
+    expect(Object.keys(state).sort()).toEqual(['tasks', 'userId', 'version'])
+  })
+
+  it('keeps only the newest unclear requests and drops a damaged one on its own', async () => {
+    const { root, store } = fixture()
+    await store.upsert(task('video-waiting'))
+    for (let index = 0; index <= MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS; index += 1) await store.markUnconfirmed(7, `request-${index}`)
+    await expect(store.findUnconfirmed(7, 'request-0')).resolves.toBeNull()
+    await expect(store.findUnconfirmed(7, `request-${MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS}`)).resolves.toMatchObject({ requestId: `request-${MAXIMUM_UNCONFIRMED_VIDEO_REQUESTS}` })
+
+    // A request id is whatever the page sent; one that looks like an endpoint must not condemn the paid tasks.
+    await store.markUnconfirmed(7, 'https://evil.example/relay')
+    const filePath = path.join(root, 'user-7', 'video-tasks.json')
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { unconfirmed: Record<string, unknown>[] }
+    state.unconfirmed.push({ requestId: 'request-undated', submittedAt: 'yesterday' })
+    fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, 'utf8')
+    const reopened = new AiVideoTaskStore({ rootDirectory: root })
+    expect((await reopened.list(7)).map(({ taskId }) => taskId)).toEqual(['video-waiting'])
+    await expect(reopened.findUnconfirmed(7, 'https://evil.example/relay')).resolves.toBeNull()
+    await expect(reopened.findUnconfirmed(7, 'request-undated')).resolves.toBeNull()
+    await expect(reopened.findUnconfirmed(7, 'request-50')).resolves.toMatchObject({ requestId: 'request-50' })
+    expect(fs.readdirSync(path.dirname(filePath)).some((entry) => entry.includes('.corrupt-'))).toBe(false)
   })
 })

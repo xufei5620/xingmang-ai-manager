@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { isAiVideoUnconfirmedSubmission } from '../../../../electron/ai-video-submission'
 import type { AiChatGroupSummary, AiVideoClip, XingmangApi } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -82,10 +83,11 @@ function loadProject(storage: VideoStudioStorage | null, scope: string): VideoSt
 /**
  * 片段停下或失败以后回到什么样：有上一段就还是「已生成」，没有就是「没生成」。失败的留着请求号：
  * 「暂时查不到进度」这类失败时服务端多半还在出，下次打开页面拿它接回来；真失败了主进程回 null，照样回到「没生成」。
+ * 提交结果不明的（主进程那句「提交结果不明确」）另外记下 unconfirmed：钱可能扣了、却接不回来，重开也照样提醒。
  */
 function settleShot(shot: VideoStudioShot, error?: string): VideoStudioShot {
-  const { requestId, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
-  if (error) return { ...rest, ...(requestId ? { requestId } : {}), status: 'failed', error }
+  const { requestId, unconfirmed: _unconfirmed, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
+  if (error) return { ...rest, ...(requestId ? { requestId, ...(isAiVideoUnconfirmedSubmission(error) ? { unconfirmed: true } : {}) } : {}), status: 'failed', error }
   return { ...rest, status: rest.clip ? 'done' : 'idle' }
 }
 
@@ -102,6 +104,13 @@ function unqueueShot(shot: VideoStudioShot): VideoStudioShot {
  * 宁可多等一会儿也不让客户再付一次）；stopped 是还没交出去就停住了；finished 是停下时它已经自己结束了，按它自己的结果收尾。
  */
 type StopOutcome = 'billed' | 'stopped' | 'finished'
+
+/**
+ * 排着队的一镜，连同客户在确认框里点头时的设置：轮到它时照这份出片，不看那之后的设置。页面刚打开、模型表还没读完时
+ * 点了生成，读完以后记着的模型可能被换成默认的、时长跟着挪，排在后面的几段不能悄悄换成客户没确认过的模型和时长
+ * （#1489 R28-4）。那个模型真的用不了了，主进程在扣费之前就拒掉，报错照样落在这一镜上。
+ */
+interface QueuedShot { id: string, settings: VideoStudioSettings }
 
 export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: ChatSite, enabled: boolean, options: VideoStudioOptions = {}) {
   const [storage] = useState(() => options.storage === undefined ? defaultStorage() : options.storage)
@@ -122,7 +131,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const catalogAttempt = useLatestRequest()
   // 每点一次「停止生成」翻一页：之前排定的「接不回来就重新提交」都不再提交。
   const stops = useLatestRequest()
-  const queue = useRef<string[]>([])
+  const queue = useRef<QueuedShot[]>([])
   const running = useRef(new Map<string, string>())
   const canceled = useRef(new Map<string, Promise<StopOutcome>>())
   // 在接回的那几单：只查不提交，停了也省不下钱，「停止生成」不去碰它们，免得这一镜又变回「还没生成」。
@@ -293,23 +302,29 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (running.current.get(shotId) !== requestId) billed.current.delete(requestId)
     })
   }
-  /** 新提交一单：这一步开始花钱。 */
-  function submitShot(shotId: string) {
+  /**
+   * 新提交一单：这一步开始花钱。按确认时的那份设置出（QueuedShot）。上一次提交结果不明的那一镜沿用原来的请求号：
+   * MiniMax 拿它当去重的凭据，服务端其实收下过那一单时不会再出一份。
+   */
+  function submitShot(shotId: string, settings: VideoStudioSettings, requestId = createVideoStudioId()) {
     const shot = projectRef.current.shots.find((item) => item.id === shotId)
     if (!shot) return
-    const requestId = createVideoStudioId()
+    // 沿用的请求号这回是新交出去的一单，停下时要去停它，不能还按「在接回的」跳过。
+    billed.current.delete(requestId)
     commit((current) => updateVideoStudioShot(current, shotId, (item) => ({ ...settleShot(item), status: 'generating', requestId })))
-    void awaitClip(shotId, requestId, () => bridge.generateAiVideo(buildVideoStudioClipRequest(projectRef.current.settings, shot, requestId)))
+    void awaitClip(shotId, requestId, () => bridge.generateAiVideo(buildVideoStudioClipRequest(settings, shot, requestId)))
   }
   /**
    * 轮到这一镜。上一单没等到结果就失败了的（「暂时查不到进度」这类，服务端多半还在出），先拿记着的请求号接回：
-   * 接得回来就不用再付一次钱；主进程那边确实没有这一单，才重新提交。
+   * 接得回来就不用再付一次钱；主进程那边确实没有这一单，才重新提交。提交结果不明的那一镜没有任务号、接不回来，
+   * 客户已经在确认框里看过「可能多扣一次」，直接沿用原来的请求号重新提交。
    */
-  function runShot(shotId: string) {
+  function runShot(shotId: string, settings: VideoStudioSettings) {
     const shot = projectRef.current.shots.find((item) => item.id === shotId)
     if (!shot) return
     const { requestId: previous } = shot
-    if (!previous) { submitShot(shotId); return }
+    if (!previous) { submitShot(shotId, settings); return }
+    if (shot.unconfirmed) { submitShot(shotId, settings, previous); return }
     commit((current) => updateVideoStudioShot(current, shotId, (item) => {
       const { error: _error, ...rest } = item
       return { ...rest, status: 'generating' }
@@ -318,14 +333,14 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     const going = stops.capture()
     resumeClip(shotId, previous, () => {
       if (projectRef.current.shots.find((item) => item.id === shotId)?.requestId !== previous) return
-      if (going()) submitShot(shotId)
+      if (going()) submitShot(shotId, settings)
       else commit((current) => updateVideoStudioShot(current, shotId, (item) => item.requestId === previous ? settleShot(item) : item))
     })
   }
   function pump() {
     while (running.current.size < maxParallelClips && queue.current.length) {
       const next = queue.current.shift()
-      if (next && projectRef.current.shots.some((shot) => shot.id === next)) void runShot(next)
+      if (next && projectRef.current.shots.some((shot) => shot.id === next.id)) void runShot(next.id, next.settings)
     }
   }
   /** 生成这几个镜头的片段（已经有片段的就是重新生成）。先检查每一镜都写好了，有一处没写好就一段都不发。 */
@@ -341,7 +356,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (problem) { setError(problem); return }
     }
     setError(''); setNotice('')
-    queue.current.push(...chosen.map((shot) => shot.id))
+    queue.current.push(...chosen.map((shot) => ({ id: shot.id, settings })))
     commit((current) => chosen.reduce((next, shot) => updateVideoStudioShot(next, shot.id, (item) => ({ ...item, status: 'queued' })), current))
     pump()
   }
@@ -352,7 +367,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const stopGenerating = async () => {
     stops.invalidate()
     const queued = queue.current.splice(0)
-    commit((current) => queued.reduce((next, id) => updateVideoStudioShot(next, id, (shot) => shot.status === 'queued' ? unqueueShot(shot) : shot), current))
+    commit((current) => queued.reduce((next, { id }) => updateVideoStudioShot(next, id, (shot) => shot.status === 'queued' ? unqueueShot(shot) : shot), current))
     const requests = [...running.current.values()]
     let stillRunning = 0
     await Promise.all(requests.map(async (requestId) => {

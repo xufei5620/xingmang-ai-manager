@@ -18,6 +18,7 @@ import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-ta
 import type { AiVideoTaskStore, FinishedAiVideoAsset, StoredAiVideoTask } from './ai-video-task-store'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
+import { aiVideoTaskRecordLostPrefix, aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
 import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
 
@@ -199,7 +200,7 @@ function mediaFileName(kind: 'image' | 'video' | 'audio', index: number, mimeTyp
 }
 
 function ambiguousVideoSubmission(): Error {
-  return new Error('视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交')
+  return new Error(aiVideoUnconfirmedSubmissionMessage)
 }
 
 /**
@@ -316,7 +317,7 @@ export function delayVideoPoll(milliseconds: number, signal: AbortSignal): Promi
 export function createAiVideoService(options: {
   baseUrl: string
   credentials: Pick<ChatCredentialCoordinator, 'resolveCredential'>
-  tasks: Pick<AiVideoTaskStore, 'list' | 'reserve' | 'commitReservation' | 'releaseReservation' | 'remove' | 'finish' | 'findFinished'>
+  tasks: Pick<AiVideoTaskStore, 'list' | 'reserve' | 'commitReservation' | 'releaseReservation' | 'remove' | 'finish' | 'findFinished' | 'markUnconfirmed' | 'clearUnconfirmed' | 'findUnconfirmed'>
   assets: AiVideoAssetWriter
   fetchImpl?: typeof fetch
   pollIntervalMs?: number
@@ -725,6 +726,16 @@ export function createAiVideoService(options: {
       if (operation.controller.signal.aborted) throw operation.controller.signal.reason
       reservationId = await options.tasks.reserve(credential.userId)
       if (operation.controller.signal.aborted) throw operation.controller.signal.reason
+      // Written before the POST so that any way of losing the reply, the app
+      // being killed included, still leaves "sent, outcome unknown" behind for
+      // resumeRequest. Losing the write only loses that warning, never the clip,
+      // so it does not hold the request up.
+      const forgetSubmission = () => options.tasks.clearUnconfirmed(credential.userId, requestId).catch(() => undefined)
+      await options.tasks.markUnconfirmed(credential.userId, requestId).catch(() => undefined)
+      if (operation.controller.signal.aborted) {
+        await forgetSubmission()
+        throw operation.controller.signal.reason
+      }
       operation.dispatched = true
       let submitted: { response: Response; payload?: Record<string, unknown> }
       try {
@@ -756,12 +767,14 @@ export function createAiVideoService(options: {
       const payload = submitted.payload
       if (!payload) {
         if (!response.ok && response.status < 500) {
+          await forgetSubmission()
           throw videoRequestFailure(response.status, '', response.headers.get('retry-after'))
         }
         throw ambiguousVideoSubmission()
       }
       if (!response.ok) {
         if (response.status >= 500) throw ambiguousVideoSubmission()
+        await forgetSubmission()
         throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'), capability.provider)
       }
       let taskId: string
@@ -798,7 +811,7 @@ export function createAiVideoService(options: {
         reservationId = undefined
         operation.taskId = task.taskId
       } catch {
-        throw new Error(`视频任务已创建但本地恢复记录保存失败（任务 ${task.taskId}），请勿重复提交`)
+        throw new Error(`${aiVideoTaskRecordLostPrefix}（任务 ${task.taskId}），请勿重复提交`)
       }
       await progress?.onStage('processing')
       return await raceAbort(finishOnce(task, async () => {
@@ -814,7 +827,7 @@ export function createAiVideoService(options: {
     } catch (error) {
       if (operation.controller.signal.aborted) {
         if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')
-        if (operation.dispatched) throw new Error('视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交')
+        if (operation.dispatched) throw ambiguousVideoSubmission()
         throw new Error('已取消视频请求')
       }
       throw error
@@ -871,8 +884,9 @@ export function createAiVideoService(options: {
 
   /**
    * 视频剪辑页重开以后，拿镜头上记着的请求号回来接那一段：还在出就等它出完，已经出完的直接给片段；
-   * 都没有（没交出去、服务端说失败了、记录太旧被挤掉）回 null，页面当这一镜还没生成。只查、只下载，
-   * 永不重新提交：那一单的钱已经付过了。
+   * 交出去了却没拿到任务号的（回包丢了、服务端出错、提交到一半停了、软件被关掉）照「提交结果不明确」报错，
+   * 页面照样提醒可能已经扣了钱，不能当它没发过；都没有（没交出去、服务端说失败了、记录太旧被挤掉）回 null，
+   * 页面当这一镜还没生成。只查、只下载，永不重新提交：那一单的钱已经付过了。
    */
   async function resumeRequest(
     senderId: number,
@@ -885,7 +899,12 @@ export function createAiVideoService(options: {
     const requestId = requiredIdentifier(requestIdInput, '视频请求标识', 160)
     const key = requestKey(senderId, requestId)
     const task = (await options.tasks.list(userId)).find((entry) => entry.requestId === requestId)
-    if (!task) return options.tasks.findFinished(userId, requestId)
+    if (!task) {
+      const finished = await options.tasks.findFinished(userId, requestId)
+      if (finished) return finished
+      if (await options.tasks.findUnconfirmed(userId, requestId)) throw ambiguousVideoSubmission()
+      return null
+    }
     const operation: ActiveVideoRequest = {
       senderId, requestId, userId, taskId: task.taskId, controller: new AbortController(), dispatched: true,
     }

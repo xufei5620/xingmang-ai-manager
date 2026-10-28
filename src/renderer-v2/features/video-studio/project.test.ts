@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
+import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
 import {
   addVideoStudioShot,
@@ -20,6 +21,7 @@ import {
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotProblem,
+  videoStudioUnconfirmedIndexes,
   type VideoStudioProject,
 } from './project'
 
@@ -157,6 +159,32 @@ describe('video studio project', () => {
     ])
     expect(restored?.exported).toEqual(clip('z'))
     expect(restored?.title).toBe('回家的猫')
+  })
+
+  // #1489 N2：提交没收到答复的那一镜，重开以后不能变回「还没生成」让「生成剩下的」再付一次钱。
+  it('keeps a shot whose submission went unanswered failed with its warning after the page reopens', () => {
+    const project = planned()
+    const unclear: VideoStudioProject = {
+      ...project,
+      shots: [
+        { ...project.shots[0], status: 'failed', requestId: 'lost', unconfirmed: true, error: aiVideoUnconfirmedSubmissionMessage },
+        { ...project.shots[1], clip: clip('b'), status: 'failed', requestId: 'lost-again', unconfirmed: true, error: aiVideoUnconfirmedSubmissionMessage },
+        { ...project.shots[2], status: 'failed', requestId: 'slow', error: '暂时查不到生成进度' },
+      ],
+    }
+    const restored = restoreVideoStudioProject(JSON.parse(JSON.stringify(serializeVideoStudioProject(unclear))))
+    // There is no task id to fetch it by, so it is not picked back up; the warning stays until the person decides to pay again.
+    expect(restored?.shots).toEqual([
+      { id: 'shot-1', prompt: '雨夜街头的橘猫', caption: '下雨了', requestId: 'lost', unconfirmed: true, status: 'failed', error: aiVideoUnconfirmedSubmissionMessage },
+      { id: 'shot-2', prompt: '橘猫穿过人群', caption: '', clip: clip('b'), requestId: 'lost-again', unconfirmed: true, status: 'failed', error: aiVideoUnconfirmedSubmissionMessage },
+      { id: 'shot-3', prompt: '橘猫跳上台阶', caption: '到家了', requestId: 'slow', status: 'generating' },
+    ])
+    expect(videoStudioUnconfirmedIndexes(restored!, ['shot-3', 'shot-2', 'shot-1'])).toEqual([0, 1])
+    expect(videoStudioUnconfirmedIndexes(restored!, ['shot-3'])).toEqual([])
+
+    // The mark means nothing without the request it belongs to.
+    const orphan = restoreVideoStudioProject({ version: 1, settings: defaultVideoStudioSettings(), title: '', shots: [{ id: 'x', prompt: '一', caption: '', unconfirmed: true }] })
+    expect(orphan?.shots).toEqual([{ id: 'x', prompt: '一', caption: '', status: 'idle' }])
   })
 
   it('reads back a damaged record without trusting it', () => {

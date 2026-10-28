@@ -401,6 +401,127 @@ test('marks a clip stopped mid-submission as failed when nothing comes back', as
   await page.close()
 })
 
+// 主进程那句「提交结果不明确」（electron/ai-video-submission.ts）：交出去了、没拿到任务号，钱可能扣了，片段接不回来。
+const unclear = '视频提交结果不明确，服务端可能已创建任务，请勿立即重复提交'
+
+// #1489 N2：提交没收到答复的那一段，关掉重开以后不能变回「还没生成」，「生成剩下的」再付一次钱之前要客户自己点头。
+test('keeps a clip whose submission went unanswered flagged after reopening, and asks before paying for it again', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '海边', { title: '海边', shots: [{ prompt: '浪花' }, { prompt: '海鸥' }, { prompt: '灯塔' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  const [first, second, third] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate(([requestId, message]) => window.videoStudioPage.failClip(requestId, message), [first.requestId, unclear])
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#0088ff'), second.requestId)
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
+
+  // 第三段还在提交时关掉软件。重开以后只接第三段；第一段没有任务号可接，照样是失败加那句提醒。
+  await page.reload()
+  await page.waitForFunction(() => window.videoStudioPage.pendingResumes().length === 1)
+  assert.deepEqual([...new Set(await studioCalls(page, 'resume'))], [third.requestId])
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  // 主进程说第三段也是交出去了、没拿到任务号：同样提醒，不变回「还没生成」。
+  await page.evaluate(([requestId, message]) => window.videoStudioPage.failResume(requestId, message), [third.requestId, unclear])
+  await page.getByTestId('video-shot-2').getByText(unclear).waitFor()
+  assert.deepEqual(await studioCalls(page, 'generate'), [])
+
+  // 再打开一次：两段都还是那句提醒，不去接，也不发生成。
+  await page.reload()
+  for (const index of [0, 2]) await page.getByTestId(`video-shot-${index}`).getByText(unclear).waitFor()
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+  assert.equal(await page.getByTestId('video-generate-all').textContent(), '生成剩下的 2 段')
+
+  // 「生成剩下的 2 段」：确认框另外说清可能多扣一次，先勾「我已了解影响」才能点。
+  await page.getByTestId('video-generate-all').click()
+  const confirm = page.getByTestId('video-confirm')
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText('这几段上次提交时没收到服务端答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。').waitFor()
+  assert.equal(await confirm.getByRole('button', { name: '开始生成' }).isDisabled(), true)
+  await confirm.getByRole('button', { name: '取消' }).click()
+  await confirm.waitFor({ state: 'detached' })
+
+  // 单独重新生成第一段：确认后沿用原来的请求号重新提交（MiniMax 拿它去重），不去接。
+  await page.getByTestId('video-shot-generate-0').click()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到服务端答复/).waitFor()
+  await confirm.getByRole('checkbox').check()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [again] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  assert.equal(again.requestId, first.requestId)
+  assert.equal(again.prompt, '浪花')
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+  await page.getByTestId('video-shot-0').getByText('生成中').waitFor()
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff88'), first.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+
+  // 跟一段新加的一起生成：只点名那一段，没问题的那段照常。
+  await page.getByTestId('video-shot-add').click()
+  await page.getByTestId('video-shot-prompt-3').fill('日出')
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^其中第 3 段上次提交时没收到服务端答复/).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+  // 生成好的那一段重开以后不再提醒。
+  await page.reload()
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-2').getByText(unclear).waitFor()
+  assert.equal(await page.getByTestId('video-shot-0').getByRole('alert').count(), 0)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// #1489 N2 同页那条路：「暂时查不到进度」的那一镜点重新生成，接回时主进程说它其实没拿到任务号，就停下提醒，不换新请求号再付一次。
+test('stops and warns when picking a clip back up turns out the submission went unanswered', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '雪山', { title: '雪山', shots: [{ prompt: '山顶' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [clip] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), clip.requestId)
+  await page.getByTestId('video-shot-0').getByText('没生成出来').waitFor()
+  await page.getByTestId('video-shot-generate-0').click()
+  assert.equal(await page.getByTestId('video-confirm-unconfirmed').count(), 0, 'nothing says it was unanswered yet')
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction((requestId) => window.videoStudioPage.pendingResumes().includes(requestId), clip.requestId)
+  await page.evaluate(([requestId, message]) => window.videoStudioPage.failResume(requestId, message), [clip.requestId, unclear])
+  await page.getByTestId('video-shot-0').getByText(unclear).waitFor()
+  assert.equal((await studioCalls(page, 'generate')).length, 1)
+  await page.getByTestId('video-shot-generate-0').click()
+  await page.getByTestId('video-confirm-unconfirmed').waitFor()
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// #1489 R28-4：模型表还没读完就点了生成，读完以后记着的模型换成了默认的；排在后面的那一段照客户确认时的模型出，不悄悄换。
+test('makes every queued clip with the model the person confirmed, even if the model list settles on another one meanwhile', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '城市', { title: '城市', shots: [{ prompt: '一' }, { prompt: '二' }, { prompt: '三' }, { prompt: '四' }] })
+  await page.evaluate(() => {
+    const key = 'xingmang-ui-v2:video-studio:xm-account:7'
+    const stored = JSON.parse(localStorage.getItem(key))
+    stored.settings.videoModel = 'grok-imagine-video'
+    localStorage.setItem(key, JSON.stringify(stored))
+  })
+  await page.goto(`${base}/src/renderer-v2/features/video-studio/page-fixture.html?models=held`)
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video"]').waitFor()
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByText('用「grok-imagine-video」生成 4 段、每段 6 秒，每段单独计费。').waitFor()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+
+  await page.evaluate(() => window.videoStudioPage.releaseModels())
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  const [first] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#123456'), first.requestId)
+  await page.waitForFunction(() => window.videoStudioPage.calls.filter((call) => call.method === 'generate').length === 4)
+  const generated = await studioCalls(page, 'generate')
+  assert.deepEqual(generated.map((input) => [input.prompt, input.model, input.seconds]), [['一', 'grok-imagine-video', '6'], ['二', 'grok-imagine-video', '6'], ['三', 'grok-imagine-video', '6'], ['四', 'grok-imagine-video', '6']])
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // 审查清单 严重-1 后半：「暂时查不到进度」这类失败时服务端多半还在出，点重新生成先拿原来的请求号接回，接不回来才再花钱。
 test('retrying a clip that failed while the server may still be working picks the old one up before paying again', async () => {
   const { page, errors } = await openStudio()

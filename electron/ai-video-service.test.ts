@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
+import { aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
 import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type FinishedAiVideoAsset, type FinishedAiVideoTask, type StoredAiVideoTask } from './ai-video-task-store'
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -50,6 +51,8 @@ function setup(
     })),
   }
   const reservations = new Set<string>()
+  // Requests sent without a task id coming back, as the real store keeps them.
+  const unconfirmed = new Set<string>()
   let reservationSequence = 0
   const upsert = vi.fn(async (_task: StoredAiVideoTask) => undefined)
   const remove = vi.fn(async (_userId: number, _taskId: string) => undefined)
@@ -67,6 +70,7 @@ function setup(
     commitReservation: vi.fn(async (reservationId: string, task: StoredAiVideoTask) => {
       if (!reservations.has(reservationId)) throw new Error('AI 视频任务预留已失效')
       await upsert(task)
+      unconfirmed.delete(task.requestId)
       reservations.delete(reservationId)
     }),
     releaseReservation: vi.fn(async (_userId: number, reservationId: string) => {
@@ -77,6 +81,11 @@ function setup(
     // that only care about the task being gone keep asserting on remove.
     finish: vi.fn(async (task: Pick<StoredAiVideoTask, 'userId' | 'taskId'>, _asset: FinishedAiVideoAsset) => remove(task.userId, task.taskId)),
     findFinished: vi.fn(async (_userId: number, _requestId: string): Promise<FinishedAiVideoTask | null> => null),
+    markUnconfirmed: vi.fn(async (_userId: number, requestId: string) => { unconfirmed.add(requestId) }),
+    clearUnconfirmed: vi.fn(async (_userId: number, requestId: string) => { unconfirmed.delete(requestId) }),
+    findUnconfirmed: vi.fn(async (_userId: number, requestId: string) => (
+      unconfirmed.has(requestId) ? { requestId, submittedAt: '2026-10-28T00:00:00.000Z' } : null
+    )),
   }
   const assets = {
     assertWritable: vi.fn(async (_userId: number, _projectId?: string) => undefined),
@@ -493,6 +502,110 @@ describe('createAiVideoService', () => {
     })).rejects.toThrow('结果不明确')
     expect(fetchImpl).toHaveBeenCalledOnce()
     expect(tasks.upsert).not.toHaveBeenCalled()
+  })
+
+  // #1489 N2：提交没收到答复的那一单，重开的视频剪辑页问起来要听到「结果不明」，不能是「没发过」。
+  it('remembers a paid POST that lost its reply, across a restart, until a resubmission gets a task id', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-unconfirmed-'))
+    try {
+      const tasks = new AiVideoTaskStore({ rootDirectory: root })
+      const dropped = vi.fn(async () => { throw new TypeError('socket reset') }) as unknown as typeof fetch
+      const first = setup(dropped, { tasks })
+      const input = {
+        requestId: 'shot-unclear', group: '生图分组', model: 'minimax-h3-base', prompt: '海浪', seconds: '6', mode: 't2va' as const,
+      }
+      await expect(first.service.generate(41, input)).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+
+      const reopened = new AiVideoTaskStore({ rootDirectory: root })
+      const quiet = vi.fn() as unknown as typeof fetch
+      const next = setup(quiet, { tasks: reopened })
+      await expect(next.service.resumeRequest(52, 7, 'shot-unclear')).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+      await expect(next.service.resumeRequest(52, 7, 'never-sent')).resolves.toBeNull()
+      expect(quiet).not.toHaveBeenCalled()
+      expect(next.credentials.resolveCredential).not.toHaveBeenCalled()
+
+      // The page resubmits under the same id, so MiniMax can tell it is the same clip.
+      const accepted = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => (
+        init?.method === 'POST'
+          ? jsonResponse({ id: 'task_unclear', status: 'queued' })
+          : String(input).endsWith('/content')
+            ? mp4Response()
+            : jsonResponse({ id: 'task_unclear', status: 'completed' })
+      )) as unknown as typeof fetch
+      const retry = setup(accepted, { tasks: reopened })
+      await expect(retry.service.generate(52, input)).resolves.toMatchObject({ taskId: 'task_unclear' })
+      for (const [, init] of [...vi.mocked(dropped).mock.calls, ...vi.mocked(accepted).mock.calls.filter(([, init]) => init?.method === 'POST')]) {
+        expect((init as RequestInit | undefined)?.headers).toMatchObject({ 'Idempotency-Key': 'shot-unclear' })
+      }
+      await expect(reopened.findUnconfirmed(7, 'shot-unclear')).resolves.toBeNull()
+      await expect(retry.service.resumeRequest(53, 7, 'shot-unclear')).resolves.toMatchObject({ assetId: 'a'.repeat(43) })
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('writes the unclear-request record to disk before the paid POST leaves', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-unconfirmed-'))
+    try {
+      const tasks = new AiVideoTaskStore({ rootDirectory: root })
+      let seenOnDisk: unknown
+      const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
+        // A fresh store reads only the file, as the next launch would after the app was killed here.
+        seenOnDisk = await new AiVideoTaskStore({ rootDirectory: root }).findUnconfirmed(7, 'shot-killed')
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+        })
+      }) as unknown as typeof fetch
+      const { service } = setup(fetchImpl, { tasks })
+      const pending = service.generate(41, {
+        requestId: 'shot-killed', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      })
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(seenOnDisk).toMatchObject({ requestId: 'shot-killed' }))
+      // 「停止」 mid-submit leaves the same answer behind.
+      expect(service.cancel(41, 'shot-killed', 7)).toEqual({ canceled: true, mayStillComplete: true })
+      await expect(pending).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+      await expect(service.resumeRequest(41, 7, 'shot-killed')).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('forgets the request when the server turns it down or the stop comes before it is sent', async () => {
+    const refused = vi.fn(async () => jsonResponse({ error: { message: 'prompt rejected by moderation' } }, 400)) as unknown as typeof fetch
+    const turnedDown = setup(refused)
+    await expect(turnedDown.service.generate(41, {
+      requestId: 'shot-refused', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).rejects.toThrow()
+    expect(turnedDown.tasks.markUnconfirmed).toHaveBeenCalledWith(7, 'shot-refused')
+    await expect(turnedDown.service.resumeRequest(41, 7, 'shot-refused')).resolves.toBeNull()
+
+    const neverSent = vi.fn() as unknown as typeof fetch
+    const stopped = setup(neverSent)
+    vi.mocked(stopped.tasks.markUnconfirmed).mockImplementationOnce(async () => {
+      expect(stopped.service.cancel(41, 'shot-stopped-early')).toEqual({ canceled: true, mayStillComplete: false })
+    })
+    await expect(stopped.service.generate(41, {
+      requestId: 'shot-stopped-early', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).rejects.toThrow('已取消视频请求')
+    expect(neverSent).not.toHaveBeenCalled()
+    expect(stopped.tasks.clearUnconfirmed).toHaveBeenCalledWith(7, 'shot-stopped-early')
+    await expect(stopped.service.resumeRequest(41, 7, 'shot-stopped-early')).resolves.toBeNull()
+  })
+
+  it('still sends the paid request when the unclear-request record cannot be written', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => (
+      init?.method === 'POST'
+        ? jsonResponse({ id: 'task_unrecorded', status: 'queued' })
+        : String(input).endsWith('/content')
+          ? mp4Response()
+          : jsonResponse({ id: 'task_unrecorded', status: 'completed' })
+    )) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    vi.mocked(tasks.markUnconfirmed).mockRejectedValueOnce(new Error('AI 视频任务记录超过安全上限'))
+    await expect(service.generate(41, {
+      requestId: 'shot-unrecorded', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'task_unrecorded' })
   })
 
   it('rejects a video model missing from the selected group before paid dispatch', async () => {
@@ -1260,8 +1373,10 @@ describe('createAiVideoService', () => {
     await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
 
     const reloaded = service.resumeRequest(41, 7, ' shot-reload ')
-    // Another window has no request of that id in flight and no record of it yet.
-    await expect(service.resumeRequest(42, 7, 'shot-reload')).resolves.toBeNull()
+    // Another window has no request of that id in flight, but the request has
+    // already left this machine: it hears "unclear", never "not sent", so it
+    // cannot be talked into paying for the same shot again.
+    await expect(service.resumeRequest(42, 7, 'shot-reload')).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
     resolvePost(jsonResponse({ id: 'video_reload', status: 'queued' }))
     await expect(reloaded).resolves.toMatchObject({ assetId: 'a'.repeat(43), taskId: 'video_reload' })
     await expect(original).resolves.toMatchObject({ taskId: 'video_reload' })

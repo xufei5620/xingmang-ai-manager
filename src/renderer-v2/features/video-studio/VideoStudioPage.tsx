@@ -11,6 +11,7 @@ import {
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotCounts,
+  videoStudioUnconfirmedIndexes,
   type VideoStudioShot,
 } from './project'
 import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, videoStudioAspects, videoStudioFits, videoStudioResolutions } from './timeline'
@@ -69,6 +70,8 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const writePlan = () => { if (shots.some((shot) => shot.clip)) setConfirmation({ kind: 'plan' }); else void studio.writePlan() }
   const confirmCount = confirmation?.kind === 'generate' ? confirmation.ids.length : 0
   const regenerating = confirmation?.kind === 'generate' && confirmation.ids.some((id) => shots.find((shot) => shot.id === id)?.clip)
+  // 上次提交没收到答复的那几段：钱可能已经扣了，再生成可能多扣一次，确认框要另外说清（#1489 N2）。
+  const unconfirmed = confirmation?.kind === 'generate' ? videoStudioUnconfirmedIndexes(project, confirmation.ids) : []
 
   return <section className="v2-page video-studio" data-page-id="video" data-testid="page-video">
     <PageHead title="视频剪辑" lead={pageLead}
@@ -155,14 +158,22 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     {active && confirmation && <Confirm testId="video-confirm"
       title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、每段 ${settings.secondsPerShot} 秒，每段单独计费。`}</p><p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、每段 ${settings.secondsPerShot} 秒，每段单独计费。`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
         : confirmation.kind === 'reset' ? <p>想法、分镜和片段都从这一页清掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
         : <p>这个镜头和它的片段从分镜里拿掉，片段还在 AI 作品文件夹里。</p>}
       okLabel={confirmation.kind === 'generate' ? regenerating ? '重新生成' : '开始生成' : confirmation.kind === 'plan' ? '重新写' : confirmation.kind === 'reset' ? '重新开始' : '删掉'}
-      danger={confirmation.kind === 'reset' || confirmation.kind === 'remove'}
+      danger={confirmation.kind === 'reset' || confirmation.kind === 'remove' || unconfirmed.length > 0}
+      // 同聊天页重新生成「上次请求可能仍在服务端处理」那一下：先勾「我已了解影响」才能点。
+      requireAck={unconfirmed.length > 0}
       onOk={runConfirmation} onClose={() => setConfirmation(null)} />}
   </section>
+}
+
+/** 确认框里那句「可能多扣一次」。indexes 是这几段在分镜里的位置（从 0 数），total 是这次要生成几段。 */
+function unconfirmedWarning(indexes: readonly number[], total: number): string {
+  const subject = total === 1 ? '这一段' : indexes.length === total ? '这几段' : `其中第 ${indexes.map((index) => index + 1).join('、')} 段`
+  return `${subject}上次提交时没收到服务端答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
 }
 
 function secondsOptions(model: string, current: number) {
