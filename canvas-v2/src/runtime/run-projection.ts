@@ -1,3 +1,4 @@
+import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import { isImageTransformNodeKind } from '../image-tools/recipe'
 import type { CanvasRunCandidate, CanvasRunNodeState, CanvasRunRecord } from '../host'
 import type { WorkflowCandidateRef, WorkflowEdge, WorkflowNodeData } from '../model'
@@ -10,12 +11,17 @@ type CandidateSelectionEdge = Pick<WorkflowEdge, 'source' | 'target'> & { source
 
 export interface ProjectableCanvasNode {
   id: string
+  type?: string
   data: WorkflowNodeData
 }
 
-/** Pending regeneration is document state, unlike transient run progress. */
+/**
+ * Pending regeneration is document state, unlike transient run progress. A
+ * node that never runs (a note, a group) is never waiting for a rerun, even
+ * when an earlier build saved it as dirty after its text was edited.
+ */
 export function dirtyCanvasNodeIds(nodes: readonly ProjectableCanvasNode[]): Set<string> {
-  return new Set(nodes.filter((node) => node.data.dirty === true).map((node) => node.id))
+  return new Set(nodes.filter((node) => node.data.dirty === true && (node.type === undefined || builtinNodeRegistry.resolve(node.type)?.executable !== false)).map((node) => node.id))
 }
 
 export type NodeResultStagingState = 'accepted' | 'empty'

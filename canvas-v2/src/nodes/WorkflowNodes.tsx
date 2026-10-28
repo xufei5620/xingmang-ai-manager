@@ -1077,6 +1077,8 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
   // no-attempt disabled reason identifies a skip; other failures stay visible.
   const disabledSkipped = disabled && data.status === 'failed' && data.errorMessage === '节点已禁用' && data.attemptCount === 0
   const presentedStatus = disabledSkipped ? 'idle' : data.status
+  // A note or group never runs; a dirty flag an earlier build saved on one is not a pending update.
+  const pendingUpdate = data.dirty === true && definition.executable
   const presentedStatusLabel = disabledSkipped ? '已跳过' : statusLabel[data.status]
   const locked = data.__canvasLocked === true
   const inputs = definition.ports.filter((port) => port.direction === 'input')
@@ -1234,7 +1236,7 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
 
   return (
     <div
-      className={`wf-node wf-editor-node wf-node-${kind} wf-category-${definition.category} wf-status-${presentedStatus}${data.dirty ? ' wf-is-dirty' : ''}${data.fromCache && data.status === 'succeeded' && !data.dirty ? ' wf-is-cached' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}
+      className={`wf-node wf-editor-node wf-node-${kind} wf-category-${definition.category} wf-status-${presentedStatus}${pendingUpdate ? ' wf-is-dirty' : ''}${data.fromCache && data.status === 'succeeded' && !pendingUpdate ? ' wf-is-cached' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}
       // Content determines ordinary node height, but absolute-positioned ports
       // also need room. Keep the last port above the clipped bottom edge.
       style={kind !== 'group' && portRows > 0 ? { minHeight: portSlotOffsetY(portRows - 1) + 12 } : undefined}
@@ -1256,13 +1258,13 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
           {data.status === 'idle'
             ? <span className="wf-status-idle-dot" title="待运行" aria-label="待运行" />
             : <span className={`wf-status wf-status-${presentedStatus}`}><StatusIcon size={12} aria-hidden="true" />{presentedStatusLabel}</span>}
-          {data.fromCache && data.status === 'succeeded' && !data.dirty && (
+          {data.fromCache && data.status === 'succeeded' && !pendingUpdate && (
             <span className="wf-cached" title="输入未变化，本次复用了上次结果，没有产生新的付费请求">已缓存</span>
           )}
           {locked && <span className="wf-locked" title="节点位置已锁定" role="img" aria-label="位置已锁定"><Lock size={10} aria-hidden="true" /></span>}
           {disabled && <span className="wf-disabled" title="此节点不会参与运行">已禁用</span>}
           {hostUnsupported && <span className="wf-disabled wf-host-unsupported" title="当前客户端不能运行这个节点">当前客户端不支持</span>}
-          {data.dirty && <span className="wf-dirty" title="输入或采纳结果已变化，需要重新运行">待更新</span>}
+          {pendingUpdate && <span className="wf-dirty" title="输入或采纳结果已变化，需要重新运行">待更新</span>}
         </span>
         {/* Pinned to the header's bottom border so a run costs zero height and
             the graph never reflows mid-execution. */}

@@ -3,6 +3,7 @@ import type { CanvasRunCandidate, CanvasRunRecord } from '../host'
 import type { WorkflowNodeData } from '../model'
 import {
   autoFixedDownstreamNodeIds,
+  dirtyCanvasNodeIds,
   downstreamNodeIds,
   fixNodeCandidate,
   markNodeAndDescendantsDirty,
@@ -259,5 +260,17 @@ describe('run record projection', () => {
     expect(restored[0].data.result?.assetId).toBe('asset-2')
     expect(restored[1].data.dirty).toBe(true)
   })
+})
 
+describe('pending updates', () => {
+  it('counts dirty nodes that can run and never a note an earlier build saved as dirty', () => {
+    const nodes = [
+      { id: 'image', type: 'image-generate', data: { ...data(), dirty: true } },
+      { id: 'note', type: 'note', data: { ...data(), dirty: true } },
+      { id: 'group', type: 'group', data: { ...data(), dirty: true } },
+      { id: 'untyped', data: { ...data(), dirty: true } },
+      { id: 'clean', type: 'image-generate', data: { ...data(), dirty: false } },
+    ]
+    expect([...dirtyCanvasNodeIds(nodes)]).toEqual(['image', 'untyped'])
+  })
 })

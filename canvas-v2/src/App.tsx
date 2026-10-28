@@ -312,6 +312,7 @@ import { PromptCatalogProvider, useWorkspacePromptCatalog } from './components/P
 import { maximumPromptPresetLength, type PromptPresetInput, type PromptPresetUpdateInput, type PromptPresetOrderInput } from './library/prompt-preset-contract'
 import { findAvailableCanvasPosition } from './editor/node-placement'
 import { createCreatedNodeFocusCoordinator, createdNodeFocusZoom, createdNodeNeedsFocus } from './editor/node-focus'
+import { useCanvasNarrowLayout } from './editor/narrow-canvas-layout'
 import { applyCanvasAppearance, initialCanvasAppearance, subscribeCanvasTheme, type CanvasTheme } from './theme/canvas-theme'
 import {
   buildCanvasRunPreflight,
@@ -4453,7 +4454,8 @@ function CanvasWorkspace({
         if (!node) return
         const keys = Object.keys(patch)
         const viewerOnly = keys.length === 1 && ((node.type === 'image-compare' && keys[0] === 'imageCompare') || (node.type === 'image-panorama' && keys[0] === 'imagePanorama'))
-        if (viewerOnly) {
+        // A note never runs and has no ports, so editing it leaves nothing waiting for a rerun.
+        if (viewerOnly || builtinNodeRegistry.resolve(node.type ?? 'unknown')?.executable === false) {
           // Viewing an existing image must not invalidate results or dirty downstream AI nodes.
           const updated = current.nodes.map((entry) => entry.id === nodeId ? { ...entry, data: { ...entry.data, settings: { ...entry.data.settings, ...patch } } } : entry)
           execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
@@ -8578,6 +8580,20 @@ function CanvasWorkspace({
     () => projectCanvasInspectorNodes(nodes, edges),
     [edges, nodes],
   )
+  const inspectorShown = !focusMode && !agentOpen && (
+    (inspectorTab === 'node' && nodeInspectorOpen && selectedInspectorNodes.length > 0)
+    || (inspectorTab === 'assets' && assetTrayOpen)
+    || (inspectorTab === 'runs' && runInspectorOpen)
+  )
+  // In the narrow layout an open side panel squeezes the library into its rail (styles.css,
+  // canvas-agent.css). The library is told it is collapsed then, so a rail tab really opens it: the panel
+  // closes first, instead of the drawer expanding into a 48px column nobody can see.
+  const narrowCanvas = useCanvasNarrowLayout()
+  const libraryRailForced = narrowCanvas && (agentOpen || inspectorShown)
+  const changeLibraryCollapsed = useCallback((collapsed: boolean) => {
+    if (!collapsed && libraryRailForced) { setAgentOpen(false); closeInspector() }
+    setUiPreferences((current) => current.libraryCollapsed === collapsed ? current : { ...current, libraryCollapsed: collapsed })
+  }, [closeInspector, libraryRailForced])
 
   const workshopDialog = workshopCatalog && CanvasWorkshopLibraryDialog ? <PromptCatalogProvider value={promptCatalogValue}><CanvasWorkshopLibraryDialog
     key={`${draftOwnerId ?? 'local'}:${activeProject?.id ?? 'new'}:${workshopProjectEpoch}`}
@@ -8993,8 +9009,8 @@ function CanvasWorkspace({
           onGroup={groupNodes} onLock={(ids, locked) => setNodeFlags(ids, 'locked', locked)}
           canExport={hostEntryPoints.projectPackageExport}
           onExport={(ids) => { void previewProjectExport(ids) }} />}
-        collapsed={uiPreferences.libraryCollapsed}
-        onCollapsedChange={(collapsed) => setUiPreferences((current) => ({ ...current, libraryCollapsed: collapsed }))}
+        collapsed={uiPreferences.libraryCollapsed || libraryRailForced}
+        onCollapsedChange={changeLibraryCollapsed}
         onAdd={addNode}
         onAddPrompt={(prompt) => addNode('prompt', undefined, { prompt })}
         onAddAsset={addAssetNode}
@@ -9339,11 +9355,7 @@ function CanvasWorkspace({
         onConfigureModels={() => { setMediaConfigOpen(true); setRunMenuOpen(false); setMoreActionsOpen(false) }}
         onLocateNode={(id) => { const target = nodes.find((node) => node.id === id); if (target) { setNodes((current) => current.map((node) => ({ ...node, selected: node.id === id }))); fitCanvasNodes([id], 1.1) } }}
         onClose={() => setAgentOpen(false)} />}
-      {!focusMode && !agentOpen && (
-        (inspectorTab === 'node' && nodeInspectorOpen && selectedInspectorNodes.length > 0)
-        || (inspectorTab === 'assets' && assetTrayOpen)
-        || (inspectorTab === 'runs' && runInspectorOpen)
-      ) && (
+      {inspectorShown && (
         <CanvasInspector
           readOnly={!projectCanEdit}
           canRun={projectCanRun}
