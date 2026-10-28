@@ -389,8 +389,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // away and back.
   const renderedChatScope = page === 'chat' ? scope : chatScope
   // 「搬到新电脑」：导入前把聊天页同步卸下，免得它下一次自动保存把刚导入的对话又删掉。
+  // 人正停在聊天页时清掉 chatScope 卸不下它（renderedChatScope 这时看的是 page），就换个 key 让它重新挂上；
+  // 重新挂上的和导入中途点开的，都等导入写完才读（R28-2）。
+  const [chatMount, setChatMount] = useState(0)
   const chatTransfer = useMemo(() => session.authenticated
-    ? createChatTransfer(native, window.localStorage, scope, () => flushSync(() => setChatScope(null)))
+    ? createChatTransfer(native, window.localStorage, scope, () => flushSync(() => { setChatScope(null); setChatMount((count) => count + 1) }))
     : undefined, [native, scope, session.authenticated, setChatScope])
   if (boot !== 'ready') return <Splash platform={os} phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={retryBoot} />
   return <AccountBalanceContext.Provider value={balanceStore}><OnlineStatusContext.Provider value={onlineStatus}><BalanceTierProvider value={subscription ? 'ok' : balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
@@ -452,7 +455,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
+            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsUsageTrend={accountSupports(session, 'supportsDashboardTrends')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               toolRouteStatus={session.authenticated && siteId === 'solov' ? settings?.relayToolRouteStatus : undefined}

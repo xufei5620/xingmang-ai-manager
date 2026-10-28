@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, conversationPlainText, createHistoryWriter, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText } from './storage'
+import { ChatStorageError, conversationPlainText, createHistoryWriter, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -612,6 +612,48 @@ describe('moving history to another computer', () => {
     release()
     await waiting
     expect(settled).toBe(true)
+  })
+
+  // R28-2：导入还没写盘就点进聊天页，聊天页读到的是导入前那一份，下一次自动保存把刚导入的对话又删了。
+  it('makes a chat page opened during an import read only once the import is saved', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save(workspace(scope, 1))
+    const write = files.api.writeHistory.getMockImplementation()!
+    let release: () => void = () => undefined
+    files.api.writeHistory.mockImplementationOnce((input) => new Promise<void>((resolve) => { release = () => { void write(input).then(resolve) } }))
+    const imported = { ...createConversation(undefined, 'from-old-computer'), messages: [message()] }
+    const importing = runHistoryImport(scope, () => importConversationsIntoHistory(files.api, memoryStorage(), scope, [imported]))
+    const page = loadChatHistory(files.api, memoryStorage(), scope)
+    await vi.waitFor(() => expect(files.api.writeHistory).toHaveBeenCalledTimes(2))
+    expect(files.api.readHistory).toHaveBeenCalledOnce()
+    release()
+    expect(await importing).toEqual({ added: 1, skipped: 0 })
+    expect(new Set((await page).state.conversations.map((conversation) => conversation.id))).toEqual(new Set(['from-old-computer', 'conversation-0']))
+  })
+
+  it('holds a chat page that remounts as the import starts', async () => {
+    const files = memoryFiles()
+    const imported = { ...createConversation(undefined, 'from-old-computer'), messages: [message()] }
+    let page: ReturnType<typeof loadChatHistory> | undefined
+    await runHistoryImport(scope, async () => {
+      page = loadChatHistory(files.api, memoryStorage(), scope)
+      return importConversationsIntoHistory(files.api, memoryStorage(), scope, [imported])
+    })
+    expect((await page!).state.conversations.map((conversation) => conversation.id)).toEqual(['from-old-computer'])
+  })
+
+  it('lets reads through once an import fails, and never holds another account', async () => {
+    const files = memoryFiles()
+    let fail: (reason: Error) => void = () => undefined
+    const importing = runHistoryImport(scope, () => new Promise<never>((_, reject) => { fail = reject }))
+    expect((await loadChatHistory(files.api, memoryStorage(), 'xm-account:9')).exists).toBe(false)
+    const page = loadChatHistory(files.api, memoryStorage(), scope)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(files.api.readHistory).toHaveBeenCalledOnce()
+    fail(new Error('导入失败'))
+    await expect(importing).rejects.toThrow('导入失败')
+    expect((await page).exists).toBe(false)
+    expect(files.api.readHistory).toHaveBeenCalledTimes(2)
   })
 
   it('formats one conversation as plain text without keys', () => {
