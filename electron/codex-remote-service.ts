@@ -957,6 +957,10 @@ export class CodexRemoteService {
       return
     }
     const now = this.now()
+    // 电脑时间往回调过（比如照着提醒调准了），开启时间按调好的钟改记成现在（#1407 P3-5）：不然调准以后，
+    // 原来快了多久，就有多久发的话还被当成开启前的。现在不会早于真正的开启时间，所以比起时间一直准的电脑，
+    // 不会多放进一条旧消息。
+    if (now < runtime.startedAt) runtime.startedAt = now
     if (message.sentAt !== undefined && isStaleInbound(message.sentAt, runtime.startedAt, now)) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'stale' })
       if (message.kind !== 'approval' && isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) {

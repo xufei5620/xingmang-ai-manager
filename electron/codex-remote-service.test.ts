@@ -179,6 +179,8 @@ async function setup(options: {
   replyGates?: ReadonlyMap<string, Promise<unknown>>
   /** 设了就等它好了才交出 Codex 的密钥：模拟读配置读得慢。 */
   secretsGate?: Promise<unknown>
+  /** 电脑上的钟，缺省 Date.now。 */
+  now?: () => number
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -209,6 +211,7 @@ async function setup(options: {
       logDetails.push({ event, ...(detail ? { detail } : {}) })
     },
     randomInt: () => 42,
+    ...(options.now ? { now: options.now } : {}),
     spawnCodex: async () => {
       await options.spawnGate
       const fake = new FakeCodex()
@@ -592,6 +595,24 @@ describe('codex-remote-service clock running fast', () => {
     expect(channel.sent[0].replyContext).toBe(message.replyContext)
     expect(s.codex).toHaveLength(0)
     expect(s.logDetails).toContainEqual({ event: 'remote.clock-ahead', detail: { channel: 'feishu', aheadSeconds: 900 } })
+  })
+
+  it('runs what the phone sends once the clock has been set right, without waiting out the hours it was fast', async () => {
+    const eightHours = 8 * 60 * 60_000
+    const clock = { aheadMs: eightHours }
+    const s = await setup({ now: () => Date.now() + clock.aheadMs })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: eightHours }))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([clockAheadText]))
+    // The customer sets the clock right and sends again: the channel counts as opened just now, not eight hours ahead.
+    clock.aheadMs = 0
+    channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: 0 }))
+    await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
+    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
+    // Something sent before the clock was set right is still too old to run.
+    channel.handlers?.onInbound(text(alice, '调钟以前发的', { sentAt: Date.now() - 2 * 60_000, clockAheadMs: 0 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
   })
 
   it('stays silent for really old messages, unknown clocks and strangers', async () => {
