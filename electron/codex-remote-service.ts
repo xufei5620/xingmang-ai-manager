@@ -624,6 +624,16 @@ export class CodexRemoteService {
     return this.emit()
   }
 
+  /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */
+  async disableAllChannels(): Promise<CodexRemoteSnapshot | null> {
+    if (this.disposed) return null
+    for (const id of remoteChannelIds) {
+      const runtime = this.runtimes[id]
+      if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedOnComputer)
+    }
+    return this.emit()
+  }
+
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')

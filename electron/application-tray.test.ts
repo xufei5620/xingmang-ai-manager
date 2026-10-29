@@ -371,3 +371,43 @@ describe('application tray keep-awake line', () => {
     expect(handle.setToolTip).toHaveBeenLastCalledWith('星芒AI管理工具\n余额：USD 8.00')
   })
 })
+
+describe('application tray remote-control switch', () => {
+  it('offers a clickable way to switch phone remote control off right under the keep-awake line while a channel is on', () => {
+    const off = vi.fn()
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: off }
+    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: '手机遥控开着，暂不让电脑自动睡眠', remoteControlOn: true }, actions, (action) => { void action() })
+    expect(menu.slice(0, 4).map((entry) => entry.label ?? entry.type))
+      .toEqual(['打开星芒AI管理工具', '手机遥控开着，暂不让电脑自动睡眠', '关掉手机遥控', 'separator'])
+    expect(menu[2].enabled).not.toBe(false)
+    click(menu, '关掉手机遥控')
+    expect(off).toHaveBeenCalledOnce()
+  })
+
+  // 灰字同一时间只说一件：终端里的工具在干活时说的是那件，遥控照样开着，关它的那一项不能跟着不见。
+  it('keeps the switch while the keep-awake line is talking about something else', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn() }
+    const busy = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: 'Claude Code 正在干活，暂不让电脑自动睡眠', remoteControlOn: true }, actions, () => undefined)
+    expect(busy.map((entry) => entry.label)).toContain('关掉手机遥控')
+    const needsLogin = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlOn: true }, actions, () => undefined)
+    expect(needsLogin.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '关掉手机遥控', 'separator'])
+  })
+
+  it('leaves the switch out when nothing is on or nothing is wired to switch it off', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
+    const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOff: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
+    expect(labels({ installedTools: [] }, true)).not.toContain('关掉手机遥控')
+    expect(labels({ installedTools: [], remoteControlOn: false }, true)).not.toContain('关掉手机遥控')
+    expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关掉手机遥控')
+  })
+
+  it('reports a failed switch-off through the tray error path and drops the item once the tray snapshot says it is off', async () => {
+    const failure = new Error('飞书断开失败')
+    const { controller, runtime, options } = fixture({ onRemoteControlOff: vi.fn(async () => { throw failure }) })
+    controller.updateSnapshot({ installedTools: [], remoteControlOn: true })
+    click(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0], '关掉手机遥控')
+    await vi.waitFor(() => expect(options.onError).toHaveBeenCalledWith(failure))
+    controller.updateSnapshot({ installedTools: [], remoteControlOn: false })
+    expect(vi.mocked(runtime.buildMenu).mock.calls.at(-1)![0].map((entry) => entry.label)).not.toContain('关掉手机遥控')
+  })
+})

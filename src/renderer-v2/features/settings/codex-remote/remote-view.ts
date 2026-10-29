@@ -35,7 +35,7 @@ export function remoteSwitchHint(
 ): string {
   if (!channel.enabled && !channel.hasCredential) return credentialHint
   if (!channel.enabled && !snapshot.workspaceDirectory) return '先在上面选好干活的文件夹。'
-  return '开着时电脑不会自己睡着，合上笔记本盖子还是会睡。关掉星芒就断开，下次打开星芒要再打开一次；闲着 4 小时也会自动断开。'
+  return '开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 4 小时也会自动断开。'
 }
 
 export function remoteChannelStateLabel(status: RemoteChannelStatus): string {

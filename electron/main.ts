@@ -2222,6 +2222,9 @@ if (!hasSingleInstanceLock) {
       updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && !remoteFeatures.isOff('mac-idle-install')
         && installUnattended(updaterService.getState().installMethod))
     }
+    // 托盘那一项「关掉手机遥控」跟着有没有渠道开着走。状态快照来得勤（每条消息、每次连上断开都有一份），
+    // 只在开关真变了时重建托盘菜单。
+    let trayRemoteControlOn = false
     const codexRemote = createCodexRemote({
       managerDataDirectory,
       runtimeLog,
@@ -2236,6 +2239,10 @@ if (!hasSingleInstanceLock) {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
         refreshIdleInstall()
+        if (codexRemote.hasEnabledChannel() !== trayRemoteControlOn) {
+          trayRemoteControlOn = !trayRemoteControlOn
+          applicationTray?.updateSnapshot()
+        }
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
     })
@@ -3048,6 +3055,7 @@ if (!hasSingleInstanceLock) {
             installing: installKeepAwake.reasons().includes('install'),
             downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
           }),
+          remoteControlOn: codexRemote.hasEnabledChannel(),
         }
       },
       onOpen: showMainWindow,
@@ -3058,6 +3066,10 @@ if (!hasSingleInstanceLock) {
         if (id === 'codexDesktop' || isProviderId(id)) deliverToMainWindow('onLaunchTool', id)
       },
       onAccelerationToggle: () => trayAcceleration?.toggle(),
+      onRemoteControlOff: () => {
+        runtimeLog.log('info', 'codex-remote', 'remote.tray-off', '托盘里点了关掉手机遥控')
+        return codexRemote.disableAllChannels()
+      },
       // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
       onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },
       // 主窗口缩到托盘之后渲染层那边的加速轮询是停的，菜单弹出来这一刻是唯一
