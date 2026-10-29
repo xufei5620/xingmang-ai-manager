@@ -4025,6 +4025,43 @@ describe('moving competing official credentials aside during an account switch',
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).cli_auth_credentials_store).toBe('keyring')
   })
 
+  it('lifts a forced ChatGPT login for the relay key and gives the official profile its restriction back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(snapshots.active), { recursive: true })
+    fs.writeFileSync(snapshots.active, 'forced_login_method = "chatgpt"\nmodel = "gpt-5.5"\n')
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    for (const file of [snapshots.active, snapshots.relay]) {
+      expect(TOML.parse(fs.readFileSync(file, 'utf8'))).not.toHaveProperty('forced_login_method')
+    }
+    expect(TOML.parse(fs.readFileSync(snapshots.chatgpt, 'utf8')).forced_login_method).toBe('chatgpt')
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(snapshots.active, 'utf8')).forced_login_method).toBe('chatgpt')
+
+    // Back on the relay the stored relay profile is reused; the restriction stays lifted there too.
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(snapshots.active, 'utf8'))).not.toHaveProperty('forced_login_method')
+  })
+
+  it('lifts a forced ChatGPT login left in a relay profile and keeps a forced API key login', () => {
+    function savedLoginMethod(existing: string): unknown {
+      const roots = providerRoots(temporaryHome())
+      const [configPath] = providerConfigPaths('codex', roots)
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, existing)
+      saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+      return TOML.parse(fs.readFileSync(configPath, 'utf8')).forced_login_method
+    }
+
+    const relayTable = `model_provider = "XingmangAI"\n\n[model_providers.XingmangAI]\nname = "OpenAI"\nbase_url = "${providerBaseUrls.codex}"\nwire_api = "responses"\nrequires_openai_auth = true\n`
+    expect(savedLoginMethod(`forced_login_method = "chatgpt"\n${relayTable}`)).toBeUndefined()
+    // "api" is what the relay key is, so Codex keeps it signed in.
+    expect(savedLoginMethod('forced_login_method = "api"\n')).toBe('api')
+  })
+
   it('switches a half-switched Codex (ChatGPT login over the relay config.toml) fully back to official', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
@@ -4399,6 +4436,18 @@ describe('bringing an older account config up to the current template', () => {
     writeFile(snapshots.active, picked)
 
     expect(relayTemplateDefaultsPending('codex', roots, providerBaseUrls)).toBe(false)
+    expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
+    expect(fs.readFileSync(snapshots.active, 'utf8')).toBe(picked)
+  })
+
+  it('leaves a forced ChatGPT login alone at startup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexConfigSnapshotPaths(roots)
+    saveProviderConfig('codex', 'sk-fixture', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+    const picked = `forced_login_method = "chatgpt"\n${fs.readFileSync(snapshots.active, 'utf8')}`
+    writeFile(snapshots.active, picked)
+
     expect(fillRelayTemplateDefaults('codex', roots, providerBaseUrls)).toBeNull()
     expect(fs.readFileSync(snapshots.active, 'utf8')).toBe(picked)
   })
