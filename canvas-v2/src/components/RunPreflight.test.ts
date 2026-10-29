@@ -115,3 +115,14 @@ describe('run preflight recovery actions', () => {
     expect(environment.confirmCanvasRun).not.toHaveBeenCalled()
   })
 })
+
+describe('run preflight drama parse billing', () => {
+  it('tells the user a drama parse may be billed twice', () => {
+    const graph: CanvasRunGraph = { nodes: [{ id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '第一场：雨夜，林青推门进来。', model: 'gpt-4.1', group: 'provider' } }], edges: [] }
+    const preflight = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, imageModels: [], videoModels: [], textModels: ['gpt-4.1'] })
+    const html = markup(preflight)
+    expect(html).toContain('<strong>2</strong><span>文字请求</span>')
+    expect(html).toContain('最多 2 次独立生成，按次计费，具体金额以来源为准')
+    expect(html).toContain('本次最多提交 2 个付费请求')
+  })
+})

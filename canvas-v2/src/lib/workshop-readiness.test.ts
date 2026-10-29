@@ -308,7 +308,9 @@ describe('workshop preparation requirements', () => {
     const image = node('image', 'image-generate', { title: '商品主图' }); image.data.model = 'saved-image-model'; image.data.group = 'old-private-group'
     const text = node('text', 'drama-parse'); text.data.prompt = '剧本'
     const result = analyzeWorkshopReadiness(workflow([prompt, image, text], [edge('prompt', 'image', 'out:text', 'in:text')]))
-    expect(result.requestCounts).toEqual({ image: 1, video: 0, text: 1 })
+    // A drama parse may be asked twice when the first answer is not a readable table.
+    expect(result.requestCounts).toEqual({ image: 1, video: 0, text: 2 })
+    expect(result.nodes.find((entry) => entry.nodeId === 'text')).toMatchObject({ maximumRequestCount: 2 })
     expect(result.localOnly).toBe(false)
     expect(result.nodes.find((entry) => entry.nodeId === 'image')).toMatchObject({ title: '商品主图', modelHint: 'saved-image-model', execution: 'model', requirements: [expect.objectContaining({ kind: 'model', modelPurpose: 'image' })] })
     expect(JSON.stringify(result)).not.toContain('old-private-group')

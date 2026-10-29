@@ -1,7 +1,7 @@
 import { defaultImageTransformRecipe, maximumImageTransformInputs, type ImageLayer, type ImageLayerRecipe } from '../image-tools/recipe'
 import { describe, expect, it } from 'vitest'
 import type { CanvasRunGraph } from '../host'
-import { buildCanvasRunPreflight } from './run-preflight'
+import { buildCanvasRunPreflight, dramaParseMaximumRequestCount } from './run-preflight'
 import { defaultInteriorTask } from '../interior/interior-task'
 import { defaultCommerceTask } from '../commerce/commerce-task'
 import { defaultExteriorTask } from '../exterior/exterior-task'
@@ -24,6 +24,10 @@ describe('paid node prompt admission', () => {
     }
     return result
   }
+  // The desktop host asks a drama parse once more when the answer is not a readable table.
+  function upperBound(kind: typeof kinds[number]): number {
+    return kind.startsWith('image') ? 4 : kind.startsWith('video') ? 3 : kind === 'drama-parse' ? 2 : 1
+  }
   function inspect(value: CanvasRunGraph, nodeBlockReasons?: Record<string, string>) {
     return buildCanvasRunPreflight({ graph: value, scope: { kind: 'all' }, cachedNodeIds: ['target'], imageModels: ['gpt-image-1'], videoModels: ['grok-imagine-video'], textModels: ['gpt-4.1'], nodeBlockReasons })
   }
@@ -38,7 +42,7 @@ describe('paid node prompt admission', () => {
   })
   it.each(kinds)('keeps explicit %s prompts and their independent request upper bounds', (kind) => {
     const result = inspect(graph(kind, 'A ceramic cup on a table'))
-    const expected = kind.startsWith('image') ? 4 : kind.startsWith('video') ? 3 : 1
+    const expected = upperBound(kind)
     expect(result).toMatchObject({ canStart: true, paidRequestCount: expected, cacheHitCount: 0 })
     expect(result.items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'execute', requestCount: expected })
   })
@@ -46,7 +50,17 @@ describe('paid node prompt admission', () => {
     const value = graph(kind)
     value.nodes.push({ id: 'words', kind: 'prompt', definitionVersion: 1, data: { prompt: 'A ceramic cup on a table', model: '' } })
     value.edges.push({ id: 'words-edge', source: 'words', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' })
-    expect(inspect(value)).toMatchObject({ canStart: true, paidRequestCount: kind.startsWith('image') ? 4 : kind.startsWith('video') ? 3 : 1 })
+    expect(inspect(value)).toMatchObject({ canStart: true, paidRequestCount: upperBound(kind) })
+  })
+  it('counts a drama parse as the two text requests it may be billed for', () => {
+    const value = graph('drama-parse', '第一场：雨夜，林青推门进来。')
+    value.nodes.push({ id: 'words', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写一句旁白', model: 'gpt-4.1', group: 'provider' } })
+    const result = inspect(value)
+    expect(dramaParseMaximumRequestCount).toBe(2)
+    expect(result.items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'execute', paid: true, requestCount: 2 })
+    expect(result.items.find((item) => item.nodeId === 'words')).toMatchObject({ action: 'execute', paid: true, requestCount: 1 })
+    expect(result).toMatchObject({ canStart: true, requestCount: 3, paidRequestCount: 3, textRequestCount: 3 })
+    expect(result.warnings).toContain('本次最多提交 3 个付费生成请求；不确定的上游提交不会自动重试')
   })
   it('does not treat an image input or a text edge to a different node as a prompt', () => {
     const value = graph('image-edit')
