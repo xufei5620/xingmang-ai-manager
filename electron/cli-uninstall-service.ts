@@ -298,7 +298,7 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
   const {
     windowsExecutionMode, platform, providerRoots, runtimeLog, executeCommand, installing, installationQueue,
     assertInstallDiskSpace, findInstalledExecutable, resolveServiceNpmGlobalRoot, isManagedNpmInstallation,
-    cliTerminalAccess, describeOccupiedCliFailure,
+    cliTerminalAccess, describeOccupiedCliFailure, releaseRemoteCodex,
   } = context
   const {
     inspectCliTool,
@@ -452,6 +452,8 @@ export function createCliUninstallService(context: ServiceContext, dependencies:
       }
       // 和装的时候问同一句、用同一个门槛（installCliOperation），只是提前到动手卸之前。
       if (options.reinstall) await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
+      // 同装的时候（installCliOperation）：手机遥控开着的那份 Codex 锁着包目录，npm 挪不开（Windows，#1407 P3-3）。
+      await releaseRemoteCodex(provider, 'uninstall')
       let current = initial
       const removedInstallations: string[] = []
       const retainedClaudeCommandFiles: string[] = []

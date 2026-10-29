@@ -123,6 +123,29 @@ describe('codex-remote-app-server', () => {
     expect(client.running).toBe(false)
   })
 
+  // 装、卸 Codex 前要等它真退出、放开程序文件（#1407 P3-3）：stop() 只发信号，退出得另等。
+  it('settles the exit wait only once the process has really gone, and at once when there is none', async () => {
+    const idle = new CodexAppServerClient({ spawn: async () => new FakeProcess() as unknown as AppServerProcess, clientVersion: '1', log: vi.fn() })
+    await expect(idle.whenExited()).resolves.toBeUndefined()
+
+    const fake = new FakeProcess()
+    fake.kill = (signal?: NodeJS.Signals) => {
+      fake.kills.push(signal ?? 'SIGTERM')
+      return true
+    }
+    const client = await started(fake)
+    let exited = false
+    const waiting = client.whenExited().then(() => { exited = true })
+    await client.stop()
+    await Promise.resolve()
+    expect(fake.kills).toEqual(['SIGTERM'])
+    expect(exited).toBe(false)
+    fake.emit('exit', null, 'SIGTERM')
+    await waiting
+    expect(exited).toBe(true)
+    await expect(client.whenExited()).resolves.toBeUndefined()
+  })
+
   it('keeps only a short stderr tail', async () => {
     const fake = new FakeProcess()
     const events = handlers()

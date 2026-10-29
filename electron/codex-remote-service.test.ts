@@ -23,6 +23,7 @@ import {
   buildRemoteMcpServerOverrides,
   buildThreadStartParams,
   collectCredentialSecrets,
+  codexRemoteBusyMessages,
   CodexRemoteService,
   commandApprovalKind,
   generateApprovalNonce,
@@ -77,10 +78,17 @@ class FakeCodex extends EventEmitter {
     on: () => this,
   }
 
+  /** 设了就只记下收到的信号、先不退出，等测试调 exitNow()：模拟 Windows 上 taskkill 收掉一整棵进程要一会儿。 */
+  holdExit = false
+
   kill(signal?: NodeJS.Signals): boolean {
     this.kills.push(signal ?? 'SIGTERM')
-    this.emit('exit', null, signal ?? 'SIGTERM')
+    if (!this.holdExit) this.emit('exit', null, signal ?? 'SIGTERM')
     return true
+  }
+
+  exitNow(): void {
+    this.emit('exit', null, 'SIGTERM')
   }
 
   send(message: unknown): void {
@@ -1614,5 +1622,110 @@ describe('codex-remote-service lifecycle', () => {
     expect(await deps.readCredential()).toContain('feishu-secret-value')
     deps.log('info', 'probe')
     expect(s.logs).toContain('feishu.probe')
+  })
+})
+
+// #1407 P3-3（yoyo 10-29「按推荐」）：Windows 上遥控那份 Codex 一直开着，锁着自己的程序文件，在星芒里更新、卸载
+// Codex 会撞上「文件被占用」。闲着就停掉、等它真退出再放行，正在干活就挡下来。哪个平台调由安装那边定。
+describe('codex-remote-service releasing Codex for an update or uninstall', () => {
+  async function idleAfterOneTask(s: Setup): Promise<{ channel: FakeChannel; codex: FakeCodex }> {
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    return { channel, codex }
+  }
+
+  it('says what the customer sees in so many words', () => {
+    expect(codexRemoteBusyMessages).toEqual({
+      update: '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。',
+      uninstall: '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。',
+    })
+  })
+
+  it('stops an idle Codex, waits until it has really exited, and starts afresh on the next message', async () => {
+    const s = await setup()
+    const { channel, codex } = await idleAfterOneTask(s)
+    const toldBefore = channel.texts()
+    codex.holdExit = true
+    let released = false
+    const releasing = s.service.releaseCodex('update').then(() => { released = true })
+    await vi.waitFor(() => expect(codex.kills.length).toBeGreaterThan(0))
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(released).toBe(false)
+    codex.exitNow()
+    await releasing
+    expect(s.logs).toContain('remote.codex-released')
+    // 停的是电脑这边自己要的：手机上不说「意外退出」，遥控照样开着。
+    expect(channel.texts()).toEqual(toldBefore)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
+    // 下一条消息再起一份，对话开在新的那份里：旧对话的编号停掉以后接不上。
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await vi.waitFor(() => expect(s.codex[1]?.requests('turn/start').length ?? 0).toBe(1))
+    expect(s.codex[1].requests('thread/start')).toHaveLength(1)
+  })
+
+  it('leaves a Codex in the middle of a phone task alone and says why', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    await expect(s.service.releaseCodex('update')).rejects.toThrow(codexRemoteBusyMessages.update)
+    // 等你同意的那一会儿也算在干活。
+    void codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('waiting-approval'))
+    await expect(s.service.releaseCodex('uninstall')).rejects.toThrow(codexRemoteBusyMessages.uninstall)
+    expect(codex.kills).toEqual([])
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    expect(s.logs).toContain('remote.codex-release-refused')
+    expect(s.logs).not.toContain('remote.codex-released')
+  })
+
+  it('counts a Codex that is still starting as working rather than waiting for it', async () => {
+    let release!: () => void
+    const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('收到，Codex 开始处理。'))
+    // 起 Codex 也排在安装队列里：这时它可能排在这次安装后面，在这里等它就互相等死。
+    await expect(s.service.releaseCodex('uninstall')).rejects.toThrow(codexRemoteBusyMessages.uninstall)
+    release()
+    await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
+    expect(s.codex[0].kills).toEqual([])
+  })
+
+  it('has nothing to stop when the phone has not used Codex yet', async () => {
+    const s = await setup()
+    await enabledAndPaired(s)
+    await expect(s.service.releaseCodex('update')).resolves.toBeUndefined()
+    expect(s.codex).toHaveLength(0)
+    expect(s.logs).not.toContain('remote.codex-released')
+  })
+
+  it('also waits for a Codex that was just stopped by switching the remote off', async () => {
+    const s = await setup()
+    const { codex } = await idleAfterOneTask(s)
+    codex.holdExit = true
+    await s.service.setChannelEnabled('feishu', false)
+    expect(codex.kills.length).toBeGreaterThan(0)
+    let released = false
+    const releasing = s.service.releaseCodex('update').then(() => { released = true })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(released).toBe(false)
+    codex.exitNow()
+    await releasing
+  })
+
+  it('goes ahead after ten seconds when Codex will not exit, and logs it', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const { codex } = await idleAfterOneTask(s)
+    codex.holdExit = true
+    let released = false
+    const releasing = s.service.releaseCodex('update').then(() => { released = true })
+    await vi.advanceTimersByTimeAsync(9_000)
+    expect(released).toBe(false)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await releasing
+    expect(s.logs).toContain('remote.codex-release-timeout')
   })
 })

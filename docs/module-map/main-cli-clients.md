@@ -94,7 +94,7 @@
 - `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
 - `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
 - `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
-- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来
 - `codex-remote-keep-awake.ts` — 有渠道开着（在连、已连上、连不上正在重试）就挡住系统自动睡眠，全关了、要重新登录了、闲置断开了就放开（关屏、合盖照旧）；跟着底座推给界面的快照走，按 `revision` 只认新的那份。Codex 自己的防睡开关只管它跑一轮，两轮之间等手机那段靠这里
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试

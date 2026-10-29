@@ -111,6 +111,20 @@ const maxRetiredTurns = 16
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
 const maxStderrLogLength = 1000
 const quittingMessage = '星芒正在退出。'
+/**
+ * 装、卸 Codex 前停掉遥控那份 Codex，最多等它这么久真退出（releaseCodex）。Windows 上它和它起的命令由
+ * taskkill /T /F 一起收掉，平常一两秒；client.stop() 5 秒后还会再补一刀，这里比那个多留一点。
+ */
+const codexReleaseTimeoutMs = 10_000
+
+/** 电脑上要更新还是卸载 Codex：遥控里的 Codex 正在干活时，挡下来的那句按这个说。 */
+export type CodexRemoteReleaseAction = 'update' | 'uninstall'
+
+/** 遥控里的 Codex 正在干活，不替客户停它（#1407 P3-3，yoyo 10-29「按推荐」）。 */
+export const codexRemoteBusyMessages: Readonly<Record<CodexRemoteReleaseAction, string>> = {
+  update: '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。',
+  uninstall: '手机遥控里的 Codex 正在干活，等它做完再卸载，或者先在设置里关掉手机遥控。',
+}
 
 const developerInstructions = [
   'You are being driven remotely from a phone chat through the Xingmang desktop app.',
@@ -559,6 +573,8 @@ export class CodexRemoteService {
   private revision = 0
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
+  /** 已经叫停、还没真退出的几份 Codex（retireClient）：装、卸 Codex 前也要等它们放开文件。 */
+  private readonly retiringClients = new Set<CodexAppServerClient>()
   private secrets: readonly string[] = []
   private secretsReadAt = 0
   /** farewell() 已经说过「星芒关了」的渠道：退出没退成时要补一句（quitAborted）。 */
@@ -594,6 +610,44 @@ export class CodexRemoteService {
   /** 有渠道开着。闲时自动装更新要看：一重启遥控就停了，开着它的人又多半不在电脑前。 */
   hasEnabledChannel(): boolean {
     return remoteChannelIds.some((id) => this.runtimes[id].enabled)
+  }
+
+  /**
+   * Windows 上在星芒里更新、卸载 Codex 之前调（#1407 P3-3）。手机用过一次以后遥控那份 Codex 一直开着，锁着自己的
+   * 程序文件，换版本、卸载都会撞上「文件被占用」，提示里还看不出是遥控占着。它闲着就停掉、等它真退出再放行，
+   * 手机下次来消息再起（起 Codex 也排在安装队列里，装完才起）；正在干活就不动它，抛那句话给电脑上的人。
+   *
+   * 要在安装队列里调：查完到 npm 动手之间不会再起一份。还在起的那一份（codexStarting）也算干活：它可能已经
+   * 起来、正在握手，也可能排在这次安装后面，两种都不能在这里等它（后一种等它就互相等死）。
+   */
+  async releaseCodex(action: CodexRemoteReleaseAction): Promise<void> {
+    const working = remoteChannelIds.some((id) => this.runtimes[id].turn !== null) || this.pending.size > 0
+    if (this.codexStarting || (this.codex?.running && working)) {
+      this.options.log('info', 'remote.codex-release-refused', { action })
+      throw new Error(codexRemoteBusyMessages[action])
+    }
+    const client = this.codex
+    if (client) {
+      this.codex = null
+      this.fileChanges.clear()
+      // 对话开在这一份 Codex 里，它停了就接不上：下一条从新对话开始，同 Codex 意外退出以后。
+      for (const id of remoteChannelIds) this.runtimes[id].threadId = null
+      this.options.log('info', 'remote.codex-released', { action })
+      await this.retireClient(client)
+    }
+    const exiting = [...this.retiringClients]
+    if (!exiting.length) return
+    let timer: NodeJS.Timeout | undefined
+    const exited = await Promise.race([
+      Promise.all(exiting.map((entry) => entry.whenExited())).then(() => true),
+      new Promise<false>((resolve) => {
+        timer = setTimeout(() => resolve(false), codexReleaseTimeoutMs)
+        timer.unref?.()
+      }),
+    ])
+    clearTimeout(timer)
+    // 等不到就照常往下装：真撞上占用时，安装那边会数进程、说成「文件被占用」。
+    if (!exited) this.options.log('warn', 'remote.codex-release-timeout', { action })
   }
 
   async snapshot(): Promise<CodexRemoteSnapshot> {
@@ -1358,14 +1412,14 @@ export class CodexRemoteService {
         } catch (error) {
           const stderr = this.stderrDetail(client.lastStderr)
           if (stderr.stderr) this.options.log('warn', 'remote.codex-start-stderr', stderr)
-          await client.stop()
+          await this.retireClient(client)
           throw error
         }
         // 起 Codex 的这一会儿，电脑上可能已经把遥控全关了、星芒在退出。这时 stopCodex 还看不到这一份，
         // 不在这里收掉，它就一直开着没人管，留到下次关遥控或退出（#1407 P3-1）。
         if (this.disposed || !this.hasEnabledChannel()) {
           this.options.log('info', 'remote.codex-start-abandoned')
-          await client.stop()
+          await this.retireClient(client)
           throw new Error('手机遥控已经关了')
         }
         this.codex = client
@@ -1386,7 +1440,14 @@ export class CodexRemoteService {
     const client = this.codex
     this.codex = null
     this.fileChanges.clear()
-    if (client) await client.stop()
+    if (client) await this.retireClient(client)
+  }
+
+  /** 叫停一份 Codex，记着它直到真退出：刚关了遥控就点更新，releaseCodex 也要等这一份放开文件。 */
+  private async retireClient(client: CodexAppServerClient): Promise<void> {
+    this.retiringClients.add(client)
+    void client.whenExited().then(() => { this.retiringClients.delete(client) })
+    await client.stop()
   }
 
   /** Codex 的 stderr 尾巴，脱敏、截短后进日志：它起不来、半路退出时，客服只能从这里看出原因（#1407 P3-6）。 */

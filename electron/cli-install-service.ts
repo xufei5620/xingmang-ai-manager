@@ -891,7 +891,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     installing, installationQueue, installCancellations, installRequestedVersions, nodeRuntimeInstall,
     createInstallTemporaryDirectory, assertInstallDiskSpace,
     findInstalledExecutable, preferredNodeDirectories, resolveServiceNpmGlobalRoot,
-    isManagedNpmInstallation, cliTerminalAccess, describeOccupiedCliFailure,
+    isManagedNpmInstallation, cliTerminalAccess, describeOccupiedCliFailure, releaseRemoteCodex,
   } = context
   const {
     inspectNetworkRegion,
@@ -1006,6 +1006,9 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     // 磁盘快满时 npm 会跑到一半才报 ENOSPC：用户白等几分钟，旧版本还可能已经被
     // 动过。所以一个字节都还没下之前先看一眼盘（读不到空间照常放行）。
     await assertInstallDiskSpace(`${cliCatalog[provider].name} 安装失败`)
+    // 手机遥控开着的那份 Codex 锁着要换掉的文件（Windows）：闲着先停掉，正在干活就不换（#1407 P3-3）。
+    // 放在一个字节都没动之前，挡下来时旧版原样能用。
+    await releaseRemoteCodex(provider, 'update')
     try {
       if (provider === 'grok' && grokInstallStrategyFor(platform) === 'windows-native') {
         await runCliInstall(provider, target, requestedVersion, cancellation)
