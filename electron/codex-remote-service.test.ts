@@ -23,9 +23,11 @@ import {
   buildThreadStartParams,
   collectCredentialSecrets,
   CodexRemoteService,
+  commandApprovalKind,
   generateApprovalNonce,
   generatePairingCode,
   grantRequestedPermissions,
+  inspectCommandDisplay,
   isStaleInbound,
   nextApprovalNumber,
   permissionsShowInFull,
@@ -279,6 +281,10 @@ const wholeDiskWrite = {
 
 const permissionsRefusedText = 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
 
+const commandRefusedText = 'Codex 想运行的命令太长，手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+
+const npmRegistry = { host: 'registry.npmjs.org', protocol: 'https' }
+
 const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
 
 afterEach(() => {
@@ -423,6 +429,45 @@ describe('codex-remote-service helpers', () => {
     const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
     expect(change.summary).toContain('另外还有 5 个文件')
+  })
+
+  it('tells running a command, typing into a running program and reaching a website apart', () => {
+    expect(commandApprovalKind(commandRequest)).toBe('command')
+    // Older Codex leaves kind out; that still means a command.
+    expect(commandApprovalKind({ ...commandRequest, kind: undefined })).toBe('command')
+    expect(commandApprovalKind({ ...commandRequest, kind: 'writeStdin', command: 'write_stdin --session-id 3 yes' })).toBe('terminal-input')
+    expect(commandApprovalKind({ ...commandRequest, command: null, cwd: null, networkApprovalContext: npmRegistry })).toBe('network')
+    // Without a host there is no website to show, so it is not a website card.
+    expect(commandApprovalKind({ ...commandRequest, networkApprovalContext: { protocol: 'https' } })).toBe('command')
+    expect(commandApprovalKind({ ...commandRequest, networkApprovalContext: { host: '', protocol: 'https' } })).toBe('command')
+  })
+
+  it('shows the website for a network approval and what Codex types for terminal input', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [] }
+    const site = buildApprovalRequest('5', 'nonce-five', 'network', { command: null, cwd: null, networkApprovalContext: npmRegistry }, [], display)
+    expect(site).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
+    expect(site.cwd).toBeUndefined()
+    const input = buildApprovalRequest('6', 'nonce-six', 'terminal-input', {
+      command: 'write_stdin --session-id 3 yes',
+      cwd: '/Users/alice/projects/demo',
+    }, [], display)
+    expect(input).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes', cwd: '~/projects/demo' })
+  })
+
+  it('only puts a command on the card when the phone can show all of it', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [apiKey] }
+    expect(inspectCommandDisplay('command', { command: 'x'.repeat(1500) }, display)).toBe('full')
+    expect(inspectCommandDisplay('command', { command: 'x'.repeat(1501) }, display)).toBe('too-long')
+    expect(inspectCommandDisplay('terminal-input', { command: `write_stdin --session-id 3 ${'y'.repeat(1500)}` }, display)).toBe('too-long')
+    // What counts is what the phone would show, after the key is hidden.
+    const withKey = `echo ${apiKey} ${'x'.repeat(1489)}`
+    expect(withKey.length).toBeGreaterThan(1500)
+    expect(inspectCommandDisplay('command', { command: withKey }, display)).toBe('full')
+    expect(inspectCommandDisplay('network', { networkApprovalContext: npmRegistry }, display)).toBe('full')
+    // Nothing to show: the card would ask about a blank.
+    expect(inspectCommandDisplay('command', { command: null }, display)).toBe('blank')
+    expect(inspectCommandDisplay('command', { command: '   ' }, display)).toBe('blank')
+    expect(inspectCommandDisplay('network', {}, display)).toBe('blank')
   })
 })
 
@@ -983,6 +1028,62 @@ describe('codex-remote-service approvals', () => {
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect((await answer).result).toEqual({ decision: 'decline' })
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+  })
+
+  it('declines a command the card would cut short without asking, says why, and spends no approval number', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    // The dangerous part sits past what the card can show.
+    const long = `${'echo ok && '.repeat(150)}rm -rf ~/important`
+    expect((await codex.ask('item/commandExecution/requestApproval', { ...commandRequest, command: long })).result)
+      .toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts()).toContain(commandRefusedText))
+    expect(s.logs).toContain('remote.command-refused')
+    // Typing into a running program is held to the same rule.
+    const input = { ...commandRequest, itemId: 'i2', kind: 'writeStdin', command: `write_stdin --session-id 3 ${'y'.repeat(1600)}` }
+    expect((await codex.ask('item/commandExecution/requestApproval', input)).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2))
+    // A command Codex left blank is declined too; there is nothing to explain on the phone.
+    expect((await codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i3', command: null })).result)
+      .toEqual({ decision: 'decline' })
+    expect(approvalsSent(channel)).toHaveLength(0)
+    const next = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i4' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0].approvalId).toBe('1')
+    expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2)
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await next).result).toEqual({ decision: 'decline' })
+  })
+
+  it('titles a website request and typing into a running program for what they are', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const site = codex.ask('item/commandExecution/requestApproval', {
+      ...commandRequest,
+      command: null,
+      cwd: null,
+      reason: '要下载依赖',
+      networkApprovalContext: npmRegistry,
+    }, 'a')
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
+    expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nregistry.npmjs.org\n原因：要下载依赖\n回「同意 1」或「拒绝 1」。')
+    channel.handlers?.onInbound(text(alice, '同意'))
+    expect((await site).result).toEqual({ decision: 'accept' })
+
+    const input = codex.ask('item/commandExecution/requestApproval', {
+      ...commandRequest,
+      itemId: 'i2',
+      kind: 'writeStdin',
+      command: 'write_stdin --session-id 3 yes',
+    }, 'b')
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(2))
+    expect(approvalsSent(channel)[1]).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes' })
+    expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\nwrite_stdin --session-id 3 yes\n'))).toBe(true)
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await input).result).toEqual({ decision: 'decline' })
   })
 
   it('declines approvals for threads it did not start and grants nothing by default', async () => {

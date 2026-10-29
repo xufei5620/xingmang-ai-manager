@@ -20,6 +20,7 @@ export const remoteMessages = {
   quitAborted: '电脑上的星芒没关成，遥控还开着，可以接着用。',
   stalled: '这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。',
   codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',
+  commandRefused: 'Codex 想运行的命令太长，手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
   permissionsRefused: 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
   staleApprovalCard: '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。',
 } as const
@@ -63,6 +64,8 @@ export function statusMessage(status: RemoteStatusSummary): string {
 
 const approvalTitles: Record<RemoteApprovalKind, string> = {
   command: 'Codex 想运行命令',
+  'terminal-input': 'Codex 想往正在运行的程序里输入',
+  network: 'Codex 想连网站',
   'file-change': 'Codex 想改文件',
   other: 'Codex 想做一件需要你同意的事',
 }
