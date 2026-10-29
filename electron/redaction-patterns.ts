@@ -124,6 +124,18 @@ const DOUBLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}"\\s*[:=]\\s
 const SINGLE_QUOTED_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}'\\s*[:=]\\s*)'[^']*'`, 'gi')
 const SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;]+)`, 'gi')
 
+// `Cookie: a=b; c=d`. The first value runs to the end of its run of value
+// characters (anything but whitespace, `,`, `;` and quotes), and `cookie=` is
+// made of value characters itself, so in `cookie=cookie=cookie=…` every name
+// after the first starts inside the value of the one before it, and each used
+// to read the rest of the run again: quadratic. Its value ends where the first
+// one's does, so it matches exactly when that one does, and that one is always
+// tried first, since no match ends inside a run. The lookbehind skips such a
+// name, reading back only as far as the nearest name in front of it. A name
+// that ends its run (`cookie=` or `cookie` before a space) takes its value from
+// the next run and is always tried.
+const COOKIE_HEADER = /(?:(?=cookies?[:=][^\s,;"'])(?<!cookies?[:=][^\s,;"']*?)|(?=cookies?[:=]?(?![^\s,;"'])))(cookies?\s*[:=]\s*)[^\s,;"']+(?:;\s*[^\s,;"'=]+=[^\s,;"']*)+/gi
+
 /**
  * Values recognised by the name in front of them. `api[_-]?key` also covers the
  * `x-api-key` and `x-goog-api-key` request headers, since the rule is not
@@ -148,7 +160,7 @@ export function redactSecretFields(value: string): string {
     // stops, so `Cookie: session=…; refresh=…` would lose only its first pair.
     // Only `name=value` segments are taken, which leaves `Set-Cookie` flags such
     // as `HttpOnly` and the rest of a sentence readable.
-    .replace(/(cookies?\s*[:=]\s*)[^\s,;"']+(?:;\s*[^\s,;"'=]+=[^\s,;"']*)+/gi, `$1${REDACTED}`)
+    .replace(COOKIE_HEADER, `$1${REDACTED}`)
     // The quoted spellings need their own rules: in `{"access_token":"…"}` the
     // unquoted rule can never match, because `\s*` does not cross the quote
     // that closes the key name, so any CLI writing JSON to stderr leaked its

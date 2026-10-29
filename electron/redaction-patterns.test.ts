@@ -215,6 +215,26 @@ describe('redactSecretFields', () => {
       .toBe('cookie=[REDACTED]; then the request failed')
   })
 
+  // A cookie name may stand inside the value in front of it. It still starts a
+  // match there, and one that ends its run still takes the pairs after it.
+  it('redacts a Cookie header whose name stands inside another value', () => {
+    expect(redactSecretFields('trace=cookie=plain-fake-a; refresh=plain-fake-b')).toBe('trace=cookie=[REDACTED]')
+    expect(redactSecretFields('x-cookie=cookie:plain-fake-a; refresh=plain-fake-b')).toBe('x-cookie=[REDACTED]')
+    expect(redactSecretFields('cookie=cookie= session=plain-fake-a; refresh=plain-fake-b')).toBe('cookie=[REDACTED] [REDACTED]')
+  })
+
+  // In `cookie=cookie=…` every name after the first stands inside the value of
+  // the one before it. Before, each one read the rest of the run again looking
+  // for a `;`, which took seconds here.
+  it('scans a long run of cookie names in linear time', () => {
+    const started = performance.now()
+    expect(redactSecretFields('cookie='.repeat(20_000))).toBe('cookie=[REDACTED]')
+    expect(redactSecretFields(`${'Cookie:'.repeat(20_000)}; HttpOnly`)).toBe('Cookie:[REDACTED]; HttpOnly')
+    expect(redactSecretFields(`${'cookies='.repeat(20_000)} sid=plain-fake-a; refresh=plain-fake-b`))
+      .toBe('cookies=[REDACTED] [REDACTED]')
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('leaves names that only contain a cookie or credential word readable', () => {
     for (const text of [
       'git config credential.helper=manager',
