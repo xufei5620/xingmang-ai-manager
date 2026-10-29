@@ -19,6 +19,7 @@ import type { SafeStorageLike } from './account-session-store'
 import {
   belongsToOtherTurn,
   buildApprovalRequest,
+  buildFileChangeSummary,
   buildRemoteMcpServerOverrides,
   buildThreadStartParams,
   collectCredentialSecrets,
@@ -468,6 +469,26 @@ describe('codex-remote-service helpers', () => {
     expect(inspectCommandDisplay('command', { command: null }, display)).toBe('blank')
     expect(inspectCommandDisplay('command', { command: '   ' }, display)).toBe('blank')
     expect(inspectCommandDisplay('network', {}, display)).toBe('blank')
+  })
+
+  it('lists only whole file paths and always keeps the write scope line on a file change card', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [apiKey] }
+    // Twenty 81-character paths no longer fit: cutting the joined text used to drop the last lines.
+    const files = Array.from({ length: 25 }, (_, index) => `/Volumes/Work/customer-portal/frontend/src/components/orders/details/panel-${String(index).padStart(2, '0')}.tsx`)
+    const summary = buildApprovalRequest('8', 'nonce-eight', 'file-change', { grantRoot: '/Volumes/Work/customer-portal' }, files, display).summary
+    expect(summary.length).toBeLessThanOrEqual(1500)
+    expect(summary).not.toContain('…')
+    expect(summary.split('\n')).toEqual([...files.slice(0, 17), '另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    // Without a write scope the whole budget goes to the file list.
+    expect(buildFileChangeSummary({}, files, display)?.split('\n')).toEqual([...files.slice(0, 18), '另外还有 7 个文件'])
+    expect(buildFileChangeSummary({}, [], display)).toBe('')
+    // A write scope that cannot be shown whole leaves nothing to put to the person.
+    expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, files, display)).toBeNull()
+    expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, [], display)).toBeNull()
+    // What counts is what the phone would show, after the key is hidden.
+    const keyedRoot = `/Volumes/${apiKey}/${'x'.repeat(1475)}`
+    expect(`可写范围：${keyedRoot}`.length).toBeGreaterThan(1500)
+    expect(buildFileChangeSummary({ grantRoot: keyedRoot }, [], display)).toBe(`可写范围：${keyedRoot}`)
   })
 })
 
@@ -1054,6 +1075,30 @@ describe('codex-remote-service approvals', () => {
     expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2)
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await next).result).toEqual({ decision: 'decline' })
+  })
+
+  it('keeps the write scope on a file change card and declines one whose write scope cannot fit', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const files = Array.from({ length: 25 }, (_, index) => `/Volumes/Work/customer-portal/frontend/src/components/orders/details/panel-${String(index).padStart(2, '0')}.tsx`)
+    codex.notify('item/started', {
+      threadId: 'th-1',
+      turnId: 'tu-1',
+      item: { type: 'fileChange', id: 'f1', changes: files.map((file) => ({ path: file, kind: { type: 'update' }, diff: '' })) },
+    })
+    const fileChange = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 0 }
+    expect((await codex.ask('item/fileChange/requestApproval', { ...fileChange, grantRoot: `/${'deep/'.repeat(300)}` })).result)
+      .toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts()).toContain(permissionsRefusedText))
+    expect(s.logs).toContain('remote.file-change-refused')
+    expect(approvalsSent(channel)).toHaveLength(0)
+    const asked = codex.ask('item/fileChange/requestApproval', { ...fileChange, grantRoot: '/Volumes/Work/customer-portal' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0]).toMatchObject({ approvalId: '1', kind: 'file-change' })
+    expect(approvalsSent(channel)[0].summary.split('\n').slice(-2)).toEqual(['另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await asked).result).toEqual({ decision: 'decline' })
   })
 
   it('titles a website request and typing into a running program for what they are', async () => {

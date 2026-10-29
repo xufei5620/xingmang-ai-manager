@@ -64,7 +64,9 @@ import { isRecord } from './input-guards'
 // - A permission request is only put to the user when every part of it fits on
 //   the card, and "accept" grants exactly the paths the card listed. A command
 //   (or terminal input, or website) is only put to the user when the card shows
-//   it whole; one that would be cut short is declined without asking.
+//   it whole; one that would be cut short is declined without asking. A file
+//   change card lists only whole paths and always keeps its write scope line;
+//   one whose write scope alone would not fit is declined without asking.
 // - Approval numbers keep counting across restarts, and every button carries a
 //   per-request random nonce: a card left in the chat history from an earlier
 //   request or an earlier run can never answer a newer one.
@@ -404,6 +406,24 @@ export function inspectCommandDisplay(kind: CommandApprovalKind, params: Record<
   return summary.length <= maxSummaryLength ? 'full' : 'too-long'
 }
 
+/**
+ * 改文件卡片的正文（#1407）。以前整段拼好再截到上限，路径一长，截掉的正是最后的「另外还有」和「可写范围」，
+ * 客户看到半截路径，以为要改的就这些。现在只列整条放得下的文件，其余都算进「另外还有」，「可写范围」整行留在最后。
+ * 「可写范围」那一行自己都放不下就返回 null，由调用方不问直接拒，跟显示不全的权限申请一样。
+ */
+export function buildFileChangeSummary(params: Record<string, unknown>, changedFiles: readonly string[], options: ApprovalDisplayOptions): string | null {
+  const grantRoot = stringField(params.grantRoot)
+  const tail = grantRoot ? [`可写范围：${displayPath(grantRoot, options)}`] : []
+  for (let shown = Math.min(changedFiles.length, maxFileLines); shown >= 0; shown -= 1) {
+    const lines = changedFiles.slice(0, shown).map((file) => displayPath(file, options))
+    if (changedFiles.length > shown) lines.push(`另外还有 ${changedFiles.length - shown} 个文件`)
+    const summary = [...lines, ...tail].join('\n')
+    // 量的是脱敏以后的长度：手机上显示的就是那个。
+    if (redactRemoteText(summary, options).length <= maxSummaryLength) return summary
+  }
+  return null
+}
+
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
 export function buildApprovalRequest(
   approvalId: string,
@@ -420,13 +440,8 @@ export function buildApprovalRequest(
   })
   let summary = ''
   if (isCommandApprovalKind(kind)) summary = commandApprovalSummary(kind, params)
-  else if (kind === 'file-change') {
-    const lines = changedFiles.slice(0, maxFileLines).map((file) => displayPath(file, options))
-    if (changedFiles.length > maxFileLines) lines.push(`另外还有 ${changedFiles.length - maxFileLines} 个文件`)
-    const grantRoot = stringField(params.grantRoot)
-    if (grantRoot) lines.push(`可写范围：${displayPath(grantRoot, options)}`)
-    summary = lines.join('\n')
-  } else {
+  else if (kind === 'file-change') summary = buildFileChangeSummary(params, changedFiles, options) ?? ''
+  else {
     const requested = readRequestedPermissions(params.permissions)
     summary = requested ? describePermissions(requested, options) : ''
   }
@@ -1474,12 +1489,20 @@ export class CodexRemoteService {
       }
       return 'decline'
     }
+    // 量放不放得下和卡片上列的用同一份文件清单，只在这里取一次。
+    const itemId = stringField(params.itemId)
+    const changedFiles = itemId ? this.fileChanges.get(itemId) ?? [] : []
+    if (kind === 'file-change' && buildFileChangeSummary(params, changedFiles, display) === null) {
+      // 同上：「可写范围」整行放不下，客户点「同意」时看不全要放开写的地方。
+      this.options.log('info', 'remote.file-change-refused', { channel: runtime.id })
+      if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
+      return 'decline'
+    }
     const id = await this.allocateApprovalId()
     // 读密钥、记编号的这一会儿，这一轮可能已经被停掉、渠道已经关了：不再问人。
     if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
     const nonce = generateApprovalNonce()
-    const itemId = stringField(params.itemId)
-    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], display)
+    const request = buildApprovalRequest(id, nonce, kind, params, changedFiles, display)
     const decision = new Promise<RemoteApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return
