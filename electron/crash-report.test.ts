@@ -61,6 +61,30 @@ describe('redactCrashText', () => {
     expect(redactCrashText('登录失败：buyer@example.com', '')).toBe('登录失败：[REDACTED_EMAIL]')
   })
 
+  // The next search starts where the last address ended, not only after a
+  // character that cannot be part of one.
+  it('removes an address that runs straight on from the previous one', () => {
+    expect(redactCrashText('buyer@example.com_seller@example.org', ''))
+      .toBe('[REDACTED_EMAIL][REDACTED_EMAIL]')
+    expect(redactCrashText('buyer@example.cc5seller@example.org', ''))
+      .toBe('[REDACTED_EMAIL][REDACTED_EMAIL]')
+  })
+
+  // Every position of a long run of address characters could start a match.
+  // Before, each one read the rest of the run again looking for `@` or for a
+  // domain ending, which took seconds here.
+  it('scans a long run of address characters in linear time', () => {
+    const runs = ['a'.repeat(100_000), 'AbC123xyz_%'.repeat(10_000)]
+    const started = performance.now()
+    for (const run of runs) {
+      expect(redactCrashText(run, '')).toBe(run)
+      expect(redactCrashText(`${run}@`, '')).toBe(`${run}@`)
+      expect(redactCrashText(`${run}@example.com`, '')).toBe('[REDACTED_EMAIL]')
+      expect(redactCrashText(`登录失败：buyer@${run}`, '')).toBe(`登录失败：buyer@${run}`)
+    }
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('leaves scoped package paths alone', () => {
     expect(redactCrashText('/app/node_modules/@iarna/toml/index.js', ''))
       .toBe('/app/node_modules/@iarna/toml/index.js')
