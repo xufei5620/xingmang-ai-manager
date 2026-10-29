@@ -1053,8 +1053,8 @@ function applyCodexRelayConfig(
 }
 
 // 公司统一下发的配置里常写 forced_login_method = "chatgpt"。Codex 一启动就核登录方式：auth.json 里是
-// 密钥就当场删掉它、要求登 ChatGPT（login/src/auth/manager.rs 的 enforce_login_restrictions），首页却
-// 还显示配好了（D04）。用当前账号时只拿掉这一条；写的是 "api" 跟密钥接入不冲突，不动。官方快照里照留
+// 密钥就当场删掉它、要求登 ChatGPT（0.164.0 连本机假接口实测，报「ChatGPT login is required, but an API
+// key is currently being used. Logging out.」后退出），首页却还显示配好了（D04）。用当前账号时只拿掉这一条；写的是 "api" 跟密钥接入不冲突，不动。官方快照里照留
 // 原值，切回官方账号时原样回来，跟上面的 cli_auth_credentials_store 一样。
 //
 // 只在保存配置时拿掉，不进开机补设置（fillCodexRelayTemplateDefaults）：这是客户自己写的值。
