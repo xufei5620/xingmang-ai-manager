@@ -23,6 +23,9 @@ const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
 
+/** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。Windows 上多半是杀毒软件正占着它，重启后通常就能删。 */
+export const credentialRemoveFailedMessage = '没能删掉保存的登录信息，请重启星芒后再点一次退出登录。'
+
 export interface CodexRemoteBoundPeer {
   userId: string
   displayName?: string
@@ -156,7 +159,14 @@ export class CodexRemoteStore {
       const persistence = this.credentialPersistence()
       if (value === null) {
         this.memoryCredentials.delete(channel)
-        await removeSafeDataFile(this.credentialPath(channel), credentialLabel).catch(() => undefined)
+        try {
+          await removeSafeDataFile(this.credentialPath(channel), credentialLabel)
+        } catch (error) {
+          // 查的时候还在、删的时候已经没了，也算删掉了。别的失败不能当成功：凭据还留在电脑上，
+          // 下次打开照样登着，客户却以为退出了。原来的错误挂在 cause 上进运行日志。
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+          throw new Error(credentialRemoveFailedMessage, { cause: error })
+        }
         return
       }
       if (persistence === 'unavailable') throw new Error('这台电脑没法安全保存密码，凭据没有保存。')

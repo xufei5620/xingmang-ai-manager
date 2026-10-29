@@ -14,7 +14,7 @@ import type {
   RemotePeer,
 } from './codex-remote-channel'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
-import { CodexRemoteStore } from './codex-remote-store'
+import { CodexRemoteStore, credentialRemoveFailedMessage } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 import {
   belongsToOtherTurn,
@@ -1167,6 +1167,29 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.saveChannelCredential('feishu', null, null)
     const snapshot = await s.service.snapshot()
     expect(snapshot.channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false })
+  })
+
+  it('still unbinds and stops the channel but reports it when logging out cannot remove the saved credential', async () => {
+    const s = await setup()
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'x'.repeat(16) }), 'cli_abcdef')
+    const channel = await enabledAndPaired(s)
+    const locked = Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+    vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error(credentialRemoveFailedMessage, { cause: locked }))
+    await expect(s.service.saveChannelCredential('feishu', null, null)).rejects.toThrow(new Error(credentialRemoveFailedMessage))
+    expect(s.logs).toContain('remote.credential-remove-failed')
+    expect(channel.stopped).toBe(1)
+    // The failed call returns nothing, so the card catches up from the state-changed snapshot.
+    expect(s.snapshots.at(-1)?.channels.feishu).toMatchObject({ enabled: false, boundPeer: null, hasCredential: true, accountLabel: 'cli_abcdef' })
+    // Clicking 退出登录 again once the file can go finishes the job.
+    await s.service.saveChannelCredential('feishu', null, null)
+    expect((await s.service.snapshot()).channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false, boundPeer: null })
+  })
+
+  it('does not swallow a failure to save a new credential as a logout failure', async () => {
+    const s = await setup()
+    vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error('这台电脑没法安全保存密码，凭据没有保存。'))
+    await expect(s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_other1', appSecret: 'z'.repeat(16) }), 'cli_other1')).rejects.toThrow('没法安全保存')
+    expect(s.logs).not.toContain('remote.credential-remove-failed')
   })
 
   it('drops what is waiting, stops the channel and Codex, and stays off when the manager quits', async () => {
