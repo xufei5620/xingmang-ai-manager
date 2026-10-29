@@ -79,7 +79,7 @@ function compareVersions(left, right) {
 
 /**
  * 线上状态文件里正在进行的分批放量；没有、版本号读不懂、或者已经是 100（等于全放）时是 null。
- * 只管某几种安装包的（「@linux」这类）照样体检，平台表只拿来写在结论里。
+ * 只管某几种安装包的（「@linux」这类）照样体检，样本够不够按它管的那几个平台算（见 controlledPlatformsOf）。
  */
 function readActiveRollout(status) {
   const rollout = isRecord(status) ? status.rollout : null
@@ -89,6 +89,21 @@ function readActiveRollout(status) {
   if (compareVersions(version, version) !== 0 || rollout.percent >= 100) return null
   const platforms = Array.isArray(rollout.platforms) ? rollout.platforms.filter((name) => typeof name === 'string') : []
   return { version, percent: Math.max(0, rollout.percent), ...(platforms.length ? { platforms } : {}) }
+}
+
+/**
+ * 放量只管某几种安装包时，它管的是哪几个平台；不限平台是 null。打卡只分得出 Windows / Mac / Linux，
+ * 「mac-arm64」这类按 Mac 算。其余平台已经全放了，它们的新版打卡再好也说明不了放量管着的这几个。
+ */
+function controlledPlatformsOf(rollout) {
+  if (!rollout.platforms) return null
+  const names = [...new Set(rollout.platforms.map((name) => name.toLowerCase().split('-')[0]))]
+  const known = names.filter((name) => SCOPES.some(([id]) => id !== 'all' && id === name))
+  return known.length ? known : null
+}
+
+function describeScopes(ids) {
+  return ids.map((id) => SCOPES.find(([scope]) => scope === id)[1]).join('、')
 }
 
 function sumWeights(records) {
@@ -101,13 +116,17 @@ function measure(records, metric) {
   return { machineDays, events, rate: machineDays > 0 ? events * 100 / machineDays : null }
 }
 
+function failedToInstall(record, version) {
+  return record.update.state === 'ff' && record.update.version === version
+}
+
 /**
  * 对照组电脑里，下好了新版、试着装过还停在旧版的（打卡里「新版装上没有」是 ff~新版本号）占「试过的」多少。
  * 试过的 = 这些 + 已经在新版上打卡的。新装的客户也算进后者，只会让比例偏低一点。对照组都不打卡
  * （上一版早于 0.2.23）时看不出，是 null。
  */
 function measureInstallFailures(newRecords, baselineRecords, version) {
-  const failed = sumWeights(baselineRecords.filter((record) => record.update.state === 'ff' && record.update.version === version))
+  const failed = sumWeights(baselineRecords.filter((record) => failedToInstall(record, version)))
   const tried = failed + sumWeights(newRecords)
   if (sumWeights(baselineRecords) === 0) return { failed, tried, share: null }
   return { failed, tried, share: tried > 0 ? failed / tried : null }
@@ -131,8 +150,15 @@ function assessRolloutHealth({ rollout, releasedAt, approximate = false, records
   const hours = (now.getTime() - releasedAt) / HOUR_MS
   const newRecords = records.filter((record) => record.app === version)
   const baselineRecords = records.filter((record) => record.app !== null && compareVersions(record.app, version) === -1)
-  const scopes = SCOPES.filter(([id]) => id === 'all' || newRecords.some((record) => record.platform === id))
+  const controlled = controlledPlatformsOf(rollout)
+  // 平台那几格不能只看新版有没有打卡：某个平台一台都没升上去时，新版那边一条它的打卡也没有，它装不上的
+  // 那些会被别的平台升上去的摊薄在合计里（R29-05，#1380 那次就是 Mac 大半停在旧版）。所以有电脑试着装过
+  // 新版的平台、这次放量管着的平台都单列一格。
+  const seen = [...newRecords, ...baselineRecords.filter((record) => failedToInstall(record, version))]
+  const scopes = SCOPES.filter(([id]) => id === 'all' || controlled?.includes(id) || seen.some((record) => record.platform === id))
   const reasons = []
+  // 有电脑下好了新版没装上、可试着装过的还太少，看不出是个别电脑还是整个平台都装不上的平台。
+  const unsettled = []
   const table = []
   let comparable = false
   for (const [id, label] of scopes) {
@@ -159,12 +185,23 @@ function assessRolloutHealth({ rollout, releasedAt, approximate = false, records
       }
     }
     const install = measureInstallFailures(scopeNew, scopeBase, version)
-    if (install.share !== null && install.tried >= MIN_MACHINE_DAYS && install.failed >= MIN_EVENTS && install.share >= INSTALL_FAILURE_SHARE) {
-      reasons.push(`${where}升新版没装上：下好了新版、试着装过的电脑里 ${(install.share * 100).toFixed(0)}% 还停在旧版`)
+    // 一台都没升上去（试过的全没装上）时不等攒够 20 台·天：停住只是先不自动推、交给人看，再等一天，
+    // 这个平台又多一批电脑下了新版装不上。
+    if (install.share !== null && install.failed >= MIN_EVENTS && install.share >= INSTALL_FAILURE_SHARE && (install.tried >= MIN_MACHINE_DAYS || newDays === 0)) {
+      const stuck = newDays === 0 ? '全都还停在旧版，一台都没升上去' : `里 ${(install.share * 100).toFixed(0)}% 还停在旧版`
+      reasons.push(`${where}升新版没装上：下好了新版、试着装过的电脑${stuck}`)
+    } else if (id !== 'all' && install.failed > 0 && install.tried < MIN_MACHINE_DAYS) {
+      unsettled.push({ id, installed: newDays > 0 })
     }
     table.push({ id, label, enoughNew, enoughBase, rows, installShare: install.share })
   }
-  const newDays = sumWeights(newRecords)
+  // 样本够不够、有没有打卡，按这次放量管着的平台算；不限平台时就是全部。
+  const subjectRecords = controlled ? newRecords.filter((record) => controlled.includes(record.platform)) : newRecords
+  const subject = controlled ? `${describeScopes(controlled)} 上` : ''
+  const newDays = sumWeights(subjectRecords)
+  // 别的平台升上去的再多，也顶不了这几个平台装不装得上：一台都没升上去的一直等，有升上去的满 44 小时才照
+  // 「样本少」那样放开。
+  const pending = unsettled.filter((spot) => !spot.installed || hours < LONG_OBSERVATION_HOURS)
   const notes = []
   if (approximate) notes.push('查不到 GitHub 上这一版的发布时间，「发出去多久」按更新清单里的出包时间算，实际发出去可能更晚。')
   if (!comparable) notes.push('没有可比的对照：还在旧版的电脑打卡太少，或者它们的版本早于 0.2.23、本来就不打卡（0.2.23 自己放量时就是这样）。这次只看了新版自己有没有明摆着坏掉。')
@@ -176,16 +213,22 @@ function assessRolloutHealth({ rollout, releasedAt, approximate = false, records
     headline = `建议停住 ${version}：${reasons.join('；')}。`
   } else if (newDays === 0 && hours >= LONG_OBSERVATION_HOURS) {
     verdict = 'unknown'
-    headline = `看不出 ${version} 稳不稳：发出去 ${formatHours(hours)} 小时，新版一条打卡都没收到。照老办法看客服群和反馈报告再定。`
+    headline = `看不出 ${version} 稳不稳：发出去 ${formatHours(hours)} 小时，${subject}新版一条打卡都没收到。照老办法看客服群和反馈报告再定。`
   } else if (hours < MIN_OBSERVATION_HOURS) {
     verdict = 'wait'
     headline = `再等等，${version} 先不放开：发出去才 ${formatHours(hours)} 小时，新版装上那天的问题要第二天上午才报上来，满 ${MIN_OBSERVATION_HOURS} 小时再看。`
+  } else if (pending.length) {
+    verdict = 'wait'
+    headline = `再等等，${version} 先不放开：${describeScopes(pending.map((spot) => spot.id))} 上有电脑下好了新版没装上，试着装过的还不到 ${MIN_MACHINE_DAYS} 台·天，看不出是个别电脑的问题还是都装不上。`
   } else if (newDays < MIN_MACHINE_DAYS && hours < LONG_OBSERVATION_HOURS) {
     verdict = 'wait'
-    headline = `再等等，${version} 先不放开：发出去 ${formatHours(hours)} 小时，新版的打卡还不到 ${MIN_MACHINE_DAYS} 台·天，看不准。`
+    headline = `再等等，${version} 先不放开：发出去 ${formatHours(hours)} 小时，${subject}新版的打卡还不到 ${MIN_MACHINE_DAYS} 台·天，看不准。`
   } else {
     verdict = 'open'
-    headline = `建议放开 ${version}：发出去 ${formatHours(hours)} 小时，${comparable ? '和还在旧版的电脑比' : '只看新版自己'}，闪退、卡住、付款页、装工具都没有明显变差${newDays < MIN_MACHINE_DAYS ? '（样本少，只能粗看）' : ''}。`
+    let rough = ''
+    if (newDays < MIN_MACHINE_DAYS) rough = `（${subject}样本少，只能粗看）`
+    else if (unsettled.length) rough = `（${describeScopes(unsettled.map((spot) => spot.id))} 上试着装新版的还少，装不装得上只能粗看）`
+    headline = `建议放开 ${version}：发出去 ${formatHours(hours)} 小时，${comparable ? '和还在旧版的电脑比' : '只看新版自己'}，闪退、卡住、付款页、装工具都没有明显变差${rough}。`
   }
   return { verdict, rollout, hours, headline, reasons, notes, table }
 }
@@ -233,6 +276,8 @@ function renderRolloutHealth(result, checkedAt) {
     `- 停住的条件：新版自己出过至少 ${MIN_EVENTS} 次、样本够，又比还在旧版的多出一倍以上、每 100 台·天多 ${MIN_RATE_GAP} 次以上；没有可比的对照时，只拦每 100 台·天闪退 ${CRASH_CEILING} 次以上的。`
       + `升新版没装上的占两成以上也停住。`,
     `- 放开的条件：发出去满 ${MIN_OBSERVATION_HOURS} 小时、新版样本够、没有上面的情况；样本一直不够的，满 ${LONG_OBSERVATION_HOURS} 小时也建议放开，写明只能粗看。`,
+    `- 每个平台单独算：有新版打卡的、有电脑下好了新版没装上的、这次放量管着的平台各占一格。某个平台试着装的一台都没升上去，攒到 ${MIN_EVENTS} 台·天就停住；`
+      + '试着装的还太少就再等等，不拿别的平台升得好顶它。放量只管某几个平台时，样本够不够按那几个平台算。',
     '- Sentry 上新冒出来的报错没算进来：发版用的 Sentry 令牌只能传对照表、读不了报错（商业级差距报告 G06）。放量期间去 Sentry 按这一版的 release 筛一眼；同一个报错一小时超过 10 次 Sentry 会直接发邮件。',
   )
   for (const note of result.notes) lines.push(`- ${note}`)

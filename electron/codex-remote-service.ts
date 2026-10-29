@@ -96,6 +96,7 @@ const maxApprovalNumber = 9999
 const maxRetiredTurns = 16
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
 const maxStderrLogLength = 1000
+const quittingMessage = '星芒正在退出。'
 
 const developerInstructions = [
   'You are being driven remotely from a phone chat through the Xingmang desktop app.',
@@ -527,7 +528,7 @@ export class CodexRemoteService {
       return this.emit()
     }
     if (runtime.enabled) return this.emit()
-    if (this.disposed) throw new Error('星芒正在退出。')
+    if (this.disposed) throw new Error(quittingMessage)
     const reason = this.options.inspectAvailability()
     if (reason) throw new Error(reason)
     const settings = await this.options.store.readSettings()
@@ -536,7 +537,8 @@ export class CodexRemoteService {
     if ((await this.options.store.readCredential(channel)) === null) throw new Error('先完成这个渠道的登录。')
     const codexProblem = await this.options.checkCodexReady?.()
     if (codexProblem) throw new Error(codexProblem)
-    await this.startChannel(runtime)
+    const blocked = await this.startChannel(runtime)
+    if (blocked) throw new Error(blocked)
     return this.emit()
   }
 
@@ -620,6 +622,7 @@ export class CodexRemoteService {
       if (value === null) await this.disableChannel(runtime, null)
       else {
         await this.stopAdapter(runtime)
+        // 这时手机遥控被关掉了就不连，也不报错：凭据已经存好（微信扫码登录也认这一步算成功），设置页上那句停用的话就是交代。
         await this.startChannel(runtime)
       }
     }
@@ -703,7 +706,23 @@ export class CodexRemoteService {
     return [...this.pending.values()].filter((entry) => entry.channel === channel)
   }
 
-  private async startChannel(runtime: ChannelRuntime): Promise<void> {
+  /**
+   * 连上渠道。开不了就返回原因（上屏用），渠道这时停着；返回 null 时渠道开着，或者半路被别处关掉、那边已经交代过。
+   *
+   * 调用方开头都问过能不能开，可那之后还要等：读设置、读凭据、查 Codex 装没装，换凭据重启要先等旧连接停下。
+   * 这几秒里状态文件关掉了手机遥控（applyAvailability），那一刻渠道还不算开着、停不到它，不在这里再问一次
+   * 就照常连上了，急刹车刹不住（R29-06）。星芒开始退出也是同一个窗口。
+   */
+  private async startChannel(runtime: ChannelRuntime): Promise<string | null> {
+    const blocked = this.disposed ? quittingMessage : this.options.inspectAvailability()
+    if (blocked) {
+      // 换凭据重启那条路上它还算开着：照远程关那样收干净。旧连接已经停了，手机上收不到道别。
+      if (runtime.enabled) {
+        await this.disableChannel(runtime, null)
+        this.options.log('info', 'remote.channel-suspended', { channel: runtime.id })
+      }
+      return blocked
+    }
     runtime.enabled = true
     runtime.startedAt = this.now()
     runtime.seen.clear()
@@ -711,6 +730,8 @@ export class CodexRemoteService {
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
     await this.refreshSecrets(true)
+    // 读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
+    if (runtime.adapter !== adapter) return null
     this.touch(runtime)
     this.options.log('info', 'remote.channel-started', { channel: runtime.id })
     try {
@@ -728,6 +749,7 @@ export class CodexRemoteService {
       }
       this.options.log('warn', 'remote.channel-start-failed', { channel: runtime.id })
     }
+    return null
   }
 
   private async stopAdapter(runtime: ChannelRuntime): Promise<void> {

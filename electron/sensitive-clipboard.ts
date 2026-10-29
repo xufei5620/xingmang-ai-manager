@@ -6,12 +6,18 @@
  * 这里只比较文本，所以用户碰巧又复制了同一段密钥，也会一起清掉——那段本来就是
  * 该清的内容，不算误伤。
  *
+ * 清理的责任不能半路丢：后一段写进去了，前一段才算被换掉、不用再清；后一段没写进去，
+ * 前一段照原来的时间清。到点读不了剪贴板（Windows 上别的程序正占着）就隔几秒再试，
+ * 试满次数才放手。
+ *
  * Electron 44 起剪贴板的读写都是异步的（官方破坏性改动「clipboard module rearchitected」），
  * 只有清空还是当场做完。读回来比对和清空之间隔着一次等待，这几毫秒里用户恰好复制了
  * 别的东西就会被一起清掉；这个接口没有更窄的做法。
  */
 
 export const SENSITIVE_CLIPBOARD_CLEAR_MS = 60_000
+export const SENSITIVE_CLIPBOARD_RETRY_MS = 3_000
+export const SENSITIVE_CLIPBOARD_MAX_RETRIES = 2
 
 export interface SensitiveClipboardTarget {
   readText(): Promise<string>
@@ -39,6 +45,13 @@ export interface SensitiveClipboard {
   dispose(): void
 }
 
+interface PendingSecret {
+  order: number
+  text: string
+  handle: unknown
+  retries: number
+}
+
 function defaultTimers(): SensitiveClipboardTimers {
   return {
     set(callback, delayMs) {
@@ -55,62 +68,86 @@ function defaultTimers(): SensitiveClipboardTimers {
 export function createSensitiveClipboard(options: {
   clipboard: SensitiveClipboardTarget
   delayMs?: number
+  retryMs?: number
+  maxRetries?: number
   timers?: SensitiveClipboardTimers
 }): SensitiveClipboard {
   const { clipboard } = options
   const delayMs = options.delayMs ?? SENSITIVE_CLIPBOARD_CLEAR_MS
+  const retryMs = options.retryMs ?? SENSITIVE_CLIPBOARD_RETRY_MS
+  const maxRetries = options.maxRetries ?? SENSITIVE_CLIPBOARD_MAX_RETRIES
   const timers = options.timers ?? defaultTimers()
-  // Set before the write lands, so a flush that arrives while it is still in
-  // flight knows which text to look for; the timer is attached once it lands.
-  let pending: { text: string; handle: unknown } | null = null
+  let issued = 0
+  // Every secret whose wipe is still owed, in the order the writes were
+  // issued. An entry joins before its write lands, so a flush that arrives
+  // while it is in flight knows which text to look for. It leaves only when a
+  // later write has landed over it, its wipe went through, its retries ran
+  // out, or a flush took it; a later write that fails leaves it in place.
+  const pending: PendingSecret[] = []
 
-  async function wipeIfUnchanged(text: string): Promise<void> {
-    // Reading the clipboard can fail when another process holds it open
-    // (Windows). Leaving the secret in place is the only outcome available
-    // then; it must not surface as a crash in the main process.
+  // Reading the clipboard can fail when another process holds it open
+  // (Windows); that must not surface as a crash in the main process. Resolves
+  // to whether the clipboard could be checked at all.
+  async function wipeIfUnchanged(texts: string[]): Promise<boolean> {
     try {
-      if (await clipboard.readText() === text) clipboard.clear()
+      if (texts.includes(await clipboard.readText())) clipboard.clear()
+      return true
     } catch {
-      // Nothing else to do.
+      return false
     }
   }
 
-  function cancelPending() {
-    if (!pending) return
-    if (pending.handle !== undefined) timers.clear(pending.handle)
-    pending = null
+  function release(entry: PendingSecret) {
+    const index = pending.indexOf(entry)
+    if (index >= 0) pending.splice(index, 1)
+    if (entry.handle !== undefined) timers.clear(entry.handle)
+    entry.handle = undefined
+  }
+
+  function schedule(entry: PendingSecret, delay: number) {
+    entry.handle = timers.set(() => {
+      entry.handle = undefined
+      void wipeOnTimer(entry)
+    }, delay)
+  }
+
+  async function wipeOnTimer(entry: PendingSecret): Promise<void> {
+    const checked = await wipeIfUnchanged([entry.text])
+    // A flush or a later write took over while the clipboard was being read.
+    if (!pending.includes(entry)) return
+    if (checked || entry.retries >= maxRetries) {
+      release(entry)
+      return
+    }
+    entry.retries += 1
+    schedule(entry, retryMs)
   }
 
   async function flush(): Promise<void> {
-    if (!pending) return
-    const { text } = pending
-    cancelPending()
-    await wipeIfUnchanged(text)
+    if (pending.length === 0) return
+    const texts = pending.map((entry) => entry.text)
+    for (const entry of [...pending]) release(entry)
+    await wipeIfUnchanged(texts)
   }
 
   return {
     async write(text) {
-      // The previous secret is replaced on the clipboard by this write, so
-      // its own timer has nothing left to protect.
-      cancelPending()
-      if (!text) {
-        await clipboard.writeText(text)
-        return
-      }
-      const entry: { text: string; handle: unknown } = { text, handle: undefined }
-      pending = entry
+      const order = ++issued
+      const entry: PendingSecret | null = text ? { order, text, handle: undefined, retries: 0 } : null
+      if (entry) pending.push(entry)
       try {
         await clipboard.writeText(text)
       } catch (error) {
-        if (pending === entry) pending = null
+        // Whatever an earlier write put there is still on the clipboard, so
+        // its wipe stays owed.
+        if (entry) release(entry)
         throw error
       }
-      // A newer write, a flush or dispose took over while this one landed.
-      if (pending !== entry) return
-      entry.handle = timers.set(() => {
-        if (pending === entry) pending = null
-        void wipeIfUnchanged(text)
-      }, delayMs)
+      // This write has replaced what every earlier one put on the clipboard,
+      // so their wipes have nothing left to protect.
+      for (const earlier of pending.filter((item) => item.order < order)) release(earlier)
+      // A later write that landed first, a flush or dispose took over.
+      if (entry && pending.includes(entry)) schedule(entry, delayMs)
     },
     flush,
     dispose() {

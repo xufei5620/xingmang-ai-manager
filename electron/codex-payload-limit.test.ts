@@ -436,7 +436,7 @@ describe('codex payload limit service', () => {
     }])
     expect(JSON.stringify(run.logs)).not.toContain('solov.cc')
     await settle()
-    expect(run.writes.at(-1)).toEqual({ handled: { [sessionA]: now }, warned: {} })
+    expect(run.writes.at(-1)).toEqual({ handled: { [sessionA]: now }, handledDirect: {}, warned: {} })
   })
 
   it('handles each conversation once, also after a restart and when two reports arrive together', async () => {
@@ -505,6 +505,41 @@ describe('codex payload limit service', () => {
     expect(run.logs[0].detail).toMatchObject({ siteId: 'solov', from: 'direct', to: null, action: 'too-large' })
   })
 
+  // R29-02：以前一个会话只记一次，线路 1 上换过线的对话到了线路 2 再超就不吭声。
+  it('still asks for a new conversation when a conversation moved off line 1 is too large for line 2 too, also after a restart', async () => {
+    const run = serviceHarness()
+    await run.service.payloadTooLarge(refused(lineOneUrl))
+    expect(run.followCodex).toHaveBeenCalledWith('solov', 'switched')
+    await run.service.payloadTooLarge(refused(lineTwoUrl, sessionA, now + 1))
+    await run.service.payloadTooLarge(refused(lineTwoUrl, sessionA, now + 2))
+    expect(run.notices).toEqual(['too-large'])
+    expect(run.holdDirect).toHaveBeenCalledTimes(1)
+    expect(run.logs.map((entry) => entry.detail.action)).toEqual(['switched', 'too-large'])
+    await settle()
+    expect(run.writes.at(-1)).toEqual({ handled: { [sessionA]: now }, handledDirect: { [sessionA]: now }, warned: {} })
+
+    const lineOneOnly = { handled: { [sessionA]: now }, handledDirect: {}, warned: {} }
+    const restarted = serviceHarness({ readState: () => lineOneOnly })
+    await restarted.service.payloadTooLarge(refused(lineOneUrl))
+    expect(restarted.holdDirect).not.toHaveBeenCalled()
+    await restarted.service.payloadTooLarge(refused(lineTwoUrl))
+    expect(restarted.notices).toEqual(['too-large'])
+  })
+
+  it('leaves a conversation alone on line 1 once line 2 has asked for a new one', async () => {
+    const run = serviceHarness()
+    await run.service.payloadTooLarge(refused(lineTwoUrl))
+    // 线路 2 坏了退回线路 1，同一个对话照样发不出去：不再换线、不再提示。
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionA, now + 1))
+    run.service.largeSession({ sessionId: sessionA, rolloutBytes: codexPayloadNearingBytes })
+    expect(run.holdDirect).not.toHaveBeenCalled()
+    expect(run.followCodex).not.toHaveBeenCalled()
+    expect(run.notices).toEqual(['too-large'])
+    // 别的对话照常处理。
+    await run.service.payloadTooLarge(refused(lineOneUrl, sessionB))
+    expect(run.holdDirect).toHaveBeenCalledTimes(1)
+  })
+
   it('moves the historical account on its own site and leaves other sites and addresses alone', async () => {
     const historical = serviceHarness({ activeSiteId: () => 'solov-api' })
     await historical.service.payloadTooLarge(refused(historicalLineOneUrl))
@@ -548,7 +583,7 @@ describe('codex payload limit service', () => {
     const handled: Record<string, number> = {}
     for (let index = 0; index < 64; index++) handled[`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`] = now - dayMs + index
     handled['00000000-0000-4000-8000-0000000000ff'] = now - 31 * dayMs
-    const run = serviceHarness({ readState: () => ({ handled, warned: {} }) })
+    const run = serviceHarness({ readState: () => ({ handled, handledDirect: {}, warned: {} }) })
     await run.service.payloadTooLarge(refused(lineOneUrl))
     await settle()
     const kept = run.writes.at(-1)?.handled ?? {}
@@ -572,7 +607,7 @@ describe('codex payload early warning', () => {
       detail: { sessionId: sessionA, siteId: 'solov', line: 'primary', rolloutBytes: codexPayloadNearingBytes },
     }])
     await settle()
-    expect(run.writes.at(-1)).toEqual({ handled: {}, warned: { [sessionA]: now } })
+    expect(run.writes.at(-1)).toEqual({ handled: {}, handledDirect: {}, warned: { [sessionA]: now } })
     // 提醒过的对话真发不出去了照样处理。
     await run.service.payloadTooLarge(refused(lineOneUrl))
     expect(run.holdDirect).toHaveBeenCalledTimes(1)
@@ -605,10 +640,19 @@ describe('codex payload state store', () => {
     const filePath = path.join(temporaryDirectory(), 'codex-payload-sessions.json')
     const store = createCodexPayloadStateStore(filePath)
     expect(store.readState()).toBeNull()
-    const state: CodexPayloadState = { handled: { [sessionA]: now }, warned: { [sessionB]: now - 1 } }
+    const state: CodexPayloadState = { handled: { [sessionA]: now }, handledDirect: { [sessionA]: now + 1 }, warned: { [sessionB]: now - 1 } }
     await store.writeState(state)
     expect(createCodexPayloadStateStore(filePath).readState()).toEqual(state)
     expect(JSON.parse(fs.readFileSync(filePath, 'utf8'))).toEqual({ version: 1, ...state })
+  })
+
+  it('still fits all three lists when each is full', async () => {
+    const full: Record<string, number> = {}
+    for (let index = 0; index < 64; index++) full[`00000000-0000-4000-8000-${String(index).padStart(12, '0')}`] = now + index
+    const state: CodexPayloadState = { handled: { ...full }, handledDirect: { ...full }, warned: { ...full } }
+    const filePath = path.join(temporaryDirectory(), 'codex-payload-sessions.json')
+    await createCodexPayloadStateStore(filePath).writeState(state)
+    expect(createCodexPayloadStateStore(filePath).readState()).toEqual(state)
   })
 
   it('drops what it does not recognize and treats a damaged or oversized file as missing', () => {
@@ -616,8 +660,11 @@ describe('codex payload state store', () => {
       version: 1,
       handled: { [sessionA]: now, '../../etc': now, [sessionB]: -1, 'NOT-A-SESSION': now },
       warned: { [sessionB]: 1.5, [sessionA]: '2026-10-28' },
-    }))).toEqual({ handled: { [sessionA]: now }, warned: {} })
-    expect(parseCodexPayloadState(JSON.stringify({ version: 1 }))).toEqual({ handled: {}, warned: {} })
+    }))).toEqual({ handled: { [sessionA]: now }, handledDirect: {}, warned: {} })
+    // 以前存下的记录没有 handledDirect。
+    expect(parseCodexPayloadState(JSON.stringify({ version: 1, handled: { [sessionA]: now }, warned: {} })))
+      .toEqual({ handled: { [sessionA]: now }, handledDirect: {}, warned: {} })
+    expect(parseCodexPayloadState(JSON.stringify({ version: 1 }))).toEqual({ handled: {}, handledDirect: {}, warned: {} })
     for (const text of ['', '{', 'null', '[]', JSON.stringify({ version: 2, handled: {} })]) expect(parseCodexPayloadState(text)).toBeNull()
 
     const filePath = path.join(temporaryDirectory(), 'codex-payload-sessions.json')
