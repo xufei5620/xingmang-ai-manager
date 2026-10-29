@@ -98,6 +98,16 @@ export class ToolConfigOwnershipStore {
     }
   }
 
+  /**
+   * 记录上写的来源，指纹对不对得上都照读：客户自己填过、之后又被改了的那份读成「看不出来」，
+   * 这里还认得出它是手动的。没有记录或读不懂 = null。
+   */
+  recordedSource(provider: ProviderId, config: NativeConfigInspection): OwnershipRecord['source'] | null {
+    try {
+      return this.record(provider, config)?.source ?? null
+    } catch { return null }
+  }
+
   /** 这份配置记录下来的模板版本；没有记录或读不懂 = null，老记录没有这个字段 = 0。 */
   templateRevision(provider: ProviderId, config: NativeConfigInspection): number | null {
     try {

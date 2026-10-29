@@ -56,6 +56,31 @@ describe('redactSecretShapes', () => {
     expect(redactSecretShapes('https://registry.npmjs.org/@xai-official/grok')).toBe('https://registry.npmjs.org/@xai-official/grok')
   })
 
+  // The scheme may start after a `-`, `.` or `+` in front of it, as `\b` let it
+  // before; what stands in front stays in the text.
+  it('redacts a URL password whose scheme follows a dash, dot or plus in the text', () => {
+    expect(redactSecretShapes('remote:-ssh://fake-user:fake-pass-value@git.example.invalid/acme'))
+      .toBe('remote:-ssh://[REDACTED]@git.example.invalid/acme')
+    expect(redactSecretShapes('x.git+ssh://fake-user:fake-pass-value@git.example.invalid'))
+      .toBe('x.git+ssh://[REDACTED]@git.example.invalid')
+    expect(redactSecretShapes('1.FTP://fake-user:fake-pass-value@ftp.example.invalid'))
+      .toBe('1.FTP://[REDACTED]@ftp.example.invalid')
+  })
+
+  // Every letter after a `-`, `.` or `+` could start a scheme. Before, each one
+  // read the rest of the run again looking for `://`, which took seconds here.
+  it('scans a long run of letters, digits, dashes and dots in linear time', () => {
+    const runs = ['ab-c.d+9'.repeat(10_000), `-${'eyJabcdefghijklmnop-'.repeat(10_000)}`]
+    const started = performance.now()
+    for (const run of runs) {
+      expect(redactSecretShapes(run)).toBe(run)
+      expect(redactSecretShapes(`${run}ssh://fake-user:fake-pass-value`)).toBe(`${run}ssh://fake-user:fake-pass-value`)
+      expect(redactSecretShapes(`${run}ssh://fake-user:fake-pass-value@git.example.invalid`))
+        .toBe(`${run}ssh://[REDACTED]@git.example.invalid`)
+    }
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('redacts GitHub and GitLab access tokens wherever they appear', () => {
     const classic = `ghp_${'FakeClassicTokenFiller0123'}`
     const fineGrained = `github_pat_${'Fake_Fine_Grained_Filler_0123'}`
@@ -213,6 +238,26 @@ describe('redactSecretFields', () => {
       .toBe('Set-Cookie: [REDACTED]; HttpOnly; Secure')
     expect(redactSecretFields('cookie=plain-fake-a; then the request failed'))
       .toBe('cookie=[REDACTED]; then the request failed')
+  })
+
+  // A cookie name may stand inside the value in front of it. It still starts a
+  // match there, and one that ends its run still takes the pairs after it.
+  it('redacts a Cookie header whose name stands inside another value', () => {
+    expect(redactSecretFields('trace=cookie=plain-fake-a; refresh=plain-fake-b')).toBe('trace=cookie=[REDACTED]')
+    expect(redactSecretFields('x-cookie=cookie:plain-fake-a; refresh=plain-fake-b')).toBe('x-cookie=[REDACTED]')
+    expect(redactSecretFields('cookie=cookie= session=plain-fake-a; refresh=plain-fake-b')).toBe('cookie=[REDACTED] [REDACTED]')
+  })
+
+  // In `cookie=cookie=…` every name after the first stands inside the value of
+  // the one before it. Before, each one read the rest of the run again looking
+  // for a `;`, which took seconds here.
+  it('scans a long run of cookie names in linear time', () => {
+    const started = performance.now()
+    expect(redactSecretFields('cookie='.repeat(20_000))).toBe('cookie=[REDACTED]')
+    expect(redactSecretFields(`${'Cookie:'.repeat(20_000)}; HttpOnly`)).toBe('Cookie:[REDACTED]; HttpOnly')
+    expect(redactSecretFields(`${'cookies='.repeat(20_000)} sid=plain-fake-a; refresh=plain-fake-b`))
+      .toBe('cookies=[REDACTED] [REDACTED]')
+    expect(performance.now() - started).toBeLessThan(2_000)
   })
 
   it('leaves names that only contain a cookie or credential word readable', () => {

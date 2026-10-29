@@ -19,6 +19,7 @@ import type { SafeStorageLike } from './account-session-store'
 import {
   belongsToOtherTurn,
   buildApprovalRequest,
+  buildFileChangeSummary,
   buildRemoteMcpServerOverrides,
   buildThreadStartParams,
   collectCredentialSecrets,
@@ -134,6 +135,7 @@ class FakeChannel implements RemoteChannelAdapter {
   handlers: RemoteChannelHandlers | null = null
   readonly sent: Array<{ peer: RemotePeer; message: RemoteOutbound; replyContext?: string }> = []
   stopped = 0
+  private readonly waiters: Array<{ done: () => boolean; resolve: () => void }> = []
 
   async start(handlers: RemoteChannelHandlers): Promise<void> {
     this.handlers = handlers
@@ -146,6 +148,20 @@ class FakeChannel implements RemoteChannelAdapter {
 
   async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void> {
     this.sent.push({ peer, message, replyContext })
+    for (const waiter of [...this.waiters]) {
+      if (!waiter.done()) continue
+      this.waiters.splice(this.waiters.indexOf(waiter), 1)
+      waiter.resolve()
+    }
+  }
+
+  /**
+   * 发到手机的那一下让 done 成立时 resolve（已经成立就立刻 resolve）。直接等发送本身，不用 vi.waitFor 的
+   * 1 秒轮询：「配对成功」和每张审批卡片都要先把设置原子写进盘才发，Windows CI 上撞过 1 秒（#1542）。
+   */
+  sentUntil(done: () => boolean): Promise<void> {
+    if (done()) return Promise.resolve()
+    return new Promise((resolve) => { this.waiters.push({ done, resolve }) })
   }
 
   texts(): string[] {
@@ -244,7 +260,7 @@ async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
   const channel = s.channels[0]
   await s.service.startPairing('feishu')
   channel.handlers?.onInbound(text(alice, '000042'))
-  await vi.waitFor(() => expect(channel.texts()).toContain('配对成功。这台电脑上的 Codex 现在只听你的。直接发消息就能让它干活，发「帮助」看能用的指令。'))
+  await channel.sentUntil(() => channel.texts().includes('配对成功。这台电脑上的 Codex 现在只听你的。直接发消息就能让它干活，发「帮助」看能用的指令。'))
   channel.sent.length = 0
   return channel
 }
@@ -257,6 +273,14 @@ async function prompted(s: Setup, channel: FakeChannel, body = '跑一下测试'
 
 function approvalsSent(channel: FakeChannel): RemoteApprovalRequest[] {
   return channel.sent.flatMap((entry) => (entry.message.kind === 'approval' ? [entry.message.request] : []))
+}
+
+/** 等第 count 张审批卡片发出去：每张卡片发之前都要把编号原子写进盘。 */
+async function approvalCardsSent(channel: FakeChannel, count: number): Promise<RemoteApprovalRequest[]> {
+  await channel.sentUntil(() => approvalsSent(channel).length >= count)
+  const cards = approvalsSent(channel)
+  expect(cards).toHaveLength(count)
+  return cards
 }
 
 function cardClick(peer: RemotePeer, request: Pick<RemoteApprovalRequest, 'approvalId'> & { nonce: string | null }, decision: 'accept' | 'decline', direct = true): RemoteInbound {
@@ -497,6 +521,26 @@ describe('codex-remote-service helpers', () => {
     expect(inspectCommandDisplay('command', { command: '   ' }, display)).toBe('blank')
     expect(inspectCommandDisplay('network', {}, display)).toBe('blank')
   })
+
+  it('lists only whole file paths and always keeps the write scope line on a file change card', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [apiKey] }
+    // Twenty 81-character paths no longer fit: cutting the joined text used to drop the last lines.
+    const files = Array.from({ length: 25 }, (_, index) => `/Volumes/Work/customer-portal/frontend/src/components/orders/details/panel-${String(index).padStart(2, '0')}.tsx`)
+    const summary = buildApprovalRequest('8', 'nonce-eight', 'file-change', { grantRoot: '/Volumes/Work/customer-portal' }, files, display).summary
+    expect(summary.length).toBeLessThanOrEqual(1500)
+    expect(summary).not.toContain('…')
+    expect(summary.split('\n')).toEqual([...files.slice(0, 17), '另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    // Without a write scope the whole budget goes to the file list.
+    expect(buildFileChangeSummary({}, files, display)?.split('\n')).toEqual([...files.slice(0, 18), '另外还有 7 个文件'])
+    expect(buildFileChangeSummary({}, [], display)).toBe('')
+    // A write scope that cannot be shown whole leaves nothing to put to the person.
+    expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, files, display)).toBeNull()
+    expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, [], display)).toBeNull()
+    // What counts is what the phone would show, after the key is hidden.
+    const keyedRoot = `/Volumes/${apiKey}/${'x'.repeat(1475)}`
+    expect(`可写范围：${keyedRoot}`.length).toBeGreaterThan(1500)
+    expect(buildFileChangeSummary({ grantRoot: keyedRoot }, [], display)).toBe(`可写范围：${keyedRoot}`)
+  })
 })
 
 describe('codex-remote-service permission requests', () => {
@@ -613,7 +657,8 @@ describe('codex-remote-service pairing', () => {
     expect((await s.service.snapshot()).channels.feishu.pairing?.code).toBe('000042')
     channel.handlers?.onInbound(text(mallory, '123456'))
     channel.handlers?.onInbound(text(alice, '000 042'))
-    await vi.waitFor(() => expect(channel.sent).toHaveLength(1))
+    await channel.sentUntil(() => channel.sent.length > 0)
+    expect(channel.sent).toHaveLength(1)
     expect(channel.sent[0].peer).toEqual(alice)
     const snapshot = await s.service.snapshot()
     expect(snapshot.channels.feishu.boundPeer).toMatchObject({ userIdTail: '1234' })
@@ -857,7 +902,7 @@ describe('codex-remote-service turns', () => {
     const codex = await prompted(s, channel)
     await vi.advanceTimersByTimeAsync(55 * 60_000)
     const asked = codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await approvalCardsSent(channel, 1)
     // 审批十分钟没人回先按原有规则自己过期（第 65 分钟），这一轮照旧跑着、不算卡死。
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
@@ -974,7 +1019,7 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('running'))
     expect(channel.texts().filter((entry) => entry === '已停止。')).toHaveLength(1)
     const current = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, turnId: 'tu-2' })
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     channel.handlers?.onInbound(text(alice, '同意'))
     await expect(current).resolves.toMatchObject({ result: { decision: 'accept' } })
   })
@@ -996,7 +1041,7 @@ describe('codex-remote-service approvals', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await approvalCardsSent(channel, 1)
     const approval = channel.sent.find((entry) => entry.message.kind === 'approval')?.message
     expect(approval).toMatchObject({ kind: 'approval', request: { approvalId: '1', kind: 'command', summary: 'npm test' } })
     expect(approvalsSent(channel)[0].nonce).toMatch(/^[A-Za-z0-9_-]{16}$/)
@@ -1006,7 +1051,7 @@ describe('codex-remote-service approvals', () => {
     await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
 
     const second = codex.ask('item/fileChange/requestApproval', { threadId: 'th-1', turnId: 'tu-1', itemId: 'i2', startedAtMs: 0 })
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(2))
+    await approvalCardsSent(channel, 2)
     channel.handlers?.onInbound(cardClick(alice, approvalsSent(channel)[1], 'decline'))
     expect((await second).result).toEqual({ decision: 'decline' })
   })
@@ -1016,7 +1061,7 @@ describe('codex-remote-service approvals', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     const request = approvalsSent(channel)[0]
     channel.handlers?.onInbound(cardClick(alice, { approvalId: request.approvalId, nonce: generateApprovalNonce() }, 'accept'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(staleCardText))
@@ -1038,7 +1083,7 @@ describe('codex-remote-service approvals', () => {
     const beforeChannel = await enabledAndPaired(before)
     const beforeCodex = await prompted(before, beforeChannel)
     void beforeCodex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(approvalsSent(beforeChannel)).toHaveLength(1))
+    await approvalCardsSent(beforeChannel, 1)
     const oldCard = approvalsSent(beforeChannel)[0]
     expect(oldCard.approvalId).toBe('1')
     before.service.dispose()
@@ -1049,7 +1094,7 @@ describe('codex-remote-service approvals', () => {
     const channel = after.channels[0]
     const codex = await prompted(after, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, command: 'rm -rf build' })
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     const fresh = approvalsSent(channel)[0]
     expect(fresh.approvalId).toBe('2')
     expect(fresh.nonce).not.toBe(oldCard.nonce)
@@ -1068,7 +1113,7 @@ describe('codex-remote-service approvals', () => {
     const firstChannel = await enabledAndPaired(first)
     const firstCodex = await prompted(first, firstChannel)
     void firstCodex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(approvalsSent(firstChannel)).toHaveLength(1))
+    await approvalCardsSent(firstChannel, 1)
     const oldCard = approvalsSent(firstChannel)[0]
     first.service.dispose()
 
@@ -1077,7 +1122,7 @@ describe('codex-remote-service approvals', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, command: 'rm -rf build' })
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0].approvalId).toBe(oldCard.approvalId)
     channel.handlers?.onInbound(cardClick(alice, oldCard, 'accept'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(staleCardText))
@@ -1092,7 +1137,7 @@ describe('codex-remote-service approvals', () => {
     const codex = await prompted(s, channel)
     const first = codex.ask('item/commandExecution/requestApproval', commandRequest, 'a')
     const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' }, 'b')
-    await vi.waitFor(() => expect(channel.sent.filter((entry) => entry.message.kind === 'approval')).toHaveLength(2))
+    await approvalCardsSent(channel, 2)
     channel.handlers?.onInbound(text(alice, '同意'))
     await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('现在有 2 条等你同意（1、2）'))
     channel.handlers?.onInbound(text(alice, '同意 9'))
@@ -1108,7 +1153,7 @@ describe('codex-remote-service approvals', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await approvalCardsSent(channel, 1)
     const request = approvalsSent(channel)[0]
     channel.handlers?.onInbound(cardClick(mallory, request, 'accept'))
     channel.handlers?.onInbound(text(mallory, '同意 1'))
@@ -1123,7 +1168,7 @@ describe('codex-remote-service approvals', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await approvalCardsSent(channel, 1)
     await vi.advanceTimersByTimeAsync(10 * 60_000)
     expect((await answer).result).toEqual({ decision: 'decline' })
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
@@ -1148,11 +1193,35 @@ describe('codex-remote-service approvals', () => {
       .toEqual({ decision: 'decline' })
     expect(approvalsSent(channel)).toHaveLength(0)
     const next = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i4' })
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0].approvalId).toBe('1')
     expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2)
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await next).result).toEqual({ decision: 'decline' })
+  })
+
+  it('keeps the write scope on a file change card and declines one whose write scope cannot fit', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const files = Array.from({ length: 25 }, (_, index) => `/Volumes/Work/customer-portal/frontend/src/components/orders/details/panel-${String(index).padStart(2, '0')}.tsx`)
+    codex.notify('item/started', {
+      threadId: 'th-1',
+      turnId: 'tu-1',
+      item: { type: 'fileChange', id: 'f1', changes: files.map((file) => ({ path: file, kind: { type: 'update' }, diff: '' })) },
+    })
+    const fileChange = { threadId: 'th-1', turnId: 'tu-1', itemId: 'f1', startedAtMs: 0 }
+    expect((await codex.ask('item/fileChange/requestApproval', { ...fileChange, grantRoot: `/${'deep/'.repeat(300)}` })).result)
+      .toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts()).toContain(permissionsRefusedText))
+    expect(s.logs).toContain('remote.file-change-refused')
+    expect(approvalsSent(channel)).toHaveLength(0)
+    const asked = codex.ask('item/fileChange/requestApproval', { ...fileChange, grantRoot: '/Volumes/Work/customer-portal' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0]).toMatchObject({ approvalId: '1', kind: 'file-change' })
+    expect(approvalsSent(channel)[0].summary.split('\n').slice(-2)).toEqual(['另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await asked).result).toEqual({ decision: 'decline' })
   })
 
   it('titles a website request and typing into a running program for what they are', async () => {
@@ -1166,7 +1235,7 @@ describe('codex-remote-service approvals', () => {
       reason: '要下载依赖',
       networkApprovalContext: npmRegistry,
     }, 'a')
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
     expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nregistry.npmjs.org\n原因：要下载依赖\n回「同意 1」或「拒绝 1」。')
     channel.handlers?.onInbound(text(alice, '同意'))
@@ -1178,7 +1247,7 @@ describe('codex-remote-service approvals', () => {
       kind: 'writeStdin',
       command: 'write_stdin --session-id 3 yes',
     }, 'b')
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(2))
+    await approvalCardsSent(channel, 2)
     expect(approvalsSent(channel)[1]).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes' })
     expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\nwrite_stdin --session-id 3 yes\n'))).toBe(true)
     channel.handlers?.onInbound(text(alice, '拒绝'))
@@ -1198,7 +1267,8 @@ describe('codex-remote-service approvals', () => {
       threadId: 'th-1', turnId: 'tu-1', itemId: 'p', cwd: '/tmp', reason: null, startedAtMs: 0, environmentId: null,
       permissions: { network: { enabled: true }, fileSystem: null },
     })
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('联网'))
+    await approvalCardsSent(channel, 1)
+    expect(channel.texts().at(-1)).toContain('联网')
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await permissions).result).toEqual({ permissions: {}, scope: 'turn' })
   })
@@ -1219,7 +1289,7 @@ describe('codex-remote-service permission approvals', () => {
     expect(approvalsSent(channel)).toHaveLength(0)
     expect(s.logs).toContain('remote.permissions-refused')
     const next = codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0].approvalId).toBe('1')
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await next).result).toEqual({ decision: 'decline' })
@@ -1231,7 +1301,7 @@ describe('codex-remote-service permission approvals', () => {
     const codex = await prompted(s, channel)
     const out = path.join(s.workspace, 'out')
     const answer = codex.ask('item/permissions/requestApproval', permissionRequest(codexPermissions(null, [out], true)))
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     // The workspace is a real folder here, so its separators are this machine's.
     expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'other', summary: `联网\n写：${path.join('~', 'projects', 'demo', 'out')}` })
     channel.handlers?.onInbound(text(alice, '同意'))
@@ -1524,7 +1594,7 @@ describe('codex-remote-service lifecycle', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     void codex.ask('item/commandExecution/requestApproval', commandRequest)
-    await vi.waitFor(() => expect(channel.sent.some((entry) => entry.message.kind === 'approval')).toBe(true))
+    await approvalCardsSent(channel, 1)
     await s.service.startPairing('feishu')
     s.service.dispose()
     // Codex itself is killed, so the waiting command can never run; nothing was ever accepted.
