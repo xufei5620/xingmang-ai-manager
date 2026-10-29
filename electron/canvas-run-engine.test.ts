@@ -596,6 +596,19 @@ function originResolver(records: readonly CanvasRunRecord[]) {
   }
 }
 
+const unprovenImageMessage = '找不到你选中的这张图当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那张；想要新图，在这个节点上点「运行到此」重新生成（会扣费）。'
+
+function cachedEntry(fingerprint: string, nodeKind: CanvasRunGraphNode['kind'], cachedAsset: CanvasRunAsset): CanvasRunCacheEntry {
+  return {
+    version: 1,
+    fingerprint,
+    nodeKind,
+    candidate: { candidateId: 'cached', attemptId: 'cached-attempt', createdAt: '2026-08-13T00:00:00.000Z', asset: cachedAsset },
+    createdAt: '2026-08-13T00:00:00.000Z',
+    lastUsedAt: '2026-08-13T00:00:00.000Z',
+  }
+}
+
 function adoptionChain(prompt = '一只猫', adopted: { image?: string; video?: string } = {}): CanvasRunGraph {
   const image = node('image', 'image-generate')
   const video = node('video', 'video-generate')
@@ -717,25 +730,81 @@ describe('executeCanvasRun adopted results', () => {
     expect(resolveAssetOrigin).not.toHaveBeenCalled()
   })
 
-  it('keeps the cached result when the shown result cannot be looked up', async () => {
+  it('stops instead of handing downstream another cached result when the shown one cannot be looked up (O06)', async () => {
     const image = vi.fn(async () => ({ assets: [asset('n'.repeat(43))] }))
+    const after = vi.fn(async () => ({ assets: [] }))
     const generate = node('image', 'image-generate')
     generate.data.adoptedAssetId = 'o'.repeat(43)
-    const record = await executeCanvasRun(runOptions(graph([generate]), {
-      executors: executors({ image }),
-      resolveCache: async (fingerprint) => ({
-        version: 1,
-        fingerprint,
-        nodeKind: 'image-generate',
-        candidate: { candidateId: 'cached', attemptId: 'cached-attempt', createdAt: '2026-08-13T00:00:00.000Z', asset: asset('c'.repeat(43)) },
-        createdAt: '2026-08-13T00:00:00.000Z',
-        lastUsedAt: '2026-08-13T00:00:00.000Z',
-      }),
+    const record = await executeCanvasRun(runOptions(graph([generate, node('after', 'video-generate')], [edge('image', 'after', 'image')]), {
+      executors: executors({ image, video: after }),
+      resolveCache: async (fingerprint) => cachedEntry(fingerprint, 'image-generate', asset('c'.repeat(43))),
       resolveAssetOrigin: async () => { throw new Error('run history unavailable') },
     }))
     expect(image).not.toHaveBeenCalled()
-    expect(record.nodes[0].state).toBe('cached')
-    expect(outputAssetId(record, 'image')).toBe('c'.repeat(43))
+    expect(after).not.toHaveBeenCalled()
+    expect(nodeStates(record)).toEqual({ image: 'failed', after: 'skipped' })
+    expect(record.nodes[0].errorMessage).toBe(unprovenImageMessage)
+    expect(record.nodes[0].attempts).toEqual([])
+  })
+
+  it('stops a video node whose shown result has no remembered origin, with the video wording', async () => {
+    const video = vi.fn(async () => ({ assets: [] }))
+    const generate = node('video', 'video-generate')
+    generate.data.adoptedAssetId = 'o'.repeat(43)
+    const shown = { kind: 'video' as const, assetId: 'c'.repeat(43), localUrl: `xingmang-asset://video/${'c'.repeat(43)}` }
+    const record = await executeCanvasRun(runOptions(graph([generate]), {
+      executors: executors({ video }),
+      resolveCache: async (fingerprint) => cachedEntry(fingerprint, 'video-generate', shown),
+      resolveAssetOrigin: async () => null,
+    }))
+    expect(video).not.toHaveBeenCalled()
+    expect(record.nodes[0].state).toBe('failed')
+    expect(record.nodes[0].errorMessage).toBe(
+      '找不到你选中的这段视频当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那段；想要新视频，在这个节点上点「运行到此」重新生成（会扣费）。',
+    )
+  })
+
+  it('stops instead of using the newest candidate once the history behind the switched-back one is evicted (O06)', async () => {
+    const harness = adoptionHarness()
+    const first = await harness.run('project-a', adoptionChain())
+    const firstShown = { image: outputAssetId(first, 'image'), video: outputAssetId(first, 'video') }
+    await harness.run('project-a', adoptionChain('一只猫', firstShown), { kind: 'to-node', nodeId: 'image' })
+    expect(harness.image).toHaveBeenCalledTimes(2)
+
+    harness.records.length = 0
+    const switchedBack = await harness.run('project-a', adoptionChain('一只猫', firstShown))
+    expect(nodeStates(switchedBack)).toEqual({ prompt: 'cached', image: 'failed', video: 'skipped' })
+    expect(switchedBack.nodes.find((entry) => entry.nodeId === 'image')?.errorMessage).toBe(unprovenImageMessage)
+    expect(harness.image).toHaveBeenCalledTimes(2)
+    expect(harness.video).toHaveBeenCalledOnce()
+    expect(harness.videoInputs).toEqual([firstShown.image])
+  })
+
+  it('still uses the cache for the current inputs when the shown result is remembered only under edited ones', async () => {
+    const harness = adoptionHarness()
+    const cat = await harness.run('project-a', adoptionChain())
+    const catShown = { image: outputAssetId(cat, 'image'), video: outputAssetId(cat, 'video') }
+    const dog = await harness.run('project-a', adoptionChain('一只狗'))
+    const dogImage = outputAssetId(dog, 'image')
+
+    const stale = await harness.run('project-a', adoptionChain('一只狗', catShown))
+    expect(nodeStates(stale)).toEqual({ prompt: 'cached', image: 'cached', video: 'cached' })
+    expect(outputAssetId(stale, 'image')).toBe(dogImage)
+    expect(harness.image).toHaveBeenCalledTimes(2)
+    expect(harness.video).toHaveBeenCalledTimes(2)
+  })
+
+  it('still generates again when the shown result has no remembered origin and nothing is cached', async () => {
+    const harness = adoptionHarness()
+    const original = await harness.run('project-a', adoptionChain())
+    const shown = { image: outputAssetId(original, 'image'), video: outputAssetId(original, 'video') }
+
+    harness.records.length = 0
+    harness.cache.clear()
+    const rerun = await harness.run('project-a', adoptionChain('一只猫', shown))
+    expect(nodeStates(rerun)).toEqual({ prompt: 'succeeded', image: 'succeeded', video: 'succeeded' })
+    expect(harness.image).toHaveBeenCalledTimes(2)
+    expect(harness.video).toHaveBeenCalledTimes(2)
   })
 
   it('cancels while the shown result is being looked up without dispatching an executor', async () => {
