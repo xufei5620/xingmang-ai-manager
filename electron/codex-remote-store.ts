@@ -23,7 +23,7 @@ const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
 
-/** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。Windows 上多半是杀毒软件正占着它，重启后通常就能删。 */
+/** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。比如 Windows 上文件正被杀毒软件占着，重启后再删一般就行。 */
 export const credentialRemoveFailedMessage = '没能删掉保存的登录信息，请重启星芒后再点一次退出登录。'
 
 export interface CodexRemoteBoundPeer {
