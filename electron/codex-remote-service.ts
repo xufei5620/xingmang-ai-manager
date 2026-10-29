@@ -57,6 +57,9 @@ import { isRecord } from './input-guards'
 //   approvals routed to the user (never to an auto reviewer). Every request is
 //   answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
+// - Threads started from the phone get no MCP servers, plugins or apps: their
+//   tool calls do not all go through an approval, so nothing the phone cannot
+//   see or stop is handed to the model. Codex on the computer keeps them.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
 // - A permission request is only put to the user when every part of it fits on
 //   the card, and "accept" grants exactly the paths the card listed.
@@ -157,7 +160,12 @@ export function isStaleInbound(sentAt: number, channelStartedAt: number, now: nu
   return sentAt < channelStartedAt - staleBeforeStartMs || sentAt < now - maxMessageAgeMs
 }
 
-export function buildThreadStartParams(workspace: string): Record<string, unknown> {
+/**
+ * 遥控开的对话不给客户自己接的外部工具（#1407 P2-4，yoyo 10-29「按推荐」）：MCP 服务、插件、ChatGPT 应用的工具
+ * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
+ * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
+ */
+export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
   return {
     cwd: workspace,
     approvalPolicy: 'untrusted',
@@ -165,7 +173,64 @@ export function buildThreadStartParams(workspace: string): Record<string, unknow
     approvalsReviewer: 'user',
     sandbox: 'workspace-write',
     developerInstructions,
+    config: {
+      'features.apps': false,
+      'features.plugins': false,
+      ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
+    },
   }
+}
+
+function mcpServerTable(config: unknown): Record<string, unknown> | null {
+  return isRecord(config) && isRecord(config.mcp_servers) ? config.mcp_servers : null
+}
+
+function mcpServerTransport(server: unknown): Record<string, string> | null {
+  if (!isRecord(server)) return null
+  if (typeof server.command === 'string') return { command: server.command }
+  if (typeof server.url === 'string') return { url: server.url }
+  return null
+}
+
+/**
+ * Turns Codex's `config/read` answer for the workspace (`includeLayers: true`)
+ * into a `mcp_servers` override that switches every configured server off.
+ *
+ * Codex only knows servers by name, and merges an override into the layers
+ * instead of replacing the table, so each name has to be listed. Disabled
+ * layers count too: a project `.codex/config.toml` in a folder Codex has not
+ * trusted yet is a disabled layer here, and thread/start with workspace-write
+ * trusts that folder on the spot and loads it. Codex refuses the whole config
+ * when an override names a server that has no command or url, so a server that
+ * only such a layer defines carries its own command or url along: valid before
+ * the folder is trusted, unchanged after. Without layers (an older Codex), the
+ * effective config's servers are used.
+ */
+export function buildRemoteMcpServerOverrides(configRead: unknown): Record<string, Record<string, unknown>> {
+  const response = isRecord(configRead) ? configRead : {}
+  const layers: unknown[] = Array.isArray(response.layers) ? response.layers : [{ config: response.config, disabledReason: null }]
+  const active = new Set<string>()
+  const inactive = new Map<string, Record<string, string>>()
+  // Codex lists layers from the highest precedence down; the first command or url seen wins, as it does in Codex.
+  for (const layer of layers) {
+    if (!isRecord(layer)) continue
+    const servers = mcpServerTable(layer.config)
+    if (!servers) continue
+    const disabled = layer.disabledReason !== null && layer.disabledReason !== undefined
+    for (const [name, server] of Object.entries(servers)) {
+      if (!disabled) active.add(name)
+      else if (!inactive.has(name)) {
+        const transport = mcpServerTransport(server)
+        if (transport) inactive.set(name, transport)
+      }
+    }
+  }
+  const entries: Array<[string, Record<string, unknown>]> = [...active].map((name) => [name, { enabled: false }])
+  for (const [name, transport] of inactive) {
+    if (!active.has(name)) entries.push([name, { ...transport, enabled: false }])
+  }
+  // fromEntries, not assignment: a server called "__proto__" must stay an own key and be switched off like the rest.
+  return Object.fromEntries(entries)
 }
 
 /** 渠道凭据（JSON）里的字符串值都当要遮住的原值：App Secret、机器人令牌。 */
@@ -1132,7 +1197,10 @@ export class CodexRemoteService {
     if (!this.turnStillWanted(runtime, turn)) return
     try {
       if (!runtime.threadId) {
-        const started = await client.request('thread/start', buildThreadStartParams(workspace))
+        // 读不出配了哪些外部工具就不开对话：宁可这一条做不了，也不让手机用上没关掉的工具。
+        const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
+        if (!this.turnStillWanted(runtime, turn)) return
+        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead)))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 没有开出新对话')
         if (!this.turnStillWanted(runtime, turn)) return
