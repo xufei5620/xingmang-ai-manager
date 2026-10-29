@@ -42,6 +42,12 @@ interface RemoteInboundBase {
    * 发的指令不该在下次打开时突然执行。平台不给就不填，按收到的时间算。
    */
   sentAt?: number
+  /**
+   * 电脑上的时间比平台快多少毫秒（慢了是负数），渠道拿最近一次平台接口回应里的时间估的；估不出不填。
+   * 电脑时间快了，刚发的消息也会被当成旧的丢掉（#1407 P3-5）：底座靠它认出这种情况，给手机回一句提醒。
+   * 只用来决定回不回这句话，消息照样不执行，绝不拿它放行。
+   */
+  clockAheadMs?: number
 }
 
 export interface RemoteInboundText extends RemoteInboundBase {

@@ -56,6 +56,31 @@ describe('redactSecretShapes', () => {
     expect(redactSecretShapes('https://registry.npmjs.org/@xai-official/grok')).toBe('https://registry.npmjs.org/@xai-official/grok')
   })
 
+  // The scheme may start after a `-`, `.` or `+` in front of it, as `\b` let it
+  // before; what stands in front stays in the text.
+  it('redacts a URL password whose scheme follows a dash, dot or plus in the text', () => {
+    expect(redactSecretShapes('remote:-ssh://fake-user:fake-pass-value@git.example.invalid/acme'))
+      .toBe('remote:-ssh://[REDACTED]@git.example.invalid/acme')
+    expect(redactSecretShapes('x.git+ssh://fake-user:fake-pass-value@git.example.invalid'))
+      .toBe('x.git+ssh://[REDACTED]@git.example.invalid')
+    expect(redactSecretShapes('1.FTP://fake-user:fake-pass-value@ftp.example.invalid'))
+      .toBe('1.FTP://[REDACTED]@ftp.example.invalid')
+  })
+
+  // Every letter after a `-`, `.` or `+` could start a scheme. Before, each one
+  // read the rest of the run again looking for `://`, which took seconds here.
+  it('scans a long run of letters, digits, dashes and dots in linear time', () => {
+    const runs = ['ab-c.d+9'.repeat(10_000), `-${'eyJabcdefghijklmnop-'.repeat(10_000)}`]
+    const started = performance.now()
+    for (const run of runs) {
+      expect(redactSecretShapes(run)).toBe(run)
+      expect(redactSecretShapes(`${run}ssh://fake-user:fake-pass-value`)).toBe(`${run}ssh://fake-user:fake-pass-value`)
+      expect(redactSecretShapes(`${run}ssh://fake-user:fake-pass-value@git.example.invalid`))
+        .toBe(`${run}ssh://[REDACTED]@git.example.invalid`)
+    }
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
   it('redacts GitHub and GitLab access tokens wherever they appear', () => {
     const classic = `ghp_${'FakeClassicTokenFiller0123'}`
     const fineGrained = `github_pat_${'Fake_Fine_Grained_Filler_0123'}`

@@ -36,6 +36,12 @@ describe('codex remote card', () => {
     expect(markup).toContain('正在读取…')
   })
 
+  it('ends the intro by warning that whoever holds the bound chat account controls this computer', () => {
+    const markup = render(snapshot())
+    expect(markup).toContain('<p class="v2-remote-intro">在手机上私聊你自己的机器人，')
+    expect(markup).toContain('只是看文件不问。谁能用你绑定的飞书或微信发消息，谁就能指挥这台电脑，账号别借给别人。</p>')
+  })
+
   it('starts with the folder and the Feishu app form, and keeps the switch off until both are there', () => {
     const markup = render(snapshot())
     expect(markup).toContain('选择文件夹')

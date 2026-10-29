@@ -444,6 +444,8 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   private readonly seenEvents = new Set<string>()
   private readonly eventContext: FeishuEventContext = { p2pChats: new Map() }
   private lastStatus: RemoteChannelStatus = { state: 'stopped' }
+  /** 电脑上的时间比飞书快多少，每次连长连接、发消息时拿回应里的时间重估（RemoteInbound.clockAheadMs）。 */
+  private clockAheadMs: number | undefined
 
   constructor(
     private readonly deps: RemoteChannelDependencies,
@@ -502,6 +504,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         maxResponseBytes,
         label,
       })
+      this.noteServerTime(response.serverTime)
       const payload = isRecord(response.payload) ? response.payload : {}
       const code = numberField(payload.code)
       if (code === 0) return
@@ -512,6 +515,10 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
       this.deps.log('warn', 'feishu.send-failed', { status: response.status, code })
       throw new Error(`飞书没有发出这条消息（错误码 ${code ?? response.status}）`)
     }
+  }
+
+  private noteServerTime(serverTime: number | undefined): void {
+    if (serverTime !== undefined) this.clockAheadMs = this.deps.now() - serverTime
   }
 
   private setStatus(status: RemoteChannelStatus): void {
@@ -580,6 +587,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         label,
         signal: controller.signal,
       })
+      this.noteServerTime(response.serverTime)
       result = parseFeishuEndpointResponse(response.status, response.payload)
     } catch (error) {
       if (generation !== this.generation) return
@@ -785,8 +793,9 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
       }
     }
     if (!parsed.inbound) return
+    const inbound = this.clockAheadMs === undefined ? parsed.inbound : { ...parsed.inbound, clockAheadMs: this.clockAheadMs }
     try {
-      this.handlers?.onInbound(parsed.inbound)
+      this.handlers?.onInbound(inbound)
     } catch {
       this.deps.log('error', 'feishu.inbound-handler-failed')
     }
