@@ -553,19 +553,25 @@ describe('createAiVideoService', () => {
     try {
       const tasks = new AiVideoTaskStore({ rootDirectory: root })
       let seenOnDisk: unknown
+      // 直接等假 fetch 读完盘本身，不用 vi.waitFor 的 1 秒轮询：发请求前要先把这条记录原子写进盘，
+      // Windows CI 上一次就要几百毫秒（同一个文件 #1536 的 vitest-2 撞过 1 秒）。
+      let sent!: () => void
+      const posted = new Promise<void>((resolve) => { sent = resolve })
       const fetchImpl = vi.fn(async (_input: URL | RequestInfo, init?: RequestInit) => {
         // A fresh store reads only the file, as the next launch would after the app was killed here.
         seenOnDisk = await new AiVideoTaskStore({ rootDirectory: root }).findUnconfirmed(7, 'shot-killed')
         return new Promise<Response>((_resolve, reject) => {
           init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+          sent()
         })
       }) as unknown as typeof fetch
       const { service } = setup(fetchImpl, { tasks })
       const pending = service.generate(41, {
         requestId: 'shot-killed', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
       })
-      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
-      await vi.waitFor(() => expect(seenOnDisk).toMatchObject({ requestId: 'shot-killed' }))
+      await posted
+      expect(fetchImpl).toHaveBeenCalledOnce()
+      expect(seenOnDisk).toMatchObject({ requestId: 'shot-killed' })
       // 「停止」 mid-submit leaves the same answer behind.
       expect(service.cancel(41, 'shot-killed', 7)).toEqual({ canceled: true, mayStillComplete: true })
       await expect(pending).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
@@ -793,10 +799,17 @@ describe('createAiVideoService', () => {
           return credential
         }),
       }
+      // 直接等第二单的付费请求发出去本身，不用 vi.waitFor 的 1 秒轮询：发之前要先把这 199 条的记录
+      // 原子写一次盘，Windows CI 上一次就要几百毫秒（同一个文件 #1536 的 vitest-2 撞过 1 秒）。
       let resolvePost!: (response: Response) => void
+      let posted!: () => void
+      const postSent = new Promise<void>((resolve) => { posted = resolve })
       const fetchImpl = vi.fn((input: URL | RequestInfo, init?: RequestInit) => {
         if (init?.method === 'POST') {
-          return new Promise<Response>((resolve) => { resolvePost = resolve })
+          return new Promise<Response>((resolve) => {
+            resolvePost = resolve
+            posted()
+          })
         }
         return Promise.resolve(String(input).endsWith('/content')
           ? mp4Response()
@@ -822,7 +835,8 @@ describe('createAiVideoService', () => {
       const second = service.generate(42, {
         requestId: 'fast-credential', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
       })
-      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce())
+      await postSent
+      expect(fetchImpl).toHaveBeenCalledOnce()
 
       resolveFirstCredential(credential)
       await firstRejected
@@ -899,10 +913,15 @@ describe('createAiVideoService', () => {
           : jsonResponse({ id: 'video_prompted', status: 'queued' })
       )) as unknown as typeof fetch
       const { service } = setup(fetchImpl, { tasks })
+      // 直接等「处理中」本身（任务一记进盘就报），不用 vi.waitFor 的 1 秒轮询：发请求前后各有一次
+      // 原子写，Windows CI 上一次就要几百毫秒（同一个文件 #1536 的 vitest-2 撞过 1 秒）。
+      let recorded!: () => void
+      const processing = new Promise<void>((resolve) => { recorded = resolve })
       const pending = service.generate(41, {
         requestId: 'prompted', group: 'grok', model: 'grok-imagine-video', prompt: ' 海边的黄昏 ', seconds: '5',
-      })
-      await vi.waitFor(async () => expect(await tasks.list(7)).toHaveLength(1))
+      }, { onStage: (stage) => { if (stage === 'processing') recorded() } })
+      await processing
+      expect(await tasks.list(7)).toHaveLength(1)
       expect((await tasks.list(7))[0]).toMatchObject({ taskId: 'video_prompted', prompt: '海边的黄昏' })
       service.cancel(41, 'prompted')
       await expect(pending).rejects.toThrow(/视频/)
@@ -1332,10 +1351,15 @@ describe('createAiVideoService', () => {
       const tasks = new AiVideoTaskStore({ rootDirectory: root })
       const submit = vi.fn(async () => jsonResponse({ id: 'video_closed', status: 'queued' })) as unknown as typeof fetch
       const first = setup(submit, { tasks })
+      // 直接等「处理中」本身（任务一记进盘就报），不用 vi.waitFor 的 1 秒轮询：发请求前后各有一次
+      // 原子写，Windows CI 上一次就要几百毫秒，#1536 的 vitest-2 在这里撞过 1 秒。
+      let recorded!: () => void
+      const processing = new Promise<void>((resolve) => { recorded = resolve })
       const pending = first.service.generate(41, {
         requestId: 'shot-request', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
-      })
-      await vi.waitFor(async () => expect(await tasks.list(7)).toHaveLength(1))
+      }, { onStage: (stage) => { if (stage === 'processing') recorded() } })
+      await processing
+      expect(await tasks.list(7)).toHaveLength(1)
       // Closing the window ends the wait; the paid task stays for the next launch.
       expect(first.service.cancelSender(41)).toBe(1)
       await expect(pending).rejects.toThrow('服务端可能仍在生成视频')
