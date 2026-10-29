@@ -74,7 +74,7 @@ describe('redactCrashText', () => {
   // Before, each one read the rest of the run again looking for `@` or for a
   // domain ending, which took seconds here.
   it('scans a long run of address characters in linear time', () => {
-    const runs = ['a'.repeat(100_000), 'AbC123xyz_%'.repeat(10_000)]
+    const runs = ['a'.repeat(100_000), 'AbC123xyz_%'.repeat(10_000), 'a.b-c_d%e+f1'.repeat(8_000)]
     const started = performance.now()
     for (const run of runs) {
       expect(redactCrashText(run, '')).toBe(run)
