@@ -1172,7 +1172,7 @@ describe('codex-remote-service approvals', () => {
       .toEqual({ decision: 'decline' })
     expect(approvalsSent(channel)).toHaveLength(0)
     const next = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i4' })
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0].approvalId).toBe('1')
     expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2)
     channel.handlers?.onInbound(text(alice, '拒绝'))
@@ -1190,7 +1190,7 @@ describe('codex-remote-service approvals', () => {
       reason: '要下载依赖',
       networkApprovalContext: npmRegistry,
     }, 'a')
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    await approvalCardsSent(channel, 1)
     expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
     expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nregistry.npmjs.org\n原因：要下载依赖\n回「同意 1」或「拒绝 1」。')
     channel.handlers?.onInbound(text(alice, '同意'))
@@ -1202,7 +1202,7 @@ describe('codex-remote-service approvals', () => {
       kind: 'writeStdin',
       command: 'write_stdin --session-id 3 yes',
     }, 'b')
-    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(2))
+    await approvalCardsSent(channel, 2)
     expect(approvalsSent(channel)[1]).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes' })
     expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\nwrite_stdin --session-id 3 yes\n'))).toBe(true)
     channel.handlers?.onInbound(text(alice, '拒绝'))
