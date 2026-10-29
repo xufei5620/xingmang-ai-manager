@@ -54,9 +54,9 @@ describe('codex remote view', () => {
   it('names the missing step before the switch can be turned on', () => {
     expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '先在上面填好飞书应用。')).toBe('先在上面填好飞书应用。')
     expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel(), '先在上面填好飞书应用。')).toBe('先在上面选好干活的文件夹。')
-    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。关掉星芒就断开，下次打开星芒要再打开一次；闲着 4 小时也会自动断开。')
+    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。')).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 4 小时也会自动断开。')
     // 开着的时候不再说「先填」：关掉的说法要一直看得到。
-    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel({ enabled: true }), '先在上面填好飞书应用。')).toContain('关掉星芒就断开')
+    expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel({ enabled: true }), '先在上面填好飞书应用。')).toContain('退出星芒才断开')
   })
 
   it('names the bound person by nickname and id tail, or by the tail alone', () => {
