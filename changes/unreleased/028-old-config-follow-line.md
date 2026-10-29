@@ -5,7 +5,7 @@
 
 ## 开发
 
-- 三线路方案的 C8 前半（`docs/DIRECT-ROUTE-THREE-LINES.md` 4.3 节）：来源记录 0.2.6 才开始写，0.2.5 及更早替客户写的
+- 三线路方案的 C8 前半（`docs/DIRECT-ROUTE-THREE-LINES.md` 4.3 节，10-29 yoyo 亲手打字同意）：来源记录 0.2.6 才开始写，0.2.5 及更早替客户写的
   工具配置没有记录（或只有不认账号的 v1 记录），首页凭 `configurationAccountMatched` 显示「已连接」，开机对账和换线的
   定点改写（`tool-route-follow-service.ts`）却因来源不是 account 一直跳过，地址停在线路1。现在来源读成 `unknown`、
   记录上没写过 `manual`、连着本站、有 Key、Codex 不是 ChatGPT 登录（`permitsUnrecordedRouteFollow`），而且 Key 正是
