@@ -59,7 +59,9 @@ import { isRecord } from './input-guards'
 //   no full-access mode and no way to run a shell command directly.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
 // - A permission request is only put to the user when every part of it fits on
-//   the card, and "accept" grants exactly the paths the card listed.
+//   the card, and "accept" grants exactly the paths the card listed. A command
+//   (or terminal input, or website) is only put to the user when the card shows
+//   it whole; one that would be cut short is declined without asking.
 // - Approval numbers keep counting across restarts, and every button carries a
 //   per-request random nonce: a card left in the chat history from an earlier
 //   request or an earlier run can never answer a newer one.
@@ -301,6 +303,42 @@ export function permissionsShowInFull(permissions: unknown, options: ApprovalDis
   return requested !== null && redactRemoteText(describePermissions(requested, options), options).length <= maxSummaryLength
 }
 
+export type CommandApprovalKind = Extract<RemoteApprovalKind, 'command' | 'terminal-input' | 'network'>
+
+/**
+ * Codex 的 commandExecution 审批分三种（对过 0.164.0）：跑命令；往已经开着的程序里输入（kind 是 writeStdin，
+ * command 是 write_stdin 加要输入的内容）；连网站（带 networkApprovalContext，这时 command、cwd 都是空的）。
+ */
+export function commandApprovalKind(params: Record<string, unknown>): CommandApprovalKind {
+  if (networkApprovalHost(params)) return 'network'
+  return params.kind === 'writeStdin' ? 'terminal-input' : 'command'
+}
+
+function networkApprovalHost(params: Record<string, unknown>): string | null {
+  return isRecord(params.networkApprovalContext) ? stringField(params.networkApprovalContext.host) : null
+}
+
+function isCommandApprovalKind(kind: RemoteApprovalKind): kind is CommandApprovalKind {
+  return kind === 'command' || kind === 'terminal-input' || kind === 'network'
+}
+
+/** 命令那三种审批卡片上的正文：命令原文、Codex 给的 write_stdin 原样、要连的网址。 */
+function commandApprovalSummary(kind: CommandApprovalKind, params: Record<string, unknown>): string {
+  return (kind === 'network' ? networkApprovalHost(params) : stringField(params.command)) ?? ''
+}
+
+export type CommandDisplay = 'full' | 'too-long' | 'blank'
+
+/**
+ * 命令那三种审批能不能在手机上一字不落地显示出来（#1407 P3-2）。跟权限申请一样，显示不全就不问人：
+ * 截掉的尾巴可能正是要命的那一截，点「同意」的人根本没看到它。什么都显示不出来的也不问。
+ */
+export function inspectCommandDisplay(kind: CommandApprovalKind, params: Record<string, unknown>, options: ApprovalDisplayOptions): CommandDisplay {
+  const summary = redactRemoteText(commandApprovalSummary(kind, params), options)
+  if (!summary.trim()) return 'blank'
+  return summary.length <= maxSummaryLength ? 'full' : 'too-long'
+}
+
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
 export function buildApprovalRequest(
   approvalId: string,
@@ -316,7 +354,7 @@ export function buildApprovalRequest(
     platform: options.platform,
   })
   let summary = ''
-  if (kind === 'command') summary = stringField(params.command) ?? ''
+  if (isCommandApprovalKind(kind)) summary = commandApprovalSummary(kind, params)
   else if (kind === 'file-change') {
     const lines = changedFiles.slice(0, maxFileLines).map((file) => displayPath(file, options))
     if (changedFiles.length > maxFileLines) lines.push(`另外还有 ${changedFiles.length - maxFileLines} 个文件`)
@@ -1270,7 +1308,7 @@ export class CodexRemoteService {
   private async onServerRequest(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case 'item/commandExecution/requestApproval':
-        return { decision: await this.requestApproval('command', params) }
+        return { decision: await this.requestApproval(isRecord(params) ? commandApprovalKind(params) : 'command', params) }
       case 'item/fileChange/requestApproval':
         return { decision: await this.requestApproval('file-change', params) }
       case 'item/permissions/requestApproval': {
@@ -1333,6 +1371,15 @@ export class CodexRemoteService {
       // 手机上显示不全的权限申请不问人：问了，客户点的「同意」也不是对着他看到的那些点的。
       this.options.log('info', 'remote.permissions-refused', { channel: runtime.id })
       if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
+      return 'decline'
+    }
+    const commandDisplay = isCommandApprovalKind(kind) ? inspectCommandDisplay(kind, params, display) : 'full'
+    if (commandDisplay !== 'full') {
+      // 同上：只显示得出前一截的命令不问人。空的是 Codex 没给要跑什么，手机上没什么可解释的，只记日志。
+      this.options.log('info', 'remote.command-refused', { channel: runtime.id, kind, reason: commandDisplay })
+      if (commandDisplay === 'too-long' && !this.disposed && runtime.turn === turn && !turn.stoppedByUser) {
+        void this.sendText(runtime, remoteMessages.commandRefused)
+      }
       return 'decline'
     }
     const id = await this.allocateApprovalId()
