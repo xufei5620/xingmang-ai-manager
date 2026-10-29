@@ -16,7 +16,7 @@ import { canvasNodeMediaKind } from '../library/node-model-availability'
 import { imageTransformRecipeForNode, imageTransformRecipeNeedsSources, isImageTransformNodeKind } from '../image-tools/recipe'
 import type { CanvasRunGraph } from '../host'
 import type { PortKind, WorkflowFile, WorkflowNode } from '../model'
-import { buildCanvasRunPreflight } from '../runtime/run-preflight'
+import { buildCanvasRunPreflight, dramaParseMaximumRequestCount } from '../runtime/run-preflight'
 import { canvasImageInputCardinality, canvasImageTransformInputErrors } from '../runtime/image-input-cardinality'
 import { parseNodeTileInput } from '../image-tools/tile-input'
 import { assertCanvasTileInput } from '../runtime/tile-run-input'
@@ -151,7 +151,7 @@ export function analyzeWorkshopReadiness(workflow: WorkflowFile, context: { vide
       try {
         const imageCount = parseImageCandidateCount(node.data.imageCandidateCount, node.kind)
         const videoCount = parseVideoCandidateCount(node.data.videoCandidateCount, node.kind)
-        const count = videoCount ?? imageCount ?? 1
+        const count = videoCount ?? imageCount ?? (node.kind === 'drama-parse' ? dramaParseMaximumRequestCount : 1)
         row.maximumRequestCount = count
         requestCounts[modelPurpose] += count
       } catch (error) { need('configuration', error instanceof Error ? error.message : '请核对生成数量') }

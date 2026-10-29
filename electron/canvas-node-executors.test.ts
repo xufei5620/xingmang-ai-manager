@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { executeCanvasRun } from './canvas-run-engine'
 import type { CanvasRunGraph } from './canvas-run-contract'
+import { dramaParseMaximumRequestCount } from '../canvas-v2/src/runtime/run-preflight'
 
 describe('createCanvasNodeExecutors', () => {
   it('delegates image generation through the injected main-process service', async () => {
@@ -574,5 +575,22 @@ describe('createCanvasNodeExecutors', () => {
       signal: new AbortController().signal,
     })).rejects.toThrow('剧本解析失败：无法连接 AI 服务，请检查网络后重试')
     expect(completeOnce).toHaveBeenCalledOnce()
+  })
+
+  // The canvas run confirmation tells the user how many paid requests a drama
+  // parse may cost; asking more often here would make that number a lie.
+  it('never asks a drama parse more often than the synced canvas tells the user it may be billed', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('这不是表格')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })).rejects.toThrow('剧本解析没有返回有效 JSON')
+    expect(completeOnce).toHaveBeenCalledTimes(dramaParseMaximumRequestCount)
   })
 })
