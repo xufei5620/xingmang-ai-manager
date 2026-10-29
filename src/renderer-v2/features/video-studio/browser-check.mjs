@@ -168,12 +168,12 @@ test('explains which clip it cannot read', async () => {
 // —— 视频剪辑页 ——
 // 页面接假的主进程桥（page-fixture.tsx），片段用上面那套现做的纯色视频，拼片走真的后台线程。
 
-async function openStudio() {
+async function openStudio(search = '') {
   const page = await browser.newPage({ viewport: { width: 1100, height: 900 } })
   const errors = []
   page.on('pageerror', (error) => errors.push(error.message))
   await page.route('**/*', async (route) => { if (new URL(route.request().url()).hostname !== '127.0.0.1') return route.abort(); await route.continue() })
-  await openFixturePage(page, `${base}/src/renderer-v2/features/video-studio/page-fixture.html`,
+  await openFixturePage(page, `${base}/src/renderer-v2/features/video-studio/page-fixture.html${search}`,
     (timeout) => page.getByTestId('video-idea-input').waitFor({ timeout }), { label: 'video studio page' })
   // 模型表读完、两个模型都落定了才算打开好。
   await page.locator('[data-testid="video-text-model"][data-model="gpt-5.6-sol"]').waitFor()
@@ -559,6 +559,23 @@ test('makes every queued clip with the model the person confirmed, even if the m
   assert.deepEqual(generated.map((input) => [input.prompt, input.model, input.seconds]), [['一', 'grok-imagine-video', '6'], ['二', 'grok-imagine-video', '6'], ['三', 'grok-imagine-video', '6'], ['四', 'grok-imagine-video', '6']])
   assert.deepEqual(errors, [])
   await page.close()
+})
+
+// #1406 P2-1：确认框「每段单独计费」后面报当前余额（yoyo 回「余额改」）。读不到余额不写这句；仓库里的余额是别的账号的（换账号那一下）也不写。
+test('tells the current balance when confirming clips, and leaves it out when there is none for this account', async () => {
+  const plain = '用「grok-imagine-video-1.5」生成 2 段、每段 6 秒，每段单独计费。'
+  for (const [search, sentence] of [['?balance=1234.5', `${plain}当前余额 $1,234.50。`], ['', plain], ['?balance=1234.5&balanceScope=xm-account:8', plain]]) {
+    const { page, errors } = await openStudio(search)
+    // 仓库读回来以后再看确认框，别让「还没读到」把「别的账号的不报」那一种蒙混过去。
+    if (search) await page.waitForFunction(() => window.videoStudioPage.balance() === 1234.5)
+    await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
+    await page.getByTestId('video-generate-all').click()
+    const confirm = page.getByTestId('video-confirm')
+    await confirm.getByText(sentence, { exact: true }).waitFor()
+    assert.equal(await confirm.getByText('当前余额').count(), sentence === plain ? 0 : 1, search)
+    assert.deepEqual(errors, [])
+    await page.close()
+  }
 })
 
 // 审查清单 严重-1 后半：「暂时查不到进度」这类失败时服务端多半还在出，点重新生成先拿原来的请求号接回，接不回来才再花钱。

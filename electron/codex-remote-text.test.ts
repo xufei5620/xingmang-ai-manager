@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalTitle,
   formatApprovalText,
   normalizePairingAttempt,
   parseRemoteCommand,
@@ -89,6 +90,14 @@ describe('codex-remote-text', () => {
     expect(text).toContain('npm test')
     expect(text).toContain('在：~/project')
     expect(text).toContain('回「同意 2」或「拒绝 2」')
+  })
+
+  it('titles each kind of approval for what Codex wants to do', () => {
+    expect(approvalTitle('command')).toBe('Codex 想运行命令')
+    expect(approvalTitle('terminal-input')).toBe('Codex 想往正在运行的程序里输入')
+    expect(approvalTitle('network')).toBe('Codex 想连网站')
+    expect(formatApprovalText({ approvalId: '4', nonce: 'nonce-of-four', kind: 'network', summary: 'registry.npmjs.org' }))
+      .toBe('Codex 想连网站（第 4 条）：\nregistry.npmjs.org\n回「同意 4」或「拒绝 4」。')
   })
 
   it('describes the current state', () => {

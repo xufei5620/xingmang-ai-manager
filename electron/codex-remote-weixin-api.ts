@@ -107,6 +107,8 @@ export interface WeixinUpdates {
   messages: WeixinInboundMessage[]
   cursor: string
   nextLongPollMs: number
+  /** 这次回应里 Date 头的时间（毫秒），拿来估电脑上的时间准不准；没有或等超时了不填。 */
+  serverTime?: number
 }
 
 /**
@@ -452,6 +454,7 @@ export async function fetchWeixinUpdates(
     messages,
     cursor: nextCursor || cursor,
     nextLongPollMs: payload.longpolling_timeout_ms === undefined ? longPollMs : clampWeixinLongPollMs(payload.longpolling_timeout_ms),
+    ...(response.serverTime !== undefined ? { serverTime: response.serverTime } : {}),
   }
 }
 
