@@ -136,9 +136,15 @@ describe('CanvasProjectAssetManager', () => {
       global: context(globalOutput, 2),
       create: context,
     })
+    // 直接等发请求和停止后收尾这两个回调本身，不用 vi.waitFor 的 1 秒轮询：发请求前要
+    // 先探一次能不能写，收尾要存图、打标签，都是带刷盘的原子写，Windows CI 上撞过
+    // 1 秒（#1515、#1534 的 vitest-3）。
     let answer!: (value: Response) => void
+    let requested!: () => void
+    const dispatched = new Promise<void>((resolve) => { requested = resolve })
     let userId = 7
     const finished = vi.fn()
+    const finishedAfterStop = new Promise((resolve) => { finished.mockImplementation(resolve) })
     const service = createAiImageService({
       baseUrl: 'https://xm.solov.cc',
       credentials: {
@@ -146,7 +152,10 @@ describe('CanvasProjectAssetManager', () => {
           userId, group, models: ['gpt-image-2'], keyCreated: false, apiKey: 'sk-test-only', keyId: 1, keyName: 'image',
         })),
       },
-      fetchImpl: vi.fn(() => new Promise<Response>((resolve) => { answer = resolve })) as unknown as typeof fetch,
+      fetchImpl: vi.fn(() => new Promise<Response>((resolve) => {
+        answer = resolve
+        requested()
+      })) as unknown as typeof fetch,
       finishDispatchedAfterStop: true,
       onFinishedAfterStop: finished,
       assets: {
@@ -161,14 +170,15 @@ describe('CanvasProjectAssetManager', () => {
     const pending = service.generate(4, {
       requestId: 'canvas-run:paid', group: '图片模型', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
     })
-    await vi.waitFor(() => expect(answer).toBeTypeOf('function'))
+    await dispatched
     expect(service.cancelSender(4)).toBe(1)
     await expect(pending).rejects.toThrow('已停止等待')
 
     // Another account signs in before the answer arrives.
     userId = 9
     answer(new Response(JSON.stringify({ data: [{ b64_json: png.slice(png.indexOf(',') + 1) }] }), { status: 200 }))
-    await vi.waitFor(() => expect(finished).toHaveBeenCalledWith({ requestId: 'canvas-run:paid', stored: 1 }))
+    await expect(finishedAfterStop).resolves.toEqual({ requestId: 'canvas-run:paid', stored: 1 })
+    expect(finished).toHaveBeenCalledTimes(1)
 
     const paying = await manager.forProject(7, projectId)
     await expect(paying.media.listOwnedPage(7)).resolves.toMatchObject({
