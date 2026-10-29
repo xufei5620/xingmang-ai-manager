@@ -24,11 +24,11 @@ import { nodeVersionStatus } from './versions'
  * 拆分 ②）。做法照 Mac（macos-node-runtime.ts）：不提权、不开终端，只把官方 Linux 压缩包
  * 解到产品目录下的 Runtime/node（managed-cli-paths.ts，`~/.local/share/XingMangAI`）。
  *
- * 和 Mac 不同的两处：
- * - 软件内 PATH 里这一份排在最前（linux-platform.ts）。它只在电脑上没有能用的 Node.js 时
- *   才会被装上，而 Ubuntu 22.04/24.04、Debian 12 软件源里那份都低于工具要的版本，排在后面
- *   就永远轮不到它，「准备 Node.js」点了等于没点。
- * - 版本和校验值钉死在下面，不像 Mac 那样每次查最新稳定版。理由见 Trust chain 第 2 条。
+ * 和 Mac 不同的一处：软件内 PATH 里这一份排在最前（linux-platform.ts）。它只在电脑上没有
+ * 能用的 Node.js 时才会被装上，而 Ubuntu 22.04/24.04、Debian 12 软件源里那份都低于工具要的
+ * 版本，排在后面就永远轮不到它，「准备 Node.js」点了等于没点。
+ *
+ * 版本和校验值钉死在下面，Mac 那份（S02 起）也一样、两边同一版。理由见 Trust chain 第 2 条。
  *
  * Trust chain, in order:
  * 1. The archive comes only from nodejs.org or npmmirror's fixed Node mirror, with redirects
@@ -46,7 +46,7 @@ import { nodeVersionStatus } from './versions'
  *    fixes every member before extraction starts.
  * 4. The extracted binary must report exactly the pinned version.
  *
- * 升级版本：改下面两个常量。摘要从 https://nodejs.org/dist/<版本>/SHASUMS256.txt.asc 抄
+ * 升级版本：改下面两个常量，跟 macos-node-runtime.ts 一起抬。摘要从 https://nodejs.org/dist/<版本>/SHASUMS256.txt.asc 抄
  * `node-<版本>-linux-x64.tar.gz` 与 `node-<版本>-linux-arm64.tar.gz` 两行，抄之前先用
  * https://github.com/nodejs/release-keys 的公钥核过签名（gpgv --keyring pubring.kbx …）。
  * 用 .tar.gz 不用 .tar.xz：解压只用到系统必带的 gzip，不依赖 xz。

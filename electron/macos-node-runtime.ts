@@ -10,19 +10,16 @@ import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { managedNodeRuntimeBinDirectory, managedNodeRuntimeRoot, managedProductRoot } from './managed-cli-paths'
 import {
   downloadNodeRuntimePackage,
-  fetchNodeRuntimeText,
   nodeRuntimeDownloadSources,
+  nodeRuntimePackageFileName,
   nodeRuntimeSourceUrl,
   normalizeNodeRuntimeArchitecture,
-  parseNodeReleaseIndex,
-  parseNodeShasums,
   resolveNodeRuntimeNetworkRegion,
   type InstallNodeRuntimeOptions,
   type NodeRuntimeArchitecture,
   type NodeRuntimeDownloadSource,
   type NodeRuntimeInstallProgress,
   type NodeRuntimeInstallResult,
-  type NodeRuntimeRelease,
 } from './node-runtime'
 import { assertPlainDirectory, ensureTrustedDirectory } from './trusted-temp'
 import { nodeVersionStatus } from './versions'
@@ -36,17 +33,43 @@ import { nodeVersionStatus } from './versions'
  * （macos-platform.ts 的 darwinCommandPathCandidates），客户自己装过的优先；只有他那份
  * 太旧时，本软件自己干活才改用这一份（resolveDarwinPreferredNodeDirectory，第三十四批 A）。
  *
+ * 版本和校验值钉死在下面，和 Linux 一样（S02，yoyo 2026-10-29 回「照Linux」）：整个压缩包
+ * 认的是代码里这一份校验值，不是下载源给的。理由见 Trust chain 第 2、3 条。
+ *
  * Trust chain, in order:
  * 1. The archive comes only from nodejs.org or npmmirror's fixed Node mirror, with
  *    redirects pinned to the same resource (node-runtime.ts fetchTrustedNodeResource).
- * 2. Its SHA-256 must match the one line for this exact file in SHASUMS256.txt.
- * 3. SHASUMS256.txt from a mirror is only as honest as the mirror, which is why the
- *    Windows MSI is additionally checked for its Authenticode publisher. The macOS
- *    counterpart is the Developer ID signature on bin/node, decided by codesign's exit
+ * 2. Its SHA-256 must equal the digest pinned below for this architecture. The pin was
+ *    copied from the release's OpenPGP-signed SHASUMS256.txt.asc after checking the
+ *    signature against nodejs/release-keys, so trust sits in code review and the mirror
+ *    only supplies bytes. A SHASUMS256.txt fetched next to the bytes would only be as
+ *    honest as the mirror serving both.
+ * 3. The Developer ID signature on bin/node is still checked, decided by codesign's exit
  *    status against a designated requirement pinned to the Node.js team identifier
- *    (macos-code-signing.ts explains why the printed text proves nothing).
- * 4. The extracted binary must report exactly the version that was selected.
+ *    (macos-code-signing.ts explains why the printed text proves nothing). It is not a
+ *    substitute for step 2: a signature vouches for the signed binary alone, and the
+ *    pinned digest is what covers everything else in the archive.
+ * 4. The extracted binary must report exactly the pinned version.
+ *
+ * 升级版本：改下面两个常量，跟 linux-node-runtime.ts 一起抬（测试钉住两边同一版）。摘要从
+ * https://nodejs.org/dist/<版本>/SHASUMS256.txt.asc 抄 `node-<版本>-darwin-x64.tar.gz` 与
+ * `node-<版本>-darwin-arm64.tar.gz` 两行，抄之前先用 https://github.com/nodejs/release-keys
+ * 的公钥核过签名（gpgv --keyring pubring.kbx …）。
  */
+export const darwinNodeRuntimeVersion = 'v24.22.1'
+const darwinNodeRuntimeSha256: Readonly<Record<NodeRuntimeArchitecture, string>> = {
+  x64: 'd132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035',
+  arm64: '89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7',
+}
+
+export interface DarwinNodeRuntimeRelease {
+  version: string
+  sha256: string
+}
+
+export function darwinNodeRuntimePinnedRelease(architecture: NodeRuntimeArchitecture): DarwinNodeRuntimeRelease {
+  return { version: darwinNodeRuntimeVersion, sha256: darwinNodeRuntimeSha256[architecture] }
+}
 
 /** Apple Developer team that signs the official Node.js macOS binaries. */
 export const nodeRuntimeDarwinTeamIdentifier = 'HX7739G8FX'
@@ -63,6 +86,8 @@ export interface DarwinNodeRuntimeProcess {
 
 export interface DarwinNodeRuntimeDependencies {
   runProcess(plan: DarwinNodeRuntimeProcess, signal?: AbortSignal): Promise<CommandResult>
+  /** Test seam; production always uses the pinned release above. */
+  pinnedRelease(architecture: NodeRuntimeArchitecture): DarwinNodeRuntimeRelease
 }
 
 export interface InstallDarwinNodeRuntimeOptions extends InstallNodeRuntimeOptions {
@@ -167,40 +192,20 @@ type FailureStage = 'network' | 'verify'
 async function installFromSource(
   source: NodeRuntimeDownloadSource,
   architecture: NodeRuntimeArchitecture,
+  release: DarwinNodeRuntimeRelease,
   staging: string,
   target: string,
   options: InstallDarwinNodeRuntimeOptions,
   fetchImplementation: typeof globalThis.fetch,
   runProcess: DarwinNodeRuntimeDependencies['runProcess'],
   stage: { current: FailureStage },
-): Promise<NodeRuntimeRelease> {
+): Promise<void> {
   stage.current = 'network'
-  report(options, {
-    phase: 'resolving',
-    source: source.id,
-    message: `正在从${source.label}查询 Node.js 最新稳定版`,
-    percent: null,
-  })
-  const index = await fetchNodeRuntimeText(
-    fetchImplementation,
-    nodeRuntimeSourceUrl(source.baseUrl, 'index.json'),
-    'index',
-    options.signal,
-  )
-  const release = parseNodeReleaseIndex(index, architecture, 'darwin-archive')
-  if (!release) throw new Error(`${source.label}没有适合这台 Mac 的 Node.js 稳定版`)
-  const checksums = await fetchNodeRuntimeText(
-    fetchImplementation,
-    nodeRuntimeSourceUrl(source.baseUrl, `${release.version}/SHASUMS256.txt`),
-    'checksums',
-    options.signal,
-  )
-  const expectedSha256 = parseNodeShasums(checksums, release.fileName)
-  if (!expectedSha256) throw new Error(`${source.label}的校验清单里没有这个压缩包`)
+  const fileName = nodeRuntimePackageFileName(release.version, architecture, 'darwin-archive')
   // 每个下载源一个子目录：前一个源失败留下的半截文件不会和这一次混在一起。
   const sourceDirectory = path.join(staging, source.id)
   await fs.promises.mkdir(sourceDirectory, { mode: 0o700 })
-  const archivePath = path.join(sourceDirectory, release.fileName)
+  const archivePath = path.join(sourceDirectory, fileName)
   report(options, {
     phase: 'downloading',
     source: source.id,
@@ -209,7 +214,7 @@ async function installFromSource(
   })
   const download = await downloadNodeRuntimePackage(
     fetchImplementation,
-    nodeRuntimeSourceUrl(source.baseUrl, `${release.version}/${release.fileName}`),
+    nodeRuntimeSourceUrl(source.baseUrl, `${release.version}/${fileName}`),
     archivePath,
     options,
     source,
@@ -217,7 +222,7 @@ async function installFromSource(
 
   stage.current = 'verify'
   report(options, { phase: 'verifying', source: source.id, message: '正在核对文件', percent: null })
-  if (download.sha256 !== expectedSha256) throw new Error('下载的 Node.js 压缩包和官方校验值对不上')
+  if (download.sha256 !== release.sha256) throw new Error('下载的 Node.js 压缩包和官方校验值对不上')
 
   report(options, { phase: 'installing', source: source.id, message: '正在解压 Node.js', percent: null })
   const extractDirectory = path.join(sourceDirectory, 'extract')
@@ -254,7 +259,6 @@ async function installFromSource(
   }
 
   await replaceDarwinNodeRuntime(extracted, target, staging)
-  return release
 }
 
 /**
@@ -275,6 +279,7 @@ export async function installDarwinNodeRuntime(
   options: InstallDarwinNodeRuntimeOptions,
 ): Promise<NodeRuntimeInstallResult> {
   const architecture = normalizeNodeRuntimeArchitecture(options.architecture ?? process.arch)
+  const release = (options.darwin?.pinnedRelease ?? darwinNodeRuntimePinnedRelease)(architecture)
   const environment = options.environment ?? process.env
   const fetchImplementation = options.dependencies?.fetch ?? globalThis.fetch
   const runProcess = options.darwin?.runProcess ?? defaultRunProcess
@@ -295,9 +300,10 @@ export async function installDarwinNodeRuntime(
       throwIfAborted(options.signal)
       const stage: { current: FailureStage } = { current: 'network' }
       try {
-        const release = await installFromSource(
+        await installFromSource(
           source,
           architecture,
+          release,
           staging,
           target,
           options,

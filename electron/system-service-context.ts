@@ -196,7 +196,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
   // macOS 上不跑 Windows 那套 winget / MSI：把官方压缩包解进本软件自己的文件夹（第十六批 2）。
-  // Linux 同理，只是版本和校验值钉在软件里（linux-node-runtime.ts，Linux 版拆分 ②）。
+  // Linux 同理（linux-node-runtime.ts，Linux 版拆分 ②）；两边的版本和校验值都钉在软件里（S02）。
   const installNodeRuntimeForService = serviceOptions.installNodeRuntime
     ?? (platform === 'darwin'
       ? installDarwinNodeRuntime
