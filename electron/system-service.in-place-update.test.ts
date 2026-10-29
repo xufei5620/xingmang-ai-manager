@@ -56,6 +56,8 @@ interface InPlaceUpdateOptions {
   resolutionFails?: (registry: string) => Error | undefined
   /** 这次下载走在加速线路上。 */
   accelerated?: boolean
+  /** 手机遥控放开它那份 Codex 时做的事（#1407 P3-3）：缺省放开得了。 */
+  releaseCodexRemote?: SystemServiceOptions['releaseCodexRemote']
 }
 
 // 有推荐版本就装推荐版本，名单空了才落回 latest（这里的假元数据把 latest 答成 9.9.9）。
@@ -169,6 +171,7 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
   }))
 
   const commands: string[] = []
+  const releases: Array<{ action: string; commandsBefore: number }> = []
   // npm install --global --offline 只能从这次 npm ci 填好的缓存里装：下载时缺了平台主程序包，写进去的也缺。
   const downloadsWithPlatformBuild = new Set<string>()
   const waiters: Array<{ ready: () => boolean, resolve: () => void }> = []
@@ -293,9 +296,14 @@ function createInPlaceUpdateFixture(options: InPlaceUpdateOptions) {
       ...(options.accelerated
         ? { acquireDownloadAcceleration: async () => ({ endpoint: null, accelerated: true, release: async () => undefined }) }
         : {}),
+      releaseCodexRemote: async (action) => {
+        // 记下这时已经跑过几条 npm：放开要在下载之前。
+        releases.push({ action, commandsBefore: commands.length })
+        await options.releaseCodexRemote?.(action)
+      },
     },
   )
-  return { service, target, runtimeLog, commands, reached, installedVersion, livePackage }
+  return { service, target, runtimeLog, commands, releases, reached, installedVersion, livePackage }
 }
 
 function progressMessages(target: { send: ReturnType<typeof vi.fn> }) {
@@ -414,6 +422,44 @@ describe.runIf(process.platform !== 'win32')('updating a CLI in place on Windows
     expect((error as Error).message).toContain('安装已取消')
     expect(fixture.commands).toEqual([`download ${officialRegistry}`])
     expect(fixture.installedVersion()).toBe(previousVersion)
+  })
+
+  // #1407 P3-3：手机遥控开着的那份 Codex 锁着这个目录。放开它要在一个字节都没下之前，挡下来时旧版原样能用。
+  it('lets the remote control release its Codex before anything is downloaded', async () => {
+    const fixture = createInPlaceUpdateFixture({ provider: 'codex' })
+
+    await fixture.service.installCli('codex', fixture.target)
+
+    expect(fixture.releases).toEqual([{ action: 'update', commandsBefore: 0 }])
+    expect(fixture.commands).toEqual([`download ${officialRegistry}`, `write ${officialRegistry}`])
+    expect(fixture.installedVersion()).toBe(expectedVersion('codex'))
+  })
+
+  it('leaves Codex as it was when the remote control is still using it', async () => {
+    const busy = '手机遥控里的 Codex 正在干活，等它做完再更新，或者先在设置里关掉手机遥控。'
+    const fixture = createInPlaceUpdateFixture({
+      provider: 'codex',
+      releaseCodexRemote: async () => { throw new Error(busy) },
+    })
+
+    const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
+
+    expect(error).toBeInstanceOf(Error)
+    expect((error as Error).message).toBe(busy)
+    // 错误框原样说这句，不配「文件被占用」「连不上」这类标题。
+    expect(classifyOperationError(busy)).toBe('unknown')
+    expect(fixture.releases).toEqual([{ action: 'update', commandsBefore: 0 }])
+    expect(fixture.commands).toEqual([])
+    expect(fixture.installedVersion()).toBe(previousVersion)
+  })
+
+  it('does not bother the remote control when another tool is updated', async () => {
+    const fixture = createInPlaceUpdateFixture({ provider: 'gemini' })
+
+    await fixture.service.installCli('gemini', fixture.target)
+
+    expect(fixture.releases).toEqual([])
+    expect(fixture.commands).toEqual([`download ${officialRegistry}`, `write ${officialRegistry}`])
   })
 
   it('stops at the first source when the folder in use is locked instead of downloading again', async () => {

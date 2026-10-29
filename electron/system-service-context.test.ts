@@ -103,6 +103,23 @@ describe('system service context', () => {
     expect(logged).toEqual([])
   })
 
+  // #1407 P3-3：只有 Windows 锁着正开着的程序文件，遥控也只开 Codex。
+  it('asks the remote control to let go of Codex only before a Codex change on Windows', async () => {
+    const releaseCodexRemote = vi.fn(async () => undefined)
+    const windows = createContext({ platform: 'win32', releaseCodexRemote })
+
+    await windows.releaseRemoteCodex('codex', 'update')
+    await windows.releaseRemoteCodex('codex', 'uninstall')
+    await windows.releaseRemoteCodex('claude', 'update')
+    expect(releaseCodexRemote.mock.calls).toEqual([['update'], ['uninstall']])
+
+    for (const platform of ['darwin', 'linux'] as const) {
+      await createContext({ platform, releaseCodexRemote }).releaseRemoteCodex('codex', 'update')
+    }
+    expect(releaseCodexRemote).toHaveBeenCalledTimes(2)
+    await expect(createContext({ platform: 'win32' }).releaseRemoteCodex('codex', 'update')).resolves.toBeUndefined()
+  })
+
   it('keeps the user home out of a logged failure reason', () => {
     const context = createContext()
     const home = context.providerRoots.userHome

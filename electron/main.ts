@@ -192,6 +192,7 @@ import { installMainWindowFrameNavigationGuard } from './platform/frame-navigati
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
+import type { CodexRemoteReleaseAction } from './codex-remote-service'
 
 guardProcessOutputStreams()
 
@@ -1195,6 +1196,9 @@ if (!hasSingleInstanceLock) {
     // Codex 启动时读中文开关的那一下先试着经星芒服务器代取，走不通才照旧连加速（issue #977，
     // codex-desktop-startup-route.ts）。账号服务建得比这里晚，建好以后才换成真的换票。
     let issueCodexStartupTicket: () => Promise<NewApiCodexStartupTicket> = () => Promise.reject(new Error('账号服务尚未就绪'))
+    // Windows 上装、卸 Codex 前让手机遥控放开它那份 Codex（#1407 P3-3）。遥控建得比系统服务晚，建好以后换成真的；
+    // 在那之前遥控还没起过 Codex，没什么要放开。
+    let releaseCodexRemote: (action: CodexRemoteReleaseAction) => Promise<void> = async () => undefined
     // 状态文件关掉的功能（商业级差距 G04，remote-features.ts）：跟着更新快照的 featuresOff 变，下面建好更新服务就接上。
     // 点了才做的事等状态文件这一次读完再看；状态文件的读取跟更新服务一起建，比这里晚，用到时才取。
     const remoteFeatures = createRemoteFeatureGate({ settled: () => serviceStatusMonitor?.settled() ?? Promise.resolve(null) })
@@ -1291,6 +1295,7 @@ if (!hasSingleInstanceLock) {
       // Claude Desktop 要从官网下组件，国内直连下不动：从星芒打开时先在后台替他连上加速（#1373）。
       prepareClaudeDesktopLaunch: (context) => claudeDesktopAcceleration.ensureConnected(context),
       remoteFeatureOff: (feature) => remoteFeatures.isOff(feature),
+      releaseCodexRemote: (action) => releaseCodexRemote(action),
     })
     const { unsubscribeToolRoutes, onRouteResume, routeOnlineTimer } = startToolRouteFollowing(networkRoutes, {
       systemService,
@@ -2239,6 +2244,7 @@ if (!hasSingleInstanceLock) {
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
     })
+    releaseCodexRemote = (action) => codexRemote.releaseCodex(action)
     // 状态文件关掉、放开了哪样：开着的遥控当场停（设置页跟着换那句话），「下好了」那句和托盘加速那一行跟着改。
     const unsubscribeRemoteFeatureFollowers = remoteFeatures.subscribe(() => {
       void codexRemote.applyAvailability().catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.suspend.failed', cause))

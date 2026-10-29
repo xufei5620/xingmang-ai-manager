@@ -106,6 +106,7 @@ export class CodexAppServerClient {
   private stderrTail = ''
   private exited = false
   private stopping = false
+  private exitWaiters: Array<() => void> = []
 
   constructor(private readonly options: AppServerClientOptions) {}
 
@@ -161,6 +162,15 @@ export class CodexAppServerClient {
         reject(error instanceof Error ? error : new Error(String(error)))
       }
     })
+  }
+
+  /**
+   * 进程真退出了才兑现；没起过、已经退了的当场兑现。stop() 只发信号不等它：关遥控、退出星芒都不该被它拖住，
+   * 只有装、卸 Codex 前要等它放开自己的程序文件（#1407 P3-3）。
+   */
+  whenExited(): Promise<void> {
+    if (!this.child || this.exited) return Promise.resolve()
+    return new Promise((resolve) => { this.exitWaiters.push(resolve) })
   }
 
   async stop(): Promise<void> {
@@ -287,6 +297,9 @@ export class CodexAppServerClient {
     this.exited = true
     this.rejectAll('Codex 已退出')
     this.child = null
+    const waiters = this.exitWaiters
+    this.exitWaiters = []
+    for (const resolve of waiters) resolve()
     this.handlers?.onExit({ code, signal, stderrTail: this.stderrTail, expected: this.stopping })
   }
 

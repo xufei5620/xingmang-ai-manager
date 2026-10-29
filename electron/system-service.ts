@@ -31,6 +31,7 @@ import { grokInstallStrategyFor } from './platform-capabilities'
 import { activateCodexDesktopWithCdp, injectCodexDesktopChineseLocale, withCodexDesktopCdpFailureReport, withCodexDesktopLocaleFailureReport } from './codex-desktop-cdp'
 import type { ClaudeDesktopLaunchContext } from './claude-desktop-acceleration'
 import type { CodexDesktopStartupRoute } from './codex-desktop-startup-route'
+import type { CodexRemoteReleaseAction } from './codex-remote-service'
 import {
   createCodexDesktopService,
   type CodexDesktopInstallProgress,
@@ -817,6 +818,11 @@ export interface SystemServiceOptions {
    * 免得单测装一次工具就去扫开发机的临时目录。
    */
   sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
+  /**
+   * Windows 上装、卸 Codex 之前让手机遥控放开它那份 Codex（codex-remote-service.ts 的 releaseCodex，#1407 P3-3）：
+   * 闲着就停掉、等它退出，正在干活就抛给客户看的那句。缺省 = 没有遥控（测试与旧行为）。
+   */
+  releaseCodexRemote?: (action: CodexRemoteReleaseAction) => Promise<void>
 }
 
 // 定义随用它的 preferredNodeDirectories 搬进了 system-service-context.ts，这里照旧导出。

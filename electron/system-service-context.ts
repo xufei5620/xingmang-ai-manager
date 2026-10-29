@@ -19,6 +19,7 @@ import {
 } from './cli-process-probe'
 import { CliUpdateHistoryStore } from './cli-update-history'
 import { defaultProviderConfigRoots } from './codex-home'
+import type { CodexRemoteReleaseAction } from './codex-remote-service'
 import {
   commandEnvironment,
   findExecutable,
@@ -478,6 +479,15 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     return message
   }
 
+  /**
+   * Windows 上装、卸 Codex 动手之前（已经排到安装队列里）先让手机遥控放开它开着的那份 Codex：闲着就停掉，
+   * 正在干活就抛给客户看的那句（#1407 P3-3）。Mac、Linux 换得动正开着的程序文件，别的工具遥控也不用，都不管。
+   */
+  async function releaseRemoteCodex(provider: ProviderId, action: CodexRemoteReleaseAction): Promise<void> {
+    if (provider !== 'codex' || platform !== 'win32') return
+    await serviceOptions.releaseCodexRemote?.(action)
+  }
+
   /** 这会儿有几次下载正跑在加速线路上；挑安装源顺序的两处（inspectNetworkRegion、装命令行工具）读它。 */
   function acceleratedDownloadCount(): number {
     return acceleratedDownloads
@@ -704,6 +714,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     isManagedNpmInstallation,
     cliTerminalAccess,
     describeOccupiedCliFailure,
+    releaseRemoteCodex,
     credentialFailureReason,
     refreshWindowsLivePath,
     currentWindowsLivePath,
