@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CodexRemoteStore, parseCodexRemoteSettings } from './codex-remote-store'
+import { CodexRemoteStore, credentialRemoveFailedMessage, parseCodexRemoteSettings } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 
 const roots: string[] = []
@@ -79,6 +79,29 @@ describe('codex-remote-store', () => {
     await store.writeCredential('feishu', null)
     expect(fs.existsSync(path.join(directory, 'credential-feishu.bin'))).toBe(false)
     expect(await store.readCredential('feishu')).toBeNull()
+  })
+
+  it('says so when a saved credential cannot be removed instead of passing it off as cleared', async () => {
+    const directory = tempDirectory()
+    const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')
+    await store.writeCredential('feishu', 'value')
+    const credentialPath = path.join(directory, 'credential-feishu.bin')
+    // A second hard link makes the safe-file check refuse the delete, like a file that cannot be removed.
+    fs.linkSync(credentialPath, path.join(directory, 'credential-feishu.link'))
+    const clearing = store.writeCredential('feishu', null)
+    await expect(clearing).rejects.toThrow(new Error(credentialRemoveFailedMessage))
+    // The original failure rides along as the cause so the runtime log keeps it.
+    await expect(clearing).rejects.toHaveProperty('cause', expect.any(Error))
+    expect(credentialRemoveFailedMessage).toBe('没能删掉保存的登录信息，请重启星芒后再点一次退出登录。')
+    expect(fs.existsSync(credentialPath)).toBe(true)
+    fs.rmSync(path.join(directory, 'credential-feishu.link'))
+    await store.writeCredential('feishu', null)
+    expect(fs.existsSync(credentialPath)).toBe(false)
+  })
+
+  it('treats clearing a credential that was never saved as done', async () => {
+    const store = new CodexRemoteStore(tempDirectory(), fakeStorage(), 'darwin')
+    await expect(store.writeCredential('weixin', null)).resolves.toBeUndefined()
   })
 
   it('keeps credentials in memory only on a Linux desktop without a keyring', async () => {

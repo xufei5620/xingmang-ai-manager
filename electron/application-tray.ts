@@ -16,6 +16,8 @@ export interface ApplicationTraySnapshot {
   acceleration?: TrayAccelerationEntry | null
   /** 星芒正挡着电脑自动睡眠时那一句（trayKeepAwakeLabel）；缺省或 null 时菜单和提示里都不出。 */
   keepAwakeLabel?: string | null
+  /** 手机遥控有渠道开着（codex-remote-service.ts 的 hasEnabledChannel）。缺省 = 没开，菜单里就没有「关掉手机遥控」。 */
+  remoteControlOn?: boolean
 }
 
 export interface TrayKeepAwakeState {
@@ -120,6 +122,8 @@ export interface ApplicationTrayOptions {
   onAccelerationToggle?: TrayAction
   /** 新版本已下载好时托盘里那一项「重启并安装」；缺省时那一项改为打开更新页。 */
   onInstallUpdate?: TrayAction
+  /** 「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样；缺省时那一项不出。 */
+  onRemoteControlOff?: TrayAction
   /** 用户刚打开托盘菜单：用来现读一次会过期的状态，不是定时轮询。 */
   onMenuOpen?: TrayAction
   onQuit: TrayAction
@@ -207,15 +211,19 @@ function accelerationItems(
 
 export function buildApplicationTrayMenu(
   snapshot: ApplicationTraySnapshot,
-  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate'>,
+  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate' | 'onRemoteControlOff'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
   const navigate = (target: TrayNavigationTarget) => run(async () => { await actions.onOpen(); await actions.onNavigate(target) })
   const keepAwake = menuLabel(snapshot.keepAwakeLabel, '')
+  // 窗口缩到托盘后遥控照样开着（#1407 P2-1），人走开了也得能在托盘里一下关掉；放在那行灰字下面，
+  // 状态和动作挨着。灰字同一时间只说一件，终端里的工具在干活时说的是那件，这一项不跟着它藏。
+  const remoteOff = snapshot.remoteControlOn ? actions.onRemoteControlOff : undefined
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
     ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
+    ...(remoteOff ? [{ label: '关掉手机遥控', click: () => run(remoteOff) }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },

@@ -352,6 +352,35 @@ describe('codex-remote-feishu channel', () => {
     expect(h.statuses.at(-1)).toEqual({ state: 'stopped' })
   })
 
+  // #1407 P3-5：电脑时间快了，刚发的消息也会被底座当成旧的；拿飞书回应里的时间估快了多少，交给底座认。
+  it('tells the core how far this computer runs ahead of Feishu, from the times Feishu answers with', async () => {
+    const feishuTime = 1761379200000
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      const answer = defaultRespond(url)
+      const date = url.endsWith('/callback/ws/endpoint') ? 'Sat, 25 Oct 2025 08:00:00 GMT' : 'Sat, 25 Oct 2025 08:14:00 GMT'
+      return new Response(answer.body, { status: answer.status, headers: { 'Content-Type': 'application/json', Date: date } })
+    })
+    h.deps.now = () => feishuTime + 15 * 60_000
+    const channel = await startChannel(h)
+    h.sockets[0].emit('open')
+    h.sockets[0].deliver(eventFrame(textEvent()))
+    expect(h.inbound[0]).toMatchObject({ kind: 'text', sentAt: 1761379200123, clockAheadMs: 15 * 60_000 })
+    // Every reply sent refreshes the estimate.
+    await channel.send({ channel: 'feishu', userId: 'ou_alice' }, { kind: 'text', text: '好' })
+    h.sockets[0].deliver(eventFrame(textEvent({ eventId: 'ev-2' }), 'm-2'))
+    expect(h.inbound[1]).toMatchObject({ clockAheadMs: 60_000 })
+    await channel.stop()
+  })
+
+  it('leaves the clock estimate out when Feishu answers without a time', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), defaultRespond)
+    const channel = await startChannel(h)
+    h.sockets[0].emit('open')
+    h.sockets[0].deliver(eventFrame(textEvent()))
+    expect(h.inbound[0]).not.toHaveProperty('clockAheadMs')
+    await channel.stop()
+  })
+
   it('never logs message text', async () => {
     const h = harness(serializeFeishuCredential({ appId, appSecret }), defaultRespond)
     const channel = await startChannel(h)

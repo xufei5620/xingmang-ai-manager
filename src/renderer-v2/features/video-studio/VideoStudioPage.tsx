@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
+import { dollars } from '../../business-common'
+import { useSharedAccountBalance } from '../app/balance-context'
 import { chatModelVendor, chatModelVendors, pickChatGroup, type ChatCatalogEntry, type ChatSite } from '../chat/state'
 import {
   canAddVideoStudioShot,
@@ -53,6 +55,10 @@ export function VideoStudioPage({ bridge, accountScope, site, access, active = t
 
 function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccount, options }: Omit<VideoStudioPageProps, 'access' | 'onLogin'> & { active: boolean }) {
   const studio = useVideoStudio(bridge, accountScope, site, true, options)
+  // 确认框「每段单独计费」后面报一句当前余额（yoyo 2026-10-29 批的字「余额改」，#1406 P2-1）。读不到就不写这句，
+  // 同充值页卡头；按型号报准价格放到 0.2.23 之后。
+  const { snapshot: balanceState } = useSharedAccountBalance()
+  const balance = balanceState.scope === accountScope ? balanceState.balance : null
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null)
   const { project } = studio
   const { settings, shots, exported } = project
@@ -162,7 +168,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     {active && confirmation && <Confirm testId="video-confirm"
       title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、每段 ${settings.secondsPerShot} 秒，每段单独计费。`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、每段 ${settings.secondsPerShot} 秒，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
         : confirmation.kind === 'reset' ? <p>想法、分镜和片段都从这一页清掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
         : <p>这个镜头和它的片段从分镜里拿掉，片段还在 AI 作品文件夹里。</p>}
