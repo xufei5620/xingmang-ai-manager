@@ -224,6 +224,16 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
         return new Set<number>()
       }
     },
+    // 同 config:get 的 configurationAccountMatched：只读当前账号已有的缓存，不签新 Key。
+    accountKeyMatches: async (provider, apiKey) => {
+      const session = accountService.getSessionState()
+      if (!session.authenticated || !session.account || !options.managedCliKeys || !apiKey) return false
+      try {
+        return (await options.managedCliKeys.read(session.account.userId)).some((entry) => entry.provider === provider && entry.key === apiKey)
+      } catch {
+        return false
+      }
+    },
   })
   registerTrustedHandler('models:list', (_event, apiKey: unknown) => {
     if (typeof apiKey !== 'string' || apiKey.length > 4_096) {

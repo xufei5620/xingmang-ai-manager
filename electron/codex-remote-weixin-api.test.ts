@@ -197,6 +197,13 @@ describe('fetchWeixinUpdates', () => {
     expect(updates.messages[0].messageId).toBe('7234567890123456781')
   })
 
+  it('passes on the time WeChat answered at, so the channel can tell whether this computer runs fast', async () => {
+    const timed = new Response('{"ret":0,"msgs":[]}', { status: 200, headers: { 'Content-Type': 'application/json', Date: 'Sat, 25 Oct 2025 08:00:00 GMT' } })
+    const { fetch } = mockFetch([timed, jsonResponse({ ret: 0, msgs: [] })])
+    await expect(fetchWeixinUpdates(contextFor(fetch), 'tok', '', 35_000)).resolves.toMatchObject({ serverTime: 1761379200000 })
+    expect(await fetchWeixinUpdates(contextFor(fetch), 'tok', '', 35_000)).not.toHaveProperty('serverTime')
+  })
+
   it('reports an expired session as its own reason', async () => {
     const { fetch } = mockFetch([jsonResponse({ ret: -14, errmsg: 'session timeout' })])
     const error = await fetchWeixinUpdates(contextFor(fetch), 'tok', '', 35_000).catch((caught: unknown) => caught)

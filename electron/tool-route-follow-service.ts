@@ -26,7 +26,7 @@ import {
 } from './running-tools'
 import type { ToolRouteAccountHooks, ToolRouteFollowReport, ToolRouteFollowRequest } from './system-service'
 import type { ServiceContext } from './system-service-context'
-import { toolConfigIdentity } from './tool-config-ownership'
+import { toolConfigIdentity, type ToolConfigOwnership } from './tool-config-ownership'
 import {
   recordToolRouteRevert,
   type ToolRouteFollowRecord,
@@ -35,6 +35,22 @@ import {
   toolRouteRetryDelayMs,
 } from './tool-route-follow-state'
 import { followXingmangAiSkillRoute } from './xingmang-ai-skill'
+
+/**
+ * 没有来源记录的工具配置，换线路时能不能也只换地址。来源记录 0.2.6 才开始写，0.2.5 及更早替客户写的配置
+ * 没有记录（或只有当时那种不认账号的老记录）：首页凭 Key 认出它是当前账号的，照样显示「已连接」，开机对账和
+ * 换线却一直跳过它，地址就停在当时写的线路1，客户要自己点「重置为初始状态」才换得过去（三线路方案 C8 前半，10-29 yoyo 同意）。
+ * 只认来源读出来是「看不出来」的：手动的、被改过的照旧不碰，记录上写过手动、后来又被改了的也不碰。
+ * Key 是不是当前账号签给这个工具的那把，要读缓存，由调用方另外核。
+ */
+export function permitsUnrecordedRouteFollow(input: {
+  ownership: ToolConfigOwnership
+  recordedSource: 'account' | 'manual' | 'unknown' | null
+  config: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay' | 'codexAuthMode'>
+}): boolean {
+  return input.ownership === 'unknown' && input.recordedSource !== 'manual'
+    && input.config.hasApiKey && input.config.matchesRelay && input.config.codexAuthMode !== 'chatgpt'
+}
 
 /** 线路跟随要用、但归别处管的几样，由 createSystemService 传进来。 */
 export interface ToolRouteFollowServiceDependencies {
@@ -88,6 +104,16 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
 
   type ToolRouteOutcome = 'rewritten' | 'on-target' | 'skipped' | 'retry'
 
+  /** 配置里那把正是当前账号签给这个工具、本机缓存着的那把。读不到缓存、没接上账号就当不是。 */
+  async function holdsAccountKey(provider: ProviderId, current: NativeConfigInspection): Promise<boolean> {
+    if (!toolRouteAccount?.accountKeyMatches || !current.apiKey) return false
+    try {
+      return await toolRouteAccount.accountKeyMatches(provider, current.apiKey)
+    } catch {
+      return false
+    }
+  }
+
   /** 一个工具。已经在 serializeConfigWrite 里。 */
   async function followProviderToolRoute(provider: ProviderId, owner: string, request: ToolRouteFollowRequest, attempt: number): Promise<ToolRouteOutcome> {
     if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) return 'skipped'
@@ -98,10 +124,14 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
     const record = toolRouteFollow.read().providers[provider] ?? {}
     if (record.managedElsewhere) return 'skipped'
     const ownership = configOwnership.read(provider, before, owner)
+    // 没有来源记录、Key 正是当前账号签给它的那把（permitsUnrecordedRouteFollow）：也只换地址，来源记录原样留着，
+    // 别的自动改写（补设置、换 Key、换型号）照旧不碰它。
+    const unrecorded = permitsUnrecordedRouteFollow({ ownership, recordedSource: configOwnership.recordedSource(provider, before), config: before })
+      && await holdsAccountKey(provider, before)
     // 上回改完又变回改之前那一份（那一份当时确认是当前账号的）：多半是别的配置管理器在替客户维护它。
-    const reverted = ownership === 'changed' && record.revertIdentity === toolConfigIdentity(before)
-    // 来源不是当前账号（手填、被改过、看不出来）不自动改，重试多少次也一样，不排重试。
-    if (!reverted && ownership !== 'account') return 'skipped'
+    const reverted = (ownership === 'changed' || unrecorded) && record.revertIdentity === toolConfigIdentity(before)
+    // 来源不是当前账号（手填、被改过、看不出来又认不出 Key）不自动改，重试多少次也一样，不排重试。
+    if (!reverted && !unrecorded && ownership !== 'account') return 'skipped'
     const templateRevision = configOwnership.templateRevision(provider, before)
     const target = site.providerBaseUrls[provider]
     let plan: ReturnType<typeof planProviderRouteFollow>
@@ -115,11 +145,15 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
       runtimeLog?.log('info', 'config', 'route.unlocated', '工具配置里找不到要改的那一处地址，这次不改', { provider })
     }
     if (reverted && plan.status === 'on-target') {
-      // 改回去的那份正好就在现在的线路上（线路也切回来了）：不算拉锯，把来源记回当前账号。
-      await configOwnership.write(provider, before, 'account', owner, templateRevision ?? undefined)
+      // 改回去的那份正好就在现在的线路上（线路也切回来了）：不算拉锯，把来源记回当前账号。没有记录的那份本来就没记过。
+      if (!unrecorded) await configOwnership.write(provider, before, 'account', owner, templateRevision ?? undefined)
       return 'on-target'
     }
     if (plan.status !== 'rewrite') return plan.status === 'on-target' ? 'on-target' : 'skipped'
+    // 下面写之前会先把来源记成「手动」（同 saveConfig）。没有记录的那份改完要把记录原样放回，所以在算改回次数、
+    // 备份之前先记下它；放不回（记录读不出来）就不改。
+    const restoreOwnership = configOwnership.remember(provider, before)
+    if (unrecorded && !restoreOwnership) return 'skipped'
     if (reverted) {
       // 再改一次；24 小时内第二次就停手，首页标「由其他工具管理」。
       const next = recordToolRouteRevert(record, toolRouteNow())
@@ -141,19 +175,20 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
         runtimeLog?.log('warn', 'config', 'route.original-backup-failed', '换线路前的原件没能备份，下次再补', { provider, reason: credentialFailureReason(error) })
       }
     }
-    // 同 saveConfig：写之前先记成「手动」，写到一半崩掉宁可多挡一次自动写入。模板版本号原样带回去，
-    // 不然下次开机会当成模板落后，再整套备份、补一遍缺省项、弹一句「已补齐」。
-    const restoreOwnership = configOwnership.remember(provider, before)
     async function putOwnershipBack(): Promise<void> {
       if (!restoreOwnership) return
       await restoreOwnership().catch((error: unknown) => {
         runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '换线路没成功，工具配置的来源记录也没能原样放回', { provider, reason: credentialFailureReason(error) })
       })
     }
+    // 同 saveConfig：写之前先记成「手动」，写到一半崩掉宁可多挡一次自动写入。
     await configOwnership.write(provider, before, 'manual', owner)
     const from = relaySiteEndpointIdForBaseUrl(site.id, provider, plan.from)
     const to = relaySiteEndpointIdForBaseUrl(site.id, provider, target)
-    const detail = { provider, kind: 'tool', from, to, reason: request.reason, ...(request.fault ? { fault: true } : {}), mode: 'targeted', attempt }
+    const detail = {
+      provider, kind: 'tool', from, to, reason: request.reason, ...(request.fault ? { fault: true } : {}), mode: 'targeted', attempt,
+      ...(unrecorded ? { unrecorded: true } : {}),
+    }
     try {
       applyProviderRouteFollow(provider, plan, providerRoots)
     } catch (error) {
@@ -167,7 +202,14 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
       runtimeLog?.log('warn', 'config', 'route.followed', '工具配置写了，回读出来的地址不对，稍后再试', { ...detail, readback: false })
       return 'retry'
     }
-    await configOwnership.write(provider, after, 'account', owner, templateRevision ?? undefined)
+    if (unrecorded) {
+      await restoreOwnership?.().catch((error: unknown) => {
+        runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '换完线路，工具配置原来的来源记录没能放回', { provider, reason: credentialFailureReason(error) })
+      })
+    } else {
+      // 模板版本号原样带回去，不然下次开机会当成模板落后，再整套备份、补一遍缺省项、弹一句「已补齐」。
+      await configOwnership.write(provider, after, 'account', owner, templateRevision ?? undefined)
+    }
     await writeToolRouteRecord(provider, (current) => ({
       ...current, revertIdentity: toolConfigIdentity(before), ...(originalKept ? { originalKept: true } : {}),
     }))

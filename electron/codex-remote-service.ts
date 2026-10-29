@@ -22,6 +22,8 @@ import {
   type RemoteChannelStatus,
   type RemoteInbound,
   type RemoteInboundApproval,
+  type RemoteInboundText,
+  type RemoteInboundUnsupported,
   type RemoteOutbound,
   type RemotePeer,
 } from './codex-remote-channel'
@@ -57,9 +59,16 @@ import { isRecord } from './input-guards'
 //   approvals routed to the user (never to an auto reviewer). Every request is
 //   answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
+// - Threads started from the phone get no MCP servers, plugins or apps: their
+//   tool calls do not all go through an approval, so nothing the phone cannot
+//   see or stop is handed to the model. Codex on the computer keeps them.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
 // - A permission request is only put to the user when every part of it fits on
-//   the card, and "accept" grants exactly the paths the card listed.
+//   the card, and "accept" grants exactly the paths the card listed. A command
+//   (or terminal input, or website) is only put to the user when the card shows
+//   it whole; one that would be cut short is declined without asking. A file
+//   change card lists only whole paths and always keeps its write scope line;
+//   one whose write scope alone would not fit is declined without asking.
 // - Approval numbers keep counting across restarts, and every button carries a
 //   per-request random nonce: a card left in the chat history from an earlier
 //   request or an earlier run can never answer a newer one.
@@ -76,6 +85,11 @@ const idleTimeoutMs = 4 * 60 * 60_000
 const idleRecheckMs = 30 * 60_000
 const staleBeforeStartMs = 60_000
 const maxMessageAgeMs = 10 * 60_000
+/**
+ * 电脑上的时间至少快这么多才算「不准」：快不到 1 分钟，开启以后发的消息不会被当成旧的；平台回应里的时间
+ * 只到秒，再加上路上的来回，几秒的差也不该算到电脑头上。
+ */
+const clockAheadToleranceMs = staleBeforeStartMs
 const maxReplyChunks = 5
 const maxSummaryLength = 1500
 const maxReasonLength = 500
@@ -171,7 +185,21 @@ export function isStaleInbound(sentAt: number, channelStartedAt: number, now: nu
   return sentAt < channelStartedAt - staleBeforeStartMs || sentAt < now - maxMessageAgeMs
 }
 
-export function buildThreadStartParams(workspace: string): Record<string, unknown> {
+/**
+ * 这条被当成旧消息，是不是只因为电脑上的时间快了（#1407 P3-5）：换成平台的钟再看一遍就不旧了。
+ * 只用来决定给手机回不回一句提醒，消息照样不执行，时间校验本身不放宽。
+ */
+export function isStaleOnlyByClock(sentAt: number, channelStartedAt: number, now: number, clockAheadMs: number | undefined): boolean {
+  if (clockAheadMs === undefined || !Number.isFinite(clockAheadMs) || clockAheadMs < clockAheadToleranceMs) return false
+  return isStaleInbound(sentAt, channelStartedAt, now) && !isStaleInbound(sentAt, channelStartedAt - clockAheadMs, now - clockAheadMs)
+}
+
+/**
+ * 遥控开的对话不给客户自己接的外部工具（#1407 P2-4，yoyo 10-29「按推荐」）：MCP 服务、插件、ChatGPT 应用的工具
+ * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
+ * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
+ */
+export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
   return {
     cwd: workspace,
     approvalPolicy: 'untrusted',
@@ -179,7 +207,64 @@ export function buildThreadStartParams(workspace: string): Record<string, unknow
     approvalsReviewer: 'user',
     sandbox: 'workspace-write',
     developerInstructions,
+    config: {
+      'features.apps': false,
+      'features.plugins': false,
+      ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
+    },
   }
+}
+
+function mcpServerTable(config: unknown): Record<string, unknown> | null {
+  return isRecord(config) && isRecord(config.mcp_servers) ? config.mcp_servers : null
+}
+
+function mcpServerTransport(server: unknown): Record<string, string> | null {
+  if (!isRecord(server)) return null
+  if (typeof server.command === 'string') return { command: server.command }
+  if (typeof server.url === 'string') return { url: server.url }
+  return null
+}
+
+/**
+ * Turns Codex's `config/read` answer for the workspace (`includeLayers: true`)
+ * into a `mcp_servers` override that switches every configured server off.
+ *
+ * Codex only knows servers by name, and merges an override into the layers
+ * instead of replacing the table, so each name has to be listed. Disabled
+ * layers count too: a project `.codex/config.toml` in a folder Codex has not
+ * trusted yet is a disabled layer here, and thread/start with workspace-write
+ * trusts that folder on the spot and loads it. Codex refuses the whole config
+ * when an override names a server that has no command or url, so a server that
+ * only such a layer defines carries its own command or url along: valid before
+ * the folder is trusted, unchanged after. Without layers (an older Codex), the
+ * effective config's servers are used.
+ */
+export function buildRemoteMcpServerOverrides(configRead: unknown): Record<string, Record<string, unknown>> {
+  const response = isRecord(configRead) ? configRead : {}
+  const layers: unknown[] = Array.isArray(response.layers) ? response.layers : [{ config: response.config, disabledReason: null }]
+  const active = new Set<string>()
+  const inactive = new Map<string, Record<string, string>>()
+  // Codex lists layers from the highest precedence down; the first command or url seen wins, as it does in Codex.
+  for (const layer of layers) {
+    if (!isRecord(layer)) continue
+    const servers = mcpServerTable(layer.config)
+    if (!servers) continue
+    const disabled = layer.disabledReason !== null && layer.disabledReason !== undefined
+    for (const [name, server] of Object.entries(servers)) {
+      if (!disabled) active.add(name)
+      else if (!inactive.has(name)) {
+        const transport = mcpServerTransport(server)
+        if (transport) inactive.set(name, transport)
+      }
+    }
+  }
+  const entries: Array<[string, Record<string, unknown>]> = [...active].map((name) => [name, { enabled: false }])
+  for (const [name, transport] of inactive) {
+    if (!active.has(name)) entries.push([name, { ...transport, enabled: false }])
+  }
+  // fromEntries, not assignment: a server called "__proto__" must stay an own key and be switched off like the rest.
+  return Object.fromEntries(entries)
 }
 
 /** 渠道凭据（JSON）里的字符串值都当要遮住的原值：App Secret、机器人令牌。 */
@@ -315,6 +400,60 @@ export function permissionsShowInFull(permissions: unknown, options: ApprovalDis
   return requested !== null && redactRemoteText(describePermissions(requested, options), options).length <= maxSummaryLength
 }
 
+export type CommandApprovalKind = Extract<RemoteApprovalKind, 'command' | 'terminal-input' | 'network'>
+
+/**
+ * Codex 的 commandExecution 审批分三种（对过 0.164.0）：跑命令；往已经开着的程序里输入（kind 是 writeStdin，
+ * command 是 write_stdin 加要输入的内容）；连网站（带 networkApprovalContext，这时 command、cwd 都是空的）。
+ */
+export function commandApprovalKind(params: Record<string, unknown>): CommandApprovalKind {
+  if (networkApprovalHost(params)) return 'network'
+  return params.kind === 'writeStdin' ? 'terminal-input' : 'command'
+}
+
+function networkApprovalHost(params: Record<string, unknown>): string | null {
+  return isRecord(params.networkApprovalContext) ? stringField(params.networkApprovalContext.host) : null
+}
+
+function isCommandApprovalKind(kind: RemoteApprovalKind): kind is CommandApprovalKind {
+  return kind === 'command' || kind === 'terminal-input' || kind === 'network'
+}
+
+/** 命令那三种审批卡片上的正文：命令原文、Codex 给的 write_stdin 原样、要连的网址。 */
+function commandApprovalSummary(kind: CommandApprovalKind, params: Record<string, unknown>): string {
+  return (kind === 'network' ? networkApprovalHost(params) : stringField(params.command)) ?? ''
+}
+
+export type CommandDisplay = 'full' | 'too-long' | 'blank'
+
+/**
+ * 命令那三种审批能不能在手机上一字不落地显示出来（#1407 P3-2）。跟权限申请一样，显示不全就不问人：
+ * 截掉的尾巴可能正是要命的那一截，点「同意」的人根本没看到它。什么都显示不出来的也不问。
+ */
+export function inspectCommandDisplay(kind: CommandApprovalKind, params: Record<string, unknown>, options: ApprovalDisplayOptions): CommandDisplay {
+  const summary = redactRemoteText(commandApprovalSummary(kind, params), options)
+  if (!summary.trim()) return 'blank'
+  return summary.length <= maxSummaryLength ? 'full' : 'too-long'
+}
+
+/**
+ * 改文件卡片的正文（#1407）。以前整段拼好再截到上限，路径一长，截掉的正是最后的「另外还有」和「可写范围」，
+ * 客户看到半截路径，以为要改的就这些。现在只列整条放得下的文件，其余都算进「另外还有」，「可写范围」整行留在最后。
+ * 「可写范围」那一行自己都放不下就返回 null，由调用方不问直接拒，跟显示不全的权限申请一样。
+ */
+export function buildFileChangeSummary(params: Record<string, unknown>, changedFiles: readonly string[], options: ApprovalDisplayOptions): string | null {
+  const grantRoot = stringField(params.grantRoot)
+  const tail = grantRoot ? [`可写范围：${displayPath(grantRoot, options)}`] : []
+  for (let shown = Math.min(changedFiles.length, maxFileLines); shown >= 0; shown -= 1) {
+    const lines = changedFiles.slice(0, shown).map((file) => displayPath(file, options))
+    if (changedFiles.length > shown) lines.push(`另外还有 ${changedFiles.length - shown} 个文件`)
+    const summary = [...lines, ...tail].join('\n')
+    // 量的是脱敏以后的长度：手机上显示的就是那个。
+    if (redactRemoteText(summary, options).length <= maxSummaryLength) return summary
+  }
+  return null
+}
+
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
 export function buildApprovalRequest(
   approvalId: string,
@@ -330,14 +469,9 @@ export function buildApprovalRequest(
     platform: options.platform,
   })
   let summary = ''
-  if (kind === 'command') summary = stringField(params.command) ?? ''
-  else if (kind === 'file-change') {
-    const lines = changedFiles.slice(0, maxFileLines).map((file) => displayPath(file, options))
-    if (changedFiles.length > maxFileLines) lines.push(`另外还有 ${changedFiles.length - maxFileLines} 个文件`)
-    const grantRoot = stringField(params.grantRoot)
-    if (grantRoot) lines.push(`可写范围：${displayPath(grantRoot, options)}`)
-    summary = lines.join('\n')
-  } else {
+  if (isCommandApprovalKind(kind)) summary = commandApprovalSummary(kind, params)
+  else if (kind === 'file-change') summary = buildFileChangeSummary(params, changedFiles, options) ?? ''
+  else {
     const requested = readRequestedPermissions(params.permissions)
     summary = requested ? describePermissions(requested, options) : ''
   }
@@ -613,6 +747,16 @@ export class CodexRemoteService {
     return this.emit()
   }
 
+  /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */
+  async disableAllChannels(): Promise<CodexRemoteSnapshot | null> {
+    if (this.disposed) return null
+    for (const id of remoteChannelIds) {
+      const runtime = this.runtimes[id]
+      if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedOnComputer)
+    }
+    return this.emit()
+  }
+
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')
@@ -664,10 +808,19 @@ export class CodexRemoteService {
     const before = (await this.options.store.readSettings()).channels[channel]
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
     if (!sameAccount) await this.forgetPeer(runtime)
-    await this.options.store.writeCredential(channel, value)
+    // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
+    // 账号字样留着，因为凭据还在，卡上照旧有「退出登录」能再点。最后把那句报出去。
+    let removeFailure: unknown = null
+    try {
+      await this.options.store.writeCredential(channel, value)
+    } catch (error) {
+      if (value !== null) throw error
+      removeFailure = error
+      this.options.log('warn', 'remote.credential-remove-failed', { channel })
+    }
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
-      stored.accountLabel = value === null ? null : accountLabel
+      if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
       if (!sameAccount) stored.boundPeer = null
       settings.channels[channel] = stored
     })
@@ -679,6 +832,11 @@ export class CodexRemoteService {
         // 这时手机遥控被关掉了就不连，也不报错：凭据已经存好（微信扫码登录也认这一步算成功），设置页上那句停用的话就是交代。
         await this.startChannel(runtime)
       }
+    }
+    if (removeFailure) {
+      // 报错的调用拿不到返回的快照，界面靠 state-changed 跟上已经解绑、停掉的样子。
+      await this.emit()
+      throw removeFailure
     }
     return this.emit()
   }
@@ -943,11 +1101,16 @@ export class CodexRemoteService {
     return { secrets: this.secrets, homeDirectory: this.options.homeDirectory, platform: this.platform }
   }
 
-  private deliver(runtime: ChannelRuntime, peer: RemotePeer, message: RemoteOutbound): Promise<void> {
+  /** replyContext 传 null 是不带平台句柄：回的不是绑定的人时，不能把他的句柄拿给别人用。 */
+  private deliver(
+    runtime: ChannelRuntime,
+    peer: RemotePeer,
+    message: RemoteOutbound,
+    replyContext: string | null | undefined = runtime.replyContext,
+  ): Promise<void> {
     const adapter = runtime.adapter
     if (!adapter) return Promise.resolve()
-    const replyContext = runtime.replyContext
-    const next = runtime.outbox.then(() => adapter.send(peer, message, replyContext))
+    const next = runtime.outbox.then(() => adapter.send(peer, message, replyContext ?? undefined))
     runtime.outbox = next.catch(() => undefined)
     return next.catch(() => {
       this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
@@ -955,14 +1118,19 @@ export class CodexRemoteService {
     })
   }
 
-  private async sendText(runtime: ChannelRuntime, text: string, peer = runtime.peer): Promise<void> {
+  private async sendText(
+    runtime: ChannelRuntime,
+    text: string,
+    peer = runtime.peer,
+    replyContext: string | null | undefined = runtime.replyContext,
+  ): Promise<void> {
     const adapter = runtime.adapter
     if (!peer || !adapter) return
     await this.refreshSecrets()
     const chunks = splitRemoteText(redactRemoteText(text, this.redaction()), adapter.capabilities.maxTextLength, maxReplyChunks)
     for (const chunk of chunks) {
       try {
-        await this.deliver(runtime, peer, { kind: 'text', text: chunk })
+        await this.deliver(runtime, peer, { kind: 'text', text: chunk }, replyContext)
       } catch {
         return
       }
@@ -985,18 +1153,18 @@ export class CodexRemoteService {
       return
     }
     const now = this.now()
+    // 电脑时间往回调过（比如照着提醒调准了），开启时间按调好的钟改记成现在（#1407 P3-5）：不然调准以后，
+    // 原来快了多久，就有多久发的话还被当成开启前的。现在不会早于真正的开启时间，所以比起时间一直准的电脑，
+    // 不会多放进一条旧消息。
+    if (now < runtime.startedAt) runtime.startedAt = now
     if (message.sentAt !== undefined && isStaleInbound(message.sentAt, runtime.startedAt, now)) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'stale' })
+      if (message.kind !== 'approval' && isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) {
+        await this.warnClockAhead(runtime, message)
+      }
       return
     }
-    if (message.kind !== 'approval') {
-      if (runtime.seen.has(message.messageId)) return
-      runtime.seen.add(message.messageId)
-      if (runtime.seen.size > seenMessageLimit) {
-        const oldest = runtime.seen.values().next().value
-        if (oldest !== undefined) runtime.seen.delete(oldest)
-      }
-    }
+    if (message.kind !== 'approval' && !this.markSeen(runtime, message.messageId)) return
     const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
     if (!bound || bound.userId !== message.peer.userId) {
       await this.tryPair(runtime, message)
@@ -1048,6 +1216,38 @@ export class CodexRemoteService {
       case 'prompt':
         await this.runPrompt(runtime, command.text)
     }
+  }
+
+  /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投会送重）返回 false。 */
+  private markSeen(runtime: ChannelRuntime, messageId: string): boolean {
+    if (runtime.seen.has(messageId)) return false
+    runtime.seen.add(messageId)
+    if (runtime.seen.size > seenMessageLimit) {
+      const oldest = runtime.seen.values().next().value
+      if (oldest !== undefined) runtime.seen.delete(oldest)
+    }
+    return true
+  }
+
+  /**
+   * 电脑上的时间快了，手机刚发的话被当成旧的丢掉（#1407 P3-5）：照样不执行，只跟发的人说一声，免得手机上
+   * 一直没有回音。只回绑定的那个人，或者正在配对、发来的正是这次配对码的人（电脑时间快了，配对码一样会被
+   * 当成旧的丢掉，发码的就是要绑定的那个人）；别人照旧不回话，免得拿消息探出这里有个遥控。这条配对码不算
+   * 输错，也不拿它配对。
+   */
+  private async warnClockAhead(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundUnsupported): Promise<void> {
+    if (!this.markSeen(runtime, message.messageId)) return
+    const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
+    const pairing = runtime.pairing
+    const isBound = bound?.userId === message.peer.userId
+    const holdsPairingCode = message.kind === 'text' && pairing !== null && pairing.expiresAt > this.now()
+      && normalizePairingAttempt(message.text) === pairing.code
+    if (!isBound && !holdsPairingCode) return
+    this.options.log('warn', 'remote.clock-ahead', {
+      channel: runtime.id,
+      aheadSeconds: Math.round((message.clockAheadMs ?? 0) / 1000),
+    })
+    await this.sendText(runtime, remoteMessages.clockAhead, message.peer, message.replyContext ?? (isBound ? runtime.replyContext : null))
   }
 
   private async tryPair(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {
@@ -1162,7 +1362,10 @@ export class CodexRemoteService {
     if (!this.turnStillWanted(runtime, turn)) return
     try {
       if (!runtime.threadId) {
-        const started = await client.request('thread/start', buildThreadStartParams(workspace))
+        // 读不出配了哪些外部工具就不开对话：宁可这一条做不了，也不让手机用上没关掉的工具。
+        const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
+        if (!this.turnStillWanted(runtime, turn)) return
+        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead)))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 没有开出新对话')
         if (!this.turnStillWanted(runtime, turn)) return
@@ -1331,7 +1534,7 @@ export class CodexRemoteService {
   private async onServerRequest(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case 'item/commandExecution/requestApproval':
-        return { decision: await this.requestApproval('command', params) }
+        return { decision: await this.requestApproval(isRecord(params) ? commandApprovalKind(params) : 'command', params) }
       case 'item/fileChange/requestApproval':
         return { decision: await this.requestApproval('file-change', params) }
       case 'item/permissions/requestApproval': {
@@ -1396,12 +1599,29 @@ export class CodexRemoteService {
       if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
       return 'decline'
     }
+    const commandDisplay = isCommandApprovalKind(kind) ? inspectCommandDisplay(kind, params, display) : 'full'
+    if (commandDisplay !== 'full') {
+      // 同上：只显示得出前一截的命令不问人。空的是 Codex 没给要跑什么，手机上没什么可解释的，只记日志。
+      this.options.log('info', 'remote.command-refused', { channel: runtime.id, kind, reason: commandDisplay })
+      if (commandDisplay === 'too-long' && !this.disposed && runtime.turn === turn && !turn.stoppedByUser) {
+        void this.sendText(runtime, remoteMessages.commandRefused)
+      }
+      return 'decline'
+    }
+    // 量放不放得下和卡片上列的用同一份文件清单，只在这里取一次。
+    const itemId = stringField(params.itemId)
+    const changedFiles = itemId ? this.fileChanges.get(itemId) ?? [] : []
+    if (kind === 'file-change' && buildFileChangeSummary(params, changedFiles, display) === null) {
+      // 同上：「可写范围」整行放不下，客户点「同意」时看不全要放开写的地方。
+      this.options.log('info', 'remote.file-change-refused', { channel: runtime.id })
+      if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
+      return 'decline'
+    }
     const id = await this.allocateApprovalId()
     // 读密钥、记编号的这一会儿，这一轮可能已经被停掉、渠道已经关了：不再问人。
     if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
     const nonce = generateApprovalNonce()
-    const itemId = stringField(params.itemId)
-    const request = buildApprovalRequest(id, nonce, kind, params, itemId ? this.fileChanges.get(itemId) ?? [] : [], display)
+    const request = buildApprovalRequest(id, nonce, kind, params, changedFiles, display)
     const decision = new Promise<RemoteApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return

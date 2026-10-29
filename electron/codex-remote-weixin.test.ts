@@ -179,6 +179,30 @@ describe('createWeixinRemoteChannel', () => {
     await channel.stop()
   })
 
+  // #1407 P3-5：拿每批回应里的时间估电脑上的时间快了多少，交给底座认「只因时间不准才被当成旧消息」。
+  it('tells the core how far this computer runs ahead of WeChat, from the time each batch came back with', async () => {
+    const batch = JSON.stringify({
+      ret: 0,
+      get_updates_buf: 'next',
+      msgs: [{ message_id: 21, from_user_id: owner, message_type: 1, create_time_ms: 1761379200000, item_list: [{ type: 1, text_item: { text: '刚发的' } }] }],
+    })
+    let pollCount = 0
+    const { dependencies } = harness(credentialText(), (url) => {
+      if (url.includes('/msg/notify')) return jsonResponse({ ret: 0 })
+      pollCount += 1
+      if (pollCount > 1) return blockUntilAborted()
+      return new Response(batch, { status: 200, headers: { 'Content-Type': 'application/json', Date: 'Sat, 25 Oct 2025 07:45:00 GMT' } })
+    })
+    const inbound: RemoteInbound[] = []
+    const channel = createWeixinRemoteChannel(dependencies, { botAgent: 'XingmangAI/test' })
+    await channel.start({ onInbound: (item) => inbound.push(item), onStatus: () => undefined })
+    await vi.waitFor(() => expect(pollCount).toBe(2))
+    // The harness clock reads 08:00:00Z; WeChat answered at 07:45:00Z.
+    expect(inbound).toHaveLength(1)
+    expect(inbound[0]).toMatchObject({ kind: 'text', text: '刚发的', clockAheadMs: 15 * 60_000 })
+    await channel.stop()
+  })
+
   it('stops polling and asks for a new scan when the session expires', async () => {
     let pollCount = 0
     const { dependencies } = harness(credentialText(), (url) => {

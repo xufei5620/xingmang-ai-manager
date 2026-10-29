@@ -17,6 +17,16 @@ import { redactStartupSecrets } from './startup-log'
 const fakeGoogleKey = `AIza${'Fake0Test1Value2Filler3Xy'.padEnd(35, 'z')}`
 const fakeGrokKey = `xai-${'FakeGrokTestValueFillerOnly0123456789'}`
 const fakeRelayKey = 'sk-fake-relay-test-value'
+// Built at run time so no whole token sits in the source for a scanner to flag.
+const fakeJwt = [
+  Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64url'),
+  Buffer.from('{"sub":"fake-test-user","exp":1}').toString('base64url'),
+  'fake-signature_filler-0123',
+].join('.')
+const fakeAwsKeyId = `AKIA${'FAKE0TEST1FILLER'}`
+const fakeAwsTemporaryKeyId = `ASIA${'FAKE0TEST1FILLER'}`
+const fakeAliyunKeyId = `LTAI${'Fake0Test1Filler2345'}`
+const fakeTencentKeyId = `AKID${'Fake0Test1Filler2Only3Value4567'.padEnd(32, 'z')}`
 
 describe('redactSecretShapes', () => {
   it('redacts a Google API key wherever it appears', () => {
@@ -44,6 +54,31 @@ describe('redactSecretShapes', () => {
       .toBe('ssh://[REDACTED]@git.example.invalid/acme')
     expect(redactSecretShapes('ssh://git@github.com/acme/demo.git')).toBe('ssh://git@github.com/acme/demo.git')
     expect(redactSecretShapes('https://registry.npmjs.org/@xai-official/grok')).toBe('https://registry.npmjs.org/@xai-official/grok')
+  })
+
+  // The scheme may start after a `-`, `.` or `+` in front of it, as `\b` let it
+  // before; what stands in front stays in the text.
+  it('redacts a URL password whose scheme follows a dash, dot or plus in the text', () => {
+    expect(redactSecretShapes('remote:-ssh://fake-user:fake-pass-value@git.example.invalid/acme'))
+      .toBe('remote:-ssh://[REDACTED]@git.example.invalid/acme')
+    expect(redactSecretShapes('x.git+ssh://fake-user:fake-pass-value@git.example.invalid'))
+      .toBe('x.git+ssh://[REDACTED]@git.example.invalid')
+    expect(redactSecretShapes('1.FTP://fake-user:fake-pass-value@ftp.example.invalid'))
+      .toBe('1.FTP://[REDACTED]@ftp.example.invalid')
+  })
+
+  // Every letter after a `-`, `.` or `+` could start a scheme. Before, each one
+  // read the rest of the run again looking for `://`, which took seconds here.
+  it('scans a long run of letters, digits, dashes and dots in linear time', () => {
+    const runs = ['ab-c.d+9'.repeat(10_000), `-${'eyJabcdefghijklmnop-'.repeat(10_000)}`]
+    const started = performance.now()
+    for (const run of runs) {
+      expect(redactSecretShapes(run)).toBe(run)
+      expect(redactSecretShapes(`${run}ssh://fake-user:fake-pass-value`)).toBe(`${run}ssh://fake-user:fake-pass-value`)
+      expect(redactSecretShapes(`${run}ssh://fake-user:fake-pass-value@git.example.invalid`))
+        .toBe(`${run}ssh://[REDACTED]@git.example.invalid`)
+    }
+    expect(performance.now() - started).toBeLessThan(2_000)
   })
 
   it('redacts GitHub and GitLab access tokens wherever they appear', () => {
@@ -90,6 +125,61 @@ describe('redactSecretShapes', () => {
 
   it('does not treat short look-alikes as keys', () => {
     expect(redactSecretShapes('AIzaShort and xai-short and desk-toolbar')).toBe('AIzaShort and xai-short and desk-toolbar')
+  })
+
+  // A website login token Codex reads out of a browser profile or a CLI cache
+  // goes to the phone (#1407 P2-4). Why this is safe to widen: it only adds
+  // redaction, and nothing but a JSON header encodes to `eyJ` followed by two
+  // more dotted segments.
+  it('redacts a JWT wherever it appears', () => {
+    expect(fakeJwt.startsWith('eyJ')).toBe(true)
+    expect(redactSecretShapes(`cached login ${fakeJwt}, expires soon`)).toBe('cached login [REDACTED], expires soon')
+    expect(redactSecretShapes(`{"session":"${fakeJwt}"}`)).toBe('{"session":"[REDACTED]"}')
+    expect(redactSecretShapes(`https://app.example.invalid/callback#id=${fakeJwt}&state=1`))
+      .toBe('https://app.example.invalid/callback#id=[REDACTED]&state=1')
+    expect(redactSecretShapes(`Authorization: Bearer ${fakeJwt}`)).toBe('Authorization: Bearer [REDACTED]')
+  })
+
+  it('leaves base64 that is not a whole JWT readable', () => {
+    const header = Buffer.from('{"alg":"HS256"}').toString('base64url')
+    for (const text of [
+      `${header}.only-two-segments`,
+      `${header}..empty-payload`,
+      'eyJshort.a.b',
+      `prefix${header}.payload.signature`,
+    ]) {
+      expect(redactSecretShapes(text)).toBe(text)
+    }
+  })
+
+  // Only the first `eyJ` of a base64url run may start a match. A `\b` in front
+  // would let every `-eyJ` start one and read the rest of the run again; the
+  // `_` keeps the URL userinfo rule's own scans short, so this times the JWT
+  // rule alone.
+  it('scans a long base64url run full of eyJ in linear time', () => {
+    const run = `-${'eyJabcdefghijklmnop_-'.repeat(200_000)}`
+    const started = performance.now()
+    expect(redactSecretShapes(run)).toBe(run)
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
+  it('redacts AWS, Alibaba Cloud and Tencent Cloud access key IDs', () => {
+    expect(fakeAwsKeyId).toHaveLength(20)
+    expect(fakeTencentKeyId).toHaveLength(36)
+    expect(redactSecretShapes(`aws_access_key_id = ${fakeAwsKeyId}\naws_access_key_id=${fakeAwsTemporaryKeyId}`))
+      .toBe('aws_access_key_id = [REDACTED]\naws_access_key_id=[REDACTED]')
+    expect(redactSecretShapes(`{"AccessKeyId":"${fakeAliyunKeyId}","SecretId":"${fakeTencentKeyId}"}`))
+      .toBe('{"AccessKeyId":"[REDACTED]","SecretId":"[REDACTED]"}')
+  })
+
+  it('leaves words and URLs that only start like a cloud key ID readable', () => {
+    for (const text of [
+      'AKIA alone, AKIAFAKESHORT, ASIA-Pacific region, LTAIshort',
+      `${fakeAwsKeyId}X`,
+      'X-Amz-Credential=AKIA%2F20261018%2Fus-east-1%2Fs3%2Faws4_request',
+    ]) {
+      expect(redactSecretShapes(text)).toBe(text)
+    }
   })
 })
 
@@ -148,6 +238,26 @@ describe('redactSecretFields', () => {
       .toBe('Set-Cookie: [REDACTED]; HttpOnly; Secure')
     expect(redactSecretFields('cookie=plain-fake-a; then the request failed'))
       .toBe('cookie=[REDACTED]; then the request failed')
+  })
+
+  // A cookie name may stand inside the value in front of it. It still starts a
+  // match there, and one that ends its run still takes the pairs after it.
+  it('redacts a Cookie header whose name stands inside another value', () => {
+    expect(redactSecretFields('trace=cookie=plain-fake-a; refresh=plain-fake-b')).toBe('trace=cookie=[REDACTED]')
+    expect(redactSecretFields('x-cookie=cookie:plain-fake-a; refresh=plain-fake-b')).toBe('x-cookie=[REDACTED]')
+    expect(redactSecretFields('cookie=cookie= session=plain-fake-a; refresh=plain-fake-b')).toBe('cookie=[REDACTED] [REDACTED]')
+  })
+
+  // In `cookie=cookie=…` every name after the first stands inside the value of
+  // the one before it. Before, each one read the rest of the run again looking
+  // for a `;`, which took seconds here.
+  it('scans a long run of cookie names in linear time', () => {
+    const started = performance.now()
+    expect(redactSecretFields('cookie='.repeat(20_000))).toBe('cookie=[REDACTED]')
+    expect(redactSecretFields(`${'Cookie:'.repeat(20_000)}; HttpOnly`)).toBe('Cookie:[REDACTED]; HttpOnly')
+    expect(redactSecretFields(`${'cookies='.repeat(20_000)} sid=plain-fake-a; refresh=plain-fake-b`))
+      .toBe('cookies=[REDACTED] [REDACTED]')
+    expect(performance.now() - started).toBeLessThan(2_000)
   })
 
   it('leaves names that only contain a cookie or credential word readable', () => {
@@ -283,6 +393,17 @@ describe('shared redaction table', () => {
   ])('%s hides private key blocks and .env style key names', (_name, redact) => {
     const result = redact('-----BEGIN RSA PRIVATE KEY-----\nplain-fake-pem\n-----END RSA PRIVATE KEY-----\nAWS_SECRET_ACCESS_KEY=plain-fake-env')
     for (const secret of ['plain-fake-pem', 'plain-fake-env']) expect(result).not.toContain(secret)
+  })
+
+  it.each([
+    ['redactSecretPatterns', (value: string) => redactSecretPatterns(value)],
+    ['redactCommandText', (value: string) => redactCommandText(value)],
+    ['redactStartupSecrets', (value: string) => redactStartupSecrets(value)],
+    ['redactDiagnosticText', (value: string) => redactDiagnosticText(value)],
+    ['redactCrashText', (value: string) => redactCrashText(value, '/home/fake-user')],
+  ])('%s hides a bare JWT and cloud access key IDs', (_name, redact) => {
+    const result = redact(`login ${fakeJwt}\naws_access_key_id = ${fakeAwsKeyId} ${fakeAliyunKeyId} ${fakeTencentKeyId}`)
+    for (const secret of [fakeJwt.split('.')[1], fakeAwsKeyId, fakeAliyunKeyId, fakeTencentKeyId]) expect(result).not.toContain(secret)
   })
 
   // The crash reporter hid these two names long before the other four did.

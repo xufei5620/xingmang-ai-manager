@@ -381,6 +381,11 @@ export interface ToolRouteAccountHooks {
   backup(provider: ProviderId): Promise<void>
   /** 当前账号签发过的 Key 的 id，生图技能据此认人；读不到 = 空集合。 */
   ownedKeyIds(): Promise<ReadonlySet<number>>
+  /**
+   * 这把 Key 是不是当前账号签给这个工具、本机缓存着的那把（首页据此显示「已连接」）。没有来源记录的老配置
+   * 换线路时靠它认人；读不到缓存 = 不是。缺省 = 不认，老配置照旧不动。
+   */
+  accountKeyMatches?(provider: ProviderId, apiKey: string): Promise<boolean>
 }
 
 export interface AppConfigSummary {

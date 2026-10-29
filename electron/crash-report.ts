@@ -79,6 +79,37 @@ const MAX_FRAMES = 60
 // closing bracket, since a stack trace wraps payloads in `(…)` and `{…}`.
 const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?:"[^"]*"|'[^']*'|[^\\s,;)\\]}]+)`, 'gi')
 
+// The address shape the crash reporter hides whole. A match that starts inside
+// a run of local-part characters also matches from the character before it,
+// so the leftmost match is either right where the previous one ended
+// (`a@b.cc_d@e.ff` hides both) or where such a run starts. Trying only those
+// two places reads a long run with no `@` in it once; a plain global replace
+// started a match at every position of the run and read the rest of it again
+// each time, which took seconds on a large error message.
+const CRASH_EMAIL_ADDRESS = '[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)*\\.[A-Za-z]{2,}'
+const CRASH_EMAIL_AT_CURSOR = new RegExp(CRASH_EMAIL_ADDRESS, 'y')
+const CRASH_EMAIL_AT_RUN_START = new RegExp(`(?<![A-Za-z0-9._%+-])${CRASH_EMAIL_ADDRESS}`, 'g')
+
+function findCrashEmailAddress(value: string, cursor: number): RegExpExecArray | null {
+  CRASH_EMAIL_AT_CURSOR.lastIndex = cursor
+  const adjacent = CRASH_EMAIL_AT_CURSOR.exec(value)
+  if (adjacent) return adjacent
+  CRASH_EMAIL_AT_RUN_START.lastIndex = cursor
+  return CRASH_EMAIL_AT_RUN_START.exec(value)
+}
+
+function redactCrashEmailAddresses(value: string): string {
+  let output = ''
+  let cursor = 0
+  let match = findCrashEmailAddress(value, cursor)
+  while (match) {
+    output += `${value.slice(cursor, match.index)}[REDACTED_EMAIL]`
+    cursor = match.index + match[0].length
+    match = findCrashEmailAddress(value, cursor)
+  }
+  return output + value.slice(cursor)
+}
+
 /**
  * Everything leaving this process goes through here first. The three classes
  * of payload we must never ship are credentials (a relay key in an error
@@ -90,7 +121,7 @@ const CRASH_SECRET_FIELD = new RegExp(`(${SECRET_FIELD_NAME}["']?\\s*[:=]\\s*)(?
  * crashed.
  */
 export function redactCrashText(value: string, homeDirectory: string): string {
-  return redactSecretShapes(redactHomeDirectory(value, homeDirectory))
+  const redacted = redactSecretShapes(redactHomeDirectory(value, homeDirectory))
     // The optional quote after the key name is what `redactCommandText` lacks:
     // a stack trace carrying a serialized payload spells it `"api_key":"..."`.
     .replace(CRASH_SECRET_FIELD, '$1[REDACTED]')
@@ -101,7 +132,7 @@ export function redactCrashText(value: string, homeDirectory: string): string {
     .replace(/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/:*?"<>|\r\n]+/gi, '$1%USER%')
     .replace(/(\/Users\/)[^/\s:"'\\]+/g, '$1%USER%')
     .replace(/(\/home\/)[^/\s:"'\\]+/g, '$1%USER%')
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]')
+  return redactCrashEmailAddresses(redacted)
 }
 
 /**
