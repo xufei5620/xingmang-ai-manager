@@ -127,7 +127,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
    * fromStart：这一批是从空游标拉的（每次打开都从头拉，游标不落盘），里面可能有星芒关着时发的旧消息。
    * 旧不旧靠发送时间判断（底座的 isStaleInbound），没带时间的判断不了，宁可不执行（#1407 P3-5）。
    */
-  function deliver(message: WeixinInboundMessage, owner: string | null, fromStart: boolean): void {
+  function deliver(message: WeixinInboundMessage, owner: string | null, fromStart: boolean, clockAheadMs: number | undefined): void {
     const inbound = toWeixinRemoteInbound(message, owner)
     if (!inbound) {
       if (isWeixinUserMessage(message)) {
@@ -140,7 +140,7 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
       dependencies.log('info', 'weixin-inbound-ignored', { reason: 'no-sent-time' })
       return
     }
-    handlers?.onInbound(inbound)
+    handlers?.onInbound(clockAheadMs === undefined ? inbound : { ...inbound, clockAheadMs })
   }
 
   async function run(active: WeixinCredential, signal: AbortSignal): Promise<void> {
@@ -154,6 +154,8 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
     let cursor = ''
     let longPollMs = defaultLongPollMs
     let backoffMs = 0
+    // 电脑上的时间比微信快多少，每拉回一批就拿回应里的时间重估（RemoteInbound.clockAheadMs）。
+    let clockAheadMs: number | undefined
     while (!signal.aborted) {
       try {
         const fromStart = cursor === ''
@@ -162,8 +164,9 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
         cursor = updates.cursor
         longPollMs = updates.nextLongPollMs
         backoffMs = 0
+        if (updates.serverTime !== undefined) clockAheadMs = dependencies.now() - updates.serverTime
         report({ state: 'connected' })
-        for (const message of updates.messages) deliver(message, active.ownerUserId, fromStart)
+        for (const message of updates.messages) deliver(message, active.ownerUserId, fromStart, clockAheadMs)
       } catch (error) {
         if (signal.aborted) return
         if (error instanceof WeixinIlinkError && (error.reason === 'session-expired' || error.reason === 'refused')) {

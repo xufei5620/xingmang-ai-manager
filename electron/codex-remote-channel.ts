@@ -42,6 +42,12 @@ interface RemoteInboundBase {
    * 发的指令不该在下次打开时突然执行。平台不给就不填，按收到的时间算。
    */
   sentAt?: number
+  /**
+   * 电脑上的时间比平台快多少毫秒（慢了是负数），渠道拿最近一次平台接口回应里的时间估的；估不出不填。
+   * 电脑时间快了，刚发的消息也会被当成旧的丢掉（#1407 P3-5）：底座靠它认出这种情况，给手机回一句提醒。
+   * 只用来决定回不回这句话，消息照样不执行，绝不拿它放行。
+   */
+  clockAheadMs?: number
 }
 
 export interface RemoteInboundText extends RemoteInboundBase {
@@ -70,7 +76,11 @@ export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteIn
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 
-export type RemoteApprovalKind = 'command' | 'file-change' | 'other'
+/**
+ * Codex 要你同意的是哪一种事，手机上的标题跟着它走。command / terminal-input / network 都是 Codex 的
+ * commandExecution 审批：分别是跑一条命令、往已经开着的程序里输入、连某个网站。
+ */
+export type RemoteApprovalKind = 'command' | 'terminal-input' | 'network' | 'file-change' | 'other'
 
 /** 底座发出的审批请求，跟渠道无关。渠道自己决定画成按钮还是文字。 */
 export interface RemoteApprovalRequest {
@@ -82,7 +92,7 @@ export interface RemoteApprovalRequest {
    */
   nonce: string
   kind: RemoteApprovalKind
-  /** 要跑的命令或要改的文件，已脱敏、已截断。 */
+  /** 要跑的命令、要输入的内容、要连的网址或要改的文件，已脱敏；命令那几种一字不落，放不下的不问人直接拒。 */
   summary: string
   /** 工作目录，主目录已换成 ~。 */
   cwd?: string

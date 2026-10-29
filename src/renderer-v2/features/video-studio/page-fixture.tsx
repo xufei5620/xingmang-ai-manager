@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { ToastProvider } from '../../ui'
+import { AccountBalanceContext } from '../app/balance-context'
+import { createAccountBalanceStore } from '../app/balance-store'
 import '../../app.css'
 import './browser-fixture'
 import type { VideoStudioBridge } from './useVideoStudio'
@@ -33,6 +35,13 @@ let folderOpens = true
 // 地址带 ?models=held 时各分组先不回模型表，等测试叫 releaseModels：页面刚打开、模型还没读完就点生成的那一下（#1489 R28-4）。
 const modelsHeld = query.get('models') === 'held'
 const heldModels: Array<() => void> = []
+// 地址带 ?balance=1234.5 时挂上真应用那份余额仓库，读回这个数（确认框里那句「当前余额」）；不带 = 外壳手上没有余额。
+// 再带 balanceScope 时仓库停在那个账号上：换账号那一下，页面不能报上一个账号的余额。
+const balanceQuery = query.get('balance')
+const balanceStore = balanceQuery === null ? null : createAccountBalanceStore({
+  read: async () => ({ quota: Number(balanceQuery) * 500_000, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: Number(balanceQuery) }),
+})
+balanceStore?.setScope(query.get('balanceScope') ?? 'xm-account:7')
 const groups = [{ name: 'GPT', description: '聊天', ratio: 1, recommended: true }, { name: '图片模型', description: '图片和视频', ratio: 1 }]
 const groupModels: Record<string, string[]> = { GPT: ['gpt-5.6-sol', 'claude-test'], 图片模型: ['gpt-image-2', 'grok-imagine-video-1.5', 'minimax-h3-base'] }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
@@ -123,6 +132,7 @@ declare global {
       exported(): ArrayBuffer | null
       forget(assetId: string): void
       folderOpens(value: boolean): void
+      balance(): number | null
     }
   }
 }
@@ -148,9 +158,10 @@ window.videoStudioPage = {
   exported: () => exported,
   forget: (assetId) => { library.delete(assetId) },
   folderOpens: (value) => { folderOpens = value },
+  balance: () => balanceStore?.getSnapshot().balance?.displayAmount ?? null,
 }
 
 const access = query.get('access') === 'guest' ? 'guest' : query.get('access') === 'unsupported' ? 'unsupported' : 'ready'
-createRoot(document.getElementById('root')!).render(<StrictMode><ToastProvider><div style={{ maxWidth: 1000, margin: '0 auto', padding: 24 }}>
+createRoot(document.getElementById('root')!).render(<StrictMode><AccountBalanceContext.Provider value={balanceStore}><ToastProvider><div style={{ maxWidth: 1000, margin: '0 auto', padding: 24 }}>
   <VideoStudioPage bridge={bridge as XingmangApi} accountScope="xm-account:7" site="solov" access={access} onLogin={() => record('login')} onOpenAccount={(tab) => record('account', tab)} />
-</div></ToastProvider></StrictMode>)
+</div></ToastProvider></AccountBalanceContext.Provider></StrictMode>)
