@@ -559,6 +559,16 @@ export class CodexRemoteService {
     return this.emit()
   }
 
+  /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */
+  async disableAllChannels(): Promise<CodexRemoteSnapshot | null> {
+    if (this.disposed) return null
+    for (const id of remoteChannelIds) {
+      const runtime = this.runtimes[id]
+      if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedOnComputer)
+    }
+    return this.emit()
+  }
+
   async startPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')
@@ -610,10 +620,19 @@ export class CodexRemoteService {
     const before = (await this.options.store.readSettings()).channels[channel]
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
     if (!sameAccount) await this.forgetPeer(runtime)
-    await this.options.store.writeCredential(channel, value)
+    // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
+    // 账号字样留着，因为凭据还在，卡上照旧有「退出登录」能再点。最后把那句报出去。
+    let removeFailure: unknown = null
+    try {
+      await this.options.store.writeCredential(channel, value)
+    } catch (error) {
+      if (value !== null) throw error
+      removeFailure = error
+      this.options.log('warn', 'remote.credential-remove-failed', { channel })
+    }
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
-      stored.accountLabel = value === null ? null : accountLabel
+      if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
       if (!sameAccount) stored.boundPeer = null
       settings.channels[channel] = stored
     })
@@ -625,6 +644,11 @@ export class CodexRemoteService {
         // 这时手机遥控被关掉了就不连，也不报错：凭据已经存好（微信扫码登录也认这一步算成功），设置页上那句停用的话就是交代。
         await this.startChannel(runtime)
       }
+    }
+    if (removeFailure) {
+      // 报错的调用拿不到返回的快照，界面靠 state-changed 跟上已经解绑、停掉的样子。
+      await this.emit()
+      throw removeFailure
     }
     return this.emit()
   }

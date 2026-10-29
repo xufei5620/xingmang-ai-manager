@@ -11,6 +11,22 @@ const REDACTED = '[REDACTED]'
 // trailing `\b` would stop short of a key ending in `-` and leak its tail.
 const KEY_TAIL = '(?![A-Za-z0-9_-])'
 
+// A JWT is three base64url segments. The first is a JSON header, and `{"`
+// followed by a letter always encodes to `eyJ`; the header has to name its
+// `alg`, so even `{"alg":"none"}` runs past the floor of ten after `eyJ`.
+// The lookbehind lets a match start only where a token can start: a long
+// base64url run with `-eyJ` all through it (a blob in a log detail) is then
+// scanned once, not once per occurrence.
+const JSON_WEB_TOKEN = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g
+
+// Cloud access key IDs: AWS long-term `AKIA` and temporary `ASIA` (always 20
+// characters), Alibaba Cloud `LTAI`, Tencent Cloud `AKID` (36 characters). The
+// secret that goes with each is printed under a name (`aws_secret_access_key`,
+// `AccessKeySecret`) and is the field rules' job; the ID is what Codex reads out
+// of `~/.aws/credentials` or a `.env` as `aws_access_key_id = AKIA…`, a name
+// those rules rightly leave alone.
+const CLOUD_ACCESS_KEY_ID = /\b(?:(?:AKIA|ASIA)[A-Z0-9]{16}|LTAI[A-Za-z0-9]{12,20}|AKID[A-Za-z0-9]{32})\b/g
+
 // `RSA`, `EC`, `OPENSSH`, `ENCRYPTED`, and PGP's `PRIVATE KEY BLOCK`.
 const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?)-----/g
 
@@ -57,6 +73,11 @@ function redactPrivateKeyBlocks(value: string): string {
  *   matching END line, or to the end of the text when the END line was cut
  *   off): Codex reads `~/.ssh` or a `.pem` on request and its answer goes to
  *   the phone (YK-4). The BEGIN/END lines stay so the reader knows what it was.
+ * - JWTs (`eyJ…` header, payload, signature): a website login token, read out
+ *   of a browser profile or a CLI's cache on request, is a login wherever it is
+ *   printed (#1407 P2-4).
+ * - Cloud access key IDs (`AKIA…`, `ASIA…`, `LTAI…`, `AKID…`), for the same
+ *   reason.
  */
 export function redactSecretShapes(value: string): string {
   return redactPrivateKeyBlocks(value)
@@ -65,6 +86,8 @@ export function redactSecretShapes(value: string): string {
     .replace(new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}${KEY_TAIL}`, 'g'), REDACTED)
     .replace(new RegExp(`\\bgithub_pat_[A-Za-z0-9_]{20,}${KEY_TAIL}`, 'g'), REDACTED)
     .replace(new RegExp(`\\bglpat-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'g'), REDACTED)
+    .replace(JSON_WEB_TOKEN, REDACTED)
+    .replace(CLOUD_ACCESS_KEY_ID, REDACTED)
     .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, `$1${REDACTED}`)
     .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, REDACTED)
     .replace(new RegExp(`\\bAIza[A-Za-z0-9_-]{35,}${KEY_TAIL}`, 'g'), REDACTED)
