@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import type { SystemService, SystemSnapshot } from './system-service'
+import type { SystemService, SystemSnapshot, ToolRouteAccountHooks } from './system-service'
 import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
@@ -447,12 +447,39 @@ describe('registerIpcHandlers', () => {
     service.bindToolRouteAccount = bindToolRouteAccount
     const { dispose } = register(service)
     expect(bindToolRouteAccount).toHaveBeenCalledOnce()
-    expect(bindToolRouteAccount.mock.calls[0][0]).toEqual({ backup: expect.any(Function), ownedKeyIds: expect.any(Function) })
+    expect(bindToolRouteAccount.mock.calls[0][0]).toEqual({
+      backup: expect.any(Function), ownedKeyIds: expect.any(Function), accountKeyMatches: expect.any(Function),
+    })
 
     dispose()
 
     expect(bindToolRouteAccount).toHaveBeenCalledTimes(2)
     expect(bindToolRouteAccount).toHaveBeenLastCalledWith(null)
+  })
+
+  // 没有来源记录的老配置换线路时靠它认人（tool-route-follow-service.ts 的 permitsUnrecordedRouteFollow）：只认当前账号
+  // 缓存里签给这个工具的那把，签给别的工具的、读不出缓存、没登录都不认。
+  it('recognizes only the key the signed-in account issued for that very tool', async () => {
+    const service = serviceStub()
+    const bindToolRouteAccount = vi.fn()
+    service.bindToolRouteAccount = bindToolRouteAccount
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const cached = [{ id: 11, provider: 'codex' as const, group: 'g', name: 'xingmang-desktop-codex', key: 'sk-codex-account-000' }]
+    const managedCliKeys = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+    register(service, undefined, undefined, accountService, undefined, managedCliKeys)
+    const hooks = bindToolRouteAccount.mock.calls[0][0] as ToolRouteAccountHooks
+    const matches = hooks.accountKeyMatches!
+
+    await expect(matches('codex', 'sk-codex-account-000')).resolves.toBe(true)
+    expect(managedCliKeys.read).toHaveBeenCalledWith(7)
+    await expect(matches('grok', 'sk-codex-account-000')).resolves.toBe(false)
+    await expect(matches('codex', 'sk-someone-else-000')).resolves.toBe(false)
+    await expect(matches('codex', '')).resolves.toBe(false)
+    managedCliKeys.read.mockRejectedValueOnce(new Error('cache corrupt'))
+    await expect(matches('codex', 'sk-codex-account-000')).resolves.toBe(false)
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false } as never)
+    await expect(matches('codex', 'sk-codex-account-000')).resolves.toBe(false)
   })
 
   it('routes global acceleration through trusted IPC and rejects unknown modes', async () => {

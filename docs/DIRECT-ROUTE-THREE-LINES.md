@@ -101,7 +101,7 @@
 
 | | 缺口 | 位置 | 对应改动 | 批次 |
 |---|---|---|---|---|
-| (a) | 来源记录不是 account 的配置，永远不迁移。而首页只要地址属于本站任一条线路，就显示「已连接」，用户看不出 Codex 其实在 CF | 渲染层：`account-bootstrap.ts:207-224`（`accountRouteMigrationNeeded`）、`:293-331`（`accountBootstrapPlan` 的 skipped 分支）。主进程：`system-service.ts:7186`（`saveConfig` 的来源闸门）。首页的判断：`relay-sites.ts:266-276`（`relayProviderBaseUrlMatches`）、`config-files.ts:1732`（`matchesRelay`） | 首页如实显示：C12（第一批）。放宽迁移范围：C8（第二批，待定） | 拆开 |
+| (a) | 来源记录不是 account 的配置，永远不迁移。而首页只要地址属于本站任一条线路，就显示「已连接」，用户看不出 Codex 其实在 CF | 渲染层：`account-bootstrap.ts:207-224`（`accountRouteMigrationNeeded`）、`:293-331`（`accountBootstrapPlan` 的 skipped 分支）。主进程：`system-service.ts:7186`（`saveConfig` 的来源闸门）。首页的判断：`relay-sites.ts:266-276`（`relayProviderBaseUrlMatches`）、`config-files.ts:1732`（`matchesRelay`） | 首页如实显示：C12（第一批）。放宽迁移范围：C8 前半 10-29 已拍板、随 0.2.23（见 4.3） | 拆开 |
 | (b) | Claude Desktop、WorkBuddy、OpenCode 开着时不改，之后只在下一次扫描（启动、重新检测、换线、保存配置后）时重试，没有定时器 | `system-service.ts:6620-6623`（`followExternalClientRoute` 的 `status.running` 分支） | C11 | 第一批 |
 | (c) | #942 去掉了延后，但注释里承诺的「由渲染层提示客户重开」没有做 | `system-service.ts:7195-7196`（`saveConfig` 里 `followedRoute` 上方的注释） | C10 | 第一批 |
 | (d) | 停在 CF 以后，要连续运行约 10 分钟才迁回直连，这时管理工具多半早关了 | `relay-route-controller.ts:329-339`（`checkRecovery`） | C3 回升规则 | 第一批 |
@@ -109,6 +109,8 @@
 | (f) | `settledRouteLine` 要求保存的偏好等于当前生效的偏好。用户改了线路设置、还没重启时，什么都不迁 | `account-bootstrap.ts:198-204`（`settledRouteLine`） | 5.3.6 节 | 第一批 |
 
 注意 (a)：C8 拍板之前，来源不是 account 的那部分用户在 0.2.18 里**仍然不会被自动迁移**，首页会如实显示他们在 CF。这是有意的，不要当 bug 顺手修。
+
+**更新（10-29）**：yoyo 亲手打字同意 C8 前半（见 4.3 那一行），随 0.2.23。没有来源记录的老配置从此跟着线路走；`manual` / `changed` 的照旧不迁。
 
 ---
 
@@ -143,7 +145,7 @@
 
 | 项 | 内容 | 在等什么 | 先别动什么 |
 |---|---|---|---|
-| **C8 放宽迁移范围** | 三条同时成立时只改 base_url，不碰 Key：① 来源 unknown（含 v1 旧记录）；② 原地址是本站某条线路的 origin；③ 文件里的 Key 与当前账号某把 Key 的哈希一致。另外，`manual` / `changed` 的配置在首页给「一键改到当前线路」按钮 | 我们拍板。这一项是在放宽「来源未经确认就不自动改写」的同意规则 | 两道闸原样保留：渲染层 `account-bootstrap.ts:293-331`、主进程 `system-service.ts:7186`。第一批的定点改写只作用于来源是 account 的配置 |
+| **C8 放宽迁移范围** | 三条同时成立时只改 base_url，不碰 Key：① 来源 unknown（含 v1 旧记录）；② 原地址是本站某条线路的 origin；③ 文件里的 Key 与当前账号某把 Key 的哈希一致。另外，`manual` / `changed` 的配置在首页给「一键改到当前线路」按钮 | 我们拍板。这一项是在放宽「来源未经确认就不自动改写」的同意规则 | 两道闸原样保留：渲染层 `account-bootstrap.ts:293-331`、主进程 `system-service.ts:7186`。第一批的定点改写只作用于来源是 account 的配置。<br>**10-29 前半已拍板（yoyo 亲手打字同意），随 0.2.23**：老客户升级后要点「重置为初始状态」才走线路2，原因就是 (a)。实现在 `tool-route-follow-service.ts` 的定点改写里（`permitsUnrecordedRouteFollow`），条件比上面更窄：③ 认的是当前账号**签给这个工具**、本机缓存着的那把（`ToolRouteAccountHooks.accountKeyMatches`，和首页 `configurationAccountMatched` 同一个判断）；另加记录上没写过 `manual`、Codex 不是 ChatGPT 登录。来源记录原样放回，补设置、换 Key、换型号照旧不碰它；只作用于星芒账号，历史账号和渲染层那道闸不变。后半的按钮没做，要新字 |
 | **C14 Codex 桌面端自动加速** | 三选一：去掉 / 每次打开前征得同意 / 只对 ChatGPT 登录用户保留并征得同意 | 我们拍板 | `codex-desktop-service.ts:3546-3550`（`connectAccelerationBeforeLaunch`）、`:3582`、`:3610`，`main.ts:1327-1346`，以及 `codex-desktop-acceleration.ts`：**现有行为原样保留，不要顺手改**。可以先写「强杀管理工具后系统代理能否还原」的测试步骤（V10），只测不改 |
 | **香港接入** | C2：给 solov 加 `direct-hk` 线路和 origin（`relay-sites.ts:15` `RelayEndpointId`、`:172-187` `siteEndpoints`）。<br>C13：生图 MCP 白名单（`bundled-skills/xingmang-ai/scripts/mcp-server.mjs:28-32`，`ALLOWED_RELAY_ORIGINS`）加上香港 origin。写 L2 之前，先确认本机**已安装**的技能脚本包含香港 origin，否则技能的 baseUrl 留在 L1/L3。<br>写配置前查模型列表改走应用线路（5.1.0）。<br>逐一核对写死地址的地方（5.9 节）。<br>更新源对香港的处理（C15 补充） | 香港域名：等服务端做完换注册域名后的连通性实验，由我们拍板。另外还要等状态文件上线 | **C2 和 C13 必须同一版发。** 先别写任何香港域名 |
 | **C21 匿名汇总上报** | 经 L3 上报线路健康计数（只报线路 id、失败类别、时间窗），供服务端判断国内一侧的整体故障 | 隐私口径拍板，以及服务端的接收接口 | 不加任何上报 |
@@ -380,7 +382,7 @@
   - 配置里的地址和工具线路上这个工具的地址不完全相等（`relayProviderBaseUrlEquals`，`relay-sites.ts:279-282`）；
   - 能认出它是本站某条线路或别名（`relaySiteEndpointIdForBaseUrl`，`relay-sites.ts:240-249`）。
   - 落在别名上的配置照样改写成那条线路的域名。别的地址不碰。
-- 第一批只作用于来源记录是 account、且 identity 对得上的配置，与现有闸门一致。C8 拍板前不放宽。
+- 第一批只作用于来源记录是 account、且 identity 对得上的配置，与现有闸门一致。C8 拍板前不放宽（10-29 起 C8 前半另外放进来，见 4.3）。
 - **触发点**：
   - 工具线路变化；
   - 开机对账：配置里实际的线路 ≠ 工具线路，比如上次没迁成，或者是 0.2.17 留下的；
@@ -672,7 +674,7 @@
 | V9 | 关闭管理工具后，Codex、Claude Code、Gemini、Grok 都能正常对话 | 第一批 | 真机 |
 | V10 | 不改系统：整个切换过程前后，Windows 注册表 Internet Settings、`HKCU\Environment`、hosts、网卡 DNS、路由表，以及 macOS `networksetup`，都零变化。另外测：加速连接状态下强杀管理工具，系统代理和 PAC 是否还原；重启电脑前后对比 | 切换部分第一批；加速部分只测不改（C14） | 真机 |
 | V11 | 迁移后来源记录为 account，下一次换线照样能迁 | 第一批 | 单测 |
-| V11-C8 | unknown + 本站线路 + Key 哈希匹配：只改 base_url；Key 不匹配不改；manual 不改，但首页显示实际线路 | 第二批 | — |
+| V11-C8 | unknown + 本站线路 + Key 哈希匹配：只改 base_url；Key 不匹配不改；manual 不改，但首页显示实际线路 | 第二批（前半 0.2.23） | 单测（`system-service-tool-route.test.ts`） |
 | V12 | 首页每个工具的线路，和配置文件里的实际地址一致 | 第一批 | 单测 + 真机 |
 | V13 | 生图技能的 baseUrl 跟随工具线路（L1/L3）。L2 上生图正常；本机装的是旧技能脚本时，不会被写成 L2 | L1/L3 部分第一批；L2 部分第二批 | 单测 / 真机 |
 | V14 | 不抖动：hosts 每 5 分钟切换一次，模拟时有时无的劫持，跑 24 小时。配置切换不超过 2 次，每个工具最多提示 1 次 | 第一批 | 真机（可用开发构建的缩短计时开关） |
@@ -709,6 +711,6 @@
 | 测试用地址（返回自签证书的公网地址、中转测试入口） | V7-1 等真机测试 | 私下提供，不进仓库 |
 | 三个外部客户端退出时会不会回写配置的实测结论 | C11 是否改为立即写入 | 我们测；结论出来之前保持「延后 + 定时重试」 |
 | V17 推荐版本实测结论：Codex 桌面端新对话、TUI `/new`、Grok 1.0.46 热加载与 `/settings` 回写、各工具读不读系统代理 | 第 6 节文案细节；Grok 回读核对的预期 | 我们测 |
-| C8、C14、C21、C22 的结论；香港域名 | 第二批对应各项（4.3） | 待拍板 |
+| C8、C14、C21、C22 的结论；香港域名 | 第二批对应各项（4.3） | 待拍板（C8 前半 10-29 已拍板） |
 | `X-XM-Relay` 响应头上线 | 只影响日志和诊断里有没有这一项 | 未上线，读不到就不记 |
 | 灰度名单、放量比例、发版审批 | 0.2.18 发布 | 我们来 |

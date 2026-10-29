@@ -620,6 +620,24 @@ describe('remembering an ownership record to put it back', () => {
   })
 })
 
+describe('the source a record names', () => {
+  it('reads the recorded source even after the config changed, and null without a record', async () => {
+    const f = fixture()
+    saveProviderConfig('codex', f.payload.apiKey, f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    const config = f.current()
+    expect(f.ownership.recordedSource('codex', config)).toBeNull()
+
+    await f.ownership.write('codex', config, 'manual')
+    saveProviderConfig('codex', 'sk-fixture-changed', f.payload.model, 'merge', f.roots, {}, providerBaseUrls)
+    // 指纹对不上的手动记录读成「看不出来」，记录上写的来源还认得出。
+    expect(f.ownership.read('codex', f.current())).toBe('unknown')
+    expect(f.ownership.recordedSource('codex', f.current())).toBe('manual')
+
+    fs.writeFileSync(f.ownerFile(), '{')
+    expect(f.ownership.recordedSource('codex', f.current())).toBeNull()
+  })
+})
+
 describe('sameNativeConfigSnapshot', () => {
   it('counts a config as untouched only while its identity, modification time and model all match', () => {
     const f = fixture()
