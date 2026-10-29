@@ -19,6 +19,7 @@ import type { SafeStorageLike } from './account-session-store'
 import {
   belongsToOtherTurn,
   buildApprovalRequest,
+  buildRemoteMcpServerOverrides,
   buildThreadStartParams,
   collectCredentialSecrets,
   CodexRemoteService,
@@ -59,6 +60,8 @@ class FakeCodex extends EventEmitter {
   readonly kills: string[] = []
   /** 按方法名设了就等它好了才回：模拟 Codex 的回执比别的消息晚到。 */
   readonly replyGates = new Map<string, Promise<unknown>>()
+  /** config/read 回什么（result 或 error）：缺省是什么外部工具都没配。 */
+  configRead: Record<string, unknown> = { result: { config: {}, origins: {}, layers: [] } }
   private turns = 0
   private readonly replies = new Map<string, (message: Record<string, unknown>) => void>()
   readonly stdin = {
@@ -107,6 +110,7 @@ class FakeCodex extends EventEmitter {
     if (typeof id !== 'string') return
     let reply: Record<string, unknown> | null = null
     if (message.method === 'initialize') reply = { id, result: { userAgent: 'codex' } }
+    if (message.method === 'config/read') reply = { id, ...this.configRead }
     if (message.method === 'thread/start') reply = { id, result: { thread: { id: 'th-1' } } }
     if (message.method === 'turn/start') {
       this.turns += 1
@@ -178,6 +182,8 @@ async function setup(options: {
   replyGates?: ReadonlyMap<string, Promise<unknown>>
   /** 设了就等它好了才交出 Codex 的密钥：模拟读配置读得慢。 */
   secretsGate?: Promise<unknown>
+  /** 起出来的每份 Codex 回 config/read 用的（FakeCodex.configRead）。 */
+  configRead?: Record<string, unknown>
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -212,6 +218,7 @@ async function setup(options: {
       await options.spawnGate
       const fake = new FakeCodex()
       for (const [method, gate] of options.replyGates ?? []) fake.replyGates.set(method, gate)
+      if (options.configRead) fake.configRead = options.configRead
       codex.push(fake)
       return fake as unknown as AppServerProcess
     },
@@ -325,6 +332,60 @@ describe('codex-remote-service helpers', () => {
       sandbox: 'workspace-write',
     })
     expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('danger-full-access')
+  })
+
+  // #1407 P2-4：客户自己接的外部工具调用不一定先问人，遥控开的对话里一律关掉；联网搜索不动。
+  it('starts threads without plugins, apps or the configured MCP servers, and leaves web search alone', () => {
+    expect(buildThreadStartParams('/p').config).toEqual({ 'features.apps': false, 'features.plugins': false })
+    expect(buildThreadStartParams('/p', { docs: { enabled: false } }).config).toEqual({
+      'features.apps': false,
+      'features.plugins': false,
+      mcp_servers: { docs: { enabled: false } },
+    })
+    expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('web_search')
+  })
+
+  it('switches off every MCP server any config layer defines', () => {
+    const configRead = {
+      config: { mcp_servers: { docs: { command: 'docs-mcp' } } },
+      origins: {},
+      layers: [
+        { name: { type: 'sessionFlags' }, version: 'a', config: {}, disabledReason: null },
+        // A project layer Codex has not trusted yet: thread/start will trust and load it.
+        {
+          name: { type: 'project', dotCodexFolder: '/p/.codex' },
+          version: 'b',
+          config: { mcp_servers: { repo: { command: './repo-mcp', args: ['--serve'] }, web: { url: 'https://mcp.example.test/' }, docs: { command: 'other' }, broken: { args: [] } } },
+          disabledReason: 'untrusted',
+        },
+        { name: { type: 'user', file: '/h/.codex/config.toml', profile: null }, version: 'c', config: { mcp_servers: { docs: { command: 'docs-mcp' }, remote: { url: 'https://x.test/' } } }, disabledReason: null },
+        { name: { type: 'system', file: '/etc/codex/config.toml' }, version: 'd', config: { model: 'x' }, disabledReason: null },
+      ],
+    }
+    expect(buildRemoteMcpServerOverrides(configRead)).toEqual({
+      docs: { enabled: false },
+      remote: { enabled: false },
+      repo: { command: './repo-mcp', enabled: false },
+      web: { url: 'https://mcp.example.test/', enabled: false },
+    })
+  })
+
+  it('takes the command of the highest disabled layer for a server only disabled layers define', () => {
+    const layer = (command: string) => ({ config: { mcp_servers: { repo: { command } } }, disabledReason: 'untrusted' })
+    expect(buildRemoteMcpServerOverrides({ layers: [layer('inner'), layer('outer')] })).toEqual({ repo: { command: 'inner', enabled: false } })
+  })
+
+  it('keeps a server called __proto__ as its own key', () => {
+    const configRead = JSON.parse('{"layers":[{"config":{"mcp_servers":{"__proto__":{"command":"evil"}}},"disabledReason":null}]}') as unknown
+    const overrides = buildRemoteMcpServerOverrides(configRead)
+    expect(Object.keys(overrides)).toEqual(['__proto__'])
+    expect(JSON.parse(JSON.stringify(buildThreadStartParams('/p', overrides)))).toMatchObject({ config: { mcp_servers: JSON.parse('{"__proto__":{"enabled":false}}') as unknown } })
+  })
+
+  it('falls back to the effective config when Codex sends no layers, and to nothing for an unreadable answer', () => {
+    expect(buildRemoteMcpServerOverrides({ config: { mcp_servers: { docs: { command: 'docs-mcp' } } }, layers: null })).toEqual({ docs: { enabled: false } })
+    expect(buildRemoteMcpServerOverrides(null)).toEqual({})
+    expect(buildRemoteMcpServerOverrides({ layers: [null, { config: { mcp_servers: [] } }] })).toEqual({})
   })
 
   it('collects every long string of a channel credential as a secret', () => {
@@ -538,11 +599,13 @@ describe('codex-remote-service turns', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(codex.requests('config/read')[0].params).toEqual({ cwd: s.workspace, includeLayers: true })
     expect(codex.requests('thread/start')[0].params).toMatchObject({
       cwd: s.workspace,
       approvalPolicy: 'untrusted',
       approvalsReviewer: 'user',
       sandbox: 'workspace-write',
+      config: { 'features.apps': false, 'features.plugins': false },
     })
     expect(codex.requests('turn/start')[0].params).toEqual({
       threadId: 'th-1',
@@ -555,6 +618,43 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts()).toHaveLength(2))
     expect(channel.texts()[1]).toBe('测试都过了，密钥是 [已隐去]')
     expect(channel.sent[1].replyContext).toMatch(/^ctx-/)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+  })
+
+  // #1407 P2-4：配了外部工具的电脑，遥控开的对话把它们逐个停用，电脑上的配置不动。
+  it('opens the thread with every configured MCP server switched off', async () => {
+    const s = await setup({
+      configRead: {
+        result: {
+          config: { mcp_servers: { docs: { command: 'docs-mcp' } } },
+          origins: {},
+          layers: [
+            { name: { type: 'project', dotCodexFolder: '/w/.codex' }, version: 'b', config: { mcp_servers: { repo: { url: 'https://mcp.example.test/' } } }, disabledReason: 'untrusted' },
+            { name: { type: 'user', file: '/h/.codex/config.toml', profile: null }, version: 'a', config: { mcp_servers: { docs: { command: 'docs-mcp' } } }, disabledReason: null },
+          ],
+        },
+      },
+    })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('thread/start')[0].params).toMatchObject({
+      config: {
+        'features.apps': false,
+        'features.plugins': false,
+        mcp_servers: { docs: { enabled: false }, repo: { url: 'https://mcp.example.test/', enabled: false } },
+      },
+    })
+    expect(codex.written.findIndex((message) => message.method === 'config/read'))
+      .toBeLessThan(codex.written.findIndex((message) => message.method === 'thread/start'))
+  })
+
+  it('opens no thread when Codex cannot say which MCP servers are configured', async () => {
+    const s = await setup({ configRead: { error: { code: -32603, message: 'failed to read configuration layers' } } })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这一轮没做完：failed to read configuration layers'))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
   })
 
