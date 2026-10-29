@@ -1,0 +1,84 @@
+# 临时：核网络加速现在还能不能用（洛杉矶线路活不活、线上有没有在线节点或远程关掉），核完就删。
+# 从 GitHub Release 取线上 0.2.22 的 Windows 安装包，解出里面的加速节点，用产品自己的运行时代码和同版本官方 Linux 内核
+# 真连一次；再只读看一眼更新目录上的 service-status.json、acceleration-nodes.json。不读 secret、不挂 environment、不改系统代理。
+name: tmp acceleration line check
+
+on:
+  push:
+    branches: [claude/project-thread-9439do]
+    paths:
+      - .github/workflows/tmp-acceleration-line-check.yml
+      - scripts/tmp-acceleration-line-check.cjs
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: '0.2.22'
+  SETUP_SHA256: e7ea43376a517d03e54f23fc6931d1f3b7586c94efbc367bd5c09e26932903eb
+  MAC_ARM64_DMG_SHA256: 3ccc5184e12812345d2688dc7e7abc6b85d85f473e466afd15cc3d3d0dfb19cf
+  MIHOMO_VERSION: v1.19.29
+  FEED: https://updatesnew.shenfengwl.fun/xingmang-manager
+
+jobs:
+  line:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/ --ignore-scripts
+      - run: npx tsc -p tsconfig.electron.json
+
+      - name: What the update feed tells clients now (read only)
+        run: |
+          set -uo pipefail
+          echo "== latest.yml version =="
+          curl --silent --show-error --max-time 30 "$FEED/latest.yml" | grep -E '^version:' || true
+          echo "== service-status.json featuresOff / minimumVersion / badVersions =="
+          curl --silent --show-error --max-time 30 "$FEED/service-status.json" \
+            | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const v=JSON.parse(s);console.log(JSON.stringify({featuresOff:v.featuresOff??null,minimumVersion:v.minimumVersion??null,badVersions:v.badVersions??null,maintenance:v.maintenance??null,updatedAt:v.updatedAt??null}))})"
+          echo "== acceleration-nodes.json =="
+          curl --silent --show-error --max-time 30 --output /dev/null --write-out 'HTTP %{http_code}\n' "$FEED/acceleration-nodes.json"
+
+      - name: Unpack the live Windows installer
+        run: |
+          set -euo pipefail
+          setup="$RUNNER_TEMP/setup.exe"
+          curl --fail --location --silent --show-error --max-time 300 --output "$setup" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${RELEASE_VERSION}/XingMang-AI-Manager-${RELEASE_VERSION}-Setup.exe"
+          echo "$SETUP_SHA256  $setup" | sha256sum --check
+          7z x -y "$setup" "-o$RUNNER_TEMP/nsis" > /dev/null
+          archive=$(find "$RUNNER_TEMP/nsis" -name 'app-64.7z' | head -1)
+          test -n "$archive"
+          7z x -y "$archive" "-o$RUNNER_TEMP/app" > /dev/null
+          ls -la "$RUNNER_TEMP/app/resources/acceleration"
+          echo "RESOURCES=$RUNNER_TEMP/app/resources" >> "$GITHUB_ENV"
+
+      - name: Fetch the official Linux core of the same version
+        run: |
+          set -euo pipefail
+          curl --fail --location --silent --show-error --max-time 120 --output "$RUNNER_TEMP/mihomo.gz" \
+            "https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-amd64-compatible-${MIHOMO_VERSION}.gz"
+          gunzip -c "$RUNNER_TEMP/mihomo.gz" > "$RUNNER_TEMP/mihomo"
+          chmod 700 "$RUNNER_TEMP/mihomo"
+          "$RUNNER_TEMP/mihomo" -v
+          echo "CORE=$RUNNER_TEMP/mihomo" >> "$GITHUB_ENV"
+
+      - name: Connect to the line with the packaged profile
+        run: node scripts/tmp-acceleration-line-check.cjs "$RESOURCES" "$CORE"
+
+      - name: Does the live Mac (Apple silicon) package carry the line too
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          dmg="$RUNNER_TEMP/mac.dmg"
+          curl --fail --location --silent --show-error --max-time 300 --output "$dmg" \
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/v${RELEASE_VERSION}/XingMang-AI-Manager-${RELEASE_VERSION}-Apple-Silicon-arm64.dmg"
+          echo "$MAC_ARM64_DMG_SHA256  $dmg" | sha256sum --check
+          7z l "$dmg" | grep -E 'Resources/acceleration/' || echo '没在 dmg 里找到 Resources/acceleration'
