@@ -1053,6 +1053,33 @@ describe('codex-remote-service lifecycle', () => {
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 
+  // 托盘里那一项「关掉手机遥控」（#1407 P2-1）：开着的渠道一起关，手机上收到的跟在设置里点关一样。
+  it('switches every open channel off at once from the tray and tells the bound person', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    await s.service.setChannelEnabled('weixin', true)
+    const weixin = s.channels[1]
+    const codex = await prompted(s, channel)
+    expect(s.service.hasEnabledChannel()).toBe(true)
+
+    const snapshot = await s.service.disableAllChannels()
+    expect(channel.texts()).toContain('手机遥控已在电脑上关闭。')
+    expect(channel.stopped).toBe(1)
+    expect(weixin.stopped).toBe(1)
+    expect(codex.kills).toContain('SIGTERM')
+    expect(snapshot).toMatchObject({ channels: { feishu: { enabled: false }, weixin: { enabled: false } } })
+    expect(s.snapshots).toContain(snapshot)
+    expect(s.service.hasEnabledChannel()).toBe(false)
+
+    // 再点一次（菜单还没跟上）不重复道别、不再停一遍。
+    await s.service.disableAllChannels()
+    expect(channel.texts().filter((line) => line === '手机遥控已在电脑上关闭。')).toHaveLength(1)
+    expect(channel.stopped).toBe(1)
+    s.service.dispose()
+    expect(await s.service.disableAllChannels()).toBeNull()
+  })
+
   // 状态文件关掉了手机遥控（G04）：开着的当场停，手机上收到的跟在电脑上点关一样。
   it('stops an open channel the moment the computer can no longer offer remote control, and only refreshes when it can', async () => {
     const s = await setup()
