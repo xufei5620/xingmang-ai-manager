@@ -11,6 +11,16 @@ const REDACTED = '[REDACTED]'
 // trailing `\b` would stop short of a key ending in `-` and leak its tail.
 const KEY_TAIL = '(?![A-Za-z0-9_-])'
 
+// URL userinfo that carries a password, on any scheme. The scheme always runs
+// to the end of its run of scheme characters (none of them is the `:` of
+// `://`), so a match starts where that run starts and reads it once. A `\b` in
+// front let every letter after a `-`, `.` or `+` start a match and read the
+// rest of the run again, which is quadratic in a long base64url or kebab-case
+// run. The lookahead keeps what that rule reached: a run counts only if a
+// letter opens it at a word boundary or follows a `-`, `.` or `+` in it, where
+// `\b[a-z]` could start; the part in front of that letter is kept in `$1`.
+const URL_USERINFO_WITH_PASSWORD = /(?<![a-z0-9+.-])(?=\b[a-z]|[a-z0-9+.-]*?[+.-][a-z])([a-z0-9+.-]+:\/\/)[^\s/?#@:]*:[^\s/?#@]*@/gi
+
 // A JWT is three base64url segments. The first is a JSON header, and `{"`
 // followed by a letter always encodes to `eyJ`; the header has to name its
 // `alg`, so even `{"alg":"none"}` runs past the floor of ten after `eyJ`.
@@ -82,7 +92,7 @@ function redactPrivateKeyBlocks(value: string): string {
 export function redactSecretShapes(value: string): string {
   return redactPrivateKeyBlocks(value)
     .replace(/\b(https?:\/\/)[^\s/?#@]+@/gi, `$1${REDACTED}@`)
-    .replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^\s/?#@:]*:[^\s/?#@]*@/gi, `$1${REDACTED}@`)
+    .replace(URL_USERINFO_WITH_PASSWORD, `$1${REDACTED}@`)
     .replace(new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}${KEY_TAIL}`, 'g'), REDACTED)
     .replace(new RegExp(`\\bgithub_pat_[A-Za-z0-9_]{20,}${KEY_TAIL}`, 'g'), REDACTED)
     .replace(new RegExp(`\\bglpat-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'g'), REDACTED)
