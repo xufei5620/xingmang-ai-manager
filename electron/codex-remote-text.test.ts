@@ -45,6 +45,20 @@ describe('codex-remote-text', () => {
     expect(redacted).toContain('[已隐去]')
   })
 
+  // Codex can read a website login token or a cloud key ID without asking, and
+  // its answer goes to the phone (#1407 P2-4).
+  it('hides a JWT and a cloud access key ID before they leave the machine', () => {
+    const jwt = [
+      Buffer.from('{"alg":"RS256","kid":"fake"}').toString('base64url'),
+      Buffer.from('{"sub":"fake-phone-user"}').toString('base64url'),
+      'fake-phone-signature',
+    ].join('.')
+    const keyId = `AKIA${'FAKE0PHONE1TESTX'}`
+    const text = `浏览器里存着 ${jwt}\naws_access_key_id = ${keyId}`
+    expect(redactRemoteText(text, { secrets: [], homeDirectory: '/home/alice', platform: 'linux' }))
+      .toBe('浏览器里存着 [已隐去]\naws_access_key_id = [已隐去]')
+  })
+
   it('ignores secrets too short to redact safely', () => {
     expect(redactRemoteText('a b c', { secrets: ['a'], homeDirectory: '' })).toBe('a b c')
   })
