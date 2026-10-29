@@ -6,35 +6,26 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { CommandRunnerError, type CommandResult } from './command-runner'
 import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNodeRuntimeBinDirectory, managedNodeRuntimeRoot } from './managed-cli-paths'
+import { linuxNodeRuntimeVersion } from './linux-node-runtime'
 import {
   buildDarwinNodeExtractPlan,
   buildDarwinNodeSignaturePlan,
   darwinNodeArchiveTopDirectory,
   darwinNodeRuntimeFailureMessage,
+  darwinNodeRuntimePinnedRelease,
+  darwinNodeRuntimeVersion,
   installDarwinNodeRuntime,
   nodeRuntimeDarwinTeamIdentifier,
   resolveDarwinPreferredNodeDirectory,
   type DarwinNodeRuntimeProcess,
 } from './macos-node-runtime'
-import { parseNodeReleaseIndex } from './node-runtime'
+import { nodeVersionStatus } from './versions'
 
-const version = 'v22.12.0'
+const version = darwinNodeRuntimeVersion
 const archiveBytes = Buffer.alloc(2 * 1024 * 1024, 7)
 const archiveSha256 = createHash('sha256').update(archiveBytes).digest('hex')
-
-const releaseIndex = JSON.stringify([
-  { version: 'v23.3.0', lts: false, files: ['osx-arm64-tar', 'osx-x64-tar'] },
-  { version, lts: 'Jod', files: ['osx-arm64-tar', 'osx-x64-tar', 'win-x64-msi'] },
-  { version: 'v20.18.1', lts: 'Iron', files: ['osx-arm64-tar', 'osx-x64-tar'] },
-])
-
-function shasums(sha = archiveSha256): string {
-  return [
-    `${'a'.repeat(64)}  node-${version}-darwin-x64.tar.gz`,
-    `${sha}  node-${version}-darwin-arm64.tar.gz`,
-    `${'b'.repeat(64)}  node-${version}-arm64.msi`,
-  ].join('\n')
-}
+const pinned = { version, sha256: archiveSha256 }
+const archiveFile = `${version}/node-${version}-darwin-arm64.tar.gz`
 
 function result(plan: DarwinNodeRuntimeProcess, stdout = ''): CommandResult {
   return { executable: plan.executable, argv: [...plan.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: 0, durationMs: 1 }
@@ -42,7 +33,6 @@ function result(plan: DarwinNodeRuntimeProcess, stdout = ''): CommandResult {
 
 interface FakeOptions {
   failHosts?: string[]
-  checksum?: string
   signatureExitCode?: number
   reportedVersion?: string
 }
@@ -53,8 +43,6 @@ function fakeNetwork(options: FakeOptions = {}) {
     const url = String(input)
     requested.push(url)
     if (options.failHosts?.some((host) => url.includes(host))) throw new TypeError('fetch failed')
-    if (url.endsWith('/index.json')) return new Response(releaseIndex)
-    if (url.endsWith('/SHASUMS256.txt')) return new Response(shasums(options.checksum))
     if (url.endsWith('.tar.gz')) {
       return new Response(archiveBytes, { headers: { 'content-length': String(archiveBytes.byteLength) } })
     }
@@ -111,15 +99,20 @@ afterEach(() => {
 })
 
 describe('macOS managed Node.js runtime', () => {
-  it('selects the newest LTS release that ships a macOS archive', () => {
-    expect(parseNodeReleaseIndex(releaseIndex, 'arm64', 'darwin-archive')).toEqual({
-      version,
-      lts: 'Jod',
-      architecture: 'arm64',
-      fileName: `node-${version}-darwin-arm64.tar.gz`,
-    })
-    // The Windows default keeps asking for the MSI, so the Windows path is untouched.
-    expect(parseNodeReleaseIndex(releaseIndex, 'x64')?.fileName).toBe(`node-${version}-x64.msi`)
+  it('pins one reviewed release with a digest for each Mac architecture', () => {
+    expect(nodeVersionStatus(darwinNodeRuntimeVersion)).toBe('supported')
+    const x64 = darwinNodeRuntimePinnedRelease('x64')
+    const arm64 = darwinNodeRuntimePinnedRelease('arm64')
+    expect(x64.version).toBe(darwinNodeRuntimeVersion)
+    expect(arm64.version).toBe(darwinNodeRuntimeVersion)
+    expect(x64.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(arm64.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(x64.sha256).not.toBe(arm64.sha256)
+  })
+
+  // 两份钉的是同一版：抬版本时一起改，免得只记得改一边。真要分开时再删掉这一条。
+  it('pins the same Node.js release as the Linux build', () => {
+    expect(darwinNodeRuntimeVersion).toBe(linuxNodeRuntimeVersion)
   })
 
   it('extracts with the SIP-protected tar and verifies the Node.js Developer ID', () => {
@@ -163,7 +156,7 @@ describe('macOS managed Node.js runtime', () => {
       architecture: 'arm64',
       environment: { HOME: home },
       dependencies: { fetch: network.fetch },
-      darwin: { runProcess: processes.runProcess },
+      darwin: { runProcess: processes.runProcess, pinnedRelease: () => pinned },
       onProgress: (entry) => progress.push(entry.message),
     })
 
@@ -177,12 +170,14 @@ describe('macOS managed Node.js runtime', () => {
       pathRefreshRequired: false,
       systemRestartRequired: false,
     })
-    expect(network.requested[0]).toBe('https://npmmirror.com/mirrors/node/index.json')
+    // Only the archive itself is fetched: no release index, no checksum list from the mirror.
+    expect(network.requested).toEqual([`https://npmmirror.com/mirrors/node/${archiveFile}`])
+    expect(progress[0]).toBe(`正在下载 Node.js ${version}`)
     const target = managedNodeRuntimeRoot({ HOME: home }, 'darwin')
     expect(fs.readFileSync(path.join(target, 'bin', 'node'), 'utf8')).toBe('node')
     expect(processes.plans.map((plan) => plan.executable).slice(0, 2)).toEqual(['/usr/bin/tar', '/usr/bin/codesign'])
     // The version probe runs the extracted binary itself, before it is moved into place.
-    expect(processes.plans[2].executable).toMatch(/\/npmmirror\/extract\/node-v22\.12\.0-darwin-arm64\/bin\/node$/)
+    expect(processes.plans[2].executable.endsWith(`/npmmirror/extract/node-${version}-darwin-arm64/bin/node`)).toBe(true)
     expect(processes.plans[2].argv).toEqual(['--version'])
     // The staging directory is gone and only the finished runtime is left behind.
     expect(fs.readdirSync(path.dirname(target))).toEqual(['node'])
@@ -203,11 +198,11 @@ describe('macOS managed Node.js runtime', () => {
       architecture: 'arm64',
       environment: { HOME: home },
       dependencies: { fetch: network.fetch },
-      darwin: { runProcess: fakeProcesses().runProcess },
+      darwin: { runProcess: fakeProcesses().runProcess, pinnedRelease: () => pinned },
     })
 
     expect(installed.source).toBe('official')
-    expect(network.requested[0]).toBe('https://nodejs.org/dist/index.json')
+    expect(network.requested).toEqual([`https://nodejs.org/dist/${archiveFile}`])
     expect(asked).toBe(1)
   })
 
@@ -224,7 +219,7 @@ describe('macOS managed Node.js runtime', () => {
       architecture: 'arm64',
       environment: { HOME: home },
       dependencies: { fetch: fakeNetwork({ failHosts: ['npmmirror.com'] }).fetch },
-      darwin: { runProcess: fakeProcesses().runProcess },
+      darwin: { runProcess: fakeProcesses().runProcess, pinnedRelease: () => pinned },
     })
 
     expect(installed.source).toBe('official')
@@ -232,19 +227,29 @@ describe('macOS managed Node.js runtime', () => {
     expect(fs.readdirSync(path.dirname(target))).toEqual(['node'])
   })
 
-  it.skipIf(process.platform === 'win32')('refuses an archive whose digest does not match the checksum list', async () => {
+  // S02: without the seam this is the production pin, and nothing a source serves can move it.
+  it.skipIf(process.platform === 'win32')('refuses bytes whose digest is not the pinned one from either source', async () => {
     const home = temporaryHome()
+    const target = managedNodeRuntimeRoot({ HOME: home }, 'darwin')
+    fs.mkdirSync(path.join(target, 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(target, 'bin', 'node'), 'old')
+    const network = fakeNetwork()
     const processes = fakeProcesses()
     await expect(installDarwinNodeRuntime({
       networkRegion: 'mainland-china',
       architecture: 'arm64',
       environment: { HOME: home },
-      dependencies: { fetch: fakeNetwork({ checksum: 'c'.repeat(64) }).fetch },
+      dependencies: { fetch: network.fetch },
       darwin: { runProcess: processes.runProcess },
-    })).rejects.toThrow('和官方校验值对不上')
-    // Nothing is extracted from an archive that failed its digest.
+    })).rejects.toThrow(/^Node\.js 没有准备好.*和官方校验值对不上/)
+    expect(network.requested).toEqual([
+      `https://npmmirror.com/mirrors/node/${archiveFile}`,
+      `https://nodejs.org/dist/${archiveFile}`,
+    ])
+    // Nothing is extracted from an archive that failed its digest, and the old runtime stays.
     expect(processes.plans).toEqual([])
-    expect(fs.existsSync(managedNodeRuntimeRoot({ HOME: home }, 'darwin'))).toBe(false)
+    expect(fs.readFileSync(path.join(target, 'bin', 'node'), 'utf8')).toBe('old')
+    expect(fs.readdirSync(path.dirname(target))).toEqual(['node'])
   })
 
   it.skipIf(process.platform === 'win32')('keeps the old runtime when the signature check rejects the new binary', async () => {
@@ -258,20 +263,20 @@ describe('macOS managed Node.js runtime', () => {
       architecture: 'arm64',
       environment: { HOME: home },
       dependencies: { fetch: fakeNetwork().fetch },
-      darwin: { runProcess: fakeProcesses({ signatureExitCode: 3 }).runProcess },
+      darwin: { runProcess: fakeProcesses({ signatureExitCode: 3 }).runProcess, pinnedRelease: () => pinned },
     })).rejects.toThrow(/^Node\.js 没有准备好.*没有通过官方签名核对/)
     expect(fs.readFileSync(path.join(target, 'bin', 'node'), 'utf8')).toBe('old')
     expect(fs.readdirSync(path.dirname(target))).toEqual(['node'])
   })
 
-  it.skipIf(process.platform === 'win32')('refuses a binary that reports a different version than the one selected', async () => {
+  it.skipIf(process.platform === 'win32')('refuses a binary that reports a different version than the pinned one', async () => {
     const home = temporaryHome()
     await expect(installDarwinNodeRuntime({
       networkRegion: 'outside-mainland-china',
       architecture: 'arm64',
       environment: { HOME: home },
       dependencies: { fetch: fakeNetwork().fetch },
-      darwin: { runProcess: fakeProcesses({ reportedVersion: 'v18.0.0' }).runProcess },
+      darwin: { runProcess: fakeProcesses({ reportedVersion: 'v18.0.0' }).runProcess, pinnedRelease: () => pinned },
     })).rejects.toThrow('版本和下载的不一致')
     expect(fs.existsSync(managedNodeRuntimeRoot({ HOME: home }, 'darwin'))).toBe(false)
   })

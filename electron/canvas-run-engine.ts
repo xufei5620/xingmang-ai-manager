@@ -47,6 +47,24 @@ function reusesAdoptedAsset(kind: CanvasRunNodeKind): boolean {
     || kind === 'video-generate'
 }
 
+// 画布上那张图能不能证明是按现在的输入生成的。证明只能来自运行记录（只留最近
+// 100 次），记录被挤掉或读不出来时，缓存里那张未必就是客户选的那张（O06）。
+type AdoptedAssetProof =
+  | { state: 'proven'; entry: CanvasRunCacheEntry }
+  // Every remembered attempt that made it ran under other inputs: the shown
+  // result is out of date, so the ordinary cache or a new run is the answer.
+  | { state: 'outdated' }
+  // Nothing remembered says which inputs made it.
+  | { state: 'unproven' }
+
+// 选的是 A、缓存里是 B、又证明不了 A 时，宁可停下也不拿 B 往下游交：画面上显示的
+// 是 A，下游悄悄用 B，客户看不出来。这一步什么都没提交，所以不扣费。
+function unprovenAdoptedAssetMessage(kind: CanvasRunNodeKind): string {
+  return kind === 'video' || kind === 'video-generate'
+    ? '找不到你选中的这段视频当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那段；想要新视频，在这个节点上点「运行到此」重新生成（会扣费）。'
+    : '找不到你选中的这张图当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那张；想要新图，在这个节点上点「运行到此」重新生成（会扣费）。'
+}
+
 /**
  * One earlier attempt that produced or reused an asset: the fingerprint that
  * attempt ran under, and the project that fingerprint was computed for.
@@ -657,27 +675,45 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
 
   // The asset the canvas shows on this node, as a cache entry for the current
   // fingerprint — but only when an earlier attempt produced it from the same
-  // inputs. Anything else (inputs edited, history evicted) is not reused here
-  // and falls back to the ordinary cache, exactly as before.
-  async function resolveAdoptedEntry(node: CanvasRunGraphNode, fingerprint: string): Promise<CanvasRunCacheEntry | null> {
-    const assetId = node.data.adoptedAssetId
-    if (!assetId || !options.resolveAssetOrigin) return null
-    const found = await raceWithAbort(options.resolveAssetOrigin(assetId, (origin) => (
-      origin.candidate.asset.assetId === assetId
-      && origin.fingerprint === (origin.projectId === options.projectId
-        ? fingerprint
-        : fingerprintInProject(node.id, origin.projectId))
-    )), options.signal)
-    if (!found) return null
+  // inputs. Remembered attempts that all ran under other inputs mean the inputs
+  // were edited; no remembered attempt at all (history evicted) or a failed
+  // lookup proves nothing either way. A cancelled lookup also lands there, so
+  // the caller checks the signal before acting on the answer.
+  async function inspectAdoptedAsset(
+    node: CanvasRunGraphNode,
+    assetId: string,
+    resolveAssetOrigin: NonNullable<CanvasRunEngineOptions['resolveAssetOrigin']>,
+    fingerprint: string,
+  ): Promise<AdoptedAssetProof> {
+    // One verdict per remembered attempt the store offers. A match whose asset
+    // can no longer be read still comes back null, and is not an edit.
+    const verdicts: boolean[] = []
+    let found: CanvasRunAssetOrigin | null
+    try {
+      found = await raceWithAbort(resolveAssetOrigin(assetId, (origin) => {
+        const matches = origin.candidate.asset.assetId === assetId
+          && origin.fingerprint === (origin.projectId === options.projectId
+            ? fingerprint
+            : fingerprintInProject(node.id, origin.projectId))
+        verdicts.push(matches)
+        return matches
+      }), options.signal)
+    } catch {
+      return { state: 'unproven' }
+    }
+    if (!found) return verdicts.length > 0 && !verdicts.includes(true) ? { state: 'outdated' } : { state: 'unproven' }
     const usedAt = now().toISOString()
     return {
-      version: canvasRunContractVersion,
-      fingerprint,
-      nodeKind: node.kind,
-      candidate: structuredClone(found.candidate),
-      ...(found.outputText !== undefined ? { outputText: found.outputText } : {}),
-      createdAt: usedAt,
-      lastUsedAt: usedAt,
+      state: 'proven',
+      entry: {
+        version: canvasRunContractVersion,
+        fingerprint,
+        nodeKind: node.kind,
+        candidate: structuredClone(found.candidate),
+        ...(found.outputText !== undefined ? { outputText: found.outputText } : {}),
+        createdAt: usedAt,
+        lastUsedAt: usedAt,
+      },
     }
   }
 
@@ -736,20 +772,22 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
       let reusedAdopted = false
       const adoptedAssetId = reusesAdoptedAsset(node.kind) ? node.data.adoptedAssetId : undefined
-      if (!bypassCache && adoptedAssetId && cached?.candidate?.asset.assetId !== adoptedAssetId) {
-        try {
-          const adopted = await resolveAdoptedEntry(node, fingerprint)
-          if (adopted) {
-            cached = adopted
-            reusedAdopted = true
-          }
-        } catch {
-          if (options.signal.aborted) {
-            await updateNode(nodeId, 'cancelled')
-            return
-          }
-          // Like the cache: a failed lookup keeps whatever the cache answered.
+      if (!bypassCache && adoptedAssetId && options.resolveAssetOrigin && cached?.candidate?.asset.assetId !== adoptedAssetId) {
+        const proof = await inspectAdoptedAsset(node, adoptedAssetId, options.resolveAssetOrigin, fingerprint)
+        if (options.signal.aborted) {
+          await updateNode(nodeId, 'cancelled')
+          return
         }
+        if (proof.state === 'proven') {
+          cached = proof.entry
+          reusedAdopted = true
+        } else if (proof.state === 'unproven' && cached?.candidate) {
+          await updateNode(nodeId, 'failed', { errorMessage: unprovenAdoptedAssetMessage(node.kind) })
+          return
+        }
+        // Outdated: the cache answers for the current inputs, as before.
+        // Unproven with nothing cached: the node runs again, which the run
+        // confirmation already disclosed as a possible charge.
       }
       if (cached && (cached.outputText !== undefined || cached.candidate)) {
         const completedAt = now()

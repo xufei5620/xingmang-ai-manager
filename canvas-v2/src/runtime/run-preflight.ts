@@ -27,6 +27,13 @@ const textRunNodeKinds = new Set(['text-generate', 'drama-parse'])
 const paidRunNodeKinds = new Set([...imageRunNodeKinds, ...videoRunNodeKinds, ...textRunNodeKinds])
 const assetInputKinds = new Set(['image-input', 'video-input', 'audio-input'])
 
+/**
+ * 剧本解析最多付几次钱。桌面宿主在模型答了、但答出来的表格读不懂时会自动再问一次
+ * （桌面 electron/canvas-node-executors.ts），一次解析最多两个文字请求；网页宿主只问一次。
+ * 确认框给的是上限，按两个宿主里多的那个算。
+ */
+export const dramaParseMaximumRequestCount = 2
+
 export type CanvasPreflightSeverity = 'info' | 'warning' | 'blocking'
 export type CanvasPreflightAction = 'execute' | 'cached' | 'skip' | 'blocked'
 export type CanvasPreflightReasonCode = 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-source' | 'unavailable-model' | 'missing-asset' | 'drama-gate' | 'invalid-parameters' | 'unsupported-host'
@@ -337,7 +344,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
       action,
       paid,
       ...(node.data.textWebSearch === true ? { webSearch: true as const } : {}),
-      requestCount: action === 'execute' ? imageRunNodeKinds.has(node.kind) ? imageCandidateCount : videoRunNodeKinds.has(node.kind) ? videoCandidateCount : 1 : 0,
+      requestCount: action === 'execute' ? imageRunNodeKinds.has(node.kind) ? imageCandidateCount : videoRunNodeKinds.has(node.kind) ? videoCandidateCount : node.kind === 'drama-parse' ? dramaParseMaximumRequestCount : 1 : 0,
       ...(group ? { group } : {}),
       ...(node.data.model ? { model: node.data.model } : {}),
       ...(reason ? { reason } : {}),
@@ -361,7 +368,7 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
   const paidRequestCount = items.filter((item) => item.paid).reduce((total, item) => total + item.requestCount, 0)
   const imageRequestCount = items.filter((item) => imageRunNodeKinds.has(item.kind)).reduce((total, item) => total + item.requestCount, 0)
   const videoRequestCount = items.filter((item) => videoRunNodeKinds.has(item.kind)).reduce((total, item) => total + item.requestCount, 0)
-  const textRequestCount = items.filter((item) => item.action === 'execute' && textRunNodeKinds.has(item.kind)).length
+  const textRequestCount = items.filter((item) => item.action === 'execute' && textRunNodeKinds.has(item.kind)).reduce((total, item) => total + item.requestCount, 0)
   const webSearchRequestCount = items.filter((item) => item.action === 'execute' && item.webSearch).length
   if (webSearchRequestCount > 0) {
     const scope = input.scope

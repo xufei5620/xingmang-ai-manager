@@ -26,7 +26,7 @@
 - `npm-registry.ts` — 两个 npm 源（官方、国内镜像）的地址、按网络区域谁先谁后（`npmInstallRegistries`，区域不明时镜像优先）、查询地址怎么拼，以及查询的超时和响应体上限；装、查新版本、卸载共用
 - `npm-command-failure.ts` — npm 命令没成功时挑出给客户看的那句：命令运行器的话后面接 npm 自己的要点（错误码、占用、权限），超时说成「下载超时」；`isMachineBoundNpmFailure` 判断换个源也没用的那几种（盘满、正在用的目录被占用）。要用 `command-runner`，所以不跟进渲染层的 `npm-failure-reasons.ts` 放一起
 - `cli-process-probe.ts` — 更新、卸载撞上文件被占用时，查是不是这个工具自己的进程还开着（只认镜像或命令行落在它自己包目录里的进程，不按进程名），好让报错说「先关掉它的窗口」而不是「被杀毒拦了」；Windows 走 PowerShell/CIM，Mac 走 ps
-- `node-runtime.ts` — **Windows 上代装 Node.js**：在海外 winget 优先，国内或测不出位置时不试 winget（#1061 第5条）；下安装包时按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源、版本索引、校验清单这些通用件 Mac/Linux 版复用，`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
+- `node-runtime.ts` — **Windows 上代装 Node.js**：在海外 winget 优先，国内或测不出位置时不试 winget（#1061 第5条）；下安装包时按网络区域定先走国内镜像还是官方 MSI，核 SHASUMS 与 Authenticode 签名；要管理员时由普通权限的中转脚本钉住当前账号再弹 UAC，提权那一步把包拷进只有管理员能写的目录再核一遍才交给 msiexec。下载源和下载件 Mac/Linux 版复用（两边都钉版本和校验值，不读版本索引和校验清单），`resolveSystemWingetExecutable` 也给外部客户端和 Python 用
 - `python-runtime.ts` — Windows 上代装 Python 3.12：winget 优先，退到 python.org 安装包时才借下载线路，核 Authenticode 签名与响应地址
 - `git-runtime-install.ts` — Windows 上代装 Git for Windows：**钉死版本与 SHA-256**（官方摘要只写在 GitHub 发布说明里，从镜像取摘要等于让镜像自己作证），Inno Setup 按当前用户装、不弹 UAC；升级时改文件里那三个常量
 - `git-runtime.ts` — 缺 Git 会怎样、怎么装的**唯一文案来源**，插件市场、首页运行环境、检查页三处共用（Windows 上缺它 Claude Code 的 Bash 工具会退成 PowerShell）；零依赖，渲染层直接引
@@ -147,7 +147,7 @@
 - `macos-claude.ts` / `macos-codex.ts` — 起原生安装的 `claude`（Anthropic Team ID）和 Codex 官方独立安装布局（`CODEX_HOME/packages/standalone/releases/…`，OpenAI Team ID）之前先核签名，Codex 再经私有暂存执行
 - `macos-codex-app.ts` / `macos-executable-architectures.ts` — Mac 上探测、核对、打开 Codex 桌面端（钉 bundle id 与 OpenAI Team ID；深度签名核验另给更宽的时限并缓存一阵，超时降级成可重试而不是「没装」）；后者读 Mach-O / fat 头，认出可执行文件带哪几种架构
 - `macos-grok.ts` — Grok 在 Mac 上的安装核对与卸载：npm 装完由它的 postinstall 把二进制解到 `~/.grok/bin`，这里核 xAI 签名、做规范链接与 `agent` 链接的快照和回滚；Linux 版直接复用这一套
-- `macos-node-runtime.ts` — Mac 上代下 Node.js：官方 tar 包按 SHASUMS 与 Node 的 Developer ID 核对，解进产品目录 `Runtime/node`，不提权、不开终端；客户自己的 Node 太旧时，本软件自己干活才改用这一份
+- `macos-node-runtime.ts` — Mac 上代下 Node.js：和 Linux 钉同一版与每个架构的 SHA-256（S02），官方 tar 包再核 Node 的 Developer ID，解进产品目录 `Runtime/node`，不提权、不开终端；客户自己的 Node 太旧时，本软件自己干活才改用这一份
 - `macos-command-line-tools.ts` — `/usr/bin/git`、`/usr/bin/python3` 在没装命令行开发者工具时只是空壳，一跑就弹苹果的安装框；探测前先问 `xcode-select` 背后那份在不在，免得每次开机弹两次
 - `macos-git-install.ts` — 「安装 Git」在 Mac 上就是跑一次 `xcode-select --install`，下载与授权全交给苹果的窗口；之后定时看 Git 能不能用、安装程序还在不在，推断装好、取消还是超时
 - `macos-shell-profile.ts` — 让客户自己开的终端也能直接敲 claude / codex / grok：往 `~/.zprofile`（或 bash 登录文件、fish 的 conf.d）末尾追加标记段，只追加不前置，客户自己装的照旧优先；客户删了那几行，开机不再补
