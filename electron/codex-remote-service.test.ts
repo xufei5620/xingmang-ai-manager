@@ -29,6 +29,7 @@ import {
   grantRequestedPermissions,
   inspectCommandDisplay,
   isStaleInbound,
+  isStaleOnlyByClock,
   nextApprovalNumber,
   permissionsShowInFull,
   readRequestedPermissions,
@@ -184,6 +185,8 @@ async function setup(options: {
   replyGates?: ReadonlyMap<string, Promise<unknown>>
   /** 设了就等它好了才交出 Codex 的密钥：模拟读配置读得慢。 */
   secretsGate?: Promise<unknown>
+  /** 电脑上的钟，缺省 Date.now。 */
+  now?: () => number
   /** 起出来的每份 Codex 回 config/read 用的（FakeCodex.configRead）。 */
   configRead?: Record<string, unknown>
 } = {}): Promise<Setup> {
@@ -216,6 +219,7 @@ async function setup(options: {
       logDetails.push({ event, ...(detail ? { detail } : {}) })
     },
     randomInt: () => 42,
+    ...(options.now ? { now: options.now } : {}),
     spawnCodex: async () => {
       await options.spawnGate
       const fake = new FakeCodex()
@@ -287,6 +291,8 @@ const npmRegistry = { host: 'registry.npmjs.org', protocol: 'https' }
 
 const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
 
+const clockAheadText = '电脑上的时间和手机差得太多，这条消息没有执行。请把电脑时间调准后再发。'
+
 afterEach(() => {
   vi.useRealTimers()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
@@ -328,6 +334,28 @@ describe('codex-remote-service helpers', () => {
     expect(isStaleInbound(1_000_000 - 61_000, 1_000_000, 1_000_000)).toBe(true)
     expect(isStaleInbound(1_000_000 - 30_000, 1_000_000, 1_000_000)).toBe(false)
     expect(isStaleInbound(0, 0, 11 * 60_000)).toBe(true)
+  })
+
+  // #1407 P3-5：电脑时间快了，手机刚发的话也会被当成旧的；按平台的钟再看一遍才认得出来。
+  it('tells a message dropped only because this computer runs fast from a really old one', () => {
+    const fiveMinutes = 5 * 60_000
+    // Local clock 5 minutes fast: the channel opened at platform time 700_000, the phone wrote a minute later.
+    const startedAt = 700_000 + fiveMinutes
+    const sentAt = 760_000
+    const now = sentAt + fiveMinutes
+    expect(isStaleInbound(sentAt, startedAt, now)).toBe(true)
+    expect(isStaleOnlyByClock(sentAt, startedAt, now, fiveMinutes)).toBe(true)
+    // 15 minutes fast: every message just sent looks older than ten minutes.
+    expect(isStaleOnlyByClock(1_000_000, 0, 1_000_000 + 15 * 60_000, 15 * 60_000)).toBe(true)
+    // Written five minutes before the channel opened, by the platform's own clock: really old, nothing to say.
+    expect(isStaleOnlyByClock(700_000 - fiveMinutes, startedAt, now, fiveMinutes)).toBe(false)
+    // No estimate, an estimate under a minute, or a slow clock: the drop is not the clock's fault.
+    expect(isStaleOnlyByClock(sentAt, startedAt, now, undefined)).toBe(false)
+    expect(isStaleOnlyByClock(sentAt, startedAt, now, 59_000)).toBe(false)
+    expect(isStaleOnlyByClock(sentAt, startedAt, now, -fiveMinutes)).toBe(false)
+    expect(isStaleOnlyByClock(sentAt, startedAt, now, Number.NaN)).toBe(false)
+    // A message that was never dropped needs no warning either.
+    expect(isStaleOnlyByClock(now, startedAt, now, fiveMinutes)).toBe(false)
   })
 
   it('starts threads that ask the user before anything outside the safe list runs', () => {
@@ -635,6 +663,77 @@ describe('codex-remote-service pairing', () => {
     channel.handlers?.onInbound(text(alice, '000042', { sentAt: Date.now() - 5 * 60_000 }))
     await new Promise((resolve) => setTimeout(resolve, 20))
     expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
+  })
+
+  // #1407 P3-5：电脑时间快了，配对码一样会被当成旧的；发对码的就是要绑定的人，跟他说一声，但不拿这条配对。
+  it('tells whoever sends the right code that this computer runs fast, without pairing or counting a failure', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    const fast = { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 }
+    channel.handlers?.onInbound(text(mallory, '123456', fast))
+    channel.handlers?.onInbound(text(alice, '000042', { ...fast, replyContext: 'ctx-fast-code' }))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([clockAheadText]))
+    expect(channel.sent[0].peer).toEqual(alice)
+    expect(channel.sent[0].replyContext).toBe('ctx-fast-code')
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.boundPeer).toBeNull()
+    expect(snapshot.channels.feishu.pairing?.code).toBe('000042')
+    expect(s.logs).toContain('remote.clock-ahead')
+    expect(s.logs).not.toContain('remote.pairing-mismatch')
+    // Once the clock is right the same code pairs as usual.
+    channel.handlers?.onInbound(text(alice, '000042'))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).channels.feishu.boundPeer?.userIdTail).toBe('1234'))
+  })
+})
+
+describe('codex-remote-service clock running fast', () => {
+  it('tells the bound person their message was not run because this computer runs fast, once per message', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const message = text(alice, '跑一下测试', { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 })
+    channel.handlers?.onInbound(message)
+    channel.handlers?.onInbound(message)
+    await vi.waitFor(() => expect(channel.texts()).toEqual([clockAheadText]))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts()).toEqual([clockAheadText])
+    expect(channel.sent[0].replyContext).toBe(message.replyContext)
+    expect(s.codex).toHaveLength(0)
+    expect(s.logDetails).toContainEqual({ event: 'remote.clock-ahead', detail: { channel: 'feishu', aheadSeconds: 900 } })
+  })
+
+  it('runs what the phone sends once the clock has been set right, without waiting out the hours it was fast', async () => {
+    const eightHours = 8 * 60 * 60_000
+    const clock = { aheadMs: eightHours }
+    const s = await setup({ now: () => Date.now() + clock.aheadMs })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: eightHours }))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([clockAheadText]))
+    // The customer sets the clock right and sends again: the channel counts as opened just now, not eight hours ahead.
+    clock.aheadMs = 0
+    channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: 0 }))
+    await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
+    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
+    // Something sent before the clock was set right is still too old to run.
+    channel.handlers?.onInbound(text(alice, '调钟以前发的', { sentAt: Date.now() - 2 * 60_000, clockAheadMs: 0 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
+  })
+
+  it('stays silent for really old messages, unknown clocks and strangers', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    // Old by the platform's clock too: sent twenty minutes ago on a clock five minutes fast.
+    channel.handlers?.onInbound(text(alice, '昨天的话', { sentAt: Date.now() - 20 * 60_000, clockAheadMs: 5 * 60_000 }))
+    // The channel could not tell how far off this computer is.
+    channel.handlers?.onInbound(text(alice, '不知道钟准不准', { sentAt: Date.now() - 15 * 60_000 }))
+    // Someone else, even when the clock is to blame.
+    channel.handlers?.onInbound(text(mallory, '你好', { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.sent).toHaveLength(0)
+    expect(s.codex).toHaveLength(0)
+    expect(s.logs).not.toContain('remote.clock-ahead')
   })
 })
 
