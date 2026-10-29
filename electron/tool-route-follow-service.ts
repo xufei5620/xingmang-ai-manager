@@ -39,7 +39,7 @@ import { followXingmangAiSkillRoute } from './xingmang-ai-skill'
 /**
  * 没有来源记录的工具配置，换线路时能不能也只换地址。来源记录 0.2.6 才开始写，0.2.5 及更早替客户写的配置
  * 没有记录（或只有当时那种不认账号的老记录）：首页凭 Key 认出它是当前账号的，照样显示「已连接」，开机对账和
- * 换线却一直跳过它，地址就停在当时写的线路1，客户要自己点「重置为初始状态」才换得过去（10-29 yoyo）。
+ * 换线却一直跳过它，地址就停在当时写的线路1，客户要自己点「重置为初始状态」才换得过去（三线路方案 C8 前半）。
  * 只认来源读出来是「看不出来」的：手动的、被改过的照旧不碰，记录上写过手动、后来又被改了的也不碰。
  * Key 是不是当前账号签给这个工具的那把，要读缓存，由调用方另外核。
  */
@@ -130,7 +130,7 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
       && await holdsAccountKey(provider, before)
     // 上回改完又变回改之前那一份（那一份当时确认是当前账号的）：多半是别的配置管理器在替客户维护它。
     const reverted = (ownership === 'changed' || unrecorded) && record.revertIdentity === toolConfigIdentity(before)
-    // 来源不是当前账号（手填、被改过、看不出来）不自动改，重试多少次也一样，不排重试。
+    // 来源不是当前账号（手填、被改过、看不出来又认不出 Key）不自动改，重试多少次也一样，不排重试。
     if (!reverted && !unrecorded && ownership !== 'account') return 'skipped'
     const templateRevision = configOwnership.templateRevision(provider, before)
     const target = site.providerBaseUrls[provider]
@@ -150,8 +150,8 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
       return 'on-target'
     }
     if (plan.status !== 'rewrite') return plan.status === 'on-target' ? 'on-target' : 'skipped'
-    // 同 saveConfig：写之前先记成「手动」，写到一半崩掉宁可多挡一次自动写入。没有记录的那份改完要把记录原样放回，
-    // 放不回（记录读不出来）就不改。
+    // 下面写之前会先把来源记成「手动」（同 saveConfig）。没有记录的那份改完要把记录原样放回，所以在算改回次数、
+    // 备份之前先记下它；放不回（记录读不出来）就不改。
     const restoreOwnership = configOwnership.remember(provider, before)
     if (unrecorded && !restoreOwnership) return 'skipped'
     if (reverted) {
@@ -181,6 +181,7 @@ export function createToolRouteFollowService(context: ServiceContext, dependenci
         runtimeLog?.log('warn', 'config', 'ownership.restore-failed', '换线路没成功，工具配置的来源记录也没能原样放回', { provider, reason: credentialFailureReason(error) })
       })
     }
+    // 同 saveConfig：写之前先记成「手动」，写到一半崩掉宁可多挡一次自动写入。
     await configOwnership.write(provider, before, 'manual', owner)
     const from = relaySiteEndpointIdForBaseUrl(site.id, provider, plan.from)
     const to = relaySiteEndpointIdForBaseUrl(site.id, provider, target)
