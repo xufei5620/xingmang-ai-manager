@@ -22,6 +22,8 @@ import {
   type RemoteChannelStatus,
   type RemoteInbound,
   type RemoteInboundApproval,
+  type RemoteInboundText,
+  type RemoteInboundUnsupported,
   type RemoteOutbound,
   type RemotePeer,
 } from './codex-remote-channel'
@@ -76,6 +78,11 @@ const idleTimeoutMs = 4 * 60 * 60_000
 const idleRecheckMs = 30 * 60_000
 const staleBeforeStartMs = 60_000
 const maxMessageAgeMs = 10 * 60_000
+/**
+ * 电脑上的时间至少快这么多才算「不准」：快不到 1 分钟，开启以后发的消息不会被当成旧的；平台回应里的时间
+ * 只到秒，再加上路上的来回，几秒的差也不该算到电脑头上。
+ */
+const clockAheadToleranceMs = staleBeforeStartMs
 const maxReplyChunks = 5
 const maxSummaryLength = 1500
 const maxReasonLength = 500
@@ -155,6 +162,15 @@ export function belongsToOtherTurn(currentTurnId: string | null, retiredTurnIds:
 /** 渠道开启前 1 分钟以上、或 10 分钟以前发的消息不算：星芒关着时发的指令不该在下次打开时突然执行。 */
 export function isStaleInbound(sentAt: number, channelStartedAt: number, now: number): boolean {
   return sentAt < channelStartedAt - staleBeforeStartMs || sentAt < now - maxMessageAgeMs
+}
+
+/**
+ * 这条被当成旧消息，是不是只因为电脑上的时间快了（#1407 P3-5）：换成平台的钟再看一遍就不旧了。
+ * 只用来决定给手机回不回一句提醒，消息照样不执行，时间校验本身不放宽。
+ */
+export function isStaleOnlyByClock(sentAt: number, channelStartedAt: number, now: number, clockAheadMs: number | undefined): boolean {
+  if (clockAheadMs === undefined || !Number.isFinite(clockAheadMs) || clockAheadMs < clockAheadToleranceMs) return false
+  return isStaleInbound(sentAt, channelStartedAt, now) && !isStaleInbound(sentAt, channelStartedAt - clockAheadMs, now - clockAheadMs)
 }
 
 export function buildThreadStartParams(workspace: string): Record<string, unknown> {
@@ -889,11 +905,16 @@ export class CodexRemoteService {
     return { secrets: this.secrets, homeDirectory: this.options.homeDirectory, platform: this.platform }
   }
 
-  private deliver(runtime: ChannelRuntime, peer: RemotePeer, message: RemoteOutbound): Promise<void> {
+  /** replyContext 传 null 是不带平台句柄：回的不是绑定的人时，不能把他的句柄拿给别人用。 */
+  private deliver(
+    runtime: ChannelRuntime,
+    peer: RemotePeer,
+    message: RemoteOutbound,
+    replyContext: string | null | undefined = runtime.replyContext,
+  ): Promise<void> {
     const adapter = runtime.adapter
     if (!adapter) return Promise.resolve()
-    const replyContext = runtime.replyContext
-    const next = runtime.outbox.then(() => adapter.send(peer, message, replyContext))
+    const next = runtime.outbox.then(() => adapter.send(peer, message, replyContext ?? undefined))
     runtime.outbox = next.catch(() => undefined)
     return next.catch(() => {
       this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
@@ -901,14 +922,19 @@ export class CodexRemoteService {
     })
   }
 
-  private async sendText(runtime: ChannelRuntime, text: string, peer = runtime.peer): Promise<void> {
+  private async sendText(
+    runtime: ChannelRuntime,
+    text: string,
+    peer = runtime.peer,
+    replyContext: string | null | undefined = runtime.replyContext,
+  ): Promise<void> {
     const adapter = runtime.adapter
     if (!peer || !adapter) return
     await this.refreshSecrets()
     const chunks = splitRemoteText(redactRemoteText(text, this.redaction()), adapter.capabilities.maxTextLength, maxReplyChunks)
     for (const chunk of chunks) {
       try {
-        await this.deliver(runtime, peer, { kind: 'text', text: chunk })
+        await this.deliver(runtime, peer, { kind: 'text', text: chunk }, replyContext)
       } catch {
         return
       }
@@ -933,16 +959,12 @@ export class CodexRemoteService {
     const now = this.now()
     if (message.sentAt !== undefined && isStaleInbound(message.sentAt, runtime.startedAt, now)) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'stale' })
+      if (message.kind !== 'approval' && isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) {
+        await this.warnClockAhead(runtime, message)
+      }
       return
     }
-    if (message.kind !== 'approval') {
-      if (runtime.seen.has(message.messageId)) return
-      runtime.seen.add(message.messageId)
-      if (runtime.seen.size > seenMessageLimit) {
-        const oldest = runtime.seen.values().next().value
-        if (oldest !== undefined) runtime.seen.delete(oldest)
-      }
-    }
+    if (message.kind !== 'approval' && !this.markSeen(runtime, message.messageId)) return
     const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
     if (!bound || bound.userId !== message.peer.userId) {
       await this.tryPair(runtime, message)
@@ -994,6 +1016,38 @@ export class CodexRemoteService {
       case 'prompt':
         await this.runPrompt(runtime, command.text)
     }
+  }
+
+  /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投会送重）返回 false。 */
+  private markSeen(runtime: ChannelRuntime, messageId: string): boolean {
+    if (runtime.seen.has(messageId)) return false
+    runtime.seen.add(messageId)
+    if (runtime.seen.size > seenMessageLimit) {
+      const oldest = runtime.seen.values().next().value
+      if (oldest !== undefined) runtime.seen.delete(oldest)
+    }
+    return true
+  }
+
+  /**
+   * 电脑上的时间快了，手机刚发的话被当成旧的丢掉（#1407 P3-5）：照样不执行，只跟发的人说一声，免得手机上
+   * 一直没有回音。只回绑定的那个人，或者正在配对、发来的正是这次配对码的人（电脑时间快了，配对码一样会被
+   * 当成旧的丢掉，发码的就是要绑定的那个人）；别人照旧不回话，免得拿消息探出这里有个遥控。这条配对码不算
+   * 输错，也不拿它配对。
+   */
+  private async warnClockAhead(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundUnsupported): Promise<void> {
+    if (!this.markSeen(runtime, message.messageId)) return
+    const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
+    const pairing = runtime.pairing
+    const isBound = bound?.userId === message.peer.userId
+    const holdsPairingCode = message.kind === 'text' && pairing !== null && pairing.expiresAt > this.now()
+      && normalizePairingAttempt(message.text) === pairing.code
+    if (!isBound && !holdsPairingCode) return
+    this.options.log('warn', 'remote.clock-ahead', {
+      channel: runtime.id,
+      aheadSeconds: Math.round((message.clockAheadMs ?? 0) / 1000),
+    })
+    await this.sendText(runtime, remoteMessages.clockAhead, message.peer, message.replyContext ?? (isBound ? runtime.replyContext : null))
   }
 
   private async tryPair(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {

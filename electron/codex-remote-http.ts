@@ -26,6 +26,11 @@ export interface RemoteJsonResponse {
   ok: boolean
   /** 解析不了 JSON 时是 null。 */
   payload: unknown
+  /**
+   * 平台回应里 Date 头的时间（毫秒），没有或认不出不填。只拿来估电脑上的时间准不准，好跟手机说一声；
+   * 放不放行消息从不看它（#1407 P3-5）。
+   */
+  serverTime?: number
 }
 
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
@@ -51,6 +56,13 @@ export function assertAllowedRemoteUrl(url: string, allowedOrigins: readonly str
     throw new RemoteHttpError(`${label}请求地址不在允许范围内，已拒绝`, 'blocked-url')
   }
   return parsed
+}
+
+/** HTTP Date 头（只到秒）换成毫秒；没有或认不出返回 undefined。 */
+export function parseHttpDate(value: string | null | undefined): number | undefined {
+  if (!value) return undefined
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
 export async function requestRemoteJson(request: RemoteJsonRequest): Promise<RemoteJsonResponse> {
@@ -102,7 +114,8 @@ export async function requestRemoteJson(request: RemoteJsonRequest): Promise<Rem
         payload = null
       }
     }
-    return { status: response.status, ok: response.ok, payload }
+    const serverTime = parseHttpDate(response.headers.get('date'))
+    return { status: response.status, ok: response.ok, payload, ...(serverTime !== undefined ? { serverTime } : {}) }
   } catch (error) {
     if (error instanceof RemoteHttpError) throw error
     if (timedOut) throw new RemoteHttpError(`${request.label}请求超时`, 'timeout')

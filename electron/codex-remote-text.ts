@@ -22,6 +22,7 @@ export const remoteMessages = {
   codexUnavailable: '电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。',
   permissionsRefused: 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
   staleApprovalCard: '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。',
+  clockAhead: '电脑上的时间和手机差得太多，这条消息没有执行。请把电脑时间调准后再发。',
 } as const
 
 export function turnFailedMessage(reason: string): string {
