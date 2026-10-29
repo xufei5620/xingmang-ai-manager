@@ -251,6 +251,118 @@ describe('tool route follow', () => {
   })
 })
 
+// 0.2.5 及更早替客户写的配置没有来源记录：Key 正是当前账号签给这个工具的那把时，开机对账、换线也只换地址，
+// 来源记录原样留着（10-29 yoyo：老客户升级以后要点「重置为初始状态」才走线路2）。
+describe('tool route follow for a config written before source records existed', () => {
+  function bindAccountKeys(f: Awaited<ReturnType<typeof fixture>>, keys: Partial<Record<ProviderId, string>>) {
+    const backup = vi.fn(async (_provider: ProviderId) => undefined)
+    f.service.bindToolRouteAccount?.({
+      backup,
+      ownedKeyIds: async () => new Set<number>(),
+      accountKeyMatches: async (provider, apiKey) => keys[provider] === apiKey,
+    })
+    return backup
+  }
+
+  function ownershipRecords(f: Awaited<ReturnType<typeof fixture>>) {
+    const directory = path.join(f.root, 'tool-config-ownership')
+    if (!fs.existsSync(directory)) return {}
+    return Object.fromEntries(fs.readdirSync(directory).map((name) => [name, fs.readFileSync(path.join(directory, name), 'utf8')]))
+  }
+
+  it.each(['claude', 'codex', 'grok'] satisfies ProviderId[])(
+    'moves an unrecorded %s config holding the account key at startup, after a backup, and records nothing', async (provider) => {
+      const log = vi.fn()
+      const f = await fixture({ providers: [provider], owned: false, log })
+      const backup = bindAccountKeys(f, { [provider]: 'sk-route-fixture' })
+      const before = f.read(provider)
+      expect(await f.follow({ reason: 'startup' })).toEqual({ rewritten: [provider] })
+      expect(f.read(provider)).toBe(before.split(primary[provider]).join(direct[provider]))
+      expect(backup).toHaveBeenCalledWith(provider)
+      const summary = f.service.getConfig(false).providers[provider]
+      expect(summary.actualBaseUrl).toBe(direct[provider])
+      expect(summary.relayLine).toBe('direct')
+      // 只换了地址：来源照旧没有记录，补设置、换 Key 这些自动改写照旧不碰它。
+      expect(summary.configurationOwnership).toBe('unknown')
+      expect(ownershipRecords(f)).toEqual({})
+      expect(log).toHaveBeenCalledWith('info', 'config', 'route.followed', expect.any(String), expect.objectContaining({
+        provider, from: 'primary', to: 'direct', reason: 'startup', unrecorded: true, readback: true,
+      }))
+      // 一分钟后照样回头看一眼，在线路上就不再动。
+      expect(await f.follow({ reason: 'verify', providers: [provider] })).toEqual({ rewritten: [] })
+      expect(f.read(provider)).toBe(before.split(primary[provider]).join(direct[provider]))
+    },
+  )
+
+  it('keeps an old record it cannot vouch for exactly as it was', async () => {
+    const f = await fixture({ owned: false })
+    bindAccountKeys(f, { codex: 'sk-route-fixture' })
+    // 别的账号写下的记录：读成「看不出来」，换完线路原样放回。
+    await f.ownership.write('codex', inspectProviderConfig('codex', f.roots, primary), 'account', JSON.stringify(['solov', 8]), 2)
+    const records = ownershipRecords(f)
+    expect(await f.follow({ reason: 'startup' })).toEqual({ rewritten: ['codex'] })
+    expect(ownershipRecords(f)).toEqual(records)
+    expect(f.service.getConfig(false).providers.codex.configurationOwnership).toBe('unknown')
+  })
+
+  it('leaves an unrecorded config alone when its key is not the one the account issued for that tool', async () => {
+    const f = await fixture({ providers: ['codex', 'grok'], owned: false })
+    // Codex 那把不是当前账号签的；Grok 那把是当前账号签给 Claude Code 的，不算它的。
+    bindAccountKeys(f, { codex: 'sk-route-other', claude: 'sk-route-fixture' })
+    const codex = f.read('codex')
+    const grok = f.read('grok')
+    expect(await f.follow({ reason: 'startup' })).toEqual({ rewritten: [] })
+    expect(f.read('codex')).toBe(codex)
+    expect(f.read('grok')).toBe(grok)
+    expect(f.timers).toEqual([])
+  })
+
+  it('leaves a config the customer filled in by hand alone, even after it changed', async () => {
+    const f = await fixture({ providers: ['codex', 'grok'], owned: false })
+    bindAccountKeys(f, { codex: 'sk-route-fixture', grok: 'sk-route-fixture' })
+    await f.ownership.write('codex', inspectProviderConfig('codex', f.roots, primary), 'manual', owner)
+    await f.ownership.write('grok', inspectProviderConfig('grok', f.roots, primary), 'manual', owner)
+    // Grok 那份之后又被改到了别的线路上：指纹对不上读成「看不出来」，记录上还是手动。
+    f.overwrite(f.read('grok').split(primary.grok).join(direct.grok), 'grok')
+    f.line.current = 'primary'
+    const codex = f.read('codex')
+    const grok = f.read('grok')
+    expect(await f.follow({ reason: 'startup' })).toEqual({ rewritten: [] })
+    expect(f.read('codex')).toBe(codex)
+    expect(f.read('grok')).toBe(grok)
+  })
+
+  it('treats a revert of an unrecorded config like any other and stops after the second within a day', async () => {
+    const log = vi.fn()
+    const f = await fixture({ owned: false, log })
+    bindAccountKeys(f, { codex: 'sk-route-fixture' })
+    const original = f.read()
+    await f.follow({ reason: 'startup' })
+    const moved = f.read()
+    f.overwrite(original)
+    expect(await f.follow({ reason: 'verify', providers: ['codex'] })).toEqual({ rewritten: ['codex'] })
+    expect(f.read()).toBe(moved)
+    expect(log).toHaveBeenCalledWith('warn', 'config', 'route.reverted', expect.any(String), { provider: 'codex' })
+
+    f.clock.now += 60_000
+    f.overwrite(original)
+    expect(await f.follow({ reason: 'verify', providers: ['codex'] })).toEqual({ rewritten: [] })
+    expect(f.read()).toBe(original)
+    expect(f.service.getConfig(false).providers.codex.relayRouteState).toBe('managed-elsewhere')
+  })
+
+  it('follows later line changes too, and asks open tools to restart after a fault switch', async () => {
+    const f = await fixture({ owned: false, report: { running: ['codex'], unknown: [], codexDesktopRunning: false, canRestartCodexDesktop: false } })
+    bindAccountKeys(f, { codex: 'sk-route-fixture' })
+    await f.follow({ reason: 'startup' })
+    f.clock.now += 10 * 60 * 1000
+    f.line.current = 'primary'
+    expect(await f.follow({ reason: 'route-changed', fault: true })).toEqual({ rewritten: ['codex'] })
+    expect(f.service.getConfig(false).providers.codex.actualBaseUrl).toBe(primary.codex)
+    expect(f.service.readStoredConfig().toolRouteRestartHint?.codex).toEqual({ cli: true, desktop: null, canRestartDesktop: false })
+  })
+})
+
 // Codex 有个对话在线路 1 上太大、换到线路 2 以后（codex-payload-limit.ts）：Codex 的配置真跟到线路 2 才提示重开。
 describe('codex restart hint after a conversation too large for line 1', () => {
   const codexRunning: RunningToolsReport = { running: ['codex'], unknown: [], codexDesktopRunning: true, canRestartCodexDesktop: true }
