@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalTitle,
   formatApprovalText,
   normalizePairingAttempt,
   parseRemoteCommand,
@@ -45,6 +46,20 @@ describe('codex-remote-text', () => {
     expect(redacted).toContain('[已隐去]')
   })
 
+  // Codex can read a website login token or a cloud key ID without asking, and
+  // its answer goes to the phone (#1407 P2-4).
+  it('hides a JWT and a cloud access key ID before they leave the machine', () => {
+    const jwt = [
+      Buffer.from('{"alg":"RS256","kid":"fake"}').toString('base64url'),
+      Buffer.from('{"sub":"fake-phone-user"}').toString('base64url'),
+      'fake-phone-signature',
+    ].join('.')
+    const keyId = `AKIA${'FAKE0PHONE1TESTX'}`
+    const text = `浏览器里存着 ${jwt}\naws_access_key_id = ${keyId}`
+    expect(redactRemoteText(text, { secrets: [], homeDirectory: '/home/alice', platform: 'linux' }))
+      .toBe('浏览器里存着 [已隐去]\naws_access_key_id = [已隐去]')
+  })
+
   it('ignores secrets too short to redact safely', () => {
     expect(redactRemoteText('a b c', { secrets: ['a'], homeDirectory: '' })).toBe('a b c')
   })
@@ -75,6 +90,14 @@ describe('codex-remote-text', () => {
     expect(text).toContain('npm test')
     expect(text).toContain('在：~/project')
     expect(text).toContain('回「同意 2」或「拒绝 2」')
+  })
+
+  it('titles each kind of approval for what Codex wants to do', () => {
+    expect(approvalTitle('command')).toBe('Codex 想运行命令')
+    expect(approvalTitle('terminal-input')).toBe('Codex 想往正在运行的程序里输入')
+    expect(approvalTitle('network')).toBe('Codex 想连网站')
+    expect(formatApprovalText({ approvalId: '4', nonce: 'nonce-of-four', kind: 'network', summary: 'registry.npmjs.org' }))
+      .toBe('Codex 想连网站（第 4 条）：\nregistry.npmjs.org\n回「同意 4」或「拒绝 4」。')
   })
 
   it('describes the current state', () => {

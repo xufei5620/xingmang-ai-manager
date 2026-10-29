@@ -14,17 +14,20 @@ import type {
   RemotePeer,
 } from './codex-remote-channel'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
-import { CodexRemoteStore } from './codex-remote-store'
+import { CodexRemoteStore, credentialRemoveFailedMessage } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 import {
   belongsToOtherTurn,
   buildApprovalRequest,
+  buildRemoteMcpServerOverrides,
   buildThreadStartParams,
   collectCredentialSecrets,
   CodexRemoteService,
+  commandApprovalKind,
   generateApprovalNonce,
   generatePairingCode,
   grantRequestedPermissions,
+  inspectCommandDisplay,
   isStaleInbound,
   isStaleOnlyByClock,
   nextApprovalNumber,
@@ -60,6 +63,8 @@ class FakeCodex extends EventEmitter {
   readonly kills: string[] = []
   /** 按方法名设了就等它好了才回：模拟 Codex 的回执比别的消息晚到。 */
   readonly replyGates = new Map<string, Promise<unknown>>()
+  /** config/read 回什么（result 或 error）：缺省是什么外部工具都没配。 */
+  configRead: Record<string, unknown> = { result: { config: {}, origins: {}, layers: [] } }
   private turns = 0
   private readonly replies = new Map<string, (message: Record<string, unknown>) => void>()
   readonly stdin = {
@@ -108,6 +113,7 @@ class FakeCodex extends EventEmitter {
     if (typeof id !== 'string') return
     let reply: Record<string, unknown> | null = null
     if (message.method === 'initialize') reply = { id, result: { userAgent: 'codex' } }
+    if (message.method === 'config/read') reply = { id, ...this.configRead }
     if (message.method === 'thread/start') reply = { id, result: { thread: { id: 'th-1' } } }
     if (message.method === 'turn/start') {
       this.turns += 1
@@ -181,6 +187,8 @@ async function setup(options: {
   secretsGate?: Promise<unknown>
   /** 电脑上的钟，缺省 Date.now。 */
   now?: () => number
+  /** 起出来的每份 Codex 回 config/read 用的（FakeCodex.configRead）。 */
+  configRead?: Record<string, unknown>
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -216,6 +224,7 @@ async function setup(options: {
       await options.spawnGate
       const fake = new FakeCodex()
       for (const [method, gate] of options.replyGates ?? []) fake.replyGates.set(method, gate)
+      if (options.configRead) fake.configRead = options.configRead
       codex.push(fake)
       return fake as unknown as AppServerProcess
     },
@@ -275,6 +284,10 @@ const wholeDiskWrite = {
 }
 
 const permissionsRefusedText = 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+
+const commandRefusedText = 'Codex 想运行的命令太长，手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。'
+
+const npmRegistry = { host: 'registry.npmjs.org', protocol: 'https' }
 
 const staleCardText = '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。'
 
@@ -355,6 +368,60 @@ describe('codex-remote-service helpers', () => {
     expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('danger-full-access')
   })
 
+  // #1407 P2-4：客户自己接的外部工具调用不一定先问人，遥控开的对话里一律关掉；联网搜索不动。
+  it('starts threads without plugins, apps or the configured MCP servers, and leaves web search alone', () => {
+    expect(buildThreadStartParams('/p').config).toEqual({ 'features.apps': false, 'features.plugins': false })
+    expect(buildThreadStartParams('/p', { docs: { enabled: false } }).config).toEqual({
+      'features.apps': false,
+      'features.plugins': false,
+      mcp_servers: { docs: { enabled: false } },
+    })
+    expect(JSON.stringify(buildThreadStartParams('/p'))).not.toContain('web_search')
+  })
+
+  it('switches off every MCP server any config layer defines', () => {
+    const configRead = {
+      config: { mcp_servers: { docs: { command: 'docs-mcp' } } },
+      origins: {},
+      layers: [
+        { name: { type: 'sessionFlags' }, version: 'a', config: {}, disabledReason: null },
+        // A project layer Codex has not trusted yet: thread/start will trust and load it.
+        {
+          name: { type: 'project', dotCodexFolder: '/p/.codex' },
+          version: 'b',
+          config: { mcp_servers: { repo: { command: './repo-mcp', args: ['--serve'] }, web: { url: 'https://mcp.example.test/' }, docs: { command: 'other' }, broken: { args: [] } } },
+          disabledReason: 'untrusted',
+        },
+        { name: { type: 'user', file: '/h/.codex/config.toml', profile: null }, version: 'c', config: { mcp_servers: { docs: { command: 'docs-mcp' }, remote: { url: 'https://x.test/' } } }, disabledReason: null },
+        { name: { type: 'system', file: '/etc/codex/config.toml' }, version: 'd', config: { model: 'x' }, disabledReason: null },
+      ],
+    }
+    expect(buildRemoteMcpServerOverrides(configRead)).toEqual({
+      docs: { enabled: false },
+      remote: { enabled: false },
+      repo: { command: './repo-mcp', enabled: false },
+      web: { url: 'https://mcp.example.test/', enabled: false },
+    })
+  })
+
+  it('takes the command of the highest disabled layer for a server only disabled layers define', () => {
+    const layer = (command: string) => ({ config: { mcp_servers: { repo: { command } } }, disabledReason: 'untrusted' })
+    expect(buildRemoteMcpServerOverrides({ layers: [layer('inner'), layer('outer')] })).toEqual({ repo: { command: 'inner', enabled: false } })
+  })
+
+  it('keeps a server called __proto__ as its own key', () => {
+    const configRead = JSON.parse('{"layers":[{"config":{"mcp_servers":{"__proto__":{"command":"evil"}}},"disabledReason":null}]}') as unknown
+    const overrides = buildRemoteMcpServerOverrides(configRead)
+    expect(Object.keys(overrides)).toEqual(['__proto__'])
+    expect(JSON.parse(JSON.stringify(buildThreadStartParams('/p', overrides)))).toMatchObject({ config: { mcp_servers: JSON.parse('{"__proto__":{"enabled":false}}') as unknown } })
+  })
+
+  it('falls back to the effective config when Codex sends no layers, and to nothing for an unreadable answer', () => {
+    expect(buildRemoteMcpServerOverrides({ config: { mcp_servers: { docs: { command: 'docs-mcp' } } }, layers: null })).toEqual({ docs: { enabled: false } })
+    expect(buildRemoteMcpServerOverrides(null)).toEqual({})
+    expect(buildRemoteMcpServerOverrides({ layers: [null, { config: { mcp_servers: [] } }] })).toEqual({})
+  })
+
   it('collects every long string of a channel credential as a secret', () => {
     expect(collectCredentialSecrets('{"appId":"cli_abcdef12","appSecret":"s3cr3t-value","n":1}')).toEqual(['cli_abcdef12', 's3cr3t-value'])
     expect(collectCredentialSecrets('plain-token-value')).toEqual(['plain-token-value'])
@@ -390,6 +457,45 @@ describe('codex-remote-service helpers', () => {
     const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
     expect(change.summary).toContain('另外还有 5 个文件')
+  })
+
+  it('tells running a command, typing into a running program and reaching a website apart', () => {
+    expect(commandApprovalKind(commandRequest)).toBe('command')
+    // Older Codex leaves kind out; that still means a command.
+    expect(commandApprovalKind({ ...commandRequest, kind: undefined })).toBe('command')
+    expect(commandApprovalKind({ ...commandRequest, kind: 'writeStdin', command: 'write_stdin --session-id 3 yes' })).toBe('terminal-input')
+    expect(commandApprovalKind({ ...commandRequest, command: null, cwd: null, networkApprovalContext: npmRegistry })).toBe('network')
+    // Without a host there is no website to show, so it is not a website card.
+    expect(commandApprovalKind({ ...commandRequest, networkApprovalContext: { protocol: 'https' } })).toBe('command')
+    expect(commandApprovalKind({ ...commandRequest, networkApprovalContext: { host: '', protocol: 'https' } })).toBe('command')
+  })
+
+  it('shows the website for a network approval and what Codex types for terminal input', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [] }
+    const site = buildApprovalRequest('5', 'nonce-five', 'network', { command: null, cwd: null, networkApprovalContext: npmRegistry }, [], display)
+    expect(site).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
+    expect(site.cwd).toBeUndefined()
+    const input = buildApprovalRequest('6', 'nonce-six', 'terminal-input', {
+      command: 'write_stdin --session-id 3 yes',
+      cwd: '/Users/alice/projects/demo',
+    }, [], display)
+    expect(input).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes', cwd: '~/projects/demo' })
+  })
+
+  it('only puts a command on the card when the phone can show all of it', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [apiKey] }
+    expect(inspectCommandDisplay('command', { command: 'x'.repeat(1500) }, display)).toBe('full')
+    expect(inspectCommandDisplay('command', { command: 'x'.repeat(1501) }, display)).toBe('too-long')
+    expect(inspectCommandDisplay('terminal-input', { command: `write_stdin --session-id 3 ${'y'.repeat(1500)}` }, display)).toBe('too-long')
+    // What counts is what the phone would show, after the key is hidden.
+    const withKey = `echo ${apiKey} ${'x'.repeat(1489)}`
+    expect(withKey.length).toBeGreaterThan(1500)
+    expect(inspectCommandDisplay('command', { command: withKey }, display)).toBe('full')
+    expect(inspectCommandDisplay('network', { networkApprovalContext: npmRegistry }, display)).toBe('full')
+    // Nothing to show: the card would ask about a blank.
+    expect(inspectCommandDisplay('command', { command: null }, display)).toBe('blank')
+    expect(inspectCommandDisplay('command', { command: '   ' }, display)).toBe('blank')
+    expect(inspectCommandDisplay('network', {}, display)).toBe('blank')
   })
 })
 
@@ -637,11 +743,13 @@ describe('codex-remote-service turns', () => {
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    expect(codex.requests('config/read')[0].params).toEqual({ cwd: s.workspace, includeLayers: true })
     expect(codex.requests('thread/start')[0].params).toMatchObject({
       cwd: s.workspace,
       approvalPolicy: 'untrusted',
       approvalsReviewer: 'user',
       sandbox: 'workspace-write',
+      config: { 'features.apps': false, 'features.plugins': false },
     })
     expect(codex.requests('turn/start')[0].params).toEqual({
       threadId: 'th-1',
@@ -654,6 +762,43 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts()).toHaveLength(2))
     expect(channel.texts()[1]).toBe('测试都过了，密钥是 [已隐去]')
     expect(channel.sent[1].replyContext).toMatch(/^ctx-/)
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+  })
+
+  // #1407 P2-4：配了外部工具的电脑，遥控开的对话把它们逐个停用，电脑上的配置不动。
+  it('opens the thread with every configured MCP server switched off', async () => {
+    const s = await setup({
+      configRead: {
+        result: {
+          config: { mcp_servers: { docs: { command: 'docs-mcp' } } },
+          origins: {},
+          layers: [
+            { name: { type: 'project', dotCodexFolder: '/w/.codex' }, version: 'b', config: { mcp_servers: { repo: { url: 'https://mcp.example.test/' } } }, disabledReason: 'untrusted' },
+            { name: { type: 'user', file: '/h/.codex/config.toml', profile: null }, version: 'a', config: { mcp_servers: { docs: { command: 'docs-mcp' } } }, disabledReason: null },
+          ],
+        },
+      },
+    })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(codex.requests('thread/start')[0].params).toMatchObject({
+      config: {
+        'features.apps': false,
+        'features.plugins': false,
+        mcp_servers: { docs: { enabled: false }, repo: { url: 'https://mcp.example.test/', enabled: false } },
+      },
+    })
+    expect(codex.written.findIndex((message) => message.method === 'config/read'))
+      .toBeLessThan(codex.written.findIndex((message) => message.method === 'thread/start'))
+  })
+
+  it('opens no thread when Codex cannot say which MCP servers are configured', async () => {
+    const s = await setup({ configRead: { error: { code: -32603, message: 'failed to read configuration layers' } } })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这一轮没做完：failed to read configuration layers'))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
   })
 
@@ -984,6 +1129,62 @@ describe('codex-remote-service approvals', () => {
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
   })
 
+  it('declines a command the card would cut short without asking, says why, and spends no approval number', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    // The dangerous part sits past what the card can show.
+    const long = `${'echo ok && '.repeat(150)}rm -rf ~/important`
+    expect((await codex.ask('item/commandExecution/requestApproval', { ...commandRequest, command: long })).result)
+      .toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts()).toContain(commandRefusedText))
+    expect(s.logs).toContain('remote.command-refused')
+    // Typing into a running program is held to the same rule.
+    const input = { ...commandRequest, itemId: 'i2', kind: 'writeStdin', command: `write_stdin --session-id 3 ${'y'.repeat(1600)}` }
+    expect((await codex.ask('item/commandExecution/requestApproval', input)).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2))
+    // A command Codex left blank is declined too; there is nothing to explain on the phone.
+    expect((await codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i3', command: null })).result)
+      .toEqual({ decision: 'decline' })
+    expect(approvalsSent(channel)).toHaveLength(0)
+    const next = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i4' })
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0].approvalId).toBe('1')
+    expect(channel.texts().filter((line) => line === commandRefusedText)).toHaveLength(2)
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await next).result).toEqual({ decision: 'decline' })
+  })
+
+  it('titles a website request and typing into a running program for what they are', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const site = codex.ask('item/commandExecution/requestApproval', {
+      ...commandRequest,
+      command: null,
+      cwd: null,
+      reason: '要下载依赖',
+      networkApprovalContext: npmRegistry,
+    }, 'a')
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
+    expect(approvalsSent(channel)[0]).toMatchObject({ kind: 'network', summary: 'registry.npmjs.org' })
+    expect(channel.texts()).toContain('[approval] Codex 想连网站（第 1 条）：\nregistry.npmjs.org\n原因：要下载依赖\n回「同意 1」或「拒绝 1」。')
+    channel.handlers?.onInbound(text(alice, '同意'))
+    expect((await site).result).toEqual({ decision: 'accept' })
+
+    const input = codex.ask('item/commandExecution/requestApproval', {
+      ...commandRequest,
+      itemId: 'i2',
+      kind: 'writeStdin',
+      command: 'write_stdin --session-id 3 yes',
+    }, 'b')
+    await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(2))
+    expect(approvalsSent(channel)[1]).toMatchObject({ kind: 'terminal-input', summary: 'write_stdin --session-id 3 yes' })
+    expect(channel.texts().some((line) => line.startsWith('[approval] Codex 想往正在运行的程序里输入（第 2 条）：\nwrite_stdin --session-id 3 yes\n'))).toBe(true)
+    channel.handlers?.onInbound(text(alice, '拒绝'))
+    expect((await input).result).toEqual({ decision: 'decline' })
+  })
+
   it('declines approvals for threads it did not start and grants nothing by default', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -1293,6 +1494,29 @@ describe('codex-remote-service lifecycle', () => {
     await s.service.saveChannelCredential('feishu', null, null)
     const snapshot = await s.service.snapshot()
     expect(snapshot.channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false })
+  })
+
+  it('still unbinds and stops the channel but reports it when logging out cannot remove the saved credential', async () => {
+    const s = await setup()
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'x'.repeat(16) }), 'cli_abcdef')
+    const channel = await enabledAndPaired(s)
+    const locked = Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })
+    vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error(credentialRemoveFailedMessage, { cause: locked }))
+    await expect(s.service.saveChannelCredential('feishu', null, null)).rejects.toThrow(new Error(credentialRemoveFailedMessage))
+    expect(s.logs).toContain('remote.credential-remove-failed')
+    expect(channel.stopped).toBe(1)
+    // The failed call returns nothing, so the card catches up from the state-changed snapshot.
+    expect(s.snapshots.at(-1)?.channels.feishu).toMatchObject({ enabled: false, boundPeer: null, hasCredential: true, accountLabel: 'cli_abcdef' })
+    // Clicking 退出登录 again once the file can go finishes the job.
+    await s.service.saveChannelCredential('feishu', null, null)
+    expect((await s.service.snapshot()).channels.feishu).toMatchObject({ hasCredential: false, accountLabel: null, enabled: false, boundPeer: null })
+  })
+
+  it('does not swallow a failure to save a new credential as a logout failure', async () => {
+    const s = await setup()
+    vi.spyOn(s.store, 'writeCredential').mockRejectedValueOnce(new Error('这台电脑没法安全保存密码，凭据没有保存。'))
+    await expect(s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_other1', appSecret: 'z'.repeat(16) }), 'cli_other1')).rejects.toThrow('没法安全保存')
+    expect(s.logs).not.toContain('remote.credential-remove-failed')
   })
 
   it('drops what is waiting, stops the channel and Codex, and stays off when the manager quits', async () => {

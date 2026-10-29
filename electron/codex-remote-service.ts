@@ -59,9 +59,14 @@ import { isRecord } from './input-guards'
 //   approvals routed to the user (never to an auto reviewer). Every request is
 //   answered with plain accept or decline; there is no "accept for session",
 //   no full-access mode and no way to run a shell command directly.
+// - Threads started from the phone get no MCP servers, plugins or apps: their
+//   tool calls do not all go through an approval, so nothing the phone cannot
+//   see or stop is handed to the model. Codex on the computer keeps them.
 // - Unanswered approvals decline themselves; nothing ever approves by default.
 // - A permission request is only put to the user when every part of it fits on
-//   the card, and "accept" grants exactly the paths the card listed.
+//   the card, and "accept" grants exactly the paths the card listed. A command
+//   (or terminal input, or website) is only put to the user when the card shows
+//   it whole; one that would be cut short is declined without asking.
 // - Approval numbers keep counting across restarts, and every button carries a
 //   per-request random nonce: a card left in the chat history from an earlier
 //   request or an earlier run can never answer a newer one.
@@ -173,7 +178,12 @@ export function isStaleOnlyByClock(sentAt: number, channelStartedAt: number, now
   return isStaleInbound(sentAt, channelStartedAt, now) && !isStaleInbound(sentAt, channelStartedAt - clockAheadMs, now - clockAheadMs)
 }
 
-export function buildThreadStartParams(workspace: string): Record<string, unknown> {
+/**
+ * 遥控开的对话不给客户自己接的外部工具（#1407 P2-4，yoyo 10-29「按推荐」）：MCP 服务、插件、ChatGPT 应用的工具
+ * 调用不一定先问人，手机上看不到也拦不住。只关这一份对话，电脑上直接用 Codex 照旧，联网搜索也不动。
+ * mcpServers 是 buildRemoteMcpServerOverrides 算出来的那份。
+ */
+export function buildThreadStartParams(workspace: string, mcpServers: Record<string, Record<string, unknown>> = {}): Record<string, unknown> {
   return {
     cwd: workspace,
     approvalPolicy: 'untrusted',
@@ -181,7 +191,64 @@ export function buildThreadStartParams(workspace: string): Record<string, unknow
     approvalsReviewer: 'user',
     sandbox: 'workspace-write',
     developerInstructions,
+    config: {
+      'features.apps': false,
+      'features.plugins': false,
+      ...(Object.keys(mcpServers).length > 0 ? { mcp_servers: mcpServers } : {}),
+    },
   }
+}
+
+function mcpServerTable(config: unknown): Record<string, unknown> | null {
+  return isRecord(config) && isRecord(config.mcp_servers) ? config.mcp_servers : null
+}
+
+function mcpServerTransport(server: unknown): Record<string, string> | null {
+  if (!isRecord(server)) return null
+  if (typeof server.command === 'string') return { command: server.command }
+  if (typeof server.url === 'string') return { url: server.url }
+  return null
+}
+
+/**
+ * Turns Codex's `config/read` answer for the workspace (`includeLayers: true`)
+ * into a `mcp_servers` override that switches every configured server off.
+ *
+ * Codex only knows servers by name, and merges an override into the layers
+ * instead of replacing the table, so each name has to be listed. Disabled
+ * layers count too: a project `.codex/config.toml` in a folder Codex has not
+ * trusted yet is a disabled layer here, and thread/start with workspace-write
+ * trusts that folder on the spot and loads it. Codex refuses the whole config
+ * when an override names a server that has no command or url, so a server that
+ * only such a layer defines carries its own command or url along: valid before
+ * the folder is trusted, unchanged after. Without layers (an older Codex), the
+ * effective config's servers are used.
+ */
+export function buildRemoteMcpServerOverrides(configRead: unknown): Record<string, Record<string, unknown>> {
+  const response = isRecord(configRead) ? configRead : {}
+  const layers: unknown[] = Array.isArray(response.layers) ? response.layers : [{ config: response.config, disabledReason: null }]
+  const active = new Set<string>()
+  const inactive = new Map<string, Record<string, string>>()
+  // Codex lists layers from the highest precedence down; the first command or url seen wins, as it does in Codex.
+  for (const layer of layers) {
+    if (!isRecord(layer)) continue
+    const servers = mcpServerTable(layer.config)
+    if (!servers) continue
+    const disabled = layer.disabledReason !== null && layer.disabledReason !== undefined
+    for (const [name, server] of Object.entries(servers)) {
+      if (!disabled) active.add(name)
+      else if (!inactive.has(name)) {
+        const transport = mcpServerTransport(server)
+        if (transport) inactive.set(name, transport)
+      }
+    }
+  }
+  const entries: Array<[string, Record<string, unknown>]> = [...active].map((name) => [name, { enabled: false }])
+  for (const [name, transport] of inactive) {
+    if (!active.has(name)) entries.push([name, { ...transport, enabled: false }])
+  }
+  // fromEntries, not assignment: a server called "__proto__" must stay an own key and be switched off like the rest.
+  return Object.fromEntries(entries)
 }
 
 /** 渠道凭据（JSON）里的字符串值都当要遮住的原值：App Secret、机器人令牌。 */
@@ -317,6 +384,42 @@ export function permissionsShowInFull(permissions: unknown, options: ApprovalDis
   return requested !== null && redactRemoteText(describePermissions(requested, options), options).length <= maxSummaryLength
 }
 
+export type CommandApprovalKind = Extract<RemoteApprovalKind, 'command' | 'terminal-input' | 'network'>
+
+/**
+ * Codex 的 commandExecution 审批分三种（对过 0.164.0）：跑命令；往已经开着的程序里输入（kind 是 writeStdin，
+ * command 是 write_stdin 加要输入的内容）；连网站（带 networkApprovalContext，这时 command、cwd 都是空的）。
+ */
+export function commandApprovalKind(params: Record<string, unknown>): CommandApprovalKind {
+  if (networkApprovalHost(params)) return 'network'
+  return params.kind === 'writeStdin' ? 'terminal-input' : 'command'
+}
+
+function networkApprovalHost(params: Record<string, unknown>): string | null {
+  return isRecord(params.networkApprovalContext) ? stringField(params.networkApprovalContext.host) : null
+}
+
+function isCommandApprovalKind(kind: RemoteApprovalKind): kind is CommandApprovalKind {
+  return kind === 'command' || kind === 'terminal-input' || kind === 'network'
+}
+
+/** 命令那三种审批卡片上的正文：命令原文、Codex 给的 write_stdin 原样、要连的网址。 */
+function commandApprovalSummary(kind: CommandApprovalKind, params: Record<string, unknown>): string {
+  return (kind === 'network' ? networkApprovalHost(params) : stringField(params.command)) ?? ''
+}
+
+export type CommandDisplay = 'full' | 'too-long' | 'blank'
+
+/**
+ * 命令那三种审批能不能在手机上一字不落地显示出来（#1407 P3-2）。跟权限申请一样，显示不全就不问人：
+ * 截掉的尾巴可能正是要命的那一截，点「同意」的人根本没看到它。什么都显示不出来的也不问。
+ */
+export function inspectCommandDisplay(kind: CommandApprovalKind, params: Record<string, unknown>, options: ApprovalDisplayOptions): CommandDisplay {
+  const summary = redactRemoteText(commandApprovalSummary(kind, params), options)
+  if (!summary.trim()) return 'blank'
+  return summary.length <= maxSummaryLength ? 'full' : 'too-long'
+}
+
 /** Codex 发来的审批请求翻成渠道无关、已脱敏截断的样子。 */
 export function buildApprovalRequest(
   approvalId: string,
@@ -332,7 +435,7 @@ export function buildApprovalRequest(
     platform: options.platform,
   })
   let summary = ''
-  if (kind === 'command') summary = stringField(params.command) ?? ''
+  if (isCommandApprovalKind(kind)) summary = commandApprovalSummary(kind, params)
   else if (kind === 'file-change') {
     const lines = changedFiles.slice(0, maxFileLines).map((file) => displayPath(file, options))
     if (changedFiles.length > maxFileLines) lines.push(`另外还有 ${changedFiles.length - maxFileLines} 个文件`)
@@ -636,10 +739,19 @@ export class CodexRemoteService {
     const before = (await this.options.store.readSettings()).channels[channel]
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
     if (!sameAccount) await this.forgetPeer(runtime)
-    await this.options.store.writeCredential(channel, value)
+    // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
+    // 账号字样留着，因为凭据还在，卡上照旧有「退出登录」能再点。最后把那句报出去。
+    let removeFailure: unknown = null
+    try {
+      await this.options.store.writeCredential(channel, value)
+    } catch (error) {
+      if (value !== null) throw error
+      removeFailure = error
+      this.options.log('warn', 'remote.credential-remove-failed', { channel })
+    }
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
-      stored.accountLabel = value === null ? null : accountLabel
+      if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
       if (!sameAccount) stored.boundPeer = null
       settings.channels[channel] = stored
     })
@@ -651,6 +763,11 @@ export class CodexRemoteService {
         // 这时手机遥控被关掉了就不连，也不报错：凭据已经存好（微信扫码登录也认这一步算成功），设置页上那句停用的话就是交代。
         await this.startChannel(runtime)
       }
+    }
+    if (removeFailure) {
+      // 报错的调用拿不到返回的快照，界面靠 state-changed 跟上已经解绑、停掉的样子。
+      await this.emit()
+      throw removeFailure
     }
     return this.emit()
   }
@@ -1176,7 +1293,10 @@ export class CodexRemoteService {
     if (!this.turnStillWanted(runtime, turn)) return
     try {
       if (!runtime.threadId) {
-        const started = await client.request('thread/start', buildThreadStartParams(workspace))
+        // 读不出配了哪些外部工具就不开对话：宁可这一条做不了，也不让手机用上没关掉的工具。
+        const configRead = await client.request('config/read', { cwd: workspace, includeLayers: true })
+        if (!this.turnStillWanted(runtime, turn)) return
+        const started = await client.request('thread/start', buildThreadStartParams(workspace, buildRemoteMcpServerOverrides(configRead)))
         const thread = isRecord(started) && isRecord(started.thread) ? stringField(started.thread.id) : null
         if (!thread) throw new Error('Codex 没有开出新对话')
         if (!this.turnStillWanted(runtime, turn)) return
@@ -1338,7 +1458,7 @@ export class CodexRemoteService {
   private async onServerRequest(method: string, params: unknown): Promise<unknown> {
     switch (method) {
       case 'item/commandExecution/requestApproval':
-        return { decision: await this.requestApproval('command', params) }
+        return { decision: await this.requestApproval(isRecord(params) ? commandApprovalKind(params) : 'command', params) }
       case 'item/fileChange/requestApproval':
         return { decision: await this.requestApproval('file-change', params) }
       case 'item/permissions/requestApproval': {
@@ -1401,6 +1521,15 @@ export class CodexRemoteService {
       // 手机上显示不全的权限申请不问人：问了，客户点的「同意」也不是对着他看到的那些点的。
       this.options.log('info', 'remote.permissions-refused', { channel: runtime.id })
       if (!this.disposed && runtime.turn === turn && !turn.stoppedByUser) void this.sendText(runtime, remoteMessages.permissionsRefused)
+      return 'decline'
+    }
+    const commandDisplay = isCommandApprovalKind(kind) ? inspectCommandDisplay(kind, params, display) : 'full'
+    if (commandDisplay !== 'full') {
+      // 同上：只显示得出前一截的命令不问人。空的是 Codex 没给要跑什么，手机上没什么可解释的，只记日志。
+      this.options.log('info', 'remote.command-refused', { channel: runtime.id, kind, reason: commandDisplay })
+      if (commandDisplay === 'too-long' && !this.disposed && runtime.turn === turn && !turn.stoppedByUser) {
+        void this.sendText(runtime, remoteMessages.commandRefused)
+      }
       return 'decline'
     }
     const id = await this.allocateApprovalId()

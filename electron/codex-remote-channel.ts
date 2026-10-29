@@ -76,7 +76,11 @@ export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteIn
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 
-export type RemoteApprovalKind = 'command' | 'file-change' | 'other'
+/**
+ * Codex 要你同意的是哪一种事，手机上的标题跟着它走。command / terminal-input / network 都是 Codex 的
+ * commandExecution 审批：分别是跑一条命令、往已经开着的程序里输入、连某个网站。
+ */
+export type RemoteApprovalKind = 'command' | 'terminal-input' | 'network' | 'file-change' | 'other'
 
 /** 底座发出的审批请求，跟渠道无关。渠道自己决定画成按钮还是文字。 */
 export interface RemoteApprovalRequest {
@@ -88,7 +92,7 @@ export interface RemoteApprovalRequest {
    */
   nonce: string
   kind: RemoteApprovalKind
-  /** 要跑的命令或要改的文件，已脱敏、已截断。 */
+  /** 要跑的命令、要输入的内容、要连的网址或要改的文件，已脱敏；命令那几种一字不落，放不下的不问人直接拒。 */
   summary: string
   /** 工作目录，主目录已换成 ~。 */
   cwd?: string
