@@ -514,8 +514,8 @@ function fileIdentity(stat: fs.Stats): string {
 
 /**
  * `npm root --global` 的答案由这份 npm、跑它的 node（PATH 决定，算在缓存的键里）和用户 .npmrc
- * 里的 prefix 定。升级 npm、重装 Node.js 都会换掉 npm 的入口文件，inode 和 ctime 跟着变；
- * 光看修改时间不够，npm 包里的文件修改时间常是打包时定死的同一个值。
+ * 里的 prefix 定。升级 npm、重装 Node.js 都会换掉 npm 的入口文件；修改时间是解压时从安装包里
+ * 带过来的，不一定变，inode 或 ctime 一定会变。
  */
 async function readNpmGlobalRootIdentity(npmExecutable: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   try {
