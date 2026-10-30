@@ -16,7 +16,7 @@
 - `site-runtime.ts` — 把站点 id 换成固定的运行时定义（站点、realm、后端、账号 origin、AI 地址），并核对四个工具的地址和账号是同一个 origin。它只走 `requireRelaySite`：未知或退役的 id 一律抛错，绝不退回 xm 客户端。main.ts 只用到 `requireSiteRuntimeDefinition`（推断：`createSiteRuntime`、`requireXmSiteRuntimeDefinition` 除测试外未见引用）
 
 ## 应用线路（管理工具自己的请求）
-- `relay-route-controller.ts` — **「自动」线路怎么定**：每站一条应用线路，切不切只看健康检查（`probeRelayLineHealth`），请求慢或超时不算线路坏了。先走的那条连续 3 次不通、备用那条通了才切；退到备用后，先走的那条连续 10 分钟都通才切回；两次切换至少隔 5 分钟。开机先用上次存下的结论（`relay-route-lines.json`，只存线路 id 和原因，不存地址）。星芒账号第一次开机时直连没通，马上定在线路1（#963）；唤醒、网络恢复、点「重新检测」时两条一起查（#1053）。Codex 有个对话在线路1 上太大发不出去时，`holdDirect` 查一次线路2、通了当场换过去，24 小时不切回线路1（`holds` 也存在 `relay-route-lines.json`，老版本不认它）；线路2 自己坏了照旧退回线路1
+- `relay-route-controller.ts` — **「自动」线路怎么定**：每站一条应用线路，切不切只看健康检查（`probeRelayLineHealth`），请求慢或超时不算线路坏了。先走的那条连续 3 次不通、备用那条通了才切；退到备用后，先走的那条连续 10 分钟都通才切回；两次切换至少隔 5 分钟。开机先用上次存下的结论（`relay-route-lines.json`，只存线路 id 和原因，不存地址）。星芒账号第一次开机时直连没通，马上定在线路1（#963）；唤醒、网络恢复、点「重新检测」时两条一起查（#1053）。开机只查星芒账号的站，历史账号的站等它登上了、或者开机恢复它没连上等着重试时才 `ensureWatching` 开始查（main.ts 账号服务的 `onChanged`，0.2.22 性能体检第 11 条），在那之前照旧报上次的结论。Codex 有个对话在线路1 上太大发不出去时，`holdDirect` 查一次线路2、通了当场换过去，24 小时不切回线路1（`holds` 也存在 `relay-route-lines.json`，老版本不认它）；线路2 自己坏了照旧退回线路1
 - `relay-line-fetch.ts` — 包在 fetch 外面，把星芒自己的请求（账号、余额、AI 对话/画图/视频）换到当前线路的地址。调用方照旧按线路1 写死地址，所以 `sub2api-relay-backend.ts` 不用改。选「自动」时，网络层失败就当场换另一条重发一次，规则分三种：会改数据的请求（下单、建密钥、AI 生成）只在肯定没送到服务器时才重发，防止重复扣费；只读请求等 4 秒还没回应头，就在另一条上并发一次；失败只报给控制器去查，不直接改线路。`createRelayObservedFetch` 给写配置前查模型、做自检用：不换地址，不重发，只上报
 
 ## 工具线路（只有星芒账号，写进 AI 工具配置的那条）

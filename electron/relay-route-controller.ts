@@ -32,6 +32,11 @@
  * - Codex 有个对话在线路 1 上大到发不出去（413，codex-payload-limit.ts）：「自动」的站查一次线路 2，通了当场
  *   换过去，不等三次、不看切换间隔；从这一刻起 24 小时不切回线路 1（只对先走线路 1 的历史账号有用：
  *   星芒账号本来就先走线路 2）。线路 2 自己连不上照旧退回线路 1，不然别的工具也跟着用不了。
+ * - 一个站用上了才开始查（0.2.22 性能体检第 11 条）：开机只查叫到的站（bootstrap/network-routes.ts 只叫星芒账号），
+ *   历史账号登上了、开机恢复它没连上正等着重试，才叫 ensureWatching 从那一刻起照开机那一轮查。在那之前它照旧报
+ *   上次存下的结论（没有就是默认线路、还没定），也不跟着唤醒、网络恢复、「重新检测」查。只用星芒账号的客户用不着
+ *   它：写进工具配置、换线跟过去、外部客户端都只认当前账号的站。它上面有请求没走通照旧报上来查（reportFailure），
+ *   查完照常接着看。
  *
  * 结论和每个站最近一次切换落盘（relay-route-lines.json），下次开机先用结论，诊断页说得出最近一次
  * 为什么换。只存线路 id 和原因，不存地址：地址只从 relay-sites.ts 里来。
@@ -189,8 +194,10 @@ export interface RelayRouteController {
   route(siteId: RelayRouteSiteId): { line: RelayEndpointId; automatic: boolean }
   /** 「自动」的站最近一次改线路（这台电脑上从没改过就是 null）；写死线路的站没有。 */
   lastChange(siteId: RelayRouteSiteId): RelayRouteChange | null
-  /** 开机后在后台查「自动」的站。 */
-  start(): void
+  /** 开机后在后台查 sites 里「自动」的站（缺省两个站都查）；别的站等 ensureWatching 再查（文件头）。 */
+  start(sites?: readonly RelayRouteSiteId[]): void
+  /** 一个「自动」的站这次运行里还没开始查，就从现在起照开机那一轮查；已经在查了什么都不做。 */
+  ensureWatching(siteId: RelayRouteSiteId): void
   /**
    * 星芒自己的一次请求在「自动」的站这会儿走的那条线路上没走通：马上查一轮，不等下一次定时的。只是叫
    * 这里去查，改不改线路照样只看健康检查。走的是先走的那条就照三次的规矩查；已经退到备用那条就两条一起
@@ -205,7 +212,7 @@ export interface RelayRouteController {
    */
   holdDirect(siteId: RelayRouteSiteId, trigger: string): Promise<RelayRouteHoldResult>
   /**
-   * 唤醒、网络恢复、客户点「重新检测」：每个「自动」的站两条一起查一轮，走着的那条不通、另一条通就
+   * 唤醒、网络恢复、客户点「重新检测」：每个在查的「自动」站两条一起查一轮，走着的那条不通、另一条通就
    * 换过去；这个站正有检查没回来的，那次查完马上补这一轮。唤醒、网络恢复先等 relayRouteNetworkSettleMs
    * 再查，「重新检测」马上查。唤醒、网络恢复时，退到备用以后攒下的「一直查得通」从头数：睡前那几次不该
    * 跟醒来连成一段。
@@ -238,6 +245,8 @@ interface SiteState {
    * checkFirstLaunch，也不把这条没查过的线路存成结论。定下来一次就是 false。
    */
   firstLaunch: boolean
+  /** start、ensureWatching 叫过：开机那一轮查过了，唤醒、网络恢复、「重新检测」也查它（文件头）。 */
+  watching: boolean
   cancelTimer: (() => void) | null
 }
 
@@ -301,6 +310,7 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       failureCheckedAt: null,
       requestFailures: [],
       firstLaunch: siteId === 'solov' && concluded === undefined,
+      watching: false,
       cancelTimer: null,
     })
   }
@@ -485,6 +495,21 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       state.round = null
     }
     beginRound(siteId, state, trigger, true)
+  }
+
+  // 从这一刻起查一个站，同开机那一轮：有存下的结论两条一起查，换了网络时走着的那条不通、另一条通就当场换过去
+  // （#1053）；上次退到了备用那条的，切回去照旧按切回的规矩，这一次算头一次。没有结论的照原来：星芒账号走
+  // checkFirstLaunch，历史账号先查默认线路。它上面的请求没走通、已经在查的（reportFailure），不等那一轮的三次，
+  // 查完马上补一轮两条一起查，跟唤醒那时一样。
+  function startWatching(siteId: RelayRouteSiteId, state: SiteState): void {
+    if (disposed || state.watching) return
+    state.watching = true
+    if (state.round || state.checking) recheckSite(siteId, state, 'startup')
+    else beginRound(siteId, state, 'startup', state.settled && !state.firstLaunch)
+  }
+
+  function watchedSites(): Array<[RelayRouteSiteId, SiteState]> {
+    return [...states].filter(([, state]) => state.watching)
   }
 
   // 两条一起查以后接着看：走先走的那条照常隔一阵查一次；退到备用那条时切回去的计时照旧，已经挂着的
@@ -730,13 +755,14 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       const change = states.has(siteId) ? conclusions.changes[siteId] : undefined
       return change ? { ...change } : null
     },
-    start() {
+    start(sites = relayRouteSiteIds) {
       for (const [siteId, state] of states) {
-        // 有存下的结论：两条一起查，换了网络时走着的那条不通、另一条通就当场换过去（#1053）。上次退到了
-        // 备用那条的，切回去照旧按切回的规矩，开机这一次算头一次。没有结论的照原来：星芒账号走
-        // checkFirstLaunch，历史账号先查默认线路。
-        beginRound(siteId, state, 'startup', state.settled && !state.firstLaunch)
+        if (sites.includes(siteId)) startWatching(siteId, state)
       }
+    },
+    ensureWatching(siteId) {
+      const state = states.get(siteId)
+      if (state) startWatching(siteId, state)
     },
     reportFailure(siteId, line, reason) {
       const state = states.get(siteId)
@@ -781,19 +807,20 @@ export function createRelayRouteController(dependencies: RelayRouteControllerDep
       if (disposed) return
       cancelSettleWait?.()
       cancelSettleWait = null
-      for (const [siteId, state] of states) {
+      // 还没开始查的站（用不着的历史账号）不跟着查，文件头。
+      for (const [siteId, state] of watchedSites()) {
         log('info', 'relay.route.recheck', '唤醒、网络恢复或点了重新检测，查一轮线路', { siteId, line: state.line, trigger })
         if (trigger !== 'manual') state.recovered = 0
       }
       if (trigger === 'manual') {
-        for (const [siteId, state] of states) recheckSite(siteId, state, trigger)
+        for (const [siteId, state] of watchedSites()) recheckSite(siteId, state, trigger)
         return
       }
       // 唤醒、网络恢复：等网络稳下来再查，这段时间里又来的从头等、只查一次（#1156）。
       cancelSettleWait = schedule(() => {
         cancelSettleWait = null
         if (disposed) return
-        for (const [siteId, state] of states) recheckSite(siteId, state, trigger)
+        for (const [siteId, state] of watchedSites()) recheckSite(siteId, state, trigger)
       }, relayRouteNetworkSettleMs)
     },
     subscribe(listener) {
