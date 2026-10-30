@@ -1,6 +1,5 @@
 // 主窗口业务通道的处理器：「设置 › 手机遥控 Codex」里微信那一块的扫码登录。开关、配对、凭据清除
 // 这些两个渠道共用的在 codex-remote.ts，同用 ctx.codexRemote()。
-import QRCode from 'qrcode'
 import type { RemoteChannelDependencies } from '../../codex-remote-channel'
 import { buildWeixinBotAgent } from '../../codex-remote-weixin-api'
 import { createWeixinLoginController, type WeixinLoginController } from '../../codex-remote-weixin-login'
@@ -23,7 +22,8 @@ export function createWeixinLoginForHost(host: WeixinLoginHost): WeixinLoginCont
     saveCredential: async (value, accountLabel) => {
       await host.saveChannelCredential('weixin', value, accountLabel)
     },
-    renderQrCode: (content) => QRCode.toDataURL(content, { errorCorrectionLevel: 'M', margin: 2, width: 280 }),
+    // 二维码库只有扫码登录时才用到，到这一步才加载，不拖慢开机。
+    renderQrCode: async (content) => (await import('qrcode')).default.toDataURL(content, { errorCorrectionLevel: 'M', margin: 2, width: 280 }),
     log: (level, event, detail) => dependencies.log(level, event, detail),
   })
 }

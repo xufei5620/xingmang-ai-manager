@@ -3,7 +3,6 @@ import {
   type BrowserWindowConstructorOptions,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
-import QRCode from 'qrcode'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
 import { networkFailureCode } from './network-failure'
 import type { PaymentOrderStatusReader } from './payment-status-reader'
@@ -660,6 +659,8 @@ export function createPaymentWindowController(
     async openQrCode(input, parent) {
       const requestGeneration = ++openRequestGeneration
       const validated = validatePaymentQrCode(input)
+      // 二维码库连带它的 PNG 编码有五十多个文件，只有扫码付款用得到，点到这一步才加载，不拖慢开机。
+      const QRCode = (await import('qrcode')).default
       const image = await QRCode.toDataURL(validated.code, {
         errorCorrectionLevel: 'M', margin: 2, width: 360,
       })

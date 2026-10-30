@@ -4,7 +4,7 @@
 import path from 'node:path'
 import { type BrowserWindow, safeStorage } from 'electron'
 import { AccountSessionStore } from '../account-session-store'
-import { relayStatusProbeUrl } from '../diagnostics'
+import { relayStatusProbeUrl } from '../relay-status-probe'
 import { ipcEventChannels } from '../ipc-contract'
 import { createNewApiClient, type NewApiRetryOffProxyFailure } from '../new-api-client'
 import { parseRealmSavedAccount, type RealmSavedAccount } from '../realm-account'

@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
@@ -488,5 +489,63 @@ describe('main process startup order', () => {
     visit(source)
     expect(factories.size).toBeGreaterThan(0)
     expect(misplaced).toEqual([])
+  })
+})
+
+// The files main.ts pulls in before it can open a window: every value import reachable from it.
+// `import type` and `import()` are left out, because the compiled CommonJS only requires those
+// when the code that uses them runs.
+function startupImports(): { files: Set<string>, packages: Set<string> } {
+  const files = new Set<string>()
+  const packages = new Set<string>()
+  const pending = [path.join(__dirname, 'main.ts')]
+  for (let file = pending.pop(); file; file = pending.pop()) {
+    if (files.has(file)) continue
+    files.add(file)
+    const source = ts.createSourceFile(file, fs.readFileSync(file, 'utf8'), ts.ScriptTarget.Latest)
+    for (const statement of source.statements) {
+      const specifier = valueImportSpecifier(statement)
+      if (specifier === null) continue
+      if (!specifier.startsWith('.')) {
+        packages.add(specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0])
+        continue
+      }
+      const target = path.resolve(path.dirname(file), specifier)
+      const resolved = [`${target}.ts`, path.join(target, 'index.ts')].find((candidate) => fs.existsSync(candidate))
+      if (resolved) pending.push(resolved)
+    }
+  }
+  return { files, packages }
+}
+
+function valueImportSpecifier(statement: ts.Statement): string | null {
+  if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+    const clause = statement.importClause
+    if (clause?.isTypeOnly) return null
+    const bindings = clause?.namedBindings
+    const typesOnly = clause !== undefined && !clause.name && bindings !== undefined && ts.isNamedImports(bindings)
+      && bindings.elements.every((element) => element.isTypeOnly)
+    return typesOnly ? null : statement.moduleSpecifier.text
+  }
+  if (ts.isExportDeclaration(statement) && statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)) {
+    if (statement.isTypeOnly) return null
+    const clause = statement.exportClause
+    const typesOnly = clause !== undefined && ts.isNamedExports(clause) && clause.elements.every((element) => element.isTypeOnly)
+    return typesOnly ? null : statement.moduleSpecifier.text
+  }
+  return null
+}
+
+describe('main process startup imports', () => {
+  it('leaves the QR code library and the health check out of startup until they are used', () => {
+    const { files, packages } = startupImports()
+    const loaded = new Set([...files].map((file) => path.relative(__dirname, file).split(path.sep).join('/')))
+    // The walk itself reaches what startup does wire up.
+    expect(packages.has('electron-updater')).toBe(true)
+    expect(loaded.has('payment-window.ts')).toBe(true)
+    expect(loaded.has('bootstrap/diagnostics.ts')).toBe(true)
+    // 二维码只在扫码付款、扫码登录时画；检查页那一套只在跑检查、点「点这里就好」时用，都到那时才加载。
+    expect(packages.has('qrcode')).toBe(false)
+    expect(['diagnostics.ts', 'diagnostic-fixes.ts', 'diagnostics-dns-check.ts'].filter((file) => loaded.has(file))).toEqual([])
   })
 })

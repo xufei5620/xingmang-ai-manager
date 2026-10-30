@@ -4,7 +4,7 @@
 import path from 'node:path'
 import { app, type BrowserWindow, net, powerMonitor, session } from 'electron'
 import type { AppSettings, AppSettingsStore } from '../app-settings'
-import { relaySiteStatusProbeUrls, relayStatusProbeUrl } from '../diagnostics'
+import { relaySiteStatusProbeUrls, relayStatusProbeUrl } from '../relay-status-probe'
 import { parseChromiumProxyResult } from '../download-proxy'
 import { ipcEventChannels } from '../ipc-contract'
 import { createSiteRouting } from '../proxy-bypass'
