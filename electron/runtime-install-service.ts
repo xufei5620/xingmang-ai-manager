@@ -9,7 +9,7 @@ import type { GitRuntimeInstallProgress, GitRuntimeInstallResult } from './git-r
 import type { NodeRuntimeInstallRequest } from './ipc-contract'
 import { inspectCommandLineToolsShim } from './macos-command-line-tools'
 import { requestMacCommandLineToolsInstall, waitForMacCommandLineTools } from './macos-git-install'
-import type { NodeRuntimeInstallResult, WindowsRestartStatus } from './node-runtime'
+import type { NodeRuntimeInstallResult } from './node-runtime'
 import type { PythonRuntimeInstallResult } from './python-runtime'
 import { nodeReadsSystemCertificates } from './system-certificate-trust'
 import type { NetworkRegion, RendererMessageTarget, ToolStatus } from './system-service'
@@ -114,40 +114,19 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
         return result
       }
       if (platform === 'win32') {
-        let restartStatus: WindowsRestartStatus
+        // 以前 Windows 在等重启（系统更新装完没重启）就不装，叫客户先重启。可 Node.js 的安装包不看这两个
+        // 标记（nodejs/node 的 tools/msvs/msi/nodemsi/product.wxs 只拦系统版本）：带 /norestart 装，真要
+        // 重启时退出码是 3010，走装完要重启那条；真被挡住时 1603、1618、1925 那几句本来就叫客户重启。
+        // 拦在前面反倒常见：合盖不关机的电脑几天都在「等重启」，标记卡住的重启了还在，客户就永远装不上。
+        // 现在照样装，只把这件事记进运行日志，装不上时客服看得见。装工具时缺 Node.js 自己补装的那一路
+        // （cli-install-service.ts）本来就不查。
         try {
-          restartStatus = await inspectWindowsRestartRequiredForService()
+          const restartStatus = await inspectWindowsRestartRequiredForService()
+          if (restartStatus.required) {
+            runtimeLog?.log('info', 'install', 'node.install.restart-pending', 'Windows 在等重启，照样先装 Node.js', { reasons: restartStatus.reasons })
+          }
         } catch (error) {
-          // A probe failure must not turn into a false "reboot required" state.
-          // The installer still has its own verified fallback and will report
-          // the actual Windows Installer result if the probe is unavailable.
-          restartStatus = { required: false, reasons: [] }
-          // 进度那一行只说结果，系统回的英文原话进运行日志（#1100 第1条）。
-          const message = '没查清 Windows 是否在等重启，先接着装'
-          runtimeLog?.log('warn', 'install', 'node.install.restart-probe-failed', message, { reason: error instanceof Error ? error.message : String(error) })
-          if (!target.isDestroyed()) {
-            target.send('runtime:node-install-progress', {
-              phase: 'checking',
-              source: null,
-              message,
-              percent: null,
-            })
-          }
-        }
-        if (restartStatus.required) {
-          const reasons = restartStatus.reasons.length > 0
-            ? `（${restartStatus.reasons.join('、')}）`
-            : ''
-          const message = `检测到 Windows 有待完成的系统更新${reasons}，请先重启电脑；重启后回到这里重新检测，再自动安装 Node.js LTS`
-          if (!target.isDestroyed()) {
-            target.send('runtime:node-install-progress', {
-              phase: 'error',
-              source: null,
-              message,
-              percent: null,
-            })
-          }
-          throw new Error(message)
+          runtimeLog?.log('warn', 'install', 'node.install.restart-probe-failed', '没查清 Windows 是否在等重启，先接着装', { reason: error instanceof Error ? error.message : String(error) })
         }
       }
       const architecture = platform === 'win32'
