@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
@@ -150,6 +151,65 @@ export async function readBoundedFile(
       throw new Error(`${label}在读取过程中发生变化`)
     }
     return buffer
+  } finally {
+    await handle.close()
+  }
+}
+
+export interface BoundedFileDigest {
+  sha256: string
+  size: number
+  /** The first `headBytes` bytes asked for, fewer when the file is shorter. */
+  head: Buffer
+}
+
+/**
+ * readBoundedFile's checks without holding the whole file: the bundled
+ * acceleration core is tens of megabytes, and all a caller looks at is its
+ * digest and a few header bytes. Hashing in chunks also keeps each step on
+ * the main thread short instead of one long digest of the whole buffer.
+ */
+export async function readBoundedFileDigest(
+  requestedPath: string,
+  maximumBytes: number,
+  label: string,
+  headBytes = 0,
+): Promise<BoundedFileDigest> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+    throw new Error(`${label}读取上限无效`)
+  }
+  const filePath = resolveRelocatedPath(requestedPath)
+  const pathBeforeOpen = await pathSnapshot(filePath, label)
+  const handle = await fs.promises.open(
+    filePath,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+  )
+  try {
+    const before = await handle.stat({ bigint: true })
+    assertSingleLinkRegularFile(before, label)
+    if (!sameFileSnapshot(pathBeforeOpen, before)) throw new Error(`${label}在打开期间发生变化`)
+    const size = readBufferSize(before, maximumBytes, label)
+    const hash = createHash('sha256')
+    const head = Buffer.alloc(Math.min(Math.max(headBytes, 0), size))
+    const buffer = Buffer.allocUnsafe(Math.min(Math.max(size, 1), 1024 * 1024))
+    let offset = 0
+    while (offset < size) {
+      const { bytesRead } = await handle.read(buffer, 0, Math.min(buffer.length, size - offset), offset)
+      if (bytesRead === 0) break
+      if (offset < head.length) buffer.copy(head, offset, 0, Math.min(bytesRead, head.length - offset))
+      hash.update(buffer.subarray(0, bytesRead))
+      offset += bytesRead
+    }
+    const after = await handle.stat({ bigint: true })
+    const pathAfterRead = await pathSnapshot(filePath, label)
+    if (
+      offset !== size
+      || !sameFileSnapshot(before, after)
+      || !sameFileSnapshot(after, pathAfterRead)
+    ) {
+      throw new Error(`${label}在读取过程中发生变化`)
+    }
+    return { sha256: hash.digest('hex'), size, head }
   } finally {
     await handle.close()
   }

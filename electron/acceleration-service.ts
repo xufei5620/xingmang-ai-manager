@@ -66,6 +66,12 @@ interface AccelerationServiceOptions {
    */
   bundleDamaged?: { recheck(): Promise<AccelerationBundleCheck> }
   /**
+   * 开机不等安装包里的加速文件校验完（main.ts），后端和文件坏没坏要等它才知道。给了它就以它为准，上面
+   * backend、bundleDamaged 两项不看：要用到后端的操作都排在它后面；到手之前 awaitingPreviousOwner 答
+   * 「没在等」，也还不给「重新检查」。缺省 = 建的时候就都知道，旧行为。
+   */
+  ready?: Promise<Pick<AccelerationServiceOptions, 'backend' | 'bundleDamaged'>>
+  /**
    * 状态文件关掉了网络加速（remote-features.ts）：不再连新的，用户点的、软件替他连的都一样。连着的照常用、
    * 照常能停，停不掉才是更糟的事。缺省 = 不关。
    */
@@ -246,7 +252,6 @@ export function userAccelerationState(state: AccelerationState): AccelerationSta
  * （acceleration-development-backend.ts 的 startSession）。
  */
 export function createUserAccelerationApi(service: AccelerationService): AccelerationApi & AccelerationPreferenceApi {
-  const recheck = service.recheckAccelerationBundle
   return {
     getAccelerationState: (scope) => service.getAccelerationState(scope).then(userAccelerationState),
     startAcceleration: (scope, mode, lineId, ignoreConflicts) => service.startAcceleration(scope, mode, lineId, ignoreConflicts)
@@ -258,7 +263,7 @@ export function createUserAccelerationApi(service: AccelerationService): Acceler
     pingAccelerationLine: (scope, lineId) => service.pingAccelerationLine(scope, lineId),
     getAccelerationPreference: (scope) => service.getAccelerationPreference(scope),
     saveAccelerationPreference: (scope, update) => service.saveAccelerationPreference(scope, update),
-    ...(recheck ? { recheckAccelerationBundle: recheck } : {}),
+    get recheckAccelerationBundle() { return service.recheckAccelerationBundle },
   }
 }
 
@@ -285,10 +290,16 @@ function projectRedemption(value: unknown, scope: string): AccelerationRedemptio
 }
 
 export function createAccelerationService(options: AccelerationServiceOptions): AccelerationService {
-  const { backend, bundleDamaged } = options
+  let { backend, bundleDamaged }: Pick<AccelerationServiceOptions, 'backend' | 'bundleDamaged'> = options.ready ? {} : options
   // Track a start before awaiting it: a failed/late response does not prove the tunnel never started.
   const possibleSessions = new Set<string>()
-  let queue: Promise<unknown> = Promise.resolve()
+  // Every request below that reaches the backend runs inside this queue, so a
+  // backend that arrives later (options.ready) is settled before any of them
+  // gets its turn; awaitingPreviousOwner only peeks and answers no until then.
+  // One that never arrives counts as none: the page shows it cannot connect.
+  let queue: Promise<unknown> = options.ready
+    ? options.ready.then((settled) => { ({ backend, bundleDamaged } = settled) }, () => { backend = undefined; bundleDamaged = undefined })
+    : Promise.resolve()
   let lastMutation: { key: string; promise: Promise<AccelerationState> } | null = null
   let revision = 0
   let disposed = false
@@ -498,7 +509,11 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
       if (!options.preferences) return Promise.reject(new Error('加速线路偏好暂不可用，请稍后重试。'))
       return options.preferences.saveAccelerationPreference(scope, parsed)
     },
-    ...(bundleDamaged ? { recheckAccelerationBundle: () => bundleDamaged.recheck() } : {}),
+    // 坏没坏可能要等 ready 才知道，所以每次现看；没坏、还不知道时都没有这一项。
+    get recheckAccelerationBundle() {
+      const damaged = bundleDamaged
+      return damaged ? () => damaged.recheck() : undefined
+    },
     hasPossibleSession() {
       return possibleSessions.size > 0
     },

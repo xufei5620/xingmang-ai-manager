@@ -237,6 +237,48 @@ describe('acceleration-service', () => {
     await service.dispose()
   })
 
+  it('holds every backend request until a backend that arrives later is in hand', async () => {
+    const ready = deferred<{ backend?: AccelerationApi & { awaitingPreviousOwner(): boolean } }>()
+    const backend = { ...createBackend(), awaitingPreviousOwner: () => true }
+    const service = createAccelerationService({ getAccountScope: () => scope, ready: ready.promise })
+    // Nothing to wait for while there is no helper yet, and no request may run as if there were none.
+    expect(service.awaitingPreviousOwner()).toBe(false)
+    const read = service.getAccelerationState(scope)
+    const started = service.startAcceleration(scope, 'system-proxy')
+    await Promise.resolve()
+    expect(backend.getAccelerationState).not.toHaveBeenCalled()
+    ready.resolve({ backend })
+    expect(await read).toEqual(state())
+    expect(await started).toEqual(active())
+    expect(backend.startAcceleration).toHaveBeenCalledOnce()
+    expect(service.awaitingPreviousOwner()).toBe(true)
+    await service.dispose()
+  })
+
+  it('takes a later answer of no backend, or none at all, as acceleration being unavailable', async () => {
+    for (const ready of [Promise.resolve({}), Promise.reject(new Error('read failed'))]) {
+      const service = createAccelerationService({ getAccountScope: () => scope, backend: createBackend(), ready })
+      expect((await service.getAccelerationState(scope)).phase).toBe('unavailable')
+      await expect(service.startAcceleration(scope, 'system-proxy')).rejects.toThrow('加速线路暂未开通，请稍后再试。')
+      await service.dispose()
+    }
+  })
+
+  it('offers the bundle recheck once a later answer says the bundle is damaged, and not before', async () => {
+    const ready = deferred<{ bundleDamaged?: { recheck(): Promise<'repaired' | 'damaged'> } }>()
+    const recheck = vi.fn(async () => 'damaged' as const)
+    const service = createAccelerationService({ getAccountScope: () => scope, ready: ready.promise })
+    const user = createUserAccelerationApi(service)
+    expect(service.recheckAccelerationBundle).toBeUndefined()
+    expect(user.recheckAccelerationBundle).toBeUndefined()
+    const read = service.getAccelerationState(scope)
+    ready.resolve({ bundleDamaged: { recheck } })
+    expect(await read).toMatchObject({ phase: 'unavailable', unavailableReason: 'bundle-damaged' })
+    await expect(user.recheckAccelerationBundle?.()).resolves.toBe('damaged')
+    expect(recheck).toHaveBeenCalledOnce()
+    await service.dispose()
+  })
+
   it.each(['', 'xm-account:0', 'xm-account:-1', 'xm-account:01', 'xm-account:1/../2', 'api-account:1.1', 'xm-account:9007199254740992', 'other:42'])('rejects malformed scopes: %s', async (invalidScope) => {
     const backend = createBackend()
     const service = createAccelerationService({ getAccountScope: () => invalidScope, backend })

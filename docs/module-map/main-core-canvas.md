@@ -28,7 +28,7 @@
 ## 本地文件与有界读写（I8 / I10 的工具库，写本地数据和读网络响应一律走这里）
 
 - `safe-local-data.ts` — 用户可写区里读写数据文件的统一入口：`assertNoReparseComponents` 逐级拒绝符号链接与目录联接，`ensureSafeDataDirectory` / `assertSafeDataFile` / `readSafeUtf8File*` / `writeAtomicSafe*`（临时文件 + 原子改名）/ `appendSafe*` / `renameWithTransientRetry*`（扛 Windows 杀软短暂占用）。路径先过 `relocated-folders.ts`：只在 same-user 模式下跟随「C 盘搬家」留下的联接，trusted-only 下一律拒绝（I8 已登记的例外）
-- `bounded-file.ts` — 有上限地读文件、独占复制文件：要求单链接普通文件（`nlink === 1`），读前读后比对 dev/ino/大小/时间戳，路径校验期间被换掉就报错，防硬链接与 TOCTOU 重定向（I8）
+- `bounded-file.ts` — 有上限地读文件、只算摘要（几十兆的加速内核一块块算，不整个读进内存）、独占复制文件：要求单链接普通文件（`nlink === 1`），读前读后比对 dev/ino/大小/时间戳，路径校验期间被换掉就报错，防硬链接与 TOCTOU 重定向（I8）
 - `bounded-directory.ts` — 有上限地列目录（`readDirectoryEntries*`），条目超过上限抛 `DirectoryEntryLimitError`，防被塞爆的目录拖垮主进程
 - `bounded-response.ts` — 有上限地读 HTTP 响应体（`readBoundedResponseText/Bytes`），先看 content-length 再边读边数，超了就取消；I10 四件套里"响应体上限"那一件
 - `redirect-allowlist-fetch.ts` — 逐跳跟随下载跳转（`fetchWithRedirectAllowlist`）：强制 `redirect: 'manual'`，第一跳、每个 Location、响应自报的地址都过调用方给的校验，响应地址还必须正好是这一跳，另管循环与次数上限；I10 四件套里"重定向策略"那一件。`fetchLandingWithRedirectAllowlist` 另交回答话的那一跳（生产下载用的 fetch 不填 `response.url`），续传可设 `beyondLimit: 'return'` 不跟跳转；客户看得到的报错可用 `messages` 沿用原话。Node 运行时、Mac 桌面端安装器、Codex 插件目录、Git 运行时、Claude Desktop MSIX、Grok 版本查询、AI 图片下载在用（图片那处传进来的 fetch 每一跳按主机挑：`imgen.x.ai` 走跟随代理的会话，其余先查 DNS 再钉住地址）；Codex 桌面端那份按 AGENTS 第 7 节不收
