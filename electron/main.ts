@@ -908,10 +908,12 @@ if (!hasSingleInstanceLock) {
     ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
     // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
     // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
-    // 网络加速 2026-10-30 下线以后，检查页不再有「加速功能」这一行：客户用不着加速，文件坏了也没什么可做的。
-    // 文件照旧要读，开机改回上次留在半路的系统代理靠它（createAccelerationHost）。
+    // 网络加速 2026-10-30 下线（platform-capabilities.ts）：三个平台都没有加速了。加速文件照旧要读，
+    // 开机改回上次留在半路的系统代理靠它（createAccelerationHost）。
+    const accelerationOffered = platformCapabilitiesFor().acceleration !== false
+    // 下线以后检查页不再有「加速功能」这一行：客户用不着加速，文件坏了也没什么可做的。
     const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
-      !app.isPackaged || platformCapabilitiesFor().acceleration === false ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
+      !app.isPackaged || !accelerationOffered ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
     ))
     // 「重新检查」连点几下只读一遍：内核文件有几十 MB。
     let accelerationBundleRecheck: Promise<AccelerationBundleCheck> | null = null
@@ -1216,6 +1218,7 @@ if (!hasSingleInstanceLock) {
       accelerationService: () => acceleration,
       issueCodexStartupTicket: () => issueCodexStartupTicket(),
       readStoredConfig: () => systemService.readStoredConfig(),
+      accelerationOffered,
     })
     const { downloadAcceleration, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, prepareClaudeDesktopLaunch, downloadFetch } = accelerationRouting
     const systemService = createSystemService(settingsStore, {
@@ -2197,6 +2200,7 @@ if (!hasSingleInstanceLock) {
       mainWindow: () => managedMainWindow,
       applicationTray: () => applicationTray,
       accelerationSuspended: () => remoteFeatures.isOff('acceleration'),
+      accelerationOffered,
     })
     accelerationExpiry = accelerationServices.accelerationExpiry
     accelerationInterruption = accelerationServices.accelerationInterruption
@@ -2214,8 +2218,9 @@ if (!hasSingleInstanceLock) {
         : Promise.reject(new Error('加速服务尚未就绪。')),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
-    const onSuspend = () => { if (developmentAcceleration) accelerationPower.suspended() }
-    const onResume = () => { if (developmentAcceleration) accelerationPower.resumed() }
+    // 网络加速下线以后不会再有连着的加速：醒来不再替他读一次加速状态，那会白白拉起加速辅助进程。
+    const onSuspend = () => { if (developmentAcceleration && accelerationOffered) accelerationPower.suspended() }
+    const onResume = () => { if (developmentAcceleration && accelerationOffered) accelerationPower.resumed() }
     powerMonitor.on('suspend', onSuspend)
     powerMonitor.on('resume', onResume)
     quitCleanup.add('acceleration-power', () => {
