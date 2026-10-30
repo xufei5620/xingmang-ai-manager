@@ -68,7 +68,7 @@ import { bypassClosedLoopbackProxies, describeDroppedProxies, probeLoopbackProxy
 import { redactHomeDirectory } from './startup-log'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
 import { toolConfigIdentity, ToolConfigOwnershipStore } from './tool-config-ownership'
-import { resolveCliCommand, resolveCliInstallation, resolveNpmGlobalRoot, type CliInstallation } from './tool-installation'
+import { createNpmGlobalRootLookup, resolveCliCommand, resolveCliInstallation, type CliInstallation } from './tool-installation'
 import { createToolRouteFollowStore } from './tool-route-follow-state'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { createCliTerminalAccess } from './windows-cli-shell-access'
@@ -266,6 +266,8 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
   // Mac 上要不要改用代下的那份 Node.js（preferredNodeDirectories）。判断要起一两次 `node --version`，
   // 同一阵子里的检测、装工具、开工具共用一次结果；强制重新检测、装完 Node.js 时重新判断。
   let preferredNodeProbe: { at: number; directory: Promise<string | null> } | null = null
+  // Mac、Linux 上 `npm root --global` 每问一次起一个 node 进程；同一份 npm 的答案记到这次运行结束，装过 Node.js 作废。
+  const npmGlobalRoots = createNpmGlobalRootLookup()
   const inspectExecutableMachine = serviceOptions.inspectExecutableMachine ?? inspectWindowsExecutableMachine
   const inspectOfficialUsage = serviceOptions.fetchOfficialChatGptUsage
     ?? (process.env.VITEST ? async () => null : fetchOfficialChatGptUsage)
@@ -395,7 +397,12 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
 
   /** `npm root --global` 也得用找 npm 时排在最前的那份 Node.js 跑，不然代下的 npm 会落到客户的旧 node 上。 */
   async function resolveServiceNpmGlobalRoot(npmExecutable: string | null): Promise<string | null> {
-    return resolveNpmGlobalRoot(npmExecutable, commandEnvironment(), undefined, undefined, await preferredNodeDirectories())
+    return npmGlobalRoots.resolve(npmExecutable, commandEnvironment(), await preferredNodeDirectories())
+  }
+
+  /** 装过 Node.js 以后调，全局安装目录下次重新问。 */
+  function forgetNpmGlobalRoots(): void {
+    npmGlobalRoots.forget()
   }
 
   async function executeVersion(
@@ -710,6 +717,7 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
     forgetPreferredNodeDirectories,
     nodeCommandDirectories,
     resolveServiceNpmGlobalRoot,
+    forgetNpmGlobalRoots,
     executeVersion,
     isManagedNpmInstallation,
     cliTerminalAccess,

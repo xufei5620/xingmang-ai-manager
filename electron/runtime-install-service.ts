@@ -60,6 +60,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
     inspectWindowsRestartRequiredForService, installNodeRuntimeForService, installGitRuntimeForService,
     installMacGitRuntimeWith, downloadFetch, resolveWindowsMachinePathsForService, installationQueue,
     nodeRuntimeInstall, inspectExecutableMachine, withDownloadAcceleration, forgetPreferredNodeDirectories,
+    forgetNpmGlobalRoots,
   } = context
   const {
     inspectNetworkRegion,
@@ -162,6 +163,8 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
       if (replaceForCertificates) await assertNodeReplacedForCertificates()
       return result
     } finally {
+      // 装成、装到一半失败都可能已经换了 npm，全局安装目录下次重新问；不必装的那条路多问一次也不贵。
+      forgetNpmGlobalRoots()
       nodeRuntimeInstall.running = false
     }
   }

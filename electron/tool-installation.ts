@@ -23,6 +23,7 @@ import {
   resolveDarwinGrokCanonicalSelection,
   stageDarwinGrokCanonicalSelection,
 } from './macos-grok'
+import { resolveNpmHomeDirectory, resolveUserNpmrcPath } from './npm-user-prefix'
 import { sameLocalPathIdentity } from './path-identity'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
 import { isNewerVersion } from './versions'
@@ -488,6 +489,88 @@ export async function resolveNpmGlobalRoot(
     return path.win32.join(path.win32.dirname(npmExecutable), 'node_modules')
   }
   return queryNpmRoot(npmExecutable, env)
+}
+
+export interface NpmGlobalRootLookup {
+  resolve(
+    npmExecutable: string | null,
+    envInput?: NodeJS.ProcessEnv,
+    additionalPaths?: readonly string[],
+  ): Promise<string | null>
+  /** 装过 Node.js（装成、装到一半都算）以后调：之前问到的都不算数了。 */
+  forget(): void
+}
+
+export interface NpmGlobalRootLookupOptions {
+  queryNpmRoot?: ResolveCliInstallationOptions['queryNpmRoot']
+  platform?: NodeJS.Platform
+  /** 判断「还是不是上次那份 npm」的依据；读不出（null）就照旧现问，也不记。 */
+  readIdentity?: (npmExecutable: string, env: NodeJS.ProcessEnv) => Promise<string | null>
+}
+
+function fileIdentity(stat: fs.Stats): string {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(':')
+}
+
+/**
+ * `npm root --global` 的答案由这份 npm、跑它的 node（PATH 决定，算在缓存的键里）和用户 .npmrc
+ * 里的 prefix 定。升级 npm、重装 Node.js 都会换掉 npm 的入口文件；修改时间是解压时从安装包里
+ * 带过来的，不一定变，inode 或 ctime 一定会变。
+ */
+async function readNpmGlobalRootIdentity(npmExecutable: string, env: NodeJS.ProcessEnv): Promise<string | null> {
+  try {
+    const target = await fs.promises.realpath(npmExecutable)
+    const npm = fileIdentity(await fs.promises.stat(target))
+    const userConfigPath = resolveUserNpmrcPath({ env, home: resolveNpmHomeDirectory(env) })
+    const userConfig = userConfigPath
+      ? await fs.promises.stat(userConfigPath).then(fileIdentity, () => 'missing')
+      : 'none'
+    return [target, npm, userConfigPath ?? '', userConfig].join('\0')
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Mac、Linux 上每问一次全局安装目录就要起一个 node 进程（性能体检第 13 条）。同一份 npm 的答案
+ * 不会变，按 npm 路径和 PATH 记到这次运行结束；npm 文件或用户 .npmrc 变了就重问，装过 Node.js
+ * 由调用方 forget。没问到的不记，下次照旧再问。只省进程，找到目录以后的校验一步不少。
+ */
+export function createNpmGlobalRootLookup(options: NpmGlobalRootLookupOptions = {}): NpmGlobalRootLookup {
+  const platform = options.platform ?? process.platform
+  const queryNpmRoot = options.queryNpmRoot ?? defaultQueryNpmRoot
+  const readIdentity = options.readIdentity ?? readNpmGlobalRootIdentity
+  const answers = new Map<string, { identity: string; root: Promise<string | null> }>()
+
+  async function resolve(
+    npmExecutable: string | null,
+    envInput: NodeJS.ProcessEnv = process.env,
+    additionalPaths: readonly string[] = [],
+  ): Promise<string | null> {
+    // Windows 本来就不跑 npm，没有可省的。
+    if (!npmExecutable || platform === 'win32') {
+      return resolveNpmGlobalRoot(npmExecutable, envInput, queryNpmRoot, platform, additionalPaths)
+    }
+    const env = commandEnvironment(envInput, additionalPaths)
+    const identity = await readIdentity(npmExecutable, env)
+    if (identity === null) return queryNpmRoot(npmExecutable, env)
+    const key = `${path.resolve(npmExecutable)}\0${env.PATH ?? ''}`
+    const known = answers.get(key)
+    if (known?.identity === identity) return known.root
+    const answer = { identity, root: queryNpmRoot(npmExecutable, env) }
+    answers.set(key, answer)
+    function drop() {
+      if (answers.get(key) === answer) answers.delete(key)
+    }
+    void answer.root.then((root) => { if (root === null) drop() }, drop)
+    return answer.root
+  }
+
+  function forget(): void {
+    answers.clear()
+  }
+
+  return { resolve, forget }
 }
 
 function closestCommandToPackage(
