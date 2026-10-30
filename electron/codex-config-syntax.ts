@@ -36,14 +36,15 @@ const codexFatalTomlErrors = [
 // TOML 1.1 新加的转义只有 \e 和 \x；"D:\projects" 里的 \p 这类两边都不认。
 const escapesOnlyCodexKnows: ReadonlySet<number> = new Set([0x65, 0x78])
 
-export function isCodexConfigBroken(content: Buffer): boolean {
+// parse 缺省用 @iarna/toml；看一遍配置时传进来的是同一份内容只解析一遍的那个（config-files.ts）。
+export function isCodexConfigBroken(content: Buffer, parse: (text: string) => unknown = TOML.parse): boolean {
   // Codex 按严格 UTF-8 读，用 GBK 存过一行中文就整份读不了。解码会把坏字节悄悄换成
   // U+FFFD，所以要在解码之前看。
   if (!isUtf8(content)) return true
   const text = content.toString('utf8').replace(/^\uFEFF/, '')
   if (forbiddenCharacters.test(text)) return true
   try {
-    TOML.parse(text)
+    parse(text)
     return false
   } catch (error) {
     return codexAlsoRejects(error)

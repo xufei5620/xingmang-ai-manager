@@ -280,9 +280,63 @@ export interface FileRemovePlan {
 // 读写配置文件的底层（读文本、查路径、两阶段提交）搬进了 config-files-context.ts（#1070 第 10 步），这里照旧导出。
 export { executeFilePlans, providerConfigPaths }
 
+// 看一遍工具配置（inspectProviderConfig，或者 config:get 要的整份摘要）是一段只读的同步代码，中间不写配置，
+// 别的代码也插不进来：这一遍里同一份文件只读一遍，同样的内容只解析一遍。以前按字段各读各的，Codex 的
+// config.toml 一次 config:get 要读六遍、解析六遍，首页开机那阵每次都在主线程上多占几十毫秒（0.2.22 性能
+// 体检第 7 条）。出了这一遍照旧每次现读。包进来的只能是只读的同步代码：里面要是写了配置，后面读到的还是
+// 写之前那份。
+interface InspectionReads {
+  files: Map<string, Buffer | null>
+  json: Map<string, Record<string, unknown> | null>
+  toml: Map<string, { parsed: Record<string, unknown> } | { error: unknown }>
+}
+
+let inspectionReads: InspectionReads | null = null
+
+export function withSharedConfigReads<T>(inspect: () => T): T {
+  if (inspectionReads) return inspect()
+  inspectionReads = { files: new Map(), json: new Map(), toml: new Map() }
+  try {
+    return inspect()
+  } finally {
+    inspectionReads = null
+  }
+}
+
+// 和 readText 同一套：不是单链接普通文件、读不了都当没有。
+function readConfigBytes(filePath: string): Buffer | null {
+  const reads = inspectionReads?.files
+  if (reads?.has(filePath)) return reads.get(filePath) ?? null
+  let content: Buffer | null = null
+  try {
+    const info = fs.lstatSync(filePath)
+    if (info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()) {
+      content = readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件')
+    }
+  } catch {
+    content = null
+  }
+  reads?.set(filePath, content)
+  return content
+}
+
+function readConfigText(filePath: string): string | null {
+  if (!inspectionReads) return readText(filePath)
+  const content = readConfigBytes(filePath)
+  return content === null ? null : withoutByteOrderMark(content.toString('utf8'))
+}
+
 function readJson(filePath: string): Record<string, unknown> | null {
-  const content = readText(filePath)
+  const content = readConfigText(filePath)
   if (!content) return null
+  const reads = inspectionReads?.json
+  if (reads?.has(content)) return reads.get(content) ?? null
+  const parsed = parseJsonRecordOrNull(content)
+  reads?.set(content, parsed)
+  return parsed
+}
+
+function parseJsonRecordOrNull(content: string): Record<string, unknown> | null {
   try {
     const parsed = JSON.parse(content) as unknown
     return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
@@ -293,9 +347,13 @@ function readJson(filePath: string): Record<string, unknown> | null {
   }
 }
 
+function isCodexConfigFileBroken(content: Buffer): boolean {
+  return isCodexConfigBroken(content, parseToml)
+}
+
 // 每个工具的主配置（providerConfigPaths 的第一份）它自己读不读得了；null = 不判。
 const mainConfigBrokenChecks: Record<ProviderId, ((content: Buffer) => boolean) | null> = {
-  codex: isCodexConfigBroken,
+  codex: isCodexConfigFileBroken,
   claude: isClaudeSettingsBroken,
   gemini: isGeminiSettingsBroken,
   grok: null,
@@ -303,10 +361,9 @@ const mainConfigBrokenChecks: Record<ProviderId, ((content: Buffer) => boolean) 
 
 // 判断编码要看原始字节（解码会把坏字节悄悄换成 U+FFFD），读不到、不是单链接普通文件都当没坏。
 function readFileBroken(filePath: string, broken: (content: Buffer) => boolean): boolean {
+  const content = readConfigBytes(filePath)
   try {
-    const info = fs.lstatSync(filePath)
-    if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) return false
-    return broken(readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
+    return content !== null && broken(content)
   } catch {
     return false
   }
@@ -321,14 +378,31 @@ function readConfigFilesBroken(provider: ProviderId, paths: string[]): Pick<Nati
 }
 
 function readToml(filePath: string): Record<string, unknown> | null {
-  const content = readText(filePath)
+  const content = readConfigText(filePath)
   if (!content) return null
   return parseTomlOrNull(content)
 }
 
+function parseToml(content: string): Record<string, unknown> {
+  const reads = inspectionReads?.toml
+  const read = reads?.get(content)
+  if (read) {
+    if ('parsed' in read) return read.parsed
+    throw read.error
+  }
+  try {
+    const parsed = TOML.parse(content)
+    reads?.set(content, { parsed })
+    return parsed
+  } catch (error) {
+    reads?.set(content, { error })
+    throw error
+  }
+}
+
 function parseTomlOrNull(content: string): Record<string, unknown> | null {
   try {
-    return TOML.parse(content)
+    return parseToml(content)
   } catch {
     return null
   }
@@ -691,7 +765,7 @@ function nestedString(source: Record<string, unknown> | null, keys: string[]): s
 }
 
 function readEnvValue(filePath: string, name: string): string {
-  const content = readText(filePath)
+  const content = readConfigText(filePath)
   if (!content) return ''
   return readEnvLineValue(content, name) ?? ''
 }
@@ -1573,6 +1647,14 @@ export function inspectProviderConfig(
   // active site passes its RelaySite.providerBaseUrls (see system-service.ts's
   // inspectNativeProviderConfig).
   siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
+): NativeConfigInspection {
+  return withSharedConfigReads(() => inspectProviderConfigFiles(provider, rootsInput, siteBaseUrlsInput))
+}
+
+function inspectProviderConfigFiles(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  siteBaseUrlsInput: Record<ProviderId, string>,
 ): NativeConfigInspection {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
