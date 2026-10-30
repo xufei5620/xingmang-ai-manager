@@ -1,9 +1,9 @@
 // 本机加速的接线（#1070 第 5 步从 main.ts 的启动回调原样搬出），按启动时建的先后：
 // - createAccelerationRouting：下载线路和 Codex 桌面端要的加速，系统服务要用，所以最早建；
-// - createAccelerationHost：读好的加速文件能用就建宿主（辅助进程、内核、系统代理都归它管），并把上次崩溃
-//   没改回的系统代理先改回去；
+// - createAccelerationHost：加速文件一读完、能用就建宿主（辅助进程、内核、系统代理都归它管），并把上次崩溃
+//   没改回的系统代理先改回去。建窗口不等它，用到宿主的地方等它给的 Promise；
 // - createAccelerationServices：加速服务和挂在它上面的系统通知、加速页、托盘。
-// 睡眠唤醒那一段（只在有宿主时挂）和退出清理留在 main.ts。
+// 睡眠唤醒那一段（没有宿主时什么都不做）和退出清理留在 main.ts。
 import { app, type BrowserWindow, net, session } from 'electron'
 import { accelerationConflictDescriptions, accelerationFailureMessages, accelerationProxyFailureCause, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from '../acceleration-contract'
 import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, type AccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from '../acceleration-development-host'
@@ -197,16 +197,24 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
 export type AccelerationRouting = ReturnType<typeof createAccelerationRouting>
 
 export interface AccelerationHostOptions {
-  /** 启动一开始就读的加速文件，main.ts 等它读完再交进来，读不通时 ok 是 false。 */
-  read: { ok: true, config: AccelerationDevelopmentConfig | null } | { ok: false, error: unknown }
+  /** 启动一开始就读的加速文件，读不通时 ok 是 false。不会失败（main.ts 先接住了）。 */
+  read: Promise<{ ok: true, config: AccelerationDevelopmentConfig | null } | { ok: false, error: unknown }>
   managerDataDirectory: string
   runtimeLog: RuntimeLogStore
   /** 加速中断的提醒建得比这里晚，用到时再取。 */
   accelerationInterruption: () => AccelerationInterruptionNotice | null
 }
 
-export function createAccelerationHost(options: AccelerationHostOptions) {
-  const { read, managerDataDirectory, runtimeLog, accelerationInterruption } = options
+export interface AccelerationHost {
+  developmentAcceleration: AccelerationDevelopmentHost | undefined
+  accelerationBundleDamaged: boolean
+}
+
+// 安装包里的加速内核三十多兆，校验要整读一遍，慢盘、杀毒软件逐字节扫的电脑上要一两秒；绝大多数客户又根本
+// 不用加速。所以 main.ts 不等这里，读完的那一刻才建宿主、才去改回系统代理，跟有没有人用加速无关。
+export async function createAccelerationHost(options: AccelerationHostOptions): Promise<AccelerationHost> {
+  const { managerDataDirectory, runtimeLog, accelerationInterruption } = options
+  const read = await options.read
   let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
   // 只看读文件这一步：后面建加速服务失败不是文件坏了，不能叫客户去翻杀毒软件。
   let accelerationBundleDamaged = false
@@ -278,8 +286,8 @@ export function createAccelerationHost(options: AccelerationHostOptions) {
 }
 
 export interface AccelerationServicesOptions {
-  developmentAcceleration: AccelerationDevelopmentHost | undefined
-  accelerationBundleDamaged: boolean
+  /** createAccelerationHost 给的那个：加速服务先建好，要用到宿主的操作等它。 */
+  host: Promise<AccelerationHost>
   accelerationPreferences: AccelerationPreferenceStore
   recheckAccelerationBundle: () => Promise<AccelerationBundleCheck>
   routing: Pick<AccelerationRouting, 'codexDesktopAcceleration' | 'claudeDesktopAcceleration' | 'accelerationStartArguments'>
@@ -295,7 +303,7 @@ export interface AccelerationServicesOptions {
 // 加速服务和挂在它上面的几样：时长快用完、加速中断的系统通知，加速页和托盘看到的那一套。
 // main.ts 照旧各有一份同名的变量，拿到这里的结果马上填上；睡眠唤醒那一段和退出清理留在 main.ts。
 export function createAccelerationServices(options: AccelerationServicesOptions) {
-  const { developmentAcceleration, accelerationBundleDamaged, accelerationPreferences, recheckAccelerationBundle, runtimeLog } = options
+  const { host, accelerationPreferences, recheckAccelerationBundle, runtimeLog } = options
   const { routing: { codexDesktopAcceleration, claudeDesktopAcceleration, accelerationStartArguments }, readAccelerationAccountScope, mainWindow, applicationTray } = options
   const { accelerationSuspended } = options
   // 建的过程中互相读得到：还没建好的那一样是空的，跟原来在 main.ts 里一样。
@@ -335,14 +343,16 @@ export function createAccelerationServices(options: AccelerationServicesOptions)
     log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
   })
   acceleration = createAccelerationService({
-    backend: developmentAcceleration,
+    ready: host.then(({ developmentAcceleration, accelerationBundleDamaged }) => ({
+      backend: developmentAcceleration,
+      ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
+        const result = await recheckAccelerationBundle()
+        runtimeLog.log(result === 'repaired' ? 'info' : 'warn', 'network', 'acceleration.config.recheck',
+          result === 'repaired' ? '本机加速资源已恢复，重新打开软件后生效' : '本机加速资源仍未通过校验', { result })
+        return result
+      } } } : {}),
+    })),
     preferences: accelerationPreferences,
-    ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
-      const result = await recheckAccelerationBundle()
-      runtimeLog.log(result === 'repaired' ? 'info' : 'warn', 'network', 'acceleration.config.recheck',
-        result === 'repaired' ? '本机加速资源已恢复，重新打开软件后生效' : '本机加速资源仍未通过校验', { result })
-      return result
-    } } } : {}),
     getAccountScope: () => readAccelerationAccountScope(),
     ...(accelerationSuspended ? { suspended: accelerationSuspended } : {}),
     onState: (state) => {

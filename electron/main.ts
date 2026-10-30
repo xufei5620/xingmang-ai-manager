@@ -897,7 +897,8 @@ if (!hasSingleInstanceLock) {
     if (process.platform !== 'win32') configureRelocatedFolderAccess('same-user')
     const managerDataDirectory = app.getPath('userData')
     // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，慢机上
-    // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，用到时再等。
+    // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，建窗口也不等它：
+    // 读完那一刻才建加速宿主（见下面 createAccelerationHost），用到加速时再等。
     // 失败先接住：没等到它的这段时间里被拒绝，会被当成没人处理的错误。
     const accelerationConfigRead = (app.isPackaged
       ? readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
@@ -2157,21 +2158,26 @@ if (!hasSingleInstanceLock) {
       if (restored || accounts.stalledAccount() || !accountStartupGate.releasedEarly()) return
       sendToMainWindow('onAccountSessionChanged', accounts.client.getSessionState())
     })
-    const { developmentAcceleration, accelerationBundleDamaged } = createAccelerationHost({
-      read: await accelerationConfigRead,
+    // 加速文件读完才建得出宿主，建窗口不等它（第 4 条，0.2.22 性能体检）：读完那一刻就把上次崩溃没改回的
+    // 系统代理改回去，跟有没有人用加速无关。建好以前下载线路、睡眠唤醒都当没有宿主，加速服务的操作排着等它。
+    const accelerationHost = createAccelerationHost({
+      read: accelerationConfigRead,
       managerDataDirectory,
       runtimeLog,
       accelerationInterruption: () => accelerationInterruption,
+    })
+    let developmentAcceleration: AccelerationDevelopmentHost | undefined
+    void accelerationHost.then((host) => {
+      developmentAcceleration = host.developmentAcceleration
+      accelerationDownloadRoutes = developmentAcceleration ?? null
     })
     readAccelerationAccountScope = () => {
       const state = accountService.getSessionState()
       if (!state.authenticated || !state.account) return null
       return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
     }
-    accelerationDownloadRoutes = developmentAcceleration ?? null
     const accelerationServices = createAccelerationServices({
-      developmentAcceleration,
-      accelerationBundleDamaged,
+      host: accelerationHost,
       accelerationPreferences,
       recheckAccelerationBundle,
       routing: accelerationRouting,
@@ -2186,27 +2192,25 @@ if (!hasSingleInstanceLock) {
     acceleration = accelerationServices.acceleration
     const { userAcceleration } = accelerationServices
     trayAcceleration = accelerationServices.trayAcceleration
-    // 睡着的那段不计免费时长；醒来看加速还在不在，不在了先恢复网络再提醒。
-    if (developmentAcceleration) {
-      const accelerationHost = developmentAcceleration
-      const accelerationPower = createAccelerationPower({
-        suspend: () => accelerationHost.suspend(),
-        resume: () => accelerationHost.resume(),
-        getAccountScope: () => readAccelerationAccountScope(),
-        readState: (scope) => acceleration
-          ? acceleration.getAccelerationState(scope)
-          : Promise.reject(new Error('加速服务尚未就绪。')),
-        log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
-      })
-      const onSuspend = () => accelerationPower.suspended()
-      const onResume = () => accelerationPower.resumed()
-      powerMonitor.on('suspend', onSuspend)
-      powerMonitor.on('resume', onResume)
-      quitCleanup.add('acceleration-power', () => {
-        powerMonitor.off('suspend', onSuspend)
-        powerMonitor.off('resume', onResume)
-      })
-    }
+    // 睡着的那段不计免费时长；醒来看加速还在不在，不在了先恢复网络再提醒。宿主还没建好、这台电脑上
+    // 也没有宿主（Linux、加速文件没带或读坏了）时，睡眠唤醒什么都不做，跟以前不挂这两个监听一样。
+    const accelerationPower = createAccelerationPower({
+      suspend: async () => { await developmentAcceleration?.suspend() },
+      resume: async () => { await developmentAcceleration?.resume() },
+      getAccountScope: () => readAccelerationAccountScope(),
+      readState: (scope) => acceleration
+        ? acceleration.getAccelerationState(scope)
+        : Promise.reject(new Error('加速服务尚未就绪。')),
+      log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
+    })
+    const onSuspend = () => { if (developmentAcceleration) accelerationPower.suspended() }
+    const onResume = () => { if (developmentAcceleration) accelerationPower.resumed() }
+    powerMonitor.on('suspend', onSuspend)
+    powerMonitor.on('resume', onResume)
+    quitCleanup.add('acceleration-power', () => {
+      powerMonitor.off('suspend', onSuspend)
+      powerMonitor.off('resume', onResume)
+    })
     attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
@@ -2454,8 +2458,9 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('acceleration', () => {
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
     })
+    // 等宿主建好再放：退出时加速文件还没读完的，读完建出来的那个照样放掉。
     quitCleanup.add('acceleration-host', () => {
-      void developmentAcceleration?.dispose().catch(() => undefined)
+      void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)
     })
     quitCleanup.add('runtime-log-hooks', () => {
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')

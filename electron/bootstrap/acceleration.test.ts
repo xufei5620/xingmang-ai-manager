@@ -9,6 +9,7 @@ import {
   createAccelerationHost,
   createAccelerationRouting,
   createAccelerationServices,
+  type AccelerationHost,
   type AccelerationHostOptions,
   type AccelerationRoutingOptions,
   type AccelerationServicesOptions,
@@ -42,10 +43,12 @@ function runtimeLog() {
   return { log: vi.fn(), exception: vi.fn() }
 }
 
-function create(read: AccelerationHostOptions['read'], interruption: AccelerationInterruptionNotice | null = null) {
+type HostRead = Awaited<AccelerationHostOptions['read']>
+
+function create(read: HostRead | Promise<HostRead>, interruption: AccelerationInterruptionNotice | null = null) {
   const runtimeLog = { log: vi.fn(), exception: vi.fn() }
   const host = createAccelerationHost({
-    read,
+    read: Promise.resolve(read),
     managerDataDirectory: '/tmp/xingmang-acceleration-test',
     runtimeLog: runtimeLog as unknown as RuntimeLogStore,
     accelerationInterruption: () => interruption,
@@ -54,28 +57,39 @@ function create(read: AccelerationHostOptions['read'], interruption: Acceleratio
 }
 
 describe('acceleration host wiring', () => {
-  it('builds no host and blames the bundle when the packaged files could not be read', () => {
+  it('builds no host and blames the bundle when the packaged files could not be read', async () => {
     const { host, runtimeLog } = create({ ok: false, error: new Error('quarantined') })
-    expect(host).toEqual({ developmentAcceleration: undefined, accelerationBundleDamaged: true })
+    expect(await host).toEqual({ developmentAcceleration: undefined, accelerationBundleDamaged: true })
     expect(createAccelerationDevelopmentHost).not.toHaveBeenCalled()
     expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'network', 'acceleration.config.invalid', expect.any(String))
   })
 
-  it('builds no host and blames nothing when the build carries no acceleration files', () => {
+  it('builds no host and blames nothing when the build carries no acceleration files', async () => {
     const { host, runtimeLog } = create({ ok: true, config: null })
-    expect(host).toEqual({ developmentAcceleration: undefined, accelerationBundleDamaged: false })
+    expect(await host).toEqual({ developmentAcceleration: undefined, accelerationBundleDamaged: false })
     expect(runtimeLog.log).not.toHaveBeenCalled()
   })
 
-  it('restores a proxy left behind by a crash as soon as the host exists', () => {
-    const { host } = create({ ok: true, config: {} as AccelerationDevelopmentConfig })
+  it('restores a proxy left behind by a crash as soon as the host exists', async () => {
+    const host = await create({ ok: true, config: {} as AccelerationDevelopmentConfig }).host
     expect(host.accelerationBundleDamaged).toBe(false)
     expect(host.developmentAcceleration?.recover).toHaveBeenCalledTimes(1)
   })
 
-  it('tells the interruption notice, read when the runtime exits, that acceleration stopped', () => {
+  it('builds the host and restores the proxy the moment the files are read, with nobody waiting for it', async () => {
+    let finishRead!: (read: HostRead) => void
+    create(new Promise<HostRead>((resolve) => { finishRead = resolve }))
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(createAccelerationDevelopmentHost).not.toHaveBeenCalled()
+    finishRead({ ok: true, config: {} as AccelerationDevelopmentConfig })
+    await new Promise((resolve) => setImmediate(resolve))
+    const [host] = vi.mocked(createAccelerationDevelopmentHost).mock.results.map((result) => result.value as { recover: ReturnType<typeof vi.fn> })
+    expect(host.recover).toHaveBeenCalledTimes(1)
+  })
+
+  it('tells the interruption notice, read when the runtime exits, that acceleration stopped', async () => {
     const interruption = { runtimeExited: vi.fn(), helperExited: vi.fn() } as unknown as AccelerationInterruptionNotice
-    create({ ok: true, config: {} as AccelerationDevelopmentConfig }, interruption)
+    await create({ ok: true, config: {} as AccelerationDevelopmentConfig }, interruption).host
     const [[options]] = vi.mocked(createAccelerationDevelopmentHost).mock.calls
     options.onRuntimeExited?.()
     options.onHelperExited?.(true)
@@ -147,8 +161,7 @@ describe('acceleration services', () => {
     const applicationTray = vi.fn<AccelerationServicesOptions['applicationTray']>(() => null)
     const recheckAccelerationBundle = vi.fn(async () => 'repaired' as const)
     const services = createAccelerationServices({
-      developmentAcceleration: undefined,
-      accelerationBundleDamaged: false,
+      host: Promise.resolve({ developmentAcceleration: undefined, accelerationBundleDamaged: false }),
       accelerationPreferences: {} as AccelerationPreferenceStore,
       recheckAccelerationBundle,
       routing: {
@@ -174,16 +187,29 @@ describe('acceleration services', () => {
   })
 
   it('blames a damaged bundle and offers a recheck that logs what it found', async () => {
-    const { services, log, recheckAccelerationBundle } = build({ accelerationBundleDamaged: true })
+    const { services, log, recheckAccelerationBundle } = build({ host: Promise.resolve({ developmentAcceleration: undefined, accelerationBundleDamaged: true }) })
     expect((await services.userAcceleration.getAccelerationState('xm-account:1')).unavailableReason).toBe('bundle-damaged')
     expect(await services.userAcceleration.recheckAccelerationBundle?.()).toBe('repaired')
     expect(recheckAccelerationBundle).toHaveBeenCalledTimes(1)
     expect(log.log).toHaveBeenCalledWith('info', 'network', 'acceleration.config.recheck', '本机加速资源已恢复，重新打开软件后生效', { result: 'repaired' })
   })
 
-  it('offers no recheck when the bundle was fine', () => {
+  it('offers no recheck when the bundle was fine', async () => {
     const { services } = build()
+    await services.userAcceleration.getAccelerationState('xm-account:1')
     expect(services.userAcceleration.recheckAccelerationBundle).toBeUndefined()
+  })
+
+  it('is ready to answer before the files are read, and answers once they are', async () => {
+    let finishHost!: (host: AccelerationHost) => void
+    const { services, observe } = build({ host: new Promise<AccelerationHost>((resolve) => { finishHost = resolve }) })
+    const read = services.userAcceleration.getAccelerationState('xm-account:1')
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(observe).not.toHaveBeenCalled()
+    expect(services.userAcceleration.recheckAccelerationBundle).toBeUndefined()
+    finishHost({ developmentAcceleration: undefined, accelerationBundleDamaged: true })
+    expect((await read).unavailableReason).toBe('bundle-damaged')
+    expect(services.userAcceleration.recheckAccelerationBundle).toBeTypeOf('function')
   })
 
   it.runIf(process.platform === 'linux')('puts no acceleration row on the tray on Linux', () => {

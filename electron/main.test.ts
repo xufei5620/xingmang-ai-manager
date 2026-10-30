@@ -208,7 +208,7 @@ describe('main process quit cleanup', () => {
       ],
       'acceleration-notices': ['accelerationExpiry?.dispose()', 'codexDesktopAcceleration.dispose()', 'claudeDesktopAcceleration.dispose()', 'accelerationInterruption?.dispose()'],
       acceleration: ["void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))"],
-      'acceleration-host': ['void developmentAcceleration?.dispose().catch(() => undefined)'],
+      'acceleration-host': ['void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)'],
       'runtime-log-hooks': [
         "runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')",
         "process.off('uncaughtExceptionMonitor', onUncaughtException)",
@@ -308,12 +308,16 @@ describe('main process quit cleanup', () => {
   })
 
   it('keeps the steps that only exist on some machines behind the same guards', () => {
+    // 睡眠唤醒以前只在有加速宿主时才挂；宿主现在等加速文件读完才建（不挡建窗口），所以监听一直挂着，
+    // 没有宿主时监听里什么都不做。
     const guards = Object.fromEntries(quitCleanupSteps().map((step) => [step.name, step.guard]))
-    expect(guards['acceleration-power']).toBe('developmentAcceleration')
     expect(guards['power-off-watch']).toBe("process.platform === 'darwin'")
     for (const [name, guard] of Object.entries(guards)) {
-      if (name !== 'acceleration-power' && name !== 'power-off-watch') expect({ name, guard }).toEqual({ name, guard: null })
+      if (name !== 'power-off-watch') expect({ name, guard }).toEqual({ name, guard: null })
     }
+    const { sourceText } = mainSource()
+    expect(sourceText).toContain('const onSuspend = () => { if (developmentAcceleration) accelerationPower.suspended() }')
+    expect(sourceText).toContain('const onResume = () => { if (developmentAcceleration) accelerationPower.resumed() }')
   })
 
   it('disconnects acceleration after its notices, then lets the worker go exactly once', () => {
@@ -325,7 +329,8 @@ describe('main process quit cleanup', () => {
     expect(names.indexOf('acceleration')).toBeLessThan(names.indexOf('acceleration-host'))
     const bodies = Object.fromEntries(steps.map((step) => [step.name, step.body]))
     expect(bodies.acceleration).toContain("void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))")
-    expect(bodies['acceleration-host']).toContain('void developmentAcceleration?.dispose().catch(() => undefined)')
+    // 退出时加速文件还没读完的，读完建出来的宿主也要放掉，所以等的是 createAccelerationHost 给的那个 Promise。
+    expect(bodies['acceleration-host']).toContain('void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)')
     const all = steps.map((step) => step.body).join('\n')
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
     expect(all.match(/developmentAcceleration\?\.dispose\(\)/g)).toHaveLength(1)
@@ -390,6 +395,28 @@ describe('main process startup order', () => {
     for (const { callee, positions } of calls) expect({ callee, calls: positions.length }).toEqual({ callee, calls: 1 })
     const started = calls.map(({ callee, positions }) => ({ callee, at: positions[0] }))
     expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
+  })
+
+  it('builds the window without waiting for the bundled acceleration files to be checked', () => {
+    // 安装包里的加速内核三十多兆，慢盘、杀毒软件逐字节扫的电脑上校验要一两秒，绝大多数客户又不用加速
+    // （0.2.22 性能体检第 4 条）。启动回调里不许 await 它：宿主由 createAccelerationHost 在读完那一刻自己建。
+    const { source } = mainSource()
+    const callback = startupCallback(source)
+    const awaited: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isAwaitExpression(node) && enclosingFunction(node) === callback) awaited.push(node.expression.getText(source))
+      ts.forEachChild(node, visit)
+    }
+    visit(callback)
+    expect(awaited.filter((expression) => /accelerationConfigRead|accelerationHost/.test(expression))).toEqual([])
+    const calls = directCallPositions(source, callback, ['createAccelerationHost'])
+    expect(calls[0].positions).toHaveLength(1)
+    const host = calls[0].positions[0]
+    function hostCall(node: ts.Node): ts.CallExpression | undefined {
+      if (ts.isCallExpression(node) && node.getStart(source) === host) return node
+      return ts.forEachChild(node, hostCall)
+    }
+    expect(hostCall(callback)?.arguments[0]?.getText(source)).toMatch(/^\{\s*read: accelerationConfigRead,/)
   })
 
   it('builds the routes before it starts checking them, and follows tool routes once a listener is attached', () => {

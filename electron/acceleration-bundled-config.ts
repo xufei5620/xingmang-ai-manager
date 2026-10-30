@@ -1,9 +1,8 @@
 import path from 'node:path'
-import { createHash } from 'node:crypto'
 import type { AccelerationDevelopmentConfig } from './acceleration-development-host'
 import { assertSafeDataFile, readSafeUtf8File } from './safe-local-data'
-import { readBoundedFile } from './bounded-file'
-import { assertMacosAccelerationBinary } from './acceleration-binary'
+import { readBoundedFileDigest } from './bounded-file'
+import { assertMacosAccelerationBinary, macosAccelerationBinaryHeaderBytes } from './acceleration-binary'
 
 const invalidBundle = '内置加速资源无效，请重新安装软件。'
 
@@ -58,14 +57,16 @@ export async function readBundledAccelerationConfig(options: {
     if (Object.keys(expected).some(key => manifest[key] !== expected[key])) throw new Error(invalidBundle)
     // Names are exact constants, not general relative paths. A manifest cannot
     // point outside the installed resources or select a user-data config.
-    // Read sequentially to keep the maximum simultaneous binary allocation
-    // bounded. Never return any node contents through this config object.
+    // Each file is hashed in chunks rather than read whole: this runs on every
+    // launch, and the core alone is tens of megabytes. Never return any node
+    // contents through this config object.
     for (const resource of resourceDefinitions(options.platform)) {
       const filePath = path.join(directory, resource.name)
       if (!assertSafeDataFile(filePath, resource.label)) throw new Error(invalidBundle)
-      const content = await readBoundedFile(filePath, resource.limit, resource.label)
-      if (!content.length || createHash('sha256').update(content).digest('hex') !== expected[resource.digestKey]) throw new Error(invalidBundle)
-      if (options.platform === 'darwin' && resource.fileKey === 'coreFile') assertMacosAccelerationBinary(content, architecture)
+      const macosCore = options.platform === 'darwin' && resource.fileKey === 'coreFile'
+      const read = await readBoundedFileDigest(filePath, resource.limit, resource.label, macosCore ? macosAccelerationBinaryHeaderBytes : 0)
+      if (!read.size || read.sha256 !== expected[resource.digestKey]) throw new Error(invalidBundle)
+      if (macosCore) assertMacosAccelerationBinary(read.head, architecture, read.size)
     }
     // Callers recheck these pins on the copied executable and every
     // freshly read profile, so later replacement cannot bypass this first read.

@@ -5,13 +5,17 @@ import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 
 const mocks = vi.hoisted(() => ({ read: vi.fn(), assertFile: vi.fn(), readBinary: vi.fn() }))
 vi.mock('./safe-local-data', () => ({ readSafeUtf8File: mocks.read, assertSafeDataFile: mocks.assertFile }))
-vi.mock('./bounded-file', () => ({ readBoundedFile: mocks.readBinary }))
+vi.mock('./bounded-file', () => ({ readBoundedFileDigest: mocks.readBinary }))
 
 const resourcesPath = path.resolve('installed-app', 'resources')
 const contents: Record<string, Buffer> = {
   'mihomo.exe': Buffer.from('fake-mihomo'), 'profile.yaml': Buffer.from('fake-profile'),
 }
 function hash(content: Buffer) { return createHash('sha256').update(content).digest('hex') }
+// What readBoundedFileDigest hands back for these bytes when the caller asks for `headBytes` of them.
+function digest(content: Buffer, headBytes = 0) {
+  return { sha256: hash(content), size: content.length, head: content.subarray(0, headBytes) }
+}
 const manifest = {
   version: 1,
   coreFile: 'mihomo.exe', coreSha256: hash(contents['mihomo.exe']),
@@ -22,7 +26,7 @@ const options = { isPackaged: true, platform: 'win32', resourcesPath, bundledMet
 beforeEach(() => {
   mocks.read.mockReset().mockResolvedValue(JSON.stringify(manifest))
   mocks.assertFile.mockReset().mockReturnValue(true)
-  mocks.readBinary.mockReset().mockImplementation(async (filePath: string) => contents[path.basename(filePath)])
+  mocks.readBinary.mockReset().mockImplementation(async (filePath: string, _limit: number, _label: string, headBytes?: number) => digest(contents[path.basename(filePath)], headBytes))
 })
 
 describe('bundled acceleration manifest', () => {
@@ -41,11 +45,28 @@ describe('bundled acceleration manifest', () => {
     core.writeUInt32LE(2, 12)
     const darwin = { ...manifest, version: 2, platform: 'darwin', arch, coreFile: 'mihomo', coreSha256: hash(core) }
     mocks.read.mockResolvedValue(JSON.stringify(darwin))
-    mocks.readBinary.mockImplementation(async (file: string) => path.basename(file) === 'mihomo' ? core : contents[path.basename(file)])
+    mocks.readBinary.mockImplementation(async (file: string, _limit: number, _label: string, headBytes?: number) => digest(path.basename(file) === 'mihomo' ? core : contents[path.basename(file)], headBytes))
     const result = await readBundledAccelerationConfig({ ...options, platform: 'darwin', architecture: arch, bundledMetadata: darwin })
     expect(result?.corePath).toBe(path.join(resourcesPath, 'acceleration', 'mihomo'))
     expect(result?.coreSha256).toBe(hash(core))
     expect(result?.profileSha256).toBe(manifest.profileSha256)
+  })
+
+  it('checks the Darwin core from its header bytes against the size of the whole file', async () => {
+    const core = Buffer.alloc(64)
+    core.writeUInt32LE(0xfeedfacf, 0)
+    core.writeUInt32LE(0x0100000c, 4)
+    core.writeUInt32LE(2, 12)
+    for (const [commandBytes, accepted] of [[32, true], [33, false]] as const) {
+      core.writeUInt32LE(commandBytes, 20)
+      const darwin = { ...manifest, version: 2, platform: 'darwin', arch: 'arm64', coreFile: 'mihomo', coreSha256: hash(core) }
+      mocks.read.mockResolvedValue(JSON.stringify(darwin))
+      mocks.readBinary.mockClear().mockImplementation(async (file: string, _limit: number, _label: string, headBytes?: number) => digest(path.basename(file) === 'mihomo' ? core : contents[path.basename(file)], headBytes))
+      const result = readBundledAccelerationConfig({ ...options, platform: 'darwin', architecture: 'arm64', bundledMetadata: darwin })
+      if (accepted) expect((await result)?.coreSha256).toBe(hash(core))
+      else await expect(result).rejects.toThrow('内置加速资源无效')
+      expect(mocks.readBinary.mock.calls[0]).toEqual([path.join(resourcesPath, 'acceleration', 'mihomo'), 100 * 1024 * 1024, '内置加速内核', 32])
+    }
   })
 
   it('rejects wrong-target manifests before reading executable or profile bytes', async () => {
@@ -59,7 +80,7 @@ describe('bundled acceleration manifest', () => {
     const core = Buffer.from('MZwrong-platform')
     const darwin = { ...manifest, version: 2, platform: 'darwin', arch: 'arm64', coreFile: 'mihomo', coreSha256: hash(core) }
     mocks.read.mockResolvedValue(JSON.stringify(darwin))
-    mocks.readBinary.mockImplementation(async (file: string) => path.basename(file) === 'mihomo' ? core : contents[path.basename(file)])
+    mocks.readBinary.mockImplementation(async (file: string, _limit: number, _label: string, headBytes?: number) => digest(path.basename(file) === 'mihomo' ? core : contents[path.basename(file)], headBytes))
     await expect(readBundledAccelerationConfig({ ...options, platform: 'darwin', architecture: 'arm64', bundledMetadata: darwin })).rejects.toThrow('内置加速资源无效')
   })
 
@@ -76,9 +97,10 @@ describe('bundled acceleration manifest', () => {
       profilePath: path.join(resourcesPath, 'acceleration', 'profile.yaml'), profileSha256: manifest.profileSha256,
     })
     expect(mocks.read).toHaveBeenCalledExactlyOnceWith(path.join(resourcesPath, 'acceleration', 'manifest.json'), '内置加速清单', 16 * 1024)
+    // Only a digest comes back, never the bytes: Windows needs no header, only the Mach-O check does.
     expect(mocks.readBinary.mock.calls).toEqual([
-      [path.join(resourcesPath, 'acceleration', 'mihomo.exe'), 100 * 1024 * 1024, '内置加速内核'],
-      [path.join(resourcesPath, 'acceleration', 'profile.yaml'), 2 * 1024 * 1024, '内置加速节点'],
+      [path.join(resourcesPath, 'acceleration', 'mihomo.exe'), 100 * 1024 * 1024, '内置加速内核', 0],
+      [path.join(resourcesPath, 'acceleration', 'profile.yaml'), 2 * 1024 * 1024, '内置加速节点', 0],
     ])
     expect(mocks.assertFile.mock.calls.map(call => call[0])).toEqual(mocks.readBinary.mock.calls.map(call => call[0]))
   })
@@ -108,7 +130,7 @@ describe('bundled acceleration manifest', () => {
   })
 
   it.each(Object.keys(contents))('rejects tampered %s bytes even when manifest and metadata match', async (fileName) => {
-    mocks.readBinary.mockImplementation(async (filePath: string) => path.basename(filePath) === fileName ? Buffer.from('replaced') : contents[path.basename(filePath)])
+    mocks.readBinary.mockImplementation(async (filePath: string) => digest(path.basename(filePath) === fileName ? Buffer.from('replaced') : contents[path.basename(filePath)]))
     await expect(readBundledAccelerationConfig(options)).rejects.toThrow(/^内置加速资源无效，请重新安装软件。$/)
   })
 

@@ -1,8 +1,9 @@
+import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { copyBoundedFileExclusive, readBoundedFileSync, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
+import { copyBoundedFileExclusive, readBoundedFileDigest, readBoundedFileSync, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 
 const temporaryDirectories: string[] = []
 
@@ -36,6 +37,36 @@ describe('readBoundedUtf8File', () => {
     fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
     await expect(readBoundedUtf8File(path.join(alias, 'input.txt'), 64, '异步测试文件'))
       .rejects.toThrow('符号链接或目录联接')
+  })
+})
+
+describe('readBoundedFileDigest', () => {
+  it('hashes a file several chunks long and hands back only its leading bytes', async () => {
+    const content = Buffer.alloc(3 * 1024 * 1024 + 7)
+    for (let index = 0; index < content.length; index += 1) content[index] = (index * 31) % 251
+    const filePath = path.join(temporaryDirectory(), 'core.bin')
+    fs.writeFileSync(filePath, content)
+    const read = await readBoundedFileDigest(filePath, 4 * 1024 * 1024, '摘要测试文件', 32)
+    expect(read.sha256).toBe(createHash('sha256').update(content).digest('hex'))
+    expect(read.size).toBe(content.length)
+    expect(read.head).toEqual(content.subarray(0, 32))
+    expect((await readBoundedFileDigest(filePath, 4 * 1024 * 1024, '摘要测试文件')).head).toHaveLength(0)
+    expect((await readBoundedFileDigest(temporaryFile('short'), 64, '摘要测试文件', 32)).head.toString('utf8')).toBe('short')
+  })
+
+  it('keeps the size limit and refuses the same links readBoundedFile refuses', async () => {
+    await expect(readBoundedFileDigest(temporaryFile('12345'), 4, '摘要测试文件')).rejects.toThrow('安全上限')
+    const filePath = temporaryFile('linked')
+    fs.linkSync(filePath, path.join(path.dirname(filePath), 'hard-link.txt'))
+    await expect(readBoundedFileDigest(filePath, 64, '摘要测试文件')).rejects.toThrow('单链接普通文件')
+
+    const root = temporaryDirectory('xingmang-bounded-link-')
+    const target = path.join(root, 'target')
+    const alias = path.join(root, 'alias')
+    fs.mkdirSync(target)
+    fs.writeFileSync(path.join(target, 'input.txt'), 'linked', 'utf8')
+    fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
+    await expect(readBoundedFileDigest(path.join(alias, 'input.txt'), 64, '摘要测试文件')).rejects.toThrow('符号链接或目录联接')
   })
 })
 
