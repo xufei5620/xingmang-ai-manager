@@ -1,4 +1,4 @@
-// 设置页（#1070 第 11 步，从 pages-maintenance.tsx 原样搬来）：外观显示、启动关闭、工具管理、网络加速、消息通知、
+// 设置页（#1070 第 11 步，从 pages-maintenance.tsx 原样搬来）：外观显示、启动关闭、工具管理、网络连接、消息通知、
 // 备份迁移、隐私数据、版本更新八组，左栏搜索设置和快捷键弹窗。pages-maintenance.tsx 照旧转出这里的导出名；
 // 各业务页共用的参数类型在 business-actions.ts。
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
@@ -205,7 +205,8 @@ export function SettingsPage({
   const [systemAttempt, setSystemAttempt] = useState(0)
   const [isMac, setIsMac] = useState(false)
   const [isLinux, setIsLinux] = useState(false)
-  const [accelerationAvailable, setAccelerationAvailable] = useState(true)
+  // 网络加速 2026-10-30 下线：能力读回来之前按没有算，不先闪一下加速卡、「加速提醒」。
+  const [accelerationAvailable, setAccelerationAvailable] = useState(false)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。

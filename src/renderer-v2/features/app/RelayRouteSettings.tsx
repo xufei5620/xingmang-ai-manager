@@ -11,7 +11,7 @@ import {
 import { settingsItemLabel } from '../../registry/business'
 import { Button, Card, Confirm, Segment, SettingRow } from '../../ui'
 
-/** 设置 › 网络加速 › 连接线路里的一行：一种账号一行，三个选项排成一排。 */
+/** 设置 › 网络连接 › 连接线路里的一行：一种账号一行，三个选项排成一排。 */
 export function RelayRouteRow({
   route,
   settings,

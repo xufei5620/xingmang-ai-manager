@@ -98,7 +98,8 @@ export const settingsGroups = [
   { value: 'appearance', label: '外观显示', keywords: ['主题', '深色', '夜间', '颜色', '显卡', '显示', '语言'] },
   { value: 'startup', label: '启动关闭', keywords: ['开机', '自启', '自动启动', '关闭', '托盘', '最小化'] },
   { value: 'tools', label: '工具管理', keywords: ['工作文件夹', '文件夹', '终端', '安装位置', '装在哪'] },
-  { value: 'network', label: '网络加速', keywords: ['加速', '游戏', '下载来源', '网络', '证书', '连不上'] },
+  // 网络加速 2026-10-30 下线以后这一组只剩线路、下载和连接，改叫「网络连接」（yoyo 回「下线改」）。
+  { value: 'network', label: '网络连接', keywords: ['线路', '下载来源', '网络', '证书', '连不上'] },
   { value: 'notifications', label: '消息通知', keywords: ['通知', '提醒', '消息提示'] },
   { value: 'backup', label: '备份迁移', keywords: ['备份', '恢复', '还原', '迁移', '换电脑'] },
   { value: 'privacy', label: '隐私数据', keywords: ['隐私', '数据', '崩溃', '上报', '日志', '统计', '许可'] },

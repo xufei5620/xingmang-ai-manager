@@ -4,6 +4,7 @@ import type { AccelerationState } from '../acceleration-contract'
 import { createAccelerationDevelopmentHost, type AccelerationDevelopmentConfig } from '../acceleration-development-host'
 import type { AccelerationInterruptionNotice } from '../acceleration-interruption-notice'
 import type { AccelerationPreferenceStore } from '../acceleration-preference-store'
+import { accelerationOffMessage } from '../remote-features'
 import type { RuntimeLogStore } from '../runtime-log'
 import {
   createAccelerationHost,
@@ -151,6 +152,29 @@ describe('acceleration routing', () => {
     await expect(routing.claudeDesktopAcceleration.ensureConnected({ isDesktopRunning: async () => null }))
       .resolves.toEqual({ status: 'skipped', reason: 'state-unreadable' })
   })
+
+  // 网络加速 2026-10-30 下线（yoyo 回「下线改」）：打开 Codex、Claude 桌面端都不再替他连，连加速状态都不去读，
+  // 读一次就会拉起整份加速辅助进程。
+  it('neither connects nor reads acceleration for the desktop apps where acceleration is retired', async () => {
+    const { routing, accelerationService } = route({ accelerationOffered: false })
+    expect(routing.prepareClaudeDesktopLaunch).toBeUndefined()
+    await expect(routing.codexDesktopStartupRoute.prepare({ launchArgumentsUsable: true })).resolves.toMatchObject({ kind: expect.any(String) })
+    await expect(routing.codexDesktopStartupRoute.prepare({ launchArgumentsUsable: false })).resolves.toMatchObject({ kind: expect.any(String) })
+    expect(accelerationService).not.toHaveBeenCalled()
+  })
+
+  it('still connects for the desktop apps on a platform that offers acceleration', async () => {
+    const { routing, accelerationService } = route({ accelerationOffered: true })
+    await expect(routing.prepareClaudeDesktopLaunch?.({ isDesktopRunning: async () => null }))
+      .resolves.toEqual({ status: 'skipped', reason: 'state-unreadable' })
+    expect(accelerationService).toHaveBeenCalledTimes(1)
+    await routing.codexDesktopStartupRoute.prepare({ launchArgumentsUsable: false })
+    expect(accelerationService).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers no acceleration for the desktop apps on this computer by default', () => {
+    expect(route().routing.prepareClaudeDesktopLaunch).toBeUndefined()
+  })
 })
 
 describe('acceleration services', () => {
@@ -212,14 +236,29 @@ describe('acceleration services', () => {
     expect(services.userAcceleration.recheckAccelerationBundle).toBeTypeOf('function')
   })
 
-  it.runIf(process.platform === 'linux')('puts no acceleration row on the tray on Linux', () => {
+  // 网络加速 2026-10-30 下线：三个平台都不再有托盘那一行。
+  it('puts no acceleration row on the tray now that acceleration is retired', () => {
     const { services } = build()
     expect(services.trayAcceleration).toBeNull()
   })
 
-  it.runIf(process.platform !== 'linux')('builds the tray row without touching the tray, which is built later', () => {
-    const { services, applicationTray } = build()
+  it('builds the tray row without touching the tray, which is built later, where acceleration is offered', () => {
+    const { services, applicationTray } = build({ accelerationOffered: true })
     expect(services.trayAcceleration).not.toBeNull()
     expect(applicationTray).not.toHaveBeenCalled()
+  })
+
+  // 冻结的旧回滚界面还有加速页：从那里点开启也不连新的，停用的话照现成的远程开关那一句说。
+  it('refuses every new connection where acceleration is retired, whatever the status file says', async () => {
+    const { services } = build({ accelerationSuspended: () => false })
+    await expect(services.userAcceleration.startAcceleration('xm-account:1', 'system-proxy')).rejects.toThrow(accelerationOffMessage)
+  })
+
+  it('follows the status file where acceleration is offered', async () => {
+    let off = false
+    const { services } = build({ accelerationOffered: true, accelerationSuspended: () => off })
+    await expect(services.userAcceleration.startAcceleration('xm-account:1', 'system-proxy')).rejects.not.toThrow(accelerationOffMessage)
+    off = true
+    await expect(services.userAcceleration.startAcceleration('xm-account:1', 'system-proxy')).rejects.toThrow(accelerationOffMessage)
   })
 })

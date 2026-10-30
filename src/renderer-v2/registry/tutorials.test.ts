@@ -44,10 +44,7 @@ describe('tutorial step targets', () => {
     expect(step('safety', '查看隐私数据设置')).toMatchObject({ page: 'settings', section: 'privacy' });
   });
 
-  it('lands the acceleration, backup and update steps on their rows in settings', () => {
-    for (const action of ['打开网络加速', '去选择加速线路', '打开网络加速连接', '查看并停止加速']) {
-      expect(step('acceleration', action)).toMatchObject({ page: 'settings', section: 'acceleration' });
-    }
+  it('lands the backup and update steps on their rows in settings', () => {
     expect(step(updatesTutorialTopic, '打开备份迁移')).toMatchObject({ page: 'settings', section: 'backups' });
     expect(step(updatesTutorialTopic, '打开版本更新')).toMatchObject({ page: 'settings', section: 'version' });
   });
@@ -129,8 +126,14 @@ describe('tutorial wording that follows the current app', () => {
     expect(text).toContain('「刷新模型」');
   });
 
-  it('never teaches the acceleration mode switch that is not open to customers', () => {
-    expect(JSON.stringify(tutorialTopics)).not.toMatch(/TUN/i);
+  // 网络加速 2026-10-30 下线（yoyo 回「下线改」）：哪个系统的教程都不再有这一章。落到加速卡上的那一步写不出来了：
+  // TutorialSettingsRow 里没有 acceleration，写了是编译错。
+  it('teaches network acceleration on no system now that it is retired', () => {
+    for (const os of ['win', 'mac', 'linux'] as const) {
+      const topics = tutorialTopicsFor(os);
+      expect(topics.map((topic) => topic.id)).not.toContain('acceleration');
+      expect(JSON.stringify(topics)).not.toMatch(/网络加速|开启加速|停止加速|加速线路|免费时长/);
+    }
   });
 
   // Gemini CLI 已下线（yoyo 2026-10-14）：教程不再教它，搜索词里也不再收它，免得搜出来一章讲不到它的教程。
@@ -192,14 +195,11 @@ describe('linux tutorials', () => {
     expect(switching?.steps[2].detail).toBe('已经打开的工具还记着旧账号，要关掉重开才会换过来。');
   });
 
-  it('drops the Codex desktop, acceleration and Mac-only chapters and keeps everything else in order', () => {
+  it('drops the Codex desktop and Mac-only chapters and keeps everything else in order', () => {
     const ids = linux.map((topic) => topic.id);
-    const hidden = ['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic];
+    const hidden = ['install', 'config', 'launch', macRuntimeTutorialTopic, macDesktopTutorialTopic];
     expect(ids).toEqual(tutorialTopics.map((topic) => topic.id).filter((id) => !hidden.includes(id)));
     expect(ids[0]).toBe('start');
-    const landsOnAcceleration = (entry: TutorialStep) => entry.page === 'settings' && entry.section === 'acceleration';
-    expect(tutorialTopics.flatMap((topic) => topic.steps).some(landsOnAcceleration)).toBe(true);
-    expect(linux.flatMap((topic) => topic.steps).some(landsOnAcceleration)).toBe(false);
   });
 
   it('never points a Linux reader at Windows, a Mac, the desktop app or game acceleration', () => {

@@ -545,8 +545,8 @@ test('acceleration state is read once when idle, and again when the game acceler
     await page.clock.install()
     await page.clock.runFor(60_000)
     assert.equal(await reads(), initial, '没在加速时不定时读状态')
-    // v4 批09：游戏加速是「设置 › 网络加速」最上面那张卡。
-    const settings = await openSettingsGroup(page, '网络加速')
+    // v4 批09：游戏加速是「设置 › 网络连接」最上面那张卡（2026-10-30 下线以后只在没关加速的夹具里还有）。
+    const settings = await openSettingsGroup(page, '网络连接')
     await settings.getByTestId('acceleration-page').waitFor()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length > count, initial)
     await clean(page)
@@ -4293,7 +4293,7 @@ test('relay route settings stay confirmed while saving and keep the restart noti
   try {
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '网络加速', exact: true }).click()
+    await settings.getByRole('tab', { name: '网络连接', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
     await expectRoute(route, 'primary')
     // 历史账号也有直连了，这一行能选。
@@ -4312,7 +4312,7 @@ test('relay route settings stay confirmed while saving and keep the restart noti
     assert.equal(await page.evaluate(async () => (await window.xingmang.getSettings()).activeRelayEndpointIds.solov), 'primary')
     await page.getByTestId('nav-home').click()
     await page.getByTestId('nav-settings').click()
-    await settings.getByRole('tab', { name: '网络加速', exact: true }).click()
+    await settings.getByRole('tab', { name: '网络连接', exact: true }).click()
     await page.getByTestId('settings-relay-relaunch').waitFor()
     await page.screenshot({ path: path.join(artifacts, 'settings-relay-route-pending.png'), fullPage: true })
     // 先问一句：点「稍后」什么都不做，横条留着。
@@ -4333,7 +4333,7 @@ test('relay route settings roll back a failed save and do not announce a pending
   const page = await open()
   try {
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络连接', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
     await page.evaluate(() => { window.v2Test.fail = 'saveSettings' })
     await chooseRoute(route, 'direct')
@@ -4354,7 +4354,7 @@ test('relay route settings compare against the active backup route and preserve 
   const page = await open('directRelayActive=1')
   try {
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络连接', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
     await expectRoute(route, 'direct')
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
@@ -4369,7 +4369,7 @@ test('relay route settings compare against the active backup route and preserve 
   } finally { await page.close() }
 })
 
-// 左栏搜索搜到线路那一行，改完就在搜索结果里给「现在重开」，不用再回到网络加速那一组。
+// 左栏搜索搜到线路那一行，改完就在搜索结果里给「现在重开」，不用再回到网络连接那一组。
 test('a route changed from the settings search offers the restart right there', async () => {
   const page = await open()
   try {
@@ -4390,7 +4390,7 @@ test('relay route settings read nothing stored as auto and offer it first with t
   const page = await open('autoRelay=direct')
   try {
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络连接', exact: true }).click()
     const route = page.getByTestId('settings-relay-route-solov')
     await expectRoute(route, 'auto')
     assert.deepEqual(await route.getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
@@ -8537,7 +8537,7 @@ test('a cut-off network row takes a signed-in account to its route setting', asy
     await page.getByTestId('nav-health').click()
     await page.getByTestId('health-fix-XINGMANG_NETWORK').click()
     const settings = page.getByTestId('page-settings')
-    await expect(settings.getByRole('tab', { name: '网络加速', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(settings.getByRole('tab', { name: '网络连接', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.waitForFunction(() => document.querySelector('[data-testid="page-settings"] [data-anchor="relay-route-solov"]')?.getAttribute('data-anchor-focus') === 'true')
     // 焦点落在那一排的第一颗按钮上，键盘用户左右键就能换。
     await expect(routeChoice(page.getByTestId('settings-relay-route-solov'), 'auto')).toBeFocused()
@@ -8675,7 +8675,7 @@ test('the enterprise certificate row opens the check page on the certificate ite
     })
     await page.getByTestId('nav-settings').click()
     const settings = page.getByTestId('page-settings')
-    await settings.getByRole('tab', { name: '网络加速', exact: true }).click()
+    await settings.getByRole('tab', { name: '网络连接', exact: true }).click()
     await page.getByTestId('settings-certificate-health').click()
     await page.getByTestId('page-health').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="page-health"] [data-anchor="CERTIFICATE_TRUST"]')?.getAttribute('data-anchor-focus') === 'true')
@@ -8770,7 +8770,7 @@ test('the settings network check opens the passing network item and points at it
   try {
     await stubHealthReport(page, mixedHealthItems)
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络连接', exact: true }).click()
     await page.getByTestId('settings-network-health').click()
     await page.getByTestId('page-health').waitFor()
     // 网络那一项是正常的：先把正常的几项摆出来，再翻到它、亮一下。
@@ -8880,7 +8880,7 @@ test('pointing at an item of a check page visited before waits for the new resul
       ]
     })
     await page.getByTestId('nav-settings').click()
-    await page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByTestId('page-settings').getByRole('tab', { name: '网络连接', exact: true }).click()
     await page.getByTestId('settings-network-health').click()
     await page.getByTestId('page-health').waitFor()
     // 新结果还没回来：哪一项都不亮，正常的几项也还收着。
@@ -8965,8 +8965,8 @@ test('a network self-check result sends 去处理 to the network group of settin
     await claude.getByRole('button', { name: '去处理', exact: true }).click()
     const settings = page.getByTestId('page-settings')
     await settings.waitFor()
-    await expect(settings.getByRole('tab', { name: '网络加速', exact: true })).toHaveAttribute('aria-selected', 'true')
-    await expect(settings.locator('#v2-settings-panel .v2-settings-panel-head h2')).toHaveText('网络加速')
+    await expect(settings.getByRole('tab', { name: '网络连接', exact: true })).toHaveAttribute('aria-selected', 'true')
+    await expect(settings.locator('#v2-settings-panel .v2-settings-panel-head h2')).toHaveText('网络连接')
     await clean(page)
   } finally { await page.close() }
 })

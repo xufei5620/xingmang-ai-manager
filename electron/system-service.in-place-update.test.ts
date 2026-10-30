@@ -561,7 +561,8 @@ const registryTimeoutStderr = [
 // 装之前到官方源核对安装清单那一步只能走官方源，连不上时要说清这一点和下一步（#1057 第5b条），
 // 别的原因按 npm 原因表说（#1100 第1条）。同上，只在 macOS / Linux 主机上跑。
 describe.runIf(process.platform !== 'win32')('checking the install manifest against the official registry', () => {
-  it('says the official registry was unreachable and points at acceleration when it is off', async () => {
+  // 网络加速 2026-10-30 下线以后，没开过加速的人也不再叫他去开，跟 Linux 一样说换个网络。
+  it('says the official registry was unreachable and to switch networks, now that acceleration is retired', async () => {
     const fixture = createInPlaceUpdateFixture({
       provider: 'codex',
       resolutionFails: (registry) => registry === officialRegistry ? npmFailure(registryTimeoutStderr) : undefined,
@@ -570,7 +571,7 @@ describe.runIf(process.platform !== 'win32')('checking the install manifest agai
     const error = await fixture.service.installCli('codex', fixture.target).catch((failure: unknown) => failure)
 
     const message = (error as Error).message
-    expect(message).toBe('Codex CLI 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。')
+    expect(message).toBe('Codex CLI 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ETIMEDOUT）。换个网络（比如手机热点）后再试。')
     expect(classifyOperationError(message)).toBe('officialRegistryUnreachable')
     expect(((error as Error).cause as CommandRunnerError).stderr).toBe(registryTimeoutStderr)
     expect(fixture.installedVersion()).toBe(previousVersion)

@@ -12,7 +12,6 @@ import { clientConnections } from './registry/clients'
 import { pages } from './registry/pages'
 import { errors } from './registry/errors'
 import { statuses } from './registry/status'
-import { accelerationTrialSeconds } from '../../electron/acceleration-contract'
 import { runtimeButtonLabel, runtimeHomebrewCommand } from './features/tools/runtime-install-guide'
 import * as healthPage from './features/health/HealthPage'
 import * as feedbackPage from './features/feedback/FeedbackPage'
@@ -255,9 +254,9 @@ describe('tutorial topics', () => {
     }
   })
 
-  it('covers the two daily pages that had no chapter at all', () => {
-    // 记录页与加速页是 0.2.7~0.2.8 才成型的两块功能，教程里一度一个字都没有。
-    for (const id of ['sessions', 'acceleration']) {
+  it('covers the sessions page that had no chapter at all', () => {
+    // 记录页是 0.2.7~0.2.8 才成型的功能，教程里一度一个字都没有。加速页那一章 2026-10-30 随加速下线去掉了。
+    for (const id of ['sessions']) {
       const topic = tutorialTopics.find((entry) => entry.id === id)
       expect(topic, `缺少 ${id} 教程章节`).toBeDefined()
       expect(topic?.title).toBe(pageLabels.get(id))
@@ -281,29 +280,6 @@ describe('tutorial topics', () => {
     // 记录只在本机、保留期放长到一年，与记录页页头同一口径。
     expect(text).toContain('只存在这台电脑上')
     expect(text).toContain('一年')
-  })
-
-  it('quotes the free allowance from the contract and leaves the bonus code out', () => {
-    // 免费时长由 acceleration-contract 定，教程里写死另一个数就会对不上。
-    const text = tutorialText('acceleration')
-    expect(text).toContain(`${accelerationTrialSeconds / 60} 分钟`)
-    // 口令入口是彩蛋，教程不写；写进来这条会红。
-    expect(text).not.toContain('口令')
-    // 托盘菜单（#326）是主窗口缩起来时唯一的开关入口。
-    expect(text).toContain('托盘')
-    // 「自己连」只剩 Codex 桌面端那条：悄悄连、不弹通知、加速页上看不见、用完就断（#707 起不扣时长，
-    // yoyo 2026-10-01 定「悄悄连」，2026-10-02 定「不在游戏加速那边体现」、结束后断开）。下载借临时线路
-    // 那条 2026-10-21 起不做了（线路只放行 GPT），教程改说下载照常直连。
-    expect(text).toContain('不扣免费时长')
-    expect(text).toContain('装工具、下载 Node.js 时不借加速线路')
-    expect(text).not.toContain('下载专用临时线路')
-    expect(text).toContain('不弹通知')
-    expect(text).toContain('网络加速卡和托盘也不显示')
-    expect(text).toContain('打开约 2 分钟后自动断开')
-    expect(text).toContain('关掉 Codex 后自动断开')
-    expect(text).not.toContain('已自动连接')
-    expect(text).not.toContain('不会自动断开')
-    expect(text).toContain('加速服务暂不可用')
   })
 
   it('spells the error banners exactly as the error registry does', () => {
@@ -467,6 +443,8 @@ describe('tutorial topics', () => {
     expect(linuxArticle).toContain(`<h2 id="tutorial-article-title">${linux[0].title}</h2>`)
     const windowsMarkup = renderToStaticMarkup(createElement(TutorialPage, { os: 'win' }))
     expect(windowsMarkup).toContain(`data-testid="tutorial-card-${macDesktopTutorialTopic}"`)
+    // 网络加速 2026-10-30 下线：Windows、Mac 上也没有那一章了。
+    expect(windowsMarkup).not.toContain('网络加速')
   })
 
   it('gives every chapter on every computer a category and its own card icon', () => {
@@ -511,7 +489,7 @@ describe('settings page before the settings arrive', () => {
   it('lists the eight v4 groups with their icons, backup and migration included', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
     const names = [...markup.matchAll(/role="tab"[^>]*>.*?<span>([^<]+)<\/span>/g)].map((match) => match[1])
-    expect(names).toEqual(['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新'])
+    expect(names).toEqual(['外观显示', '启动关闭', '工具管理', '网络连接', '消息通知', '备份迁移', '隐私数据', '版本更新'])
     expect(markup).toMatch(/id="v2-settings-appearance"[^>]*><svg/)
   })
 
@@ -520,7 +498,7 @@ describe('settings page before the settings arrive', () => {
     expect(idle).not.toContain('v2-settings-nav-dot')
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge, updateAvailable: true, accelerating: true }))
     expect(markup).toMatch(/title="有新版本"[^>]*>.*?<span>版本更新<\/span><i class="v2-settings-nav-dot" aria-hidden="true">/)
-    expect(markup).toMatch(/title="加速中"[^>]*>.*?<span>网络加速<\/span><i class="v2-settings-nav-dot is-ok" aria-hidden="true">/)
+    expect(markup).toMatch(/title="加速中"[^>]*>.*?<span>网络连接<\/span><i class="v2-settings-nav-dot is-ok" aria-hidden="true">/)
   })
 })
 

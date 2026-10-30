@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { AppWindow, Archive, ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, CheckCircle2, ChevronLeft, Clock, Clock3, Code2, Compass, Copy, CreditCard, Download, Globe2, InfinityIcon, Laptop, LifeBuoy, MessageSquare, MessageSquareWarning, Package, Plug, Rocket, Search, SlidersHorizontal, Sparkles, Terminal, type LucideIcon } from 'lucide-react'
+import { AppWindow, Archive, ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, CheckCircle2, ChevronLeft, Clock, Clock3, Code2, Compass, Copy, CreditCard, Download, InfinityIcon, Laptop, LifeBuoy, MessageSquare, MessageSquareWarning, Package, Plug, Rocket, Search, SlidersHorizontal, Sparkles, Terminal, type LucideIcon } from 'lucide-react'
 import { Button, Card, Chips, Empty, PageHead, Pill, SearchInput } from '../../ui'
 import type { BusinessActions } from '../../pages-maintenance'
 import { tutorialCategories, tutorialTopicsFor, type TutorialCategoryFilter, type TutorialTopic } from '../../registry/tutorials'
@@ -16,7 +16,7 @@ const viewKey = 'xingmang-v2-tutorial-reading'
 // 卡片左上角的小图标，一篇一个；新加一篇忘了配，测试会红，书本只是兜底。
 export const tutorialIcons: Readonly<Partial<Record<string, LucideIcon>>> = {
   start: Rocket, install: Download, config: SlidersHorizontal, 'switch-account': ArrowLeftRight, launch: AppWindow,
-  account: CreditCard, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, acceleration: Globe2,
+  account: CreditCard, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon,
   cli: Terminal, mcp: Plug, skills: Sparkles, plugins: Package, safety: Archive,
   'runtime-mac': Code2, 'mac-desktop-apps': Laptop, messages: MessageSquareWarning, trouble: LifeBuoy,
 }
