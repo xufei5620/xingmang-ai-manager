@@ -442,6 +442,30 @@ describe('main process startup order', () => {
     }
   })
 
+  it('starts checking the historical site once its account signs in or is waiting to be restored', () => {
+    // 开机只查星芒账号的站（bootstrap/network-routes.ts），历史账号的站靠账号服务每次变了都叫一声才开始查（0.2.22 性能体检第 11 条）。
+    const { source } = mainSource()
+    let onChanged: ts.ArrowFunction | undefined
+    function visit(node: ts.Node): void {
+      if (ts.isPropertyAssignment(node) && node.name.getText(source) === 'onChanged' && ts.isArrowFunction(node.initializer)
+        && ts.isCallExpression(node.parent.parent) && node.parent.parent.expression.getText(source) === 'createRealmAccountService') {
+        onChanged = node.initializer
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    if (!onChanged) throw new Error('createRealmAccountService onChanged not found')
+    const watched: string[] = []
+    function collect(node: ts.Node): void {
+      if (ts.isCallExpression(node) && node.expression.getText(source) === 'relayRouteController.ensureWatching') {
+        watched.push(node.arguments.map((argument) => argument.getText(source)).join(', '))
+      }
+      ts.forEachChild(node, collect)
+    }
+    collect(onChanged)
+    expect(watched).toEqual(['siteId', 'state.restoring.account.siteId'])
+  })
+
   it('picks the update feed before it builds the updater, and reads service status once the updater exists', () => {
     // 包里那份还是直连那份更新目录开机就定（签名校验也在这时装上）；更新服务要等版本记录读好才建，
     // 服务状态文件读到的结果要交给它，所以监视器建在它后面。

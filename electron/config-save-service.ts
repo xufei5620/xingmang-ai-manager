@@ -65,6 +65,7 @@ import {
   type SeededToolDefaults,
   takeBackCodexModelCatalog,
   toNativeConfigSummary,
+  withSharedConfigReads,
 } from './config-files'
 import { type EditorId, ensureEditorClaudeLoginPromptDisabled } from './editor-claude-login-prompt'
 import type { MacosCodexAppInspection } from './macos-codex-app'
@@ -337,6 +338,11 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
+    // 看配置和看钩子读的是同一份文件，这一整遍只读一遍。
+    return withSharedConfigReads(() => buildConfigSummaryFromFiles(previewOnboarding, cachedKeys))
+  }
+
+  function buildConfigSummaryFromFiles(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[]): AppConfigSummary {
     const stored = store.read()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const ccSwitchInstalled = inspectCcSwitchInstalled(providerRoots.userHome)

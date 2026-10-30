@@ -3,6 +3,8 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
+import { providerBaseUrls } from './catalog'
+import { providerConfigPaths, saveProviderConfig } from './config-files'
 import { createConfigSaveService } from './config-save-service'
 import { resolveEditorSettingsLocations } from './editor-claude-login-prompt'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
@@ -78,6 +80,29 @@ describe('config save service', () => {
       .rejects.toThrow('当前密钥不支持模型 claude-missing')
     expect(dependencies.moveOfficialCredentialsAside).not.toHaveBeenCalled()
     expect(dependencies.followManagedKeysNow).not.toHaveBeenCalled()
+  })
+
+  it('reads each tool config file once for the whole summary the home page asks for', () => {
+    const { root, userHome, service } = createService()
+    const roots = { userHome, codexHome: path.join(root, 'codex') }
+    saveProviderConfig('codex', 'sk-codex', 'gpt-fixture', 'reset', roots, {}, providerBaseUrls)
+    saveProviderConfig('claude', 'sk-claude', 'claude-fixture', 'reset', roots, {}, providerBaseUrls)
+    const watched = [...providerConfigPaths('codex', roots), ...providerConfigPaths('claude', roots)].map((target) => path.resolve(target))
+    const opened: string[] = []
+    const openSync = fs.openSync
+    const spy = vi.spyOn(fs, 'openSync').mockImplementation(function (this: unknown, target: fs.PathLike, ...rest: unknown[]) {
+      opened.push(path.resolve(String(target)))
+      return Reflect.apply(openSync, this, [target, ...rest]) as number
+    } as typeof fs.openSync)
+    try {
+      const summary = service.buildConfigSummary(false)
+      expect(summary.providers.codex).toMatchObject({ hasApiKey: true, model: 'gpt-fixture' })
+      expect(summary.providers.claude).toMatchObject({ hasApiKey: true, model: 'claude-fixture' })
+      // The hooks check reads the same main config the inspection just read.
+      expect(watched.map((target) => opened.filter((entry) => entry === target).length)).toEqual(watched.map(() => 1))
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('checks the Codex model catalog at startup only once and not at all without a bundled catalog', async () => {
