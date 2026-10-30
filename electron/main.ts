@@ -69,6 +69,7 @@ import { crashReportDist, crashReportDsn, crashReportRelease, crashReportSelfTes
 import { createCrashReporter } from './crash-reporter'
 import { classifyNetworkFailure } from './network-failure'
 import { PlatformSettingsStore } from './platform/settings-store'
+import { platformCapabilitiesFor } from './platform-capabilities'
 import {
   resolveUsageOs,
   resolveUsageUpdateState,
@@ -907,8 +908,10 @@ if (!hasSingleInstanceLock) {
     ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
     // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
     // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
+    // 网络加速 2026-10-30 下线以后，检查页不再有「加速功能」这一行：客户用不着加速，文件坏了也没什么可做的。
+    // 文件照旧要读，开机改回上次留在半路的系统代理靠它（createAccelerationHost）。
     const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
-      !app.isPackaged ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
+      !app.isPackaged || platformCapabilitiesFor().acceleration === false ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
     ))
     // 「重新检查」连点几下只读一遍：内核文件有几十 MB。
     let accelerationBundleRecheck: Promise<AccelerationBundleCheck> | null = null
@@ -1214,7 +1217,7 @@ if (!hasSingleInstanceLock) {
       issueCodexStartupTicket: () => issueCodexStartupTicket(),
       readStoredConfig: () => systemService.readStoredConfig(),
     })
-    const { downloadAcceleration, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, downloadFetch } = accelerationRouting
+    const { downloadAcceleration, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, prepareClaudeDesktopLaunch, downloadFetch } = accelerationRouting
     const systemService = createSystemService(settingsStore, {
       managerDataDirectory,
       systemSnapshotCacheFile: path.join(managerDataDirectory, 'system-snapshot.json'),
@@ -1294,7 +1297,8 @@ if (!hasSingleInstanceLock) {
       // 用户自己开着加速时下载照样跟着系统代理，在内核里按规则直连，也不算加速，安装源保持国内优先。
       prepareCodexDesktopStartupRoute: (context) => codexDesktopStartupRoute.prepare(context),
       // Claude Desktop 要从官网下组件，国内直连下不动：从星芒打开时先在后台替他连上加速（#1373）。
-      prepareClaudeDesktopLaunch: (context) => claudeDesktopAcceleration.ensureConnected(context),
+      // 网络加速 2026-10-30 下线以后这一项是空的，直接打开（bootstrap/acceleration.ts）。
+      ...(prepareClaudeDesktopLaunch ? { prepareClaudeDesktopLaunch } : {}),
       remoteFeatureOff: (feature) => remoteFeatures.isOff(feature),
       releaseCodexRemote: (action) => releaseCodexRemote(action),
     })

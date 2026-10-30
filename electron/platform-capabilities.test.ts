@@ -21,7 +21,7 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: false,
       },
-      acceleration: true,
+      acceleration: false,
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
@@ -58,7 +58,7 @@ describe('platformCapabilitiesFor', () => {
         gemini: true,
         grok: true,
       },
-      acceleration: true,
+      acceleration: false,
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,

@@ -205,7 +205,8 @@ export function SettingsPage({
   const [systemAttempt, setSystemAttempt] = useState(0)
   const [isMac, setIsMac] = useState(false)
   const [isLinux, setIsLinux] = useState(false)
-  const [accelerationAvailable, setAccelerationAvailable] = useState(true)
+  // 网络加速 2026-10-30 下线：能力读回来之前按没有算，不先闪一下加速卡、「加速提醒」。
+  const [accelerationAvailable, setAccelerationAvailable] = useState(false)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。

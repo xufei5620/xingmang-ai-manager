@@ -27,7 +27,7 @@
 **内置的几块能力**：
 - **星芒账号**（2026-08）：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值，登录后自动签发 CLI Key 并写进 CLI 配置。历史账号站 `api.solov.cc` 走 sub2api（`sub2api-*`），两个账号域由 `realm-account*` 隔开。
 - **无限画布 + AI 工作区**（2026-08）：节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程，与 CLI 共用同一账号额度。画布内核来自私有仓库 xingmang-canvas（0.2.23 起，#1393），按版本 tag 由同步脚本搬进 `canvas-v2/`，**不要在本仓直接改**（见 T13）。
-- **线路自动切换与游戏加速**：客户端在线路1、线路2 之间自己切（`relay-route-controller.ts` / `relay-line-fetch.ts`）；游戏加速是本机 Mihomo 系统代理（`acceleration-*`，见 `docs/GLOBAL-ACCELERATION.md`）。
+- **线路自动切换与网络加速**：客户端在线路1、线路2 之间自己切（`relay-route-controller.ts` / `relay-line-fetch.ts`）；网络加速（原游戏加速）是本机 Mihomo 系统代理（`acceleration-*`，见 `docs/GLOBAL-ACCELERATION.md`），**2026-10-30 已下线**：`platform-capabilities.ts` 的 `acceleration` 三个平台都是 false，界面入口、托盘那一行、替桌面端连的那次都关了；内核和开机改回残留系统代理那一套（`createAccelerationHost` 的 `recover()`）还在，别一起删。
 
 **技术栈**：Electron 45 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 两个账号后端（`xm.solov.cc` 是 new-api 生产实例，版本会跟上游漂移；`api.solov.cc` 是 sub2api），new-api 端点事实见 `docs/RECON-new-api.md`。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。Windows 与 macOS 双平台；Linux（只出 deb）已能打包并在 CI 里真装真开，第一版功能已做完（不带加速），发布开关还关着，见 `docs/LINUX.md`。
 

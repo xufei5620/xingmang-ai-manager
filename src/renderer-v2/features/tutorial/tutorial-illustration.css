@@ -113,11 +113,6 @@
 .tutorial-illustration-node > p { margin: var(--space-2) 0; }
 .tutorial-illustration-node > small { padding-top: var(--space-2); border-top: 1px solid var(--line); }
 .tutorial-illustration-edge { display: grid; justify-items: center; gap: var(--space-1); color: var(--accent); font-size: var(--font-small); }
-.tutorial-illustration-acceleration { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: var(--space-5); }
-.tutorial-illustration-acceleration .tutorial-illustration-pane > .tutorial-illustration-row { padding: var(--space-3) var(--space-3) var(--space-1); }
-.tutorial-illustration-acceleration .tutorial-illustration-pane > .tutorial-illustration-row > svg:last-child { margin-left: auto; }
-.tutorial-illustration-acceleration-actions { display: grid; gap: var(--space-3); }
-.tutorial-illustration-acceleration-actions > small { text-align: center; }
 .tutorial-illustration-health-item { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-2) var(--space-3); border: 1px dashed var(--line-3); border-radius: var(--radius-input); background: var(--panel-solid); }
 .tutorial-illustration-health-item > svg { color: var(--accent); }
 .tutorial-illustration-backup { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: var(--space-3); }

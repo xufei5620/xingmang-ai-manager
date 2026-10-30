@@ -12,7 +12,10 @@ export interface PlatformCapabilities {
   readonly cliInstall: Readonly<Record<ProviderId, InstallManagement>>
   /** 缺省 = 每家都要 Node.js（旧行为）。 */
   readonly cliNeedsNodeRuntime?: Readonly<Record<ProviderId, boolean>>
-  /** 游戏加速（加速页、托盘那一行、兑换加速时长）。缺省 = 有（旧行为）。 */
+  /**
+   * 网络加速（加速页、托盘那一行、兑换加速时长、打开桌面端时替他连的那次）。缺省 = 有（旧行为）。
+   * 2026-10-30 起三个平台都是 false：线路被封，yoyo 回「下线改」。
+   */
   readonly acceleration?: boolean
   /** 缺省 = 按渲染层注册表的 requires 判断，Gemini 要 Python（旧行为）。 */
   readonly cliNeedsPythonRuntime?: Readonly<Record<ProviderId, boolean>>
@@ -69,9 +72,10 @@ export function platformCapabilitiesFor(
       gemini: true,
       grok: !windows,
     }),
-    // Linux 第一版不带加速：安装包里没有加速内核，页面开着只会一直「线路准备中」。
-    // 等 Linux 加速（拆分 ⑫）落地再打开。
-    acceleration: windows || macos,
+    // 网络加速 2026-10-30 下线（线路被封，yoyo 回「下线改」）：Windows、Mac 跟 Linux 第一版一样，
+    // 界面上不再有加速的入口，也不再替打开的桌面端连。安装包里的加速内核这一版还带着：上次加速时
+    // 崩了、留在半路的系统代理，开机靠它改回去（bootstrap/acceleration.ts 的 createAccelerationHost）。
+    acceleration: false,
     // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
     // 缺了它照样能装能用，不该拦着。Linux 先去掉（Linux 版拆分 ③）；它自带的现成包也覆盖
     // Windows 和 Mac，两边跟着去掉：Windows 不再顺带多装一个 Python，Mac 没装也不再拦着

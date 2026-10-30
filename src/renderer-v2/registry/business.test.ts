@@ -144,7 +144,7 @@ describe('renderer-v2 settings rows registry', () => {
 
   // v4 八组，组名都是四个字；「账号」组拆走，测试通知并进桌面通知那一行（字表批08）。
   it('names the eight v4 groups and drops the account group and the test notification row', () => {
-    expect(settingsGroups.map(group => group.label)).toEqual(['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新']);
+    expect(settingsGroups.map(group => group.label)).toEqual(['外观显示', '启动关闭', '工具管理', '网络连接', '消息通知', '备份迁移', '隐私数据', '版本更新']);
     for (const group of settingsGroups) expect(settingsGroupIcons[group.value], group.value).toBeTruthy();
     const ids = settingsItems.map(item => item.id);
     for (const gone of ['current-account', 'switch-account', 'remember-password', 'logout', 'test-notification']) expect(ids).not.toContain(gone);

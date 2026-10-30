@@ -40,10 +40,11 @@ async function open(query = 'accelerationPreview=1', { initScript } = {}) {
   await openLazyAcceleration(page)
   return page
 }
-// v4 批09 起游戏加速是「设置 › 网络加速」最上面的一张卡，侧栏没有单独的入口了。
+// v4 批09 起游戏加速是「设置 › 网络连接」（原「网络加速」）最上面的一张卡，侧栏没有单独的入口了。2026-10-30 网络加速下线，
+// 客户的电脑上不再有这张卡（platform-capabilities.ts）；这里的夹具没说没有加速，照旧按有算，卡上的行为接着测。
 // 卡只在设置页翻到这一组时才挂上；连接本身挂在 App 上，离开设置页照样连着、照样计时。
 function networkTab(page) {
-  return page.getByTestId('page-settings').getByRole('tab', { name: '网络加速', exact: true })
+  return page.getByTestId('page-settings').getByRole('tab', { name: '网络连接', exact: true })
 }
 async function goToAcceleration(page) {
   await page.getByTestId('nav-settings').click()

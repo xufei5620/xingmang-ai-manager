@@ -1,5 +1,4 @@
 import type { PageId } from './pages';
-import { accelerationExpiryWarningSeconds, accelerationTrialSeconds } from '../../../electron/acceleration-contract';
 import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type FeedbackTabValue, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
@@ -8,14 +7,15 @@ import { runtimeButtonLabel, runtimeHomebrewCommand } from '../features/tools/ru
 import type { WindowOs } from '../features/app/window-os';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 
-export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'acceleration' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
+export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'desktop-config' | 'desktop-project' | 'desktop-message' | 'home' | 'account' | 'install' | 'config' | 'launch' | 'chat' | 'canvas' | 'extensions' | 'skills' | 'plugins' | 'backup' | 'health';
 
 /**
- * 游戏加速、备份、更新并进设置以后（v4 批09），教程直接落到那一行：外壳打开它那一组、
+ * 备份、更新并进设置以后（v4 批09），教程直接落到那一行：外壳打开它那一组、
  * 再翻到那一行，比只落到组上少找一次。行的 id 在 business.ts 的 settingsItems 里是 string，
  * 这里只收教程真用到的几个，写错照样编译不过；tutorials.test.ts 核对它们都登记过。
+ * 网络加速那一章 2026-10-30 随加速下线去掉了。
  */
-type TutorialSettingsRow = 'acceleration' | 'backups' | 'version';
+type TutorialSettingsRow = 'backups' | 'version';
 
 /**
  * 按钮落到哪一页、哪个分页。个人中心和设置里分页很多，只跳页会停在默认的
@@ -546,64 +546,6 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '还有任务时可以关闭吗？', detail: '按关闭窗口的提示处理。停止本地等待后，服务端仍可能继续生成和计费。' }],
         action: '打开画布查看项目',
         page: 'canvas',
-      },
-    ],
-  },
-  {
-    id: 'acceleration',
-    title: '网络加速',
-    lead: '选线路，点开启；用完点停止，剩余时长下次继续。',
-    category: 'tools',
-    minutes: 3,
-    keywords: ['加速', '网络', '线路', '智能分配', 'Ping', '延迟', '代理', 'VPN', '免费时长', '托盘', '自动连接', '下载', '到期', '提醒', '通知'],
-    steps: [
-      {
-        title: '登录后查看可用时长',
-        where: '设置 › 网络加速 → 剩余免费时长',
-        detail: `每个账号在本机累计 ${accelerationTrialSeconds / 60} 分钟，连接成功才计时，不每日重置。`,
-        bullets: ['未登录先点「登录领取免费体验」。', '剩余时长写在「网络加速」下面那句说明里。'],
-        expected: '读到剩余时长与线路状态。',
-        illustration: 'acceleration',
-        extra: [{ title: '时长用完和到期提醒', detail: `时长用完会自动停止，按钮变为「联系客服」，可通过「帮助与客服」咨询。启用「设置」→「消息通知」里的桌面通知和「加速提醒」且系统允许通知时，剩余 ${accelerationExpiryWarningSeconds / 60} 分钟及用完断开会各提醒一次。` }],
-        action: '打开网络加速',
-        page: 'settings',
-        section: 'acceleration',
-      },
-      {
-        title: '连接前选择线路或「自动选择」',
-        where: '设置 › 网络加速 → 线路',
-        detail: '不确定选哪条就用「自动选择」，连接时自动测速选可用线路。',
-        bullets: ['点「线路」右边的按钮，选择「自动选择」或具体线路。', '每条线路右边写着延迟，数字越小通常越快；点菜单最下面的「重新测速」再测一遍。'],
-        expected: '当前线路显示你的选择。',
-        action: '去选择加速线路',
-        page: 'settings',
-        section: 'acceleration',
-      },
-      {
-        title: '开启加速，等状态确认',
-        where: '设置 › 网络加速 → 开启加速',
-        detail: '点「开启加速」，等连接成功再使用；加速通过这台电脑的系统代理生效。',
-        bullets: ['点「开启加速」，等待状态变为「加速已开启」。', '加速只改这台电脑的系统代理，不接管整台电脑的网络。'],
-        expected: '显示实际线路，剩余时长开始计时。',
-        extra: [
-          { title: '提示其他代理或 VPN 冲突？', detail: '先关闭其他代理或 VPN 后重试；也可以按页面选择「仍然连接」。系统代理能否影响某个应用，取决于那个应用是否采用系统代理。' },
-          { title: '为什么有时会自动连接？', detail: '打开 Codex 桌面端时，若还没连接，会在后台悄悄连上加速，不弹通知、不跳页面、不扣免费时长，网络加速卡和托盘也不显示。桌面端用星芒密钥的，打开约 2 分钟后自动断开；登录 ChatGPT 账号的，关掉 Codex 后自动断开。已有线路不改动，自动连接失败也会照常打开 Codex。装工具、下载 Node.js 时不借加速线路，照常直连。' },
-          { title: '「加速服务暂不可用」或连不上？', detail: '先按具体提示处理：完全退出工具箱（含托盘）后重开、检查磁盘空间，或请管理员处理系统限制。「查看日志」会进入反馈页运行日志，「重新检查」会重新读取状态；线路准备中可点「刷新线路状态」。' },
-        ],
-        action: '打开网络加速连接',
-        page: 'settings',
-        section: 'acceleration',
-      },
-      {
-        title: '用完明确点击停止加速',
-        where: '设置 › 网络加速 → 停止加速',
-        detail: '不用时明确点停止，缩到托盘或切换页面不等于停止。',
-        bullets: ['点「停止加速」，等连接结束。', '要换线路，也先停止。'],
-        expected: '标题变回「网络加速」，剩余时长保留。',
-        extra: [{ title: '窗口缩到托盘后怎么操作？', detail: '右键工具箱托盘图标，查看加速状态和剩余时长，使用「连接加速 / 断开加速」。不可操作时按钮变灰，状态行说明原因。' }],
-        action: '查看并停止加速',
-        page: 'settings',
-        section: 'acceleration',
       },
     ],
   },
@@ -1139,12 +1081,12 @@ export const tutorialTopics: readonly TutorialTopic[] = [
 ];
 
 /*
- * Linux 版教程（Linux 版拆分 ⑩）。Linux 上没有 Codex 桌面端和游戏加速，Mac 专属的两章
+ * Linux 版教程（Linux 版拆分 ⑩）。Linux 上没有 Codex 桌面端，Mac 专属的两章
  * 也用不上；第一章换成 Codex CLI（和新手引导在 Linux 上的推荐项同一个），更新那一步换成
  * 「交给系统安装窗口」的说法，和「设置 › 版本更新」、退出确认、必须更新提示同一口径（#760）。
  * 其余章节原样沿用，只删掉几句讲 Codex 桌面端的话。Windows 和 Mac 拿到的还是上面那份。
  */
-const linuxHiddenTutorialTopics: ReadonlySet<string> = new Set(['install', 'config', 'launch', 'acceleration', macRuntimeTutorialTopic, macDesktopTutorialTopic]);
+const linuxHiddenTutorialTopics: ReadonlySet<string> = new Set(['install', 'config', 'launch', macRuntimeTutorialTopic, macDesktopTutorialTopic]);
 
 const linuxStartTutorial: TutorialTopic = {
   id: 'start',

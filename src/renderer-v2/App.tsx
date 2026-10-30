@@ -199,9 +199,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const toolboxEnabled = boot === 'ready' && (session.authenticated || restoring || guide || workspaceEntered)
   const toolbox = useToolbox(native, toolboxEnabled, scope)
   const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
-  // Linux 第一版不带加速（platformCapabilitiesFor 的 acceleration）：设置里的游戏加速卡、搜索、领时长都不出现，
-  // 也不去读加速状态。能力回来之前按窗口的系统先判断，免得 Linux 上侧栏先闪一下「游戏加速」。
-  const accelerationAvailable = platform ? platform.acceleration !== false : currentWindowOs() !== 'linux'
+  // 没有网络加速的平台（platformCapabilitiesFor 的 acceleration，2026-10-30 下线以后是全部平台）：设置里的
+  // 加速卡、搜索、领时长都不出现，也不去读加速状态。能力回来之前按没有算，免得先闪一下加速卡、白拉起加速辅助进程。
+  const accelerationAvailable = platform !== null && platform.acceleration !== false
   const acceleration = useAcceleration(accelerationApi, session.authenticated && accelerationAvailable ? scope : null)
   const remoteActive = useCodexRemoteActive(native)
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)

@@ -13,7 +13,7 @@ import { accelerationStartRequest, defaultAccelerationPreference, type Accelerat
 import { createAccelerationService, createUserAccelerationApi, userAccelerationState, type AccelerationService } from '../acceleration-service'
 import type { AppSettings } from '../app-settings'
 import type { ApplicationTrayController } from '../application-tray'
-import { createClaudeDesktopAccelerationCoordinator } from '../claude-desktop-acceleration'
+import { createClaudeDesktopAccelerationCoordinator, type ClaudeDesktopLaunchContext } from '../claude-desktop-acceleration'
 import { createCodexDesktopAccelerationCoordinator, createCodexDesktopAccelerationNeedReader } from '../codex-desktop-acceleration'
 import { probeCodexDesktopRunning } from '../codex-desktop-service'
 import { buildCodexStartupTunnelUrl, createCodexDesktopStartupRouteCoordinator } from '../codex-desktop-startup-route'
@@ -42,6 +42,8 @@ export interface AccelerationRoutingOptions {
   accelerationService: () => AccelerationService | undefined
   issueCodexStartupTicket: () => Promise<NewApiCodexStartupTicket>
   readStoredConfig: () => Pick<AppSettings, 'relaySiteId'>
+  /** 这个平台有没有网络加速（platform-capabilities.ts 的 acceleration）。缺省按这台电脑的平台。 */
+  accelerationOffered?: boolean
 }
 
 // 下载线路和 Codex 桌面端要的加速：打开 Codex 桌面端时替他连一次。装 CLI、下 Node 临时借线路那一路
@@ -50,6 +52,7 @@ export interface AccelerationRoutingOptions {
 export function createAccelerationRouting(options: AccelerationRoutingOptions) {
   const { routes: { relayRouting, proxyBypass, resolveSystemProxy }, rootedOptions, accelerationPreferences, runtimeLog } = options
   const { readAccelerationAccountScope, downloadRoutes, accelerationService, issueCodexStartupTicket, readStoredConfig } = options
+  const accelerationOffered = options.accelerationOffered ?? platformCapabilitiesFor().acceleration !== false
   // 下载专用的网络分区：它的代理只在装 CLI / 下 Node 的那几分钟里被设成加速
   // 内核的回环端口，默认 session 一行不动，所以账号、中转与画布流量不受
   // 影响。非 persist: 前缀 = 内存分区，不落盘。
@@ -169,7 +172,11 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
     onlyNeededAtStartup: () => codexDesktopUsesStarKeyOnly(),
     issueTicket: () => issueCodexStartupTicket(),
     tunnelUrls: () => codexStartupTunnelUrls(),
-    ensureAccelerated: () => codexDesktopAcceleration.ensureConnected(),
+    // 网络加速下线以后（2026-10-30）不再替 Codex 连，也不去读加速状态（那会白白拉起加速辅助进程）：
+    // 当作加速连不上，Windows 上照旧让读中文开关那一下立刻失败，不白屏等。
+    ensureAccelerated: accelerationOffered
+      ? () => codexDesktopAcceleration.ensureConnected()
+      : async () => ({ status: 'skipped', reason: 'unavailable' }),
     resolveSystemProxy: (url) => resolveSystemProxy(url),
     log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
   })
@@ -191,7 +198,11 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
     ...options,
     session: downloadAcceleration.currentEndpoint() ? acceleratedDownloadSession : session.defaultSession,
   }))
-  return { downloadAcceleration, accelerationStartArguments, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, downloadFetch }
+  // 从星芒打开 Claude Desktop 前替他连加速（#1373）：网络加速下线以后（2026-10-30）不接，直接打开。
+  const prepareClaudeDesktopLaunch = accelerationOffered
+    ? (context: ClaudeDesktopLaunchContext) => claudeDesktopAcceleration.ensureConnected(context)
+    : undefined
+  return { downloadAcceleration, accelerationStartArguments, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, prepareClaudeDesktopLaunch, downloadFetch }
 }
 
 export type AccelerationRouting = ReturnType<typeof createAccelerationRouting>
@@ -298,6 +309,8 @@ export interface AccelerationServicesOptions {
   applicationTray: () => ApplicationTrayController | null
   /** 状态文件关掉了网络加速（remote-features.ts）：加速页、托盘、替桌面端连的那次都不连新的。缺省 = 不关。 */
   accelerationSuspended?: () => boolean
+  /** 这个平台有没有网络加速（platform-capabilities.ts 的 acceleration）。缺省按这台电脑的平台。 */
+  accelerationOffered?: boolean
 }
 
 // 加速服务和挂在它上面的几样：时长快用完、加速中断的系统通知，加速页和托盘看到的那一套。
@@ -305,7 +318,10 @@ export interface AccelerationServicesOptions {
 export function createAccelerationServices(options: AccelerationServicesOptions) {
   const { host, accelerationPreferences, recheckAccelerationBundle, runtimeLog } = options
   const { routing: { codexDesktopAcceleration, claudeDesktopAcceleration, accelerationStartArguments }, readAccelerationAccountScope, mainWindow, applicationTray } = options
-  const { accelerationSuspended } = options
+  const accelerationOffered = options.accelerationOffered ?? platformCapabilitiesFor().acceleration !== false
+  // 网络加速下线以后（2026-10-30）界面上没有入口了，冻结的旧回滚界面还有：从那里点也不连新的。
+  // 连着的照常能停，上次留在半路的系统代理照常改回去（停用只挡开启）。
+  const accelerationSuspended = accelerationOffered ? options.accelerationSuspended : () => true
   // 建的过程中互相读得到：还没建好的那一样是空的，跟原来在 main.ts 里一样。
   let trayAcceleration: TrayAccelerationCoordinator | null = null
   let accelerationExpiry: AccelerationExpiryNotice | null = null
@@ -368,9 +384,9 @@ export function createAccelerationServices(options: AccelerationServicesOptions)
   // 时）在这里看不见，也停不掉（yoyo 2026-10-02）。主进程别的观察者读的仍是 acceleration。
   const userAcceleration = createUserAccelerationApi(acceleration)
   // 托盘上的连接与断开走的就是加速页那条路，线路与模式也用他在加速页上选过并
-  // 落了盘的那一套，与打开 Codex 桌面端时自动连接同一口径。没有加速的平台（Linux
-  // 第一版）托盘上就不放这一行，不然只会一直「正在读取状态」。
-  trayAcceleration = platformCapabilitiesFor().acceleration === false ? null : createTrayAccelerationCoordinator({
+  // 落了盘的那一套，与打开 Codex 桌面端时自动连接同一口径。没有加速的平台（2026-10-30
+  // 网络加速下线以后是全部平台）托盘上就不放这一行，不然只会一直「正在读取状态」。
+  trayAcceleration = !accelerationOffered ? null : createTrayAccelerationCoordinator({
     getAccountScope: () => readAccelerationAccountScope(),
     readState: (scope) => userAcceleration.getAccelerationState(scope),
     connect: async (scope, state) => userAcceleration.startAcceleration(scope, ...await accelerationStartArguments(scope, state)),

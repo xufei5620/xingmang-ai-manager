@@ -3277,9 +3277,9 @@ test('settings show the eight four-character groups without an account group, an
   const page = await fixture('page=settings')
   try {
     const tabs = page.getByRole('tablist', { name: '设置分组', exact: true }).getByRole('tab')
-    assert.deepEqual(await tabs.allInnerTexts(), ['外观显示', '启动关闭', '工具管理', '网络加速', '消息通知', '备份迁移', '隐私数据', '版本更新'])
+    assert.deepEqual(await tabs.allInnerTexts(), ['外观显示', '启动关闭', '工具管理', '网络连接', '消息通知', '备份迁移', '隐私数据', '版本更新'])
     assert.equal(await page.locator('[data-testid="settings-switch-account"], [data-testid="settings-logout"], [data-testid="settings-account-center"], [data-testid="settings-account-login"]').count(), 0)
-    await page.getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByRole('tab', { name: '网络连接', exact: true }).click()
     await page.getByTestId('settings-certificate-health').click()
     assert.deepEqual(
       (await calls(page)).filter((call) => ['open-account-switcher', 'navigate'].includes(call.name)).map((call) => [call.name, call.args ?? null]),
@@ -3507,7 +3507,7 @@ test('native preferences use the independent bridge while proxy remains a read-o
     await page
       .getByRole('switch', { name: '开机自动启动', exact: true })
       .click()
-    await page.getByRole('tab', { name: '网络加速', exact: true }).click()
+    await page.getByRole('tab', { name: '网络连接', exact: true }).click()
     await page.locator('[data-anchor="proxy"]').getByRole('button', { name: '查看', exact: true }).click()
     await waitForToast(page, '当前：应用窗口当前直接连接')
     assert.deepEqual(

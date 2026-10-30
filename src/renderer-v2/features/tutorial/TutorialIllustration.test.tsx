@@ -17,7 +17,6 @@ const everyIllustration: Record<TutorialIllustrationId, true> = {
   launch: true,
   chat: true,
   canvas: true,
-  acceleration: true,
   extensions: true,
   skills: true,
   plugins: true,
