@@ -1,3 +1,5 @@
+import os from 'node:os'
+import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { buildClaudeRetainedVersionFilesCommand } from './claude-native-uninstall'
 import { cliExitHintLines } from './cli-exit-hint'
@@ -28,6 +30,7 @@ import {
   parseWindowsCliLaunchCause,
   powerShellLiteral,
   classifyWindowsExecutionProbeFailure,
+  createCurrentWindowsTokenGroupsReader,
   describeWindowsExecutionProbeFailure,
   resolveWindowsCliExecutionMode,
   resolveWindowsCliExecutionModeDetailed,
@@ -37,6 +40,7 @@ import {
   windowsPowerShellCandidates,
   windowsPowerShellExecutable,
   windowsStandardAccountAdvice,
+  type WindowsAdministratorProbeOptions,
 } from './windows-elevation'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
 import type { WindowsMachinePaths } from './windows-machine-paths'
@@ -833,6 +837,96 @@ describe('windows elevation capability', () => {
       expect(windowsElevationCancelledMessage('Node.js', capability)).not.toContain('以管理员身份运行')
       expect(windowsElevationDeniedMessage('Node.js', capability)).not.toContain('以管理员身份运行')
     }
+  })
+})
+
+describe('current Windows token groups', () => {
+  const whoamiOutput = '"Mandatory Label\\Medium Mandatory Level","Label","S-1-16-8192",""'
+  // Points whoami at a folder that does not exist, so any whoami started with it fails.
+  const missingWhoami: WindowsMachinePaths = {
+    ...testMachinePaths,
+    system32: path.win32.join(os.tmpdir(), `xingmang-no-whoami-${process.pid}`),
+  }
+
+  function pendingQuery() {
+    let answer: (output: string) => void = () => undefined
+    const query = vi.fn((_options: WindowsAdministratorProbeOptions) => new Promise<string>((resolve) => { answer = resolve }))
+    return { query, answer: (output: string) => answer(output) }
+  }
+
+  it('asks once and hands every later caller the same answer', async () => {
+    const query = vi.fn(async (_options: WindowsAdministratorProbeOptions) => whoamiOutput)
+    const read = createCurrentWindowsTokenGroupsReader(query)
+    // Launch: the execution boundary asks first, the update account probe follows.
+    await expect(read({})).resolves.toBe(whoamiOutput)
+    await expect(read({ timeoutMs: 3_000 })).resolves.toBe(whoamiOutput)
+    await expect(read({ timeoutMs: 3_000, machinePaths: testMachinePaths })).resolves.toBe(whoamiOutput)
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query).toHaveBeenCalledWith({})
+  })
+
+  it('lets callers that overlap share the query in flight', async () => {
+    const { query, answer } = pendingQuery()
+    const read = createCurrentWindowsTokenGroupsReader(query)
+    const first = read({})
+    const second = read({ timeoutMs: 3_000 })
+    answer(whoamiOutput)
+    await expect(Promise.all([first, second])).resolves.toEqual([whoamiOutput, whoamiOutput])
+    expect(query).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not keep a failure, so the next caller asks again', async () => {
+    const query = vi.fn<(options: WindowsAdministratorProbeOptions) => Promise<string>>()
+      .mockRejectedValueOnce(Object.assign(new Error('Command failed'), { killed: true, signal: 'SIGTERM' }))
+      .mockResolvedValue(whoamiOutput)
+    const read = createCurrentWindowsTokenGroupsReader(query)
+    await expect(read({})).rejects.toThrow('Command failed')
+    await expect(read({ timeoutMs: 3_000 })).resolves.toBe(whoamiOutput)
+    await expect(read({})).resolves.toBe(whoamiOutput)
+    expect(query).toHaveBeenCalledTimes(2)
+  })
+
+  it('ends only the aborted caller\'s wait and never hands whoami the signal', async () => {
+    const { query, answer } = pendingQuery()
+    const read = createCurrentWindowsTokenGroupsReader(query)
+    const selfCheck = new AbortController()
+    const fromSelfCheck = read({ timeoutMs: 3_000, signal: selfCheck.signal })
+    const fromInstall = read({})
+    selfCheck.abort(new Error('self-check budget spent'))
+    await expect(fromSelfCheck).rejects.toThrow('self-check budget spent')
+    answer(whoamiOutput)
+    await expect(fromInstall).resolves.toBe(whoamiOutput)
+    expect(query).toHaveBeenCalledTimes(1)
+    expect(query).toHaveBeenCalledWith({ timeoutMs: 3_000 })
+  })
+
+  it('starts nothing for a caller that has already given up', async () => {
+    const query = vi.fn(async (_options: WindowsAdministratorProbeOptions) => whoamiOutput)
+    const read = createCurrentWindowsTokenGroupsReader(query)
+    const gaveUp = new AbortController()
+    gaveUp.abort(new Error('self-check budget spent'))
+    await expect(read({ signal: gaveUp.signal })).rejects.toThrow('self-check budget spent')
+    expect(query).not.toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform === 'win32')('starts whoami once for every probe in a run', async () => {
+    vi.resetModules()
+    const fresh = await import('./windows-elevation')
+    const rid = await fresh.inspectCurrentWindowsIntegrityRid()
+    expect(rid).not.toBeNull()
+    // A second whoami pointed here could not start; the answers can only be the first one's.
+    await expect(fresh.inspectWindowsElevationCapability({ machinePaths: missingWhoami }))
+      .resolves.toMatch(/^(administrator|standard)$/)
+    await expect(fresh.inspectCurrentWindowsProcessHighIntegrity({ machinePaths: missingWhoami }))
+      .resolves.toBe(rid !== null && rid >= 0x3000)
+  })
+
+  it.runIf(process.platform === 'win32')('asks the real whoami again after one that could not start', async () => {
+    vi.resetModules()
+    const fresh = await import('./windows-elevation')
+    await expect(fresh.inspectCurrentWindowsIntegrityRid({ machinePaths: missingWhoami })).rejects.toThrow()
+    await expect(fresh.inspectWindowsElevationCapability({ machinePaths: missingWhoami })).resolves.toBe('unknown')
+    await expect(fresh.inspectCurrentWindowsIntegrityRid()).resolves.toBeGreaterThanOrEqual(4096)
   })
 })
 
