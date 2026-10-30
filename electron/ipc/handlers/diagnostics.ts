@@ -7,10 +7,9 @@ import { cliCatalog, isActiveProviderId, type ProviderId } from '../../catalog'
 import { findAccountKeyById } from '../../account-key-quota'
 import { isExternalToolId } from '../../external-client-contract'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from '../../safe-local-data'
-import { isDiagnosticFolderTarget, type DiagnosticFolderTarget } from '../../diagnostics'
+import type { DiagnosticFolderTarget } from '../../diagnostics'
 import { isCappedKeyUsedUp, withKeyQuotaExhausted, type ConnectionCheckResult } from '../../connection-check'
 import { clearStaleUserProxyVariables } from '../../stale-proxy-environment'
-import { isDiagnosticFixKind } from '../../diagnostic-fixes'
 import { parseDiagnosticsRunOptions } from '../parsers/system'
 import type { IpcHandlerContext } from './context'
 
@@ -75,7 +74,9 @@ export function registerDiagnosticsHandlers(ctx: IpcHandlerContext): void {
     const clear = options.diagnosticsService.clearStaleProxy ?? (() => clearStaleUserProxyVariables())
     return clear()
   })
+  // 下面两个认名字的函数跟整套检查在一起，开机不加载（见 bootstrap/diagnostics.ts），点到时才取。
   registerTrustedHandler('diagnostics:open-folder', async (_event, rawTarget: unknown) => {
+    const { isDiagnosticFolderTarget } = await import('../../diagnostics')
     if (!isDiagnosticFolderTarget(rawTarget)) throw new Error('不认识要打开的文件夹')
     const directory = resolveDiagnosticFolder(rawTarget)
     if (directory === null) return false
@@ -86,6 +87,7 @@ export function registerDiagnosticsHandlers(ctx: IpcHandlerContext): void {
     return true
   })
   registerTrustedHandler('diagnostics:fix', async (_event, rawKind: unknown) => {
+    const { isDiagnosticFixKind } = await import('../../diagnostic-fixes')
     if (!isDiagnosticFixKind(rawKind)) throw new Error('不认识要处理的是哪一项')
     const fix = options.diagnosticsService.fix
     if (!fix) throw new Error('这一项暂时不能在这里处理，请在「反馈与客服」页导出报告发给客服')

@@ -7,6 +7,7 @@ import type { UpdaterService } from './updater'
 import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
 import type { ConnectionCheckResult } from './connection-check'
+import type { DiagnosticFixKind } from './diagnostic-fixes'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels, type AccountKeysPage } from './ipc-contract'
 import { ipcChannelPolicies } from './ipc-channel-policy'
@@ -6487,6 +6488,31 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         ok: true, verificationLevel: 'responses-tool-json',
       })
       expect(probeCodexResponses).toHaveBeenCalledExactlyOnceWith('xm-account:17')
+    })
+  })
+
+  describe('diagnostics:fix and diagnostics:open-folder', () => {
+    // 两个认名字的函数到点的时候才加载（开机不拉整套检查），没认出来的照样在动手之前就挡下。
+    it('turns away a name it does not know before doing anything', async () => {
+      const fix = vi.fn(async (kind: DiagnosticFixKind) => ({ kind, fixed: 1, machineRemaining: false }))
+      register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, {
+        diagnosticsService: {
+          run: vi.fn(), checkConnection: vi.fn(), checkExternalConnection: vi.fn(), exportLatest: vi.fn(), fix,
+        },
+      })
+      const fixHandler = electronMocks.handlers.get('diagnostics:fix')!
+      for (const value of ['../../etc', 'set-aside-codex-dotenv ', null, { kind: 'clear-user-overrides' }]) {
+        await expect(fixHandler(trustedEvent(), value)).rejects.toThrow('不认识要处理的是哪一项')
+      }
+      expect(fix).not.toHaveBeenCalled()
+      await expect(fixHandler(trustedEvent(), 'clear-user-overrides')).resolves.toEqual({ kind: 'clear-user-overrides', fixed: 1, machineRemaining: false })
+      expect(fix).toHaveBeenCalledExactlyOnceWith('clear-user-overrides')
+
+      const folderHandler = electronMocks.handlers.get('diagnostics:open-folder')!
+      for (const value of ['C:\\Windows', 'logs', null]) {
+        await expect(folderHandler(trustedEvent(), value)).rejects.toThrow('不认识要打开的文件夹')
+      }
+      expect(electronMocks.openPath).not.toHaveBeenCalled()
     })
   })
 

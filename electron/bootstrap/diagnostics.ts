@@ -9,9 +9,11 @@ import type { CodexHomeContext } from '../codex-home'
 import { createCodexResponsesProbeService } from '../codex-responses-probe'
 import { inspectProviderConfig } from '../config-files'
 import { buildConnectionProbe, runConnectionCheck } from '../connection-check'
-import { clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions, type DiagnosticFixKind } from '../diagnostic-fixes'
-import { lookupWithPublicDns, lookupWithSystemDns } from '../diagnostics-dns-check'
-import { clearableEnvironmentOverrides, createDiagnosticsExport, diagnosticsScanReuseMs, environmentAccountBaseUrls, redactDiagnosticText, runDiagnostics, type DiagnosticsDependencies, type DiagnosticsRelayRoute, type DiagnosticsReport, type DiagnosticsRunOptions } from '../diagnostics'
+// 整套检查（diagnostics.ts 连同它拉进来的各项检查、DNS 查询、就地修复）只在跑检查、点「点这里就好」时才用到，
+// 到那时再 import()，开机不加载；这里只拿它们的类型。导出和脱敏另在 diagnostics-redaction.ts，照旧直接用。
+import type { DiagnosticFixKind } from '../diagnostic-fixes'
+import type { DiagnosticsDependencies, DiagnosticsRelayRoute, DiagnosticsReport, DiagnosticsRunOptions } from '../diagnostics'
+import { createDiagnosticsExport, redactDiagnosticText } from '../diagnostics-redaction'
 import type { ExternalToolId } from '../external-tool-config'
 import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute, resolveFeedbackToolRoute } from '../feedback-environment'
 import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from '../feedback-self-check'
@@ -120,6 +122,10 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
     .filter(Boolean)
   const diagnosticsService = {
     run: async (options: DiagnosticsRunOptions = {}) => {
+      const [{ diagnosticsScanReuseMs, runDiagnostics }, { lookupWithPublicDns, lookupWithSystemDns }] = await Promise.all([
+        import('../diagnostics'),
+        import('../diagnostics-dns-check'),
+      ])
       // 开机自动检查紧跟着首页扫描：扫描正在跑就等它，一分钟内刚跑完就直接用，
       // 不再把各工具的版本探测、PowerShell、Codex 桌面端检测重跑一遍。没有现成的
       // 就照旧自己探，不为此专门起一轮扫描。
@@ -175,6 +181,10 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
     // 检查页的一键处理。要删哪几项、挪哪个文件在点的那一刻按当前环境和当前站点重算，
     // 不信渲染层给的任何名字或路径（I5）。
     fix: async (kind: DiagnosticFixKind) => {
+      const [{ clearUserProviderOverrides, setAsideCodexDotenv, setAsideHomeProjectInstructions }, { clearableEnvironmentOverrides, environmentAccountBaseUrls }] = await Promise.all([
+        import('../diagnostic-fixes'),
+        import('../diagnostics'),
+      ])
       if (kind === 'set-aside-codex-dotenv') return setAsideCodexDotenv(codexContext.codexHome)
       if (kind === 'set-aside-home-agents-md') return setAsideHomeProjectInstructions(codexContext.userHome)
       const siteId = systemService.readStoredConfig().relaySiteId
