@@ -170,6 +170,12 @@ module.exports = {
   productName,
   protocols: [{ name: '星芒AI管理工具', schemes: ['xingmang'] }],
   copyright: 'Copyright © 2026 绍兴星芒文化传媒有限责任公司',
+  // 浏览器内核自带 55 种语言的内置文字（表单校验提示、文件选择框、视频控件这类），星芒
+  // 界面全是中文，只留简体、繁体（香港、澳门的系统也落到繁体）和 en-US：系统语言是别的
+  // 时候，Chromium 一律退回 en-US，删了它就没有可退的。Electron 45.1.0 上 Windows 装好后
+  // 少 47 MB、安装包少约 7 MB（2026-10-30 yoyo 同意）。这里是 Windows、Linux 的 .pak 名字，
+  // macOS 用 .lproj 的名字，另列在 mac 里。
+  electronLanguages: ['zh-CN', 'zh-TW', 'en-US'],
   asar: true,
   electronFuses: {
     runAsNode: false,
@@ -313,6 +319,10 @@ module.exports = {
     // macOS 第一次碰「文稿」「桌面」「下载」、U 盘、共享盘时弹的隐私询问框，标题是系统写的，
     // 下面那行说明取这几项；不写就只有「不允许」「好」两个按钮，客户不知道为什么要给（已知34）。
     extendInfo: macPrivacyUsageDescriptions,
+    // 同上面的 electronLanguages，换成 .lproj 的写法：下划线，en-US 在盘上就叫 en。带
+    // _FEMININE 这类后缀的是 Chromium 按语法性别分出来的目录，这三种语言的都只是 18 字节的
+    // 空壳，原样留着，这三种语言的文件就跟改之前一模一样。
+    electronLanguages: ['zh_CN', 'zh_TW', 'en'].flatMap((name) => [name, `${name}_FEMININE`, `${name}_MASCULINE`, `${name}_NEUTER`]),
     // Local packages need an ad-hoc signature after Electron fuses are changed,
     // otherwise macOS rejects the invalidated upstream seal. This is not a
     // distributable Developer ID signature; release mode discovers that identity.
