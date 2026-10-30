@@ -8,6 +8,7 @@ import type { DarwinCodexStandaloneSelection } from './macos-codex'
 import {
   classifyCliInstallDisplaySource,
   cliLaunchArgv,
+  createNpmGlobalRootLookup,
   cliResumeLastArgv,
   isCodexSessionUuid,
   codexSupportsNoDaemon,
@@ -1102,6 +1103,153 @@ describe('CLI installation resolution', () => {
     write(path.join(packageRoot, 'package.json'), ' '.repeat(256 * 1024 + 1))
 
     expect(verifiedPackageRoot(packageRoot, '@openai/codex')).toBeNull()
+  })
+})
+
+describe('npm global root lookup', () => {
+  function deferred() {
+    let resolve: (value: string | null) => void = () => undefined
+    const promise = new Promise<string | null>((settle) => { resolve = settle })
+    return { promise, resolve }
+  }
+
+  it('asks npm once for the same npm and PATH', async () => {
+    const queryNpmRoot = vi.fn(async () => '/prefix/lib/node_modules')
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot, readIdentity: async () => 'same npm' })
+
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/prefix/lib/node_modules')
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/prefix/lib/node_modules')
+    expect(queryNpmRoot).toHaveBeenCalledOnce()
+  })
+
+  it('shares one question between lookups that overlap', async () => {
+    const answer = deferred()
+    const queryNpmRoot = vi.fn(() => answer.promise)
+    const lookup = createNpmGlobalRootLookup({ platform: 'darwin', queryNpmRoot, readIdentity: async () => 'same npm' })
+
+    const first = lookup.resolve('/opt/homebrew/bin/npm', { PATH: '/opt/homebrew/bin' })
+    const second = lookup.resolve('/opt/homebrew/bin/npm', { PATH: '/opt/homebrew/bin' })
+    await vi.waitFor(() => expect(queryNpmRoot).toHaveBeenCalledOnce())
+    answer.resolve('/opt/homebrew/lib/node_modules')
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      '/opt/homebrew/lib/node_modules',
+      '/opt/homebrew/lib/node_modules',
+    ])
+    expect(queryNpmRoot).toHaveBeenCalledOnce()
+  })
+
+  it('asks again once the npm file or the user npm config is not the same any more', async () => {
+    let identity = 'npm 10.9.2'
+    const queryNpmRoot = vi.fn(async () => '/prefix/lib/node_modules')
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot, readIdentity: async () => identity })
+
+    await lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })
+    identity = 'npm 11.0.0'
+    await lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })
+    await lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })
+    expect(queryNpmRoot).toHaveBeenCalledTimes(2)
+  })
+
+  it('asks separately when a different node would run the same npm', async () => {
+    const queryNpmRoot = vi.fn(async (_npm: string, env: NodeJS.ProcessEnv) => (
+      env.PATH?.startsWith('/preferred/node/bin') ? '/preferred/lib/node_modules' : '/usr/lib/node_modules'
+    ))
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot, readIdentity: async () => 'same npm' })
+
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/usr/lib/node_modules')
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' }, ['/preferred/node/bin']))
+      .resolves.toBe('/preferred/lib/node_modules')
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' }, ['/preferred/node/bin']))
+      .resolves.toBe('/preferred/lib/node_modules')
+    expect(queryNpmRoot).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not keep an answer npm could not give', async () => {
+    const queryNpmRoot = vi.fn<(npm: string, env: NodeJS.ProcessEnv) => Promise<string | null>>()
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('npm crashed'))
+      .mockResolvedValue('/prefix/lib/node_modules')
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot, readIdentity: async () => 'same npm' })
+
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBeNull()
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).rejects.toThrow('npm crashed')
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/prefix/lib/node_modules')
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/prefix/lib/node_modules')
+    expect(queryNpmRoot).toHaveBeenCalledTimes(3)
+  })
+
+  it('asks every time when it cannot tell whether npm is still the same', async () => {
+    const queryNpmRoot = vi.fn(async () => '/prefix/lib/node_modules')
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot, readIdentity: async () => null })
+
+    await lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })
+    await lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })
+    expect(queryNpmRoot).toHaveBeenCalledTimes(2)
+  })
+
+  it('starts over after forget, even while the earlier question is still out', async () => {
+    const stale = deferred()
+    const queryNpmRoot = vi.fn<(npm: string, env: NodeJS.ProcessEnv) => Promise<string | null>>()
+      .mockReturnValueOnce(stale.promise)
+      .mockResolvedValue('/new-node/lib/node_modules')
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot, readIdentity: async () => 'same npm' })
+
+    const beforeInstall = lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })
+    await vi.waitFor(() => expect(queryNpmRoot).toHaveBeenCalledOnce())
+    lookup.forget()
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/new-node/lib/node_modules')
+    stale.resolve('/old-node/lib/node_modules')
+    await expect(beforeInstall).resolves.toBe('/old-node/lib/node_modules')
+
+    await expect(lookup.resolve('/usr/bin/npm', { PATH: '/usr/bin' })).resolves.toBe('/new-node/lib/node_modules')
+    expect(queryNpmRoot).toHaveBeenCalledTimes(2)
+  })
+
+  it('never runs npm on Windows', async () => {
+    const queryNpmRoot = vi.fn(async () => 'must-not-run')
+    const readIdentity = vi.fn(async () => 'same npm')
+    const lookup = createNpmGlobalRootLookup({ platform: 'win32', queryNpmRoot, readIdentity })
+
+    await expect(lookup.resolve('C:\\Users\\tester\\AppData\\Roaming\\npm\\npm.cmd', {}))
+      .resolves.toBe('C:\\Users\\tester\\AppData\\Roaming\\npm\\node_modules')
+    expect(queryNpmRoot).not.toHaveBeenCalled()
+    expect(readIdentity).not.toHaveBeenCalled()
+  })
+
+  it('tells a replaced npm or an edited user npm config apart by the files themselves', async () => {
+    const root = fs.realpathSync(temporaryDirectory())
+    const home = path.join(root, 'home')
+    const bin = path.join(root, 'bin')
+    const npm = write(path.join(bin, 'npm'), '#!/bin/sh\n')
+    fs.mkdirSync(home, { recursive: true })
+    const env = { PATH: bin, HOME: home }
+    const queryNpmRoot = vi.fn(async () => path.join(root, 'lib', 'node_modules'))
+    const lookup = createNpmGlobalRootLookup({ platform: 'linux', queryNpmRoot })
+
+    await lookup.resolve(npm, env)
+    await lookup.resolve(npm, env)
+    expect(queryNpmRoot).toHaveBeenCalledTimes(1)
+
+    // `npm config set prefix` 写的是用户自己的 .npmrc。
+    write(path.join(home, '.npmrc'), `prefix=${path.join(home, '.npm-global')}\n`)
+    await lookup.resolve(npm, env)
+    await lookup.resolve(npm, env)
+    expect(queryNpmRoot).toHaveBeenCalledTimes(2)
+
+    // 升级 npm、重装 Node.js 是换一个新文件上去，修改时间可能一模一样。
+    const { mtime } = fs.statSync(npm)
+    const replacement = write(path.join(bin, 'npm.next'), '#!/bin/sh\n')
+    fs.utimesSync(replacement, mtime, mtime)
+    fs.renameSync(replacement, npm)
+    await lookup.resolve(npm, env)
+    await lookup.resolve(npm, env)
+    expect(queryNpmRoot).toHaveBeenCalledTimes(3)
+
+    fs.rmSync(npm)
+    await lookup.resolve(npm, env)
+    await lookup.resolve(npm, env)
+    expect(queryNpmRoot).toHaveBeenCalledTimes(5)
   })
 })
 

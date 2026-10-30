@@ -7967,6 +7967,63 @@ describe.skipIf(process.platform === 'win32')('a Mac whose own Node.js is too ol
   })
 })
 
+describe.skipIf(process.platform === 'win32')('asking npm where it keeps global tools on Mac and Linux', () => {
+  it('asks once per run, even across forced checks, and again after installing Node.js', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-npm-root-cache-')))
+    temporaryDirectories.push(home)
+    vi.stubEnv('HOME', home)
+    // `npm test` exports these to its children; the desktop app never inherits them.
+    vi.stubEnv('npm_config_prefix', undefined)
+    vi.stubEnv('npm_config_userconfig', undefined)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const bin = path.join(home, 'node', 'bin')
+    const globalRoot = path.join(home, 'node', 'lib', 'node_modules')
+    const asked = path.join(home, 'npm-root-asked')
+    fs.mkdirSync(bin, { recursive: true })
+    // 找全局目录的 `npm root --global` 不走注入的 runCommand，是真的起这个脚本；每起一次记一行。
+    const npm = path.join(bin, 'npm')
+    fs.writeFileSync(npm, `#!/bin/sh\nif [ "$1" = root ]; then echo asked >> '${asked}'; printf '%s\\n' '${globalRoot}'; fi\nexit 0\n`)
+    fs.chmodSync(npm, 0o700)
+    const node = path.join(bin, 'node')
+    const versions = new Map([[node, 'v16.20.2'], [npm, '8.19.4']])
+    function askedTimes() {
+      return fs.existsSync(asked) ? fs.readFileSync(asked, 'utf8').trim().split('\n').length : 0
+    }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'archive',
+      source: 'npmmirror',
+      version: 'v24.22.1',
+      architecture: 'x64',
+      pathRefreshRequired: false,
+      systemRestartRequired: false,
+    }))
+    const service = createSystemService(new AppSettingsStore(path.join(home, 'settings.json'), home), {
+      platform: 'linux',
+      providerRoots: { userHome: home, codexHome: path.join(home, '.codex') },
+      findExecutable: async (command) => command === 'node' ? node : command === 'npm' ? npm : null,
+      runCommand: vi.fn<typeof productionRunCommand>(async (spec) => {
+        const stdout = `${versions.get(spec.executable) ?? ''}\n`
+        return { executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null, stdout, stderr: '', outputBytes: stdout.length, durationMs: 1 }
+      }),
+      resolveCliInstallation: async () => null,
+      installNodeRuntime,
+    })
+
+    await service.scanSystem(true)
+    await service.scanSystem(true)
+    expect(askedTimes()).toBe(1)
+
+    await expect(service.installNodeRuntime({ isDestroyed: () => false, send: vi.fn() }))
+      .resolves.toMatchObject({ action: 'installed' })
+    expect(installNodeRuntime).toHaveBeenCalledOnce()
+    await service.scanSystem(true)
+    await service.scanSystem(true)
+    expect(askedTimes()).toBe(2)
+  })
+})
+
 describe('the retired Gemini CLI', () => {
   function geminiFixture() {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-retired-gemini-'))
