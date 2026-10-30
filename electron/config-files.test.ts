@@ -324,6 +324,39 @@ describe('native CLI configuration files', () => {
     expect(inspectProviderConfig('grok', roots)).not.toHaveProperty('configBroken')
   })
 
+  it('opens each Codex config file once per inspection and reads it afresh on the next one', () => {
+    const roots = providerRoots(temporaryHome())
+    saveProviderConfig('codex', 'sk-first', 'gpt-5.6-sol', 'reset', roots, {}, providerBaseUrls)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    const opened: string[] = []
+    const openSync = fs.openSync
+    vi.spyOn(fs, 'openSync').mockImplementation(function (this: unknown, target: fs.PathLike, ...rest: unknown[]) {
+      opened.push(path.resolve(String(target)))
+      return Reflect.apply(openSync, this, [target, ...rest]) as number
+    } as typeof fs.openSync)
+
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls))
+      .toMatchObject({ apiKey: 'sk-first', model: 'gpt-5.6-sol', hasApiKey: true, matchesRelay: true })
+    // Model, address, provider table, credentials check and the broken check all read config.toml;
+    // key, sign-in mode, official identity and the broken check all read auth.json.
+    expect(opened.filter((target) => target === path.resolve(configPath))).toHaveLength(1)
+    expect(opened.filter((target) => target === path.resolve(authPath))).toHaveLength(1)
+
+    // Nothing is kept past one inspection: a change written in between is read the next time.
+    vi.mocked(fs.openSync).mockRestore()
+    saveProviderConfig('codex', 'sk-second', 'gpt-5.5', 'merge', roots, {}, providerBaseUrls)
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls)).toMatchObject({ apiKey: 'sk-second', model: 'gpt-5.5' })
+  })
+
+  it('still tells the home page about a broken Codex config.toml after parsing it only once', () => {
+    const roots = providerRoots(temporaryHome())
+    const configPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model = "a"\nmodel = "b"\n', 'utf8')
+    // The failed parse behind the empty model is the same one the broken check judges.
+    expect(inspectProviderConfig('codex', roots)).toMatchObject({ model: '', configBroken: true })
+  })
+
   it('resets an unreadable Codex config.toml for a ChatGPT login and keeps the login', () => {
     const userHome = temporaryHome()
     const roots = providerRoots(userHome)
