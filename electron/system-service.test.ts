@@ -4652,11 +4652,21 @@ describe('npm install progress reporting', () => {
     )
   })
 
-  it.runIf(process.platform === 'win32')('blocks Node.js installation before MSI when Windows has a pending reboot', async () => {
+  it.runIf(process.platform === 'win32')('still installs Node.js when Windows has a pending reboot and only logs it', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-pending-reboot-node-runtime-'))
     temporaryDirectories.push(directory)
     const target = { isDestroyed: () => false, send: vi.fn() }
-    const installNodeRuntime = vi.fn()
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    const log = vi.fn()
     const service = createSystemService(
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
       {
@@ -4665,19 +4675,61 @@ describe('npm install progress reporting', () => {
         findExecutable: async () => null,
         inspectWindowsRestartRequired: async () => ({
           required: true,
-          reasons: ['Windows Update 待重启', '安装文件替换待重启'],
+          reasons: ['Windows 组件更新待重启', 'Windows Update 待重启'],
         }),
+        inspectWindowsProcessor: async () => 'x64' as const,
         installNodeRuntime,
+        runtimeLog: { log },
       },
     )
 
-    await expect(service.installNodeRuntime(target)).rejects.toThrow(
-      '检测到 Windows 有待完成的系统更新（Windows Update 待重启、安装文件替换待重启）',
-    )
-    expect(installNodeRuntime).not.toHaveBeenCalled()
-    expect(target.send).toHaveBeenCalledWith(
+    await expect(service.installNodeRuntime(target)).resolves.toMatchObject({ installed: true, action: 'installed' })
+    expect(installNodeRuntime).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith('info', 'install', 'node.install.restart-pending', expect.any(String), {
+      reasons: ['Windows 组件更新待重启', 'Windows Update 待重启'],
+    })
+    expect(target.send).not.toHaveBeenCalledWith(
       'runtime:node-install-progress',
-      expect.objectContaining({ phase: 'error', message: expect.stringContaining('请先重启电脑') }),
+      expect.objectContaining({ phase: 'error' }),
+    )
+  })
+
+  it.runIf(process.platform === 'win32')('installs Node.js without a progress line when the pending-reboot probe fails', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-reboot-probe-failed-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    const log = vi.fn()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        inspectWindowsRestartRequired: async () => { throw new Error('Command timed out: powershell.exe') },
+        inspectWindowsProcessor: async () => 'x64' as const,
+        installNodeRuntime,
+        runtimeLog: { log },
+      },
+    )
+
+    await expect(service.installNodeRuntime(target)).resolves.toMatchObject({ installed: true })
+    expect(installNodeRuntime).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith('warn', 'install', 'node.install.restart-probe-failed', expect.any(String), {
+      reason: 'Command timed out: powershell.exe',
+    })
+    expect(target.send).not.toHaveBeenCalledWith(
+      'runtime:node-install-progress',
+      expect.objectContaining({ message: expect.stringContaining('等重启') }),
     )
   })
 
