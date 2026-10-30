@@ -10,6 +10,7 @@ import {
   trustedCommandEnvironment,
   type CommandSpec,
 } from './command-runner'
+import { raceAbort } from './bounded-response'
 import { isChineseSentence } from './chinese-sentence'
 import { cliExitHintLines } from './cli-exit-hint'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
@@ -271,9 +272,38 @@ export async function inspectCurrentWindowsProcessHighIntegrity(
   return rid === null ? null : rid >= highMandatoryIntegrityRid
 }
 
-async function readCurrentWindowsTokenGroups(
-  options: WindowsAdministratorProbeOptions & { signal?: AbortSignal },
-): Promise<string> {
+/**
+ * The groups and mandatory label of this process's token cannot change while it
+ * runs, so one whoami answer serves every caller. Launch used to start whoami
+ * twice, once for the CLI execution boundary and once for whether an update may
+ * install by itself (0.2.22 performance checkup #2).
+ *
+ * Callers that overlap share the query in flight, which keeps the timeout of the
+ * caller that started it. A failure is not kept: the next caller asks again, as
+ * every caller did before. A caller's abort signal only ends its own wait and is
+ * never handed to whoami, so a self-check that gives up cannot fail an install
+ * waiting on the same answer.
+ */
+export function createCurrentWindowsTokenGroupsReader(
+  query: (options: WindowsAdministratorProbeOptions) => Promise<string>,
+): (options: WindowsAdministratorProbeOptions & { signal?: AbortSignal }) => Promise<string> {
+  let shared: Promise<string> | null = null
+  return ({ signal, ...options }) => {
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    if (!shared) {
+      const pending = query(options)
+      shared = pending
+      pending.catch(() => {
+        if (shared === pending) shared = null
+      })
+    }
+    return signal ? raceAbort(shared, signal) : shared
+  }
+}
+
+const readCurrentWindowsTokenGroups = createCurrentWindowsTokenGroupsReader(queryCurrentWindowsTokenGroups)
+
+async function queryCurrentWindowsTokenGroups(options: WindowsAdministratorProbeOptions): Promise<string> {
   const env = options.env ?? process.env
   const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
   const { stdout } = await execFileAsync(
@@ -284,7 +314,6 @@ async function readCurrentWindowsTokenGroups(
       windowsHide: true,
       timeout: options.timeoutMs ?? 5_000,
       maxBuffer: 256 * 1024,
-      signal: options.signal,
     },
   )
   return stdout
