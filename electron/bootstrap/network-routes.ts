@@ -242,14 +242,20 @@ export function createNetworkRoutes(options: NetworkRoutesOptions) {
     if (managedMainWindow.webContents.isDestroyed()) return
     managedMainWindow.webContents.send(ipcEventChannels.onRelayRouteChanged, undefined)
   }
-  const unsubscribeRelayRoute = relayRouteController.subscribe(() => notifyRelayRouteChanged())
+  // 只有当前账号那个站换了线路才叫（0.2.22 性能体检第 11 条）：界面跟着线路改的工具配置、标签都只认当前账号的站，
+  // 另一个站换了也叫的话，白白重读一轮设置、配置，再检测一遍外部客户端。
+  const unsubscribeRelayRoute = relayRouteController.subscribe((siteId) => {
+    if (siteId === readAccountSiteId()) notifyRelayRouteChanged()
+  })
   // 什么时候重查见下面 startToolRouteFollowing。
   function recheckRoutes(trigger: 'resume' | 'network' | 'manual'): void {
     toolEnvironmentProxies = null
     toolRouteController.recheck(trigger)
     relayRouteController.recheck(trigger)
   }
-  relayRouteController.start()
+  // 开机只查星芒账号的站：管理工具自己的更新、线路状态文件都走它，谁登录都用得上。历史账号的站等登上了、
+  // 开机恢复它没连上等着重试时再查（main.ts 账号服务的 onChanged 叫 ensureWatching，性能体检第 11 条）。
+  relayRouteController.start(['solov'])
   return {
     relayRouteController,
     relayRouting,

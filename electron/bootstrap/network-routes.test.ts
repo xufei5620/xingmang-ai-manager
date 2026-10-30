@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { net, powerMonitor, session } from 'electron'
 import { ipcEventChannels } from '../ipc-contract'
+import { relayEndpointForUrl } from '../relay-sites'
 import type { RuntimeLogStore } from '../runtime-log'
 import { createNetworkRoutes, startToolRouteFollowing, type NetworkRoutes, type NetworkRoutesOptions } from './network-routes'
 
@@ -39,12 +40,16 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
-function create(overrides: Partial<NetworkRoutesOptions> = {}) {
+async function offline(): Promise<Response> {
+  throw new TypeError('offline in tests')
+}
+
+function create(overrides: Partial<NetworkRoutesOptions> = {}, answer: typeof fetch = offline) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-network-routes-'))
   directories.push(root)
   // Every request the routes make goes through the session fetch handed in
   // here, so nothing in these tests reaches a real account site.
-  const sessionFetch = vi.fn(async () => { throw new TypeError('offline in tests') })
+  const sessionFetch = vi.fn<typeof fetch>(answer)
   const chromiumSessionFetch = vi.fn<NetworkRoutesOptions['chromiumSessionFetch']>(() => sessionFetch as unknown as typeof fetch)
   const routes = createNetworkRoutes({
     managerDataDirectory: root,
@@ -86,6 +91,34 @@ describe('network routes', () => {
     routes.notifyRelayRouteChanged()
     expect(send).toHaveBeenCalledTimes(1)
     expect(send).toHaveBeenCalledWith(ipcEventChannels.onRelayRouteChanged, undefined)
+  })
+
+  // 0.2.22 性能体检第 11 条：只用星芒账号时不查历史账号的站。
+  it('checks only the xm site at startup, and the historical site once it is asked to', async () => {
+    const { routes, sessionFetch } = create()
+    function sitesAsked(): string[] {
+      return [...new Set(sessionFetch.mock.calls.map(([input]) => relayEndpointForUrl(String(input))?.siteId ?? 'other'))]
+    }
+    await vi.waitFor(() => expect(sitesAsked()).toEqual(['solov']))
+    for (let turn = 0; turn < 8; turn++) await new Promise((resolve) => setImmediate(resolve))
+    expect(sitesAsked()).toEqual(['solov'])
+    routes.relayRouteController.ensureWatching('solov-api')
+    await vi.waitFor(() => expect(sitesAsked()).toEqual(['solov', 'solov-api']))
+  })
+
+  it('tells the main window about a route change only on the site of the current account', async () => {
+    const answer: typeof fetch = async () => new Response('{"success":true}', { headers: { 'content-type': 'application/json' } })
+    for (const accountSiteId of ['solov', 'solov-api']) {
+      const send = vi.fn()
+      const window = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send } }
+      const { routes } = create({ mainWindow: () => window as never, readAccountSiteId: () => accountSiteId }, answer)
+      routes.relayRouteController.ensureWatching('solov-api')
+      await vi.waitFor(() => expect(routes.relayRouteController.lines()['solov-api']).toEqual({ line: 'primary', settled: true }))
+      expect({ accountSiteId, sent: send.mock.calls }).toEqual({
+        accountSiteId,
+        sent: accountSiteId === 'solov-api' ? [[ipcEventChannels.onRelayRouteChanged, undefined]] : [],
+      })
+    }
   })
 
   it('reads the latest route status through a getter that starts out empty', () => {

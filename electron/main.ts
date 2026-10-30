@@ -1779,6 +1779,10 @@ if (!hasSingleInstanceLock) {
         }
       },
       onChanged: (siteId, state) => {
+        // 历史账号的线路用上了才开始查（性能体检第 11 条，relay-route-controller.ts 文件头）：登上了，或者开机恢复它
+        // 没连上、正等着重试（这时当前的站还是开机时那个没登录的星芒账号）。
+        relayRouteController.ensureWatching(siteId)
+        if (state.restoring) relayRouteController.ensureWatching(state.restoring.account.siteId)
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         sendToMainWindow('onAccountSessionChanged', state)
         if (!accountIdentity.advance(identity)) return

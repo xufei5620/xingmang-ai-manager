@@ -1300,6 +1300,114 @@ describe('relay route controller', () => {
     expect(removed).not.toHaveBeenCalled()
   })
 
+  // 0.2.22 性能体检第 11 条：只用星芒账号时开机只查星芒账号的站，历史账号的站登上了才查。
+  describe('checking a site only once it is in use', () => {
+    it('checks only the sites it is told to at startup, and leaves the others on their stored line and out of rechecks', async () => {
+      const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' }, conclusions: { solov: 'direct' } })
+      run.controller.start(['solov'])
+      await settle()
+      expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary']])
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
+      expect(run.delays()).toEqual([relayRouteRecheckIntervalMs])
+
+      run.probes.length = 0
+      run.controller.recheck('manual')
+      await settle()
+      run.controller.recheck('resume')
+      await run.fireTimerOf(relayRouteNetworkSettleMs)
+      expect(run.probes.filter(([siteId]) => siteId === 'solov-api')).toEqual([])
+      expect(run.events('relay.route.recheck').map((entry) => entry.siteId)).toEqual(['solov', 'solov'])
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: false })
+      expect(run.changes).toEqual([])
+      expect(run.writes).toEqual([])
+    })
+
+    it('starts checking a site once asked to, the way it does at startup, and only once', async () => {
+      const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' }, conclusions: { solov: 'direct' } })
+      run.controller.start(['solov'])
+      await settle()
+      run.probes.length = 0
+      run.controller.ensureWatching('solov-api')
+      await settle()
+      expect(run.probes).toEqual([['solov-api', 'primary']])
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'primary', settled: true })
+      expect(run.changes).toEqual([['solov-api', { line: 'primary', settled: true }]])
+      run.controller.ensureWatching('solov-api')
+      run.controller.ensureWatching('solov')
+      await settle()
+      expect(run.probes).toEqual([['solov-api', 'primary']])
+
+      run.probes.length = 0
+      run.controller.recheck('manual')
+      await settle()
+      expect(run.probes).toEqual([['solov', 'direct'], ['solov', 'primary'], ['solov-api', 'primary'], ['solov-api', 'direct']])
+
+      const pinned = harness({ preferences: { 'solov-api': 'primary' } })
+      pinned.controller.ensureWatching('solov-api')
+      const disposed = harness({ preferences: { 'solov-api': 'auto' } })
+      disposed.controller.dispose()
+      disposed.controller.ensureWatching('solov-api')
+      await settle()
+      expect([...pinned.probes, ...disposed.probes]).toEqual([])
+    })
+
+    it('switches a stored line it starts checking late as soon as it is down and the other line is up, as at startup', async () => {
+      const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' }, conclusions: { solov: 'direct', 'solov-api': 'primary' } })
+      run.controller.start(['solov'])
+      await settle()
+      run.probes.length = 0
+      run.reachable.primary = false
+      run.controller.ensureWatching('solov-api')
+      await settle()
+      await run.fireTimerOf(relayRouteLineDownConfirmMs)
+      expect(run.probes).toEqual([['solov-api', 'primary'], ['solov-api', 'direct'], ['solov-api', 'primary']])
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+      expect(run.controller.lastChange('solov-api')).toEqual({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at: run.now() })
+    })
+
+    // 开始查以前它上面已经有请求没走通、正按三次的规矩查着：不等那三次，跟开机一样两条一起查。
+    it('checks both lines at once when asked to start while a failed request on it is still being checked', async () => {
+      const run = harness({ preferences: { solov: 'auto', 'solov-api': 'auto' }, conclusions: { solov: 'direct', 'solov-api': 'primary' } })
+      run.controller.start(['solov'])
+      await settle()
+      run.probes.length = 0
+      run.reachable.primary = false
+      run.controller.reportFailure('solov-api', 'primary', 'ERR_CONNECTION_RESET')
+      await settle()
+      expect(run.probes).toEqual([['solov-api', 'primary']])
+      expect(run.delays()).toContain(relayRouteFailureProbeGapMs)
+
+      run.controller.ensureWatching('solov-api')
+      await settle()
+      expect(run.probes).toEqual([['solov-api', 'primary'], ['solov-api', 'primary'], ['solov-api', 'direct']])
+      expect(run.delays()).not.toContain(relayRouteFailureProbeGapMs)
+      await run.fireTimerOf(relayRouteLineDownConfirmMs)
+      expect(run.controller.lines()['solov-api']).toEqual({ line: 'direct', settled: true })
+      expect(run.controller.lastChange('solov-api')).toEqual({ from: 'primary', to: 'direct', reason: 'line-down', trigger: 'startup', at: run.now() })
+    })
+
+    it('checks both lines once a probe that was out when it was asked to start returns', async () => {
+      const pending = deferred<boolean>()
+      const probes: Array<[RelayRouteSiteId, RelayEndpointId]> = []
+      const run = harness({
+        preferences: { 'solov-api': 'auto' },
+        conclusions: { 'solov-api': 'primary' },
+        probe: (siteId, line) => {
+          probes.push([siteId, line])
+          return probes.length === 1 ? pending.promise : Promise.resolve(line === 'direct')
+        },
+      })
+      run.controller.reportFailure('solov-api', 'primary', 'ERR_CONNECTION_RESET')
+      run.controller.ensureWatching('solov-api')
+      await settle()
+      expect(probes).toEqual([['solov-api', 'primary']])
+      pending.resolve(false)
+      await settle()
+      expect(probes).toEqual([['solov-api', 'primary'], ['solov-api', 'primary'], ['solov-api', 'direct']])
+      expect(run.delays()).toEqual([relayRouteLineDownConfirmMs])
+    })
+  })
+
   describe('holding line 2 for a Codex conversation too large for line 1', () => {
     it('moves the historical site to line 2 on one passing check and keeps it there for a day without counting a failure', async () => {
       const run = harness({ preferences: { 'solov-api': 'auto' } })
