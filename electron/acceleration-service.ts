@@ -290,11 +290,12 @@ function projectRedemption(value: unknown, scope: string): AccelerationRedemptio
 }
 
 export function createAccelerationService(options: AccelerationServiceOptions): AccelerationService {
-  let { backend, bundleDamaged } = options
+  let { backend, bundleDamaged }: Pick<AccelerationServiceOptions, 'backend' | 'bundleDamaged'> = options.ready ? {} : options
   // Track a start before awaiting it: a failed/late response does not prove the tunnel never started.
   const possibleSessions = new Set<string>()
-  // Every read of the backend below runs inside this queue, so a backend that
-  // arrives later (options.ready) is settled before any of them gets its turn.
+  // Every request below that reaches the backend runs inside this queue, so a
+  // backend that arrives later (options.ready) is settled before any of them
+  // gets its turn; awaitingPreviousOwner only peeks and answers no until then.
   // One that never arrives counts as none: the page shows it cannot connect.
   let queue: Promise<unknown> = options.ready
     ? options.ready.then((settled) => { ({ backend, bundleDamaged } = settled) }, () => { backend = undefined; bundleDamaged = undefined })

@@ -1738,9 +1738,13 @@ if (!hasSingleInstanceLock) {
     })
     const accountIdentity = createAccountIdentityTracker()
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
+    // 加速文件读完才有（见下面 createAccelerationHost）。
+    let developmentAcceleration: AccelerationDevelopmentHost | undefined
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
-      if (!scope || !acceleration) return false
+      // 宿主还没建好时这次运行里不可能开着加速：不陪着等加速文件读完。开机系统代理连不上时恢复登录要靠这里
+      // 马上答「没开」才改直连，以前加速服务还没建好的那段也是这么答的。
+      if (!scope || !acceleration || !developmentAcceleration) return false
       // 加速在等上一个星芒交出网络设置时读状态要陪着等最多半分钟：这里只问开没开（绕不绕代理、导出诊断），
       // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。
       if (acceleration.awaitingPreviousOwner()) return true
@@ -2166,7 +2170,6 @@ if (!hasSingleInstanceLock) {
       runtimeLog,
       accelerationInterruption: () => accelerationInterruption,
     })
-    let developmentAcceleration: AccelerationDevelopmentHost | undefined
     void accelerationHost.then((host) => {
       developmentAcceleration = host.developmentAcceleration
       accelerationDownloadRoutes = developmentAcceleration ?? null

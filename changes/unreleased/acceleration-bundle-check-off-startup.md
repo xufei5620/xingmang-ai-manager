@@ -9,7 +9,8 @@
 - `electron/acceleration-service.ts` 新增可选的 `ready`：后端和「文件坏了」晚到时，用到后端的操作都排在它后面（服务那条串行队列
   从等它开始）；到手之前 `awaitingPreviousOwner` 答「没在等」，「重新检查」那一项也还没有。`recheckAccelerationBundle` 在服务和
   `createUserAccelerationApi` 上都改成每次现看的 getter，坏没坏照旧只在启动时读坏了的那次运行才有。不给 `ready` 的是旧行为。
-- `electron/main.ts`：下载线路等宿主建好才接上；睡眠唤醒的两个监听一直挂着，没有宿主（还没建好、Linux、加速文件没带或读坏了）
+- `electron/main.ts`：「加速开没开」（绕不绕系统代理、导出诊断）在宿主建好以前直接答「没开」，不陪着等加速文件读完：
+  开机系统代理连不上时恢复登录要靠它马上答才改直连，以前加速服务还没建好的那段也是这么答的。下载线路等宿主建好才接上；睡眠唤醒的两个监听一直挂着，没有宿主（还没建好、Linux、加速文件没带或读坏了）
   时什么都不做，跟以前不挂一样；退出时放掉宿主那一步等这个 Promise，退出时还没读完的，读完建出来的那个也放掉。
   `main.test.ts` 跟着改了这几处的源码钉子，另加一条：启动回调里不许 `await` 加速文件的读取或宿主。
 - 校验改成一块块算：`electron/bounded-file.ts` 新增 `readBoundedFileDigest`，跟 `readBoundedFile` 同一套检查（打开前后路径快照、
