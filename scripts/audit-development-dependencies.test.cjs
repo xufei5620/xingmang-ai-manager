@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const {
   advisoryUrls,
+  temporaryAdvisoryExceptions,
   validatePackageLockSources,
   validateDevelopmentAuditReport,
 } = require('./audit-development-dependencies.cjs')
@@ -77,6 +78,119 @@ test('rejects vulnerability entries and severity-count drift', () => {
   critical.metadata.vulnerabilities.critical = 1
   critical.metadata.vulnerabilities.total = 1
   assert.throws(() => validateDevelopmentAuditReport(critical), /构建依赖存在漏洞/)
+})
+
+const minimatchAdvisory = 'https://github.com/advisories/GHSA-g3hv-75wg-m249'
+const testException = {
+  url: minimatchAdvisory,
+  packageName: 'minimatch',
+  maxSeverity: 'moderate',
+  expiresAt: '2026-11-30T16:00:00.000Z',
+}
+const beforeExpiry = new Date('2026-11-01T00:00:00.000Z')
+
+// Same shape as the 2026-10-31 report: one advisory object on minimatch, and
+// every other package only "depends on vulnerable versions of" something.
+function minimatchChainReport() {
+  const via = {
+    minimatch: [{ name: 'minimatch', url: minimatchAdvisory, severity: 'moderate' }],
+    glob: ['minimatch'],
+    '@electron/asar': ['glob', 'minimatch'],
+    'app-builder-lib': ['@electron/asar', 'minimatch'],
+    'electron-builder': ['app-builder-lib'],
+  }
+  return {
+    auditReportVersion: 2,
+    vulnerabilities: Object.fromEntries(Object.entries(via).map(([name, entries]) => [
+      name,
+      { name, severity: 'moderate', via: entries },
+    ])),
+    metadata: {
+      vulnerabilities: { info: 0, low: 0, moderate: 5, high: 0, critical: 0, total: 5 },
+    },
+  }
+}
+
+function validateWithTestException(report, now = beforeExpiry) {
+  return validateDevelopmentAuditReport(report, { exceptions: [testException], now })
+}
+
+test('pins the temporary exception list to the single advisory yoyo approved', () => {
+  assert.deepEqual(temporaryAdvisoryExceptions, [testException])
+})
+
+test('accepts the excepted minimatch chain before it expires', () => {
+  const result = validateWithTestException(minimatchChainReport())
+  assert.deepEqual(result.advisories, [minimatchAdvisory])
+  assert.deepEqual(result.exceptedAdvisories, [minimatchAdvisory])
+  assert.deepEqual(result.unusedExceptions, [])
+  assert.deepEqual(result.affectedPackages, [
+    '@electron/asar', 'app-builder-lib', 'electron-builder', 'glob', 'minimatch',
+  ])
+})
+
+test('rejects the excepted chain once the exception expires', () => {
+  assert.throws(
+    () => validateWithTestException(minimatchChainReport(), new Date(testException.expiresAt)),
+    /临时例外已到期/,
+  )
+})
+
+test('rejects the excepted chain when any other advisory appears beside it', () => {
+  const report = minimatchChainReport()
+  report.vulnerabilities.joi = {
+    name: 'joi',
+    severity: 'moderate',
+    via: [{ name: 'joi', url: 'https://github.com/advisories/GHSA-new-advisory', severity: 'moderate' }],
+  }
+  report.metadata.vulnerabilities.moderate = 6
+  report.metadata.vulnerabilities.total = 6
+  assert.throws(() => validateWithTestException(report), /新增公告/)
+})
+
+test('rejects the excepted advisory once its severity rises above the approved ceiling', () => {
+  const report = minimatchChainReport()
+  for (const node of Object.values(report.vulnerabilities)) node.severity = 'high'
+  report.vulnerabilities.minimatch.via[0].severity = 'high'
+  report.metadata.vulnerabilities.moderate = 0
+  report.metadata.vulnerabilities.high = 5
+  assert.throws(() => validateWithTestException(report), /构建依赖存在漏洞/)
+})
+
+test('rejects the excepted advisory URL reported against another package', () => {
+  const report = minimatchChainReport()
+  report.vulnerabilities.glob.via = [{ name: 'glob', url: minimatchAdvisory, severity: 'moderate' }]
+  assert.throws(() => validateWithTestException(report), /构建依赖存在漏洞/)
+})
+
+test('rejects dangling and advisory-free chains even when the excepted advisory is present', () => {
+  const dangling = minimatchChainReport()
+  dangling.vulnerabilities.orphan = { name: 'orphan', severity: 'moderate', via: ['not-in-report'] }
+  dangling.metadata.vulnerabilities.moderate = 6
+  dangling.metadata.vulnerabilities.total = 6
+  assert.throws(() => validateWithTestException(dangling), /构建依赖存在漏洞/)
+
+  const loop = minimatchChainReport()
+  loop.vulnerabilities['loop-a'] = { name: 'loop-a', severity: 'moderate', via: ['loop-b'] }
+  loop.vulnerabilities['loop-b'] = { name: 'loop-b', severity: 'moderate', via: ['loop-a'] }
+  loop.metadata.vulnerabilities.moderate = 7
+  loop.metadata.vulnerabilities.total = 7
+  assert.throws(() => validateWithTestException(loop), /构建依赖存在漏洞/)
+})
+
+test('rejects severity-count drift alongside the excepted chain', () => {
+  const report = minimatchChainReport()
+  report.metadata.vulnerabilities.high = 1
+  report.metadata.vulnerabilities.total = 6
+  assert.throws(() => validateWithTestException(report), /构建依赖存在漏洞/)
+
+  const hiddenTotal = minimatchChainReport()
+  hiddenTotal.metadata.vulnerabilities.total = 4
+  assert.throws(() => validateWithTestException(hiddenTotal), /构建依赖存在漏洞/)
+})
+
+test('reports an exception as unused once the audit comes back clean', () => {
+  assert.deepEqual(validateWithTestException(cleanReport()).unusedExceptions, [minimatchAdvisory])
 })
 
 test('extracts unique advisory URLs from npm audit report nodes', () => {
