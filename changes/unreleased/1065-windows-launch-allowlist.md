@@ -1,3 +1,0 @@
-## 开发
-
-- Windows 打包版的启动参数改成白名单（#1065 剩下的第 1 步）：`security.ts` 的 `resolvePackagedLaunchArguments` 只认开机自启 `--launched-at-login`、更新后重开 `--updated`、卸载清理两个参数、加速辅助进程和它的 `--user-data-dir`、通知冷启动的 `-Embedding` / `-ToastActivated`，以及深链这类不像开关的参数。别的开关不再放过：`platform/entry.ts` 去掉它们用 `app.relaunch` 重新打开一次（同一个令牌，以管理员身份运行的还是管理员），而不是让客户打不开；重开出来的进程靠环境变量 `XINGMANG_RELAUNCHED_WITHOUT_SWITCHES`（`launch-argument-relaunch.ts`）认出自己，还带着就退出不再重开，去掉的开关名记进运行日志 `launch-arguments.relaunched`。黑名单上的调试、拉起命令开关照旧直接退出；卸载清理和加速辅助进程带了多余开关也直接退出。Mac 不提权、Linux 不许 root，只用黑名单。Windows CI 的 `e2e/packaged-hardening-smoke.mjs` 补了「去掉开关重新打开」和「重开的那次不再重开」两段真跑。

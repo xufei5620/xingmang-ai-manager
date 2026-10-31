@@ -1,4 +1,0 @@
-## 开发
-
-- 加代码扫描（商业级差距报告 G21）：新工作流 `.github/workflows/codeql.yml` 用 GitHub 的 CodeQL 扫 `javascript-typescript`（主进程、两套渲染层、画布、脚本和测试，不扫 `ui-spec/`）和 `actions`（工作流本身的表达式注入）。每天北京时间 4:23 扫一次 main，改到它自己的 PR 上先扫一遍不上传，Actions 页面也能手动跑。现在只报不挡：不进 quality-gate，PR 上不把结果交给 Code scanning，不会让 PR 变红。结果在 Security 标签页，也由 `scripts/codeql-summary.cjs` 逐条（严重程度、规则、文件:行）列进作业日志和摘要页，线程读不了 code-scanning 接口、读得到日志。作业不装依赖，只有 `contents: read` 和上传结果用的 `security-events: write`。
-- 发版产物带出处证明：`publish-release.yml` 末尾新加 `attest` 作业，publish 成功后给这次真发出去的 `*Setup.exe`、`*.dmg`、`*.zip`、`*.deb` 签 GitHub artifact attestation（SLSA build provenance，`actions/attest`），任何人能用 `gh attestation verify <文件> --repo xufei5620/xingmang-ai-manager --signer-workflow xufei5620/xingmang-ai-manager/.github/workflows/publish-release.yml` 核对（`docs/RELEASING.md`「出处证明」、`SECURITY.md`）。签证明要的 `id-token: write` 只给这一个作业：它不挂环境、不读 secret、不装依赖，下哪几个平台的产物和 cos-sync 一致；它排在最后，失败了客户照常更新，单独重跑即可。两次审批、release 环境和上传顺序都没动。
