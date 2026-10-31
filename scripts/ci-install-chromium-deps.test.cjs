@@ -13,10 +13,21 @@ const linuxOnly = { skip: process.platform !== 'linux' && 'the apt installer onl
 // A stand-in for `playwright install-deps`: the first call starts a holder that
 // escapes the caller's process group (as sudo's apt-get did on #695) and keeps
 // the lock file open, then hangs; later calls fail fast like apt on a held lock.
+//
+// The holder is a renamed copy of bash parked in its own `read`, not a renamed
+// copy of sleep. On Ubuntu 26.04 (ubuntu-latest from 2026-10) sleep is the
+// uutils multicall binary, which picks the tool from its own file name, so a
+// copy called xmfakeaptget exits at once, nothing holds the lock, and the test
+// meant to prove the lock still blocks the retry sees the retry succeed. The
+// read builtin on a FIFO this same process opened read-write blocks without
+// starting a child, so killing the holder by name really frees the lock.
 function writeFakeInstaller(dir) {
   const holder = path.join(dir, 'xmfakeaptget')
-  fs.copyFileSync(fs.realpathSync(spawnSync('bash', ['-c', 'command -v sleep']).stdout.toString().trim()), holder)
+  fs.copyFileSync(fs.realpathSync(spawnSync('bash', ['-c', 'command -v bash']).stdout.toString().trim()), holder)
   fs.chmodSync(holder, 0o755)
+  const holderWait = path.join(dir, 'holder-wait')
+  const madeFifo = spawnSync('mkfifo', [holderWait], { encoding: 'utf8' })
+  assert.equal(madeFifo.status, 0, madeFifo.stderr)
   const installer = path.join(dir, 'fake-install-deps.sh')
   fs.writeFileSync(installer, `#!/bin/bash
 count=$(( $(cat "${dir}/calls" 2>/dev/null || echo 0) + 1 ))
@@ -26,7 +37,7 @@ if fuser "${dir}/lock-frontend" > /dev/null 2>&1; then
   exit 100
 fi
 if [[ "$count" == 1 ]]; then
-  setsid bash -c 'exec 9> "${dir}/lock-frontend"; exec "${holder}" 300' < /dev/null > /dev/null 2>&1 &
+  setsid "${holder}" -c 'exec 9> "${dir}/lock-frontend" 8<> "${holderWait}"; read -r -t 300 -u 8 _' < /dev/null > /dev/null 2>&1 &
   sleep 300
 fi
 exit 0
