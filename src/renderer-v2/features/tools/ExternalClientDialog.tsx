@@ -12,9 +12,10 @@ import { OptionPicker, type PickerOption } from './OptionPicker'
 import { beginBusinessOperation, errorMessage } from '../../business-common'
 
 // 选模型之前要知道的那一句，放在最上面（v4 原型）。Claude Desktop 第一次用、每次自己升级以后都要从官网下组件，
-// 国内直连下不动；从星芒点「打开」时主进程会在后台替他连上加速（#1373，yoyo 2026-10-24 定的原文）。
+// 国内直连下不动。以前从星芒点「打开」时会在后台替他连上加速（#1373）；网络加速 2026-10-30 下线以后不再连，
+// 这句改成实话（yoyo 10-31 回「检查改」）。
 const clientHints: Record<ExternalToolId, string> = {
-  claudeDesktop: '保存后要完全退出再重新打开 Claude Desktop。它第一次用和每次自己升级以后，都要从 Claude 官网下载组件（最多 1.6GB），请从这里点「打开」，星芒会在后台帮它连上下载线路。',
+  claudeDesktop: '保存后要完全退出再重新打开 Claude Desktop。它第一次用和每次自己升级以后，都要从 Claude 官网下载组件（最多 1.6GB），这台电脑要能连上 Claude 官网才下得动。',
   workbuddy: '请选择能调用工具的模型；保存后在 WorkBuddy 的模型列表里选它。',
   opencode: '命令行版和桌面版共用这份配置。',
 }

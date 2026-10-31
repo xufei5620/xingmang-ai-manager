@@ -102,8 +102,8 @@ export function buildMacosInstallLocationNotice(
   location: MacosInstallLocation,
 ): MacosInstallLocationNotice {
   const detail = location === 'mounted-volume'
-    ? '星芒还在磁盘映像里，没放进「应用程序」文件夹，在这里运行的话加速和自动更新用不了。'
-    : '星芒还没放进「应用程序」文件夹，系统让它在一个只读的临时位置运行，加速和自动更新用不了。'
+    ? '星芒还在磁盘映像里，没放进「应用程序」文件夹，在这里运行的话自动更新用不了。'
+    : '星芒还没放进「应用程序」文件夹，系统让它在一个只读的临时位置运行，自动更新用不了。'
   return {
     title: '请先把程序放进「应用程序」',
     message: location === 'mounted-volume'
@@ -152,7 +152,7 @@ export function buildMacosMoveFailureNotice(
   return {
     title: '没能自动移动',
     message: `没能自动移动（${reason}）。`,
-    detail: `${manualMoveInstruction}\n\n仍要继续的话，加速和自动更新用不了。`,
+    detail: `${manualMoveInstruction}\n\n仍要继续的话，自动更新用不了。`,
     buttons: ['退出', '仍要继续'],
     choices: ['quit', 'continue'],
     defaultId: 0,

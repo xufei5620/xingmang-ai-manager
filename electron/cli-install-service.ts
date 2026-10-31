@@ -237,7 +237,7 @@ export const npmDownloadHeartbeatMs = 15_000
 export const grokDownloadStallHeartbeatMs = 15_000
 
 export function grokDownloadStallMessage(idleMs: number): string {
-  return `Grok CLI 下载已 ${Math.round(idleMs / 1000)} 秒没有新数据，仍在等待；若长时间不动，请检查网络或切换加速线路后重试`
+  return `Grok CLI 下载已 ${Math.round(idleMs / 1000)} 秒没有新数据，仍在等待；若长时间不动，请检查网络，或换个网络（比如手机热点）后重试`
 }
 
 export function formatElapsedDuration(elapsedMs: number): string {
