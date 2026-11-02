@@ -217,8 +217,9 @@ const nonSiteExternalUrlAllowlist = [
   appReleaseDownloadUrl,
 ] as const
 
-// Every relay site's own destinations (marketing and keys pages) is derived
-// from relay-sites.ts. Recharge stays in the desktop account center.
+// Every relay site's own destinations (marketing, keys and invoice-portal
+// pages) is derived from relay-sites.ts. Recharge stays in the desktop
+// account center.
 const externalUrlAllowlist = [
   ...nonSiteExternalUrlAllowlist,
   ...relaySiteExternalUrls(relaySites),

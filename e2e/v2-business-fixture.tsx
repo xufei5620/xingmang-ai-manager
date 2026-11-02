@@ -679,6 +679,12 @@ const apiMethods = {
   onNodeRuntimeInstallProgress: () => () => undefined,
   onPythonRuntimeInstallProgress: () => () => undefined,
   onCodexDesktopLaunchProgress: () => () => undefined,
+  // 「开发票」只把开票中心交给系统浏览器；externalFail 时与主进程 external:open 抛错一样。
+  openExternal: async (url: string) => {
+    record('open-external', url)
+    if (query.has('externalFail')) throw new Error("Error invoking remote method 'external:open': Error: 打开失败")
+    return true
+  },
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
