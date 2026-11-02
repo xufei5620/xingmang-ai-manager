@@ -88,12 +88,21 @@ describe('explicit relay site identity', () => {
     expect(new Set(relaySites.map((site) => site.id)).size).toBe(relaySites.length)
   })
 
-  it('does not expand the external URL allowlist in this preparatory wave', () => {
+  it('pins the exact external URLs the relay sites add to the allowlist', () => {
     expect(relaySiteExternalUrls(relaySites)).toEqual([
       'https://xm.solov.cc',
       'https://xm.solov.cc/keys',
+      'https://invoice-xm.solov.cc/orders',
       'https://api.solov.cc',
       'https://api.solov.cc/keys',
+      'https://invoice-api.solov.cc/orders',
     ])
+  })
+
+  it('sends each account to its own invoice portal', () => {
+    // The two portals are separate logins: an xm account sent to the api
+    // portal (or the reverse) would be told its password is wrong.
+    expect(requireRelaySite('solov').invoicePortalUrl).toBe('https://invoice-xm.solov.cc/orders')
+    expect(requireRelaySite('solov-api').invoicePortalUrl).toBe('https://invoice-api.solov.cc/orders')
   })
 })

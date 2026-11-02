@@ -86,7 +86,7 @@ describe('relay site registry', () => {
 
   it('every site URL is https -- I10', () => {
     for (const site of relaySites) {
-      for (const url of [site.websiteUrl, site.keysPageUrl, ...(site.accountBaseUrl ? [site.accountBaseUrl] : [])]) {
+      for (const url of [site.websiteUrl, site.keysPageUrl, ...(site.accountBaseUrl ? [site.accountBaseUrl] : []), ...(site.invoicePortalUrl ? [site.invoicePortalUrl] : [])]) {
         expect(() => new URL(url)).not.toThrow()
         expect(new URL(url).protocol).toBe('https:')
       }
@@ -138,10 +138,18 @@ describe('relay site registry', () => {
       // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
       // Unchanged by D-10: the removed sub2api entry was same-domain, so it
       // contributed no URL of its own here either.
-      expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys', 'https://api.solov.cc', 'https://api.solov.cc/keys'])
+      // 2026-11-02:「开发票」加了两个开票中心「申请开票」页，各跟各的账号。
+      expect(relaySiteExternalUrls(relaySites)).toEqual([
+        'https://xm.solov.cc',
+        'https://xm.solov.cc/keys',
+        'https://invoice-xm.solov.cc/orders',
+        'https://api.solov.cc',
+        'https://api.solov.cc/keys',
+        'https://invoice-api.solov.cc/orders',
+      ])
     })
 
-    it('returns only marketing and keys pages for an account-backed site', () => {
+    it('returns only marketing and keys pages for an account-backed site without an invoice portal', () => {
       const accountSite = {
         id: 'account-example',
         label: 'Account example',
