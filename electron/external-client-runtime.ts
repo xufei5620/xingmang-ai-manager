@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { inspectAppxVolumeLink } from './appx-volume-link'
+import type { ClaudeDesktopSeedClient } from './claude-desktop-code-seed'
 import {
   buildClaudeDesktopInstallFailureMessage, classifyClaudeDesktopInstallFailure, isPlainClaudeDesktopInstallMessage,
 } from './claude-desktop-install-failure'
@@ -155,6 +156,12 @@ export interface ExternalClientRuntimeOptions {
    */
   onLaunched?: (tool: ExternalToolId, clientPath: string) => void
   /**
+   * Windows 上打开 Claude Desktop、交给资源管理器之前那一步：替它把 Claude Code 程序放好
+   * （claude-desktop-code-seed.ts）。在这一家的打开里跑（等它自己正在装的那次装完、打开前那次检测之后），
+   * 所以同一家的安装照旧等它；抛错也照常打开。缺省 = 不做。
+   */
+  prepareClaudeDesktopLaunch?: (client: ClaudeDesktopSeedClient) => Promise<unknown>
+  /**
    * Mac 上查星芒存储桶里这几家的最新版，首页据此提醒「可更新到 v…」（yoyo 2026-10-27「桌面端更新改」）。
    * 缺省 = 不查、不提醒（测试与旧调用方照旧），生产由 system-service 打开。
    */
@@ -204,8 +211,10 @@ export interface ExternalClientLaunchTiming extends ExternalClientInventoryTimin
   queueWaitMs: number
   /** 打开前那次检测一共多久：Windows 上是 powershellMs 加上星芒自己再核一遍路径。 */
   inventoryMs: number
-  /** 交给资源管理器（Mac 上是 open）用了多久。 */
+  /** 交给资源管理器（Mac 上是 open）用了多久，含下面的 prepareMs。 */
   launchMs: number
+  /** 交出去之前替 Claude Desktop 放程序用了多久（只有 Windows 上的 Claude Desktop 有）。 */
+  prepareMs?: number
 }
 
 /** spctl 或 codesign 没放行时的那几项；output 是它们写在标准错误里的原话。 */
@@ -1152,6 +1161,15 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
       const inspectedAt = now()
       const client = inspection.clients.find((item) => item.tool === tool)
       if (!client) throw new Error(inspection.errors[tool] || '尚未检测到客户端，请先安装并重新检测')
+      let prepareMs: number | undefined
+      if (platform === 'win32' && tool === 'claudeDesktop' && options.prepareClaudeDesktopLaunch) {
+        // 它要的 Claude Code 程序国内从官网下不动：先替它从 npm 镜像放好。放不成照常打开。
+        const preparing = now()
+        await options.prepareClaudeDesktopLaunch({
+          path: client.path, running: client.running, isRunning: () => stillRunning(tool, client.path),
+        }).catch(() => undefined)
+        prepareMs = now() - preparing
+      }
       if (platform === 'win32') {
         const machinePaths = resolveMachinePaths()
         const executable = options.resolveExplorerExecutable?.() ?? resolveWindowsExplorerExecutable({ platform, machinePaths })
@@ -1163,7 +1181,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         if (runningAsRoot()) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
-      try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }
+      try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...(prepareMs === undefined ? {} : { prepareMs }), ...inspection.timings }) }
       catch { /* 客户端已经交出去了：用时记不下也不能让这次打开报失败，不然客户再点一次就开出第二个窗口。 */ }
       try { options.onLaunched?.(tool, client.path) }
       catch { /* 同上：已经交出去了。 */ }
