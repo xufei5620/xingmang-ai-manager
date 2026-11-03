@@ -7,12 +7,17 @@
 import os from 'node:os'
 import path from 'node:path'
 import { cliCatalog, isRetiredProviderId, type ProviderId } from './catalog'
-import { createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
+import { claudeCodeSeedPlatform, claudeDesktopAsarPath, createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
+import { claudeDesktopMacAsarPath, type ClaudeDesktopVmArchitecture } from './claude-desktop-component-manifest'
+import { createClaudeDesktopMacCodeSeeder } from './claude-desktop-mac-code-seed'
+import { createClaudeDesktopVmCodeSeeder } from './claude-desktop-vm-code-seed'
+import { createClaudeDesktopWorkspaceSeeder, type ClaudeDesktopComponentTarget } from './claude-desktop-workspace-seed'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
 import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 import { resolveClaudeDesktopModels } from './claude-desktop-models'
+import { trustedCommandEnvironment } from './command-runner'
 import { buildGatewayMessagesProbe, runConnectionProbe } from './connection-check'
 import { type ExternalClientCheckResult, runExternalClientCheck } from './external-client-connection'
 import {
@@ -140,6 +145,58 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-code-seed') === true,
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
   })
+  // Mac 只问一次是不是 Apple 芯片：Claude 是通用程序，在 Apple 芯片上按 arm64 跑，星芒自己可能在 Rosetta 里。
+  let macArchitecture: Promise<ClaudeDesktopVmArchitecture> | null = null
+  function probeMacArchitecture(): Promise<ClaudeDesktopVmArchitecture> {
+    macArchitecture ??= (async (): Promise<ClaudeDesktopVmArchitecture> => {
+      if (process.arch === 'arm64') return 'arm64'
+      try {
+        const result = await executeCommand({ executable: '/usr/sbin/sysctl', argv: ['-n', 'hw.optional.arm64'] }, {
+          env: trustedCommandEnvironment(), trustedOnly: false, timeoutMs: 5_000, maxOutputBytes: 1024,
+        })
+        if (result.stdout.trim() === '1') return 'arm64'
+      } catch {
+        // 只有「1」才算 Apple 芯片；Intel 的 Mac 回 0 或者没有这一项（sysctl 非零退出），都是 x64。
+      }
+      return 'x64'
+    })()
+    return macArchitecture
+  }
+  /** 这一份 Claude Desktop 的数据目录、程序文件和它的虚拟机、Claude Code 用哪个架构（Windows 看安装位置，Mac 看芯片）。 */
+  async function claudeDesktopComponentTarget(clientPath: string): Promise<ClaudeDesktopComponentTarget | null> {
+    if (platform !== 'win32' && platform !== 'darwin') return null
+    const { env, storeVirtualization } = await claudeDesktopRoots(clientPath)
+    const { profileDirectory } = resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath: clientPath, storeVirtualization })
+    if (platform === 'darwin') return { profileDirectory, asarPath: claudeDesktopMacAsarPath(clientPath), architecture: await probeMacArchitecture() }
+    const seedPlatform = claudeCodeSeedPlatform(clientPath, process.arch)
+    if (!seedPlatform) return null
+    return { profileDirectory, asarPath: claudeDesktopAsarPath(clientPath), architecture: seedPlatform === 'win32-arm64' ? 'arm64' : 'x64' }
+  }
+  function componentLog(level: 'info' | 'warn', event: string, message: string, detail?: Record<string, unknown>): void {
+    runtimeLog?.log(level, 'install', event, message, detail)
+  }
+  // Mac 上 Claude Code 要的是官网那个带签名的程序包，npm 上没有，从星芒的下载站放（跟 Windows 那一半共用一个远程开关）。
+  const claudeDesktopMacCodeSeeder = createClaudeDesktopMacCodeSeeder({
+    platform,
+    fetch: downloadFetch,
+    resolveTarget: claudeDesktopComponentTarget,
+    userHome: providerRoots.userHome,
+    isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-code-seed') === true,
+    log: componentLog,
+  })
+  // Cowork 的工作区（约 1.3 GB）从星芒的下载站放，它虚拟机里那份 Linux 版 Claude Code 从 npm 镜像放；
+  // 只给用了 Cowork 的电脑，从星芒打开以后在后台做。
+  const claudeDesktopWorkspaceSeeder = createClaudeDesktopWorkspaceSeeder({
+    platform,
+    executionMode: windowsExecutionMode,
+    fetch: downloadFetch,
+    resolveTarget: claudeDesktopComponentTarget,
+    stateDirectory: path.join(serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager'), 'claude-desktop-components'),
+    userHome: providerRoots.userHome,
+    isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-workspace-seed') === true,
+    linuxCode: createClaudeDesktopVmCodeSeeder({ fetch: downloadFetch, userHome: providerRoots.userHome, platform, log: componentLog }),
+    log: componentLog,
+  })
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
@@ -159,8 +216,11 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       buildExternalClientDetectionErrorLogDetail(failure, providerRoots.userHome)),
     // 客户说「打开还是慢」，客服在反馈报告里看这一行：慢在排队、PowerShell 启动、读安装记录、核签名，还是交出去以后客户端自己慢。
     onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
-    onLaunched: (tool, clientPath) => { launchedClientPaths.set(tool, clientPath) },
-    prepareClaudeDesktopLaunch: (client) => claudeDesktopCodeSeeder.prepare(client),
+    onLaunched: (tool, clientPath) => {
+      launchedClientPaths.set(tool, clientPath)
+      if (tool === 'claudeDesktop') claudeDesktopWorkspaceSeeder.scheduleAfterLaunch(clientPath)
+    },
+    prepareClaudeDesktopLaunch: (client) => platform === 'darwin' ? claudeDesktopMacCodeSeeder.prepare(client) : claudeDesktopCodeSeeder.prepare(client),
   })
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()

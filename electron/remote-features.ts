@@ -21,8 +21,10 @@ export type RemoteFeatureTool = typeof remoteFeatureTools[number]
  * - tray-release：缩到托盘久了关掉界面省内存（renderer-release.ts）。
  * - acceleration：网络加速的新连接（加速页、托盘、打开桌面端时替他连的那次）。连着的照常用、照常能断。
  * - codex-desktop-chinese：打开 Codex 桌面端时的中文补丁（Windows 上经调试端口打的那个）。
- * - claude-desktop-code-seed：Windows 上打开 Claude Desktop 前替它放好 Claude Code 程序。关掉就照常打开，
- *   让它自己去官网下（客户看不到任何话）。
+ * - claude-desktop-code-seed：打开 Claude Desktop 前替它放好 Claude Code 程序（Windows 从 npm 镜像，Mac 从星芒的
+ *   下载站）。关掉就照常打开，让它自己去官网下（客户看不到任何话）。
+ * - claude-desktop-workspace-seed：从星芒打开 Claude Desktop 以后，替用了 Cowork 的电脑从下载站放好它的工作区
+ *   （约 1.3 GB）和工作区里那份 Linux 版 Claude Code。关掉就不放，让它自己去官网下（客户看不到任何话）。
  * - install:工具 / launch:工具：某个工具的安装和更新、从星芒打开它。
  */
 export const remoteFeatureIds = [
@@ -33,6 +35,7 @@ export const remoteFeatureIds = [
   'acceleration',
   'codex-desktop-chinese',
   'claude-desktop-code-seed',
+  'claude-desktop-workspace-seed',
   ...remoteFeatureTools.map((tool) => `install:${tool}` as const),
   ...remoteFeatureTools.map((tool) => `launch:${tool}` as const),
 ] as const

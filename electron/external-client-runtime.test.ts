@@ -1654,6 +1654,23 @@ describe('macOS external client signature checks', () => {
     expect(f.checks('claudeDesktop')).toEqual([])
   })
 
+  it('lets Claude Desktop on the Mac have its Claude Code program placed before it is opened, and opens it whatever happens', async () => {
+    const order: string[] = []
+    const prepareClaudeDesktopLaunch = vi.fn(async (_client: { path: string; running: boolean }) => {
+      order.push('prepare')
+      throw new Error('bucket unreachable')
+    })
+    const f = allInstalled({ prepareClaudeDesktopLaunch })
+    await f.runtime.launch('claudeDesktop')
+    expect(order).toEqual(['prepare'])
+    expect(prepareClaudeDesktopLaunch).toHaveBeenCalledWith(expect.objectContaining({ path: '/Applications/Claude.app', running: false }))
+    const openCall = f.execute.mock.calls.findIndex(([spec]) => spec.executable === '/usr/bin/open')
+    expect(openCall).toBeGreaterThanOrEqual(0)
+    expect(prepareClaudeDesktopLaunch.mock.invocationCallOrder[0]).toBeLessThan(f.execute.mock.invocationCallOrder[openCall])
+    await f.runtime.launch('workbuddy')
+    expect(prepareClaudeDesktopLaunch).toHaveBeenCalledTimes(1)
+  })
+
   it('never lets opening or installing reuse an earlier verification', async () => {
     const f = allInstalled()
     await f.runtime.scan()

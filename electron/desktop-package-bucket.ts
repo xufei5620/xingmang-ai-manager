@@ -287,7 +287,8 @@ export function parseDesktopBucketIndex(text: string, id: DesktopBucketPackageId
 
 /**
  * 只认桶本身的固定地址：https、这个主机、没有端口和账号、没有查询和片段，路径只能在同步脚本写的
- * 那几个目录下（Codex 插件目录那一路见 codex-plugin-catalog-bucket.ts，Grok 那一路见 grok-bucket.ts）。
+ * 那几个目录下（Codex 插件目录那一路见 codex-plugin-catalog-bucket.ts，Grok 那一路见 grok-bucket.ts，
+ * Claude 桌面端的工作区和 Mac 程序包那一路见 claude-desktop-workspace-seed.ts、claude-desktop-mac-code-seed.ts）。
  */
 export function validateDesktopBucketUrl(value: string): URL {
   let url: URL
@@ -304,7 +305,7 @@ export function validateDesktopBucketUrl(value: string): URL {
     || url.password
     || url.search
     || url.hash
-    || !/^\/(?:chatgpt|xingmang\/offline\/(?:claude|codex-plugins|grok|opencode))\/[A-Za-z0-9._\-/]+$/.test(url.pathname)
+    || !/^\/(?:chatgpt|xingmang\/offline\/(?:claude|claude-components|codex-plugins|grok|opencode))\/[A-Za-z0-9._\-/]+$/.test(url.pathname)
     || url.pathname.split('/').some((segment) => segment === '..' || segment === '.')
   ) {
     throw new Error('存储桶地址不在允许的范围内')

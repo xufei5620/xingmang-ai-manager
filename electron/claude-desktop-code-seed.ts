@@ -18,7 +18,8 @@
  * 读不出版本、拿不到官方源的对账值、下不动、盘不够，一律放弃，照常打开，交还 Claude 自己去下，客户
  * 不会比没有这一步更差。Claude 每一版都可能改放法，对不上就不放；放错了它会当成没下过、自己重下，不会坏。
  *
- * Mac 不做：那边要的是带签名的 claude.app 包，npm 里的不是同一个文件。Cowork 的工作区国内没有来源，也不做。
+ * Mac 不在这里做：那边要的是带签名的 claude.app 包，npm 里的不是同一个文件，改从星芒的下载站放
+ * （claude-desktop-mac-code-seed.ts）。Cowork 的工作区同样从下载站放（claude-desktop-workspace-seed.ts）。
  */
 import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
