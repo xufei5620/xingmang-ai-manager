@@ -1,0 +1,69 @@
+# 临时：核 Claude 桌面端把 Claude Code 程序和 Cowork 工作区放在哪、怎么核对，能不能由星芒先放好（yoyo 11-03「开探测」），核完就删。
+name: tmp-claude-desktop-components
+
+on:
+  push:
+    branches: [claude/tmp-claude-components-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Download the current Windows x64 MSIX
+        run: |
+          set -euo pipefail
+          loc=$(curl -sS -o /dev/null -w '%{redirect_url}' https://claude.ai/api/desktop/win32/x64/msix/latest/redirect)
+          echo "redirect: $loc"
+          case "$loc" in https://downloads.claude.ai/releases/win32/x64/*.msix) ;; *) echo "unexpected redirect"; exit 1 ;; esac
+          curl -fsSL --max-time 600 -o claude.msix "$loc"
+          ls -l claude.msix
+          mkdir msix && (cd msix && unzip -q ../claude.msix)
+          find msix -maxdepth 3 -type d | head -40
+          find msix -name '*.asar' -printf '%s %p\n'
+
+      - name: Extract app.asar
+        run: |
+          set -euo pipefail
+          asar=$(find msix -name app.asar | head -1)
+          npx --yes @electron/asar@3.4.1 extract "$asar" app
+          find app -maxdepth 3 -type f -name '*.js' -printf '%s %p\n' | sort -n | tail -20
+          find app -maxdepth 2 -name package.json -exec sh -c 'echo "== $1"; head -c 600 "$1"; echo' _ {} \;
+
+      - name: Where the components come from and where they go
+        run: |
+          set -uo pipefail
+          show() { echo; echo "######## $1"; grep -rhoE ".{0,400}$1.{0,400}" app --include='*.js' --include='*.json' | head -c "${2:-6000}"; echo; }
+          show 'claude-code-releases' 8000
+          show 'vms/linux' 6000
+          show 'vm_bundles' 8000
+          show 'rootfs\.vhdx' 6000
+          show 'claude-code"' 4000
+          show 'buildId|build_id|buildID' 6000
+          show 'expectedSha256|sha256sum|checksums' 8000
+          show 'CLAUDE_CODE_[A-Z_]*PATH|CLAUDE_CODE_BINARY|claudeCodePath|cliPath' 6000
+          show 'downloads\.claude\.ai' 8000
+          echo; echo "######## manifests"
+          find app -iname '*manifest*' -o -iname '*checksum*' -o -iname '*bundle*.json' | head -20
+
+      - name: Compare the CLI the app downloads with the npm package of the same version
+        run: |
+          set -uo pipefail
+          ver=$(grep -rhoE 'claude-code-releases/[0-9]+\.[0-9]+\.[0-9]+' app --include='*.js' | head -1 | sed 's#.*/##')
+          if [ -z "$ver" ]; then ver=$(grep -rhoE '"?claudeCodeVersion"?[:=]"?[0-9]+\.[0-9]+\.[0-9]+' app --include='*.js' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'); fi
+          echo "version guess: ${ver:-none}"
+          [ -n "${ver:-}" ] || exit 0
+          curl -fsSL --max-time 600 -o claude.exe.zst "https://downloads.claude.ai/claude-code-releases/$ver/win32-x64/claude.exe.zst" || { echo "download from downloads.claude.ai failed"; exit 0; }
+          zstd -dq claude.exe.zst -o claude-desktop.exe
+          npm pack --silent "@anthropic-ai/claude-code-win32-x64@$ver" --registry=https://registry.npmjs.org/ >/dev/null
+          mkdir npmcli && tar -xzf anthropic-ai-claude-code-win32-x64-$ver.tgz -C npmcli
+          find npmcli -type f -printf '%s %p\n' | sort -n | tail -5
+          echo "desktop download:"; sha256sum claude-desktop.exe; ls -l claude-desktop.exe
+          echo "npm package:"; find npmcli -type f -name '*.exe' -exec sha256sum {} \; -exec ls -l {} \;
