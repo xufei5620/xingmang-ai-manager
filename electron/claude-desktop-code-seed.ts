@@ -223,7 +223,7 @@ export function decodeSingleQuotedLiteral(text: string, start: number, maximumLe
       parts.push(text.slice(run, index))
       return parts.join('')
     }
-    if (character === '\n' || character === '\r' || character === ' ' || character === ' ') return null
+    if (character === '\n' || character === '\r' || character === '\u2028' || character === '\u2029') return null
     if (character !== '\\') {
       index += 1
       continue
@@ -270,8 +270,8 @@ export function decodeSingleQuotedLiteral(text: string, start: number, maximumLe
         consumed = text[index + 2] === '\n' ? 3 : 2
         break
       case '\n':
-      case ' ':
-      case ' ':
+      case '\u2028':
+      case '\u2029':
         break
       default:
         if (/[1-9]/.test(escaped)) return null
