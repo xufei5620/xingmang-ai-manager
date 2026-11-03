@@ -26,6 +26,8 @@ const WORKFLOWS = Object.freeze({
     impact: '星芒在 Windows 上装 Grok 时，桶里还是上一次同步成功的那几版：要装的那一版在桶里就照样从桶里下；不在桶里的（比如 xAI 刚出的新版）客户端照旧去 xAI 下，国内多半要等或开加速。' }),
   'sync-opencode-cos.yml': Object.freeze({ product: 'OpenCode 桌面端（Mac）',
     impact: '星芒在 Mac 上装 OpenCode 时，桶里还是上一次同步成功的那一版：OpenCode 出了新版、桶里没跟上时，客户端照旧去 GitHub 下，国内时好时坏。' }),
+  'sync-claude-components-cos.yml': Object.freeze({ product: 'Claude 桌面端的工作区和 Mac 程序',
+    impact: '星芒替客户放 Claude 桌面端的 Cowork 工作区、Mac 上的 Claude Code 程序时只从桶里下，桶里还是上一次同步成功的那几版：Claude 换了新的工作区或 Claude Code 版本、桶里没跟上时，星芒什么都不放，客户的 Claude 照旧自己去官网下，国内多半下不动（Cowork 卡在下载工作区，Mac 上聊天和 Code 用不了）。' }),
 })
 // A job that runs out of timeout-minutes is reported as cancelled, and a long
 // upload stuck on a slow network is exactly the failure this alert is for.
