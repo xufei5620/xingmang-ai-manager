@@ -48,33 +48,94 @@ jobs:
       - name: Where the components come from and where they go
         run: |
           set -uo pipefail
-          show() { echo; echo "######## $1"; grep -roE ".{0,400}$1.{0,400}" app --include='*.js' --include='*.json' | head -c "${2:-6000}"; echo; }
-          show 'claude-code-releases' 8000
-          show 'vms/linux' 6000
-          show 'vm_bundles' 8000
-          show 'rootfs\.vhdx' 6000
-          show 'claude-code"' 4000
-          show 'buildId|build_id|buildID' 6000
-          show 'expectedSha256|sha256sum|checksums' 8000
-          show 'CLAUDE_CODE_[A-Z_]*PATH|CLAUDE_CODE_BINARY|claudeCodePath|cliPath' 6000
-          show 'downloads\.claude\.ai' 8000
-          show 'claude\.exe' 6000
-          show 'win32-x64' 4000
-          show 'Host Claude Code binary' 4000
-          echo; echo "######## manifests"
-          find app -iname '*manifest*' -o -iname '*checksum*' -o -iname '*bundle*.json' | head -20
+          # grep 的 .{0,400} 在压缩成一行的大文件上会卡死（第二次跑了五分钟没出来），改用 node 按位置截取。
+          cat > "$RUNNER_TEMP/find.mjs" <<'EOF'
+          import fs from 'node:fs'
+          import path from 'node:path'
+          const root = process.argv[2]
+          const files = []
+          function walk(dir, inModules) {
+            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+              const full = path.join(dir, entry.name)
+              if (entry.isDirectory()) {
+                if (entry.name === 'node_modules') { walkModules(full); continue }
+                walk(full, inModules)
+              } else if (/\.(m?js|cjs|json)$/.test(entry.name)) files.push(full)
+            }
+          }
+          function walkModules(dir) {
+            const names = fs.readdirSync(dir)
+            console.log('node_modules in ' + path.relative(root, dir) + ': ' + names.join(' '))
+            if (names.includes('@ant')) {
+              console.log('@ant: ' + fs.readdirSync(path.join(dir, '@ant')).join(' '))
+              walk(path.join(dir, '@ant'), true)
+            }
+          }
+          walk(root, false)
+          const sized = files.map((f) => [fs.statSync(f).size, f]).sort((a, b) => b[0] - a[0])
+          console.log('files: ' + files.length)
+          for (const [size, f] of sized.slice(0, 20)) console.log(size + ' ' + path.relative(root, f))
+          const texts = new Map(files.map((f) => [f, fs.readFileSync(f, 'utf8')]))
+          const patterns = [
+            ['claude-code-releases', /claude-code-releases/g, 9000],
+            ['vm_bundles', /vm_bundles/g, 9000],
+            ['vms/linux', /vms\/linux/g, 6000],
+            ['rootfs', /rootfs/g, 6000],
+            ['"claude-code" path segment', /["'`]claude-code["'`]/g, 6000],
+            ['Claude-3p', /Claude-3p/g, 4000],
+            ['checksum', /checksum/gi, 9000],
+            ['sha256', /sha256/gi, 6000],
+            ['zst', /\.zst\b|zstd/g, 6000],
+            ['claude.exe', /claude\.exe/g, 6000],
+            ['win32-x64', /win32-x64/g, 4000],
+            ['downloads.claude.ai', /downloads\.claude\.ai/g, 9000],
+            ['Host Claude Code binary', /Host Claude Code binary/g, 4000],
+            ['buildId', /build[_-]?[iI][dD]\b/g, 4000],
+            ['version names', /[cC]laude[cC]ode[vV]ersion|cliVersion|ccVersion|CLAUDE_CODE_VERSION/g, 6000],
+          ]
+          for (const [label, re, cap] of patterns) {
+            console.log('\n######## ' + label)
+            let printed = 0
+            let count = 0
+            for (const [f, t] of texts) {
+              for (const m of t.matchAll(re)) {
+                count++
+                if (printed >= cap) continue
+                const slice = t.slice(Math.max(0, m.index - 350), m.index + m[0].length + 350)
+                console.log('--- ' + path.relative(root, f) + ' @' + m.index + '\n' + slice)
+                printed += slice.length
+              }
+            }
+            console.log('(matches: ' + count + ')')
+          }
+          const envNames = new Set()
+          for (const t of texts.values()) for (const m of t.matchAll(/CLAUDE_CODE_[A-Z0-9_]+/g)) envNames.add(m[0])
+          console.log('\n######## CLAUDE_CODE_* names\n' + [...envNames].sort().join(' '))
+          const versions = new Set()
+          for (const t of texts.values()) for (const m of t.matchAll(/claude-code-releases\/(\d+\.\d+\.\d+)/g)) versions.add(m[1])
+          fs.writeFileSync(process.env.RUNNER_TEMP + '/cli-version', [...versions][0] ?? '')
+          console.log('\n######## pinned versions: ' + [...versions].join(' '))
+          EOF
+          node "$RUNNER_TEMP/find.mjs" "$PWD/app"
+          echo; echo "######## ion-dist (only a quick look)"
+          find ion -maxdepth 2 | head -20
 
       - name: Compare the CLI the app downloads with the npm package of the same version
         run: |
           set -uo pipefail
-          ver=$(grep -rhoE 'claude-code-releases/[0-9]+\.[0-9]+\.[0-9]+' app --include='*.js' | head -1 | sed 's#.*/##')
-          if [ -z "$ver" ]; then ver=$(grep -rhoE '"?claudeCodeVersion"?[:=]"?[0-9]+\.[0-9]+\.[0-9]+' app --include='*.js' | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+'); fi
-          echo "version guess: ${ver:-none}"
-          [ -n "${ver:-}" ] || exit 0
-          curl -fsSL --max-time 600 -o claude.exe.zst "https://downloads.claude.ai/claude-code-releases/$ver/win32-x64/claude.exe.zst" || { echo "download from downloads.claude.ai failed"; exit 0; }
-          zstd -dq claude.exe.zst -o claude-desktop.exe
+          ver=$(cat "$RUNNER_TEMP/cli-version" 2>/dev/null || true)
+          if [ -z "$ver" ]; then
+            ver=$(npm view @anthropic-ai/claude-code-win32-x64 version --registry=https://registry.npmjs.org/)
+            echo "app pins no version literally; using latest npm version $ver"
+          fi
+          echo "version: $ver"
+          echo "######## manifest"
+          curl -fsSL --max-time 60 "https://downloads.claude.ai/claude-code-releases/$ver/manifest.json" | head -c 4000 || echo "no manifest.json at downloads.claude.ai"
+          echo
+          curl -fsSL --max-time 600 -o claude.exe.zst "https://downloads.claude.ai/claude-code-releases/$ver/win32-x64/claude.exe.zst" || { echo "claude.exe.zst download failed"; }
+          if [ -f claude.exe.zst ]; then zstd -dq claude.exe.zst -o claude-desktop.exe; ls -l claude.exe.zst claude-desktop.exe; sha256sum claude.exe.zst claude-desktop.exe; fi
+          curl -fsSL --max-time 600 -o claude-plain.exe "https://downloads.claude.ai/claude-code-releases/$ver/win32-x64/claude.exe" && { ls -l claude-plain.exe; sha256sum claude-plain.exe; } || echo "no plain claude.exe"
           npm pack --silent "@anthropic-ai/claude-code-win32-x64@$ver" --registry=https://registry.npmjs.org/ >/dev/null
           mkdir npmcli && tar -xzf anthropic-ai-claude-code-win32-x64-$ver.tgz -C npmcli
-          find npmcli -type f -printf '%s %p\n' | sort -n | tail -5
-          echo "desktop download:"; sha256sum claude-desktop.exe; ls -l claude-desktop.exe
-          echo "npm package:"; find npmcli -type f -name '*.exe' -exec sha256sum {} \; -exec ls -l {} \;
+          echo "npm package files:"; find npmcli -type f -printf '%s %p\n' | sort -n | tail -8
+          find npmcli -type f -name '*.exe' -exec sha256sum {} \;
