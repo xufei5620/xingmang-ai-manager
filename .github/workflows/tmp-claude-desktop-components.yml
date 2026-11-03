@@ -65,16 +65,15 @@ jobs:
           walk(root)
           const texts = files.map((f) => [path.relative(root, f), fs.readFileSync(f, 'utf8')])
           const patterns = [
-            ['getBinaryPathForTarget', /getBinaryPathForTarget\(e,t,r=this/g, 1, 300, 5000],
-            ['.verified', /\.verified/g, 6, 600, 1600],
-            ['preseed', /preseed/gi, 8, 400, 1400],
-            ['bundle origin check', /origin missing/g, 2, 200, 2600],
-            ['.origin write', /\.origin`/g, 6, 600, 900],
-            ['expectedChecksumForTarget', /expectedChecksumForTarget\(/g, 3, 300, 1500],
-            ['releases.claude.com', /releases\.claude\.com/g, 4, 500, 1200],
-            ['manifest signature', /manifestSignatureEnforcement/g, 4, 500, 1200],
-            ['claude-code-vm', /claude-code-vm/g, 4, 400, 900],
-            ['vm_bundles dir', /claudevm\.bundle/g, 6, 500, 900],
+            // 第五次只看 Mac：它装的是「程序包」，名字、下载地址、装法和格式核对。
+            ['n3r', /[,;\s]n3r=/g, 2, 300, 600],
+            ['t3r', /[,;\s]t3r=/g, 2, 300, 600],
+            ['F4r', /function F4r\(/g, 1, 100, 2400],
+            ['I4r', /function I4r\(/g, 1, 100, 2400],
+            ['_4r', /function _4r\(/g, 1, 100, 1800],
+            ['.tar.zst', /\.tar\.zst/g, 8, 700, 700],
+            ['bundle download', /bundle\.(checksum|size)/g, 6, 700, 700],
+            ['ion-dist check', /ion-dist/g, 3, 300, 300],
           ]
           for (const [label, re, max, before, after] of patterns) {
             console.log('\n######## ' + label)
@@ -100,21 +99,28 @@ jobs:
           EOF
           node "$RUNNER_TEMP/read.mjs" "$PWD/app"
 
-      - name: Compare the CLI the app downloads with the npm package of the same version
+      - name: Mac bundle versus the npm package
         run: |
           set -uo pipefail
-          ver=$(cat "$RUNNER_TEMP/cli-version" 2>/dev/null || true)
-          if [ -z "$ver" ]; then
-            ver=$(npm view @anthropic-ai/claude-code-win32-x64 version --registry=https://registry.npmjs.org/)
-            echo "app pins no version literally; using latest npm version $ver"
-          fi
-          echo "version: $ver"
-          echo "######## manifest"
-          curl -fsSL --max-time 60 "https://downloads.claude.ai/claude-code-releases/$ver/manifest.json" | head -c 4000 || echo "no manifest.json at downloads.claude.ai"
-          echo
-          curl -fsSL --max-time 600 -o claude.exe.zst "https://downloads.claude.ai/claude-code-releases/$ver/win32-x64/claude.exe.zst" || { echo "claude.exe.zst download failed"; }
-          if [ -f claude.exe.zst ]; then zstd -dq claude.exe.zst -o claude-desktop.exe; ls -l claude.exe.zst claude-desktop.exe; sha256sum claude.exe.zst claude-desktop.exe; fi
-          npm pack --silent "@anthropic-ai/claude-code-win32-x64@$ver" --registry=https://registry.npmjs.org/ >/dev/null
-          mkdir npmcli && tar -xzf anthropic-ai-claude-code-win32-x64-$ver.tgz -C npmcli
-          echo "npm package files:"; find npmcli -type f -printf '%s %p\n' | sort -n | tail -8
-          find npmcli -type f -name '*.exe' -exec sha256sum {} \;
+          ver=$(cat "$RUNNER_TEMP/cli-version")
+          base="https://downloads.claude.ai/claude-code-releases/$ver/darwin-arm64"
+          for name in claude.zst claude.tar.zst bundle.tar.zst claude.app.tar.zst claude-bundle.tar.zst; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' -I "$base/$name"); echo "$name -> $code"
+          done
+          curl -fsSL --max-time 600 -o mac-claude.zst "$base/claude.zst" && zstd -dq mac-claude.zst -o mac-claude && sha256sum mac-claude.zst mac-claude && ls -l mac-claude
+          for name in claude.tar.zst bundle.tar.zst claude.app.tar.zst claude-bundle.tar.zst; do
+            if curl -fsSL --max-time 600 -o mac-bundle.tar.zst "$base/$name"; then
+              echo "bundle file: $name"; sha256sum mac-bundle.tar.zst; zstd -dc mac-bundle.tar.zst | tar -tvf - | head -40
+              mkdir -p macbundle && zstd -dc mac-bundle.tar.zst | tar -xf - -C macbundle
+              find macbundle -type f -size +10M -exec sha256sum {} \;
+              break
+            fi
+          done
+          npm pack --silent "@anthropic-ai/claude-code-darwin-arm64@$ver" --registry=https://registry.npmjs.org/ >/dev/null
+          mkdir npmmac && tar -xzf anthropic-ai-claude-code-darwin-arm64-$ver.tgz -C npmmac
+          echo "npm darwin-arm64:"; find npmmac -type f -printf '%s %p\n' | sort -n | tail -5
+          find npmmac -type f -size +10M -exec sha256sum {} \;
+          npm pack --silent "@anthropic-ai/claude-code-linux-x64@$ver" --registry=https://registry.npmjs.org/ >/dev/null
+          mkdir npmlinux && tar -xzf anthropic-ai-claude-code-linux-x64-$ver.tgz -C npmlinux
+          curl -fsSL --max-time 600 -o linux-claude.zst "https://downloads.claude.ai/claude-code-releases/$ver/linux-x64/claude.zst" && zstd -dq linux-claude.zst -o linux-claude && sha256sum linux-claude.zst linux-claude
+          echo "npm linux-x64:"; find npmlinux -type f -size +10M -exec sha256sum {} \;
