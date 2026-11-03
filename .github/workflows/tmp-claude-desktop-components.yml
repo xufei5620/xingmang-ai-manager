@@ -32,15 +32,23 @@ jobs:
       - name: Extract app.asar
         run: |
           set -euo pipefail
+          # MSIX 包里的文件名是百分号编码的（@ 写成 %40），解包器按原名找 unpacked 文件会找不到。
+          find msix -depth -name '*%*' | while IFS= read -r f; do
+            d=$(dirname "$f"); b=$(basename "$f")
+            n=$(python3 -I -c 'import sys, urllib.parse; print(urllib.parse.unquote(sys.argv[1]))' "$b")
+            [ "$b" = "$n" ] || mv "$f" "$d/$n"
+          done
           asar=$(find msix -name app.asar | head -1)
-          npx --yes @electron/asar@3.4.1 extract "$asar" app
+          npx --yes @electron/asar@3.4.1 extract "$asar" app || echo "some files could not be extracted"
+          npx --yes @electron/asar@3.4.1 extract msix/app/resources/ion-dist.asar ion || echo "ion: some files could not be extracted"
+          find ion -maxdepth 2 | head -30
           find app -maxdepth 3 -type f -name '*.js' -printf '%s %p\n' | sort -n | tail -20
           find app -maxdepth 2 -name package.json -exec sh -c 'echo "== $1"; head -c 600 "$1"; echo' _ {} \;
 
       - name: Where the components come from and where they go
         run: |
           set -uo pipefail
-          show() { echo; echo "######## $1"; grep -rhoE ".{0,400}$1.{0,400}" app --include='*.js' --include='*.json' | head -c "${2:-6000}"; echo; }
+          show() { echo; echo "######## $1"; grep -roE ".{0,400}$1.{0,400}" app --include='*.js' --include='*.json' | head -c "${2:-6000}"; echo; }
           show 'claude-code-releases' 8000
           show 'vms/linux' 6000
           show 'vm_bundles' 8000
@@ -50,6 +58,9 @@ jobs:
           show 'expectedSha256|sha256sum|checksums' 8000
           show 'CLAUDE_CODE_[A-Z_]*PATH|CLAUDE_CODE_BINARY|claudeCodePath|cliPath' 6000
           show 'downloads\.claude\.ai' 8000
+          show 'claude\.exe' 6000
+          show 'win32-x64' 4000
+          show 'Host Claude Code binary' 4000
           echo; echo "######## manifests"
           find app -iname '*manifest*' -o -iname '*checksum*' -o -iname '*bundle*.json' | head -20
 
