@@ -13,6 +13,7 @@ const claudeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.g
 const pluginsWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-codex-plugins-cos.yml'), 'utf8'))
 const grokWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-grok-cos.yml'), 'utf8'))
 const openCodeWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-opencode-cos.yml'), 'utf8'))
+const componentsWorkflow = YAML.parse(fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'sync-claude-components-cos.yml'), 'utf8'))
 
 test('Claude backup packages support official native runners and independent manual platform selection', () => {
   assert.deepEqual(Object.keys(claudeWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
@@ -138,6 +139,7 @@ test('only a scheduled sync on main reports failures, from a job that can write 
     ['sync-codex-plugins-cos.yml', pluginsWorkflow, ['sync']],
     ['sync-grok-cos.yml', grokWorkflow, ['sync']],
     ['sync-opencode-cos.yml', openCodeWorkflow, ['sync']],
+    ['sync-claude-components-cos.yml', componentsWorkflow, ['sync']],
   ]) {
     const alert = parsed.jobs.alert
     assert.deepEqual(alert.needs, needs, file)
@@ -219,5 +221,42 @@ test('the Grok and OpenCode syncs run on their own systems, on a timer or by han
       assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
       assert.equal(step.env, undefined)
     }
+  }
+})
+
+// The Cowork workspace and Mac program copy reads Claude's manifest with the client's own compiled
+// code, so its job installs the locked dependencies (install scripts off) and compiles before the one
+// step that holds the upload key; the five parts write disjoint checksum-named keys and run side by side.
+test('the Claude component sync compiles the client parser first and keeps the upload key in its last step', () => {
+  const gate = "${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}"
+  assert.deepEqual(Object.keys(componentsWorkflow.on).sort(), ['schedule', 'workflow_dispatch'])
+  assert.deepEqual(componentsWorkflow.on.schedule, [{ cron: '41 */6 * * *' }])
+  assert.equal(componentsWorkflow.on.workflow_dispatch, null)
+  assert.deepEqual(componentsWorkflow.permissions, { contents: 'read' })
+  assert.deepEqual(componentsWorkflow.concurrency, { group: 'cos-claude-components-publish', 'cancel-in-progress': false })
+  const sync = componentsWorkflow.jobs.sync
+  assert.equal(sync.if, gate)
+  assert.equal(sync.environment, 'cos-sync')
+  assert.equal(sync['runs-on'], 'ubuntu-latest')
+  assert.equal(sync['timeout-minutes'], 330)
+  assert.equal(sync.permissions, undefined)
+  assert.equal(sync.env, undefined)
+  assert.equal(sync.strategy['fail-fast'], false)
+  assert.deepEqual(sync.strategy.matrix, { part: require('./sync-claude-components-cos.cjs').PART_IDS })
+  const runs = sync.steps.filter((step) => step.run).map((step) => step.run)
+  assert.deepEqual(runs, ['npm ci --ignore-scripts --no-audit --no-fund', 'node node_modules/typescript/bin/tsc -p tsconfig.electron.json', 'node scripts/sync-claude-components-cos.cjs'])
+  const steps = sync.steps.filter((step) => Object.keys(step.env || {}).some((key) => key.startsWith('COS_SECRET_') || key === 'GITHUB_TOKEN'))
+  assert.equal(steps.length, 1)
+  assert.equal(steps[0], sync.steps[sync.steps.length - 1])
+  assert.equal(steps[0].env.COS_SECRET_ID, '${{ secrets.COS_SECRET_ID }}')
+  assert.equal(steps[0].env.COS_SECRET_KEY, '${{ secrets.COS_SECRET_KEY }}')
+  assert.equal(steps[0].env.CLAUDE_COMPONENTS_PART, '${{ matrix.part }}')
+  assert.equal(steps[0].env.GITHUB_TOKEN, undefined)
+  assert.doesNotMatch(steps[0].run, /inputs\.|secrets\.|\$\{\{/)
+  const checkout = sync.steps.find((step) => /actions\/checkout@/.test(step.uses || ''))
+  assert.equal(checkout.with['persist-credentials'], false)
+  for (const step of sync.steps.filter((entry) => entry.uses)) {
+    assert.match(step.uses, /^[^@]+@[a-f0-9]{40}$/)
+    assert.equal(step.env, undefined)
   }
 })

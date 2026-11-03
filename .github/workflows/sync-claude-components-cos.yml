@@ -1,0 +1,81 @@
+# Claude Desktop 的 Cowork 工作区（四个平台）和 Mac 的 Claude Code 程序包：从 Claude 官网原样搬进腾讯云存储桶。
+# 客户端（claude-desktop-workspace-seed.ts、claude-desktop-mac-code-seed.ts）按自己装的那份 Claude 里写的校验值去桶里取。
+name: sync-claude-components-cos
+
+on:
+  schedule:
+    - cron: '41 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cos-claude-components-publish
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: ${{ github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    # 五部分各写各的位置（位置里带校验值），互不覆盖，可以同时传；已经在桶里的几分钟就看完。
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [vm-win32-x64, vm-win32-arm64, vm-unix-x64, vm-unix-arm64, code-mac]
+    runs-on: ubuntu-latest
+    environment: cos-sync
+    # 一份工作区约 1.3 GB，往 COS 上海分块传约 190~300 KB/s，要一个半小时上下，断网时还要等着重试；
+    # GitHub 托管的作业最长 6 小时，留半小时余量。
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - name: Install locked dependencies without their install scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # 读清单、算桶里的位置都用客户端同一套代码，所以先编译主进程。
+      - name: Compile the main process that reads Claude's component manifest
+        run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      - name: Copy the components this Claude version pins into Tencent COS
+        env:
+          COS_BUCKET: ${{ vars.COS_BUCKET || 'xingmang-downloads-1342302199' }}
+          COS_REGION: ${{ vars.COS_REGION || 'ap-shanghai' }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          XINGMANG_COS_MULTIPART_ENABLED: ${{ vars.XINGMANG_COS_MULTIPART_ENABLED || 'false' }}
+          XINGMANG_COS_MULTIPART_CONCURRENCY: ${{ vars.XINGMANG_COS_MULTIPART_CONCURRENCY || '8' }}
+          XINGMANG_COS_ACCELERATE: ${{ vars.XINGMANG_COS_ACCELERATE || 'false' }}
+          CLAUDE_COMPONENTS_PART: ${{ matrix.part }}
+        run: node scripts/sync-claude-components-cos.cjs
+
+  # 定时同步连续两次失败就开一条 issue 报警（指派给仓库负责人），之后的失败只改这一条，
+  # 下一次定时同步成功就留言并关闭；手动运行不算。只有这个作业能写 issue，它不碰 COS 凭据。
+  alert:
+    needs: [sync]
+    if: ${{ always() && github.event_name == 'schedule' && github.repository == 'xufei5620/xingmang-ai-manager' && github.ref == 'refs/heads/main' && vars.XINGMANG_COS_SYNC_ENABLED == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Open, update or close the sync failure alert issue
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SYNC_WORKFLOW_FILE: sync-claude-components-cos.yml
+          SYNC_NEEDS: ${{ toJSON(needs) }}
+        run: node scripts/cos-sync-alert.cjs

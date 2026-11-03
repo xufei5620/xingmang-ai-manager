@@ -18,6 +18,7 @@ COS 的主要用途是下载星芒 AI 管理工具。Codex 桌面端和 Claude �
 | Codex 官方插件目录（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-codex-plugins-cos` | `xingmang/offline/codex-plugins/latest.json` |
 | Grok CLI Windows 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-grok-cos` | `xingmang/offline/grok/latest.json` |
 | OpenCode 桌面端 Mac 版（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-opencode-cos` | `xingmang/offline/opencode/latest.json` |
+| Claude 桌面端的 Cowork 工作区、Mac 上的 Claude Code 程序包（只给星芒客户端用） | 每 6 小时检查一次；也可手动运行 `sync-claude-components-cos` | 没有索引：位置由客户端自己装的 Claude 里写的版本和校验值算出 |
 
 星芒用 `GITHUB_TOKEN` 创建 GitHub Release，不能依赖这个事件再触发一个 `release: published` 工作流，所以同步写在 `publish-release` 里，是排在 publish 后面的单独作业 `cos-sync`：publish 作业（`release` 环境批准、`update-feed` 串行）成功后才开始；它挂 `cos-sync` 环境，不多一次批准；和手动导入 `sync-published-manager-cos` 共用 `cos-manager-publish` 并发组，因为两边都会写 `xingmang/latest.json`。2026-10-04 以前同步接在 publish 作业末尾，为什么拆出来见下文「网络不稳时」。
 
@@ -188,11 +189,25 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 打开 **Actions → sync-opencode-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/opencode/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 
+### Claude 桌面端的工作区和 Mac 程序
+
+Claude Desktop 自己要从官网下两样东西，国内下不动：点进 Cowork 时下的工作区（每个平台一个 1.3 GB 左右的系统盘外加内核等小文件），Mac 上聊天和 Code 要用的 Claude Code 程序包（`claude.app.tar.zst`，九十来 MB）。网络加速 2026-10-30 下线后，yoyo 11-03 定：这两样搬进桶里，由星芒放进 Claude 自己的文件夹（`electron/claude-desktop-workspace-seed.ts`、`claude-desktop-mac-code-seed.ts`），不用加速。`sync-claude-components-cos`（`scripts/sync-claude-components-cos.cjs`）负责搬：
+
+- 每次先下一份最新的 Windows x64 版 Claude 安装包，只解出里面的 `app/resources/app.asar`，读出这一版 Claude 要的工作区（四个平台）和 Claude Code 版本、Mac 程序包的校验值。读法和桶里的位置用的是客户端同一套代码：作业先 `npm ci --ignore-scripts`、编译主进程，脚本再加载 `dist-electron/` 里那三个模块，所以同步传的位置和客户端去取的位置是同一个函数算的（`electron/claude-desktop-components-sync.test.ts` 也钉着）。Windows 包里四个平台的清单都在（11-03 拆 4.4212.0 核过），不用另拆 Mac 包。
+- 五部分（`vm-win32-x64`、`vm-win32-arm64`、`vm-unix-x64`、`vm-unix-arm64` 四份工作区，`code-mac` 两种芯片的程序包）各一台 Ubuntu 机器同时跑。每个文件先 HEAD 桶里的位置：大小和 `x-cos-meta-sha256` 都对得上就跳过，所以没出新版时几分钟就结束；位置上有东西但对不上就停下报警，不覆盖。
+- 缺的才从 `downloads.claude.ai` 的两个固定目录下（`/vms/linux/<x64|arm64>/<工作区版本>/<文件>.zst`、`/claude-code-releases/<版本>/darwin-<芯片>/claude.app.tar.zst`，不跟跳转），大小和 SHA-256 必须和清单一字不差，再原样传到 `xingmang/offline/claude-components/vm/<工作区版本>/<win32|unix>-<x64|arm64>/<SHA-256>/<文件>.zst` 或 `…/code/<版本>/darwin-<芯片>/<SHA-256>/claude.app.tar.zst`（`application/zstd`，不可覆盖），完整回读、HEAD 核过才算完。下下来的东西不运行、不解开。
+- 不核安装包签名：安装包在这里只用来知道该搬哪几个官网文件。客户电脑上放之前还要拿它**自己装的那份** Claude 里写的校验值再核一遍，桶里的东西对不上就丢掉不放，所以桶出了问题最多是客户白下一次。
+- 没有 `latest.json`：客户端按自己的 Claude 版本算位置，桶里只增不改。一版工作区四个平台约 5.3 GB、换一版传一次（往上海分块约 190~300 KB/s，每份一个半小时上下，单个文件分块期限 4 小时，作业限 330 分钟）；程序包跟 Claude Code 版本走，大约一周一次。旧版不删，要清可以在桶上设生命周期规则（桶设置，负责人决定）。
+- 大文件要走分块上传，所以 `cos-sync` 环境的 `XINGMANG_COS_MULTIPART_ENABLED` 得是 `true`（Codex 桌面端那条同步已经靠它传 700 MB 以上的包）；关着时工作区那四部分会在上传那一步失败报警，程序包那部分照常。
+- 客户端那边的总开关是远程开关 `claude-desktop-workspace-seed`（工作区）和 `claude-desktop-code-seed`（程序），见 `docs/SERVICE-STATUS.md`；账单不对先关开关，同步可以照跑。
+
+打开 **Actions → sync-claude-components-cos → Run workflow**，分支选 `main` 即可手动跑一次（五部分都跑，已经在桶里的跳过）。日志里搜 `"event":"plan"` 看这次读到的工作区版本、Claude Code 版本和要搬的文件，搜 `stage-failed` 看卡在哪一步。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
+
 ### 同步失败报警
 
-五条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
+六条官方定时同步（Claude、Codex 桌面端离线包，Codex 插件目录，Windows 版 Grok，Mac 版 OpenCode，Claude 桌面端的工作区和 Mac 程序）各带一个 `alert` 作业（`scripts/cos-sync-alert.cjs`），等其它作业结束后看这次定时同步有没有失败（作业失败、取消或超时都算）：
 
-- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac）」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
+- 第 1 次失败不出声；**连续第 2 次**失败就开一条 issue「离线包同步连续失败：Claude 桌面端 / Codex 桌面端 / Codex 插件目录 / Grok CLI（Windows） / OpenCode 桌面端（Mac） / Claude 桌面端的工作区和 Mac 程序」，指派给仓库负责人，写明连续几次、最早从什么时候、最近一次运行的链接和红的是哪个作业（离线包是哪个平台）。
 - 之后再失败只更新这条 issue 的正文，不另开；下一次定时同步成功就自动留言「恢复正常更新」并关闭。
 - 手动运行（Run workflow）不计数，也不开关 issue；重跑以前的某次定时运行也不改 issue，以最新一次定时同步为准。只有 `alert` 作业自己红（比如 GitHub 接口临时出错）的那次不算同步失败。
 - 看原因：打开 issue 里的运行链接，点红色作业，日志里搜 `stage-failed`，`stage` 是卡在哪一步，`failure.code` 是原因。
