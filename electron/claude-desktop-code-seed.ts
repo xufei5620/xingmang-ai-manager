@@ -114,7 +114,7 @@ const tarBlock = 512
 // 包里只有 LICENSE.md、README.md、package.json、claude.exe 四样；多出一大堆就不是我们认得的那种包。
 const tarEntryLimit = 64
 const tarMetadataLimitBytes = 64 * 1024
-// 2.1.317 的 claude.exe 是 338 MB，包约 120 MB（推测：gzip 比官网的 zstd 压得松一点）。
+// 2.1.309 实测（11-03 GitHub 的 Windows 机器）：claude.exe 298 MB，npm 包 136 MB；2.1.317 的 claude.exe 是 338 MB。
 const tarballLimitBytes = 768 * 1024 * 1024
 const binaryLimitBytes = 1024 * 1024 * 1024
 const binaryMinimumBytes = 1024 * 1024
@@ -124,7 +124,7 @@ const tarballRedirectLimit = 3
 const markerLimitBytes = 4 * 1024
 // 下完要等它退出、放进去之前那次「开着没有」：一个 PowerShell，给 20 秒。
 const runningProbeTimeoutMs = 20_000
-/** 一次最多为这件事等多久：约 120 MB，按每秒 150 KB 也下得完；再慢就先照常打开，下次再放。 */
+/** 一次最多为这件事等多久：包约 136 MB，按每秒 150 KB 刚好下得完；再慢就先照常打开，下次再放。 */
 export const claudeDesktopCodeSeedTimeoutMs = 15 * 60_000
 const temporaryNamePattern = /^claude\.exe\.xingmang-[0-9a-f-]{36}\.(?:tgz|tmp)$/
 
@@ -398,7 +398,7 @@ export function validateClaudeCodeTarballUrl(candidate: string, packageName: str
   const bare = packageName.slice(packageName.indexOf('/') + 1)
   const file = `${bare}-${version}.tgz`
   const registryPath = `/${packageName}/-/${file}`
-  // 镜像跳去 CDN 时 scope 前那个 @ 可能写成 %40：解开以后整段跟预期逐字相同才算，解不开的直接拒。
+  // 镜像 302 去 CDN 时 scope 前那个 @ 写成 %40（11-03 实测 Location 就是这样）：解开以后整段跟预期逐字相同才算，解不开的直接拒。
   let pathname: string | null
   try { pathname = decodeURIComponent(url.pathname) }
   catch { pathname = null }
@@ -972,7 +972,7 @@ export function createClaudeDesktopCodeSeeder(options: ClaudeDesktopCodeSeederOp
       return { status: 'present', version: pin.version }
     }
     const space = await diskSpace(profileDirectory).catch(() => null)
-    // 读不到空间照样放行（disk-space.ts 的 fail-open）。程序解开约 300 MB，包约 120 MB，同一道 1 GB 门槛。
+    // 读不到空间照样放行（disk-space.ts 的 fail-open）。程序解开约 300 MB，包约 136 MB，同一道 1 GB 门槛。
     if (space && space.availableBytes < installMinimumFreeBytes) {
       throw new SeedSkip('disk-space', '盘上空间不够，这次不替 Claude Desktop 放程序', { availableBytes: space.availableBytes })
     }
