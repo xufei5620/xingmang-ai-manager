@@ -1,0 +1,75 @@
+# 临时：空跑 sync-claude-components-cos（从官网真下五部分、核大小和校验值，不往桶里传），核 yoyo 11-03「开探测」，核完就删。
+name: tmp-claude-components-sync
+
+on:
+  push:
+    branches: [claude/tmp-claude-components-sync-probe]
+
+permissions:
+  contents: read
+
+jobs:
+  dry-run:
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [vm-win32-x64, vm-win32-arm64, vm-unix-x64, vm-unix-arm64, code-mac]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      # 同一份脚本、同一套依赖，只把存储桶换成只记账的假桶：inspect 一律说「桶里没有」，publishFile 只在本机算一遍
+      # 大小和 SHA-256。所以每个文件都会真从 downloads.claude.ai 下（不跟跳转），按 app.asar 清单核大小和校验值。
+      - name: Dry-run the sync without the bucket
+        env:
+          CLAUDE_COMPONENTS_PART: ${{ matrix.part }}
+        run: |
+          node <<'NODE'
+          const crypto = require('node:crypto')
+          const fs = require('node:fs')
+          const common = require('./scripts/cos-sync-utils.cjs')
+          const sync = require('./scripts/sync-claude-components-cos.cjs')
+          const part = sync.parsePart(process.env.CLAUDE_COMPONENTS_PART)
+          const objects = new Map()
+          function hashFile(file) {
+            return new Promise((resolve, reject) => {
+              const hash = crypto.createHash('sha256')
+              let bytes = 0
+              fs.createReadStream(file).on('data', (chunk) => { bytes += chunk.length; hash.update(chunk) }).on('error', reject).on('end', () => resolve({ bytes, sha256: hash.digest('hex') }))
+            })
+          }
+          const store = {
+            async inspect(key) { return objects.get(key) || null },
+            async publishFile(key, file, input) {
+              const { bytes, sha256 } = await hashFile(file)
+              if (bytes !== input.expectedBytes || sha256 !== input.expectedSha256) throw new Error('dry-run: local file differs from the manifest')
+              console.log(`[dry-run] would publish ${key} (${bytes} bytes, ${input.contentType})`)
+              const object = { bytes, sha256, etag: `"${sha256.slice(0, 16)}"` }
+              objects.set(key, object)
+              return { key, ...object }
+            },
+          }
+          const dependencies = sync.createRuntimeDependencies(common)
+          const resolve = dependencies.resolveOfficialPackage
+          dependencies.resolveOfficialPackage = async (url) => {
+            const resource = await resolve(url)
+            console.log(`[dry-run] installer ${resource.url} (${resource.bytes} bytes)`)
+            return resource
+          }
+          const started = Date.now()
+          sync.synchronizeClaudeComponents({ part, store, dependencies, components: sync.loadComponents(),
+            progress: (event) => { if (event.event !== 'transfer') console.log(`[claude-components-sync] ${JSON.stringify(event)}`) } })
+            .then((result) => console.log(`[dry-run] done in ${Math.round((Date.now() - started) / 1000)}s ${JSON.stringify(result)}`))
+            .catch((error) => { console.error(`[dry-run] failed ${JSON.stringify(sync.safeComponentsSyncFailure(error))}`); process.exitCode = 1 })
+          NODE
