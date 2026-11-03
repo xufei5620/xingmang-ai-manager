@@ -17,6 +17,13 @@ export interface PlatformCapabilities {
    * 2026-10-30 起三个平台都是 false：线路被封，yoyo 回「下线改」。
    */
   readonly acceleration?: boolean
+  /**
+   * 内置加速：客户看不见、也开不了，只在必须加速才办得成的那几处由软件在后台替他连——从星芒打开
+   * Claude 桌面端让它下组件、打开 Codex 桌面端取不到中文、Codex 里登 ChatGPT 账号（2026-11-03 yoyo
+   * 「客户无法自己开启，作为内置完成一些必须要加速才用得到的事」）。界面上有没有加速仍只看 acceleration。
+   * 缺省 = 不替他连（0.2.23 的行为）。
+   */
+  readonly automaticAcceleration?: boolean
   /** 缺省 = 按渲染层注册表的 requires 判断，Gemini 要 Python（旧行为）。 */
   readonly cliNeedsPythonRuntime?: Readonly<Record<ProviderId, boolean>>
   readonly codexDesktop: Readonly<{
@@ -76,6 +83,8 @@ export function platformCapabilitiesFor(
     // 界面上不再有加速的入口，也不再替打开的桌面端连。安装包里的加速内核这一版还带着：上次加速时
     // 崩了、留在半路的系统代理，开机靠它改回去（bootstrap/acceleration.ts 的 createAccelerationHost）。
     acceleration: false,
+    // 界面上不放回去，后台那几处接回来（2026-11-03）。Linux 第一版本来就没有加速内核。
+    automaticAcceleration: windows || macos,
     // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
     // 缺了它照样能装能用，不该拦着。Linux 先去掉（Linux 版拆分 ③）；它自带的现成包也覆盖
     // Windows 和 Mac，两边跟着去掉：Windows 不再顺带多装一个 Python，Mac 没装也不再拦着
@@ -95,6 +104,12 @@ export function platformCapabilitiesFor(
       windowsStore: windows,
     }),
   })
+}
+
+// 这台电脑还会不会真的去连加速：界面上能开，或者软件在后台替他连。在线换节点、睡眠唤醒后重读加速
+// 状态、远程开关这几样跟着它，不跟界面走。
+export function accelerationInUse(capabilities: Pick<PlatformCapabilities, 'acceleration' | 'automaticAcceleration'>): boolean {
+  return capabilities.acceleration !== false || capabilities.automaticAcceleration === true
 }
 
 // Grok 走哪条路装：Windows 装 xAI 签名的原生程序，Mac 和 Linux 从 npm 装。装、查新版本、算安装目录都按它分平台。

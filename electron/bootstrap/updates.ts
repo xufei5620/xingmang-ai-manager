@@ -10,7 +10,7 @@ import { createCliModelHintsStore } from '../cli-model-hints-store'
 import { runWithTrustedWindowsProcessEnvironment } from '../command-runner'
 import { readDiskSpace, tightestDiskSpace, updateDownloadProbeTargets } from '../disk-space'
 import type { InstalledRelease } from '../installed-release'
-import { platformCapabilitiesFor } from '../platform-capabilities'
+import { accelerationInUse, platformCapabilitiesFor } from '../platform-capabilities'
 import { openWithSystemInstaller, readLinuxPackageType, resolveLinuxInstallMethod, resolveSystemPackageOpener, systemInstallerEnvironment, systemInstallerFailureMessage, type SystemInstallerError } from '../linux-deb-update'
 import type { ReleaseGuardStore } from '../release-guard-store'
 import type { RelayEndpointId } from '../relay-sites'
@@ -299,9 +299,10 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       await serviceStatusMonitor.settled()
       return resolveHiddenPaymentMethodsFor(serviceStatusMonitor.lastKnown(), app.getVersion(), releasePlatforms)
     }
-    // 在线换节点（acceleration-online-nodes.ts）：节点文件跟状态文件放在一起，读法也一样，只有能加速的平台读。
+    // 在线换节点（acceleration-online-nodes.ts）：节点文件跟状态文件放在一起，读法也一样，只有会去连加速的平台读
+    // （界面上能开，或者内置加速在后台替他连：线路被封后换了新线路，不发版也能推过去）。
     // 一律读包里那份更新目录：直连那份只放行白名单里的文件。日志里只有发布时间和线路条数，不写节点内容（I13）。
-    const accelerationNodes = serviceStatusUrl && platformCapabilitiesFor(process.platform).acceleration
+    const accelerationNodes = serviceStatusUrl && accelerationInUse(platformCapabilitiesFor(process.platform))
       ? createAccelerationNodesUpdater({
         url: resolveAccelerationNodesUrl(serviceStatusUrl),
         filePath: accelerationOnlineNodesPath(managerDataDirectory),

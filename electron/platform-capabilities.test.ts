@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { platformCapabilitiesFor } from './platform-capabilities'
+import { accelerationInUse, platformCapabilitiesFor } from './platform-capabilities'
 
 describe('platformCapabilitiesFor', () => {
   it('returns the exact managed Windows policy, with no Python for Gemini', () => {
@@ -22,6 +22,7 @@ describe('platformCapabilitiesFor', () => {
         grok: false,
       },
       acceleration: false,
+      automaticAcceleration: true,
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
@@ -59,6 +60,7 @@ describe('platformCapabilitiesFor', () => {
         grok: true,
       },
       acceleration: false,
+      automaticAcceleration: true,
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
@@ -102,6 +104,7 @@ describe('platformCapabilitiesFor', () => {
         grok: true,
       },
       acceleration: false,
+      automaticAcceleration: false,
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
@@ -139,6 +142,7 @@ describe('platformCapabilitiesFor', () => {
         grok: true,
       },
       acceleration: false,
+      automaticAcceleration: false,
       cliNeedsPythonRuntime: {
         claude: false,
         codex: false,
@@ -152,5 +156,23 @@ describe('platformCapabilitiesFor', () => {
         windowsStore: false,
       },
     })
+  })
+})
+
+describe('accelerationInUse', () => {
+  // 2026-11-03 yoyo「客户无法自己开启，作为内置完成一些必须要加速才用得到的事」：界面上没有加速，后台那几处照样要连。
+  it('still uses the acceleration kernel on Windows and Mac, where the app connects in the background', () => {
+    expect(accelerationInUse(platformCapabilitiesFor('win32', 'x64'))).toBe(true)
+    expect(accelerationInUse(platformCapabilitiesFor('darwin', 'arm64'))).toBe(true)
+  })
+
+  it('never uses it on Linux, which ships no acceleration kernel', () => {
+    expect(accelerationInUse(platformCapabilitiesFor('linux', 'x64'))).toBe(false)
+  })
+
+  it('treats a policy that shows acceleration on screen as using it, as before', () => {
+    expect(accelerationInUse({})).toBe(true)
+    expect(accelerationInUse({ acceleration: false })).toBe(false)
+    expect(accelerationInUse({ acceleration: false, automaticAcceleration: true })).toBe(true)
   })
 })

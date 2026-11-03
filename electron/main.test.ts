@@ -317,9 +317,9 @@ describe('main process quit cleanup', () => {
       if (name !== 'power-off-watch') expect({ name, guard }).toEqual({ name, guard: null })
     }
     const { sourceText } = mainSource()
-    // 网络加速 2026-10-30 下线以后，没有加速的平台（现在是全部）睡眠唤醒也什么都不做。
-    expect(sourceText).toContain('const onSuspend = () => { if (developmentAcceleration && accelerationOffered) accelerationPower.suspended() }')
-    expect(sourceText).toContain('const onResume = () => { if (developmentAcceleration && accelerationOffered) accelerationPower.resumed() }')
+    // 不会去连加速的平台（Linux）睡眠唤醒什么都不做；内置加速（2026-11-03）在后台连着的那次照旧要管。
+    expect(sourceText).toContain('const onSuspend = () => { if (developmentAcceleration && accelerationKernelInUse) accelerationPower.suspended() }')
+    expect(sourceText).toContain('const onResume = () => { if (developmentAcceleration && accelerationKernelInUse) accelerationPower.resumed() }')
   })
 
   it('disconnects acceleration after its notices, then lets the worker go exactly once', () => {

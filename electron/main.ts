@@ -69,7 +69,7 @@ import { crashReportDist, crashReportDsn, crashReportRelease, crashReportSelfTes
 import { createCrashReporter } from './crash-reporter'
 import { classifyNetworkFailure } from './network-failure'
 import { PlatformSettingsStore } from './platform/settings-store'
-import { platformCapabilitiesFor } from './platform-capabilities'
+import { accelerationInUse, platformCapabilitiesFor } from './platform-capabilities'
 import {
   resolveUsageOs,
   resolveUsageUpdateState,
@@ -908,9 +908,13 @@ if (!hasSingleInstanceLock) {
     ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
     // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
     // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
-    // 网络加速 2026-10-30 下线（platform-capabilities.ts）：三个平台都没有加速了。加速文件照旧要读，
-    // 开机改回上次留在半路的系统代理靠它（createAccelerationHost）。
-    const accelerationOffered = platformCapabilitiesFor().acceleration !== false
+    // 网络加速 2026-10-30 下线（platform-capabilities.ts）：界面上三个平台都没有加速了。加速文件照旧要读，
+    // 开机改回上次留在半路的系统代理靠它（createAccelerationHost）；2026-11-03 起 Windows、Mac 上
+    // 打开桌面端时又在后台替他连（内置加速，automaticAcceleration），客户自己开不了。
+    const platformCapabilities = platformCapabilitiesFor()
+    const accelerationOffered = platformCapabilities.acceleration !== false
+    const automaticAccelerationOffered = platformCapabilities.automaticAcceleration === true
+    const accelerationKernelInUse = accelerationInUse(platformCapabilities)
     // 下线以后检查页不再有「加速功能」这一行：客户用不着加速，文件坏了也没什么可做的。
     const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
       !app.isPackaged || !accelerationOffered ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
@@ -1218,7 +1222,7 @@ if (!hasSingleInstanceLock) {
       accelerationService: () => acceleration,
       issueCodexStartupTicket: () => issueCodexStartupTicket(),
       readStoredConfig: () => systemService.readStoredConfig(),
-      accelerationOffered,
+      automaticAccelerationOffered,
     })
     const { downloadAcceleration, codexDesktopAcceleration, claudeDesktopAcceleration, codexDesktopStartupRoute, prepareClaudeDesktopLaunch, downloadFetch } = accelerationRouting
     const systemService = createSystemService(settingsStore, {
@@ -2201,6 +2205,7 @@ if (!hasSingleInstanceLock) {
       applicationTray: () => applicationTray,
       accelerationSuspended: () => remoteFeatures.isOff('acceleration'),
       accelerationOffered,
+      automaticAccelerationOffered,
     })
     accelerationExpiry = accelerationServices.accelerationExpiry
     accelerationInterruption = accelerationServices.accelerationInterruption
@@ -2218,9 +2223,10 @@ if (!hasSingleInstanceLock) {
         : Promise.reject(new Error('加速服务尚未就绪。')),
       log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
     })
-    // 网络加速下线以后不会再有连着的加速：醒来不再替他读一次加速状态，那会白白拉起加速辅助进程。
-    const onSuspend = () => { if (developmentAcceleration && accelerationOffered) accelerationPower.suspended() }
-    const onResume = () => { if (developmentAcceleration && accelerationOffered) accelerationPower.resumed() }
+    // 不会去连加速的平台（Linux）醒来不替他读加速状态，那会白白拉起加速辅助进程。内置加速后台连着的那次
+    // 照旧要：睡着前停住计时，醒来看它还在不在，不在了先把网络改回来。
+    const onSuspend = () => { if (developmentAcceleration && accelerationKernelInUse) accelerationPower.suspended() }
+    const onResume = () => { if (developmentAcceleration && accelerationKernelInUse) accelerationPower.resumed() }
     powerMonitor.on('suspend', onSuspend)
     powerMonitor.on('resume', onResume)
     quitCleanup.add('acceleration-power', () => {

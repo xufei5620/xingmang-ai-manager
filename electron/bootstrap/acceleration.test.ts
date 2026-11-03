@@ -4,6 +4,7 @@ import type { AccelerationState } from '../acceleration-contract'
 import { createAccelerationDevelopmentHost, type AccelerationDevelopmentConfig } from '../acceleration-development-host'
 import type { AccelerationInterruptionNotice } from '../acceleration-interruption-notice'
 import type { AccelerationPreferenceStore } from '../acceleration-preference-store'
+import { platformCapabilitiesFor } from '../platform-capabilities'
 import { accelerationOffMessage } from '../remote-features'
 import type { RuntimeLogStore } from '../runtime-log'
 import {
@@ -153,18 +154,20 @@ describe('acceleration routing', () => {
       .resolves.toEqual({ status: 'skipped', reason: 'state-unreadable' })
   })
 
-  // 网络加速 2026-10-30 下线（yoyo 回「下线改」）：打开 Codex、Claude 桌面端都不再替他连，连加速状态都不去读，
+  // 没有内置加速的平台（Linux）：打开 Codex、Claude 桌面端都不替他连，连加速状态都不去读，
   // 读一次就会拉起整份加速辅助进程。
-  it('neither connects nor reads acceleration for the desktop apps where acceleration is retired', async () => {
-    const { routing, accelerationService } = route({ accelerationOffered: false })
+  it('neither connects nor reads acceleration for the desktop apps where there is no built-in acceleration', async () => {
+    const { routing, accelerationService } = route({ automaticAccelerationOffered: false })
     expect(routing.prepareClaudeDesktopLaunch).toBeUndefined()
     await expect(routing.codexDesktopStartupRoute.prepare({ launchArgumentsUsable: true })).resolves.toMatchObject({ kind: expect.any(String) })
     await expect(routing.codexDesktopStartupRoute.prepare({ launchArgumentsUsable: false })).resolves.toMatchObject({ kind: expect.any(String) })
     expect(accelerationService).not.toHaveBeenCalled()
   })
 
-  it('still connects for the desktop apps on a platform that offers acceleration', async () => {
-    const { routing, accelerationService } = route({ accelerationOffered: true })
+  // 2026-11-03 yoyo「客户无法自己开启，作为内置完成一些必须要加速才用得到的事」：界面上没有加速，
+  // 打开 Claude 桌面端下组件、Codex 桌面端取中文照样在后台替他连。
+  it('connects for the desktop apps where acceleration is built in, though it is gone from the screen', async () => {
+    const { routing, accelerationService } = route({ automaticAccelerationOffered: true })
     await expect(routing.prepareClaudeDesktopLaunch?.({ isDesktopRunning: async () => null }))
       .resolves.toEqual({ status: 'skipped', reason: 'state-unreadable' })
     expect(accelerationService).toHaveBeenCalledTimes(1)
@@ -172,8 +175,10 @@ describe('acceleration routing', () => {
     expect(accelerationService).toHaveBeenCalledTimes(2)
   })
 
-  it('offers no acceleration for the desktop apps on this computer by default', () => {
-    expect(route().routing.prepareClaudeDesktopLaunch).toBeUndefined()
+  it('follows this computer\'s platform by default: built in on Windows and Mac, absent on Linux', () => {
+    const builtIn = platformCapabilitiesFor().automaticAcceleration === true
+    expect(route().routing.prepareClaudeDesktopLaunch === undefined).toBe(!builtIn)
+    expect(builtIn).toBe(process.platform === 'win32' || process.platform === 'darwin')
   })
 })
 
@@ -252,6 +257,25 @@ describe('acceleration services', () => {
   it('refuses every new connection where acceleration is retired, whatever the status file says', async () => {
     const { services } = build({ accelerationSuspended: () => false })
     await expect(services.userAcceleration.startAcceleration('xm-account:1', 'system-proxy')).rejects.toThrow(accelerationOffMessage)
+  })
+
+  // 内置加速：后台替桌面端连的那次照远程开关走，客户自己开（冻结的旧回滚界面）照样拒。
+  it('lets the app connect in the background where acceleration is built in, but never the customer', async () => {
+    let off = false
+    const { services } = build({ automaticAccelerationOffered: true, accelerationSuspended: () => off })
+    await expect(services.acceleration.startAutomaticAcceleration('xm-account:1', 'claude-desktop', 'system-proxy'))
+      .rejects.not.toThrow(accelerationOffMessage)
+    await expect(services.userAcceleration.startAcceleration('xm-account:1', 'system-proxy')).rejects.toThrow(accelerationOffMessage)
+    expect(services.trayAcceleration).toBeNull()
+    off = true
+    await expect(services.acceleration.startAutomaticAcceleration('xm-account:1', 'claude-desktop', 'system-proxy'))
+      .rejects.toThrow(accelerationOffMessage)
+  })
+
+  it('refuses the background connections too where acceleration is neither shown nor built in', async () => {
+    const { services } = build({ accelerationOffered: false, automaticAccelerationOffered: false, accelerationSuspended: () => false })
+    await expect(services.acceleration.startAutomaticAcceleration('xm-account:1', 'codex-desktop', 'system-proxy'))
+      .rejects.toThrow(accelerationOffMessage)
   })
 
   it('follows the status file where acceleration is offered', async () => {
