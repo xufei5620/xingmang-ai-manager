@@ -1,4 +1,4 @@
-import type { CliLaunchResult, CodexDesktopLaunchResult } from '../../../../electron/ipc-contract'
+import type { CliLaunchResult, CodexDesktopLaunchResult, ExternalClientLaunchProgress } from '../../../../electron/ipc-contract'
 import { spacedName } from './model'
 
 const unverifiedChineseLocale = 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。'
@@ -73,6 +73,16 @@ export function clientLaunchWaitLabel(
 ): string {
   const own = jobs[client]
   return launchWaitLabel(own ? { [client]: own } : {}, nameOf, '正在打开客户端')
+}
+
+/**
+ * 点了「打开」Claude Desktop、真正打开之前，Windows 上星芒先从国内 npm 镜像替它放好聊天要用的 Claude Code
+ * 程序（electron/claude-desktop-code-seed.ts），要下一百多 MB。这段时间工具行不再只写「正在打开客户端」，
+ * 免得以为卡死了。字是 yoyo 2026-11-04 回「放程序字改」批的；不知道包多大、已经在解包时不写百分比。
+ */
+export function clientLaunchProgressLabel(event: ExternalClientLaunchProgress): string {
+  const percent = event.percent === null ? '' : `（${event.percent}%）`
+  return `正在替 Claude Desktop 准备聊天要用的程序${percent}，好了马上打开`
 }
 
 // Git 不在工具表里，和 Node.js、Python 一样挂在首页「运行环境」那张卡上，名字只能在这里给。

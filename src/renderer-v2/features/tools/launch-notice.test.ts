@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clientLaunchWaitLabel, launchDeclined, launchWaitLabel, launchWarning, logoutJobsNote, resumeSessionNotice } from './launch-notice'
+import { clientLaunchProgressLabel, clientLaunchWaitLabel, launchDeclined, launchWaitLabel, launchWarning, logoutJobsNote, resumeSessionNotice } from './launch-notice'
 import type { DesktopAppStatus } from '../../../../electron/ipc-contract'
 
 const status = { installed: true } as DesktopAppStatus
@@ -126,5 +126,16 @@ describe('logoutJobsNote', () => {
   it('says uninstalls finish separately and skips keys it cannot name', () => {
     expect(logoutJobsNote({ claude: {}, workbuddy: { kind: 'uninstall' }, mystery: {} }, nameOf))
       .toBe('正在安装的 Claude Code 会继续装完。正在卸载的 WorkBuddy 会继续卸完。')
+  })
+})
+
+describe('clientLaunchProgressLabel', () => {
+  it('says Claude Desktop is getting its program, with the percent while it is known', () => {
+    expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'downloading', percent: 35 }))
+      .toBe('正在替 Claude Desktop 准备聊天要用的程序（35%），好了马上打开')
+    expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'downloading', percent: null }))
+      .toBe('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开')
+    expect(clientLaunchProgressLabel({ tool: 'claudeDesktop', phase: 'placing', percent: null }))
+      .toBe('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开')
   })
 })

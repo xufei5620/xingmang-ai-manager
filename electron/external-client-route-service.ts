@@ -7,7 +7,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { cliCatalog, isRetiredProviderId, type ProviderId } from './catalog'
-import { createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
+import { createClaudeCodeSeedProgressRelay, createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
@@ -127,6 +127,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     return { env, storeVirtualization }
   }
   // Windows 上从星芒打开 Claude Desktop 前，替它把 Claude Code 程序从 npm 镜像放好（国内从它官网下不动）。
+  // 下载那段时间工具行说「正在替 Claude Desktop 准备…（35%）」，进度转给点了「打开」的窗口。
+  const claudeDesktopSeedProgress = createClaudeCodeSeedProgressRelay()
   const claudeDesktopCodeSeeder = createClaudeDesktopCodeSeeder({
     platform,
     architecture: process.arch,
@@ -138,6 +140,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       return resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath, storeVirtualization }).profileDirectory
     },
     isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-code-seed') === true,
+    onProgress: (event) => claudeDesktopSeedProgress.report(event),
     log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
   })
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
@@ -338,17 +341,20 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     if (clientPath === null) return false
     return await externalClientRuntime.stillRunning?.(tool, clientPath) ?? null
   }
-  async function launchExternalClient(tool: ExternalToolId): Promise<void> {
+  async function launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void> {
     // Claude Desktop 第一次用、每次自己升级以后都要从官网下 1GB 多的组件，国内直连下不动：先在后台替他连上
     // 加速（#1373）。连不上照常打开（它永不抛错，这里再兜一层）。
     if (tool === 'claudeDesktop' && serviceOptions.prepareClaudeDesktopLaunch) {
       await serviceOptions.prepareClaudeDesktopLaunch({ isDesktopRunning: () => launchedClientRunning('claudeDesktop') }).catch(() => undefined)
     }
+    const unwatch = tool === 'claudeDesktop' && target ? claudeDesktopSeedProgress.watch(target) : null
     try {
       await externalClientRuntime.launch(tool)
     } catch (error) {
       if (tool === 'claudeDesktop') launchedClientPaths.set(tool, null)
       throw error
+    } finally {
+      unwatch?.()
     }
   }
   /**
