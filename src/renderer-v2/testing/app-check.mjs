@@ -464,6 +464,24 @@ test('opening a desktop client while another tool installs neither claims to wai
   } finally { await page.close() }
 })
 
+test('opening Claude Desktop says it is preparing the program while it downloads, then opens', async () => {
+  const page = await open('externalInstalled=1&externalReady=claudeDesktop&externalLaunchPending=1')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    await row.getByRole('button', { name: '打开', exact: true }).click()
+    await row.getByText('正在打开客户端', { exact: true }).waitFor()
+    // 别的工具的打开进度不改这一行。
+    await page.evaluate(() => window.v2Test.emit('onExternalClientLaunchProgress', { tool: 'workbuddy', phase: 'downloading', percent: 80 }))
+    await page.evaluate(() => window.v2Test.emit('onExternalClientLaunchProgress', { tool: 'claudeDesktop', phase: 'downloading', percent: 35 }))
+    await row.getByText('正在替 Claude Desktop 准备聊天要用的程序（35%），好了马上打开', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onExternalClientLaunchProgress', { tool: 'claudeDesktop', phase: 'placing', percent: null }))
+    await row.getByText('正在替 Claude Desktop 准备聊天要用的程序，好了马上打开', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByText(/运行中/).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a background recheck that fails after opening a desktop client keeps the last result without an error bar', async () => {
   const page = await open('externalInstalled=1&externalReady=workbuddy')
   try {

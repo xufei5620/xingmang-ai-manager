@@ -7,6 +7,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import { cliCatalog, isRetiredProviderId, type ProviderId } from './catalog'
+import { createClaudeCodeSeedProgressRelay, createClaudeDesktopCodeSeeder } from './claude-desktop-code-seed'
 import { createClaudeDesktopConfigService } from './claude-desktop-config'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
@@ -118,6 +119,30 @@ export function createExternalClientRouteService(context: ServiceContext, depend
 
   // 从星芒打开过的客户端装在哪：之后问它还在不在跑要用。没打开成记 null（当它不在），还在打开就没有这一项。
   const launchedClientPaths = new Map<ExternalToolId, string | null>()
+  /** 这一份 Claude Desktop 的几个配置目录：商店版要先读它的安装包清单，才知道数据目录有没有被挪进 Packages 底下。 */
+  async function claudeDesktopRoots(installationPath: string | undefined) {
+    const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
+    const storeVirtualization = env.CLAUDE_USER_DATA_DIR ? undefined
+      : await (serviceOptions.inspectClaudeDesktopStoreVirtualization ?? inspectClaudeDesktopStoreVirtualization)({ platform, installationPath })
+    return { env, storeVirtualization }
+  }
+  // Windows 上从星芒打开 Claude Desktop 前，替它把 Claude Code 程序从 npm 镜像放好（国内从它官网下不动）。
+  // 下载那段时间工具行说「正在替 Claude Desktop 准备…（35%）」，进度转给点了「打开」的窗口。
+  const claudeDesktopSeedProgress = createClaudeCodeSeedProgressRelay()
+  const claudeDesktopCodeSeeder = createClaudeDesktopCodeSeeder({
+    platform,
+    architecture: process.arch,
+    executionMode: windowsExecutionMode,
+    fetch: downloadFetch,
+    userHome: providerRoots.userHome,
+    resolveProfileDirectory: async (installationPath) => {
+      const { env, storeVirtualization } = await claudeDesktopRoots(installationPath)
+      return resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath, storeVirtualization }).profileDirectory
+    },
+    isOff: () => serviceOptions.remoteFeatureOff?.('claude-desktop-code-seed') === true,
+    onProgress: (event) => claudeDesktopSeedProgress.report(event),
+    log: (level, event, message, detail) => runtimeLog?.log(level, 'install', event, message, detail),
+  })
   const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
     installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
     // Mac 上一键装桌面端自己下官方包：和命令行工具一样走系统代理、临时加速，下之前先看盘。
@@ -138,6 +163,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     // 客户说「打开还是慢」，客服在反馈报告里看这一行：慢在排队、PowerShell 启动、读安装记录、核签名，还是交出去以后客户端自己慢。
     onLaunchTiming: (timing) => runtimeLog?.log('info', 'system', 'external-client.launch-timing', '打开桌面客户端前各段用时', { ...timing }),
     onLaunched: (tool, clientPath) => { launchedClientPaths.set(tool, clientPath) },
+    prepareClaudeDesktopLaunch: (client) => claudeDesktopCodeSeeder.prepare(client),
   })
 
   let externalConfigQueue: Promise<unknown> = Promise.resolve()
@@ -167,10 +193,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
   const externalRoutesFollowed = new Map<string, { from: RelayEndpointId; baseUrl: string; apiKey: string }>()
   async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
     if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
-    const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
     const installationPath = status.path ?? undefined
-    const storeVirtualization = env.CLAUDE_USER_DATA_DIR ? undefined
-      : await (serviceOptions.inspectClaudeDesktopStoreVirtualization ?? inspectClaudeDesktopStoreVirtualization)({ platform, installationPath })
+    const { env, storeVirtualization } = await claudeDesktopRoots(installationPath)
     assertBeforeWrite?.()
     const roots = resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath, storeVirtualization })
     return createClaudeDesktopConfigService({
@@ -317,17 +341,20 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     if (clientPath === null) return false
     return await externalClientRuntime.stillRunning?.(tool, clientPath) ?? null
   }
-  async function launchExternalClient(tool: ExternalToolId): Promise<void> {
+  async function launchExternalClient(tool: ExternalToolId, target?: RendererMessageTarget): Promise<void> {
     // Claude Desktop 第一次用、每次自己升级以后都要从官网下 1GB 多的组件，国内直连下不动：先在后台替他连上
     // 加速（#1373）。连不上照常打开（它永不抛错，这里再兜一层）。
     if (tool === 'claudeDesktop' && serviceOptions.prepareClaudeDesktopLaunch) {
       await serviceOptions.prepareClaudeDesktopLaunch({ isDesktopRunning: () => launchedClientRunning('claudeDesktop') }).catch(() => undefined)
     }
+    const unwatch = tool === 'claudeDesktop' && target ? claudeDesktopSeedProgress.watch(target) : null
     try {
       await externalClientRuntime.launch(tool)
     } catch (error) {
       if (tool === 'claudeDesktop') launchedClientPaths.set(tool, null)
       throw error
+    } finally {
+      unwatch?.()
     }
   }
   /**

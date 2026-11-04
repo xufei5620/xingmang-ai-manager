@@ -7,6 +7,7 @@ import { errorMessage } from '../../business-common'
 import { useLatestRequest } from '../../latest-request'
 import { isWindowInFront, resolveInstallNoticeOutcome, type InstallNoticePlan } from './install-notice'
 import { installProgressLabel } from './install-stage-text'
+import { clientLaunchProgressLabel } from './launch-notice'
 
 export interface ToolJob {
   label: string
@@ -253,6 +254,8 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       // 打开桌面端最长要等近一分钟，这句「等了多久」替掉工具行上的「正在打开」。
       bridge.onCodexDesktopLaunchProgress((event) => update('launch:codexDesktop', event.message)),
       bridge.onExternalClientInstallProgress((event) => update(event.tool, event.message, event.percent ?? undefined)),
+      // Windows 上打开 Claude Desktop 前先替它放程序，下载那段替掉工具行上的「正在打开客户端」。
+      bridge.onExternalClientLaunchProgress((event) => update(`launch:${event.tool}`, clientLaunchProgressLabel(event))),
       bridge.onCodexDesktopStatus((event) => {
         desktopRevision.invalidate()
         latestDesktop.current = event.status
