@@ -28,6 +28,7 @@ import { pipeline } from 'node:stream/promises'
 import zlib from 'node:zlib'
 import { readBoundedResponseText } from './bounded-response'
 import { readDiskSpace, installMinimumFreeBytes, type DiskSpaceReading } from './disk-space'
+import type { ExternalClientLaunchProgress } from './external-client-contract'
 import { downloadWithResume, DownloadStalledError } from './download-retry'
 import { npmMirrorRegistry, npmOfficialRegistry, npmPackageVersionUrl } from './npm-registry'
 import { fetchLandingWithRedirectAllowlist } from './redirect-allowlist-fetch'
@@ -1012,6 +1013,54 @@ export function createClaudeDesktopCodeSeeder(options: ClaudeDesktopCodeSeederOp
       inFlight = pending
       void pending.finally(() => { if (inFlight === pending) inFlight = null })
       return pending
+    },
+  }
+}
+
+/** 工具行上那个百分比：下载时按已下 / 总量取整（0~100）；服务器没说包多大、或者已经在解包时为 null。 */
+export function claudeCodeSeedPercent(event: ClaudeDesktopCodeSeedProgress): number | null {
+  if (event.phase !== 'downloading' || event.total === null || event.total <= 0) return null
+  return Math.min(100, Math.max(0, Math.floor(event.transferred * 100 / event.total)))
+}
+
+/** 能收进度的那个窗口（主窗口点「打开」时的 event.sender；同 system-service 的 RendererMessageTarget）。 */
+export interface ClaudeCodeSeedProgressTarget {
+  isDestroyed(): boolean
+  send(channel: string, payload: ExternalClientLaunchProgress): void
+}
+
+export interface ClaudeCodeSeedProgressRelay {
+  /** 这次「打开」等着的窗口；打开结束（成不成都算）调返回的函数撤掉。 */
+  watch(target: ClaudeCodeSeedProgressTarget): () => void
+  report(event: ClaudeDesktopCodeSeedProgress): void
+}
+
+/**
+ * 把放程序的进度转给点了「打开」的窗口。同一次放程序可能被几次「打开」共用（seeder 的 inFlight），
+ * 所以按「这会儿谁在等」发，不按是谁先点的。下载时每收到一块数据都报一次，百分比和阶段都没变就不发，
+ * 免得一次下载往界面发几千条。
+ */
+export function createClaudeCodeSeedProgressRelay(): ClaudeCodeSeedProgressRelay {
+  const watchers = new Set<{ target: ClaudeCodeSeedProgressTarget }>()
+  let lastSent = ''
+  return {
+    watch(target) {
+      const watcher = { target }
+      watchers.add(watcher)
+      // 新来的窗口还没收过任何一条：下一条不管变没变都发给它。
+      lastSent = ''
+      return () => { watchers.delete(watcher) }
+    },
+    report(event) {
+      const progress: ExternalClientLaunchProgress = { tool: 'claudeDesktop', phase: event.phase, percent: claudeCodeSeedPercent(event) }
+      const key = `${progress.phase}:${progress.percent}`
+      if (key === lastSent) return
+      lastSent = key
+      for (const { target } of watchers) {
+        try {
+          if (!target.isDestroyed()) target.send('external-clients:launch-progress', progress)
+        } catch { /* 界面关了照样放程序。 */ }
+      }
     },
   }
 }

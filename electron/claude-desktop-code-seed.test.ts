@@ -7,9 +7,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   claudeCodeNpmPackageName,
   claudeCodeSeedPaths,
+  claudeCodeSeedPercent,
   claudeCodeSeedPlatform,
   claudeCodeTarballUrl,
   claudeDesktopAsarPath,
+  createClaudeCodeSeedProgressRelay,
   createClaudeDesktopCodeSeeder,
   decodeSingleQuotedLiteral,
   extractTarEntry,
@@ -23,8 +25,10 @@ import {
   readClaudeCodeBuildPin,
   validateClaudeCodeTarballUrl,
   verifyAndExtractClaudeCodeTarball,
+  type ClaudeCodeSeedProgressTarget,
   type ClaudeDesktopCodeSeederOptions,
 } from './claude-desktop-code-seed'
+import type { ExternalClientLaunchProgress } from './external-client-contract'
 import { npmPackageVersionUrl } from './npm-registry'
 
 // Real values from Claude Desktop 4.4212.0 (probe run 41623510171, 2026-11-03).
@@ -529,5 +533,71 @@ describe('claude desktop code seed: putting it in place', () => {
     expect(f.log.mock.calls.filter(([, event]) => event === 'claude-desktop.code-seed.present')).toHaveLength(1)
     expect(await inspectClaudeCodeSeed(claudeCodeSeedPaths(f.profile, { version: '2.1.309', checksum: x64Checksum }, path), x64Checksum, path)).toBe('present')
     expect(await inspectClaudeCodeSeed(claudeCodeSeedPaths(f.profile, { version: '2.1.309', checksum: arm64Checksum }, path), arm64Checksum, path)).toBe('missing')
+  })
+})
+
+function progressTarget(sent: ExternalClientLaunchProgress[], state: { destroyed?: boolean; throws?: boolean } = {}): ClaudeCodeSeedProgressTarget {
+  return {
+    isDestroyed: () => state.destroyed === true,
+    send: (channel, payload) => {
+      if (state.throws) throw new Error('render frame disposed')
+      expect(channel).toBe('external-clients:launch-progress')
+      sent.push(payload)
+    },
+  }
+}
+
+describe('claude desktop code seed: telling the tool row how far it got', () => {
+  it('turns bytes into a whole percent only while downloading a package of known size', () => {
+    expect(claudeCodeSeedPercent({ phase: 'downloading', version: '2.1.309', transferred: 47_000_000, total: 136_346_595 })).toBe(34)
+    expect(claudeCodeSeedPercent({ phase: 'downloading', version: '2.1.309', transferred: 136_346_595, total: 136_346_595 })).toBe(100)
+    // A resumed download can briefly report more than the declared size; the row never shows past 100.
+    expect(claudeCodeSeedPercent({ phase: 'downloading', version: '2.1.309', transferred: 2, total: 1 })).toBe(100)
+    expect(claudeCodeSeedPercent({ phase: 'downloading', version: '2.1.309', transferred: 5, total: null })).toBeNull()
+    expect(claudeCodeSeedPercent({ phase: 'downloading', version: '2.1.309', transferred: 5, total: 0 })).toBeNull()
+    expect(claudeCodeSeedPercent({ phase: 'placing', version: '2.1.309', transferred: 0, total: null })).toBeNull()
+  })
+
+  it('sends a change only to the windows still waiting, and survives one that went away', () => {
+    const relay = createClaudeCodeSeedProgressRelay()
+    const first: ExternalClientLaunchProgress[] = []
+    const second: ExternalClientLaunchProgress[] = []
+    const gone = { destroyed: false }
+    const unwatchFirst = relay.watch(progressTarget(first))
+    relay.watch(progressTarget([], { throws: true }))
+    relay.watch(progressTarget([], gone))
+    const download = (transferred: number) => relay.report({ phase: 'downloading', version: '2.1.309', transferred, total: 1000 })
+    download(0)
+    download(4)
+    download(9)
+    download(12)
+    gone.destroyed = true
+    unwatchFirst()
+    const unwatchSecond = relay.watch(progressTarget(second))
+    download(13)
+    relay.report({ phase: 'placing', version: '2.1.309', transferred: 0, total: null })
+    unwatchSecond()
+    relay.report({ phase: 'placing', version: '2.1.309', transferred: 0, total: null })
+    // Thousands of chunk callbacks inside one percent collapse to one message.
+    expect(first).toEqual([
+      { tool: 'claudeDesktop', phase: 'downloading', percent: 0 },
+      { tool: 'claudeDesktop', phase: 'downloading', percent: 1 },
+    ])
+    // A window that starts waiting mid-download hears the current percent right away.
+    expect(second).toEqual([
+      { tool: 'claudeDesktop', phase: 'downloading', percent: 1 },
+      { tool: 'claudeDesktop', phase: 'placing', percent: null },
+    ])
+  })
+
+  it('reports the download and then the unpacking of a real placement', async () => {
+    const relay = createClaudeCodeSeedProgressRelay()
+    const sent: ExternalClientLaunchProgress[] = []
+    relay.watch(progressTarget(sent))
+    const f = seedFixture({ overrides: { onProgress: (event) => relay.report(event) } })
+    expect(await f.seeder.prepare(client())).toEqual({ status: 'placed', version: '2.1.309' })
+    expect(sent[0]).toEqual({ tool: 'claudeDesktop', phase: 'downloading', percent: expect.any(Number) })
+    expect(sent.at(-2)).toEqual({ tool: 'claudeDesktop', phase: 'downloading', percent: 100 })
+    expect(sent.at(-1)).toEqual({ tool: 'claudeDesktop', phase: 'placing', percent: null })
   })
 })

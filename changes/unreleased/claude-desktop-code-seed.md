@@ -1,3 +1,7 @@
+## 用户
+
+- Windows 上从星芒打开 Claude Desktop 时，星芒会先替它放好聊天和 Code 要用的程序，不用再连 Claude 官网下载；Cowork 要用的工作区还是要连得上 Claude 官网。
+
 ## 开发
 
 - Windows 上从星芒点「打开」Claude Desktop 之前，先替它把聊天要用的 Claude Code 程序放好
@@ -13,3 +17,7 @@
   跟「打开」同一把锁（I11 已登记例外，范围没扩）；下载地址只放行 `registry.npmmirror.com`、
   `cdn.npmmirror.com`、`registry.npmjs.org` 上这个包这一版的固定路径（I10），写盘走 `safe-local-data`（I8），
   日志路径过 `redactHomeDirectory`（I13）。远程开关 `featuresOff` 加了 `claude-desktop-code-seed`，能单独关掉。
+- 下载那段时间首页工具行写「正在替 Claude Desktop 准备聊天要用的程序（35%），好了马上打开」：新事件通道
+  `external-clients:launch-progress`（`ipc-contract.ts` / `preload.ts` / `ipc/handlers/external-clients.ts`，
+  只发给点了「打开」的那个窗口，百分比没变不发）；Windows 上 Claude Desktop 配置框顶上那句改成星芒会先放好程序、
+  只有 Cowork 工作区还要连官网。三句字 yoyo 11-04 回「放程序字改」。
