@@ -1328,10 +1328,13 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
        */
       // 解析一次就够：加速开关在一次安装中途变化时，换代理反而会让已经建立
       // 的连接和重试落到两条不同的线路上。
+      // 照系统代理补上的这几条同样先试连：代理软件关了、系统设置里还勾着本机端口时，交给 npm 的就是
+      // 一个连不上的地址（Mac 真机日志里的 ECONNREFUSED 127.0.0.1:7890 可能就是这一种，也可能是下面
+      // 那份环境里本来就有的，推测）。它排在后面会盖过环境里那几条，所以单独判，不跟环境合在一起判。
       let npmProxyVariables: NodeJS.ProcessEnv | null = null
       const resolveNpmProxyVariables = async (): Promise<NodeJS.ProcessEnv> => {
         if (!npmProxyVariables) {
-          try { npmProxyVariables = await resolveSubprocessProxyEnvironment() }
+          try { npmProxyVariables = await withoutDeadLoopbackProxies(await resolveSubprocessProxyEnvironment(), provider, 'system-proxy') }
           catch { npmProxyVariables = {} }
         }
         return npmProxyVariables

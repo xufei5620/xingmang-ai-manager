@@ -12,7 +12,10 @@
   `DiagnosticsDependencies.inspectProxyVariables` 和 `ProxyVariableSummary` 随之删掉，测试改注入 `probeLoopbackProxy`。
 - 装工具时 npm 的环境 Mac 上也过 `withoutDeadLoopbackProxies`（`cli-install-service.ts`）：从终端启动或 launchctl 里设过时，
   星芒自己的环境里带着代理，没开就一样装不上，检查页那句「会自动绕开」要对装工具也成立。打开工具那一半 Mac 上原本就由
-  `buildMacosClosedProxyGuard` 管。
+  `buildMacosClosedProxyGuard` 管。照系统代理替 npm 补上的那几条（`resolveSubprocessProxyEnvironment`）三个系统都单独再判一次：
+  代理软件关了、系统设置里还勾着本机端口时交给 npm 的也是连不上的地址，而且它排在后面会盖过环境里那几条。日志
+  `proxy-env.bypassed` 对这一种多带 `from: 'system-proxy'`，好分清来源（Mac 真机安装日志里见过 ECONNREFUSED 127.0.0.1:7890，
+  来源没定位）。
 - PROVIDER_ENVIRONMENT_OVERRIDE：实测盖不过写入配置的那几个（`breaksAccount: false`：ANTHROPIC_BASE_URL、ANTHROPIC_AUTH_TOKEN、
   OPENAI_BASE_URL、OPENAI_API_KEY，以及指到别处的 CODEX_HOME）不再报 warn「可能会盖过当前账号的设置」，改成 pass「电脑里另外设的
   工具地址或密钥盖不过当前账号的设置，不影响使用」；Windows 上只剩这种时也就不再给「删掉这几项设置」。2026-11-06 用 Codex 0.164.0、
