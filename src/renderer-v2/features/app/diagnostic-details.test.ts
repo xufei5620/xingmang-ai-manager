@@ -30,6 +30,13 @@ describe('diagnostic detail rows', () => {
     expect(rows).toEqual([])
   })
 
+  // 「电脑里另外设过的工具地址或密钥」正常时，那几个英文名只进导出报告（yoyo 11-06「体检改」）；
+  // 代理那一行按变量名记的端口同样不上屏。
+  it('keeps the environment variable names off the screen when there is nothing to do about them', () => {
+    expect(diagnosticDetailRows({ reportOnlyVariables: 'OPENAI_API_KEY（Codex CLI）' })).toEqual([])
+    expect(diagnosticDetailRows({ HTTP_PROXY: '本机 7890 端口（开着）', HTTPS_PROXY: '本机 7890 端口（开着）' })).toEqual([])
+  })
+
   it('shows a readable reason but drops unknown answers', () => {
     expect(diagnosticDetailRows({ reason: '单项检查超过 8000ms', canElevate: null })).toEqual([
       { key: 'reason', label: '原因', value: '单项检查超过 8000ms' },
