@@ -25,7 +25,7 @@ export const codexDesktopInstallFailedPrefix = 'Codex 桌面端没装上'
  */
 export const codexDesktopTechnicalWords = /SHA|MSIX|Appx|Content-Type|Content-Length|winget|msstore|0x[0-9a-f]{4,}|schema|HTTP \d{3}|Location/i
 
-export type CodexDesktopInstallFailureReason = 'unsupported' | 'blocked' | 'damaged' | 'unreachable' | 'unavailable' | 'unknown'
+export type CodexDesktopInstallFailureReason = 'unsupported' | 'firewallOff' | 'blocked' | 'damaged' | 'unreachable' | 'unavailable' | 'unknown'
 
 /**
  * 这台电脑根本没有微软商店（LTSC、精简版、公司策略关掉了）时，失败句里代替
@@ -39,8 +39,15 @@ export const codexDesktopNoStoreNotice = '这台电脑没有微软商店'
  */
 export const codexDesktopOfficialPackageFailedNotice = 'OpenAI 官网的离线安装包也没下成'
 
+/**
+ * winget 的 APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE：商店那边还没有比本机更新的版本。
+ * 商店没出错，只是没新版，失败句里不能说成「微软商店这次没装上」。
+ */
+export const codexDesktopStoreNoUpdateExitCode = 0x8a15002b
+
 export const codexDesktopInstallFailureReasons: Readonly<Record<CodexDesktopInstallFailureReason, string>> = {
   unsupported: '这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。',
+  firewallOff: '这台电脑的 Windows 防火墙服务被停掉了。新版 Codex 桌面端安装时要在防火墙里登记一下，服务停着 Windows 就不让装，重试和去微软商店装都绕不过去。',
   blocked: '这台电脑不让装（Windows 拒绝了这次安装）。可能留下了装到一半的程序，点「重试」会重新装一遍。',
   damaged: '下载下来的安装包不完整或被改过，已经删掉了。',
   unreachable: '国内下载线路这会儿连不上。',
@@ -59,6 +66,12 @@ const rules: ReadonlyArray<{ reason: Exclude<CodexDesktopInstallFailureReason, '
   // 原话里写着要求的 OS 版本。它也在 blocked 那一族错误码里，但「重试」永远没用，
   // 所以排在 blocked 前面单独认。
   { reason: 'unsupported', test: /0x80073cfd|requires OS version|OS 版本[^。；]{0,40}(或更高|以上)/i },
+  // 0x800706D9 (EPT_S_NOT_REGISTERED) inside the generic 0x80073CF6: registering the
+  // package's windows.firewallRules extension needs the Windows Firewall service (MpsSvc)
+  // over RPC, and it is stopped or disabled. Retrying or going through the Store hits the
+  // same registration step. PowerShell wraps its error at the console width (the
+  // 2026-11-06 log reads "windows.firewallRu\r\nles"), so match the code, not the word.
+  { reason: 'firewallOff', test: /0x800706d9/i },
   { reason: 'blocked', test: /Add-AppxPackage|管理员安装失败|应用部署|0x80073[cd][0-9a-f]{2}|授权使用了不同的 Windows 账号|安装命令完成后仍未检测到/i },
   { reason: 'damaged', test: /SHA-256|Content-Length|Content-Type|不是 MSIX|AppxManifest|官方安装包|不匹配|字节数|下载不完整|超过声明|大小无效|安全上限|签名|身份|已损坏|元数据|发生变化|与[^。；]{0,12}清单版本[^。；]{0,24}不一致/i },
   { reason: 'unreachable', test: /HTTP \d{3}|超时|连接|连不上|本次不可用|未返回|重定向|fetch failed|network|socket|ETIMEDOUT|ECONN|ENOTFOUND|EAI_AGAIN|ENETUNREACH|ERR_[A-Z_]+/i },
@@ -80,6 +93,8 @@ export function isPlainCodexDesktopInstallMessage(message: string): boolean {
 export interface CodexDesktopInstallFailureContext {
   /** 这一次先试过微软商店、没装上。 */
   storeTried: boolean
+  /** 试过商店，商店说还没有比本机更新的版本（codexDesktopStoreNoUpdateExitCode）。缺省 = 商店那边出错或没试。 */
+  storeNoUpdate?: boolean
   /** 这台电脑没有微软商店，这次直接走的国内线路。缺省 = 不知道或有商店。 */
   storeUnavailable?: boolean
   /** 商店之后还试过 OpenAI 官网的离线安装包，没下成才换的国内镜像。缺省 = 没走那一路。 */
@@ -92,12 +107,14 @@ export function buildCodexDesktopInstallFailureMessage(
   reason: CodexDesktopInstallFailureReason,
   context: CodexDesktopInstallFailureContext,
 ): string {
-  const store = context.storeUnavailable
-    ? `${codexDesktopNoStoreNotice}，`
-    : context.storeTried ? '微软商店这次没装上，' : ''
-  const official = context.officialTried ? `${codexDesktopOfficialPackageFailedNotice}，` : ''
+  // 防火墙服务停着时，商店和官网那两路怎么样都不相干：哪一路装都卡在同一步，提了反倒像是还能换一路试。
+  const routes = reason !== 'firewallOff'
+  const store = !routes ? ''
+    : context.storeUnavailable ? `${codexDesktopNoStoreNotice}，`
+      : context.storeTried ? (context.storeNoUpdate ? '微软商店里还没有新版，' : '微软商店这次没装上，') : ''
+  const official = routes && context.officialTried ? `${codexDesktopOfficialPackageFailedNotice}，` : ''
   // Windows 拒绝安装时旧版本可能已经被动过，不能说「照常能用」。
-  const unaffected = context.updating && reason !== 'blocked' ? '原来那一版照常能用。' : ''
+  const unaffected = context.updating && reason !== 'blocked' && reason !== 'firewallOff' ? '原来那一版照常能用。' : ''
   return `${codexDesktopInstallFailedPrefix}：${store}${official}${codexDesktopInstallFailureReasons[reason]}${unaffected}`
 }
 
@@ -113,4 +130,9 @@ export function isCodexDesktopNoStoreInstallFailure(message: string): boolean {
 /** Windows 太旧装不了：重试、去商店都没用。 */
 export function isCodexDesktopUnsupportedInstallFailure(message: string): boolean {
   return isCodexDesktopInstallFailureMessage(message) && message.includes(codexDesktopInstallFailureReasons.unsupported)
+}
+
+/** Windows 防火墙服务停着装不上：重试、去商店都没用，先得把服务打开。 */
+export function isCodexDesktopFirewallOffInstallFailure(message: string): boolean {
+  return isCodexDesktopInstallFailureMessage(message) && message.includes(codexDesktopInstallFailureReasons.firewallOff)
 }
