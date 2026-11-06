@@ -226,13 +226,18 @@ describe('installing a CLI with download acceleration', () => {
     expect(env?.ALL_PROXY).toBe('http://127.0.0.1:1080')
   })
 
-  it.runIf(process.platform !== 'win32')('keeps the proxy settings untouched for npm on macOS', async () => {
+  // Mac 上从终端启动、或者 launchctl 里设过时，星芒自己的环境里也带着代理；检查页说「从星芒打开的工具会
+  // 自动绕开它」，装工具也一样（yoyo 11-06「体检改」）。以前这里钉的是 Mac 上一律不动。
+  it.runIf(process.platform !== 'win32')('leaves out a proxy setting that points at a closed local port when npm runs on macOS', async () => {
     vi.stubEnv('HTTPS_PROXY', 'http://127.0.0.1:7899')
-    const probe = vi.fn(async () => false)
+    vi.stubEnv('ALL_PROXY', 'http://127.0.0.1:1080')
+    const probe = vi.fn(async (target: { port: number }) => target.port === 1080)
     const fixture = createInstallFixture({ platform: 'darwin', subprocessProxy: {}, probeLoopbackProxy: probe })
     await fixture.service.installCli('claude', fixture.target).catch(() => undefined)
-    expect(fixture.subprocessEnvironments[0]?.HTTPS_PROXY).toBe('http://127.0.0.1:7899')
-    expect(probe).not.toHaveBeenCalled()
+    const env = fixture.subprocessEnvironments[0]
+    expect(env).toBeDefined()
+    expect(Object.keys(env ?? {}).some((key) => key.toUpperCase() === 'HTTPS_PROXY')).toBe(false)
+    expect(env?.ALL_PROXY).toBe('http://127.0.0.1:1080')
   })
 })
 

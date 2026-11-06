@@ -1338,15 +1338,16 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       }
       // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
       // 装不上。同一次安装只判断一次，日志也只写一条。Linux 上照着网上教程把
-      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）；
-      // macOS 维持原样。
+      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）。
+      // Mac 上从访达打开的星芒自己的环境里一般没有这几条，可从终端启动、或者 launchctl 里设过时
+      // 就有，检查页那一行说「从星芒打开的工具会自动绕开它」，装工具也得一样（yoyo 11-06「体检改」）。
       let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
       const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
         if (!npmBaseEnvironment) {
           // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
           // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
           const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment(process.env, nodeDirectories))
-          npmBaseEnvironment = platform !== 'darwin' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+          npmBaseEnvironment = withoutDeadLoopbackProxies(base, provider)
         }
         return npmBaseEnvironment
       }
