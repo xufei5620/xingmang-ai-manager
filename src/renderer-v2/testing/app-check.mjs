@@ -9416,6 +9416,77 @@ test('a floating sidebar leaves no window drag region outside it, so clicking th
   }
 })
 
+// 窗口把拖动区按文档顺序叠起来：拖动的加上、不拖动的减掉，后来的盖前面的。所以排在按钮后面、又盖在按钮上的
+// 拖动区，会把那颗按钮变回拖窗口的地方，鼠标点下去只当是在拖窗口，按钮收不到。Electron 45 用的 Chromium 152 起
+// 拖动区会传给子元素，CI 上的 Chromium 151 还不传：这里按 152 的规矩自己往上找，两边查的是同一件事。
+function windowDragOverControls(page) {
+  return page.evaluate(() => {
+    function own(element) { return getComputedStyle(element).getPropertyValue('-webkit-app-region') }
+    function region(element) {
+      for (let node = element; node; node = node.parentElement) {
+        const value = own(node)
+        if (value === 'drag' || value === 'no-drag') return value
+      }
+      return 'none'
+    }
+    function name(element) { return element.getAttribute('data-testid') || element.getAttribute('class') || element.tagName.toLowerCase() }
+    const found = []
+    for (const root of document.querySelectorAll('.v2-sidebar, .v2-topbar, .v2-titlebar')) {
+      const clickable = []
+      for (const element of [root, ...root.querySelectorAll('*')]) {
+        const box = element.getBoundingClientRect()
+        // 读屏才用的那种 1×1 的隐藏元素不算点得到的地方。
+        if (box.width < 2 || box.height < 2) continue
+        const value = region(element)
+        // 按钮里面那几层跟着按钮走，记最外面那一层就够了。
+        if (value === 'no-drag') { if (element === root || region(element.parentElement) !== 'no-drag') clickable.push({ element, box }); continue }
+        if (value !== 'drag') continue
+        for (const control of clickable) {
+          if (control.element.contains(element)) continue
+          const overlaps = box.left < control.box.right && control.box.left < box.right && box.top < control.box.bottom && control.box.top < box.bottom
+          if (overlaps) found.push(`${name(element)} over ${name(control.element)}`)
+        }
+      }
+    }
+    return found
+  })
+}
+
+// 2026-11-06 产品负责人在 0.2.23 上报「点头像这边的区域不会跳到个人中心了」：Electron 升到 45（#1508）以后，
+// 账号卡右下角那个铺满整张卡的淡标志跟着侧栏变成了拖动区，排在卡的按钮后面，整张卡点下去都只当是在拖窗口。
+test('nothing laid over a sidebar or top bar control turns it back into a window drag area', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'os=mac' : '')
+    try {
+      await page.getByTestId('page-home').waitFor()
+      const shell = page.locator('.v2-shell')
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+      await page.locator('.v2-account-mark').waitFor({ state: 'attached' })
+      assert.deepEqual(await windowDragOverControls(page), [], `${os}: the expanded sidebar and the top bar`)
+      // 点头像：落在账号卡那颗按钮上，进个人中心。
+      const avatar = await page.locator('.v2-account-entry .v2-local-avatar').boundingBox()
+      const point = { x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 }
+      assert.equal(await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('[data-testid="sidebar-account-open"]')), point), true, `${os}: the avatar is part of the account button`)
+      await page.mouse.click(point.x, point.y)
+      await page.getByTestId('page-account').waitFor()
+      await page.getByTestId('sidebar-collapse').click()
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.deepEqual(await windowDragOverControls(page), [], `${os}: the collapsed sidebar`)
+      await clean(page)
+    } finally { await page.close() }
+  }
+  // 余额没读到时卡底下多一行「更新失败」和刷新键，那一行往上压着卡的按钮。
+  const page = await open('sub2api=1&balancePending=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接"))
+    await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
+    assert.deepEqual(await windowDragOverControls(page), [], 'the account card with its balance failure line')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // #1133 第 3、4 条：最小窗口选 110% 只剩 970×566 逻辑大小。收成窄条的侧栏一项不少地放得下，不滚、不渐隐
 // （Mac 顶上还要让红黄绿三个点）；状态栏里历史账号那种长邮箱先省略、悬停看全文，网络状态一个字不少。
 test('the smallest window at 110% fits the collapsed sidebar and shortens a long email before the network status', async () => {
