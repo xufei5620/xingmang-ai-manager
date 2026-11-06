@@ -99,10 +99,11 @@ describe('removeTree', () => {
     const result = await removeInElectron(root, plainCopy, copy)
 
     expect(result.electron).toEqual(expect.any(String))
-    // What the customer's log showed: app.asar is skipped as if it were a folder, so
-    // Contents/Resources is never empty.
-    expect(result.plain).toBe('ENOTEMPTY')
-    expect(fs.readdirSync(path.join(plainCopy, 'Contents', 'Resources'))).toEqual(['app.asar'])
+    // What the customer's Mac log showed: app.asar is taken for a folder and skipped, so
+    // Contents/Resources is never empty. Windows trips over the same misreading one step
+    // earlier: the asar layer holds the archive open, and rm's rmdir on it is refused as busy.
+    expect(result.plain).toBe(process.platform === 'win32' ? 'EBUSY' : 'ENOTEMPTY')
+    expect(fs.readdirSync(path.join(plainCopy, 'Contents', 'Resources'))).toContain('app.asar')
     expect(result.ours).toBe('removed')
     expect(fs.existsSync(copy)).toBe(false)
   })
