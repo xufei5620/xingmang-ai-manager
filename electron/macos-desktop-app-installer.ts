@@ -31,6 +31,7 @@ import {
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
+import { removeTree } from './remove-tree'
 import { ensureTrustedDirectory } from './trusted-temp'
 
 /**
@@ -498,7 +499,7 @@ async function createStagingDirectory(environment: NodeJS.ProcessEnv): Promise<s
   await ensureTrustedDirectory(parent, directoryOptions)
   for (const entry of await fs.promises.readdir(parent, { withFileTypes: true })) {
     if (!entry.name.startsWith(stagingPrefix) || !entry.isDirectory()) continue
-    await fs.promises.rm(path.posix.join(parent, entry.name), { recursive: true, force: true })
+    await removeTree(path.posix.join(parent, entry.name))
   }
   const staging = await fs.promises.mkdtemp(path.posix.join(parent, stagingPrefix))
   await fs.promises.chmod(staging, 0o700)
@@ -657,7 +658,7 @@ async function removeInterruptedCopies(destination: string): Promise<void> {
   const prefix = copyNamePrefix(destination)
   for (const entry of await fs.promises.readdir(directory)) {
     if (!entry.startsWith(prefix) || !/^[0-9a-f]{12}$/.test(entry.slice(prefix.length))) continue
-    await fs.promises.rm(path.posix.join(directory, entry), { recursive: true, force: true })
+    await removeTree(path.posix.join(directory, entry))
   }
 }
 
@@ -684,7 +685,7 @@ async function placeBundle(
     if (await lstatOrNull(destination)) throw nameTaken()
     await fs.promises.rename(temporary, destination)
   } finally {
-    await fs.promises.rm(temporary, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(temporary).catch(() => undefined)
   }
 }
 
@@ -713,7 +714,7 @@ async function recoverInterruptedReplacement(destination: string): Promise<boole
     await fs.promises.rename(path.posix.join(directory, backups.shift()!), destination)
     restored = true
   }
-  for (const entry of backups) await fs.promises.rm(path.posix.join(directory, entry), { recursive: true, force: true }).catch(() => undefined)
+  for (const entry of backups) await removeTree(path.posix.join(directory, entry)).catch(() => undefined)
   return restored
 }
 
@@ -768,9 +769,9 @@ async function replaceBundle(
       throw error
     }
     // 删不掉（比如「App 管理」只拦删除）不影响已经换上的新版；下次更新前 recoverInterruptedReplacement 再删。
-    await fs.promises.rm(backup, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(backup).catch(() => undefined)
   } finally {
-    await fs.promises.rm(incoming, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(incoming).catch(() => undefined)
   }
 }
 
@@ -1023,7 +1024,7 @@ async function unpackFromBucket(
     if (options.signal?.aborted) throw error
     const cause = error instanceof DesktopBucketUnavailableError ? error.cause : error
     if (isDiskFull(cause)) throw cause
-    await fs.promises.rm(workDirectory, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(workDirectory).catch(() => undefined)
     bucket.onFallback?.(describeDesktopBucketFallback(id, error instanceof MacosDesktopInstallError ? error.detail : error))
     return null
   }
@@ -1183,6 +1184,6 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       : stage === 'download' ? macosDesktopDownloadFailedMessage(source.name) : macosDesktopInstallFailedMessage(source.name)
     throw new MacosDesktopInstallError(message, detail, error)
   } finally {
-    if (staging) await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => undefined)
+    if (staging) await removeTree(staging).catch(() => undefined)
   }
 }
