@@ -2195,7 +2195,7 @@ test('backup restore requires preview and confirmation before touching files', a
     assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
     await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
     await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
-    await preview.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
+    await preview.getByText('备份在这台电脑上，里面可能有密钥，别随便发给别人。', { exact: true }).waitFor()
     await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
@@ -3241,7 +3241,7 @@ test('settings that wait on the system state say they were not read and read aga
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
     await contrast.getByText('暂未读到', { exact: true }).waitFor()
-    assert.equal(await page.getByText('此版本暂不支持', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('这台电脑上用不了', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
@@ -3697,7 +3697,7 @@ test('desktop notifications start on, the master switch gates test notifications
     await waitForToast(page, '已发送一条测试通知')
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
-      name: '崩溃自动上报',
+      name: '自动发送错误报告',
       exact: true,
     })
     assert.equal(await crashReports.getAttribute('aria-checked'), 'true')
