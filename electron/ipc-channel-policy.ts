@@ -294,6 +294,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // (I13). Failures still log, with the Chinese reason only.
   'chat-history:read': { label: '聊天记录读取', log: 'quiet-success', account: 'none' },
   'chat-history:write': { label: '聊天记录保存', log: 'quiet-success', account: 'none' },
+  // 每次退出都有一条，成功了不值得进反馈报告；没回话的那次主进程等满时限照样退，这里也看不到。
+  'chat-history:flushed': { label: '退出前聊天记录保存回执', log: 'quiet-success', account: 'none' },
   'chat-history:export-text': { label: '聊天对话导出', log: 'normal', account: 'none' },
   'data-transfer:export': { label: '聊天记录与设置导出', log: 'normal', account: 'none' },
   'data-transfer:import': { label: '聊天记录与设置导入', log: 'normal', account: 'none' },

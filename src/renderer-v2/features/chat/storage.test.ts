@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, conversationPlainText, createHistoryWriter, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
+import { answerHistoryFlushRequests, autosaveDelay, autosaveMaxWaitMs, autosaveQuietMs, ChatStorageError, conversationPlainText, createHistoryWriter, flushChatHistory, registerHistoryFlusher, exportableConversations, historyKey, importConversationsIntoHistory, mergeImportedConversations, mergeSessionIntoHistory, parseImportedConversations, settleHistoryWrites, importLegacyHistory, legacyHistoryKeys, loadChatHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace, redactPersistentChatText, runHistoryImport } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -233,6 +233,128 @@ describe('lossless chat history files', () => {
     current.conversations[0].draft = 'file store copy'
     const restored = await saveAndReopen(current, files, storage)
     expect(restored.state.conversations[0].draft).toBe('file store copy')
+  })
+})
+
+// 回复出字时主进程每 50 毫秒推一段，等「停下 250 毫秒」的自动保存一直被重置，整段说完才存第一次；
+// 这时退出或崩了，已经扣了费的回复就没了（0.2.24 深查聊天页 C1）。
+describe('saving a reply while it is still streaming', () => {
+  it('waits for a pause, but never longer than the cap after the first unsaved change', () => {
+    expect(autosaveQuietMs).toBe(250)
+    expect(autosaveMaxWaitMs).toBe(2_000)
+    // A lone edit still saves once typing pauses.
+    expect(autosaveDelay(1_000, 1_000)).toBe(autosaveQuietMs)
+    // Chunks keep arriving every 50 ms: the wait shrinks as the cap approaches...
+    expect(autosaveDelay(1_000, 2_800)).toBe(200)
+    expect(autosaveDelay(1_000, 2_950)).toBe(50)
+    // ...and once it is reached the save happens right away.
+    expect(autosaveDelay(1_000, 3_000)).toBe(0)
+    expect(autosaveDelay(1_000, 9_000)).toBe(0)
+  })
+
+  it('saves at least every two seconds while chunks keep arriving every 50 ms', () => {
+    // Replays the controller's effect: every state change reschedules the
+    // save; the save itself clears the first-unsaved-change mark.
+    let since: number | null = null
+    let due: number | null = null
+    const saves: number[] = []
+    for (let now = 0; now <= 6_000; now += 50) {
+      if (due !== null && due <= now) { saves.push(due); since = null; due = null }
+      since ??= now
+      due = now + autosaveDelay(since, now)
+    }
+    expect(saves.length).toBeGreaterThanOrEqual(2)
+    expect(saves[0]).toBeLessThanOrEqual(autosaveMaxWaitMs)
+    for (let index = 1; index < saves.length; index += 1) expect(saves[index] - saves[index - 1]).toBeLessThanOrEqual(autosaveMaxWaitMs + 50)
+  })
+
+  it('keeps the partial reply when the window goes away mid-stream and shows it as stopped next time', async () => {
+    const files = memoryFiles()
+    const state = workspace()
+    state.conversations[0].messages.push(message(1, { content: 'half of the answer', reasoning: '', status: 'streaming', requestId: 'request-1' }))
+    const restored = await saveAndReopen(state, files)
+    expect(restored.warning).toBeUndefined()
+    expect(restored.state.conversations[0].messages[1]).toMatchObject({ content: 'half of the answer', status: 'canceled' })
+    expect(restored.state.conversations[0].messages[1].requestId).toBeUndefined()
+  })
+})
+
+describe('saving before the app quits', () => {
+  it('has every open chat page save now, and waits for those writes to land', async () => {
+    const files = memoryFiles()
+    let release!: () => void
+    files.api.writeHistory.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => { release = resolve })
+      files.stores.set(input.scope, { index: input.index, conversations: input.put })
+    })
+    const writer = createHistoryWriter(files.api, null)
+    const state = workspace()
+    const unregister = registerHistoryFlusher(() => writer.save(state))
+    try {
+      let flushed = false
+      const flushing = flushChatHistory().then(() => { flushed = true })
+      await vi.waitFor(() => expect(files.api.writeHistory).toHaveBeenCalledTimes(1))
+      await Promise.resolve()
+      expect(flushed).toBe(false)
+      release()
+      await flushing
+      expect((await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0].id).toBe(state.conversations[0].id)
+    } finally { unregister() }
+  })
+
+  it('also waits for the last save of a chat page that has just closed', async () => {
+    const files = memoryFiles()
+    let release!: () => void
+    files.api.writeHistory.mockImplementationOnce(async (input) => {
+      await new Promise<void>((resolve) => { release = resolve })
+      files.stores.set(input.scope, { index: input.index, conversations: input.put })
+    })
+    // No page is registered any more; its unmount save is still on the way.
+    const closing = createHistoryWriter(files.api, null).save(workspace())
+    let flushed = false
+    const flushing = flushChatHistory().then(() => { flushed = true })
+    await vi.waitFor(() => expect(files.api.writeHistory).toHaveBeenCalledTimes(1))
+    expect(flushed).toBe(false)
+    release()
+    await Promise.all([closing, flushing])
+  })
+
+  it('finishes even when a page fails to save or throws, and leaves the other pages saving', async () => {
+    const saved = vi.fn(async () => {})
+    const unregister = [
+      registerHistoryFlusher(() => { throw new Error('boom') }),
+      registerHistoryFlusher(async () => { throw new Error('disk full') }),
+      registerHistoryFlusher(saved),
+    ]
+    try {
+      await expect(flushChatHistory()).resolves.toBeUndefined()
+      expect(saved).toHaveBeenCalledOnce()
+    } finally { for (const remove of unregister) remove() }
+  })
+
+  it('stops asking a page once it has unregistered', async () => {
+    const flush = vi.fn(async () => {})
+    registerHistoryFlusher(flush)()
+    await flushChatHistory()
+    expect(flush).not.toHaveBeenCalled()
+  })
+
+  it('answers the quit request with its own number only after the save, even if saving failed', async () => {
+    let listener: ((request: { requestId: string }) => void) | undefined
+    const confirmed: string[] = []
+    const order: string[] = []
+    const bridge = {
+      onAiChatHistoryFlushRequested: vi.fn((callback: (request: { requestId: string }) => void) => { listener = callback; return () => { listener = undefined } }),
+      confirmAiChatHistoryFlushed: vi.fn(async (requestId: string) => { order.push('confirm'); confirmed.push(requestId) }),
+    }
+    const unregister = registerHistoryFlusher(async () => { order.push('save'); throw new Error('disk full') })
+    const unsubscribe = answerHistoryFlushRequests(bridge)
+    try {
+      listener?.({ requestId: 'request-1' })
+      await vi.waitFor(() => expect(confirmed).toEqual(['request-1']))
+      expect(order).toEqual(['save', 'confirm'])
+    } finally { unregister(); unsubscribe() }
+    expect(listener).toBeUndefined()
   })
 })
 
