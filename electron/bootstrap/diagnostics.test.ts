@@ -53,11 +53,14 @@ describe('diagnostics wiring', () => {
   it('attaches the three feedback sections without reading the scan snapshot until a report is built', async () => {
     const { diagnostics, runtimeLog } = create()
     const latestTraySystem = vi.fn((): SystemSnapshot | null => null)
-    diagnostics.attachFeedbackDescribers({ latestTraySystem })
+    const readPrivacySwitches = vi.fn(() => ({ crashReporting: true, anonymousUsage: false }))
+    diagnostics.attachFeedbackDescribers({ latestTraySystem, readPrivacySwitches })
     expect(runtimeLog.attachEnvironmentDescriber).toHaveBeenCalledTimes(1)
     expect(runtimeLog.attachHostDescriber).toHaveBeenCalledTimes(1)
     expect(runtimeLog.attachSelfCheckDescriber).toHaveBeenCalledTimes(1)
     expect(latestTraySystem).not.toHaveBeenCalled()
+    // 开关跟扫描快照一样，生成报告时才问：设置里刚关掉的，下一份报告就写「关」。
+    expect(readPrivacySwitches).not.toHaveBeenCalled()
 
     const [describeSelfCheck] = runtimeLog.attachSelfCheckDescriber.mock.calls[0] as [() => Promise<string[]>]
     expect(await describeSelfCheck()).toEqual(buildFeedbackSelfCheckLines({ report: null, readConnection: () => null, now: new Date() }))
