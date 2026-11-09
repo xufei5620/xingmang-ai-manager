@@ -23,6 +23,8 @@ const bridge: VideoStudioBridge = {
   pickAiChatImages: unused,
   pickVideoStudioMusic: unused,
   readVideoStudioMusic: unused,
+  generateAiImage: unused,
+  cancelAiChat: unused,
 }
 
 function clip(letter: string): AiVideoClip {
@@ -126,6 +128,66 @@ describe('VideoStudioPage', () => {
     expect(markup).toMatch(/data-testid="video-shot-image-remove-1"[^>]*>[^]*?不用这张图/)
     expect(markup).toMatch(/title="生成时从这张图动起来，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
     expect(markup).not.toContain('data-testid="video-shot-image-0"')
+  })
+
+  it('offers to have AI draw each shot picture once there is a picture model, and to draw again over one already there', () => {
+    const project = plannedProject()
+    const image = videoStudioShotImage('p'.repeat(43))!
+    const withImage: VideoStudioProject = { ...project, shots: [project.shots[0], { ...project.shots[1], image }] }
+    const noModel = render('ready', withImage)
+    expect(noModel).toMatch(/<span>画镜头图<\/span>[^]*?data-testid="video-image-model"/)
+    // 还没读到画图模型：按钮在，但是灰的。
+    expect(noModel).toMatch(/<button title="按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费"[^>]*data-testid="video-shot-draw-0" disabled=""[^>]*>[^]*?让 AI 画一张/)
+    const ready = render('ready', { ...withImage, settings: { ...withImage.settings, imageModel: 'gpt-image-2', imageGroup: '图片模型' } })
+    expect(ready).toMatch(/data-model="gpt-image-2" data-group="图片模型"[^>]*data-testid="video-image-model"/)
+    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?让 AI 画一张/)
+    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?再画一张/)
+    expect(ready).not.toContain('正在画图')
+    expect(ready).not.toContain('data-testid="video-shot-draw-stop-1"')
+  })
+
+  it('offers to trim the start and end of a shot only once it has a clip, and counts the trimmed seconds off the total', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>开头剪掉<\/label><select[^>]*data-testid="video-shot-trim-start-0"/)
+    expect(plain).toMatch(/<label[^>]*>结尾剪掉<\/label><select[^>]*data-testid="video-shot-trim-end-0"/)
+    expect(plain).toMatch(/data-testid="video-shot-trim-start-0"[^>]*><option value="0" selected="">不剪<\/option><option value="0.5">0.5 秒<\/option><option value="1">1 秒<\/option>/)
+    expect(plain).not.toContain('data-testid="video-shot-trim-start-1"')
+    const trimmed = render('ready', { ...project, shots: [{ ...project.shots[0], trimStart: 1, trimEnd: 0.5 }, project.shots[1]] })
+    expect(trimmed).toMatch(/data-testid="video-shot-trim-start-0"[^]*?<option value="1" selected="">1 秒<\/option>/)
+    expect(trimmed).toMatch(/data-testid="video-shot-trim-end-0"[^]*?<option value="0.5" selected="">0.5 秒<\/option>/)
+    expect(trimmed).toContain('2 个镜头 · 每段 6 秒 · 共约 11 秒')
+  })
+
+  it('lets each shot pick its own length and stops saying every shot is as long once they differ', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>时长<\/label><select[^>]*data-testid="video-shot-seconds-1"[^>]*>[^]*?<option value="6" selected="">6 秒<\/option>/)
+    expect(plain).toContain('2 个镜头 · 每段 6 秒 · 共约 12 秒')
+    const mixed = render('ready', { ...project, shots: [project.shots[0], { ...project.shots[1], seconds: 10 }] })
+    expect(mixed).toMatch(/data-testid="video-shot-seconds-1"[^>]*>[^]*?<option value="10" selected="">10 秒<\/option>/)
+    expect(mixed).toContain('2 个镜头 · 共约 16 秒')
+    expect(mixed).not.toContain('每段 6 秒 ·')
+  })
+
+  it('offers the caption size and place only while captions are on', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>字幕大小<\/label><select[^>]*data-testid="video-caption-size"[^>]*><option value="small">小<\/option><option value="medium" selected="">中<\/option><option value="large">大<\/option>/)
+    expect(plain).toMatch(/<label[^>]*>字幕位置<\/label><select[^>]*data-testid="video-caption-position"[^>]*><option value="bottom" selected="">底部<\/option><option value="middle">中间<\/option><option value="top">顶部<\/option>/)
+    const off = render('ready', { ...project, settings: { ...project.settings, captions: false } })
+    expect(off).not.toContain('data-testid="video-caption-size"')
+    expect(off).not.toContain('data-testid="video-caption-position"')
+  })
+
+  it('offers a straight cut or a fade between shots and a fade at the end, both off by default', () => {
+    const plain = render('ready', plannedProject())
+    expect(plain).toMatch(/<label[^>]*>镜头之间<\/label><select[^>]*data-testid="video-transition"[^>]*><option value="cut" selected="">直接切<\/option><option value="fade">淡入淡出<\/option>/)
+    expect(plain).toMatch(/data-testid="video-fade-out"[^]*?aria-checked="false"[^]*?>结尾淡出<\/label><small[^>]*>最后一秒画面和声音慢慢淡掉<\/small>/)
+    const project = plannedProject()
+    const faded = render('ready', { ...project, settings: { ...project.settings, transition: 'fade', fadeOut: true } })
+    expect(faded).toMatch(/<option value="fade" selected="">淡入淡出<\/option>/)
+    expect(faded).toMatch(/data-testid="video-fade-out"[^]*?aria-checked="true"/)
   })
 
   it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {

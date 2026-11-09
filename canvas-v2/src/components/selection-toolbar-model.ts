@@ -36,8 +36,8 @@ export function selectionToolbarActions(state: SelectionToolbarState, menu: Sele
     { id: 'copy', label: '复制', ariaLabel: '复制选中节点', section: '复用', shortcut: '⌘ / Ctrl C' },
   ] : []
   if (menu === 'run') return state.count === 1 && state.hasRunActions ? [
-    { id: 'run-to', label: '运行到此', ariaLabel: '运行到此', section: '执行该节点及所需上游', disabledReason: state.runDisabledReason },
-    { id: 'run-from', label: '从此向后', ariaLabel: '从此向后', section: '执行下游链路及必要依赖', disabledReason: state.runDisabledReason },
+    { id: 'run-to', label: '运行到此', ariaLabel: '运行到此', section: '运行这个节点，连同要用到的上游节点', disabledReason: state.runDisabledReason },
+    { id: 'run-from', label: '从此向后', ariaLabel: '从此向后', section: '运行这个节点和后面连着的节点，缺的上游一起运行', disabledReason: state.runDisabledReason },
   ] : []
   if (menu === 'layout') {
     const align: readonly [CanvasAlignMode, string][] = [['left', '左对齐'], ['horizontal-center', '水平居中'], ['right', '右对齐'], ['top', '顶对齐'], ['vertical-center', '垂直居中'], ['bottom', '底对齐']]

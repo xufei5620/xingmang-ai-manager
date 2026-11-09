@@ -847,6 +847,21 @@ export interface NewApiProvisionCliKeyInput {
    * （yoyo 10-16 选的）。缺省 = 命令行工具或画图技能的 Key。
    */
   purpose?: 'chat'
+  /**
+   * Keys whose plaintext this machine already holds in its encrypted cache.
+   * When the key picked for reuse below is one of them, its cached plaintext is
+   * returned instead of revealing it again: POST /api/token/:id/key sits behind
+   * CriticalRateLimit, shared per client IP with login and session refresh (see
+   * listGroupModels). The pick itself still comes from the fresh listing, so a
+   * key disabled, used up or replaced on the web is never handed back from the
+   * cache. 缺省 = 照旧取明文。
+   */
+  knownKeys?: readonly NewApiKnownCliKey[]
+}
+
+export interface NewApiKnownCliKey {
+  id: number
+  key: string
 }
 
 // The plaintext key is meant to flow straight into a CLI config write (I3
@@ -2592,6 +2607,26 @@ function collectionEntries(payload: unknown): unknown[] {
   return []
 }
 
+// The listing only carries the server's mask of each secret (first 4, ten
+// stars, last 4: MaskTokenKey in model/token.go, unchanged from rc.24 to
+// main). A cached plaintext is handed back only when it agrees with the mask
+// of the very record picked for reuse, so an entry that is not that key's
+// secret -- the other site's key under a colliding id, a damaged cache -- falls
+// back to a reveal instead of being written into a tool. A mask this parser
+// does not recognize falls back the same way.
+export function knownCliKeyForRecord(
+  payload: unknown,
+  match: NewApiExistingCliKeyMatch,
+  knownKeys: readonly NewApiKnownCliKey[] | undefined,
+): string | null {
+  const known = knownKeys?.find((entry) => entry.id === match.id)?.key
+  if (typeof known !== 'string' || !/^sk-\S{8,509}$/.test(known)) return null
+  const record = collectionEntries(payload).find((entry) => isRecord(entry) && entry.id === match.id)
+  const masked = isRecord(record) ? parseMaskedTokenKey(record.key) : ''
+  const secret = known.slice(3)
+  return masked && masked === `sk-${secret.slice(0, 4)}**********${secret.slice(-4)}` ? known : null
+}
+
 // Step 2 of the CLI-key three-call flow (RECON 坑1): POST /api/token/ never
 // returns the new record's id, so it has to be found again by the unique
 // name buildCliKeyName() generated for it. A managed name is stable, so older
@@ -4108,7 +4143,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
           && hasExhaustedCappedCliKey(records, names, group, existing?.name === requested ? existing.id : 0)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
         }
-        if (existing) return revealCliKeyForSession(current, existing)
+        if (existing) {
+          const known = knownCliKeyForRecord(records, existing, input.knownKeys)
+          if (known) return { id: existing.id, name: existing.name, key: known }
+          return revealCliKeyForSession(current, existing)
+        }
       }
       const createBody = {
         name,

@@ -1,6 +1,6 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { isChineseSentence } from './chinese-sentence'
-import { classifyNetworkFailure, isServiceUnavailableResponse, updateNetworkFailureMessages } from './network-failure'
+import { classifyNetworkFailure, isProxyConnectionFailure, isServiceUnavailableResponse, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { RemoteFeatureId } from './remote-features'
 import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
@@ -804,35 +804,31 @@ export function decideUpdateOffer(input: {
   return { offer: true }
 }
 
-// The only reaction to an unreachable proxy is taking the updater session off
-// the user's proxy, so the match must never be made against free text: a
-// release note, a mirror's HTML error page or a manifest field that merely
-// mentions the code would otherwise be enough to bypass a proxy the user
-// deliberately configured.
-//
-// Electron's net module (lib/common/api/net-client-request.ts, which
-// electron-updater's executor uses for both the check and the download) does
-// not attach a code: it rejects with `new Error('net::ERR_PROXY_CONNECTION_FAILED')`
-// and builder-util-runtime passes that error through untouched. Running
-// Electron 45.1.0 + electron-updater 6.8.9 against a closed proxy port gives a
-// plain Error whose only own keys are `stack` and `message`. So the message is
-// accepted, but only when it is the whole message of an Error -- exactly what
-// Electron constructs -- never when the code appears inside a longer text.
-// The structured `code` is still accepted for errors that do carry one.
-const PROXY_CONNECTION_FAILED_CODE = 'ERR_PROXY_CONNECTION_FAILED'
-const PROXY_CONNECTION_FAILED_NET_MESSAGE = `net::${PROXY_CONNECTION_FAILED_CODE}`
+export interface SharedDirectRetry {
+  /** 这次请求撞上代理连不上：把会话改成直连，再试一次。 */
+  retryWithoutProxy(): Promise<void>
+  /** 再试完了（成没成都调）：最后一个试完的才把会话改回跟随系统代理。 */
+  restoreProxy(): Promise<void>
+}
 
-function isProxyConnectionFailure(error: unknown): boolean {
-  // electron-updater wraps executor failures, so follow a bounded cause chain
-  // rather than only inspecting the outermost error.
-  let candidate: unknown = error
-  for (let depth = 0; depth < 4 && candidate !== null && candidate !== undefined; depth += 1) {
-    const code = (candidate as { code?: unknown }).code
-    if (typeof code === 'string' && code.toUpperCase() === PROXY_CONNECTION_FAILED_CODE) return true
-    if (candidate instanceof Error && candidate.message === PROXY_CONNECTION_FAILED_NET_MESSAGE) return true
-    candidate = (candidate as { cause?: unknown }).cause
+/**
+ * 检查更新、下载更新和服务状态文件共用一个会话（autoUpdater.netSession），撞上代理连不上时各自把它改成直连再试一次，
+ * 试完改回跟随系统代理。两边可能同时在试（定时读状态文件碰上正在直连重下的安装包）：只有最后一个试完的才改回去，
+ * 不然先试完的那个会把另一个还在直连的请求甩回那个已经关掉的代理。每个 retryWithoutProxy 都要配一个 restoreProxy，
+ * 设直连失败了也要配。
+ */
+export function createSharedDirectRetry(setProxy: (mode: 'direct' | 'system') => Promise<void>): SharedDirectRetry {
+  let retrying = 0
+  return {
+    retryWithoutProxy() {
+      retrying += 1
+      return setProxy('direct')
+    },
+    async restoreProxy() {
+      if (retrying > 0) retrying -= 1
+      if (retrying === 0) await setProxy('system')
+    },
   }
-  return false
 }
 
 function releaseNotesText(info: UpdateInfo): string | null {

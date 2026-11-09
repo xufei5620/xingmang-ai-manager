@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -4850,6 +4850,76 @@ describe('retrying a background download that did not finish', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('the updater session direct retry shared with the service status file (PX-1)', () => {
+  function recordingSession() {
+    const modes: string[] = []
+    const setProxy = vi.fn(async (mode: 'direct' | 'system') => { modes.push(mode) })
+    return { modes, setProxy }
+  }
+
+  it('switches to direct for a retry and back to the system proxy once it is over', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'system'])
+  })
+
+  it('stays direct until the last of two overlapping retries is over', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    // 下载在直连上重下时，定时读状态文件也撞上代理连不上、也改直连再读一次：先读完的不能把正在直连的下载甩回代理。
+    await shared.retryWithoutProxy()
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'direct'])
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'direct', 'system'])
+  })
+
+  it('still counts a retry whose switch to direct failed, so its restore keeps the pair balanced', async () => {
+    const session = recordingSession()
+    session.setProxy.mockRejectedValueOnce(new Error('setProxy failed'))
+    const shared = createSharedDirectRetry(session.setProxy)
+    await expect(shared.retryWithoutProxy()).rejects.toThrow('setProxy failed')
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct'])
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'system'])
+  })
+
+  it('puts the session back on the system proxy when restore is called without a retry', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    await shared.restoreProxy()
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['system', 'direct', 'system'])
+  })
+
+  it('lets the updater service retry its check off the proxy through the shared switch', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      expect(session.modes).toEqual(['direct'])
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy: shared.retryWithoutProxy,
+      restoreProxy: shared.restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available', error: null })
+    expect(session.modes).toEqual(['direct', 'system'])
+    service.dispose()
   })
 })
 

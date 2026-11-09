@@ -19,22 +19,29 @@ import {
   assignVideoStudioShotImages,
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
-  clampVideoStudioSeconds,
+  buildVideoStudioImageRequest,
   createVideoStudioId,
   createVideoStudioProject,
+  finishVideoStudioShotDrawing,
   isVideoStudioShotBusy,
+  isVideoStudioShotDrawing,
   moveVideoStudioShot,
   removeVideoStudioMusic,
   removeVideoStudioShot,
   removeVideoStudioShotImage,
   restoreVideoStudioProject,
+  selectVideoStudioVideoModel,
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
+  setVideoStudioShotSeconds,
+  setVideoStudioShotTrim,
   settleVideoStudioModels,
+  startVideoStudioShotDrawing,
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  withoutVideoStudioTrim,
   videoStudioComposeSound,
   videoStudioPlainText,
   videoStudioReadyToCompose,
@@ -44,9 +51,10 @@ import {
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
+  type VideoStudioTrimSide,
 } from './project'
 
-export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages' | 'pickVideoStudioMusic' | 'readVideoStudioMusic'>
+export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages' | 'pickVideoStudioMusic' | 'readVideoStudioMusic' | 'generateAiImage' | 'cancelAiChat'>
 export type VideoStudioStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export interface VideoStudioOptions {
@@ -155,6 +163,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   // 在接回的那几单：只查不提交，停了也省不下钱，「停止生成」不去碰它们，免得这一镜又变回「还没生成」。
   const billed = useRef(new Set<string>())
   const composeAbort = useRef<AbortController | null>(null)
+  // 点过「停止画图」的那几次画图：主进程随后回的「已取消」不当成没画出来。
+  const stoppedDrawings = useRef(new Set<string>())
 
   const commit = (change: (current: VideoStudioProject) => VideoStudioProject) => {
     const next = change(projectRef.current)
@@ -250,7 +260,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     if (!idea) { setError('先写一句想拍什么'); return }
     if (!settings.textModel || !settings.textGroup) { setError('还没有能写分镜的文字模型，点「刷新模型」再试'); return }
     // 拼片读的是现在这份分镜，写新分镜会把它换掉，两件事不能同时做。
-    if (planning || running.current.size || queue.current.length || composeAbort.current) return
+    // 画着图的镜头也一样：新分镜换掉镜头以后，画好的图找不到它那一镜。
+    if (planning || running.current.size || queue.current.length || composeAbort.current || projectRef.current.shots.some(isVideoStudioShotDrawing)) return
     const requestId = createVideoStudioId(), alive = owner.capture()
     setPlanning(requestId); setError(''); setNotice('')
     try {
@@ -289,7 +300,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (!clip && onMissing) { next = onMissing; return }
       commit((current) => {
         const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
-          : clip ? { ...shotWithoutRun(item), clip, status: 'done' } : settleShot(item))
+          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' } : settleShot(item))
         return clip ? { ...updated, exported: undefined } : updated
       })
     } catch (reason) {
@@ -371,7 +382,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     if (planning || composeAbort.current) return
     const { shots, settings } = projectRef.current
     if (!settings.videoModel || !settings.videoGroup) { setError('还没有能出视频的模型，点「刷新模型」再试'); return }
-    const chosen = shots.filter((shot) => shotIds.includes(shot.id) && !isVideoStudioShotBusy(shot))
+    // 正在画图的那一镜不出：图还没定，出来的片段会和它对不上（按钮这时也是灰的）。
+    const chosen = shots.filter((shot) => shotIds.includes(shot.id) && !isVideoStudioShotBusy(shot) && !isVideoStudioShotDrawing(shot))
     for (const shot of chosen) {
       const problem = videoStudioShotProblem(shot, shots.indexOf(shot))
       if (problem) { setError(problem); return }
@@ -427,7 +439,11 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
         totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
         // 交给后台线程时字节是转移过去的，要一份自己独占的 ArrayBuffer。
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-        clips.push({ data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer, ...(captions[index] ? { caption: captions[index] } : {}) })
+        clips.push({
+          data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer,
+          ...(captions[index] ? { caption: captions[index] } : {}),
+          ...(shot.trimStart ? { trimStart: shot.trimStart } : {}), ...(shot.trimEnd ? { trimEnd: shot.trimEnd } : {}),
+        })
       }
       const sound = videoStudioComposeSound(current)
       let music: VideoStudioComposeRequest['music']
@@ -446,7 +462,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       const run = options.compose ?? ((request, composeOptions) => composeInVideoStudioWorker(request, composeOptions))
       const request: VideoStudioComposeRequest = {
         clips,
-        options: { aspect: current.settings.aspect, resolution: current.settings.resolution, fit: current.settings.fit, frameRate: 24 },
+        options: { aspect: current.settings.aspect, resolution: current.settings.resolution, fit: current.settings.fit, frameRate: 24, transition: current.settings.transition, fadeOut: current.settings.fadeOut,
+          captionSize: current.settings.captionSize, captionPosition: current.settings.captionPosition },
         ...(music ? { music } : {}),
         ...(sound.clipGain === undefined ? {} : { clipGain: sound.clipGain }),
       }
@@ -497,11 +514,58 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     }
   }
 
+  // 「让 AI 画一张」：用对话页出图那条（chat:generate-image，凭据在主进程、画好的图存进作品库），这里只拿编号，
+  // 画好以后和自己选的图一样用。先出图便宜，客户满意了再拿它出视频。余额、额度不够照页面顶上那条说（带「去充值」）。
+  const drawShotImage = async (id: string) => {
+    if (planning || composeAbort.current) return
+    const { shots, settings } = projectRef.current
+    const shot = shots.find((item) => item.id === id)
+    if (!shot || isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot) || !settings.imageModel || !settings.imageGroup) return
+    const problem = videoStudioShotProblem(shot, shots.indexOf(shot))
+    if (problem) { setError(problem); return }
+    const requestId = createVideoStudioId(), alive = owner.capture()
+    setError(''); setNotice('')
+    commit((current) => startVideoStudioShotDrawing(current, id, requestId))
+    try {
+      const [asset] = await bridge.generateAiImage(buildVideoStudioImageRequest(settings, shot, requestId))
+      if (!alive()) return
+      commit((current) => finishVideoStudioShotDrawing(current, id, requestId, asset ? { assetId: asset.assetId } : { error: '没有收到生成的图片' }))
+    } catch (reason) {
+      if (!alive()) return
+      if (stoppedDrawings.current.has(requestId)) { commit((current) => finishVideoStudioShotDrawing(current, id, requestId, 'stopped')); return }
+      const message = videoStudioErrorMessage(reason)
+      if (matchRelayQuotaFailureMessage(message)) {
+        commit((current) => finishVideoStudioShotDrawing(current, id, requestId, 'stopped'))
+        setError(message)
+      } else {
+        commit((current) => finishVideoStudioShotDrawing(current, id, requestId, { error: message }))
+      }
+    } finally {
+      stoppedDrawings.current.delete(requestId)
+    }
+  }
+  // 「停止画图」：已经交给服务端的这一张照样扣费（确认框里说过）。主进程说已经画完、正在回的，就等它回来照常换上。
+  const stopDrawing = async (id: string) => {
+    const requestId = projectRef.current.shots.find((item) => item.id === id)?.drawing
+    if (!requestId || stoppedDrawings.current.has(requestId)) return
+    const alive = owner.capture()
+    stoppedDrawings.current.add(requestId)
+    try {
+      const result = await bridge.cancelAiChat(requestId)
+      if (!alive()) return
+      if (result.canceled) commit((current) => finishVideoStudioShotDrawing(current, id, requestId, 'stopped'))
+      else stoppedDrawings.current.delete(requestId)
+    } catch {
+      stoppedDrawings.current.delete(requestId)
+    }
+  }
+
   const openClip = async (assetId: string) => {
     try { await bridge.openAiVideo(assetId) } catch (reason) { setError(videoStudioErrorMessage(reason, '没打开这段视频，请稍后再试')) }
   }
-  const saveClip = async (assetId: string): Promise<boolean> => {
-    try { return (await bridge.saveAiVideo(assetId)).saved } catch (reason) { setError(videoStudioErrorMessage(reason, '没存下来，请换个位置再试')); return false }
+  // 另存时对话框里默认用片名当文件名（主进程洗成干净的文件名），没有片名就用作品库原来的名字。
+  const saveClip = async (assetId: string, name?: string): Promise<boolean> => {
+    try { return (await bridge.saveAiVideo(assetId, name?.trim() || undefined)).saved } catch (reason) { setError(videoStudioErrorMessage(reason, '没存下来，请换个位置再试')); return false }
   }
   // 页面上好几处说「存进 AI 作品文件夹」，这里直接打开它。用的是检查页那条：路径由主进程算、过了 I8 检查才打开，这里只说要哪一个。
   const openFolder = async () => {
@@ -512,15 +576,20 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     }
   }
 
-  const busy = Boolean(planning) || project.shots.some(isVideoStudioShotBusy) || composeState.phase !== 'idle'
+  const busy = Boolean(planning) || project.shots.some((shot) => isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot)) || composeState.phase !== 'idle'
   // 写分镜、出片、拼片都靠这一页接着往下走：做着的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
   useBackgroundWork('video-studio', busy)
   return {
     site, project, groups, preparations, catalogLoading, catalogError, planning: Boolean(planning), composeState, error, notice, storageWarning, busy,
     catalogs: buildVideoStudioCatalogs(groups, preparations),
     setError, setNotice, changeSettings, refreshModels, writePlan, stopPlan, generate, stopGenerating, compose, stopCompose, openClip, saveClip, openFolder,
-    selectVideoModel: (model: string, group: string) => changeSettings({ videoModel: model, videoGroup: group, secondsPerShot: clampVideoStudioSeconds(projectRef.current.settings.secondsPerShot, model) }),
+    selectVideoModel: (model: string, group: string) => commit((current) => selectVideoStudioVideoModel(current, model, group)),
+    setShotSeconds: (id: string, seconds: number) => commit((current) => setVideoStudioShotSeconds(current, id, seconds)),
     selectTextModel: (model: string, group: string) => changeSettings({ textModel: model, textGroup: group }),
+    selectImageModel: (model: string, group: string) => changeSettings({ imageModel: model, imageGroup: group }),
+    setShotTrim: (id: string, side: VideoStudioTrimSide, seconds: number) => commit((current) => setVideoStudioShotTrim(current, id, side, seconds)),
+    drawShotImage,
+    stopDrawing,
     editShot: (id: string, patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>) => commit((current) => ({ ...updateVideoStudioShot(current, id, (shot) => ({ ...shot, ...patch })), ...(patch.caption === undefined ? {} : { exported: undefined }) })),
     moveShot: (id: string, offset: -1 | 1) => commit((current) => ({ ...moveVideoStudioShot(current, id, offset), exported: undefined })),
     removeShot: (id: string) => commit((current) => ({ ...removeVideoStudioShot(current, id), exported: undefined })),

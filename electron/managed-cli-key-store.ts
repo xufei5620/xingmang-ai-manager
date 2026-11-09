@@ -50,7 +50,27 @@ export interface PersistedManagedCliKeyAccount {
    * 要联网、要等状态文件，首页「打开」跟着等。缺省 = 这台电脑上还没查过。
    */
   groupCheck?: ManagedCliGroupCheck
+  /**
+   * 画图技能（xingmang-ai-skill.ts）上次写进技能配置的那两把。Codex 那把多半就是上面工具那把，图片分组那把
+   * 只记在这里。有了它，开机同步时服务端挑出来的正好是这把就不再取一次明文（0.2.24 深查 R1）。
+   * 缺省 = 这台电脑上还没记过，照旧取。
+   */
+  skillKeys?: ManagedSkillKeys
 }
+
+export interface StoredManagedSkillKey {
+  id: number
+  group: string
+  name: string
+  key: string
+}
+
+export interface ManagedSkillKeys {
+  codex?: StoredManagedSkillKey
+  image?: StoredManagedSkillKey
+}
+
+const managedSkillKeyRoles = ['codex', 'image'] as const
 
 export interface ManagedCliGroupCheck {
   at: number
@@ -121,10 +141,36 @@ export function readManagedCliGroupCheck(value: unknown): ManagedCliGroupCheck |
   return { at, succeeded, hints }
 }
 
+function readManagedSkillKey(value: unknown): StoredManagedSkillKey | undefined {
+  if (!isRecord(value)) return undefined
+  const { id, group, name, key } = value
+  if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0 || !isManagedCliGroupName(group)) return undefined
+  if (typeof name !== 'string' || name.length === 0 || name.length > 50) return undefined
+  if (typeof key !== 'string' || !/^sk-\S{8,509}$/.test(key)) return undefined
+  return { id, group, name, key }
+}
+
+// 认不出的那一把当没记过：下次开机多取一次明文而已，不为它把整份缓存当坏的挪走、重签工具的 Key。
+export function readManagedSkillKeys(value: unknown): ManagedSkillKeys | undefined {
+  if (!isRecord(value)) return undefined
+  const result: ManagedSkillKeys = {}
+  for (const role of managedSkillKeyRoles) {
+    const entry = readManagedSkillKey(value[role])
+    if (entry) result[role] = entry
+  }
+  return result.codex || result.image ? result : undefined
+}
+
+export function sameManagedSkillKey(left: StoredManagedSkillKey | undefined, right: StoredManagedSkillKey | undefined): boolean {
+  if (!left || !right) return left === right
+  return left.id === right.id && left.group === right.group && left.name === right.name && left.key === right.key
+}
+
 function persistedAccount(
   userId: number,
   keys: readonly StoredManagedCliKey[],
   previous: PersistedManagedCliKeyAccount | undefined,
+  skillKeys: ManagedSkillKeys | undefined,
 ): PersistedManagedCliKeyAccount {
   const replacedKeys = nextReplacedKeys(previous, keys)
   const groupCheck = readManagedCliGroupCheck(previous?.groupCheck)
@@ -134,7 +180,27 @@ function persistedAccount(
     keys: keys.map(({ replacedKeyDigests: _replacedKeyDigests, ...entry }) => ({ ...entry })),
     ...(Object.keys(replacedKeys).length ? { replacedKeys } : {}),
     ...(groupCheck ? { groupCheck } : {}),
+    ...(skillKeys ? { skillKeys } : {}),
   }
+}
+
+// 撤销的那把从技能那两把里也拿掉：留着它的明文没有用处。两把都不是它时原样交回同一个对象。
+function skillKeysWithout(skillKeys: ManagedSkillKeys | undefined, keyId: number): ManagedSkillKeys | undefined {
+  if (!skillKeys || !managedSkillKeyRoles.some((role) => skillKeys[role]?.id === keyId)) return skillKeys
+  const result: ManagedSkillKeys = {}
+  for (const role of managedSkillKeyRoles) {
+    const entry = skillKeys[role]
+    if (entry && entry.id !== keyId) result[role] = entry
+  }
+  return result.codex || result.image ? result : undefined
+}
+
+function accountWithSkillKeys(
+  account: PersistedManagedCliKeyAccount,
+  skillKeys: ManagedSkillKeys | undefined,
+): PersistedManagedCliKeyAccount {
+  const { skillKeys: _previous, ...rest } = account
+  return skillKeys ? { ...rest, skillKeys } : rest
 }
 
 // 不分站点的老文件（0.2.12 以前写的）只认出厂的分组名。xm 站 10-16 删了老名字，出厂名换成了新名字，
@@ -297,7 +363,8 @@ export class ManagedCliKeyStore {
         await this.quarantineCorruptRecord()
       }
       if (expectedRevision !== undefined && expectedRevision !== this.revision) return false
-      const account = persistedAccount(userId, keys, existing?.accounts.find((entry) => entry.userId === userId))
+      const previous = existing?.accounts.find((entry) => entry.userId === userId)
+      const account = persistedAccount(userId, keys, previous, readManagedSkillKeys(previous?.skillKeys))
       const accounts = [
         account,
         ...(existing?.accounts.filter((entry) => entry.userId !== userId) ?? []),
@@ -343,18 +410,63 @@ export class ManagedCliKeyStore {
     })
   }
 
+  /** 画图技能上次记下的那两把。读不到、读坏了、认不出都当没记过：开机同步照旧取一次明文而已。 */
+  async readSkillKeys(userId: number): Promise<ManagedSkillKeys | undefined> {
+    try {
+      this.assertEncryptionAvailable()
+      await this.writeQueue.catch(() => undefined)
+      const record = await this.readRecord()
+      return readManagedSkillKeys(record?.accounts.find((entry) => entry.userId === userId)?.skillKeys)
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * 记下画图技能这次写进配置的两把，没给的那一把同时拿掉。跟 saveGroupCheck 一样只改这一项、不加 revision，
+   * 免得同步那一轮正要存的工具 Key 被当成「缓存被别的操作改过」而放弃。跟记着的一样就不写，开机不白写一遍。
+   * 缓存里没有这个账号时不记：工具一把都没缓存上，下次开机照旧取明文，跟以前一样。
+   */
+  saveSkillKeys(userId: number, skillKeys: ManagedSkillKeys): Promise<void> {
+    return this.enqueue(async () => {
+      this.assertEncryptionAvailable()
+      const record = await this.readRecord()
+      const account = record?.accounts.find((entry) => entry.userId === userId)
+      if (!record || !account) return
+      const previous = readManagedSkillKeys(account.skillKeys)
+      const next = readManagedSkillKeys(skillKeys)
+      if (managedSkillKeyRoles.every((role) => sameManagedSkillKey(previous?.[role], next?.[role]))) return
+      await this.writeRecord({
+        ...record,
+        accounts: record.accounts.map((entry) => entry === account ? accountWithSkillKeys(entry, next) : entry),
+      })
+    })
+  }
+
   async remove(userId: number, keyId: number): Promise<void> {
     await this.enqueue(async () => {
       this.assertEncryptionAvailable()
       const record = await this.readRecord()
       const account = record?.accounts.find((entry) => entry.userId === userId)
-      if (!record || !account?.keys.some((entry) => entry.id === keyId)) return
+      if (!record || !account) return
+      const skillKeys = readManagedSkillKeys(account.skillKeys)
+      const remainingSkillKeys = skillKeysWithout(skillKeys, keyId)
+      const holdsToolKey = account.keys.some((entry) => entry.id === keyId)
+      if (!holdsToolKey) {
+        // 只是技能记着的那把：跟 saveSkillKeys 一样不加 revision。
+        if (remainingSkillKeys === skillKeys) return
+        await this.writeRecord({
+          ...record,
+          accounts: record.accounts.map((entry) => entry === account ? accountWithSkillKeys(entry, remainingSkillKeys) : entry),
+        })
+        return
+      }
       const updated: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
         siteId: this.siteId,
         revision: this.revision + 1,
         accounts: record.accounts.map((entry) => entry.userId === userId
-          ? persistedAccount(userId, entry.keys.filter((key) => key.id !== keyId), entry)
+          ? persistedAccount(userId, entry.keys.filter((key) => key.id !== keyId), entry, remainingSkillKeys)
           : entry),
       }
       await this.writeRecord(updated)

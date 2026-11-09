@@ -60,7 +60,7 @@ describe('paid node prompt admission', () => {
     expect(result.items.find((item) => item.nodeId === 'target')).toMatchObject({ action: 'execute', paid: true, requestCount: 2 })
     expect(result.items.find((item) => item.nodeId === 'words')).toMatchObject({ action: 'execute', paid: true, requestCount: 1 })
     expect(result).toMatchObject({ canStart: true, requestCount: 3, paidRequestCount: 3, textRequestCount: 3 })
-    expect(result.warnings).toContain('本次最多提交 3 个付费生成请求；不确定的上游提交不会自动重试')
+    expect(result.warnings).toContain('这次最多扣费生成 3 次；发出去没收到结果的不会自动重发')
   })
   it('does not treat an image input or a text edge to a different node as a prompt', () => {
     const value = graph('image-edit')

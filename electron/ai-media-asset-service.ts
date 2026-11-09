@@ -1,6 +1,6 @@
-import type { AiAssetStore, AiStoredAsset } from './ai-asset-store'
-import type { AiStoredVideoAssetListItem, AiVideoAssetStore } from './ai-video-asset-store'
-import type { AiAudioAssetStore, AiStoredAudioAssetListItem } from './ai-audio-asset-store'
+import type { AiAssetStore, AiOwnedAssetRead, AiStoredAsset } from './ai-asset-store'
+import type { AiStoredVideoAssetListItem, AiVideoAssetStore, AiVideoOwnedAssetRead } from './ai-video-asset-store'
+import type { AiAudioAssetStore, AiAudioOwnedAssetRead, AiStoredAudioAssetListItem } from './ai-audio-asset-store'
 import type { AiAssetMetadataStore, AiAssetSource } from './ai-asset-metadata-store'
 import { MAXIMUM_INDEXED_ASSETS, type AiAssetIndexEntry } from './ai-asset-index'
 import { assetThumbnailUrl } from './asset-thumbnail'
@@ -64,6 +64,13 @@ interface AiMediaAssetRow {
 // Bounded so the facet panel cannot grow a DTO without limit: the metadata
 // store allows twelve tags per asset across five thousand assets.
 const MAXIMUM_TAG_FACETS = 64
+// Above one account's full index (MAXIMUM_INDEXED_ASSETS) so a library page
+// never evicts its own hints.
+const MAXIMUM_KIND_HINTS = 50_000
+
+type AiMediaAssetKind = 'image' | 'video' | 'audio'
+const SEARCH_ORDER: readonly AiMediaAssetKind[] = ['image', 'video', 'audio']
+type AiMediaOwnedRead = AiOwnedAssetRead | AiVideoOwnedAssetRead | AiAudioOwnedAssetRead
 
 function tagFacets(rows: readonly AiMediaAssetRow[]): AiMediaAssetFacets['tags'] {
   const counts = new Map<string, number>()
@@ -87,21 +94,59 @@ export function createAiMediaAssetService(options: {
    */
   trashItem: (filePath: string) => Promise<void>
 }) {
-  async function readOwned(userId: number, assetId: string, kind?: 'image' | 'video' | 'audio') {
+  // Which store holds an identifier, learned from the library index and from
+  // earlier lookups. Rename, favourite, delete and friends arrive with an id
+  // only, and asking the image store first meant every video or audio id paid
+  // a full search of the image store before the right store was even asked.
+  // A hint only picks which store to ask first: that store still runs all of
+  // its checks, and a stale hint falls back to asking each store in turn.
+  const kindHints = new Map<string, AiMediaAssetKind>()
+
+  function kindHintKey(userId: number, assetId: string): string {
+    return `${userId}:${assetId}`
+  }
+
+  function rememberKind(userId: number, assetId: string, kind: AiMediaAssetKind): void {
+    const key = kindHintKey(userId, assetId)
+    if (kindHints.size >= MAXIMUM_KIND_HINTS && !kindHints.has(key)) kindHints.clear()
+    kindHints.set(key, kind)
+  }
+
+  async function readOfKind(userId: number, assetId: string, kind: AiMediaAssetKind): Promise<AiMediaOwnedRead> {
     if (kind === 'image') return options.images.readOwned(userId, assetId)
     if (kind === 'video') return options.videos.readOwned(userId, assetId)
-    if (kind === 'audio') {
-      if (!options.audios) throw new Error('音频素材能力不可用')
-      return options.audios.readOwned(userId, assetId)
-    }
-    try {
-      return await options.images.readOwned(userId, assetId)
-    } catch {
-      try { return await options.videos.readOwned(userId, assetId) } catch {
-        if (!options.audios) throw new Error('AI 素材不存在或无权访问')
-        return options.audios.readOwned(userId, assetId)
+    if (!options.audios) throw new Error('音频素材能力不可用')
+    return options.audios.readOwned(userId, assetId)
+  }
+
+  async function readAnyKind(userId: number, assetId: string): Promise<{ kind: AiMediaAssetKind; owned: AiMediaOwnedRead }> {
+    const key = kindHintKey(userId, assetId)
+    const hinted = kindHints.get(key)
+    // Images, then video, then audio, as always; a hinted store just goes first.
+    const order: AiMediaAssetKind[] = hinted
+      ? [hinted, ...SEARCH_ORDER.filter((kind) => kind !== hinted)]
+      : [...SEARCH_ORDER]
+    let lastError: unknown
+    for (const kind of order) {
+      if (kind === 'audio' && !options.audios) {
+        lastError = new Error('AI 素材不存在或无权访问')
+        continue
+      }
+      try {
+        const owned = await readOfKind(userId, assetId, kind)
+        rememberKind(userId, assetId, kind)
+        return { kind, owned }
+      } catch (error) {
+        lastError = error
       }
     }
+    if (hinted) kindHints.delete(key)
+    throw lastError
+  }
+
+  async function readOwned(userId: number, assetId: string, kind?: AiMediaAssetKind): Promise<AiMediaOwnedRead> {
+    if (kind) return readOfKind(userId, assetId, kind)
+    return (await readAnyKind(userId, assetId)).owned
   }
 
   async function listOwnedPage(userId: number, query: AiMediaAssetListQuery = {}): Promise<AiMediaAssetListPage> {
@@ -134,6 +179,7 @@ export function createAiMediaAssetService(options: {
       mediaType === 'image' || mediaType === 'audio' ? [] : options.videos.listOwnedIndex(userId),
       mediaType === 'image' || mediaType === 'video' || !options.audios ? [] : options.audios.listOwnedIndex(userId),
     ])
+    for (const entry of [...images, ...videos, ...audios]) rememberKind(userId, entry.assetId, entry.mediaType)
     const metadata = await options.metadata.getAll(userId)
     const normalizedSearch = search.toLocaleLowerCase('zh-CN')
     const scoped = [...images, ...videos, ...audios]
@@ -230,16 +276,8 @@ export function createAiMediaAssetService(options: {
     return items
   }
 
-  async function assetKind(userId: number, assetId: string): Promise<'image' | 'video' | 'audio'> {
-    try {
-      await options.images.readOwned(userId, assetId)
-      return 'image'
-    } catch {
-      try { await options.videos.readOwned(userId, assetId); return 'video' } catch {
-        if (!options.audios) throw new Error('AI 素材不存在或无权访问')
-        await options.audios.readOwned(userId, assetId); return 'audio'
-      }
-    }
+  async function assetKind(userId: number, assetId: string): Promise<AiMediaAssetKind> {
+    return (await readAnyKind(userId, assetId)).kind
   }
 
   async function copy(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {
@@ -337,6 +375,7 @@ export function createAiMediaAssetService(options: {
         : await (options.audios ?? never('音频素材能力不可用')).resolveOwnedFilePath(userId, assetId)
     await options.trashItem(filePath)
     if (kind === 'image') options.images.forgetOwned(assetId)
+    kindHints.delete(kindHintKey(userId, assetId))
     // Metadata is dropped last: a record without a file shows as a broken tile,
     // while a file without a record is simply an unnamed asset.
     await options.metadata.forget(userId, assetId)

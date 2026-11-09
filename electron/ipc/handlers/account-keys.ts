@@ -69,6 +69,8 @@ export function registerAccountKeyHandlers(ctx: IpcHandlerContext): void {
         syncImageMcp: options.xingmangAiSkill.syncImageMcp,
         fetchAvailableModels: (apiKey) => service.fetchAvailableModels(apiKey),
         loadAccountGroupHints: () => loadAccountGroupHints(automaticProvisioning),
+        // 服务端挑出来的正好是这台电脑已经知道明文的那把，就不再取一次（取明文跟登录共用按 IP 的限流）。
+        keyStore: options.managedCliKeys,
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)

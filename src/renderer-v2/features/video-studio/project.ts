@@ -1,10 +1,12 @@
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
-import type { AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
+import type { ImageSizePolicy } from '../../../../electron/ai-chat-protocol'
+import type { AiChatGroupSummary, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { inspectModel } from '../chat/api'
-import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, normalizeVideoStudioCaption, type VideoStudioAspect, type VideoStudioFit, type VideoStudioResolution } from './timeline'
+import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, type VideoStudioCaptionPosition, type VideoStudioCaptionSize } from './captions'
+import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, normalizeVideoStudioCaption, type VideoStudioAspect, type VideoStudioFit, type VideoStudioResolution, type VideoStudioTransition } from './timeline'
 
 // 视频剪辑页的一份工程：想法、分镜、每个镜头生成好的片段，以及上一次拼好的成片。这里全是纯计算，
 // 页面和测试都直接调；请求在 useVideoStudio 里发。
@@ -37,8 +39,13 @@ export interface VideoStudioShot {
   caption: string
   /** 生成时从这张图开始动起来；没有就只按画面描述出。换图不动已经生成好的片段，重新生成才用上。 */
   image?: VideoStudioShotImage
+  /** 这一镜单独定的时长（秒）；没定就跟「每段时长」。和图一样，重新生成才用上。 */
+  seconds?: number
   /** 生成好的片段；重新生成成功前一直留着上一段。 */
   clip?: AiVideoClip
+  /** 拼片时这一段开头、结尾各剪掉几秒（videoStudioTrimChoices 里的一档，0 不存）。跟着片段走，换了新片段就清掉。 */
+  trimStart?: number
+  trimEnd?: number
   /**
    * 正在生成、或者没等到结果就失败了的那一次请求。会存下来：关掉软件再打开，拿它回主进程把那一段接回来，
    * 钱已经扣了的片段不会只留在作品库里、镜头上却显示「还没生成」。
@@ -52,6 +59,10 @@ export interface VideoStudioShot {
    */
   unconfirmed?: boolean
   // 下面几项只在这一次打开页面时有，不存。
+  /** 正在让 AI 画这一镜的图：那一次的请求号（停下时拿它去取消）。 */
+  drawing?: string
+  /** 上一次让 AI 画图没画出来的原因。 */
+  drawError?: string
   status: VideoStudioShotStatus
   stage?: AiVideoProgressEvent['stage']
   progress?: number
@@ -69,8 +80,18 @@ export interface VideoStudioSettings {
   textGroup: string
   videoModel: string
   videoGroup: string
+  /** 「让 AI 画一张」用的画图模型和它的分组。 */
+  imageModel: string
+  imageGroup: string
   resolution: VideoStudioResolution
   fit: VideoStudioFit
+  /** 镜头之间直接切还是淡入淡出；缺省直接切，和加这一项以前拼出来的一样。 */
+  transition: VideoStudioTransition
+  /** 成片结尾淡出；缺省不淡。 */
+  fadeOut: boolean
+  /** 字幕大小、放哪儿；缺省中号、底部，和加这两项以前印出来的一样。 */
+  captionSize: VideoStudioCaptionSize
+  captionPosition: VideoStudioCaptionPosition
 }
 
 export interface VideoStudioProject {
@@ -97,6 +118,9 @@ const grokDimensions: Readonly<Record<VideoStudioAspect, { width: number, height
 
 export const videoStudioAspectNames: Readonly<Record<VideoStudioAspect, string>> = { '16:9': '横屏 16:9', '9:16': '竖屏 9:16', '1:1': '方形 1:1' }
 export const videoStudioFitNames: Readonly<Record<VideoStudioFit, string>> = { cover: '裁边铺满', contain: '补黑边' }
+export const videoStudioTransitionNames: Readonly<Record<VideoStudioTransition, string>> = { cut: '直接切', fade: '淡入淡出' }
+export const videoStudioCaptionSizeNames: Readonly<Record<VideoStudioCaptionSize, string>> = { small: '小', medium: '中', large: '大' }
+export const videoStudioCaptionPositionNames: Readonly<Record<VideoStudioCaptionPosition, string>> = { bottom: '底部', middle: '中间', top: '顶部' }
 export const videoStudioClipSounds = ['normal', 'quiet', 'off'] as const satisfies readonly VideoStudioClipSound[]
 export const videoStudioClipSoundNames: Readonly<Record<VideoStudioClipSound, string>> = { normal: '照常', quiet: '调小', off: '关掉' }
 // 两路声音各放多大。照常：人声、现场声在前，歌垫在底下；调小：歌在前，原声留一点；关掉：只剩歌，
@@ -112,7 +136,7 @@ export function createVideoStudioId(): string {
 }
 
 export function defaultVideoStudioSettings(): VideoStudioSettings {
-  return { idea: '', shotCount: 4, secondsPerShot: 6, aspect: '9:16', captions: true, textModel: '', textGroup: '', videoModel: '', videoGroup: '', resolution: 720, fit: 'cover' }
+  return { idea: '', shotCount: 4, secondsPerShot: 6, aspect: '9:16', captions: true, textModel: '', textGroup: '', videoModel: '', videoGroup: '', imageModel: '', imageGroup: '', resolution: 720, fit: 'cover', transition: 'cut', fadeOut: false, captionSize: 'medium', captionPosition: 'bottom' }
 }
 
 export function createVideoStudioProject(settings: VideoStudioSettings = defaultVideoStudioSettings()): VideoStudioProject {
@@ -135,6 +159,39 @@ export function videoStudioSecondsChoices(model: string): number[] {
   return secondsChoices.filter((seconds) => seconds >= minimum && seconds <= maximum)
 }
 
+/** 这一镜出多长：单独定过就用它的，没定过跟「每段时长」；视频模型出不了这么长就按最近的一档算。 */
+export function videoStudioShotSeconds(shot: Pick<VideoStudioShot, 'seconds'>, settings: Pick<VideoStudioSettings, 'secondsPerShot' | 'videoModel'>): number {
+  const seconds = shot.seconds ?? settings.secondsPerShot
+  return settings.videoModel ? clampVideoStudioSeconds(seconds, settings.videoModel) : seconds
+}
+
+/**
+ * 单独给这一镜定时长，只收视频模型能出的那几档。定成和「每段时长」一样就是不单独定，以后改「每段时长」它跟着走。
+ * 正在出的、排着队的不改：那一单已经按原来的长短交出去了。
+ */
+export function setVideoStudioShotSeconds(project: VideoStudioProject, id: string, seconds: number): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot || isVideoStudioShotBusy(shot) || !videoStudioSecondsChoices(project.settings.videoModel).includes(seconds)) return project
+  const next = seconds === project.settings.secondsPerShot ? undefined : seconds
+  if (shot.seconds === next) return project
+  return updateVideoStudioShot(project, id, ({ seconds: _seconds, ...rest }) => next === undefined ? rest : { ...rest, seconds: next })
+}
+
+/** 换了视频模型：每段时长和各镜单独定的时长都挪到新模型能出的、离原来最近的那一档。 */
+export function selectVideoStudioVideoModel(project: VideoStudioProject, model: string, group: string): VideoStudioProject {
+  const secondsPerShot = clampVideoStudioSeconds(project.settings.secondsPerShot, model)
+  return {
+    ...project,
+    settings: { ...project.settings, videoModel: model, videoGroup: group, secondsPerShot },
+    shots: project.shots.map((shot) => {
+      if (shot.seconds === undefined) return shot
+      const seconds = clampVideoStudioSeconds(shot.seconds, model)
+      const { seconds: _seconds, ...rest } = shot
+      return seconds === secondsPerShot ? rest : { ...rest, seconds }
+    }),
+  }
+}
+
 /** 换了视频模型以后，每段时长挪到这个模型能出的、离原来最近的那一档。 */
 export function clampVideoStudioSeconds(seconds: number, model: string): number {
   const choices = videoStudioSecondsChoices(model)
@@ -142,9 +199,13 @@ export function clampVideoStudioSeconds(seconds: number, model: string): number 
   return choices.reduce((best, choice) => Math.abs(choice - seconds) < Math.abs(best - seconds) ? choice : best)
 }
 
-export interface VideoStudioCatalogs { text: ChatCatalogEntry[]; video: ChatCatalogEntry[] }
+export interface VideoStudioCatalogs { text: ChatCatalogEntry[]; video: ChatCatalogEntry[]; image: ChatCatalogEntry[] }
 
-/** 各分组读到的模型并成两张表：写分镜用的文字模型、出片段用的视频模型。 */
+function usableModel(entry: ChatCatalogEntry): boolean {
+  try { const capability = inspectModel(entry.model); return capability.available && !capability.hidden } catch { return false }
+}
+
+/** 各分组读到的模型并成三张表：写分镜用的文字模型、出片段用的视频模型、画镜头图用的画图模型。 */
 export function buildVideoStudioCatalogs(groups: readonly Pick<AiChatGroupSummary, 'name'>[], preparations: Readonly<Record<string, ChatGroupPreparation | undefined>>): VideoStudioCatalogs {
   const video = new Map<string, ChatCatalogEntry>()
   for (const group of groups) {
@@ -159,10 +220,9 @@ export function buildVideoStudioCatalogs(groups: readonly Pick<AiChatGroupSummar
     }
   }
   // 准备分组时已经滤过藏起来的模型（useVideoStudio）；这里再滤一遍，表永远不列用不了的。
-  const text = buildChatCatalog(groups, preparations, 'text').filter((entry) => {
-    try { const capability = inspectModel(entry.model); return capability.available && !capability.hidden } catch { return false }
-  })
-  return { text, video: [...video.values()] }
+  const text = buildChatCatalog(groups, preparations, 'text').filter(usableModel)
+  const image = buildChatCatalog(groups, preparations, 'image').filter(usableModel)
+  return { text, video: [...video.values()], image }
 }
 
 export interface VideoStudioModelContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio'>>)[]; site: ChatSite; settled: boolean }
@@ -171,11 +231,13 @@ export interface VideoStudioModelContext { groups: readonly (Pick<AiChatGroupSum
  * 记着的两个模型按这两张表落定，同聊天页 settleChatModel 的规矩：模型还在就挑一个有它的分组；不在了，
  * 等各分组都读完再换成默认的。视频模型按出图的规矩挑分组（先挑图片分组，视频模型都在那里）。
  */
-export function settleVideoStudioModels(settings: VideoStudioSettings, catalogs: VideoStudioCatalogs, context: VideoStudioModelContext): Pick<VideoStudioSettings, 'textModel' | 'textGroup' | 'videoModel' | 'videoGroup' | 'secondsPerShot'> {
+export function settleVideoStudioModels(settings: VideoStudioSettings, catalogs: VideoStudioCatalogs, context: VideoStudioModelContext): Pick<VideoStudioSettings, 'textModel' | 'textGroup' | 'videoModel' | 'videoGroup' | 'imageModel' | 'imageGroup' | 'secondsPerShot'> {
   const text = settleOne(settings.textModel, settings.textGroup, catalogs.text, context, 'text', (models) => resolveDefaultChatModel('text', models))
   const video = settleOne(settings.videoModel, settings.videoGroup, catalogs.video, context, 'image', (models) => preferredVideoModels.find((model) => models.includes(model)) ?? models[0] ?? '')
+  // 画图模型的默认同聊天页出图那一档（chat/state.ts 的 DEFAULT_IMAGE_MODELS），没有就取表里第一个。
+  const image = settleOne(settings.imageModel, settings.imageGroup, catalogs.image, context, 'image', (models) => resolveDefaultChatModel('image', models))
   return {
-    textModel: text.model, textGroup: text.group, videoModel: video.model, videoGroup: video.group,
+    textModel: text.model, textGroup: text.group, videoModel: video.model, videoGroup: video.group, imageModel: image.model, imageGroup: image.group,
     secondsPerShot: video.model ? clampVideoStudioSeconds(settings.secondsPerShot, video.model) : settings.secondsPerShot,
   }
 }
@@ -236,6 +298,85 @@ export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
   return shot.status === 'queued' || shot.status === 'generating'
 }
 
+/**
+ * 每段开头、结尾能剪掉的几档秒数（0 是不剪）。AI 片段常见开头一秒发呆、结尾一秒走样，这几档够用；
+ * 页面里放不了视频（主窗口不开 media-src），拖动条找不准位置，按档选反而好用。
+ */
+export const videoStudioTrimChoices: readonly number[] = [0, 0.5, 1, 1.5, 2, 3]
+export type VideoStudioTrimSide = 'start' | 'end'
+// 剪完至少留这么长，不然这一段在成片里一闪就过去了。
+const minimumTrimmedSeconds = 1
+
+function isVideoStudioTrim(value: unknown): value is number {
+  return typeof value === 'number' && videoStudioTrimChoices.includes(value)
+}
+
+/** 这一镜这一头能选哪几档：剪完至少留 1 秒（片段时长读不到就按「每段时长」算）；现在选着的那档总在里面。 */
+export function videoStudioTrimOptions(shot: Pick<VideoStudioShot, 'clip' | 'trimStart' | 'trimEnd'>, side: VideoStudioTrimSide, shotSeconds: number): number[] {
+  const current = (side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0
+  const other = (side === 'start' ? shot.trimEnd : shot.trimStart) ?? 0
+  const duration = shot.clip?.durationSeconds ?? shotSeconds
+  return videoStudioTrimChoices.filter((choice) => choice === current || duration - other - choice >= minimumTrimmedSeconds)
+}
+
+/**
+ * 改这一段剪掉多少。只有生成好、没在重新生成的片段能剪；不在可选那几档里的不收。
+ * 剪的长短一变，上一次的成片就跟现在对不上了，不再挂在这里（文件还在作品库里）。
+ */
+export function setVideoStudioShotTrim(project: VideoStudioProject, id: string, side: VideoStudioTrimSide, seconds: number): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot?.clip || isVideoStudioShotBusy(shot) || !videoStudioTrimOptions(shot, side, videoStudioShotSeconds(shot, project.settings)).includes(seconds)) return project
+  if (((side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0) === seconds) return project
+  const start = side === 'start' ? seconds : shot.trimStart ?? 0
+  const end = side === 'end' ? seconds : shot.trimEnd ?? 0
+  const updated = updateVideoStudioShot(project, id, ({ trimStart: _start, trimEnd: _end, ...rest }) => ({ ...rest, ...(start ? { trimStart: start } : {}), ...(end ? { trimEnd: end } : {}) }))
+  return { ...updated, exported: undefined }
+}
+
+/** 换上新片段时用：上一段剪掉多少对新片段没有意义。 */
+export function withoutVideoStudioTrim<T extends Pick<VideoStudioShot, 'trimStart' | 'trimEnd'>>(shot: T): Omit<T, 'trimStart' | 'trimEnd'> {
+  const { trimStart: _start, trimEnd: _end, ...rest } = shot
+  return rest
+}
+
+/** 分镜卡上「共约 T 秒」：每段按它的时长算，减掉剪掉的。只算 shots 里列的那几镜（确认框只算要生成的那几段）。 */
+export function videoStudioTotalSeconds(project: VideoStudioProject, shots: readonly VideoStudioShot[] = project.shots): number {
+  return Math.round(shots.reduce((total, shot) => total + videoStudioShotSeconds(shot, project.settings) - (shot.trimStart ?? 0) - (shot.trimEnd ?? 0), 0))
+}
+
+/** 这几镜要是一样长就是这个秒数，长短不一是 null（分镜卡、确认框就不说「每段 S 秒」）。 */
+export function videoStudioCommonSeconds(project: VideoStudioProject, shots: readonly VideoStudioShot[] = project.shots): number | null {
+  const lengths = new Set(shots.map((shot) => videoStudioShotSeconds(shot, project.settings)))
+  return lengths.size === 1 ? [...lengths][0] : null
+}
+
+/** 这一镜正在让 AI 画图。画着的时候不出这一镜的视频、不换它的图，不然画好的图和片段对不上。 */
+export function isVideoStudioShotDrawing(shot: VideoStudioShot): boolean {
+  return Boolean(shot.drawing)
+}
+
+/** 开始给这一镜画图：记下请求号，清掉上一次没画出来的原因。正在出视频、已经在画的不动。 */
+export function startVideoStudioShotDrawing(project: VideoStudioProject, id: string, requestId: string): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot || isVideoStudioShotBusy(shot) || shot.drawing) return project
+  return updateVideoStudioShot(project, id, ({ drawError: _error, ...rest }) => ({ ...rest, drawing: requestId }))
+}
+
+/**
+ * 这一次画图有了结果：画好了就换上这张图（和自己选的图一样用），没画出来就记下原因，停下了两样都不留。
+ * 只认还挂着同一个请求号的那一镜：中途停了又重画、镜头被删了，迟到的结果不会盖上去。
+ */
+export function finishVideoStudioShotDrawing(project: VideoStudioProject, id: string, requestId: string, result: { assetId: string } | { error: string } | 'stopped'): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot || shot.drawing !== requestId) return project
+  const image = typeof result === 'object' && 'assetId' in result ? videoStudioShotImage(result.assetId) : null
+  return updateVideoStudioShot(project, id, ({ drawing: _drawing, drawError: _error, ...rest }) => ({
+    ...rest,
+    ...(image ? { image } : {}),
+    ...(typeof result === 'object' && 'error' in result ? { drawError: result.error } : {}),
+  }))
+}
+
 /** 作品库里一张图的编号换成这一镜存的样子；编号不对是 null。 */
 export function videoStudioShotImage(assetId: unknown): VideoStudioShotImage | null {
   return typeof assetId === 'string' && assetIdPattern.test(assetId) ? { assetId, url: `xingmang-asset://image/${assetId}` } : null
@@ -286,13 +427,51 @@ export function videoStudioShotProblem(shot: VideoStudioShot, index: number): st
   return null
 }
 
+const aspectRatios: Readonly<Record<VideoStudioAspect, number>> = { '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1 }
+
+/**
+ * 画镜头图的尺寸跟「画面」那一项走。只收固定几种尺寸的模型挑长宽比最接近的那一种（只有 auto 的就交给它自己定）；
+ * 能自己定长宽的按 720p 算（短边 720，同片段默认的清晰度；模型上限更小就整体缩到上限），两边都取它要的倍数。
+ * 图再大也只是拿来当第一帧，出得越大越贵。
+ */
+export function videoStudioImageSize(policy: ImageSizePolicy, aspect: VideoStudioAspect): string {
+  const ratio = aspectRatios[aspect]
+  if (policy.kind === 'allow-list') {
+    let best = policy.default, distance = Number.POSITIVE_INFINITY
+    for (const value of policy.values) {
+      const match = /^(\d+)x(\d+)$/.exec(value)
+      if (!match) continue
+      const gap = Math.abs(Math.log(Number(match[1]) / Number(match[2]) / ratio))
+      if (gap < distance) { best = value; distance = gap }
+    }
+    return best
+  }
+  const short = 720
+  const width = ratio >= 1 ? short * ratio : short, height = ratio >= 1 ? short : short / ratio
+  const scale = Math.min(1, policy.max / Math.max(width, height))
+  const fit = (side: number) => Math.min(policy.max, Math.max(policy.min, Math.round(side * scale / policy.divisor) * policy.divisor))
+  return `${fit(width)}x${fit(height)}`
+}
+
+/** 让 AI 按这一镜的画面描述画一张图的请求；画质用模型自己的缺省（最便宜的那一档），先出图就是为了省钱。 */
+export function buildVideoStudioImageRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiChatImageInput {
+  let size: string | undefined
+  try {
+    const capability = inspectModel(settings.imageModel)
+    if (capability.kind === 'image') size = videoStudioImageSize(capability.sizePolicy, settings.aspect)
+  } catch {
+    // 认不出的模型交给主进程去拒。
+  }
+  return { requestId, group: settings.imageGroup, model: settings.imageModel, prompt: videoStudioPlainText(shot.prompt), ...(size ? { size } : {}) }
+}
+
 /**
  * 出一段片段的请求。视频模型按它自己那家的写法给画面比例。这一镜选了图就从这张图开头：Grok 拿它当第一帧，
  * MiniMax 换成「图生视频」（i2va，只收一张图）。
  */
 export function buildVideoStudioClipRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiVideoGenerateInput {
   const base = {
-    requestId, group: settings.videoGroup, model: settings.videoModel, prompt: videoStudioPlainText(shot.prompt), seconds: String(settings.secondsPerShot),
+    requestId, group: settings.videoGroup, model: settings.videoModel, prompt: videoStudioPlainText(shot.prompt), seconds: String(videoStudioShotSeconds(shot, settings)),
     ...(shot.image ? { imageAssetIds: [shot.image.assetId] } : {}),
   }
   let provider = ''
@@ -330,9 +509,9 @@ export function videoStudioComposeSound(project: VideoStudioProject): { music?: 
 
 /** 一次拼片用到的全部东西：哪几段、什么顺序、烧什么字、什么画面、配什么歌。拼完时和工程对不上，说明中途改过，成片不能挂到改过的分镜上。 */
 export function videoStudioComposeKey(project: VideoStudioProject): string {
-  const { aspect, resolution, fit } = project.settings
+  const { aspect, resolution, fit, transition, fadeOut, captionSize, captionPosition } = project.settings
   const sound = project.music ? [project.music.assetId, project.music.clipSound] : []
-  return JSON.stringify([aspect, resolution, fit, project.shots.map((shot) => shot.clip?.assetId ?? ''), videoStudioComposeCaptions(project), sound])
+  return JSON.stringify([aspect, resolution, fit, transition, fadeOut, captionSize, captionPosition, project.shots.map((shot) => [shot.clip?.assetId ?? '', shot.trimStart ?? 0, shot.trimEnd ?? 0]), videoStudioComposeCaptions(project), sound])
 }
 
 /**
@@ -408,7 +587,8 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     settings: project.settings,
     title: project.title,
     shots: project.shots.map((shot) => ({
-      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.clip ? { clip: shot.clip } : {}),
+      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.seconds ? { seconds: shot.seconds } : {}), ...(shot.clip ? { clip: shot.clip } : {}),
+      ...(shot.clip && shot.trimStart ? { trimStart: shot.trimStart } : {}), ...(shot.clip && shot.trimEnd ? { trimEnd: shot.trimEnd } : {}),
       // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
       ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
     })),
@@ -417,15 +597,17 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
   }
 }
 
+function isStoredSeconds(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= videoStudioPlanLimits.minimumSecondsPerShot && value <= videoStudioPlanLimits.maximumSecondsPerShot
+}
+
 /** 读回存着的工程。认不出的项换成缺省，整份认不出就是 null。 */
 export function restoreVideoStudioProject(value: unknown, createId: () => string = createVideoStudioId): VideoStudioProject | null {
   if (!isRecord(value) || value.version !== 1 || !isRecord(value.settings)) return null
   const stored = value.settings
   const defaults = defaultVideoStudioSettings()
   const shotCount = typeof stored.shotCount === 'number' && (videoStudioShotCounts as readonly number[]).includes(stored.shotCount) ? stored.shotCount : defaults.shotCount
-  const seconds = typeof stored.secondsPerShot === 'number' && Number.isInteger(stored.secondsPerShot)
-    && stored.secondsPerShot >= videoStudioPlanLimits.minimumSecondsPerShot && stored.secondsPerShot <= videoStudioPlanLimits.maximumSecondsPerShot
-    ? stored.secondsPerShot : defaults.secondsPerShot
+  const seconds = isStoredSeconds(stored.secondsPerShot) ? stored.secondsPerShot : defaults.secondsPerShot
   const settings: VideoStudioSettings = {
     idea: readText(stored.idea, maxStoredIdeaLength),
     shotCount,
@@ -436,8 +618,14 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     textGroup: readModelName(stored.textGroup),
     videoModel: readModelName(stored.videoModel),
     videoGroup: readModelName(stored.videoGroup),
+    imageModel: readModelName(stored.imageModel),
+    imageGroup: readModelName(stored.imageGroup),
     resolution: isVideoStudioResolution(stored.resolution) ? stored.resolution : defaults.resolution,
     fit: isVideoStudioFit(stored.fit) ? stored.fit : defaults.fit,
+    transition: isVideoStudioTransition(stored.transition) ? stored.transition : defaults.transition,
+    fadeOut: typeof stored.fadeOut === 'boolean' ? stored.fadeOut : defaults.fadeOut,
+    captionSize: isVideoStudioCaptionSize(stored.captionSize) ? stored.captionSize : defaults.captionSize,
+    captionPosition: isVideoStudioCaptionPosition(stored.captionPosition) ? stored.captionPosition : defaults.captionPosition,
   }
   const ids = new Set<string>()
   const shots: VideoStudioShot[] = []
@@ -450,12 +638,20 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     const image = isRecord(entry.image) ? videoStudioShotImage(entry.image.assetId) : null
     const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
     const unconfirmed = Boolean(requestId) && entry.unconfirmed === true
+    // 剪掉多少只跟着片段读；两头加起来剪得超过可选范围的整个不认，免得拼的时候才报「剪掉首尾后没法用」。
+    const trimStart = clip && isVideoStudioTrim(entry.trimStart) ? entry.trimStart : 0
+    const trimEnd = clip && isVideoStudioTrim(entry.trimEnd) ? entry.trimEnd : 0
+    const seconds = isStoredSeconds(entry.seconds) && entry.seconds !== settings.secondsPerShot ? entry.seconds : undefined
+    const trimmed = videoStudioTrimOptions({ clip, trimEnd }, 'start', seconds ?? settings.secondsPerShot).includes(trimStart)
     shots.push({
       id,
       prompt: readText(entry.prompt, videoStudioPlanLimits.maximumPromptLength),
       caption: readText(entry.caption, videoStudioPlanLimits.maximumCaptionLength),
       ...(image ? { image } : {}),
+      ...(seconds ? { seconds } : {}),
       ...(clip ? { clip } : {}),
+      ...(trimmed && trimStart ? { trimStart } : {}),
+      ...(trimmed && trimEnd ? { trimEnd } : {}),
       ...(requestId ? { requestId } : {}),
       ...(unconfirmed ? { unconfirmed, error: aiVideoUnconfirmedSubmissionMessage } : {}),
       status: unconfirmed ? 'failed' : requestId ? 'generating' : clip ? 'done' : 'idle',
