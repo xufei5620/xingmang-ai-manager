@@ -450,6 +450,12 @@ export interface SystemService {
    */
   autoRepairStaleCliHooks?(): Promise<ProviderId[]>
   /**
+   * 卸了星芒再装回来：卸载时收回的做完提醒、防睡和状态栏，开机按卸载时留下的记录补回（只补记录里那几样，
+   * 客户自己的设置不动）。这次启动只跑一遍，开机后第一次读配置也会先等它。返回补了哪几家，从不抛错。
+   * 可选 = 旧实现不提供。
+   */
+  restoreCliHooksRemovedByUninstall?(): Promise<ProviderId[]>
+  /**
    * 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。
    * `fromBackupsPage`：客户在备份页挑的那一份；缺省 = 切换失败的回滚（恢复切换前那一刻）。
    */
@@ -1180,6 +1186,7 @@ export function createSystemService(
     saveConfig,
     repairCliHooks,
     autoRepairStaleCliHooks,
+    restoreCliHooksRemovedByUninstall,
     toolModelChecker,
     guardCodexModelCatalogAtStartup,
     reclaimRetiredToolIntegrations,
@@ -1316,6 +1323,7 @@ export function createSystemService(
     serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
     autoRepairStaleCliHooks,
+    restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,
     relayModelBeforeOfficial,
     setOfficialSourcePreference,
