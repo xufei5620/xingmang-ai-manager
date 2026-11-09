@@ -12,6 +12,7 @@
 .project-import-file strong, .project-import-file span { display: block; overflow-wrap: anywhere; }
 .project-import-file span { font-size: 12px; color: var(--xm-muted, var(--text-secondary, #a5aab5)); margin-top: 2px; }
 .project-import-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.project-import-stats.is-three { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .project-import-stats > div { padding: 10px 5px; border: 1px solid var(--xm-line, var(--border-subtle, #373b44)); border-radius: 6px; text-align: center; }
 .project-import-stats dt { font-size: 11px; color: var(--xm-muted, var(--text-secondary, #a5aab5)); }
 .project-import-stats dd { margin: 4px 0 0; font-size: 19px; line-height: 1.25; }

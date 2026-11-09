@@ -128,7 +128,8 @@ import { canvasContextNodeIds } from './editor/context-menu-scope'
 import { BrowserDraftRecovery } from './persistence/BrowserDraftRecovery'
 import { CanvasProjectImportDialog } from './components/ProjectImportDialog'
 import ProjectImportRecoveryDialog from './components/project-import-recovery-dialog'
-import { buildProjectImportPresentation, createProjectImportGuard, projectImportAccountChanged, projectImportFailureMessage, type ProjectImportPreview, type ProjectImportProgress } from './lib/project-import-model'
+import { buildProjectImportPresentation, createProjectImportGuard, desktopImportedProjectName, desktopProjectImportBanner, projectImportAccountChanged, projectImportFailureMessage, type ProjectImportPreview, type ProjectImportProgress } from './lib/project-import-model'
+import { canvasHostKind } from './host-kind'
 import { CanvasProjectExportDialog } from './components/ProjectExportDialog'
 import { buildProjectExportPresentation, projectExportAccountChanged, projectExportFailureMessage } from './lib/project-export-model'
 import { createProjectExportGuard, type ProjectExportToken } from './lib/project-export-guard'
@@ -8108,7 +8109,7 @@ function CanvasWorkspace({
     setProjectImportBlocked(false)
     projectTransitionRef.current = false
     setProjectTransition(false)
-    setBanner('已取消导入；如有素材已经上传，可到素材库核对。当前画布仍保留。')
+    setBanner(canvasHostKind === 'desktop' ? '已取消导入，现在的画布没动。' : '已取消导入；如有素材已经上传，可到素材库核对。当前画布仍保留。')
   }
 
   function openImportRecovery() {
@@ -8169,13 +8170,13 @@ function CanvasWorkspace({
         // Our own open attempt advances the epoch even on a read failure. A retry
         // may read the same created project, but cannot absorb a foreign reopen.
         pending.projectEpoch = projectEpochRef.current
-        if (!opened) throw new Error('新工程已经创建，但尚未打开。可继续核对同一次导入，或从项目中心打开新工程；原画布与草稿仍保留。')
+        if (!opened) throw new Error(canvasHostKind === 'desktop' ? '新项目已经建好，但还没打开。回项目中心就能打开它；原来的画布没动。' : '新工程已经创建，但尚未打开。可继续核对同一次导入，或从项目中心打开新工程；原画布与草稿仍保留。')
         const route = new URL(window.location.href)
         route.searchParams.set('project', result.projectId)
         route.searchParams.delete('template')
         window.history.replaceState(window.history.state, '', `${route.pathname}${route.search}${route.hash}`)
         void refreshAssets()
-        setBanner(`已导入为新工程${result.warnings.length ? `；${result.warnings.join('；')}` : ''}`)
+        setBanner(canvasHostKind === 'desktop' ? desktopProjectImportBanner(true, desktopImportedProjectName(preview), result.warnings) : `已导入为新工程${result.warnings.length ? `；${result.warnings.join('；')}` : ''}`)
       } else {
         const workflow = parseWorkflowFile(result.content)
         if (!workflow) throw new Error('导入项目中的工作流无法读取；当前画布与草稿仍保留')
@@ -8185,7 +8186,7 @@ function CanvasWorkspace({
         execute({ type: 'replace-document', document: prepared.document })
         restoreCanvasViewport(prepared.document.viewport)
         const warnings = [...result.warnings, ...prepared.warnings]
-        setBanner(`已导入工作流${warnings.length ? `；${warnings.join('；')}` : ''}`)
+        setBanner(canvasHostKind === 'desktop' ? desktopProjectImportBanner(false, '', warnings) : `已导入工作流${warnings.length ? `；${warnings.join('；')}` : ''}`)
       }
       void refreshAssets()
       pendingProjectImportRef.current = null
