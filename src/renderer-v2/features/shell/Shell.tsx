@@ -459,9 +459,11 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
               {entries.map((entry) => entry === 'recharge' ? rechargeButton() : navButton(entry))}
             </div>
           })}</div>
-          {/* 「设置」不跟着滚：屏幕矮时上面那段先收缩，它始终露在外面。「更多」里的几页在 v4 各有了去处
-              （游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），「更多」跟着去掉了（第 10 批）。 */}
+          {/* 「充值」和「设置」不跟着滚：屏幕矮时上面那段先收缩，这两项始终露在外面；有新版本时那项金色的更新入口夹在中间，
+              仍紧挨「设置」上面。「更多」里的几页在 v4 各有了去处（游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），
+              「更多」跟着去掉了（第 10 批）。 */}
           <div className="v2-sidebar-pinned" data-testid="sidebar-pinned">
+            {entryVisible('recharge') && rechargeButton()}
             {updateEntry && updateButton(updateEntry)}
             {navButton('settings')}
           </div>

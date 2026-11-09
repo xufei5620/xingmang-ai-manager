@@ -40,6 +40,8 @@ describe('renderer-v2 sidebar update entry and settings dot', () => {
   it('puts the gold entry right above 设置 and dots 设置 while a new version is around', () => {
     const markup = sidebar({ update: 'ready', updateEntry: { label: '重启并安装新版', title: '新版 v0.2.23 已经下好，点一下装上，装好自动打开', install: true } })
     expect(markup).toMatch(/data-testid="nav-update"[^>]*>.*<span>重启并安装新版<\/span><\/button>.*data-testid="nav-settings"/)
+    // 钉住的那段从上到下：充值、更新、设置；更新仍紧挨「设置」上面。
+    expect([...markup.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])).toEqual(['recharge', 'update', 'settings'])
     expect(markup).toContain('class="v2-nav-item v2-nav-update"')
     expect(markup).toContain('title="新版 v0.2.23 已经下好，点一下装上，装好自动打开"')
     expect(markup).toContain('aria-label="设置，有新版本"')
@@ -145,13 +147,15 @@ describe('renderer-v2 sidebar account card', () => {
 })
 
 describe('renderer-v2 sidebar pinned navigation', () => {
-  // 「更多」里的几页在 v4 各有了去处，「更多」去掉了（第 10 批）；钉在下面的只剩「设置」。
-  it('pins only Settings outside the scrolling list, with no 更多 left', () => {
+  // 「更多」里的几页在 v4 各有了去处，「更多」去掉了（第 10 批）。加了画布、视频剪辑以后窗口矮时最下面一组先滚出去，
+  // 「充值」跟着看不见，于是它也钉在下面、「设置」上面（「充值改」）。
+  it('pins 充值 and Settings outside the scrolling list, with no 更多 left', () => {
     const markup = render()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const pinned = markup.slice(markup.indexOf('data-testid="sidebar-pinned"'), markup.indexOf('data-testid="account-entry"'))
     expect(scroll).not.toContain('nav-settings')
-    expect([...pinned.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])).toEqual(['settings'])
+    expect(scroll).not.toContain('nav-recharge')
+    expect([...pinned.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])).toEqual(['recharge', 'settings'])
     expect(markup).not.toContain('nav-more')
     expect(markup).not.toContain('更多')
   })
@@ -171,7 +175,7 @@ describe('renderer-v2 v4 sidebar', () => {
     const markup = renderShell()
     const scroll = markup.slice(markup.indexOf('data-testid="sidebar-scroll"'), markup.indexOf('data-testid="sidebar-pinned"'))
     const order = [...scroll.matchAll(/data-testid="nav-([a-z]+)"/g)].map((match) => match[1])
-    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'video', 'featured', 'mcp', 'skills', 'plugins', 'recharge', 'tutorial', 'health', 'feedback'])
+    expect(order).toEqual(['home', 'chat', 'sessions', 'canvas', 'video', 'featured', 'mcp', 'skills', 'plugins', 'tutorial', 'health', 'feedback'])
     expect(scroll).toContain('role="group" aria-label="扩展"><p class="v2-nav-group-label" aria-hidden="true">扩展</p>')
     expect(scroll).toContain('<hr class="v2-nav-separator" aria-hidden="true"/>')
     expect(scroll).toContain('<span>反馈与客服</span>')
