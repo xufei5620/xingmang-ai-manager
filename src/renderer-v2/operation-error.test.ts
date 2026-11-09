@@ -235,6 +235,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')).toBe('timeout')
   })
 
+  it('tells an offline user to check the network and retry instead of promising the tools still work', () => {
+    // 中转和账号是同一个站点：本机连不上网时装好的工具一样连不上中转，「照常能用」会把客户支去开一个也报错的工具。
+    const hint = presentOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')
+    expect(hint?.title).toBe('网络连不上')
+    expect(hint?.body).toBe('已装好的工具不受影响。检查网络后再点「重试」。')
+    expect(hint?.actions).toContainEqual({ id: 'retry', label: '重试' })
+  })
+
   it('points a full disk at the config file, not the install folder, when a config write fails', () => {
     const hint = presentOperationError("改用当前账号没有完成：ENOSPC: no space left on device, write '本机路径'", 'config')
     expect(hint).toMatchObject({
