@@ -9,6 +9,7 @@ import {
   relayLineAnswerWaitMs,
   relayLineFailureReason,
   reportedRelayLineFailure,
+  unsentRequestFailure,
   type RelayLineRouter,
 } from './relay-line-fetch'
 import type { RelayEndpointId, RelayRouteSiteId } from './relay-sites'
@@ -1031,5 +1032,30 @@ describe('relayLineFailureReason', () => {
     expect(relayLineFailureReason(networkError('ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
     expect(relayLineFailureReason(networkError('ERR_UNSAFE_REDIRECT'))).toBe('intercepted')
     expect(relayLineFailureReason(new Error('余额不足'))).toBeNull()
+  })
+})
+
+describe('unsentRequestFailure', () => {
+  // Electron's net.fetch rejects with a bare Error carrying only the net:: text (no code, no cause).
+  it('names the cause only when the request provably never reached the server', () => {
+    expect(unsentRequestFailure(new Error('net::ERR_NAME_NOT_RESOLVED'))).toBe('dns')
+    expect(unsentRequestFailure(new Error('net::ERR_CONNECTION_REFUSED'))).toBe('refused')
+    expect(unsentRequestFailure(new Error('net::ERR_INTERNET_DISCONNECTED'))).toBe('offline')
+    expect(unsentRequestFailure(new Error('net::ERR_CONNECTION_TIMED_OUT'))).toBe('timeout')
+    expect(unsentRequestFailure(new Error('net::ERR_CERT_AUTHORITY_INVALID'))).toBe('tls')
+    expect(unsentRequestFailure(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))).toBe('proxy')
+    // Switching lines does not help when the proxy software is down, but nothing left the computer either.
+    expect(unsentRequestFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'))).toBe('proxy')
+  })
+
+  it('returns null when the request may already have been written out', () => {
+    expect(unsentRequestFailure(new Error('net::ERR_CONNECTION_RESET'))).toBeNull()
+    expect(unsentRequestFailure(new Error('net::ERR_SSL_PROTOCOL_ERROR'))).toBeNull()
+    expect(unsentRequestFailure(new Error('net::ERR_TIMED_OUT'))).toBeNull()
+    expect(unsentRequestFailure(new Error('net::ERR_NETWORK_CHANGED'))).toBeNull()
+    expect(unsentRequestFailure(new Error('net::ERR_SSL_SERVER_CERT_CHANGED'))).toBeNull()
+    expect(unsentRequestFailure(new DOMException('The operation was aborted due to timeout', 'TimeoutError'))).toBeNull()
+    expect(unsentRequestFailure(new TypeError('socket reset'))).toBeNull()
+    expect(unsentRequestFailure(new Error('视频接口请求超时'))).toBeNull()
   })
 })
