@@ -1267,6 +1267,8 @@ if (!hasSingleInstanceLock) {
       onCodexPayloadRestart: () => notifyCodexPayload('codexPayloadSwitched', String(Date.now())),
       codexPayloadNotice: () => codexPayloadNotices.current(),
       windowsExecutionMode: windowsCliExecutionMode,
+      // 自带 Administrator、关了 UAC、右键以管理员身份运行：装 Node.js 不弹授权窗口，进度别说会弹（已知19）。
+      windowsProcessElevated: windowsCliExecution.highIntegrity === true,
       runtimeLog,
       sweepInstallLeftovers,
       ...(process.platform === 'win32'
