@@ -63,12 +63,12 @@ const macInstallHandoffFor = (client: FakeMacUpdater) => ({
   retryNativeCheck: () => client.nativeCheckForUpdates(),
 })
 
-// Chromium surfaces an unreachable proxy as a structured net error code; the
-// message alone must never be enough to take the session off the proxy.
-const proxyConnectionError = () => Object.assign(
-  new Error('net::ERR_PROXY_CONNECTION_FAILED'),
-  { code: 'ERR_PROXY_CONNECTION_FAILED' },
-)
+// What electron-updater actually rejects with when the proxy is not listening:
+// Electron's net module builds `new Error(netErrorString)` and nothing else
+// (captured from Electron 45.1.0 + electron-updater 6.8.9 against a closed
+// proxy port, for both checkForUpdates and downloadUpdate: a plain Error whose
+// only own keys are `stack` and `message`, no `code`, no `cause`).
+const proxyConnectionError = () => new Error('net::ERR_PROXY_CONNECTION_FAILED')
 
 // 下载好之后要用户点「重启安装」才会装（全面检测 Q42），这里替用户点这一下。
 // 安装没能启动时 install() 会抛错，各用例断言的是之后的快照。
@@ -474,6 +474,82 @@ describe('updater service', () => {
     expect(retryWithoutProxy).toHaveBeenCalledOnce()
     expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
     expect(order).toEqual(['direct', 'request', 'restore'])
+    service.dispose()
+  })
+
+  it('treats the real Electron proxy failure as one even though it carries no code', async () => {
+    const client = new FakeUpdater()
+    const real = proxyConnectionError()
+    expect(Object.getOwnPropertyNames(real).sort()).toEqual(['message', 'stack'])
+    client.checkForUpdates.mockRejectedValueOnce(real)
+    const retryWithoutProxy = vi.fn(async () => {
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+    })
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available', error: null })
+    expect(retryWithoutProxy).toHaveBeenCalledOnce()
+    expect(restoreProxy).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('still accepts the proxy failure when an error carries it as a structured code', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(
+      Object.assign(new Error('proxy connection failed'), { code: 'ERR_PROXY_CONNECTION_FAILED' }),
+    )
+    const retryWithoutProxy = vi.fn(async () => {
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available' })
+    expect(retryWithoutProxy).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it.each([
+    ['a longer message that ends with the code', new Error('请求失败 net::ERR_PROXY_CONNECTION_FAILED')],
+    ['the code without the net:: prefix', new Error('ERR_PROXY_CONNECTION_FAILED')],
+    ['different letter case', new Error('net::err_proxy_connection_failed')],
+    ['surrounding whitespace', new Error(' net::ERR_PROXY_CONNECTION_FAILED\n')],
+    ['a different Chromium proxy error', new Error('net::ERR_TUNNEL_CONNECTION_FAILED')],
+    [
+      'an HTTP error whose body quotes the code',
+      Object.assign(new Error('HttpError: 502 Bad Gateway\n"net::ERR_PROXY_CONNECTION_FAILED"'), { statusCode: 502 }),
+    ],
+    ['a plain object shaped like the Electron error', { message: 'net::ERR_PROXY_CONNECTION_FAILED' }],
+    ['a bare string', 'net::ERR_PROXY_CONNECTION_FAILED'],
+  ])('does not switch to direct mode for %s', async (_label, rejection) => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(rejection)
+    const retryWithoutProxy = vi.fn(async () => {})
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'error' })
+    expect(retryWithoutProxy).not.toHaveBeenCalled()
+    expect(restoreProxy).not.toHaveBeenCalled()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
     service.dispose()
   })
 
