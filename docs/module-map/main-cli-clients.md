@@ -142,7 +142,7 @@
 
 - `macos-platform.ts` — **Mac 上找命令与「打开」工具**：`darwinCommandPathCandidates` 定 node / npm / CLI 的查找顺序（本软件代下的 Node.js 排最后，客户自己的优先）；打开时写一次性启动脚本，交给固定路径的 `/System/Applications/Utilities/Terminal.app`（不按名字交给 LaunchServices，I14 在 Mac 上的对应），脚本里先摘掉指向已关闭本机端口的代理变量；启动脚本的文件部分在 `terminal-launcher-files.ts`
 - `darwin-path-trust.ts` — Mac 的路径信任：问的是「除 root 和当前用户外，有没有别人能改它解析到的东西」，不是 Windows 那个问题；整条祖先链都查，属主压过权限位，admin 组（gid 80）按产品决定算可信。规则见 `.claude/rules/macos-platform.md`（T5）
-- `darwin-cli-staging.ts` — 核过签名的 CLI 经已绑定的文件描述符拷进私有暂存目录、再核一遍才执行，堵住「核完到执行之间被换掉」；终端可能晚一点才真正执行，所以留存到显式释放或进程退出
+- `darwin-cli-staging.ts` — 核过签名的 CLI 经已绑定的文件描述符拷进私有暂存目录、再核一遍才执行，堵住「核完到执行之间被换掉」；交给终端的那份在星芒退出后还留着（终端里的工具还在跑它），下次打开时用 lsof 查过没有进程在跑才删；一次性用途的副本用完即删、退出时也删
 - `macos-code-signing.ts` — Mac 上认可执行文件和应用来源的唯一办法：把钉 Team ID（和 bundle id）的 designated requirement 交给 codesign，只看退出码不看输出，因为 `codesign -dv` 的文字谁都能伪造
 - `macos-claude.ts` / `macos-codex.ts` — 起原生安装的 `claude`（Anthropic Team ID）和 Codex 官方独立安装布局（`CODEX_HOME/packages/standalone/releases/…`，OpenAI Team ID）之前先核签名，Codex 再经私有暂存执行
 - `macos-codex-app.ts` / `macos-executable-architectures.ts` — Mac 上探测、核对、打开 Codex 桌面端（钉 bundle id 与 OpenAI Team ID；深度签名核验另给更宽的时限并缓存一阵，超时降级成可重试而不是「没装」）；后者读 Mach-O / fat 头，认出可执行文件带哪几种架构
