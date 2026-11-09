@@ -83,6 +83,25 @@ export function cliInstallStageLabel(stage: InstallRuntimeId | 'tool', index: nu
 }
 
 /**
+ * 装工具前那一段运行环境准备。claim 是「占住运行环境那一行再跑」（首页的 toolbox.run），
+ * 占不到说明先点的另一个工具、运行环境卡或「换成新版 Node.js」正在装同一份。以前这里
+ * 直接报「运行环境正在准备」，外面再包成「Node.js 运行环境没装上，Codex CLI 还没开始安装」，
+ * 新电脑上挨个点两个工具的「安装」，第二个立刻变红，说的跟事实正好相反（并发竞态 BF3）。
+ * 主进程按 runtime:node 一个键排队，同一个键复用同一次安装（installation-queue.ts），
+ * 所以占不到时再要一次，等到的就是那一次的结果，不会装两遍；那一次刚好已经装完，
+ * 再要一次也只是查一下、回「本来就装好了」。这几行任务都不能取消，占不到只会是被占着。
+ */
+export async function prepareSharedRuntime<T>(
+  claim: (work: () => Promise<void>) => Promise<boolean>,
+  prepare: () => Promise<T>,
+): Promise<T> {
+  const done: { result?: { value: T } } = {}
+  const claimed = await claim(async () => { done.result = { value: await prepare() } })
+  if (claimed && done.result) return done.result.value
+  return prepare()
+}
+
+/**
  * 运行环境那一段失败时，前缀要让人一眼分清「环境没装上」还是「工具没装上」；
  * 主进程原话留在后面，错误分类（下载超时、磁盘满……）照旧认得出来。
  * 原话要先剥掉 Electron 那层「Error invoking remote method '…': Error:」再接上：
