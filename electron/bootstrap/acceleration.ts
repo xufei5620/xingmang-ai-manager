@@ -1,12 +1,12 @@
 // 本机加速的接线（#1070 第 5 步从 main.ts 的启动回调原样搬出），按启动时建的先后：
 // - createAccelerationRouting：下载线路和 Codex 桌面端要的加速，系统服务要用，所以最早建；
-// - createAccelerationHost：加速文件一读完、能用就建宿主（辅助进程、内核、系统代理都归它管），并把上次崩溃
-//   没改回的系统代理先改回去。建窗口不等它，用到宿主的地方等它给的 Promise；
+// - createAccelerationHostLoader：开机只看一眼上次崩溃有没有留下没改回的系统代理，有才马上读加速文件、建宿主
+//   （createAccelerationHost：辅助进程、内核、系统代理都归它管）去改回；没有就等真用到加速时再读。建窗口不等它；
 // - createAccelerationServices：加速服务和挂在它上面的系统通知、加速页、托盘。
 // 睡眠唤醒那一段（没有宿主时什么都不做）和退出清理留在 main.ts。
 import { app, type BrowserWindow, net, session } from 'electron'
 import { accelerationConflictDescriptions, accelerationFailureMessages, accelerationProxyFailureCause, type AccelerationBundleCheck, type AccelerationMode, type AccelerationState } from '../acceleration-contract'
-import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, type AccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from '../acceleration-development-host'
+import { accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, hasAccelerationProxyRecoveryRecords, type AccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from '../acceleration-development-host'
 import { createAccelerationExpiryNotice, type AccelerationExpiryNotice } from '../acceleration-expiry-notice'
 import { createAccelerationInterruptionNotice, type AccelerationInterruptionNotice } from '../acceleration-interruption-notice'
 import { accelerationStartRequest, defaultAccelerationPreference, type AccelerationPreferenceStore } from '../acceleration-preference-store'
@@ -208,7 +208,7 @@ export function createAccelerationRouting(options: AccelerationRoutingOptions) {
 export type AccelerationRouting = ReturnType<typeof createAccelerationRouting>
 
 export interface AccelerationHostOptions {
-  /** 启动一开始就读的加速文件，读不通时 ok 是 false。不会失败（main.ts 先接住了）。 */
+  /** 读加速文件的那一次，读不通时 ok 是 false。不会失败（main.ts 先接住了）。 */
   read: Promise<{ ok: true, config: AccelerationDevelopmentConfig | null } | { ok: false, error: unknown }>
   managerDataDirectory: string
   runtimeLog: RuntimeLogStore
@@ -222,7 +222,7 @@ export interface AccelerationHost {
 }
 
 // 安装包里的加速内核三十多兆，校验要整读一遍，慢盘、杀毒软件逐字节扫的电脑上要一两秒；绝大多数客户又根本
-// 不用加速。所以 main.ts 不等这里，读完的那一刻才建宿主、才去改回系统代理，跟有没有人用加速无关。
+// 不用加速。所以谁都不等这里，读完的那一刻才建宿主、才去改回系统代理。什么时候读由 createAccelerationHostLoader 定。
 export async function createAccelerationHost(options: AccelerationHostOptions): Promise<AccelerationHost> {
   const { managerDataDirectory, runtimeLog, accelerationInterruption } = options
   const read = await options.read
@@ -296,9 +296,66 @@ export async function createAccelerationHost(options: AccelerationHostOptions): 
   return { developmentAcceleration, accelerationBundleDamaged }
 }
 
+export interface AccelerationHostLoaderOptions extends Omit<AccelerationHostOptions, 'read'> {
+  /** 读加速文件。第一次要用宿主时才调，只调一次。 */
+  read: () => AccelerationHostOptions['read']
+  /** 上次加速留下了没改回的系统代理。缺省看 managerDataDirectory 下的恢复记录（两次 lstat，不碰加速文件）。 */
+  hasRecoveryRecords?: () => Promise<boolean>
+  /** 宿主建好了（main.ts 拿它填睡眠唤醒、下载线路用的那几个变量）。退出以后才建好的不报，直接放掉。 */
+  onLoaded?: (host: AccelerationHost) => void
+}
+
+export interface AccelerationHostLoader {
+  /** 要用宿主时调：第一次才读加速文件、建宿主，之后都是同一个 Promise。退出以后不再读，给的是没有宿主的那种。 */
+  load(): Promise<AccelerationHost>
+  /** 退出时调：建好了的放掉，还在建的建好就放掉；一次都没用到的什么都不做，也不为它去读文件。 */
+  dispose(): void
+}
+
+// 网络加速 2026-10-30 下线以后，宿主唯一非建不可的时候是上次加速时崩了、系统代理还指着已经没了的端口：整台电脑
+// 上不了网，连登录都登不上，等不到谁来用加速。要判断是不是这种情况看一眼恢复记录就够（recover() 第一句也是看它），
+// 不用整读内核。没有记录就不读，等真用到加速（加速服务排到要用后端的操作）时再读，校验跟以前一样一项不少。
+export function createAccelerationHostLoader(options: AccelerationHostLoaderOptions): AccelerationHostLoader {
+  const { read, hasRecoveryRecords, onLoaded, ...hostOptions } = options
+  let loading: Promise<AccelerationHost> | null = null
+  let loaded: AccelerationHost | null = null
+  let disposed = false
+  // 放掉宿主，辅助进程退出前自己还原系统代理；退出路上不再往外抛错。
+  function release(host: AccelerationHost) {
+    void Promise.resolve().then(() => host.developmentAcceleration?.dispose()).catch(() => undefined)
+  }
+  function load(): Promise<AccelerationHost> {
+    loading ??= disposed
+      ? Promise.resolve({ developmentAcceleration: undefined, accelerationBundleDamaged: false })
+      : createAccelerationHost({ ...hostOptions, read: read() }).then((host) => {
+        loaded = host
+        if (disposed) release(host)
+        else onLoaded?.(host)
+        return host
+      })
+    return loading
+  }
+  // 看不了记录（不该发生，函数自己把 ENOENT 以外的错都当「有」）也按有记录处理：宁可多读一次文件，不能让电脑一直断网。
+  void (hasRecoveryRecords ?? (() => hasAccelerationProxyRecoveryRecords(hostOptions.managerDataDirectory)))()
+    .catch(() => true)
+    .then((records) => {
+      if (!records || disposed) return
+      hostOptions.runtimeLog.log('info', 'network', 'acceleration.recover.pending', '上次加速留下的网络设置没改回，读加速文件去改回')
+      void load()
+    })
+  return {
+    load,
+    dispose() {
+      if (disposed) return
+      disposed = true
+      if (loaded) release(loaded)
+    },
+  }
+}
+
 export interface AccelerationServicesOptions {
-  /** createAccelerationHost 给的那个：加速服务先建好，要用到宿主的操作等它。 */
-  host: Promise<AccelerationHost>
+  /** createAccelerationHostLoader 的 load：加速服务先建好，要用到宿主的操作排到了才调它、等它。 */
+  host: () => Promise<AccelerationHost>
   accelerationPreferences: AccelerationPreferenceStore
   recheckAccelerationBundle: () => Promise<AccelerationBundleCheck>
   routing: Pick<AccelerationRouting, 'codexDesktopAcceleration' | 'claudeDesktopAcceleration' | 'accelerationStartArguments'>
@@ -359,7 +416,7 @@ export function createAccelerationServices(options: AccelerationServicesOptions)
     log: (level, event, message, detail) => runtimeLog.log(level, 'network', event, message, detail),
   })
   acceleration = createAccelerationService({
-    ready: host.then(({ developmentAcceleration, accelerationBundleDamaged }) => ({
+    ready: () => host().then(({ developmentAcceleration, accelerationBundleDamaged }) => ({
       backend: developmentAcceleration,
       ...(accelerationBundleDamaged ? { bundleDamaged: { recheck: async () => {
         const result = await recheckAccelerationBundle()
