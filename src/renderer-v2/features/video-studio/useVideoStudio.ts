@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { aiVideoUnconfirmedSubmissionMessage, isAiVideoUnconfirmedSubmission } from '../../../../electron/ai-video-submission'
+import { AI_CHAT_LIMITS } from '../../../../electron/ai-chat-protocol'
 import type { AiChatGroupSummary, AiVideoClip, XingmangApi } from '../../../../electron/ipc-contract'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
@@ -15,6 +16,7 @@ import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from
 import {
   addVideoStudioShot,
   applyVideoStudioPlan,
+  assignVideoStudioShotImages,
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
   clampVideoStudioSeconds,
@@ -23,6 +25,7 @@ import {
   isVideoStudioShotBusy,
   moveVideoStudioShot,
   removeVideoStudioShot,
+  removeVideoStudioShotImage,
   restoreVideoStudioProject,
   serializeVideoStudioProject,
   settleVideoStudioModels,
@@ -38,7 +41,7 @@ import {
   type VideoStudioShot,
 } from './project'
 
-export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder'>
+export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages'>
 export type VideoStudioStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export interface VideoStudioOptions {
@@ -444,6 +447,19 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   }
   const stopCompose = () => composeAbort.current?.abort()
 
+  // 「用一张图开头」：用对话页选图那条通道（原生对话框、过大的图主进程先缩好、存进作品库），这里只拿编号。
+  // 一次能多选几张，多出来的按顺序给后面的镜头（assignVideoStudioShotImages）；一次最多几张照对话那条的上限。
+  const pickShotImage = async (id: string) => {
+    const alive = owner.capture()
+    try {
+      const picked = await bridge.pickAiChatImages(AI_CHAT_LIMITS.imagesPerMessage)
+      if (!alive() || !picked.length) return
+      commit((current) => assignVideoStudioShotImages(current, id, picked.map((asset) => asset.assetId)))
+    } catch (reason) {
+      if (alive()) setError(videoStudioErrorMessage(reason))
+    }
+  }
+
   const openClip = async (assetId: string) => {
     try { await bridge.openAiVideo(assetId) } catch (reason) { setError(videoStudioErrorMessage(reason, '没打开这段视频，请稍后再试')) }
   }
@@ -472,6 +488,8 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     moveShot: (id: string, offset: -1 | 1) => commit((current) => ({ ...moveVideoStudioShot(current, id, offset), exported: undefined })),
     removeShot: (id: string) => commit((current) => ({ ...removeVideoStudioShot(current, id), exported: undefined })),
     addShot: () => commit((current) => addVideoStudioShot(current)),
+    pickShotImage,
+    removeShotImage: (id: string) => commit((current) => removeVideoStudioShotImage(current, id)),
     reset: () => commit((current) => createVideoStudioProject({ ...current.settings, idea: '' })),
   }
 }

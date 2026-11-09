@@ -11,10 +11,21 @@ import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, normali
 
 export type VideoStudioShotStatus = 'idle' | 'queued' | 'generating' | 'done' | 'failed'
 
+/**
+ * 这一镜开头用的那张图：客户从电脑里选的（chat:pick-images，和对话里附的图片同一个作品库）。只存编号，
+ * 地址按编号现拼（作品库的图片地址只有这一种写法），存着的地址不信。
+ */
+export interface VideoStudioShotImage {
+  assetId: string
+  url: string
+}
+
 export interface VideoStudioShot {
   id: string
   prompt: string
   caption: string
+  /** 生成时从这张图开始动起来；没有就只按画面描述出。换图不动已经生成好的片段，重新生成才用上。 */
+  image?: VideoStudioShotImage
   /** 生成好的片段；重新生成成功前一直留着上一段。 */
   clip?: AiVideoClip
   /**
@@ -156,13 +167,19 @@ function settleOne(model: string, group: string, catalog: readonly ChatCatalogEn
   return chosen ? pick(chosen) : { model, group }
 }
 
-/** 分镜写好了：换上新的镜头。原来的镜头和片段都不要了（片段还在作品库里）。 */
+/**
+ * 分镜写好了：换上新的镜头。原来的镜头和片段都不要了（片段还在作品库里）。客户给镜头选过的图按位置留下：
+ * 第几镜选的图还给新的第几镜，商品图、人物照片不用重选；多出来的那几张不要了。
+ */
 export function applyVideoStudioPlan(project: VideoStudioProject, plan: VideoStudioPlan, createId: () => string = createVideoStudioId): VideoStudioProject {
   const { exported: _previous, ...rest } = project
   return {
     ...rest,
     title: plan.title,
-    shots: plan.shots.map((shot) => ({ id: createId(), prompt: shot.prompt, caption: shot.caption ?? '', status: 'idle' })),
+    shots: plan.shots.map((shot, index) => {
+      const image = project.shots[index]?.image
+      return { id: createId(), prompt: shot.prompt, caption: shot.caption ?? '', ...(image ? { image } : {}), status: 'idle' }
+    }),
   }
 }
 
@@ -197,6 +214,40 @@ export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
   return shot.status === 'queued' || shot.status === 'generating'
 }
 
+/** 作品库里一张图的编号换成这一镜存的样子；编号不对是 null。 */
+export function videoStudioShotImage(assetId: unknown): VideoStudioShotImage | null {
+  return typeof assetId === 'string' && assetIdPattern.test(assetId) ? { assetId, url: `xingmang-asset://image/${assetId}` } : null
+}
+
+/**
+ * 一次选了几张图：第一张给点按钮的那一镜，剩下的按顺序给它后面还没有图、也没在生成的镜头，放不下的不要。
+ * 一张一张点太累，客户多选了几张多半就是想一镜一张。
+ */
+export function assignVideoStudioShotImages(project: VideoStudioProject, id: string, assetIds: readonly string[]): VideoStudioProject {
+  const images = assetIds.flatMap((assetId) => videoStudioShotImage(assetId) ?? [])
+  const from = project.shots.findIndex((shot) => shot.id === id)
+  if (from < 0 || !images.length || isVideoStudioShotBusy(project.shots[from])) return project
+  const [first, ...rest] = images
+  return {
+    ...project,
+    shots: project.shots.map((shot, index) => {
+      if (index === from) return { ...shot, image: first }
+      if (index < from || shot.image || isVideoStudioShotBusy(shot)) return shot
+      const next = rest.shift()
+      return next ? { ...shot, image: next } : shot
+    }),
+  }
+}
+
+export function removeVideoStudioShotImage(project: VideoStudioProject, id: string): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot?.image || isVideoStudioShotBusy(shot)) return project
+  return updateVideoStudioShot(project, id, (item) => {
+    const { image: _image, ...rest } = item
+    return rest
+  })
+}
+
 // 想法和画面描述是多行输入框里打的字，粘贴时可能带进看不见的控制字符（垂直制表、退格这类）。主进程见到就整句拒掉，
 // 报的是对不上原因的「想法要写 1 到 2000 个字」；发之前先去掉，换行和制表照留（同主进程那条规矩，canvas-request-parser.ts）。
 const invisibleControls = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g
@@ -213,9 +264,15 @@ export function videoStudioShotProblem(shot: VideoStudioShot, index: number): st
   return null
 }
 
-/** 出一段片段的请求。视频模型按它自己那家的写法给画面比例。 */
+/**
+ * 出一段片段的请求。视频模型按它自己那家的写法给画面比例。这一镜选了图就从这张图开头：Grok 拿它当第一帧，
+ * MiniMax 换成「图生视频」（i2va，只收一张图）。
+ */
 export function buildVideoStudioClipRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiVideoGenerateInput {
-  const base = { requestId, group: settings.videoGroup, model: settings.videoModel, prompt: videoStudioPlainText(shot.prompt), seconds: String(settings.secondsPerShot) }
+  const base = {
+    requestId, group: settings.videoGroup, model: settings.videoModel, prompt: videoStudioPlainText(shot.prompt), seconds: String(settings.secondsPerShot),
+    ...(shot.image ? { imageAssetIds: [shot.image.assetId] } : {}),
+  }
   let provider = ''
   try {
     const capability = inspectModel(settings.videoModel)
@@ -223,7 +280,7 @@ export function buildVideoStudioClipRequest(settings: VideoStudioSettings, shot:
   } catch {
     // 认不出的模型交给主进程报错。
   }
-  if (provider === 'minimax-h3') return { ...base, mode: 't2va', resolution: '720p', aspectRatio: settings.aspect, promptOptimization: false }
+  if (provider === 'minimax-h3') return { ...base, mode: shot.image ? 'i2va' : 't2va', resolution: '720p', aspectRatio: settings.aspect, promptOptimization: false }
   return { ...base, ...grokDimensions[settings.aspect] }
 }
 
@@ -291,7 +348,7 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     settings: project.settings,
     title: project.title,
     shots: project.shots.map((shot) => ({
-      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.clip ? { clip: shot.clip } : {}),
+      id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.clip ? { clip: shot.clip } : {}),
       // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
       ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
     })),
@@ -329,12 +386,14 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     if (ids.has(id)) id = createId()
     ids.add(id)
     const clip = readClip(entry.clip)
+    const image = isRecord(entry.image) ? videoStudioShotImage(entry.image.assetId) : null
     const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
     const unconfirmed = Boolean(requestId) && entry.unconfirmed === true
     shots.push({
       id,
       prompt: readText(entry.prompt, videoStudioPlanLimits.maximumPromptLength),
       caption: readText(entry.caption, videoStudioPlanLimits.maximumCaptionLength),
+      ...(image ? { image } : {}),
       ...(clip ? { clip } : {}),
       ...(requestId ? { requestId } : {}),
       ...(unconfirmed ? { unconfirmed, error: aiVideoUnconfirmedSubmissionMessage } : {}),

@@ -32,6 +32,8 @@ const library = new Map<string, ArrayBuffer>()
 let exported: ArrayBuffer | null = null
 let assetCounter = 0
 let folderOpens = true
+// 下一次「用一张图开头」选到的图（编号）；空的就是客户在对话框里点了取消。
+let nextPicks: string[] = []
 // 地址带 ?models=held 时各分组先不回模型表，等测试叫 releaseModels：页面刚打开、模型还没读完就点生成的那一下（#1489 R28-4）。
 const modelsHeld = query.get('models') === 'held'
 const heldModels: Array<() => void> = []
@@ -89,6 +91,11 @@ const bridge: VideoStudioBridge = {
   openAiVideo: async (assetId) => { record('open', assetId) },
   saveAiVideo: async (assetId) => { record('save', assetId); return { saved: true } },
   openDiagnosticFolder: async (target) => { record('folder', target); return folderOpens },
+  pickAiChatImages: async (remaining) => {
+    record('pick-images', remaining)
+    const picked = nextPicks.splice(0)
+    return picked.map((assetId) => ({ assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' as const, fileName: `${assetId}.png` }))
+  },
 }
 
 async function finishResume(requestId: string, color: string) {
@@ -132,6 +139,7 @@ declare global {
       exported(): ArrayBuffer | null
       forget(assetId: string): void
       folderOpens(value: boolean): void
+      pickImages(assetIds: string[]): void
       balance(): number | null
     }
   }
@@ -158,6 +166,7 @@ window.videoStudioPage = {
   exported: () => exported,
   forget: (assetId) => { library.delete(assetId) },
   folderOpens: (value) => { folderOpens = value },
+  pickImages: (assetIds) => { nextPicks = [...assetIds] },
   balance: () => balanceStore?.getSnapshot().balance?.displayAmount ?? null,
 }
 

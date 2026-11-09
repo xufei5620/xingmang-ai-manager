@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
-import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioStorageKey, type VideoStudioProject } from './project'
+import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioShotImage, videoStudioStorageKey, type VideoStudioProject } from './project'
 import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
 import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
 
@@ -20,6 +20,7 @@ const bridge: VideoStudioBridge = {
   openAiVideo: unused,
   saveAiVideo: unused,
   openDiagnosticFolder: unused,
+  pickAiChatImages: unused,
 }
 
 function clip(letter: string): AiVideoClip {
@@ -106,6 +107,23 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('data-testid="video-generate-stop"')
     expect(markup).not.toContain('data-testid="video-generate-all"')
     expect(markup).toContain('等片段都生成好再拼。')
+  })
+
+  it('offers a picture to start each shot from, and shows the one picked in place of the empty thumbnail', () => {
+    const project = plannedProject()
+    const image = videoStudioShotImage('p'.repeat(43))!
+    const withImages: VideoStudioProject = { ...project, shots: [{ ...project.shots[0], image }, { ...project.shots[1], image }, { ...project.shots[1], id: 'shot-3', image: undefined }] }
+    const markup = render('ready', withImages)
+    // 第一镜已经有片段：左边还是片段，选的图是按钮旁边那张小的。
+    expect(markup).toContain('data-testid="video-shot-image-preview-0"')
+    expect(markup).not.toContain('data-testid="video-shot-image-thumb-0"')
+    // 第二镜还没生成：选的图就在左边那格。
+    expect(markup).toMatch(/data-testid="video-shot-image-thumb-1"[^]*?src="xingmang-asset:\/\/image\/p{43}"/)
+    expect(markup).not.toContain('data-testid="video-shot-image-preview-1"')
+    expect(markup).toMatch(/data-testid="video-shot-image-change-1"[^>]*>[^]*?换一张/)
+    expect(markup).toMatch(/data-testid="video-shot-image-remove-1"[^>]*>[^]*?不用这张图/)
+    expect(markup).toMatch(/title="生成时从这张图动起来，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
+    expect(markup).not.toContain('data-testid="video-shot-image-0"')
   })
 
   it('shows the joined film with open, save and open folder once every clip is there', () => {
