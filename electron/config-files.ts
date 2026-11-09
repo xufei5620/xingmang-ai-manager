@@ -3500,6 +3500,25 @@ export function inspectManagedCliHookTargets(
   return targets
 }
 
+/** 本软件写进某家配置的两样：钩子（Codex 是 notify）和 Claude Code 的状态行。 */
+export type ManagedCliHookPart = 'hooks' | 'statusLine'
+
+/** 某家配置里现在有本软件的哪几样（指向哪里不管）。读不出来就当没有。 */
+export function inspectManagedCliHookParts(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): ManagedCliHookPart[] {
+  const configPath = providerConfigPaths(provider, rootsInput)[0]
+  const parsed = provider === 'gemini' ? readGeminiJson(configPath)
+    : provider === 'claude' ? readJson(configPath)
+    : readToml(configPath)
+  if (!parsed) return []
+  const parts: ManagedCliHookPart[] = []
+  if (managedCliHookTargets(provider, parsed).length > 0) parts.push('hooks')
+  if (provider === 'claude' && managedClaudeStatusLineTarget(parsed)) parts.push('statusLine')
+  return parts
+}
+
 export interface ManagedCliHookRewrite {
   /** 缺省 = 这台电脑现在写不出钩子（没有 Node.js 之类），那就把我们那几条收回，不再报错。 */
   cliHook?: CliHookInvocation
@@ -3570,15 +3589,73 @@ function managedCliHookPlan(
   }
 }
 
+export interface ManagedCliHookRestore {
+  /** 卸载时收回的那几样（removed-cli-hooks.ts 的记录），只补这几样。 */
+  parts: readonly ManagedCliHookPart[]
+  /** 缺省 = 这台电脑现在写不出钩子，钩子这次不补。 */
+  cliHook?: CliHookInvocation
+  /** 缺省 = 状态行这次不补。只给 Claude Code。 */
+  claudeStatusLineCommand?: string
+}
+
+/**
+ * 卸载时收回、重装后补回：只补现在没有的那几样。已经有的（哪怕指向旧位置）一个字不动，那归
+ * 「修好它」那条路；客户自己设过的状态行、Codex notify 也不顶掉。Gemini CLI 已下线，不补。
+ */
+function managedCliHookRestorePlan(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  restore: ManagedCliHookRestore,
+): FilePlan | null {
+  const configPath = providerConfigPaths(provider, roots)[0]
+  const { cliHook, claudeStatusLineCommand } = restore
+  const hooks = restore.parts.includes('hooks')
+  switch (provider) {
+    case 'claude': {
+      if (requireConfigText(configPath, '现有 Claude settings.json') === null) return null
+      const parsed = requireJson(configPath, '现有 Claude settings.json')
+      let changed = false
+      if (hooks && cliHook && managedCliHookTargets('claude', parsed).length === 0) {
+        applyClaudeCliHooks(parsed, cliHook)
+        changed = true
+      }
+      if (restore.parts.includes('statusLine') && claudeStatusLineCommand && parsed.statusLine === undefined) {
+        applyClaudeStatusLine(parsed, claudeStatusLineCommand)
+        changed = true
+      }
+      return changed ? { path: configPath, content: jsonContent(parsed) } : null
+    }
+    case 'gemini':
+      return null
+    case 'codex': {
+      if (!hooks || !cliHook) return null
+      if (requireConfigText(configPath, '现有 Codex config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Codex config.toml')
+      if (parsed.notify !== undefined) return null
+      applyCodexCliNotify(parsed, cliHook)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+    case 'grok': {
+      // 推到 cmd 本来就不写钩子（applyGrokCliHooks 那段说明），那就别动文件。
+      if (!hooks || !cliHook || grokCliHookCommand(cliHook) === null) return null
+      if (requireConfigText(configPath, '现有 Grok config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Grok config.toml')
+      if (managedCliHookTargets('grok', parsed).length > 0) return null
+      applyGrokCliHooks(parsed, cliHook)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+  }
+}
+
 function executeManagedCliHookPlan(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots,
-  rewrite: ManagedCliHookRewrite | null,
+  buildPlan: (roots: ProviderConfigRoots) => FilePlan | null,
 ): NativeConfigSaveResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
-  const plan = managedCliHookPlan(provider, roots, rewrite)
+  const plan = buildPlan(roots)
   if (!plan) return { backups: [], files: [] }
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -3591,7 +3668,7 @@ export function rewriteManagedCliHooks(
   rootsInput: ProviderConfigRoots,
   rewrite: ManagedCliHookRewrite,
 ): NativeConfigSaveResult {
-  return executeManagedCliHookPlan(provider, rootsInput, rewrite)
+  return executeManagedCliHookPlan(provider, rootsInput, (roots) => managedCliHookPlan(provider, roots, rewrite))
 }
 
 /** 卸载时收回本软件写进这家配置的钩子与状态行。Key 和其余设置留着，卸了星芒工具照样能用。 */
@@ -3599,7 +3676,16 @@ export function removeManagedCliHooks(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
-  return executeManagedCliHookPlan(provider, rootsInput, null)
+  return executeManagedCliHookPlan(provider, rootsInput, (roots) => managedCliHookPlan(provider, roots, null))
+}
+
+/** 重装后开机：把卸载时收回的那几样按这次的路径补回去，写之前照旧备份（I9）。 */
+export function restoreManagedCliHooks(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  restore: ManagedCliHookRestore,
+): NativeConfigSaveResult {
+  return executeManagedCliHookPlan(provider, rootsInput, (roots) => managedCliHookRestorePlan(provider, roots, restore))
 }
 
 // ---------------------------------------------------------------------------

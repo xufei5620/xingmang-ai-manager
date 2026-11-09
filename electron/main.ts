@@ -134,7 +134,7 @@ import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
-import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksFromConfigs, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
+import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksRememberingRestore, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -2152,6 +2152,8 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
     // Gemini CLI 下线后，星芒以前写进它配置的做完提醒和画图没人维护了，开机后在后台收回。
     void startupQuiet.whenOver().then(() => systemService.reclaimRetiredToolIntegrations?.()).catch(() => undefined)
+    // 卸了星芒再装回来：卸载时收回的做完提醒、防睡和状态栏，按卸载时留下的记录补回。没登录的也补。
+    void startupQuiet.whenOver().then(() => systemService.restoreCliHooksRemovedByUninstall?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -3005,7 +3007,7 @@ if (!hasSingleInstanceLock) {
           return queue.activeKey !== null || queue.pendingKeys.length > 0
         },
         backupCliConfigs,
-        removeCliHooks: () => removeCliHooksFromConfigs(rootedOptions.system.providerRoots, report),
+        removeCliHooks: () => removeCliHooksRememberingRestore(managerDataDirectory, rootedOptions.system.providerRoots, report),
         removeLoginItem: () => removeMacLoginItem(app),
         removeManagedTools: () => removeMacManagedTools(undefined, report),
         trashItem: (target) => shell.trashItem(target),

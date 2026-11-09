@@ -38,6 +38,7 @@
 - `claude-native-uninstall.ts` — 卸载 Anthropic 官方安装器装的 Claude Code（`~/.local/bin/claude` 指向 `~/.local/share/claude/versions`）：只认版本号命名的文件；Windows 上 claude.exe 还开着时改得了名删不掉，照实交代并给出手动命令。口径见 `docs/CLI-NATIVE-INSTALLS.md`
 - `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名不交路径（I5）。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `uninstall-cleanup.ts` — **Windows 卸载程序的收尾一支**：卸载程序删文件前用专用参数再拉起本程序，把系统代理改回去（加速辅助进程已被强杀，代理还指着没人听的端口会让整台电脑断网）、删开机项、收回四家工具配置里的钩子和状态行，勾了就清登录与聊天记录；跑卸载的不是桌面登录的那个人就什么都不动，结果按位写进退出码，从不让卸载卡住
+- `removed-cli-hooks.ts` — 卸载时收回了哪几家工具的提醒设置（钩子、Claude Code 状态行），记在数据目录的 `cli-hooks-removed-by-uninstall.json`；Windows 卸载清理和 Mac「卸载星芒」写，重装后开机由 `config-save-service.ts` 按记录补回、补完划掉。只认这份记录，客户自己删掉的不补
 - `uninstall-cleanup-entry.ts` — 上面那支的入口判定和两个参数名（与 `build/installer.nsh` 由 scripts 测试钉成同一个值）；刻意零 import，`platform/entry.ts` 每次启动最先读它，决定走桌面还是走清理
 
 ## Grok（Windows 原生包）

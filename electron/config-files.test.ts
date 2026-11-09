@@ -19,6 +19,7 @@ import {
   moveClaudeForeignSettingsAside,
   restoreClaudeForeignSettings,
   planProviderPickerRefresh,
+  restoreManagedCliHooks,
   rewriteManagedCliHooks,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
@@ -60,6 +61,7 @@ import {
   providerAccountMode,
   providerConfigPaths,
   removeManagedCliHooks,
+  inspectManagedCliHookParts,
   removeRetiredGeminiIntegrations,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
@@ -4333,6 +4335,93 @@ describe('hooks and status line pointing at an old location', () => {
     }
     const grok = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8')) as unknown as GrokConfigShape
     expect(grok.compat).toEqual({ claude: { hooks: false } })
+  })
+
+  it('tells our hooks and our Claude Code status line apart', () => {
+    const roots = providerRoots(temporaryHome())
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookParts(provider, roots)).toEqual([])
+    writeAll(roots)
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks', 'statusLine'])
+    for (const provider of ['gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookParts(provider, roots)).toEqual(['hooks'])
+    rewriteManagedCliHooks('claude', roots, { cliHook: moved })
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+  })
+
+  it('puts back what the uninstaller took, at the new location, and keeps keys and models', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) removeManagedCliHooks(provider, roots)
+    const restore = { parts: ['hooks', 'statusLine'] as const, cliHook: moved, claudeStatusLineCommand: movedStatusLine }
+
+    const result = restoreManagedCliHooks('claude', roots, restore)
+    expect(result.backups).toHaveLength(1)
+    const claude = JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as { env: Record<string, string>, model: string, statusLine: { command: string } }
+    expect(claude.statusLine.command).toBe(movedStatusLine)
+    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(claude.model).toBe(testModels.claude)
+    expect(inspectManagedCliHookTargets('claude', roots).slice(0, 5)).toEqual(Array(5).fill({ nodeExecutable: moved.nodeExecutable, scriptPath: moved.scriptPath }))
+
+    restoreManagedCliHooks('codex', roots, { parts: ['hooks'], cliHook: moved })
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([{ nodeExecutable: moved.nodeExecutable, scriptPath: moved.scriptPath }])
+    restoreManagedCliHooks('grok', roots, { parts: ['hooks'], cliHook: { ...moved, platform: 'linux' } })
+    expect(inspectManagedCliHookTargets('grok', roots)).toHaveLength(6)
+    for (const provider of ['claude', 'codex', 'grok'] as const) expect(inspectProviderConfig(provider, roots).apiKey).toBe('sk-relay')
+
+    // Gemini CLI is retired: nothing is put back there.
+    expect(restoreManagedCliHooks('gemini', roots, { parts: ['hooks'], cliHook: moved })).toEqual({ backups: [], files: [] })
+    expect(inspectManagedCliHookParts('gemini', roots)).toEqual([])
+  })
+
+  it('puts back only the parts it is told to and never pushes out the customer\'s own status line or notify', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    for (const provider of ['claude', 'codex'] as const) removeManagedCliHooks(provider, roots)
+
+    restoreManagedCliHooks('claude', roots, { parts: ['hooks'], cliHook: moved, claudeStatusLineCommand: movedStatusLine })
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    const claudeBefore = fs.readFileSync(claudePath, 'utf8')
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'], cliHook: moved, claudeStatusLineCommand: movedStatusLine }))
+      .toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(claudeBefore)
+
+    const [codexPath] = providerConfigPaths('codex', roots)
+    fs.writeFileSync(codexPath, `notify = ["say", "done"]\n${fs.readFileSync(codexPath, 'utf8')}`, 'utf8')
+    const codexBefore = fs.readFileSync(codexPath, 'utf8')
+    expect(restoreManagedCliHooks('codex', roots, { parts: ['hooks'], cliHook: moved })).toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexBefore)
+  })
+
+  it('leaves entries that are already there alone, even ones pointing at an old location', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const before = fs.readFileSync(claudePath, 'utf8')
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'], cliHook: moved, claudeStatusLineCommand: movedStatusLine }))
+      .toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    for (const provider of ['codex', 'grok'] as const) {
+      expect(restoreManagedCliHooks(provider, roots, { parts: ['hooks'], cliHook: { ...moved, platform: 'linux' } })).toEqual({ backups: [], files: [] })
+    }
+  })
+
+  it('writes nothing when this computer cannot write the hooks, or the config is gone', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'], cliHook: moved, claudeStatusLineCommand: movedStatusLine }))
+      .toEqual({ backups: [], files: [] })
+    writeAll(roots)
+    for (const provider of ['claude', 'codex', 'grok'] as const) removeManagedCliHooks(provider, roots)
+    const read = () => (['claude', 'codex', 'grok'] as const).map((provider) => fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8'))
+    const files = read()
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'] })).toEqual({ backups: [], files: [] })
+    expect(restoreManagedCliHooks('codex', roots, { parts: ['hooks'] })).toEqual({ backups: [], files: [] })
+    expect(restoreManagedCliHooks('grok', roots, { parts: ['hooks'], cliHook: { ...moved, platform: 'win32', grokWindowsShell: 'cmd' } }))
+      .toEqual({ backups: [], files: [] })
+    expect(read()).toEqual(files)
   })
 })
 
