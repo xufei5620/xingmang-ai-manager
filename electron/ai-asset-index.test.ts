@@ -69,4 +69,22 @@ describe('indexOwnedAssetFiles', () => {
     })
     expect(index).toHaveLength(3)
   })
+
+  it('tells the owning store where each indexed file lives, newest copy only', async () => {
+    const root = temporaryRoot()
+    writeAsset(root, '2026-08-10', assetId('dup'))
+    writeAsset(root, '2026-08-15', assetId('dup'))
+    writeAsset(root, '2026-08-12', assetId('one'), 'jpg')
+    const located: Array<[string, string]> = []
+    const index = await indexOwnedAssetFiles({
+      accountRoot: root, mediaType: 'image', filePattern: imagePattern, label: 'AI 图片资产',
+      onFile: (id, filePath) => located.push([id, filePath]),
+    })
+    expect(located).toEqual([
+      [assetId('dup'), path.join(root, '2026-08-15', `xingmang-${assetId('dup')}.png`)],
+      [assetId('one'), path.join(root, '2026-08-12', `xingmang-${assetId('one')}.jpg`)],
+    ])
+    // The entries themselves still carry no path.
+    expect(JSON.stringify(index)).not.toContain(root)
+  })
 })

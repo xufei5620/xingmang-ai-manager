@@ -177,6 +177,73 @@ describe('AiVideoAssetStore', () => {
   })
 })
 
+describe('AiVideoAssetStore lookup by identifier', () => {
+  function dayName(index: number): string {
+    return new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10)
+  }
+
+  function accountWithDays(days: number): string {
+    const outputRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-lookup-')))
+    roots.push(outputRoot)
+    for (let day = 0; day < days; day += 1) {
+      const directory = path.join(outputRoot, 'user-7', dayName(day))
+      fs.mkdirSync(directory, { recursive: true })
+      fs.writeFileSync(path.join(directory, `xingmang-${String(day).padStart(2, '0').padEnd(43, 'x')}.mp4`), mp4())
+    }
+    return outputRoot
+  }
+
+  async function syncLstatsToMiss(outputRoot: string): Promise<number> {
+    const lstatSync = vi.spyOn(fs, 'lstatSync')
+    try {
+      const store = new AiVideoAssetStore({ outputRoot })
+      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
+      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
+      return lstatSync.mock.calls.length
+    } finally {
+      lstatSync.mockRestore()
+    }
+  }
+
+  it('misses at the same synchronous cost however many days the account has', async () => {
+    expect(await syncLstatsToMiss(accountWithDays(40))).toBe(await syncLstatsToMiss(accountWithDays(1)))
+  })
+
+  it('reads a video removed outside the app as missing and reveals the located file', async () => {
+    const outputRoot = accountWithDays(3)
+    const revealInFolder = vi.fn()
+    const store = new AiVideoAssetStore({
+      outputRoot,
+      now: () => new Date('2026-08-14T12:00:00.000Z'),
+      nativeOperations: { selectSavePath: async () => null, revealInFolder, showContextMenu: vi.fn() },
+    })
+    const kept = await store.storeComposed(7, mp4())
+    const gone = await store.storeComposed(7, mp4())
+    await store.revealInFolder(7, kept.assetId)
+    expect(revealInFolder).toHaveBeenCalledWith(await store.resolveOwnedFilePath(7, kept.assetId))
+    fs.rmSync(await store.resolveOwnedFilePath(7, gone.assetId))
+
+    // Not a raw ENOENT carrying the file's path.
+    await expect(store.readOwned(7, gone.assetId)).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
+    await expect(store.resolveOwnedFilePath(7, gone.assetId)).rejects.toThrow(/^AI 视频资产不存在或无权访问$/)
+  })
+
+  it.runIf(process.platform !== 'win32')('still runs the full file checks on a remembered location', async () => {
+    const outputRoot = accountWithDays(1)
+    const store = new AiVideoAssetStore({ outputRoot })
+    const asset = await store.storeComposed(7, mp4())
+    const filePath = await store.resolveOwnedFilePath(7, asset.assetId)
+    const outside = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-outside-')), 'outside.mp4')
+    roots.push(path.dirname(outside))
+    fs.writeFileSync(outside, mp4())
+    fs.rmSync(filePath)
+    fs.symlinkSync(outside, filePath)
+
+    await expect(store.readOwned(7, asset.assetId)).rejects.toThrow('不能经过符号链接或目录联接')
+    await expect(store.resolveOwnedFilePath(7, asset.assetId)).rejects.toThrow('单链接普通文件')
+  })
+})
+
 /** A profile whose 文档 was moved to "another disk" and left a junction behind (「C 盘搬家」). */
 function relocatedDocuments(root: string): { home: string; documents: string } {
   const home = path.join(root, 'Users', 'alice')

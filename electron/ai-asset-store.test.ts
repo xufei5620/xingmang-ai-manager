@@ -318,6 +318,90 @@ describe('AiAssetStore base64 and ownership', () => {
   })
 })
 
+describe('AiAssetStore lookup by identifier', () => {
+  function writeRawImage(outputRoot: string, date: string, assetId: string): string {
+    const directory = path.join(outputRoot, 'user-42', date)
+    fs.mkdirSync(directory, { recursive: true })
+    const filePath = path.join(directory, `xingmang-${assetId}.png`)
+    fs.writeFileSync(filePath, png())
+    return filePath
+  }
+
+  function dayName(index: number): string {
+    return new Date(Date.UTC(2026, 0, 1) + index * 86_400_000).toISOString().slice(0, 10)
+  }
+
+  async function syncLstatsToLookUp(outputRoot: string, assetId: string, present: boolean): Promise<number> {
+    const lstatSync = vi.spyOn(fs, 'lstatSync')
+    try {
+      const read = new AiAssetStore(storeOptions(outputRoot)).readOwned(42, assetId)
+      if (present) await expect(read).resolves.toMatchObject({ bytes: png() })
+      else await expect(read).rejects.toThrow(/^AI 图片资产不存在或无权访问$/)
+      return lstatSync.mock.calls.length
+    } finally {
+      lstatSync.mockRestore()
+    }
+  }
+
+  it('looks an image up after restart at the same synchronous cost however many days the account has', async () => {
+    // Asset ids only need the right shape here; the files are written directly.
+    const target = 'T'.repeat(43)
+    const missing = 'M'.repeat(43)
+    const busy = fs.realpathSync.native(temporaryDirectory())
+    for (let day = 1; day <= 40; day += 1) writeRawImage(busy, dayName(day), `${String(day).padStart(2, '0')}`.padEnd(43, 'x'))
+    writeRawImage(busy, dayName(0), target)
+    const quiet = fs.realpathSync.native(temporaryDirectory())
+    writeRawImage(quiet, dayName(0), target)
+
+    // A miss tries every folder and extension. Each try used to run a
+    // synchronous lstat and realpath on every component of a file that did
+    // not exist; now the walk runs once for the account folder and once for
+    // the file that is finally opened.
+    expect(await syncLstatsToLookUp(busy, missing, false)).toBe(await syncLstatsToLookUp(quiet, missing, false))
+    expect(await syncLstatsToLookUp(busy, target, true)).toBe(await syncLstatsToLookUp(quiet, target, true))
+  })
+
+  it('hydrates a library page from the index without searching the folders again', async () => {
+    const outputRoot = fs.realpathSync.native(temporaryDirectory())
+    for (let day = 0; day < 10; day += 1) writeRawImage(outputRoot, dayName(day), `${String(day).padStart(2, '0')}`.padEnd(43, 'x'))
+    const store = new AiAssetStore(storeOptions(outputRoot))
+    const index = await store.listOwnedIndex(42)
+    expect(index).toHaveLength(10)
+
+    const readdir = vi.spyOn(fs.promises, 'readdir')
+    for (const entry of index) await expect(store.readOwned(42, entry.assetId)).resolves.toMatchObject({ bytes: png() })
+    expect(readdir).not.toHaveBeenCalled()
+  })
+
+  it('reads an image removed outside the app as missing and finds a copy put back in another folder', async () => {
+    const options = storeOptions()
+    const store = new AiAssetStore(options)
+    const stored = await store.storeBase64(42, png().toString('base64'))
+    const original = path.join(options.outputRoot, 'user-42', '2026-08-12', stored.fileName)
+    fs.rmSync(original)
+
+    // Not a raw ENOENT carrying the file's path.
+    await expect(store.readOwned(42, stored.assetId)).rejects.toThrow(/^AI 图片资产不存在或无权访问$/)
+    const restored = writeRawImage(options.outputRoot, '2026-08-01', stored.assetId)
+    await expect(store.readOwned(42, stored.assetId)).resolves.toMatchObject({ bytes: png() })
+    await expect(store.resolveOwnedFilePath(42, stored.assetId)).resolves.toBe(restored)
+  })
+
+  it.runIf(process.platform !== 'win32')('still runs the full file checks on a remembered location', async () => {
+    const options = storeOptions()
+    const store = new AiAssetStore(options)
+    const stored = await store.storeBase64(42, png().toString('base64'))
+    const filePath = path.join(options.outputRoot, 'user-42', '2026-08-12', stored.fileName)
+    const outside = path.join(temporaryDirectory(), 'outside.png')
+    fs.writeFileSync(outside, png(9, 9))
+    fs.rmSync(filePath)
+    fs.symlinkSync(outside, filePath)
+
+    await expect(store.readOwned(42, stored.assetId)).rejects.toThrow('不能经过符号链接或目录联接')
+    await expect(new AiAssetStore(options).readOwned(42, stored.assetId)).rejects.toThrow('不能经过符号链接或目录联接')
+  })
+})
+
 describe('AiAssetStore listing', () => {
   it('scans owned assets after restart and never returns another user assets', async () => {
     const options = storeOptions()

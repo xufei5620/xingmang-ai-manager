@@ -15,6 +15,7 @@ import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
+import { OwnedAssetLocator } from './ai-asset-locator'
 import { readBoundedResponseBytes } from './bounded-response'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
@@ -27,6 +28,7 @@ const MAXIMUM_REVISED_PROMPT_LENGTH = 40_000
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const FILE_LABEL = 'AI 图片资产'
+const MISSING_ASSET_MESSAGE = 'AI 图片资产不存在或无权访问'
 // 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
 // 下的结果给 0o644，不用原子写默认的 0o600。
 const SAVED_COPY_FILE_MODE = 0o644
@@ -550,6 +552,7 @@ export class AiAssetStore {
   private readonly downloadTimeoutMs: number
   private readonly unwritableGuidance: string
   private readonly records = new Map<string, OwnedAssetRecord>()
+  private readonly locator: OwnedAssetLocator
 
   constructor(options: AiAssetStoreOptions) {
     this.outputRoot = path.resolve(options.outputRoot)
@@ -562,6 +565,7 @@ export class AiAssetStore {
     this.maximumImageBytes = options.maximumImageBytes ?? DEFAULT_MAXIMUM_IMAGE_BYTES
     this.downloadTimeoutMs = options.downloadTimeoutMs ?? DEFAULT_DOWNLOAD_TIMEOUT_MS
     this.unwritableGuidance = options.unwritableGuidance ?? DEFAULT_UNWRITABLE_GUIDANCE
+    this.locator = new OwnedAssetLocator({ outputRoot: this.outputRoot, extensions: ['png', 'jpg', 'webp'], label: FILE_LABEL })
     if (!Number.isInteger(this.maximumImageBytes) || this.maximumImageBytes < 1 || this.maximumImageBytes > DEFAULT_MAXIMUM_IMAGE_BYTES) {
       throw new Error('AI 图片大小上限配置无效')
     }
@@ -665,7 +669,7 @@ export class AiAssetStore {
 
   async readOwned(userId: number, assetId: string): Promise<AiOwnedAssetRead> {
     const record = await this.resolveOwned(userId, assetId)
-    const bytes = await readBoundedOwnedFile(record.filePath, this.maximumImageBytes)
+    const bytes = await this.readRecordedFile(assetId, record.filePath)
     const inspection = inspectAiImage(bytes, record.asset.mimeType)
     return {
       asset: {
@@ -694,6 +698,7 @@ export class AiAssetStore {
    */
   forgetOwned(assetId: string): void {
     this.records.delete(assetId)
+    this.locator.forget(assetId)
   }
 
   async readImageDataUri(userId: number, assetId: string): Promise<string> {
@@ -711,6 +716,7 @@ export class AiAssetStore {
       mediaType: 'image',
       filePattern: /^xingmang-([A-Za-z0-9_-]{43})\.(png|jpg|webp)$/,
       label: FILE_LABEL,
+      onFile: (assetId, filePath) => this.locator.remember(userId, assetId, filePath),
     })
   }
 
@@ -754,8 +760,7 @@ export class AiAssetStore {
             const inspection = inspectAiImage(bytes)
             if (inspection.extension !== candidate.extension) throw new Error('AI 图片扩展名与内容不一致')
             const asset = publicAsset(candidate.assetId, inspection)
-            const record: OwnedAssetRecord = { userId, filePath, asset }
-            this.records.set(candidate.assetId, record)
+            this.cacheRecord(candidate.assetId, { userId, filePath, asset })
             const stat = await fs.promises.lstat(filePath)
             return {
               asset: { ...asset, createdAt: stat.birthtime.toISOString() },
@@ -815,6 +820,7 @@ export class AiAssetStore {
     await readBoundedOwnedFile(record.filePath, this.maximumImageBytes)
     await removeSafeDataFile(record.filePath, FILE_LABEL)
     if (this.records.get(assetId) === record) this.records.delete(assetId)
+    this.locator.forget(assetId)
   }
 
   async copy(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {
@@ -924,9 +930,29 @@ export class AiAssetStore {
       }
       throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
     }
-    const record: OwnedAssetRecord = { userId, filePath, asset }
-    this.records.set(assetId, record)
+    this.cacheRecord(assetId, { userId, filePath, asset })
     return { ...asset }
+  }
+
+  private cacheRecord(assetId: string, record: OwnedAssetRecord): void {
+    this.records.set(assetId, record)
+    this.locator.remember(record.userId, assetId, record.filePath)
+  }
+
+  /**
+   * Reads a located file under the full checks. A file that vanished after it
+   * was located (removed outside the app) reads as a missing asset, not as a
+   * raw file-system error carrying its path, and is not remembered any more.
+   */
+  private async readRecordedFile(assetId: string, filePath: string): Promise<Buffer> {
+    try {
+      return await readBoundedOwnedFile(filePath, this.maximumImageBytes)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      if (this.records.get(assetId)?.filePath === filePath) this.records.delete(assetId)
+      this.locator.forget(assetId)
+      throw new Error(MISSING_ASSET_MESSAGE)
+    }
   }
 
   private async readMatchingContent(userId: number, assetId: string, bytes: Buffer): Promise<AiStoredAsset | null> {
@@ -935,7 +961,7 @@ export class AiAssetStore {
       if (!existing.bytes.equals(bytes)) throw new Error('AI 图片内容摘要冲突')
       return existing.asset
     } catch (error) {
-      if (error instanceof Error && error.message === 'AI 图片资产不存在或无权访问') return null
+      if (error instanceof Error && error.message === MISSING_ASSET_MESSAGE) return null
       throw error
     }
   }
@@ -949,36 +975,21 @@ export class AiAssetStore {
       if (!pathIsWithin(path.join(this.outputRoot, `user-${userId}`), known.filePath)) {
         throw new Error('AI 图片资产路径越界')
       }
-      return known
     }
-
-    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
-    let dateEntries: fs.Dirent[]
-    try {
-      assertNoReparseComponents(accountRoot, FILE_LABEL)
-      dateEntries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
-    } catch {
-      throw new Error('AI 图片资产不存在或无权访问')
+    // Where the file is comes from the locator (remembered, or one pass over
+    // the date folders newest first); what it is still comes from reading it
+    // under the full checks below.
+    const filePath = await this.locator.locate(userId, assetId)
+    if (!filePath) {
+      if (known && this.records.get(assetId) === known) this.records.delete(assetId)
+      throw new Error(MISSING_ASSET_MESSAGE)
     }
-    if (dateEntries.length > 4_096) throw new Error('AI 图片资产目录条目过多')
-    for (const dateEntry of dateEntries) {
-      if (!dateEntry.isDirectory() || dateEntry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(dateEntry.name)) continue
-      for (const extension of ['png', 'jpg', 'webp'] as const) {
-        const fileName = `xingmang-${assetId}.${extension}`
-        const filePath = path.join(accountRoot, dateEntry.name, fileName)
-        try {
-          const bytes = await readBoundedOwnedFile(filePath, this.maximumImageBytes)
-          const inspection = inspectAiImage(bytes)
-          if (inspection.extension !== extension) throw new Error('AI 图片扩展名与内容不一致')
-          const asset = publicAsset(assetId, inspection)
-          const record: OwnedAssetRecord = { userId, filePath, asset }
-          this.records.set(assetId, record)
-          return record
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        }
-      }
-    }
-    throw new Error('AI 图片资产不存在或无权访问')
+    if (known && known.filePath === filePath) return known
+    const bytes = await this.readRecordedFile(assetId, filePath)
+    const inspection = inspectAiImage(bytes)
+    if (inspection.extension !== path.extname(filePath).slice(1)) throw new Error('AI 图片扩展名与内容不一致')
+    const record: OwnedAssetRecord = { userId, filePath, asset: publicAsset(assetId, inspection) }
+    this.cacheRecord(assetId, record)
+    return record
   }
 }
