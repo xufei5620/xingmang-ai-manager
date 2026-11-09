@@ -2732,7 +2732,7 @@ if (!hasSingleInstanceLock) {
         })
       },
       // 画布开着时退出先让它存一次，在生成的由画布自己的关窗确认框问一句（#1368 第 9 条）。没开着时立刻放行。
-      closeCanvas: () => canvasController.requestClose(),
+      closeCanvas: () => canvasController.requestCloseForQuit(),
       confirmQuit: async () => {
         // 没有安装在跑、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟
         // 测试的预算就那几秒。两件事按轻重排队，一次退出最多只问一句。
