@@ -399,18 +399,25 @@ export async function followExternalToolRoute(
   return commitExternalToolFiles(files, openCodeFieldPlans(files, { baseUrl: from, apiKey }, 'baseURL', to, '换线路'), hooks)
 }
 
+/** 换 Key 的结论（主进程内部用，不跨 IPC）：unsupportedModels 是新 Key 不认、所以这次没换的 WorkBuddy 条目的型号。 */
+export interface ExternalToolKeyFollowResult extends ExternalToolConfigSaveResult {
+  unsupportedModels: string[]
+}
+
 /**
  * 换 Key（#1113）：星芒替某个工具换了 Key，借它那把的 WorkBuddy、OpenCode 跟着换，只把星芒替当前账号写的
  * 那几处 Key 从 from 换成 to，地址、型号、协议都不动，规矩同 followExternalToolRoute。WorkBuddy 是地址为
- * baseUrl、Key 是 from 的每一条；OpenCode 是星芒那一段里当前型号生效的 Key。
+ * baseUrl、Key 是 from、型号在 offered（新 Key 能用的型号）里的每一条：WorkBuddy 每条各带各的 Key，新 Key 不认的
+ * 那条换过去也发不通，原样留着，一条都不认就整笔不写。OpenCode 是星芒那一段里当前型号生效的 Key，当前型号由
+ * 调用方核过。
  */
 export async function followExternalToolKey(
   tool: ExternalToolId,
   platform: ExternalToolPlatform,
   rootsInput: ExternalToolPathRoots,
-  change: { baseUrl: string; from: string; to: string },
+  change: { baseUrl: string; from: string; to: string; offered: readonly string[] },
   hooks: NativeConfigWriteHooks = {},
-): Promise<ExternalToolConfigSaveResult> {
+): Promise<ExternalToolKeyFollowResult> {
   assertExternalToolImplemented(tool)
   const { baseUrl, apiKey: to } = normalizedOptions(tool, { baseUrl: change.baseUrl, apiKey: change.to })
   if (!to) configError('API Key无效')
@@ -418,13 +425,16 @@ export async function followExternalToolKey(
   if (tool === 'workbuddy') {
     const current = parseConfig(tool, files.target.content)
     const prefix = Array.isArray(current) ? [] : ['models']
-    const edits = workBuddyModels(current).flatMap((record, index): ConfigEdit[] => typeof record.url === 'string'
+    const owned = workBuddyModels(current).flatMap((record, index) => typeof record.url === 'string'
       && record.url.replace(/\/+$/, '') === `${baseUrl}/chat/completions` && record.apiKey === change.from
-      ? [{ path: [...prefix, index, 'apiKey'], value: to }] : [])
-    if (!edits.length) configError('在换密钥前已变化')
-    return commitExternalToolFiles(files, [{ path: files.target.path, content: applyConfigEdits(files.target.content, edits, true) }], hooks)
+      ? [{ model: String(record.id), index }] : [])
+    if (!owned.length) configError('在换密钥前已变化')
+    const edits = owned.flatMap(({ model, index }): ConfigEdit[] => change.offered.includes(model) ? [{ path: [...prefix, index, 'apiKey'], value: to }] : [])
+    if (!edits.length) configError('里的型号新密钥都不支持')
+    const saved = commitExternalToolFiles(files, [{ path: files.target.path, content: applyConfigEdits(files.target.content, edits, true) }], hooks)
+    return { ...saved, unsupportedModels: owned.filter(({ model }) => !change.offered.includes(model)).map(({ model }) => model) }
   }
-  return commitExternalToolFiles(files, openCodeFieldPlans(files, { baseUrl, apiKey: change.from }, 'apiKey', to, '换密钥'), hooks)
+  return { ...commitExternalToolFiles(files, openCodeFieldPlans(files, { baseUrl, apiKey: change.from }, 'apiKey', to, '换密钥'), hooks), unsupportedModels: [] }
 }
 
 /**
