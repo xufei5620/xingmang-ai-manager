@@ -538,8 +538,8 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
-// 已知29：写不进配置文件时不再叫人去查安装目录，按钮照旧。
-test('a switch that cannot write the config file says what to close and keeps the same buttons', async () => {
+// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「找客服」。
+test('a switch that cannot write the config file says what to close and offers support', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
   try {
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
@@ -551,8 +551,8 @@ test('a switch that cannot write the config file says what to close and keeps th
     assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
     assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
     assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
-    assert.equal((await page.getByTestId('guide-exit-log').textContent())?.trim(), '查看日志')
-    assert.equal(await page.getByTestId('guide-exit-support').count(), 0)
+    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '找客服')
+    assert.equal(await page.getByTestId('guide-exit-log').count(), 0)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
     assert.equal(failure.reason, '写不进配置文件')
     assert.match(failure.detail, /EPERM/)
