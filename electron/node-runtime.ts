@@ -146,6 +146,11 @@ export interface InstallNodeRuntimeOptions {
   onProgress?: (progress: NodeRuntimeInstallProgress) => void
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
+  /**
+   * 星芒这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）：装安装包时 Windows
+   * 不弹授权窗口，进度那句不说会弹（已知19）。缺省 = 会弹。
+   */
+  processElevated?: boolean
   dependencies?: Partial<NodeRuntimeInstallerDependencies>
   /**
    * 退到下安装包时才借下载专用线路。只有 Windows 这一份认它：winget 自己下载、不走这条线路；
@@ -1332,6 +1337,17 @@ async function hashFileSha256(filePath: string): Promise<string> {
   return hash.digest('hex')
 }
 
+/**
+ * 装安装包那一步的进度。这时其实在等客户在授权窗口点「是」，那个窗口常常只在任务栏上闪、
+ * 不跳到最前面，写「正在静默安装」客户只会干等（深查 D24）。星芒本身带着管理员权限在跑时
+ * Windows 不弹窗，照旧说原来那句。
+ */
+export function nodeRuntimeMsiInstallingMessage(version: string, processElevated?: boolean): string {
+  return processElevated
+    ? `正在静默安装 Node.js ${version} LTS`
+    : `正在安装 Node.js ${version} LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。`
+}
+
 async function installFromSource(
   source: NodeRuntimeDownloadSource,
   architecture: NodeRuntimeArchitecture,
@@ -1412,7 +1428,7 @@ async function installFromSource(
   report(options, {
     phase: 'installing',
     source: source.id,
-    message: `正在静默安装 Node.js ${release.version} LTS`,
+    message: nodeRuntimeMsiInstallingMessage(release.version, options.processElevated),
     percent: null,
   })
   await verifyMsiBeforeInstall()

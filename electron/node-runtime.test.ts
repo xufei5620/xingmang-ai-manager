@@ -23,6 +23,7 @@ import {
   parseNodeShasums,
   parseSystemWingetPackage,
   nodeRuntimeElevationFailureMessage,
+  nodeRuntimeMsiInstallingMessage,
   nodeRuntimeStagingRequiresProtectedDirectory,
   parseWindowsRestartStatus,
   resolveNodeRuntimeBrokerPowerShell,
@@ -587,6 +588,20 @@ describe('Node.js response URL validation', () => {
     }) as typeof fetch
     await fetchTrustedNodeResource('https://nodejs.org/dist/index.json', { method: 'HEAD', redirect: 'follow' }, fetchMock)
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+})
+
+// 深查 D24：装安装包那一步其实在等授权窗口，不能写「正在静默安装」让客户干等。
+describe('Node.js MSI installing progress', () => {
+  it('tells the customer a Windows authorization window is coming and where to look for it', () => {
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0')).toBe(
+      '正在安装 Node.js v24.19.0 LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。',
+    )
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0', false)).toBe(nodeRuntimeMsiInstallingMessage('v24.19.0'))
+  })
+
+  it('keeps the silent-install wording when the app already runs elevated and no window appears', () => {
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0', true)).toBe('正在静默安装 Node.js v24.19.0 LTS')
   })
 })
 

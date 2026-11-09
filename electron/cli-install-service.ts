@@ -973,6 +973,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       await installNodeRuntimeLts({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
+        ...(serviceOptions.windowsProcessElevated ? { processElevated: true } : {}),
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (progress.message) sendInstallProgress(target, provider, 'output', progress.message)
