@@ -656,10 +656,6 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     }
   }
 
-  /**
-   * 项目文件夹里（或公司统一下发）的设置会盖过当前账号时，打开照常，只带回一句
-   * 提醒并记一条日志。只读，不动那些文件；查的过程出任何错都不能挡住打开。
-   */
   // 光盘、只读挂载的共享盘、没有改的权限的文件夹，工具照样起得来，AI 一改文件就是一串英文报错（D17）。
   // 打开前试写一次，写不进不拦，打开后首页说一句。Windows 不走这里：同样这些文件夹在 cli:launch 那一步
   // 已经试写过（ipc/handlers/launch.ts 的 launchIfWritable）。
@@ -674,6 +670,10 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     return refused
   }
 
+  /**
+   * 项目文件夹里（或公司统一下发）的设置会盖过当前账号时，打开照常，只带回一句
+   * 提醒并记一条日志。只读，不动那些文件；查的过程出任何错都不能挡住打开。
+   */
   function inspectLaunchConfigOverrides(
     provider: ProviderId,
     workspace: string,
