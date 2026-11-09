@@ -535,6 +535,39 @@ describe('executeCanvasRun', () => {
     expect(order.every((entry, index) => index % 2 === 0 ? entry.startsWith('persist:') : entry.startsWith('notify:'))).toBe(true)
   })
 
+  // R-1: progress reports may wait in memory; whatever a paid request or its
+  // result depends on still goes through the ordinary, durable save.
+  it('saves stage and progress reports through persistProgress and every other step through persistRecord', async () => {
+    function lastEntry(snapshot: CanvasRunRecord): string {
+      const event = snapshot.events.at(-1)
+      if (!event) return 'none'
+      if (event.type === 'node-stage') return `stage:${event.stage}${event.progress === undefined ? '' : `:${event.progress}`}`
+      if (event.type === 'node-state') return `state:${event.state}`
+      return `terminal:${event.status}`
+    }
+    const durable: string[] = []
+    const progress: string[] = []
+    const imageExecutor = vi.fn(async ({ reportStage }) => {
+      expect(durable).toContain('state:running')
+      await reportStage('processing', { value: 30, mode: 'determinate', health: 'normal' })
+      await reportStage('processing', { value: 80, mode: 'determinate', health: 'normal' })
+      return { assets: [asset()] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('image', 'image')]), {
+      executors: executors({ image: imageExecutor }),
+      persistRecord: async (snapshot) => { durable.push(lastEntry(snapshot)) },
+      persistProgress: async (snapshot) => { progress.push(lastEntry(snapshot)) },
+    }))
+
+    expect(record.status).toBe('succeeded')
+    expect(imageExecutor).toHaveBeenCalledOnce()
+    expect(durable).toEqual(['state:running', 'state:succeeded', 'terminal:succeeded'])
+    expect(progress).toEqual([
+      'state:queued', 'stage:validating', 'stage:resolving-cache', 'stage:waiting-slot', 'stage:submitting',
+      'stage:processing', 'stage:processing:30', 'stage:processing:80',
+    ])
+  })
+
   it('continues persistence after one snapshot write fails without replaying the executor', async () => {
     const text = vi.fn(async () => ({ outputText: 'paid result' }))
     const persisted: Array<{ sequence: number | undefined; status: string }> = []
