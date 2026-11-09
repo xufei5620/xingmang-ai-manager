@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AiChatHistoryWrite } from './ipc-contract'
-import { chatHistoryDirectoryName, createAiChatHistoryStore, MAX_CHAT_HISTORY_SCOPES, parseAiChatHistoryScope, parseAiChatHistoryWrite } from './ai-chat-history-store'
+import { chatHistoryDirectoryName, createAiChatHistoryStore, MAX_CHAT_HISTORY_CONVERSATIONS, MAX_CHAT_HISTORY_SCOPES, parseAiChatHistoryScope, parseAiChatHistoryWrite } from './ai-chat-history-store'
 
 const scope = 'xm-account:7'
 const temporaryRoots: string[] = []
@@ -66,6 +66,33 @@ describe('ai chat history store', () => {
     await store.write(write())
     await expect(store.write(write({ index: 'second', keys: ['a', 'missing'], put: [] }))).rejects.toThrow('缺少已保存的对话')
     expect((await store.read(scope)).index).toBe('{"version":3}')
+  })
+
+  // 0.2.24 深查 D6：上限从 50 提到 200，跟渲染层 storage.ts 的 MAX_CONVERSATIONS 一起改。
+  it('keeps 200 conversations and still checks every one it did not rewrite', async () => {
+    expect(MAX_CHAT_HISTORY_CONVERSATIONS).toBe(200)
+    const root = temporaryRoot()
+    const store = createAiChatHistoryStore({ root })
+    const keys = Array.from({ length: 200 }, (_, index) => `k${index}`)
+    await store.write(write({ keys, put: keys.map((key) => ({ key, content: `content of ${key}` })) }))
+    await store.write(write({ index: 'one reply later', keys, put: [{ key: 'k0', content: 'updated' }] }))
+    const snapshot = await store.read(scope)
+    expect(snapshot.index).toBe('one reply later')
+    expect(snapshot.conversations).toHaveLength(200)
+    expect(snapshot.conversations.find((file) => file.key === 'k0')?.content).toBe('updated')
+    // The directory is walked once per save now, not once per file, but each
+    // untouched file still gets its own check: one turned into a hard link to
+    // a file elsewhere refuses the save instead of being counted and kept.
+    const directory = path.join(root, chatHistoryDirectoryName(scope))
+    const victim = path.join(path.dirname(root), 'victim.txt')
+    fs.writeFileSync(victim, 'keep')
+    fs.rmSync(path.join(directory, 'c-k150.json'))
+    fs.linkSync(victim, path.join(directory, 'c-k150.json'))
+    await expect(store.write(write({ index: 'refused', keys, put: [{ key: 'k0', content: 'again' }] }))).rejects.toThrow('单链接普通文件')
+    fs.rmSync(path.join(directory, 'c-k150.json'))
+    await expect(store.write(write({ index: 'refused', keys, put: [{ key: 'k0', content: 'again' }] }))).rejects.toThrow('缺少已保存的对话')
+    expect(fs.readFileSync(path.join(directory, 'index.json'), 'utf8')).toBe('one reply later')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('keep')
   })
 
   it('applies the total size bound on both write and read', async () => {
@@ -136,7 +163,8 @@ describe('ai chat history store', () => {
     expect(() => parseAiChatHistoryWrite(write({ scope: 'a\nb' }))).toThrow('归属无效')
     expect(() => parseAiChatHistoryWrite(write({ keys: ['../a'], put: [] }))).toThrow('标识无效')
     expect(() => parseAiChatHistoryWrite(write({ keys: ['a', 'a'], put: [] }))).toThrow('重复')
-    expect(() => parseAiChatHistoryWrite(write({ keys: Array.from({ length: 51 }, (_, index) => `k${index}`), put: [] }))).toThrow('数量')
+    expect(parseAiChatHistoryWrite(write({ keys: Array.from({ length: 200 }, (_, index) => `k${index}`), put: [] })).keys).toHaveLength(200)
+    expect(() => parseAiChatHistoryWrite(write({ keys: Array.from({ length: 201 }, (_, index) => `k${index}`), put: [] }))).toThrow('数量')
     expect(() => parseAiChatHistoryWrite(write({ put: [{ key: 'b', content: 'x' }] }))).toThrow('写入列表无效')
     expect(() => parseAiChatHistoryWrite(write({ keys: ['a', 'b'], put: [{ key: 'a', content: 'x' }, { key: 'a', content: 'y' }] }))).toThrow('重复')
     expect(() => parseAiChatHistoryWrite({ ...write(), index: 42 })).toThrow('格式无效')

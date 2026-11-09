@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import type { AiChatHistoryFile, AiChatHistorySnapshot, AiChatHistoryWrite } from './ipc-contract'
 import { readDirectoryEntries } from './bounded-directory'
-import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8File, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
+import { assertSafeDataFiles, ensureSafeDataDirectory, readSafeUtf8File, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 import { isRecord } from './input-guards'
 
 // 聊天记录以前整份存在渲染层 localStorage 里，超过 4 MB 就整份不写，退出后新内容
@@ -11,13 +11,14 @@ import { isRecord } from './input-guards'
 // 索引最后写，删掉的对话等索引落盘后才清理。上限只是防止撑爆内存的安全阀，
 // 远高于正常使用会碰到的量。
 //
-// 与渲染层 storage.ts 的 50 个对话上限是有意重复：electron 不 import src（同 I6/I7）。
-export const MAX_CHAT_HISTORY_CONVERSATIONS = 50
+// 与渲染层 storage.ts 的 MAX_CONVERSATIONS（200 个对话）是有意重复：electron 不 import src（同 I6/I7）。
+export const MAX_CHAT_HISTORY_CONVERSATIONS = 200
 export const MAX_CHAT_HISTORY_FILE_BYTES = 64 * 1024 * 1024
 export const MAX_CHAT_HISTORY_TOTAL_BYTES = 256 * 1024 * 1024
 const MAX_SCOPE_LENGTH = 256
-// 50 个对话 + 索引，外加原子写入残留的临时文件，留足余量。
-const MAX_DIRECTORY_ENTRIES = 256
+// 200 个对话 + 索引，外加原子写入残留的临时文件，留足余量：保存到一半崩了，删掉的对话文件
+// 要等下一次保存才清，所以新旧两批对话文件可能同时在。
+const MAX_DIRECTORY_ENTRIES = 1024
 // 一台电脑上登录过的账号数。每个账号各有 256 MB 的上限，这里再挡住渲染层被攻破后
 // 换着 scope 无限开新目录把磁盘写满。
 export const MAX_CHAT_HISTORY_SCOPES = 64
@@ -131,11 +132,10 @@ export function createAiChatHistoryStore(options: { root: string; maxTotalBytes?
     // saved fine and then cannot be opened is worse than a visible save error.
     const written = new Set(input.put.map((entry) => entry.key))
     let total = utf8Bytes(input.index) + input.put.reduce((sum, entry) => sum + utf8Bytes(entry.content), 0)
-    for (const key of input.keys) {
-      if (written.has(key)) continue
-      const filePath = path.join(directory, conversationFile(key))
-      if (!assertSafeDataFile(filePath, label)) throw new Error('聊天记录缺少已保存的对话，本次没有保存')
-      total += fs.lstatSync(filePath).size
+    const unchanged = input.keys.filter((key) => !written.has(key)).map(conversationFile)
+    for (const size of assertSafeDataFiles(directory, unchanged, label)) {
+      if (size === null) throw new Error('聊天记录缺少已保存的对话，本次没有保存')
+      total += size
     }
     if (total > maxTotalBytes) throw new Error(`${totalLimitMessage}，本次没有保存`)
     // Conversations first, index last: until the index lands, the previous

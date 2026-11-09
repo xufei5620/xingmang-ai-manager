@@ -8,7 +8,7 @@ import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
+import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ParametersDialog } from './ParametersDialog'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
@@ -211,6 +211,10 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     if (action.kind === 'stop') void stop()
   }
   const switchConversation = (id: string) => { if (list.current) scrolls.current.set(conversation.id, list.current.scrollTop); chat.openConversation(id) }
+  // 对话列表的行也是 memo 的，同样只拿一个稳定的对象，里面总是调最新的处理函数。
+  const latestConversationActions = useRef<ConversationActions | null>(null)
+  latestConversationActions.current = { open: switchConversation, exportText: (id) => void exportConversation(id), remove: (id) => setConfirmation({ kind: 'delete-conversation', id }) }
+  const conversationActions = useMemo<ConversationActions>(() => ({ open: (id) => latestConversationActions.current?.open(id), exportText: (id) => latestConversationActions.current?.exportText(id), remove: (id) => latestConversationActions.current?.remove(id) }), [])
   const onModeChange = (mode: string) => { chat.selectMode(mode as ChatMode); setCustomSize(false) }
   const imageSizes = imageCapability?.sizePolicy.kind === 'allow-list' ? [...imageCapability.sizePolicy.values] : [...new Set(['1024x1024', '1536x1024', '1024x1536', conversation.settings.size])].filter((size) => {
     if (imageCapability?.sizePolicy.kind !== 'divisible') return true
@@ -249,7 +253,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     <aside className="chat-conversations" aria-label="聊天会话">
       <div className="chat-conversations-top"><Button icon={Plus} onClick={chat.newConversation} testId="chat-conversation-new">新对话</Button></div>
       <div className="chat-conversation-search"><SearchInput value={search} onChange={setSearch} placeholder="搜索对话" testId="chat-conversation-search" /></div>
-      <nav className="chat-conversation-list" aria-label="已保存的对话">{groupConversationsByDay(candidates).map(({ day, conversations }) => <Fragment key={day}><div className="chat-conversation-day">{day}</div>{conversations.map((item) => <div key={item.id} className="chat-conversation-item" data-active={item.id === chat.state.activeId}><button type="button" className="chat-conversation-select" onClick={() => switchConversation(item.id)} aria-current={item.id === chat.state.activeId ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></button><Menu key={active ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => void exportConversation(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => setConfirmation({ kind: 'delete-conversation', id: item.id }) }]} /></div>)}</Fragment>)}{candidates.length === 0 && (searchText ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">没有找到「{searchText}」相关的对话</p> : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable ? '以前的对话暂时读不出来' : '聊过的对话会存在这里'}</p>)}</nav>
+      <nav className="chat-conversation-list" aria-label="已保存的对话">{groupConversationsByDay(candidates).map(({ day, conversations }) => <Fragment key={day}><div className="chat-conversation-day">{day}</div>{conversations.map((item) => <ConversationListItem key={item.id} item={item} current={item.id === chat.state.activeId} pageActive={active} actions={conversationActions} />)}</Fragment>)}{candidates.length === 0 && (searchText ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">没有找到「{searchText}」相关的对话</p> : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable ? '以前的对话暂时读不出来' : '聊过的对话会存在这里'}</p>)}</nav>
       {chat.state.conversations.length > 1 && <div className="chat-conversations-foot"><Button variant="ghost" size="xs" icon={Trash2} disabled={anyGenerating} onClick={() => setConfirmation({ kind: 'clear-all' })} testId="chat-conversations-clear">清空全部对话</Button></div>}
     </aside>
     <div className="chat-conversation">
@@ -293,6 +297,17 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
 }
 
 interface MessageActions { copyText: (text: string, done?: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; reuseImage: (asset: AiChatAsset) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
+interface ConversationActions { open: (id: string) => void; exportText: (id: string) => void; remove: (id: string) => void }
+interface ConversationListItemProps { item: Conversation; current: boolean; pageActive: boolean; actions: ConversationActions }
+
+// A streamed chunk replaces only the conversation it belongs to (see
+// filterConversations), so every other row keeps its props and skips the
+// render. The list holds up to MAX_CONVERSATIONS (200) rows, each with its own
+// menu; re-rendering all of them for every chunk made a reply stutter.
+const ConversationListItem = memo(function ConversationListItem({ item, current, pageActive, actions }: ConversationListItemProps) {
+  return <div className="chat-conversation-item" data-active={current}><button type="button" className="chat-conversation-select" onClick={() => actions.open(item.id)} aria-current={current ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></button><Menu key={pageActive ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => actions.exportText(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => actions.remove(item.id) }]} /></div>
+})
+
 interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
 
 // Every keystroke in the composer rewrites the conversation's draft. Messages

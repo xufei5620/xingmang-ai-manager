@@ -9,12 +9,16 @@ const unreadableHistory = '以前的聊天记录暂时读不出来，原文件�
 // localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
 // 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
 export interface ChatStorage { getItem: (key: string) => string | null; setItem?: (key: string, value: string) => void; removeItem?: (key: string) => void }
-const MAX_CONVERSATIONS = 50
+// 一个账号在这台电脑上最多存几个对话。主进程 ai-chat-history-store.ts 的 MAX_CHAT_HISTORY_CONVERSATIONS
+// 是同一个数（electron 不 import src），两边一起改。
+export const MAX_CONVERSATIONS = 200
 const HISTORY_VERSION = 3
 const ASSET_ID = /^[A-Za-z0-9_-]{43}$/
 const FILE_KEY = /^[A-Za-z0-9_-]{1,64}$/
 export class ChatStorageError extends Error {}
-const limitMessage = '聊天记录超过本地保存上限（50 个对话），原始记录已保留，未进行截断'
+const limitMessage = `聊天记录超过本地保存上限（${MAX_CONVERSATIONS} 个对话），原始记录已保留，未进行截断`
+// 存满以后点「新对话」、在草稿里发第一句时说的。
+export const conversationLimitMessage = `最多保存 ${MAX_CONVERSATIONS} 个对话，请先删除不再需要的对话`
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
 function migratedKey(scope: string): string { return `xingmang-ui-v2:chat-migrated:${encodeURIComponent(scope)}` }
@@ -466,7 +470,7 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
   } catch { throw new ChatStorageError(transferInvalidMessage) }
 }
 
-/** 导入对话的结果：added 是导进来的新对话，skipped 是这台电脑存满 50 个、这次放不下的新对话。 */
+/** 导入对话的结果：added 是导进来的新对话，skipped 是这台电脑存满 MAX_CONVERSATIONS 个、这次放不下的新对话。 */
 export interface ChatImportResult { added: number; skipped: number }
 
 /**
@@ -487,7 +491,7 @@ export function mergeImportedConversations(state: ChatWorkspace, imported: Conve
 
 /**
  * 「重新读取」读出了以前的记录：这一回在窗口里聊的对话还没存过，一个不丢地排在读出来的
- * 前面。合起来超过 50 个时照常存不进去、提示先删掉一些，不替用户删。这一回什么都没动过
+ * 前面。合起来超过上限时照常存不进去、提示先删掉一些，不替用户删。这一回什么都没动过
  * 就停在上次看的那段，动过就停在正在看的那段；输入框里这一回打了字就留这一回的。
  */
 export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWorkspace): ChatWorkspace {
