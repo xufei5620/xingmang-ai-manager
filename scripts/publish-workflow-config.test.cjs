@@ -659,7 +659,7 @@ test('Linux only reaches customers once the repository switch is on', () => {
   assert.equal(publishes(linuxOk, on, 'linux'), true)
   assert.equal(publishes(linuxChecksRed, on, 'linux'), false)
   assert.equal(publishes(linuxBuildTimedOut, on, 'linux'), false)
-  // 只发 Windows 或 macOS（含老的 both）时 Linux 两个作业都是 skipped，不算失败。
+  // 只发 Windows 或 macOS（含老的 both）时 Linux 几个作业都是 skipped，不算失败。
   assert.equal(publishes(ok, on, 'both'), true)
   assert.equal(publishes(ok, {}, 'both'), true)
   assert.equal(publishes({ 'windows-build': 'success' }, on, 'windows'), true)

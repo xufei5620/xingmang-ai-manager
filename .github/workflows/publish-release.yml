@@ -34,7 +34,7 @@
 # 产物进这次运行的 Actions artifact（linux-release-<架构>-<版本>），供发布者装机验收。
 # **传不传到更新目录和 GitHub Release，看仓库变量 XINGMANG_PUBLISH_LINUX**：不是
 # true（包括没建这个变量）时，publish 作业不下载 Linux 的包，客户看不到任何 Linux
-# 的东西，Linux 两个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
+# 的东西，Linux 几个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
 # 点头、先在真机上过一遍，这个变量由他自己在仓库设置里打开（docs/LINUX.md）。Linux
 # 出包不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准；两份 Linux
 # 清单和 Windows 那份一样，在 publish 作业里上传之前加发布者签名。
@@ -838,7 +838,7 @@ jobs:
     # Mac（反过来也一样），那个平台的客户收不到更新（#1090 第 1 项）。哪个选项选了哪个平台，
     # 和各出包作业自己的 if 一致，由 scripts/publish-workflow-config.test.cjs 对着它们核。
     #
-    # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 两个作业
+    # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 几个作业
     # 红了也不挡 Windows / macOS，它的包也不会被下载；只选了 linux 又关着，这个作业
     # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，同样要求 linux-build 成功：
     # linux-checks 或 linux-renderer-v2-browser 失败、超时时 linux-build 是 skipped，也得挡住。
