@@ -1,6 +1,7 @@
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
-import type { AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
+import type { ImageSizePolicy } from '../../../../electron/ai-chat-protocol'
+import type { AiChatGroupSummary, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { inspectModel } from '../chat/api'
@@ -52,6 +53,10 @@ export interface VideoStudioShot {
    */
   unconfirmed?: boolean
   // 下面几项只在这一次打开页面时有，不存。
+  /** 正在让 AI 画这一镜的图：那一次的请求号（停下时拿它去取消）。 */
+  drawing?: string
+  /** 上一次让 AI 画图没画出来的原因。 */
+  drawError?: string
   status: VideoStudioShotStatus
   stage?: AiVideoProgressEvent['stage']
   progress?: number
@@ -69,6 +74,9 @@ export interface VideoStudioSettings {
   textGroup: string
   videoModel: string
   videoGroup: string
+  /** 「让 AI 画一张」用的画图模型和它的分组。 */
+  imageModel: string
+  imageGroup: string
   resolution: VideoStudioResolution
   fit: VideoStudioFit
 }
@@ -112,7 +120,7 @@ export function createVideoStudioId(): string {
 }
 
 export function defaultVideoStudioSettings(): VideoStudioSettings {
-  return { idea: '', shotCount: 4, secondsPerShot: 6, aspect: '9:16', captions: true, textModel: '', textGroup: '', videoModel: '', videoGroup: '', resolution: 720, fit: 'cover' }
+  return { idea: '', shotCount: 4, secondsPerShot: 6, aspect: '9:16', captions: true, textModel: '', textGroup: '', videoModel: '', videoGroup: '', imageModel: '', imageGroup: '', resolution: 720, fit: 'cover' }
 }
 
 export function createVideoStudioProject(settings: VideoStudioSettings = defaultVideoStudioSettings()): VideoStudioProject {
@@ -142,9 +150,13 @@ export function clampVideoStudioSeconds(seconds: number, model: string): number 
   return choices.reduce((best, choice) => Math.abs(choice - seconds) < Math.abs(best - seconds) ? choice : best)
 }
 
-export interface VideoStudioCatalogs { text: ChatCatalogEntry[]; video: ChatCatalogEntry[] }
+export interface VideoStudioCatalogs { text: ChatCatalogEntry[]; video: ChatCatalogEntry[]; image: ChatCatalogEntry[] }
 
-/** 各分组读到的模型并成两张表：写分镜用的文字模型、出片段用的视频模型。 */
+function usableModel(entry: ChatCatalogEntry): boolean {
+  try { const capability = inspectModel(entry.model); return capability.available && !capability.hidden } catch { return false }
+}
+
+/** 各分组读到的模型并成三张表：写分镜用的文字模型、出片段用的视频模型、画镜头图用的画图模型。 */
 export function buildVideoStudioCatalogs(groups: readonly Pick<AiChatGroupSummary, 'name'>[], preparations: Readonly<Record<string, ChatGroupPreparation | undefined>>): VideoStudioCatalogs {
   const video = new Map<string, ChatCatalogEntry>()
   for (const group of groups) {
@@ -159,10 +171,9 @@ export function buildVideoStudioCatalogs(groups: readonly Pick<AiChatGroupSummar
     }
   }
   // 准备分组时已经滤过藏起来的模型（useVideoStudio）；这里再滤一遍，表永远不列用不了的。
-  const text = buildChatCatalog(groups, preparations, 'text').filter((entry) => {
-    try { const capability = inspectModel(entry.model); return capability.available && !capability.hidden } catch { return false }
-  })
-  return { text, video: [...video.values()] }
+  const text = buildChatCatalog(groups, preparations, 'text').filter(usableModel)
+  const image = buildChatCatalog(groups, preparations, 'image').filter(usableModel)
+  return { text, video: [...video.values()], image }
 }
 
 export interface VideoStudioModelContext { groups: readonly (Pick<AiChatGroupSummary, 'name' | 'recommended'> & Partial<Pick<AiChatGroupSummary, 'ratio'>>)[]; site: ChatSite; settled: boolean }
@@ -171,11 +182,13 @@ export interface VideoStudioModelContext { groups: readonly (Pick<AiChatGroupSum
  * 记着的两个模型按这两张表落定，同聊天页 settleChatModel 的规矩：模型还在就挑一个有它的分组；不在了，
  * 等各分组都读完再换成默认的。视频模型按出图的规矩挑分组（先挑图片分组，视频模型都在那里）。
  */
-export function settleVideoStudioModels(settings: VideoStudioSettings, catalogs: VideoStudioCatalogs, context: VideoStudioModelContext): Pick<VideoStudioSettings, 'textModel' | 'textGroup' | 'videoModel' | 'videoGroup' | 'secondsPerShot'> {
+export function settleVideoStudioModels(settings: VideoStudioSettings, catalogs: VideoStudioCatalogs, context: VideoStudioModelContext): Pick<VideoStudioSettings, 'textModel' | 'textGroup' | 'videoModel' | 'videoGroup' | 'imageModel' | 'imageGroup' | 'secondsPerShot'> {
   const text = settleOne(settings.textModel, settings.textGroup, catalogs.text, context, 'text', (models) => resolveDefaultChatModel('text', models))
   const video = settleOne(settings.videoModel, settings.videoGroup, catalogs.video, context, 'image', (models) => preferredVideoModels.find((model) => models.includes(model)) ?? models[0] ?? '')
+  // 画图模型的默认同聊天页出图那一档（chat/state.ts 的 DEFAULT_IMAGE_MODELS），没有就取表里第一个。
+  const image = settleOne(settings.imageModel, settings.imageGroup, catalogs.image, context, 'image', (models) => resolveDefaultChatModel('image', models))
   return {
-    textModel: text.model, textGroup: text.group, videoModel: video.model, videoGroup: video.group,
+    textModel: text.model, textGroup: text.group, videoModel: video.model, videoGroup: video.group, imageModel: image.model, imageGroup: image.group,
     secondsPerShot: video.model ? clampVideoStudioSeconds(settings.secondsPerShot, video.model) : settings.secondsPerShot,
   }
 }
@@ -236,6 +249,33 @@ export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
   return shot.status === 'queued' || shot.status === 'generating'
 }
 
+/** 这一镜正在让 AI 画图。画着的时候不出这一镜的视频、不换它的图，不然画好的图和片段对不上。 */
+export function isVideoStudioShotDrawing(shot: VideoStudioShot): boolean {
+  return Boolean(shot.drawing)
+}
+
+/** 开始给这一镜画图：记下请求号，清掉上一次没画出来的原因。正在出视频、已经在画的不动。 */
+export function startVideoStudioShotDrawing(project: VideoStudioProject, id: string, requestId: string): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot || isVideoStudioShotBusy(shot) || shot.drawing) return project
+  return updateVideoStudioShot(project, id, ({ drawError: _error, ...rest }) => ({ ...rest, drawing: requestId }))
+}
+
+/**
+ * 这一次画图有了结果：画好了就换上这张图（和自己选的图一样用），没画出来就记下原因，停下了两样都不留。
+ * 只认还挂着同一个请求号的那一镜：中途停了又重画、镜头被删了，迟到的结果不会盖上去。
+ */
+export function finishVideoStudioShotDrawing(project: VideoStudioProject, id: string, requestId: string, result: { assetId: string } | { error: string } | 'stopped'): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot || shot.drawing !== requestId) return project
+  const image = typeof result === 'object' && 'assetId' in result ? videoStudioShotImage(result.assetId) : null
+  return updateVideoStudioShot(project, id, ({ drawing: _drawing, drawError: _error, ...rest }) => ({
+    ...rest,
+    ...(image ? { image } : {}),
+    ...(typeof result === 'object' && 'error' in result ? { drawError: result.error } : {}),
+  }))
+}
+
 /** 作品库里一张图的编号换成这一镜存的样子；编号不对是 null。 */
 export function videoStudioShotImage(assetId: unknown): VideoStudioShotImage | null {
   return typeof assetId === 'string' && assetIdPattern.test(assetId) ? { assetId, url: `xingmang-asset://image/${assetId}` } : null
@@ -284,6 +324,44 @@ export function videoStudioShotProblem(shot: VideoStudioShot, index: number): st
   if (!videoStudioPlainText(shot.prompt)) return `第 ${index + 1} 个镜头还没写画面描述`
   if (shot.prompt.length > videoStudioPlanLimits.maximumPromptLength) return `第 ${index + 1} 个镜头的画面描述太长了，删到 ${videoStudioPlanLimits.maximumPromptLength} 个字以内`
   return null
+}
+
+const aspectRatios: Readonly<Record<VideoStudioAspect, number>> = { '16:9': 16 / 9, '9:16': 9 / 16, '1:1': 1 }
+
+/**
+ * 画镜头图的尺寸跟「画面」那一项走。只收固定几种尺寸的模型挑长宽比最接近的那一种（只有 auto 的就交给它自己定）；
+ * 能自己定长宽的按 720p 算（短边 720，同片段默认的清晰度；模型上限更小就整体缩到上限），两边都取它要的倍数。
+ * 图再大也只是拿来当第一帧，出得越大越贵。
+ */
+export function videoStudioImageSize(policy: ImageSizePolicy, aspect: VideoStudioAspect): string {
+  const ratio = aspectRatios[aspect]
+  if (policy.kind === 'allow-list') {
+    let best = policy.default, distance = Number.POSITIVE_INFINITY
+    for (const value of policy.values) {
+      const match = /^(\d+)x(\d+)$/.exec(value)
+      if (!match) continue
+      const gap = Math.abs(Math.log(Number(match[1]) / Number(match[2]) / ratio))
+      if (gap < distance) { best = value; distance = gap }
+    }
+    return best
+  }
+  const short = 720
+  const width = ratio >= 1 ? short * ratio : short, height = ratio >= 1 ? short : short / ratio
+  const scale = Math.min(1, policy.max / Math.max(width, height))
+  const fit = (side: number) => Math.min(policy.max, Math.max(policy.min, Math.round(side * scale / policy.divisor) * policy.divisor))
+  return `${fit(width)}x${fit(height)}`
+}
+
+/** 让 AI 按这一镜的画面描述画一张图的请求；画质用模型自己的缺省（最便宜的那一档），先出图就是为了省钱。 */
+export function buildVideoStudioImageRequest(settings: VideoStudioSettings, shot: VideoStudioShot, requestId: string): AiChatImageInput {
+  let size: string | undefined
+  try {
+    const capability = inspectModel(settings.imageModel)
+    if (capability.kind === 'image') size = videoStudioImageSize(capability.sizePolicy, settings.aspect)
+  } catch {
+    // 认不出的模型交给主进程去拒。
+  }
+  return { requestId, group: settings.imageGroup, model: settings.imageModel, prompt: videoStudioPlainText(shot.prompt), ...(size ? { size } : {}) }
 }
 
 /**
@@ -436,6 +514,8 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     textGroup: readModelName(stored.textGroup),
     videoModel: readModelName(stored.videoModel),
     videoGroup: readModelName(stored.videoGroup),
+    imageModel: readModelName(stored.imageModel),
+    imageGroup: readModelName(stored.imageGroup),
     resolution: isVideoStudioResolution(stored.resolution) ? stored.resolution : defaults.resolution,
     fit: isVideoStudioFit(stored.fit) ? stored.fit : defaults.fit,
   }

@@ -1,6 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatImageInput, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan, VideoStudioPlanInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { ToastProvider } from '../../ui'
 import { AccountBalanceContext } from '../app/balance-context'
 import { createAccountBalanceStore } from '../app/balance-store'
@@ -29,6 +29,8 @@ const resumes = new Map<string, Array<{ resolve: (clip: AiVideoClip | null) => v
 // 还没交给服务端的请求：停下时主进程回「不会照样出」。没列在这里的，停下时都当已经交出去、钱扣了。
 const unsent = new Set<string>()
 const library = new Map<string, ArrayBuffer>()
+// 「让 AI 画一张」发出去、还没回的画图请求。
+const drawings = new Map<string, { input: AiChatImageInput, resolve: (assets: AiChatAsset[]) => void, reject: (reason: Error) => void }>()
 let exported: ArrayBuffer | null = null
 let assetCounter = 0
 let folderOpens = true
@@ -98,6 +100,15 @@ const bridge: VideoStudioBridge = {
     const picked = nextPicks.splice(0)
     return picked.map((assetId) => ({ assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' as const, fileName: `${assetId}.png` }))
   },
+  generateAiImage: (input) => { record('image', input); return new Promise((resolve, reject) => { drawings.set(input.requestId, { input, resolve, reject }) }) },
+  cancelAiChat: async (requestId) => {
+    record('cancel-image', requestId)
+    const drawing = drawings.get(requestId)
+    if (!drawing) return { canceled: false, mayStillComplete: false }
+    drawings.delete(requestId)
+    drawing.reject(new Error("Error invoking remote method 'chat:generate-image': Error: 已取消"))
+    return { canceled: true, mayStillComplete: true }
+  },
   pickVideoStudioMusic: async () => {
     record('pick-music')
     const song = nextSong
@@ -159,6 +170,9 @@ declare global {
       folderOpens(value: boolean): void
       pickImages(assetIds: string[]): void
       pickSong(song: { name: string, seconds: number, frequency: number } | 'unreadable' | null): void
+      pendingDrawings(): Array<{ requestId: string, prompt: string, size?: string, model: string }>
+      finishDrawing(requestId: string, assetId: string): void
+      failDrawing(requestId: string, message: string): void
       balance(): number | null
     }
   }
@@ -187,6 +201,17 @@ window.videoStudioPage = {
   folderOpens: (value) => { folderOpens = value },
   pickImages: (assetIds) => { nextPicks = [...assetIds] },
   pickSong: (song) => { nextSong = song },
+  pendingDrawings: () => [...drawings.entries()].map(([requestId, { input }]) => ({ requestId, prompt: input.prompt, model: input.model, ...(input.size ? { size: input.size } : {}) })),
+  finishDrawing: (requestId, assetId) => {
+    const drawing = drawings.get(requestId)
+    drawings.delete(requestId)
+    drawing?.resolve([{ assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png', fileName: `${assetId}.png` }])
+  },
+  failDrawing: (requestId, message) => {
+    const drawing = drawings.get(requestId)
+    drawings.delete(requestId)
+    drawing?.reject(new Error(`Error invoking remote method 'chat:generate-image': Error: ${message}`))
+  },
   balance: () => balanceStore?.getSnapshot().balance?.displayAmount ?? null,
 }
 

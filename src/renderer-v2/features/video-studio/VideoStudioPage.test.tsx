@@ -23,6 +23,8 @@ const bridge: VideoStudioBridge = {
   pickAiChatImages: unused,
   pickVideoStudioMusic: unused,
   readVideoStudioMusic: unused,
+  generateAiImage: unused,
+  cancelAiChat: unused,
 }
 
 function clip(letter: string): AiVideoClip {
@@ -126,6 +128,22 @@ describe('VideoStudioPage', () => {
     expect(markup).toMatch(/data-testid="video-shot-image-remove-1"[^>]*>[^]*?不用这张图/)
     expect(markup).toMatch(/title="生成时从这张图动起来，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
     expect(markup).not.toContain('data-testid="video-shot-image-0"')
+  })
+
+  it('offers to have AI draw each shot picture once there is a picture model, and to draw again over one already there', () => {
+    const project = plannedProject()
+    const image = videoStudioShotImage('p'.repeat(43))!
+    const withImage: VideoStudioProject = { ...project, shots: [project.shots[0], { ...project.shots[1], image }] }
+    const noModel = render('ready', withImage)
+    expect(noModel).toMatch(/<span>画镜头图<\/span>[^]*?data-testid="video-image-model"/)
+    // 还没读到画图模型：按钮在，但是灰的。
+    expect(noModel).toMatch(/<button title="按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费"[^>]*data-testid="video-shot-draw-0" disabled=""[^>]*>[^]*?让 AI 画一张/)
+    const ready = render('ready', { ...withImage, settings: { ...withImage.settings, imageModel: 'gpt-image-2', imageGroup: '图片模型' } })
+    expect(ready).toMatch(/data-model="gpt-image-2" data-group="图片模型"[^>]*data-testid="video-image-model"/)
+    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?让 AI 画一张/)
+    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?再画一张/)
+    expect(ready).not.toContain('正在画图')
+    expect(ready).not.toContain('data-testid="video-shot-draw-stop-1"')
   })
 
   it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {
