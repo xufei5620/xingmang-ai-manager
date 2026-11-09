@@ -174,8 +174,8 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
 const secretNotSaved = '[密钥未保存]'
 const inlineImageData = /data:[^\s,;]+(?:;[^\s,;]+)*;base64,[A-Za-z0-9+/=_-]+/gi
 const runtimeBlobUrl = /blob:[^\s)\]}>"']+/gi
-// 和共用表那条一样，但要赶在下面几条之前：「名字 = 值」那条会连 `Bearer` 带后面一起
-// 吞，`?token=` 那条会吞到空格为止，先换掉 Bearer 后面的值，它们就吞不走这个词了。
+// 和共用表那条一样，但要赶在下面几条之前：`?token=` 和「名字 = 值」两条吞到空格为止，
+// 碰上 `?token=Bearer 值` 只吞掉 `Bearer` 这个词，后面的值共用表就再也认不出来了。
 const bearerValue = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi
 // 比共用表那条多收 `.`，后面那截才不会漏。结尾不用 `\b`，否则以 `-` 结尾的密钥会漏掉
 // 尾巴（共用表 KEY_TAIL 那段注释说的同一件事）。
