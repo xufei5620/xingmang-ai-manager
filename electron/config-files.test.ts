@@ -101,6 +101,8 @@ const testModels: Record<ProviderId, string> = {
   gemini: 'gemini-3.5-flash',
   grok: 'grok-4.5',
 }
+// Codex must not send response.interrupt over the relay's WebSocket (see keepCodexRelayResponsesUninterrupted).
+const uninterruptedFeatures = { instant_interrupt: false, defer_mailbox_preemption: true, interrupt_on_cancel: false }
 
 function temporaryHome(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-test-'))
@@ -1432,24 +1434,43 @@ describe('native CLI configuration files', () => {
     const windows: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(windows, 'win32')
     expect(windows).toEqual({
-      features: { prevent_idle_sleep: true, daemon_auto_start: false },
+      features: { ...uninterruptedFeatures, prevent_idle_sleep: true, daemon_auto_start: false },
+      suppress_unstable_features_warning: true,
       windows: { sandbox: 'unelevated' },
     })
 
     // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
     const mac: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(mac, 'darwin')
-    expect(mac).toEqual({ features: { prevent_idle_sleep: true, daemon_auto_start: false } })
+    expect(mac).toEqual({
+      features: { ...uninterruptedFeatures, prevent_idle_sleep: true, daemon_auto_start: false },
+      suppress_unstable_features_warning: true,
+    })
   })
 
   it('leaves Codex sleep and sandbox choices the user already made', () => {
     const chosen: Record<string, unknown> = {
-      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
+      features: {
+        prevent_idle_sleep: false,
+        daemon_auto_start: true,
+        goals: true,
+        instant_interrupt: true,
+        defer_mailbox_preemption: false,
+        interrupt_on_cancel: true,
+      },
       windows: { sandbox: 'elevated' },
     }
     applyCodexRelayMachineDefaults(chosen, 'win32')
+    // Their own defer_mailbox_preemption = false raises no warning, so nothing gets silenced either.
     expect(chosen).toEqual({
-      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
+      features: {
+        prevent_idle_sleep: false,
+        daemon_auto_start: true,
+        goals: true,
+        instant_interrupt: true,
+        defer_mailbox_preemption: false,
+        interrupt_on_cancel: true,
+      },
       windows: { sandbox: 'elevated' },
     })
 
@@ -1457,6 +1478,38 @@ describe('native CLI configuration files', () => {
     const scalar: Record<string, unknown> = { features: 'off', windows: 'x' }
     applyCodexRelayMachineDefaults(scalar, 'win32')
     expect(scalar).toEqual({ features: 'off', windows: 'x' })
+  })
+
+  // new-api 的 WebSocket 只认 response.create / response.cancel，response.interrupt 回 400（2026-11-06）。
+  it('keeps Codex from sending the response.interrupt event the relay rejects', () => {
+    const parsed: Record<string, unknown> = { features: { goals: true } }
+    applyCodexRelayMachineDefaults(parsed, 'darwin')
+    expect(asRecord(parsed.features)).toMatchObject({
+      goals: true,
+      instant_interrupt: false,
+      defer_mailbox_preemption: true,
+      interrupt_on_cancel: false,
+    })
+    // defer_mailbox_preemption is an under-development flag: without this Codex prints an
+    // English "Under-development features enabled" line at the start of every conversation.
+    expect(parsed.suppress_unstable_features_warning).toBe(true)
+
+    // A user who wants that warning keeps it.
+    const wantsWarning: Record<string, unknown> = { suppress_unstable_features_warning: false }
+    applyCodexRelayMachineDefaults(wantsWarning, 'darwin')
+    expect(wantsWarning.suppress_unstable_features_warning).toBe(false)
+    expect(asRecord(wantsWarning.features)?.defer_mailbox_preemption).toBe(true)
+
+    // A user who turned the deferral on themselves still gets the warning silenced, since it
+    // is the same under-development flag either way.
+    const ownDeferral: Record<string, unknown> = { features: { defer_mailbox_preemption: true } }
+    applyCodexRelayMachineDefaults(ownDeferral, 'darwin')
+    expect(ownDeferral.suppress_unstable_features_warning).toBe(true)
+
+    // A profile table is the user's own override and stays as written.
+    const profiled: Record<string, unknown> = { profiles: { work: { features: { instant_interrupt: true } } } }
+    applyCodexRelayMachineDefaults(profiled, 'darwin')
+    expect(profiled.profiles).toEqual({ work: { features: { instant_interrupt: true } } })
   })
 
   // 照 rust-v0.160.1 features/src/lib.rs 的 from_sources：[features] 在先，profile 选中的那张盖过它。
@@ -1501,8 +1554,14 @@ describe('native CLI configuration files', () => {
 
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
     const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
-    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(fresh.features).toEqual({ ...uninterruptedFeatures, goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(fresh.suppress_unstable_features_warning).toBe(true)
     expect(fresh.windows).toEqual(expectedWindows)
+    // The spelled-out template and the merge path must agree, or a fresh install and a
+    // merged config would behave differently.
+    const reapplied = structuredClone(fresh)
+    applyCodexRelayMachineDefaults(reapplied)
+    expect(reapplied).toEqual(fresh)
 
     const existingRoots = providerRoots(temporaryHome())
     const existingPath = codexConfigSnapshotPaths(existingRoots).active
@@ -1510,7 +1569,8 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
     const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
-    expect(merged.features).toEqual({ prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(merged.features).toEqual({ ...uninterruptedFeatures, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(merged.suppress_unstable_features_warning).toBe(true)
     expect(merged.windows).toEqual(expectedWindows)
     expect(merged.custom_official).toEqual({ enabled: true })
   })
@@ -4393,6 +4453,8 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.analytics)?.enabled).toBe(false)
     expect(asRecord(parsed.features)?.prevent_idle_sleep).toBe(false)
     expect(asRecord(parsed.features)?.daemon_auto_start).toBe(false)
+    expect(asRecord(parsed.features)).toMatchObject(uninterruptedFeatures)
+    expect(parsed.suppress_unstable_features_warning).toBe(true)
     expect(asRecord(parsed.windows)?.sandbox).toBe('unelevated')
     expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.supports_websockets).toBe(true)
     expect(parsed.model).toBe('gpt-5.5')
