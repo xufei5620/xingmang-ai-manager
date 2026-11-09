@@ -18,7 +18,7 @@ import './chat.css'
 
 const remarkPlugins = [remarkGfm]
 // 点了只填进输入框，不直接发：发一句就要花钱，得让人看一眼再发。
-const chatExamples = ['用大白话解释什么是 API Key', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
+const chatExamples = ['用大白话解释什么是 API 密钥', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
 const qualityNames: Record<ChatSettings['quality'], string> = { low: '低', medium: '中', high: '高', auto: '自动' }
 
 export interface ChatPageProps {
