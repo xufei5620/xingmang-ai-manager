@@ -92,6 +92,7 @@
 - `response-body-watch.ts` — 把回应正文包一层，读到一半出错时报给线路判断那一侧，同时原样保留 `url` / `redirected` / `type`（调用方靠它们拒绝被重定向的请求，I10，不照抄等于拆掉那道检查）
 - `download-proxy.ts` — 把 Chromium 对某个 URL 解析出的代理（含 PAC）变成两种形状：给 Electron 网络栈的端点、给 npm 子进程的代理环境变量；主机名严格校验，跨进程的只收回环地址
 - `download-retry.ts` — 大安装包（Codex 桌面端、Node.js、Git、Python、外部客户端）下到一半断了先在同一条线路续传：首个回应仍过调用方的校验、续传必须与声明的字节范围和总长完全一致、每个字节照旧进调用方事后核对的同一个 SHA-256；一个字节都没下到的、用户取消的不重试
+- `awake-deadline.ts` — 睡着那段不算的时限：Mac、Windows 上主进程计时器睡着也走、一醒补触发，这里每 15 秒看一次单调时钟，两次之间隔 60 秒以上当睡眠（只记一个间隔），「多久没进展」从醒来那一刻重算。装工具的 npm 卡住检测、`download-retry.ts` 的整份下载时限、`runCommand` 的 `timeoutExcludesSleep` 都用它（睡眠深查 G1）
 - `network-location-cache.ts` — 合并并缓存「网络位置」（境内/境外，决定安装源顺序）的探测：显式刷新会让旧的在途结果作废重读；`system-service.ts` 用
 
 ## 托盘
