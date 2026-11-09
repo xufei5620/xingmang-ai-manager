@@ -4952,6 +4952,45 @@ test('the required-update gate explains a full disk and lets the user retry', as
   } finally { await page.close() }
 })
 
+// RC-01：点过「立即更新」以后那层提示收起了（读到文件里撤掉了最低版本），下好了也不替客户接着重启装；
+// 再盖回来要他自己再点。门里的「立即更新」让主进程先看有没有工具在装（askIfInstalling），客户在那一句里
+// 点了「继续安装」，按钮回到「立即更新」，不卡在「正在重启安装…」。
+test('the required-update gate never restarts on its own once lifted, and asks about running installs first', async () => {
+  const page = await open('installPostponed=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const base = {
+      currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false,
+    }
+    const emit = (patch) => page.evaluate((state) => window.v2Test.emit('onUpdateState', state), { ...base, ...patch })
+    const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).map((entry) => entry.args), method)
+    const gate = page.getByTestId('required-update-gate')
+    const progress = { percent: 40, bytesPerSecond: 1, transferred: 40, total: 100 }
+
+    await emit({ phase: 'available', requiredVersion: '0.1.32' })
+    await gate.getByRole('button', { name: '立即更新', exact: true }).click()
+    await expect.poll(async () => (await calls('downloadUpdate')).length).toBe(1)
+    await emit({ phase: 'downloading', requiredVersion: '0.1.32', progress })
+    await gate.getByTestId('required-update-progress').waitFor()
+    // 下载途中提示收起了，接着下好：不替他装。
+    await emit({ phase: 'downloading', requiredVersion: null, progress })
+    await gate.waitFor({ state: 'detached' })
+    await emit({ phase: 'downloaded', requiredVersion: null })
+    // 再盖回来：等他自己点。
+    await emit({ phase: 'downloaded', requiredVersion: '0.1.32' })
+    const start = gate.getByTestId('required-update-start')
+    await expect(start).toHaveText('立即更新')
+    assert.deepEqual(await calls('installUpdate'), [])
+    await start.click()
+    await expect.poll(() => calls('installUpdate')).toEqual([[{ askIfInstalling: true }]])
+    // 客户选了先让工具装完：按钮回到能点的「立即更新」。
+    await expect(start).toHaveText('立即更新')
+    await expect(start).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
 test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {

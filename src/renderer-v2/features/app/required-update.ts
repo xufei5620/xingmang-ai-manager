@@ -100,9 +100,14 @@ function gateFailure(update: GateSnapshot): Pick<RequiredUpdateGateState, 'label
   return { label: labels.retry, failure, failureTitle: labels.title }
 }
 
-/** 主按钮点过之后，状态走到下一步要不要替用户接着做（下载完接着装）。 */
+/**
+ * 主按钮点过之后，状态走到下一步要不要替用户接着做（下载完接着装）。
+ *
+ * 只在那层提示还盖着时接着做：提示收起了（文件里撤掉了最低版本、查下来没有可装的），客户已经在用
+ * 底下的界面，下好了不能不打招呼就重启装（RC-01）。
+ */
 export function requiredUpdateFollowUp(update: GateSnapshot | null | undefined): Exclude<RequiredUpdateAction, 'check'> | null {
-  if (!update || update.error) return null
+  if (!update || update.error || !requiredUpdateGate(update)) return null
   // 空间不够时不替他接着点：再量一次结果多半一样，等他清出空间自己点「再试一次」。
   if (update.phase === 'available') return update.diskShortfall ? null : 'download'
   if (update.phase === 'downloaded') return 'install'
