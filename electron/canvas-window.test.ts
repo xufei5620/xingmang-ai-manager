@@ -152,6 +152,7 @@ import {
   canvasHostUpdatePromptPresetChannel,
   canvasWindowBackgroundColor,
   canvasWindowLightBackgroundColor,
+  canvasRendererAnswers,
   createCanvasWindowController,
   type CanvasWindowControllerOptions,
 } from './canvas-window'
@@ -1530,6 +1531,15 @@ describe('createCanvasWindowController', () => {
   })
 })
 
+describe('canvasRendererAnswers', () => {
+  it('answers true when the page runs the script, even with an error, and false when it never settles', async () => {
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(async () => 1) }, 50)).toBe(true)
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(async () => { throw new Error('blocked') }) }, 50)).toBe(true)
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(() => new Promise<never>(() => undefined)) }, 50)).toBe(false)
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(() => { throw new Error('destroyed') }) }, 50)).toBe(true)
+  })
+})
+
 describe('canvas close confirmation', () => {
   function latestRequestId(): string {
     const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
@@ -1642,6 +1652,70 @@ describe('canvas close confirmation', () => {
     finish(trustedEvent(), requestId, false)
     expect(await closing).toBe(false)
     expect(cancelTasks(trustedEvent(), requestId)).toBe(false)
+  })
+
+  it('destroys a canvas page that does not answer when the app quits, instead of waiting out the close handshake', async () => {
+    vi.useFakeTimers()
+    try {
+      const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+      const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+      await controller.open()
+      const window = electronMocks.latestBrowserWindow!
+      // A page stuck in a loop never settles the script it is asked to run.
+      ;(electronMocks.latestWebContents!.executeJavaScript as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise(() => undefined))
+      let result: boolean | undefined
+      void controller.requestCloseForQuit().then((value) => { result = value })
+      await vi.advanceTimersByTimeAsync(3_999)
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(result).toBe(true)
+      expect(window.destroy).toHaveBeenCalledOnce()
+      expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.closeRequested, expect.anything())
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'close.unresponsive', '画布没响应，退出时直接关掉', { waitedMs: 4_000 })
+    } finally { vi.useRealTimers() }
+  })
+
+  it('keeps the normal close handshake on quit when the canvas page answers, and waits for the user there', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      const window = electronMocks.latestBrowserWindow!
+      let result: boolean | undefined
+      void controller.requestCloseForQuit().then((value) => { result = value })
+      await vi.advanceTimersByTimeAsync(0)
+      const requestId = latestRequestId()
+      // The page is showing its running-tasks dialog: no answer yet, and the quit check is long over.
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(result).toBeUndefined()
+      expect(window.destroy).not.toHaveBeenCalled()
+      electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), requestId, false)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(result).toBe(false)
+      expect(window.destroy).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('treats a page that answers the quit check with an error as alive', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    ;(electronMocks.latestWebContents!.executeJavaScript as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Script failed to execute'))
+    const closing = controller.requestCloseForQuit()
+    await vi.waitFor(() => expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.closeRequested, expect.anything()))
+    electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestRequestId(), true)
+    expect(await closing).toBe(true)
+    expect(electronMocks.latestBrowserWindow!.destroy).not.toHaveBeenCalled()
+  })
+
+  it('does not run the quit check when no canvas is open or its renderer is already gone', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    expect(await controller.requestCloseForQuit()).toBe(true)
+    await controller.open()
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
+    expect(await controller.requestCloseForQuit()).toBe(true)
+    expect(electronMocks.latestWebContents!.executeJavaScript).not.toHaveBeenCalled()
+    expect(electronMocks.latestBrowserWindow!.destroy).toHaveBeenCalledOnce()
   })
 
   it('invalidates the pending handshake when the renderer crashes', async () => {
