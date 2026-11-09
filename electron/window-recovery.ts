@@ -49,7 +49,7 @@ export function recoverOffscreenWindow(window: RecoverableWindow, screen: Displa
 export function fitOversizedWindow(window: FittableWindow, screen: Pick<DisplayScreen, 'getAllDisplays'>): WindowBounds | null {
   if (window.isDestroyed() || window.isFullScreen() || window.isMinimized() || window.isMaximized()) return null
   const displays = screen.getAllDisplays().map((display) => ({ id: display.id, workArea: display.workArea }))
-  const [minimumWidth, minimumHeight] = window.getMinimumSize()
+  const [minimumWidth = 0, minimumHeight = 0] = window.getMinimumSize()
   const target = resolveFittedWindowBounds(window.getBounds(), { width: minimumWidth, height: minimumHeight }, displays)
   if (!target) return null
   window.setBounds(target)

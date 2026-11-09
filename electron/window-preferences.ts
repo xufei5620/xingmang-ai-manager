@@ -177,7 +177,7 @@ function containsPoint(area: WindowBounds, x: number, y: number): boolean {
   return x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height
 }
 
-// 把窗口按各块工作区的边切成小格，每一格都落在某块工作区里，窗口才算整个露在外面。
+// 把窗口按各块工作区的边切成小格，每一格都落在某块工作区里，窗口才算整个看得见。
 // 显示器最多几块，格子数可以忽略。
 function isCoveredByWorkAreas(bounds: WindowBounds, areas: readonly WindowBounds[]): boolean {
   const right = bounds.x + bounds.width
