@@ -25,10 +25,15 @@ export interface CanvasHostEntryPoints {
   projectHistory: boolean
   /** "Export project with assets" and the resource tree's package export. */
   projectPackageExport: boolean
+  /** The project center creates into the host's default folder, with "create elsewhere" next to it. */
+  projectDefaultFolder: boolean
+  /** "Choose the folder again" on a project whose folder is missing. */
+  projectFolderRelink: boolean
 }
 
 type EntryPointMethods = Pick<CanvasHostBridge, 'getAssetDetail' | 'downloadAssets' | 'readAssetOrigin' | 'listRunHistory' | 'readRunHistory' | 'renderImageAnnotation' | 'readVideoForFramePreview'
-  | 'listProjectHistory' | 'readProjectRevision' | 'restoreProjectRevision' | 'inspectProjectRestore' | 'previewProjectExport' | 'exportProjectPackage' | 'cancelProjectExport'>
+  | 'listProjectHistory' | 'readProjectRevision' | 'restoreProjectRevision' | 'inspectProjectRestore' | 'previewProjectExport' | 'exportProjectPackage' | 'cancelProjectExport'
+  | 'createProjectInDefaultFolder' | 'relinkProjectFolder'>
 
 export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profile: CanvasCapabilityProfile): CanvasHostEntryPoints {
   const assetDetail = typeof bridge.getAssetDetail === 'function'
@@ -44,6 +49,8 @@ export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profil
     projectHistory: typeof bridge.listProjectHistory === 'function' && typeof bridge.readProjectRevision === 'function'
       && typeof bridge.restoreProjectRevision === 'function' && typeof bridge.inspectProjectRestore === 'function',
     projectPackageExport: typeof bridge.previewProjectExport === 'function' && typeof bridge.exportProjectPackage === 'function' && typeof bridge.cancelProjectExport === 'function',
+    projectDefaultFolder: typeof bridge.createProjectInDefaultFolder === 'function',
+    projectFolderRelink: typeof bridge.relinkProjectFolder === 'function',
   }
 }
 

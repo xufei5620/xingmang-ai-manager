@@ -7,7 +7,10 @@ import { parseCanvasProjectWorkflow } from './canvas-project-package'
 import { sameLocalPathIdentity } from './path-identity'
 import { resolveRelocatedPath } from './relocated-folders'
 
-const maximumProjects = 100
+// 归档的项目不占这 100 个（画布完善第 14 条）：不用的项目归档以后就能再建新的。连同归档的总数另有上限，
+// 项目列表、找素材被哪些项目用着都要把它们读一遍，不能无限多。
+const maximumActiveProjects = 100
+const maximumStoredProjects = 500
 const maximumCopiedEntries = 100_000
 const maximumCopiedBytes = 100 * 1024 * 1024 * 1024
 const maximumReferenceValues = 250_000
@@ -66,6 +69,13 @@ function normalizedProjectName(value: string): string {
   const name = value.trim()
   if (!name || name.length > 128 || /[\x00-\x1f\x7f]/.test(name)) throw new Error('项目名称无效')
   return name
+}
+
+function assertRoomForNewProject(existing: readonly CanvasStoredProjectSummary[]): void {
+  if (existing.length >= maximumStoredProjects) throw new Error(`画布项目连同已归档的最多 ${maximumStoredProjects} 个，请先在「已归档」里删掉一些`)
+  if (existing.filter((project) => !project.archivedAt).length >= maximumActiveProjects) {
+    throw new Error(`画布项目最多 ${maximumActiveProjects} 个（已归档的不算），请先归档一些不用的项目`)
+  }
 }
 
 function normalizedWorkspaceDirectory(value: string, requireExisting: boolean): string {
@@ -274,7 +284,7 @@ export class CanvasProjectStore {
     }
     const projects = await Promise.all(names
       .filter((name) => name.endsWith('.json') && projectIdPattern.test(path.basename(name, '.json')))
-      .slice(0, maximumProjects)
+      .slice(0, maximumStoredProjects)
       .map(async (name) => {
         try {
           return this.summary(await this.readProject(userId, path.basename(name, '.json')))
@@ -287,7 +297,7 @@ export class CanvasProjectStore {
   async create(userId: number, nameInput: string, workspaceInput: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
     return this.enqueue(userId, async () => {
       const name = normalizedProjectName(nameInput)
-      if ((await this.list(userId)).length >= maximumProjects) throw new Error('画布项目已达到数量上限')
+      assertRoomForNewProject(await this.list(userId))
       const workspaceDirectory = normalizedWorkspaceDirectory(workspaceInput, true)
       const existing = await this.list(userId)
       for (const project of existing) {
@@ -337,7 +347,7 @@ export class CanvasProjectStore {
       const sourceWorkspace = source?.workspaceDirectory ? normalizedWorkspaceDirectory(source.workspaceDirectory, true) : undefined
       if (sourceWorkspace && sameLocalPathIdentity(sourceWorkspace, targetWorkspace)) throw new Error('复制项目必须选择新的工作文件夹')
       const existing = await this.list(userId)
-      if (existing.length >= maximumProjects) throw new Error('画布项目已达到数量上限')
+      assertRoomForNewProject(existing)
       for (const project of existing) {
         const bound = await this.getWorkspaceDirectory(userId, project.id)
         if (bound && sameLocalPathIdentity(bound, targetWorkspace)) {
@@ -356,6 +366,34 @@ export class CanvasProjectStore {
         throw error
       }
       return { project: this.summary(created), content: JSON.stringify(workflow) }
+    })
+  }
+
+  /**
+   * A project package imported as a new project. The caller has already put
+   * the package's assets into this folder's own asset stores, so unlike
+   * createWithContent() the content may use assets; the folder goes through
+   * the same checks as create() and is registered last, after the files are in.
+   */
+  async createImported(userId: number, nameInput: string, workspaceInput: string, content: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
+    return this.enqueue(userId, async () => {
+      const name = normalizedProjectName(nameInput)
+      const parsed = parseCanvasProjectWorkflow(content)
+      const workflow = { ...parsed.workflow, name }
+      const workspaceDirectory = normalizedWorkspaceDirectory(workspaceInput, true)
+      const existing = await this.list(userId)
+      assertRoomForNewProject(existing)
+      for (const project of existing) {
+        const bound = await this.getWorkspaceDirectory(userId, project.id)
+        if (bound && sameLocalPathIdentity(bound, workspaceDirectory)) {
+          throw new Error(`该工作文件夹已绑定项目「${project.name}」，请为新项目选择单独的文件夹`)
+        }
+      }
+      ensureSafeDataDirectory(path.join(workspaceDirectory, 'assets'), '画布项目素材')
+      const now = new Date().toISOString()
+      const stored = { id: randomUUID(), createdAt: now, updatedAt: now, lastOpenedAt: now, workspaceDirectory, workflow }
+      await this.write(userId, stored)
+      return { project: this.summary(stored), content: JSON.stringify(workflow) }
     })
   }
 
@@ -409,7 +447,7 @@ export class CanvasProjectStore {
       const targetWorkspace = normalizedWorkspaceDirectory(workspaceInput, true)
       if (sameLocalPathIdentity(sourceWorkspace, targetWorkspace)) throw new Error('复制项目必须选择新的工作文件夹')
       const existing = await this.list(userId)
-      if (existing.length >= maximumProjects) throw new Error('画布项目已达到数量上限')
+      assertRoomForNewProject(existing)
       for (const project of existing) {
         const bound = await this.getWorkspaceDirectory(userId, project.id)
         if (bound && sameLocalPathIdentity(bound, targetWorkspace)) throw new Error(`该工作文件夹已绑定项目「${project.name}」`)
@@ -463,6 +501,10 @@ export class CanvasProjectStore {
   async setArchived(userId: number, projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary> {
     return this.enqueue(userId, async () => {
       const current = await this.readProject(userId, projectId)
+      if (!archived && current.archivedAt) {
+        const active = (await this.list(userId)).filter((project) => !project.archivedAt).length
+        if (active >= maximumActiveProjects) throw new Error(`画布项目最多 ${maximumActiveProjects} 个（已归档的不算），请先归档一个再恢复`)
+      }
       const { archivedAt: _archivedAt, ...restored } = current
       const now = new Date().toISOString()
       const updated: StoredCanvasProject = archived
@@ -470,6 +512,22 @@ export class CanvasProjectStore {
         : { ...restored, updatedAt: now }
       await this.write(userId, updated)
       return this.summary(updated)
+    })
+  }
+
+  /**
+   * Takes an archived project off the list for good. Only the record goes:
+   * the work folder may be one the user picked with their own files in it,
+   * so whether anything happens to it is the caller's decision. Archived
+   * first, so one call can never remove a project the user is working in.
+   */
+  async remove(userId: number, projectId: string): Promise<{ project: CanvasStoredProjectSummary; workspaceDirectory?: string }> {
+    return this.enqueue(userId, async () => {
+      const stored = await this.readProject(userId, projectId)
+      if (!stored.archivedAt) throw new Error('请先归档这个项目再删除')
+      ensureSafeDataDirectory(this.accountRoot(userId), '画布项目')
+      await fs.promises.unlink(this.projectPath(userId, projectId))
+      return { project: this.summary(stored), ...(stored.workspaceDirectory ? { workspaceDirectory: stored.workspaceDirectory } : {}) }
     })
   }
 

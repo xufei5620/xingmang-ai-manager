@@ -65,11 +65,11 @@ export interface CliVersionCompatibility {
 export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = {
   claude: {
     recommended: {
-      version: '2.1.310',
-      verifiedAt: '2026-10-26',
-      verifiedSites: [],
-      note: '当前 npm latest;2.1.304 起接自定义 ANTHROPIC_BASE_URL 时默认开工具搜索(多带 advanced-tool-use beta、ToolSearch 与延迟加载的工具),网关回 400/422 就去掉重发,2.1.304 本身有一处拒收工具搜索时每次请求都失败的回归(2.1.305 修,所以加了 blocked);2.1.307 不再给自定义网关发 prompt-caching-scope beta,2.1.310 网关拒收 effort beta 或对话中途的 system 消息时去掉重发;沙箱本地假接口:-p hi 拿到回复、只带 Authorization,假接口对工具搜索回 400 时重发一次不带它的请求后照常回复,haiku 别名仍发 claude-haiku-5-5,/context 仍是 1M,install.cjs 逐字相同',
-      userNote: '修好了一些情况下提问被拒、长对话整理后仍然出错的问题；回复慢的时候不会三分钟就断开，密钥也不会顺带发给官方',
+      version: '2.1.319',
+      verifiedAt: '2026-11-09',
+      verifiedSites: ['solov'],
+      note: '当前 npm latest(2.1.313 没发到 npm);2.1.311～2.1.319 没有一条写成网关回归,反而补了几处:网关按名字拒收某个 beta 头时去掉重发(2.1.314)、拒收工具搜索的 tool_reference 时重发一次不带它并在本会话记住(2.1.314)、压缩过的回复被截断时请求不再卡住(2.1.316)、网关对自动模式的服务端检查回 403/422 时不再每轮失败(2.1.317);2.1.314 引入、2.1.318 修好的 --continue 偶尔丢前文不是每次都坏,不进 blocked;沿用 2.1.304 起的默认工具搜索;沙箱本地假接口:-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头同 2.1.316,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 改为发现原生包装了两份时让安装失败,沙箱里同一前缀从 2.1.316 全局升到 2.1.319 正常;2026-11-09 cli-relay-probe 用 Claude 分组的巡检 Key 在 solov(xm.solov.cc)上真跑通过,solov-api 是 Key 不属于那个站(401)、没测成',
+      userNote: '修好了一些情况下提问被拒要反复重试、网络不稳时回复卡住、接着上次聊时偶尔丢掉前面对话的问题',
     },
     blocked: [
       {
@@ -91,11 +91,11 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   codex: {
     recommended: {
-      version: '0.164.0',
-      verifiedAt: '2026-10-26',
-      verifiedSites: [],
-      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.164.0(models.json 与 rust-v0.162.1、rust-v0.163.0 逐字相同,sha256 不变);0.164.0 的 release note 没有一条碰自定义 model_providers / base_url / wire_api,压缩失败不再留半截摘要、恢复会话带回原来的线程设置、Windows 上的代理认证支持 Negotiate / NTLM;daemon_auto_start = false 与 --no-daemon 在 0.164.0 上仍然认,沙箱 debug models 列出全部 11 个型号,exec 的请求字段与出网记录同 0.163.0',
-      userNote: '修好了长对话整理失败后留下半截内容、重新打开对话时设置丢失的问题',
+      version: '0.167.0',
+      verifiedAt: '2026-11-09',
+      verifiedSites: ['solov'],
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.167.0(models.json 与 rust-v0.165.0、rust-v0.166.0 逐字相同,比 rust-v0.164.0 多一个 gpt-6.1-terra;openai_models.rs 只加了可选字段);0.165.0～0.167.0 的 release note 没有一条碰自定义 model_providers / base_url / wire_api,型号不存在的错误不再重试、恢复或分叉对话时保留审批与权限设置、换过 provider 后旧对话仍然看得到;daemon_auto_start = false 与 --no-daemon 在 0.167.0 上仍然认,沙箱 debug models 列出全部 12 个型号,exec 与手机遥控用的 app-server 一轮对话的请求字段与出网记录同 0.166.0;2026-11-09 cli-relay-probe 在 solov(xm.solov.cc)上用默认型号真跑通过,solov-api 是探测 Key 不属于那个站(401)、没测成',
+      userNote: '修好了重新打开对话时权限设置丢失、选到不存在的型号时反复重试、换过账号后旧对话找不到的问题',
     },
     blocked: [
       {
@@ -107,10 +107,10 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
   },
   grok: {
     recommended: {
-      version: '1.0.70',
-      verifiedAt: '2026-10-26',
+      version: '1.0.77',
+      verifiedAt: '2026-11-09',
       verifiedSites: [],
-      note: '当前 npm latest 与 xAI stable(X Corp. 签名,#1051 已认);没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效,装插件不带 --trust 仍拒装、带了一次装好,结果与 1.0.62 逐条相同',
+      note: '当前 npm latest 与 xAI stable(X Corp. 签名,#1051 已认);没有可读的变更记录,本地假接口上重核出图地址、型号名单、标题型号与钩子四项配置仍然生效,装插件不带 --trust 仍拒装、带了一次装好,结果与 1.0.70 逐条相同',
       userNote: '跟上官方最新的稳定版，画图、起标题照旧走当前账号',
     },
     blocked: [],

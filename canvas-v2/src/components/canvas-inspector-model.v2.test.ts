@@ -68,7 +68,7 @@ describe('canvasInspectorParameterRows', () => {
     const rows = summary('image-generate', { prompt: '一只猫', model: 'gpt-image-2', quality: 'low', imageResolution: '2K', size: '1280x720' })
     expect(rows).toEqual([
       { label: '提示词', value: '一只猫' },
-      { label: '模型', value: 'GPT Image 2(推荐)' },
+      { label: '模型', value: 'GPT Image 2' },
       { label: '画质', value: '标准' },
       // 内核多一行生成数量；老桌面一次只出一张。
       { label: '生成数量', value: '×1 · 按次计费' },

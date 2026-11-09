@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, type KeyboardEvent } from 'react'
 import { ArrowRight, CircleHelp, LoaderCircle, ShieldCheck, Upload, Workflow, X } from 'lucide-react'
-import { buildProjectImportPresentation, projectImportProgressLabel, projectAssetNodeLabel, projectImportBytes, type ProjectImportPreview, type ProjectImportProgress } from '../lib/project-import-model'
+import { buildProjectImportPresentation, desktopImportedProjectName, projectImportProgressLabel, projectAssetNodeLabel, projectImportBytes, type ProjectImportPreview, type ProjectImportProgress, type ProjectImportWording } from '../lib/project-import-model'
+import { canvasHostKind } from '../host-kind'
 import './project-import-dialog.css'
+
+const defaultProjectImportWording: ProjectImportWording = canvasHostKind === 'desktop' ? 'desktop' : 'web'
 
 export interface ProjectImportDialogProps {
   preview: ProjectImportPreview
@@ -13,6 +16,8 @@ export interface ProjectImportDialogProps {
   progress?: ProjectImportProgress
   appearance?: 'workspace' | 'canvas'
   purpose?: 'file' | 'assets'
+  /** The desktop imports into a new project folder and rolls back on failure; the web uploads to the account and can resume. */
+  wording?: ProjectImportWording
   onCancel(): void
   onConfirm(): void
 }
@@ -44,7 +49,25 @@ export function ProjectImportDetails({ preview }: { preview: ProjectImportPrevie
   </div>
 }
 
-export default function ProjectImportDialog({ preview, busy, error, blocked, progress, appearance = 'workspace', purpose = 'file', onCancel, onConfirm }: ProjectImportDialogProps) {
+/** What the desktop shows: the counts it actually has and the warnings, without the web's upload and reference checks. */
+export function DesktopProjectImportDetails({ preview }: { preview: ProjectImportPreview }) {
+  const summary = buildProjectImportPresentation(preview)
+  return <div className="project-import-details">
+    <div className="project-import-file"><strong>{desktopImportedProjectName(preview)}</strong><span title={preview.name}>{preview.name}</span></div>
+    <dl className="project-import-stats is-three">
+      <div><dt>节点</dt><dd>{summary.nodeCount}</dd></div><div><dt>连线</dt><dd>{summary.edgeCount}</dd></div><div><dt>素材</dt><dd>{summary.availableCount}</dd></div>
+    </dl>
+    {summary.warnings.length > 0 && <div className="project-import-note"><strong>导入前请留意</strong><ul>{summary.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>{summary.additionalWarnings > 0 && <small>另外还有 {summary.additionalWarnings} 条，导入以后可以在画布里看。</small>}</div>}
+  </div>
+}
+
+function desktopDescription(preview: ProjectImportPreview): string {
+  return preview.createsProject
+    ? `会新建一个项目「${desktopImportedProjectName(preview)}」，放进「文档 › 星芒画布」，包里的素材一起放进去。现在打开的项目不动。`
+    : '会用包里的内容换掉现在这个画布，包里的素材放进这个项目。不想换就点「取消」。'
+}
+
+export default function ProjectImportDialog({ preview, busy, error, blocked, progress, appearance = 'workspace', purpose = 'file', wording = defaultProjectImportWording, onCancel, onConfirm }: ProjectImportDialogProps) {
   const dialog = useRef<HTMLElement>(null)
   const progressLabel = projectImportProgressLabel(progress)
   const missing = (preview.missingAssetCount ?? 0) > 0
@@ -52,6 +75,9 @@ export default function ProjectImportDialog({ preview, busy, error, blocked, pro
   const resuming = preview.resumingImport === true
   const requiresOriginalAssets = preview.originalImportPolicy === 'reject' && missing
   const assetSummary = assetCreation ? buildProjectImportPresentation(preview) : null
+  // The desktop says what its main process does: a new project folder that is removed again on failure. It also
+  // drops the preview once an import starts, so a failed import cannot be confirmed a second time.
+  const desktop = wording === 'desktop' && !assetCreation
   useEffect(() => {
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
     dialog.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
@@ -74,17 +100,18 @@ export default function ProjectImportDialog({ preview, busy, error, blocked, pro
   }
   return <div className={`project-import-backdrop is-${appearance}`} onClick={() => { if (!busy) onCancel() }}>
     <section ref={dialog} className="project-import-dialog" role="dialog" aria-modal="true" aria-labelledby="project-import-title" aria-describedby="project-import-description" aria-busy={busy} tabIndex={-1} onClick={(event) => event.stopPropagation()} onKeyDown={keyboard}>
-      <header><span><Workflow size={20} /><h2 id="project-import-title">{assetCreation ? '用所选素材创建画布' : resuming ? '继续原导入' : '确认导入项目'}</h2></span><button type="button" aria-label={assetCreation ? '取消素材创作' : '取消项目导入'} disabled={busy} onClick={onCancel}><X size={18} /></button></header>
+      <header><span><Workflow size={20} /><h2 id="project-import-title">{assetCreation ? '用所选素材创建画布' : desktop ? preview.createsProject ? '导入成新项目' : '导入工作流' : resuming ? '继续原导入' : '确认导入项目'}</h2></span><button type="button" aria-label={assetCreation ? '取消素材创作' : '取消项目导入'} disabled={busy} onClick={onCancel}><X size={18} /></button></header>
       <div className="project-import-body" role="region" aria-label="导入预检详情" tabIndex={0}>
-        <p id="project-import-description">{assetCreation ? '所选素材将按当前排列顺序放入独立画布。确认后即可继续连线、处理和创作。' : resuming ? '已找回原导入编号。确认后会核对已有素材，只迁入尚未完成的文件，并继续原工程创建。' : preview.createsProject ? '预检没有上传素材或创建工程。确认后迁入素材，再建立独立画布并打开编辑。' : '确认后迁入包内素材并替换当前工作流；取消保留当前画布。'}</p>
+        <p id="project-import-description">{desktop ? desktopDescription(preview) : assetCreation ? '所选素材将按当前排列顺序放入独立画布。确认后即可继续连线、处理和创作。' : resuming ? '已找回原导入编号。确认后会核对已有素材，只迁入尚未完成的文件，并继续原工程创建。' : preview.createsProject ? '预检没有上传素材或创建工程。确认后迁入素材，再建立独立画布并打开编辑。' : '确认后迁入包内素材并替换当前工作流；取消保留当前画布。'}</p>
         {resuming && preview.originalImportPolicy && <p className="project-import-retention">{preview.originalImportPolicy === 'drop' ? '沿用原导入规则：保留当前可用素材，只移除仍然缺失的外部引用。' : '沿用原导入规则：保留全部素材；有缺失时先恢复原素材。'}</p>}
-        {!assetCreation && <p className="project-import-retention">支持普通工作流及第 1–7 版项目包（含网页便携包与完整图像调整）。普通工作流限 2 MiB；项目包限 96 MiB，最多 64 项文件，单项限 32 MiB。未内嵌文件会单独核对，不会自动下载外部地址。</p>}
-        {assetCreation && assetSummary ? <div className="project-import-details"><div className="project-import-file"><strong>{preview.workflowName}</strong></div><dl className="project-import-stats"><div><dt>素材节点</dt><dd>{assetSummary.nodeCount}</dd></div><div><dt>可用素材</dt><dd>{assetSummary.availableCount}</dd></div><div><dt>不可用素材</dt><dd>{assetSummary.missingCount}</dd></div></dl><p className={missing ? 'project-import-note is-warning' : 'project-import-ready'}>{missing ? '部分素材已不可用，请取消并在素材库中核对后重新选择。' : '素材已核对。创建会复用当前账号中的原文件，不会生成新内容或消耗模型额度。'}</p></div> : <ProjectImportDetails preview={preview} />}
-        {busy && <div className="project-import-progress" role="status"><LoaderCircle size={16} className="project-import-spin" /><span>{assetCreation ? '正在核对素材并创建画布，请稍候…' : progressLabel || '正在核对、迁入素材并确认工程，请稍候…'}</span></div>}
-        {error && <div className="project-import-note is-error" role="alert"><strong>{assetCreation ? '画布创建尚未完成' : '导入尚未完成'}</strong><p>{error}</p>{!blocked && <small>{assetCreation ? '当前创建记录已保留。继续会核对并沿用同一次创建操作。' : '预览与原导入编号已保留。“继续导入”会核对已有素材，并沿用同一次工程创建操作。'}</small>}</div>}
-        <p className="project-import-retention">{assetCreation ? '原素材会保留在素材库。取消准备不会创建画布；提交后关闭页面不会撤销已经完成的创建。' : '确认后已上传的素材会保留在素材库；取消或关闭页面不会删除它们，也不会撤销服务器已经完成的操作。'}</p>
+        {!assetCreation && !desktop && <p className="project-import-retention">支持普通工作流及第 1–7 版项目包（含网页便携包与完整图像调整）。普通工作流限 2 MiB；项目包限 96 MiB，最多 64 项文件，单项限 32 MiB。未内嵌文件会单独核对，不会自动下载外部地址。</p>}
+        {desktop ? <DesktopProjectImportDetails preview={preview} /> : assetCreation && assetSummary ? <div className="project-import-details"><div className="project-import-file"><strong>{preview.workflowName}</strong></div><dl className="project-import-stats"><div><dt>素材节点</dt><dd>{assetSummary.nodeCount}</dd></div><div><dt>可用素材</dt><dd>{assetSummary.availableCount}</dd></div><div><dt>不可用素材</dt><dd>{assetSummary.missingCount}</dd></div></dl><p className={missing ? 'project-import-note is-warning' : 'project-import-ready'}>{missing ? '部分素材已不可用，请取消并在素材库中核对后重新选择。' : '素材已核对。创建会复用当前账号中的原文件，不会生成新内容或消耗模型额度。'}</p></div> : <ProjectImportDetails preview={preview} />}
+        {busy && <div className="project-import-progress" role="status"><LoaderCircle size={16} className="project-import-spin" /><span>{assetCreation ? '正在核对素材并创建画布，请稍候…' : desktop ? '正在导入，请稍候…' : progressLabel || '正在核对、迁入素材并确认工程，请稍候…'}</span></div>}
+        {error && desktop && <div className="project-import-note is-error" role="alert"><strong>导入没有完成</strong><p>{error}</p><small>现在打开的项目没动。要再试，点「取消」后重新选文件。</small></div>}
+        {error && !desktop && <div className="project-import-note is-error" role="alert"><strong>{assetCreation ? '画布创建尚未完成' : '导入尚未完成'}</strong><p>{error}</p>{!blocked && <small>{assetCreation ? '当前创建记录已保留。继续会核对并沿用同一次创建操作。' : '预览与原导入编号已保留。“继续导入”会核对已有素材，并沿用同一次工程创建操作。'}</small>}</div>}
+        <p className="project-import-retention">{desktop ? preview.createsProject ? '没导入成功的话，刚放进去的素材和文件夹会删掉，不会留下半个项目。' : '没导入成功的话，刚放进去的素材会删掉，现在的画布不动。' : assetCreation ? '原素材会保留在素材库。取消准备不会创建画布；提交后关闭页面不会撤销已经完成的创建。' : '确认后已上传的素材会保留在素材库；取消或关闭页面不会删除它们，也不会撤销服务器已经完成的操作。'}</p>
       </div>
-      <footer><button type="button" onClick={onCancel} disabled={busy}>取消</button><button type="button" className="is-primary" onClick={onConfirm} disabled={busy || blocked || requiresOriginalAssets || assetCreation && missing}>{busy ? <LoaderCircle size={15} className="project-import-spin" /> : <Upload size={15} />}{assetCreation ? busy ? '正在创建…' : error ? '继续创建' : '确认创建画布' : busy ? '正在导入…' : requiresOriginalAssets ? '请先恢复原素材' : error || resuming ? missing ? '继续导入并移除缺失引用' : '继续导入' : missing ? '移除缺失外部引用并导入' : '确认导入'}{!busy && <ArrowRight size={15} />}</button></footer>
+      <footer><button type="button" onClick={onCancel} disabled={busy}>取消</button><button type="button" className="is-primary" onClick={onConfirm} disabled={busy || blocked || desktop && Boolean(error) || requiresOriginalAssets || assetCreation && missing}>{busy ? <LoaderCircle size={15} className="project-import-spin" /> : <Upload size={15} />}{desktop ? busy ? '正在导入…' : preview.createsProject ? '导入成新项目' : '换成包里的内容' : assetCreation ? busy ? '正在创建…' : error ? '继续创建' : '确认创建画布' : busy ? '正在导入…' : requiresOriginalAssets ? '请先恢复原素材' : error || resuming ? missing ? '继续导入并移除缺失引用' : '继续导入' : missing ? '移除缺失外部引用并导入' : '确认导入'}{!busy && <ArrowRight size={15} />}</button></footer>
     </section>
   </div>
 }

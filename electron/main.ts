@@ -2050,6 +2050,7 @@ if (!hasSingleInstanceLock) {
       projectAssets: canvasProjectAssets,
       // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
       defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
+      trashProjectFolder: (directory) => shell.trashItem(directory),
     })
     // Session restoration may have completed before the controller was
     // constructed. Seed its ownership record so the first real account
@@ -2448,7 +2449,7 @@ if (!hasSingleInstanceLock) {
       setWindowTheme: (contents, theme) => {
         setWindowTheme(contents, theme)
         const appearance = systemService.readStoredConfig()
-        canvasController.setAppearance({ theme, uiSkin: appearance.uiSkin, reducedMotion: appearance.reducedMotion })
+        canvasController.setAppearance({ theme, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
       xingmangAiSkill: {

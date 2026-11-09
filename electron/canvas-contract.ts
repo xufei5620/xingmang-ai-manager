@@ -47,6 +47,7 @@ export const canvasHostChannels = {
   setProjectArchived: 'canvas-host:set-project-archived',
   createProjectInDefaultFolder: 'canvas-host:create-project-in-default-folder',
   relinkProjectFolder: 'canvas-host:relink-project-folder',
+  deleteProject: 'canvas-host:delete-project',
   runEvent: 'canvas-host:run-event',
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
@@ -377,12 +378,22 @@ export interface CanvasProjectPreview {
   edgeCount: number
   assetCount: number
   warnings: string[]
+  /** Set when the import becomes a new project in the default folder instead of replacing the open one. */
+  createsProject?: true
 }
 
 export interface CanvasProjectImportResult {
   content: string
   warnings: string[]
   importedAssetCount: number
+  /** The new project the import created, which the canvas opens next. */
+  projectId?: string
+}
+
+export interface CanvasProjectDeleteResult {
+  projectId: string
+  /** The project's own folder directly under the default projects folder went to the system trash; any other folder is left alone. */
+  folderMovedToTrash: boolean
 }
 
 export interface CanvasStoredProjectSummary {

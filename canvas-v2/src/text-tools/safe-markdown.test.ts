@@ -1,10 +1,10 @@
 import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
-import { SafeMarkdownPreview } from './SafeMarkdownPreview'
+import { describe, expect, it, vi } from 'vitest'
+import { copyMarkdownLink, markdownLinkHost, SafeMarkdownPreview, type MarkdownLinkAction } from './SafeMarkdownPreview'
 import { markdownPreviewCharacterLimit, parseSafeMarkdown, safeMarkdownHref } from './safe-markdown'
 
-function markup(value: string, downloadable?: boolean) { return renderToStaticMarkup(createElement(SafeMarkdownPreview, { value, downloadable })) }
+function markup(value: string, downloadable?: boolean, links: MarkdownLinkAction = 'open') { return renderToStaticMarkup(createElement(SafeMarkdownPreview, { value, downloadable, links })) }
 describe('bounded safe text preview', () => {
   it('renders supported formatting, lists, quoted text and fenced code', () => {
     const html = markup('# Heading\n## Two\n### Three\n\n**bold** *italic* ~~strike~~ `code`\n\n- first\n- second\n\n3. third\n4. fourth\n\n> a quote\n> next line\n\n```ts\nconst x = "<script>"\n```\n\n---')
@@ -42,5 +42,49 @@ describe('bounded safe text preview', () => {
     const dense = parseSafeMarkdown('**x** '.repeat(6_000))
     expect(JSON.stringify(dense).length).toBeLessThan(500_000)
     expect(markup('<script>'.repeat(5_000))).not.toContain('<script>')
+  })
+})
+
+// 桌面画布窗口打不开别的网站，链接在桌面上改成点一下复制网址；网页照旧开新标签。
+describe('links in the text preview on the desktop', () => {
+  const source = '[官网](https://example.com/a?q=1) 和 [https://docs.example.org/x](https://docs.example.org/x)\n\n![图](https://img.example.net/p.png)'
+
+  it('copies instead of opening, and names the host a label does not show', () => {
+    const html = renderToStaticMarkup(createElement(SafeMarkdownPreview, { value: source }))
+    expect(html).not.toContain('<a ')
+    expect(html).not.toContain('target="_blank"')
+    expect(html).toContain('<button type="button" class="canvas-text-link" title="点一下复制网址：https://example.com/a?q=1">官网<span class="canvas-text-link-host">（example.com）</span></button>')
+    expect(html).toContain('title="点一下复制网址：https://docs.example.org/x">https://docs.example.org/x</button>')
+    expect(html).toContain('title="点一下复制网址：https://img.example.net/p.png">复制图片链接<span class="canvas-text-link-host">（img.example.net）</span></button>')
+    expect(html).not.toContain('打开图片链接')
+  })
+
+  it('still opens links in a new tab where the host can', () => {
+    const html = markup(source)
+    expect(html).toContain('<a href="https://example.com/a?q=1" target="_blank" rel="noopener noreferrer nofollow">官网</a>')
+    expect(html).toContain('打开图片链接 ↗')
+    expect(html).not.toContain('canvas-text-link')
+  })
+
+  it('leaves links it refused as plain text in both modes', () => {
+    for (const links of ['open', 'copy'] as const) {
+      const html = markup('[bad](javascript:alert(1)) [secret](https://user:pw@example.com)', undefined, links)
+      expect(html).not.toContain('<button'); expect(html).not.toContain('<a ')
+      expect(html.match(/canvas-text-invalid-link/g)).toHaveLength(2)
+    }
+  })
+
+  it('shows the host the address really goes to', () => {
+    expect(markdownLinkHost('https://evil.example/', '星芒官网')).toBe('evil.example')
+    expect(markdownLinkHost('https://evil.example/xm.solov.cc', 'xm.solov.cc')).toBe('evil.example')
+    expect(markdownLinkHost('https://Example.com/a', 'see example.com')).toBeNull()
+  })
+
+  it('reports whether the address reached the clipboard', async () => {
+    const writeText = vi.fn(async () => undefined)
+    expect(await copyMarkdownLink('https://example.com/a', { writeText })).toBe('copied')
+    expect(writeText).toHaveBeenCalledWith('https://example.com/a')
+    expect(await copyMarkdownLink('https://example.com/a', { writeText: vi.fn(async () => { throw new Error('denied') }) })).toBe('failed')
+    expect(await copyMarkdownLink('https://example.com/a', undefined)).toBe('failed')
   })
 })

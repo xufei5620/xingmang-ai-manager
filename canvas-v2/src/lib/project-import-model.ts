@@ -102,6 +102,24 @@ export function buildProjectImportPresentation(preview: ProjectImportPreview): P
   }
 }
 
+// 桌面导入项目包（第 16 条）：桌面主进程把包导入成一个新项目，放进「文档 › 星芒画布」，失败就删掉放进去的东西。
+// 桌面没有云端那套上传、引用核对、接着导，导入框和横幅照桌面实际做的事说。
+
+export type ProjectImportWording = 'desktop' | 'web'
+
+/** The name the desktop gives the imported project: the package's own name, else the file name without its extension. */
+export function desktopImportedProjectName(preview: Pick<ProjectImportPreview, 'workflowName' | 'name'>): string {
+  function cleaned(value: unknown): string {
+    return typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim() : ''
+  }
+  return cleaned(preview.workflowName) || cleaned(typeof preview.name === 'string' ? preview.name.replace(/\.xingcanvas$/i, '') : '') || '导入的项目'
+}
+
+export function desktopProjectImportBanner(createsProject: boolean, name: string, warnings: readonly string[]): string {
+  const done = createsProject ? `已导入成新项目「${name}」，原来的项目还在项目中心` : '已换成包里的内容'
+  return warnings.length ? `${done}；${warnings.join('；')}` : done
+}
+
 export function projectImportProgressLabel(progress?: ProjectImportProgress): string | null {
   if (!progress || ![progress.completed, progress.total, progress.bytesUploaded].every(count) || progress.completed > progress.total) return null
   return `已核对 ${progress.completed} / ${progress.total} 项素材 · 已上传 ${projectImportBytes(progress.bytesUploaded)}`

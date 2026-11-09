@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
-import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioShotImage, videoStudioStorageKey, type VideoStudioProject } from './project'
+import { tutorialTopics } from '../../registry/tutorials'
+import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, maxVideoStudioDrafts, serializeVideoStudioDrafts, serializeVideoStudioProject, videoStudioDraftsStorageKey, videoStudioShotImage, videoStudioStorageKey, type VideoStudioDraft, type VideoStudioProject } from './project'
 import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
 import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
 
@@ -31,14 +32,15 @@ function clip(letter: string): AiVideoClip {
   return { assetId: letter.repeat(43), thumbnailUrl: `xingmang-asset://thumb/v2/video/${letter.repeat(43)}`, width: 720, height: 1280, durationSeconds: 12 }
 }
 
-function storageWith(scope: string, project: VideoStudioProject | null): VideoStudioStorage {
+function storageWith(scope: string, project: VideoStudioProject | null, drafts: readonly VideoStudioDraft[] = []): VideoStudioStorage {
   const raw = project ? JSON.stringify(serializeVideoStudioProject(project)) : null
-  return { getItem: (key) => key === videoStudioStorageKey(scope) ? raw : null, setItem: () => undefined }
+  const box = drafts.length ? JSON.stringify(serializeVideoStudioDrafts(drafts)) : null
+  return { getItem: (key) => key === videoStudioStorageKey(scope) ? raw : key === videoStudioDraftsStorageKey(scope) ? box : null, setItem: () => undefined }
 }
 
-function render(access: VideoStudioAccess, project: VideoStudioProject | null = null) {
+function render(access: VideoStudioAccess, project: VideoStudioProject | null = null, drafts: readonly VideoStudioDraft[] = []) {
   return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined}
-    options={{ storage: storageWith('solov:7', project) }} />)
+    options={{ storage: storageWith('solov:7', project, drafts) }} />)
 }
 
 function plannedProject(): VideoStudioProject {
@@ -213,5 +215,42 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('data-testid="video-result-save"')
     expect(markup).toMatch(/data-testid="video-result-folder"[^>]*>[^]*?打开文件夹/)
     expect(markup).toContain('12 秒 · 720 × 1280')
+  })
+
+  it('offers a new film once there is something to keep and lists the draft box under the page', () => {
+    expect(render('ready')).not.toContain('data-testid="video-new"')
+    expect(render('ready')).not.toContain('data-testid="video-drafts"')
+    const project = plannedProject()
+    const markup = render('ready', project, [
+      { id: 'a', savedAt: Date.now(), project: { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '海边日落' } } },
+      { id: 'b', savedAt: Date.now(), project: { ...project, exported: clip('z') } },
+    ])
+    expect(markup).toMatch(/title="把这一份放进草稿箱，再从头做一条新的"[^>]*data-testid="video-new"[^>]*>[^]*?新建一条/)
+    expect(markup).toMatch(/data-testid="video-drafts"[^]*?草稿箱[^]*?2 份/)
+    expect(markup).toMatch(/data-testid="video-draft-0"[^]*?海边日落[^]*?还没写分镜 · 今天 \d\d:\d\d/)
+    expect(markup).toMatch(/data-testid="video-draft-1"[^]*?回家的猫[^]*?2 个镜头 · 已生成 1 段 · 已拼成片/)
+    expect(markup).toMatch(/title="现在这一份会先放进草稿箱"[^>]*data-testid="video-draft-open-0"[^>]*>[^]*?接着做/)
+    expect(markup).toMatch(/aria-label="删掉这份草稿"[^>]*title="删掉这份草稿"[^>]*data-testid="video-draft-remove-1"/)
+  })
+
+  it('stops making new films once the draft box is full and says why', () => {
+    const project = plannedProject()
+    const full = Array.from({ length: maxVideoStudioDrafts }, (_, index) => ({ id: `d${index}`, savedAt: Date.now(), project }))
+    expect(render('ready', project, full)).toMatch(new RegExp(`title="草稿箱满了（最多 ${maxVideoStudioDrafts} 份），先删掉几份不要的"[^>]*data-testid="video-new"[^>]*disabled=""`))
+  })
+
+  // 教程「视频剪辑」一章（清单第 11 项）照这一页的字教：页面改了按钮名、忘了改教程，这里会红。
+  it('shows every button and field the video tutorial tells the customer to look for', () => {
+    const topic = tutorialTopics.find((entry) => entry.id === 'video')
+    const quoted = [...JSON.stringify(topic?.steps).matchAll(/「([^」]+)」/g)].map((match) => match[1])
+    expect(quoted.length).toBeGreaterThan(20)
+    const project = plannedProject()
+    const fresh: VideoStudioProject = { ...project, shots: project.shots.map((shot) => ({ ...shot, clip: undefined, status: 'idle' })) }
+    const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('ab'[index]), status: 'done' })), music: { assetId: 'm'.repeat(43), name: '晴天', clipSound: 'quiet' }, exported: clip('z') }
+    const markup = [render('ready', fresh), render('ready', project), render('ready', done, [{ id: 'a', savedAt: Date.now(), project: fresh }])].join('')
+    // 这几个只在确认框、生成中、报余额不够时出现，首屏渲染不到；「生成全部 … 段」里的数是现算的。
+    const elsewhere = ['开始生成', '停止生成', '去充值']
+    for (const label of quoted.filter((entry) => !elsewhere.includes(entry))) expect(markup, label).toContain(label.replace(' … ', ' 2 '))
+    expect(render('unsupported')).toContain(topic?.steps[0].extra?.[0].detail ?? '-')
   })
 })

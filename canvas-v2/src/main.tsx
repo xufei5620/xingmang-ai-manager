@@ -9,10 +9,11 @@ import '../shared/ui-tokens.css'
 import './theme.css'
 import './theme/brand-appearance.css'
 import './styles.css'
-import { applyCanvasAppearance, initialCanvasAppearance } from './theme/canvas-theme'
+import { applyCanvasAppearance, applyCanvasHost, initialCanvasAppearance } from './theme/canvas-theme'
 
 const initialAppearance = initialCanvasAppearance(window.location.search)
 const initialTheme = initialAppearance.theme
+applyCanvasHost()
 applyCanvasAppearance(initialAppearance)
 
 const container = document.getElementById('root')

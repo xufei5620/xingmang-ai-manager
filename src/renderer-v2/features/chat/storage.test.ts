@@ -503,6 +503,76 @@ describe('credential redaction before persistence', () => {
     expect(redactPersistentChatText(`hash ${'Zm9vYmFy'.repeat(80)} end`)).toBe(`hash ${'Zm9vYmFy'.repeat(80)} end`)
   })
 
+  // Every value is invented for the test and built at run time, so no whole
+  // token sits in the source: the prefixes follow the vendor formats, the bodies
+  // are filler. These are the shapes the log redaction table already hid while
+  // the chat history kept them verbatim.
+  const fakeJwt = [Buffer.from('{"alg":"HS256","typ":"JWT"}').toString('base64url'), Buffer.from('{"sub":"fake-test-user"}').toString('base64url'), 'fake-signature_filler-0123'].join('.')
+  const sharedShapes = [
+    `xai-${'FakeGrokTestValueFillerOnly0123456789'}`,
+    `ghp_${'FakeClassicTokenFiller0123'}`,
+    `github_pat_${'Fake_Fine_Grained_Filler_0123'}`,
+    `glpat-${'Fake-GitLab-Filler-012345'}`,
+    `AIza${'Fake0Test1Value2Filler3Xy'.padEnd(35, 'z')}`,
+    fakeJwt,
+    `AKIA${'FAKE0TEST1FILLER'}`,
+  ]
+  const sharedShapeText = [
+    ...sharedShapes.map((secret) => `我的密钥是 ${secret} ，帮我看看`),
+    'git clone https://fake-user:plain-fake-userinfo@git.example.invalid/acme/demo.git',
+    'ssh://oauth2:plain-fake-sshpass@git.example.invalid/acme',
+    '-----BEGIN OPENSSH PRIVATE KEY-----\nplain-fake-pem-body\n-----END OPENSSH PRIVATE KEY-----',
+  ].join('\n')
+  const sharedLeaks = [...sharedShapes, 'plain-fake-userinfo', 'plain-fake-sshpass', 'plain-fake-pem-body']
+
+  it('hides every key shape the log redaction table hides, in the chat wording', () => {
+    const saved = redactPersistentChatText(sharedShapeText)
+    for (const secret of sharedLeaks) expect(saved).not.toContain(secret)
+    expect(saved).not.toContain('[REDACTED]')
+    expect(saved).toContain('我的密钥是 [密钥未保存] ，帮我看看')
+    expect(saved).toContain('git clone https://[密钥未保存]@git.example.invalid/acme/demo.git')
+    expect(saved).toContain('ssh://[密钥未保存]@git.example.invalid/acme')
+    expect(saved).toContain('-----BEGIN OPENSSH PRIVATE KEY-----\n[密钥未保存]\n-----END OPENSSH PRIVATE KEY-----')
+    expect(redactPersistentChatText('ssh://git@github.com/acme/demo.git 和 npm i -g @xai-official/grok')).toBe('ssh://git@github.com/acme/demo.git 和 npm i -g @xai-official/grok')
+  })
+
+  it('keeps a relay key whole when it ends in a dash or carries a dot', () => {
+    expect(redactPersistentChatText('密钥 sk-fake-relay-value- 用不了')).toBe('密钥 [密钥未保存] 用不了')
+    expect(redactPersistentChatText('密钥 sk-fake.relay.value 用不了。')).toBe('密钥 [密钥未保存] 用不了。')
+    expect(redactPersistentChatText('结尾 sk-fake-relay-value.')).toBe('结尾 [密钥未保存].')
+  })
+
+  // The shared table runs last: its `sk-` rule would otherwise swallow the
+  // `api_key` name glued to it and leave the named-value rule nothing to find.
+  it('still hides a named value whose name is glued to something that looks like a key', () => {
+    expect(redactPersistentChatText('sk-api_key=plain-fake-value')).not.toContain('plain-fake-value')
+  })
+
+  it('still replaces a whole inline image whose base64 happens to contain key shapes', () => {
+    const payload = `data:image/png;base64,${'QUJD'.repeat(40)}${fakeJwt.replaceAll('.', '')}sk-abcdefghijklAIza${'B'.repeat(35)}`
+    expect(redactPersistentChatText(`图 ${payload} 完`)).toBe('图 [图片数据未保存] 完')
+  })
+
+  it('gives the same text when an already saved record is saved again', () => {
+    const once = redactPersistentChatText(`${sharedShapeText}\nAuthorization: Bearer abcdef0123456789\n?token=abc&api_key=def`)
+    expect(redactPersistentChatText(once)).toBe(once)
+  })
+
+  it('keeps the newly covered shapes out of the history files and the export for another computer', async () => {
+    const files = memoryFiles()
+    const state = workspace()
+    state.conversations[0].messages = [message(0, { content: sharedShapeText, reasoning: sharedShapeText }), message(1, { content: `回复 ${sharedShapes[0]}` })]
+    state.conversations[0].draft = sharedShapeText
+    await saveAndReopen(state, files)
+    const raw = files.raw() ?? ''
+    const exported = JSON.stringify(exportableConversations(state))
+    for (const secret of sharedLeaks) {
+      expect(raw).not.toContain(secret)
+      expect(exported).not.toContain(secret)
+    }
+    expect(exported).toContain('[密钥未保存]')
+  })
+
   it('keeps ordinary links, prose and long Unicode content byte-identical', async () => {
     const state = workspace()
     const kept = '见 https://xm.example.test/docs/使用说明 与 http://127.0.0.1:3000 ，正文 🙂\n'.repeat(500)
