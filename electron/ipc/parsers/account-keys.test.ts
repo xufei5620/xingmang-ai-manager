@@ -48,6 +48,17 @@ describe('parseAccountKeyCreateInput', () => {
     expect(parseAccountKeyCreateInput({ ...valid, name }, true).name).toBe(name)
   })
 
+  it('counts the xm site name limit in UTF-8 bytes, so 16 Chinese characters fit and 17 do not', () => {
+    expect(parseAccountKeyCreateInput({ ...valid, name: '星'.repeat(16) }).name).toBe('星'.repeat(16))
+    expect(parseAccountKeyCreateInput({ ...valid, name: `${'星'.repeat(16)}ab` }).name).toBe(`${'星'.repeat(16)}ab`)
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: '星'.repeat(17) })).toThrow('密钥名称格式错误')
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: `${'x'.repeat(47)}😀` })).toThrow('密钥名称格式错误')
+    // Surrounding spaces are trimmed before sending, so they do not count.
+    expect(parseAccountKeyCreateInput({ ...valid, name: ` ${'星'.repeat(16)} ` }).name).toBe('星'.repeat(16))
+    // The legacy account site keeps its own limit.
+    expect(parseAccountKeyCreateInput({ ...valid, name: '星'.repeat(17) }, true).name).toBe('星'.repeat(17))
+  })
+
   it('allows a fractional quota only for the legacy account site, and never a zero limit there', () => {
     expect(() => parseAccountKeyCreateInput({ ...valid, unlimitedQuota: false, remainQuota: 1.5 })).toThrow('额度格式错误')
     expect(parseAccountKeyCreateInput({ ...valid, unlimitedQuota: false, remainQuota: 1.5 }, true).remainQuota).toBe(1.5)
