@@ -2336,6 +2336,7 @@ if (!hasSingleInstanceLock) {
       chatAttachments,
       videoService: chatVideoService,
       videoAssets,
+      audioAssets,
       chatHistory: chatHistoryStore,
       chatHistoryFlush,
       sessionsService,

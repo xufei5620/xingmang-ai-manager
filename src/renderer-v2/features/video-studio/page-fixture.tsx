@@ -34,6 +34,8 @@ let assetCounter = 0
 let folderOpens = true
 // 下一次「用一张图开头」选到的图（编号）；空的就是客户在对话框里点了取消。
 let nextPicks: string[] = []
+// 下一次「加配乐」选到的歌；null 是在对话框里点了取消，unreadable 是主进程认不出这个文件。
+let nextSong: { name: string, seconds: number, frequency: number } | 'unreadable' | null = null
 // 地址带 ?models=held 时各分组先不回模型表，等测试叫 releaseModels：页面刚打开、模型还没读完就点生成的那一下（#1489 R28-4）。
 const modelsHeld = query.get('models') === 'held'
 const heldModels: Array<() => void> = []
@@ -96,6 +98,22 @@ const bridge: VideoStudioBridge = {
     const picked = nextPicks.splice(0)
     return picked.map((assetId) => ({ assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' as const, fileName: `${assetId}.png` }))
   },
+  pickVideoStudioMusic: async () => {
+    record('pick-music')
+    const song = nextSong
+    nextSong = null
+    if (song === 'unreadable') throw new Error("Error invoking remote method 'video-studio:pick-music': Error: 这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）")
+    if (!song) return null
+    const assetId = nextAssetId()
+    library.set(assetId, await window.videoStudioHarness!.makeSong(song.seconds, song.frequency))
+    return { assetId, name: song.name, durationSeconds: song.seconds }
+  },
+  readVideoStudioMusic: async (assetId) => {
+    record('read-music', assetId)
+    const data = library.get(assetId)
+    if (!data) throw new Error(`Error invoking remote method 'video-studio:read-music': Error: AI 音频资产不存在或无权访问`)
+    return new Uint8Array(data.slice(0))
+  },
 }
 
 async function finishResume(requestId: string, color: string) {
@@ -140,6 +158,7 @@ declare global {
       forget(assetId: string): void
       folderOpens(value: boolean): void
       pickImages(assetIds: string[]): void
+      pickSong(song: { name: string, seconds: number, frequency: number } | 'unreadable' | null): void
       balance(): number | null
     }
   }
@@ -167,6 +186,7 @@ window.videoStudioPage = {
   forget: (assetId) => { library.delete(assetId) },
   folderOpens: (value) => { folderOpens = value },
   pickImages: (assetIds) => { nextPicks = [...assetIds] },
+  pickSong: (song) => { nextSong = song },
   balance: () => balanceStore?.getSnapshot().balance?.displayAmount ?? null,
 }
 

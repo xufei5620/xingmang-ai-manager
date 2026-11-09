@@ -26,6 +26,11 @@ export function parseAiVideoAssetId(value: unknown): string {
   return value
 }
 
+export function parseAiAudioAssetId(value: unknown): string {
+  if (typeof value !== 'string' || !assetIdPattern.test(value)) throw new Error('音频编号格式错误')
+  return value
+}
+
 function wholeNumberBetween(value: unknown, minimum: number, maximum: number, message: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(message)
   return value
