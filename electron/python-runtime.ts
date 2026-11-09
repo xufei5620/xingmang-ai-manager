@@ -281,6 +281,7 @@ export function buildPythonRuntimeWingetPlan(executable: string): NodeRuntimePro
       '--disable-interactivity',
     ],
     timeoutMs: installerTimeoutMs,
+    timeoutExcludesSleep: true,
     acceptedExitCodes: [0],
   }
 }
@@ -327,6 +328,7 @@ export function buildPythonRuntimeInstallPlan(
         'Shortcuts=0',
       ],
       timeoutMs: installerTimeoutMs,
+      timeoutExcludesSleep: true,
       acceptedExitCodes: [0],
       env,
       trustedPaths: [installerPath],
@@ -542,6 +544,7 @@ async function defaultRunProcess(
 ): Promise<CommandResult> {
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
+    timeoutExcludesSleep: plan.timeoutExcludesSleep,
     acceptedExitCodes: plan.acceptedExitCodes,
     maxOutputBytes: 2 * 1024 * 1024,
     windowsHide: true,

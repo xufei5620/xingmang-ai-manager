@@ -91,6 +91,11 @@ export interface NodeRuntimeProcessPlan {
   executable: string
   argv: readonly string[]
   timeoutMs: number
+  /**
+   * Counts only awake time toward timeoutMs (RunCommandOptions.timeoutExcludesSleep). Set on
+   * the long installer runs, so closing the lid while one works does not end it on wake.
+   */
+  timeoutExcludesSleep?: boolean
   acceptedExitCodes: readonly number[]
   env?: NodeJS.ProcessEnv
   trustedPaths?: readonly string[]
@@ -782,6 +787,7 @@ export function buildNodeRuntimeInstallPlan(
       executable: windowsSystemExecutable('msiexec.exe', process.env, 'win32', machinePaths),
       argv: ['/i', msiPath, '/qn', '/norestart', 'ADDLOCAL=ALL'],
       timeoutMs: installerTimeoutMs,
+      timeoutExcludesSleep: true,
       acceptedExitCodes: [0, 3010],
       env: signatureEnv,
       trustedPaths: [msiPath],
@@ -821,6 +827,7 @@ export function buildNodeRuntimeWingetPlan(
       ...(architecture ? ['--architecture', architecture] : []),
     ],
     timeoutMs: wingetTimeoutMs,
+    timeoutExcludesSleep: true,
     acceptedExitCodes: [0],
   }
 }
@@ -1052,6 +1059,7 @@ async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal)
       env: trustedCommandEnvironment(plan.env ?? process.env, machinePaths, 'win32'),
       trustedOnly: true,
       timeoutMs: plan.timeoutMs,
+      timeoutExcludesSleep: plan.timeoutExcludesSleep,
       acceptedExitCodes: plan.acceptedExitCodes,
       maxOutputBytes: 2 * 1024 * 1024,
       windowsHide: true,
@@ -1076,6 +1084,7 @@ async function defaultRunProcess(
   if (plan.elevation === 'uac') return runUacProcess(plan, signal)
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
+    timeoutExcludesSleep: plan.timeoutExcludesSleep,
     acceptedExitCodes: plan.acceptedExitCodes,
     maxOutputBytes: 2 * 1024 * 1024,
     windowsHide: true,

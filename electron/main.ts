@@ -23,7 +23,7 @@ import { createAccelerationPower } from './acceleration-power'
 import { createAccelerationService } from './acceleration-service'
 import type { AccelerationBundleCheck } from './acceleration-contract'
 import { createAccelerationPreferenceStore } from './acceleration-preference-store'
-import { readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
+import { hasAccelerationProxyRecoveryRecords, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
 import { createChatHistoryFlush } from './chat-history-flush'
@@ -35,7 +35,7 @@ import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
-import { createAccelerationHost, createAccelerationRouting, createAccelerationServices } from './bootstrap/acceleration'
+import { createAccelerationHostLoader, createAccelerationRouting, createAccelerationServices, type AccelerationHostOptions } from './bootstrap/acceleration'
 import { createAccountClientFactory, createAccountStorage } from './bootstrap/accounts'
 import { createRealmBusinesses } from './bootstrap/ai-services'
 import { createDiagnostics } from './bootstrap/diagnostics'
@@ -451,8 +451,15 @@ function createWindow(
   window.webContents.on('will-navigate', (event, targetUrl) => {
     if (!isAllowedAppNavigationUrl(targetUrl, urlPolicy)) event.preventDefault()
   })
+  // 重新加载也按此刻存的深浅色拼地址：webContents.reload() 带的是开窗那一刻的 ?theme=，
+  // 中途换过深浅色的，重新加载出来第一帧又是旧的那套。缩到托盘后重新加载早就这么做了。
+  const reloadPage = () => {
+    void window.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme)).catch((error) => {
+      runtimeLog.exception('renderer', 'page.load.failed', error)
+    })
+  }
   const crashRecovery = createRendererCrashRecovery({
-    reload: () => window.webContents.reload(),
+    reload: reloadPage,
     prompt: async () => {
       const result = await dialog.showMessageBox(window, {
         type: 'warning', title: '界面出了问题', message: '星芒AI管理工具的界面接连出错，自动重新加载也没能恢复。',
@@ -514,7 +521,7 @@ function createWindow(
       })
       return result.response === 1 ? 'reload' : 'wait'
     },
-    reload: () => window.webContents.reload(),
+    reload: reloadPage,
     log: (event) => {
       if (event === 'prompt.shown') { runtimeLog.log('warn', 'renderer', 'window.unresponsive.prompted', '已提示用户界面无响应'); return }
       if (event === 'prompt.reload') { runtimeLog.log('warn', 'renderer', 'window.unresponsive.reload', '用户选择重新加载界面'); return }
@@ -903,24 +910,33 @@ if (!hasSingleInstanceLock) {
     // Windows 要等下面的管理员探测有了结论再定（relocated-folders.ts）。
     if (process.platform !== 'win32') configureRelocatedFolderAccess('same-user')
     const managerDataDirectory = app.getPath('userData')
-    // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，慢机上
-    // 窗口因此晚出来；现在一开始就读，和后面的迁移、命令行探测叠着跑，建窗口也不等它：
-    // 读完那一刻才建加速宿主（见下面 createAccelerationHost），用到加速时再等。
-    // 失败先接住：没等到它的这段时间里被拒绝，会被当成没人处理的错误。
-    const accelerationConfigRead = (app.isPackaged
-      ? readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
-        bundledMetadata: applicationPackage.xingmangAccelerationBundle })
-      : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
-    ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
+    // 内置加速内核三十多兆，校验要整读一遍。它以前排在建窗口前面单独等，后来改成开机就读、建窗口不等（0.2.22
+    // 性能体检第 4 条）；网络加速 2026-10-30 下线以后开机干脆不读（0.2.24 启动速度深查 S-3）：只有上次加速时崩了、
+    // 系统代理没改回去（开机看一眼恢复记录就知道），或者真用到加速、检查页要报它坏没坏时才读，见下面
+    // createAccelerationHostLoader。几处要它都是同一次读。失败先接住：交给谁之前被拒绝，会被当成没人处理的错误。
+    let accelerationConfigRead: AccelerationHostOptions['read'] | null = null
+    function readAccelerationConfig() {
+      accelerationConfigRead ??= (app.isPackaged
+        ? readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
+          bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+        : readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+      ).then((config) => ({ ok: true as const, config }), (error: unknown) => ({ ok: false as const, error }))
+      return accelerationConfigRead
+    }
+    // 只有上次加速时崩了、系统代理还指着已经没了的端口（整台电脑上不了网）才在开机就读：看一眼恢复记录，有就马上开始读，
+    // 和后面的迁移、命令行探测叠着跑，读完由 createAccelerationHostLoader 建宿主改回去。
+    const accelerationRecoveryPending = hasAccelerationProxyRecoveryRecords(managerDataDirectory).catch(() => true)
+    void accelerationRecoveryPending.then((records) => { if (records) void readAccelerationConfig() })
     // 正式安装包自带的加速文件读不通：多半被杀毒软件隔离或改动了。开发时没带加速
     // 文件照旧是「线路准备中」，只有安装包里本该有、却读坏了才这样说（第十六批 6）。
-    // 网络加速 2026-10-30 下线（platform-capabilities.ts）：三个平台都没有加速了。加速文件照旧要读，
-    // 开机改回上次留在半路的系统代理靠它（createAccelerationHost）。
+    // 网络加速 2026-10-30 下线（platform-capabilities.ts）：三个平台都没有加速了。加速文件照旧留着，
+    // 开机改回上次留在半路的系统代理靠它（createAccelerationHostLoader）。
     const accelerationOffered = platformCapabilitiesFor().acceleration !== false
-    // 下线以后检查页不再有「加速功能」这一行：客户用不着加速，文件坏了也没什么可做的。
-    const accelerationBundleStatus = accelerationConfigRead.then((read): 'intact' | 'damaged' | null => (
-      !app.isPackaged || !accelerationOffered ? null : !read.ok ? 'damaged' : read.config ? 'intact' : null
-    ))
+    // 下线以后检查页不再有「加速功能」这一行：客户用不着加速，文件坏了也没什么可做的，也就不为它去读文件。
+    function readAccelerationBundleStatus(): Promise<'intact' | 'damaged' | null> {
+      if (!app.isPackaged || !accelerationOffered) return Promise.resolve(null)
+      return readAccelerationConfig().then((read) => !read.ok ? 'damaged' : read.config ? 'intact' : null)
+    }
     // 「重新检查」连点几下只读一遍：内核文件有几十 MB。
     let accelerationBundleRecheck: Promise<AccelerationBundleCheck> | null = null
     function recheckAccelerationBundle(): Promise<AccelerationBundleCheck> {
@@ -1390,7 +1406,7 @@ if (!hasSingleInstanceLock) {
       codexContext,
       managerDataDirectory,
       windowsCliExecution,
-      accelerationBundleStatus,
+      readAccelerationBundleStatus,
       accelerationRunning,
       readDocumentsDirectory,
       runtimeLog,
@@ -1756,7 +1772,7 @@ if (!hasSingleInstanceLock) {
     })
     const accountIdentity = createAccountIdentityTracker()
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
-    // 加速文件读完才有（见下面 createAccelerationHost）。
+    // 加速宿主建好才有（见下面 createAccelerationHostLoader），多数时候这次运行里一直是空的。
     let developmentAcceleration: AccelerationDevelopmentHost | undefined
     async function accelerationRunning(): Promise<boolean> {
       const scope = readAccelerationAccountScope()
@@ -1764,8 +1780,9 @@ if (!hasSingleInstanceLock) {
       // 马上答「没开」才改直连，以前加速服务还没建好的那段也是这么答的。
       if (!scope || !acceleration || !developmentAcceleration) return false
       // 加速在等上一个星芒交出网络设置时读状态要陪着等最多半分钟：这里只问开没开（绕不绕代理、导出诊断），
-      // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。
-      if (acceleration.awaitingPreviousOwner()) return true
+      // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。问宿主本身：开机改回网络设置时宿主先建好，
+      // 加速服务要等第一次真用到它才接手（createAccelerationHostLoader），那之前问加速服务只会答「没在等」。
+      if (developmentAcceleration.awaitingPreviousOwner()) return true
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
@@ -2189,17 +2206,19 @@ if (!hasSingleInstanceLock) {
       if (restored || accounts.stalledAccount() || !accountStartupGate.releasedEarly()) return
       sendToMainWindow('onAccountSessionChanged', accounts.client.getSessionState())
     })
-    // 加速文件读完才建得出宿主，建窗口不等它（第 4 条，0.2.22 性能体检）：读完那一刻就把上次崩溃没改回的
-    // 系统代理改回去，跟有没有人用加速无关。建好以前下载线路、睡眠唤醒都当没有宿主，加速服务的操作排着等它。
-    const accelerationHost = createAccelerationHost({
-      read: accelerationConfigRead,
+    // 加速宿主建窗口不等（第 4 条，0.2.22 性能体检），开机也不读加速文件（S-3，0.2.24 启动速度深查）：上次崩溃
+    // 留下了没改回的系统代理才马上读、建宿主、改回去，别的时候等加速服务真要用后端时再建。建好以前下载线路、
+    // 睡眠唤醒都当没有宿主，加速服务要用后端的操作排着等它。
+    const accelerationHosts = createAccelerationHostLoader({
+      read: readAccelerationConfig,
+      hasRecoveryRecords: () => accelerationRecoveryPending,
       managerDataDirectory,
       runtimeLog,
       accelerationInterruption: () => accelerationInterruption,
-    })
-    void accelerationHost.then((host) => {
-      developmentAcceleration = host.developmentAcceleration
-      accelerationDownloadRoutes = developmentAcceleration ?? null
+      onLoaded: (host) => {
+        developmentAcceleration = host.developmentAcceleration
+        accelerationDownloadRoutes = developmentAcceleration ?? null
+      },
     })
     readAccelerationAccountScope = () => {
       const state = accountService.getSessionState()
@@ -2207,7 +2226,7 @@ if (!hasSingleInstanceLock) {
       return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
     }
     const accelerationServices = createAccelerationServices({
-      host: accelerationHost,
+      host: () => accelerationHosts.load(),
       accelerationPreferences,
       recheckAccelerationBundle,
       routing: accelerationRouting,
@@ -2505,9 +2524,9 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('acceleration', () => {
       void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
     })
-    // 等宿主建好再放：退出时加速文件还没读完的，读完建出来的那个照样放掉。
+    // 建好了的放掉；退出时加速文件还没读完的，读完建出来的那个照样放掉；一次都没用到的不为它去读文件。
     quitCleanup.add('acceleration-host', () => {
-      void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)
+      accelerationHosts.dispose()
     })
     quitCleanup.add('runtime-log-hooks', () => {
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')
