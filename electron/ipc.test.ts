@@ -250,6 +250,7 @@ function updaterStub(): UpdaterService {
     download: vi.fn(async () => state),
     install: vi.fn(() => ({ accepted: true as const })),
     setServiceStatus: vi.fn(),
+    restoreServiceSwitches: vi.fn(),
     setLaunchInstallNotice: vi.fn(),
     setInstallNeedsAdminPassword: vi.fn(),
     setIdleInstall: vi.fn(),
