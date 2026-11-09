@@ -25,7 +25,7 @@ import {
   type InputVideoTrack,
   type WrappedCanvas,
 } from 'mediabunny'
-import { layoutVideoStudioCaption, paintVideoStudioCaption, videoStudioCaptionFont } from './captions'
+import { layoutVideoStudioCaption, paintVideoStudioCaption, videoStudioCaptionFont, type VideoStudioCaptionStyle } from './captions'
 import { videoStudioMusicUnreadableMessage, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult, type VideoStudioComposeStage } from './compose-protocol'
 import { chooseVideoStudioEncoding, type VideoStudioEncodeProbe } from './encoding'
 import { isVideoStudioAbort, throwIfVideoStudioAborted, VideoStudioError } from './errors'
@@ -35,6 +35,7 @@ import {
   buildVideoStudioRenderPlan,
   videoStudioAudioChannels,
   videoStudioAudioSampleRate,
+  videoStudioFadeLevel,
   videoStudioSamplesPerFrame,
   videoStudioSourceFrameTimes,
   type VideoStudioRenderPlan,
@@ -168,6 +169,7 @@ async function renderSegmentFrames(
   clip: ReadClip,
   segment: VideoStudioSegment,
   plan: VideoStudioRenderPlan,
+  captionStyle: VideoStudioCaptionStyle,
   context: OffscreenCanvasRenderingContext2D,
   source: CanvasSource,
   onFrame: () => void,
@@ -178,7 +180,7 @@ async function renderSegmentFrames(
   // lands upright. Two pooled canvases are enough: each one is drawn onto the
   // output canvas before the next frame is requested.
   const sink = new CanvasSink(clip.video, { width: plan.width, height: plan.height, fit: plan.fit, poolSize: 2 })
-  const caption = segment.caption ? layoutVideoStudioCaption(segment.caption, plan, captionMeasure(context)) : null
+  const caption = segment.caption ? layoutVideoStudioCaption(segment.caption, plan, captionMeasure(context), captionStyle) : null
   const step = 1 / plan.frameRate
   let previous: WrappedCanvas | null = null
   let index = 0
@@ -189,6 +191,13 @@ async function renderSegmentFrames(
     context.fillRect(0, 0, plan.width, plan.height)
     if (current) context.drawImage(current.canvas, 0, 0, plan.width, plan.height)
     if (caption) paintVideoStudioCaption(context, caption)
+    // 淡入淡出：字幕画好以后整张盖一层黑，字幕和画面一起淡。
+    const level = videoStudioFadeLevel(segment, index + 0.5)
+    if (level < 1) {
+      context.globalAlpha = 1 - level
+      context.fillRect(0, 0, plan.width, plan.height)
+      context.globalAlpha = 1
+    }
     await source.add((segment.firstFrame + index) * step, step)
     previous = current
     index += 1
@@ -218,6 +227,15 @@ async function addSegmentAudio(
       const data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: 'f32' }) / 4)
       sample.copyTo(data, { planeIndex: 0, format: 'f32' })
       if (gain < 1) for (let index = 0; index < data.length; index += 1) data[index] *= gain
+      if (segment.fadeInFrames || segment.fadeOutFrames) {
+        // 跟画面同一条淡入淡出：按每个采样点落在成片上的时间，换成这一段里的第几帧（带小数）去取。
+        const channels = sample.numberOfChannels
+        const segmentStart = sample.timestamp + outputOffset - segment.firstFrame / plan.frameRate
+        for (let frame = 0; frame < sample.numberOfFrames; frame += 1) {
+          const level = videoStudioFadeLevel(segment, (segmentStart + frame / sample.sampleRate) * plan.frameRate)
+          if (level < 1) for (let channel = 0; channel < channels; channel += 1) data[frame * channels + channel] *= level
+        }
+      }
       await assembler.add({
         data,
         frameCount: sample.numberOfFrames,
@@ -320,10 +338,11 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
       })
       : null
 
+    const captionStyle = { size: request.options.captionSize, position: request.options.captionPosition }
     let framesDone = 0
     for (const segment of plan.segments) {
       const clip = clips[segment.clipIndex]
-      await renderSegmentFrames(clip, segment, plan, context, videoSource, () => {
+      await renderSegmentFrames(clip, segment, plan, captionStyle, context, videoSource, () => {
         framesDone += 1
         report('rendering', framesDone / plan.frameCount)
       }, signal)

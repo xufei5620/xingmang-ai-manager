@@ -125,6 +125,61 @@ test('drops the hidden lead-in of a clip whose first frames are stamped before z
   await page.close()
 })
 
+test('dips to black between shots and fades out at the end, picture and sound together', async () => {
+  const { page, errors } = await open()
+  const summary = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const toned = (color) => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color, tone: { frequency: 440, channels: 2 } })
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30 }
+    const clips = async () => [{ data: await toned('#ff0000') }, { data: await toned('#0000ff') }]
+    const faded = await harness.compose({ clips: await clips(), options: { ...options, transition: 'fade', fadeOut: true } }, { worker: true })
+    const cut = await harness.compose({ clips: await clips(), options })
+    const probe = {
+      // 第一段中间、换段前最后一帧、换段后第一帧、第二段中间、片尾最后一帧。
+      colors: [{ time: 1, x: 427, y: 240 }, { time: 1.98, x: 427, y: 240 }, { time: 2.02, x: 427, y: 240 }, { time: 3, x: 427, y: 240 }, { time: 3.98, x: 427, y: 240 }],
+      loudness: [{ from: 0.5, to: 1.5 }, { from: 1.96, to: 2.04 }, { from: 3.94, to: 4 }],
+    }
+    return { duration: faded.duration, faded: await harness.inspect(faded.data, probe), cut: await harness.inspect(cut.data, probe) }
+  })
+  assert.deepEqual(errors, [])
+  near(summary.duration, 4, 0.01, 'fades do not change the length')
+  const [middle, beforeCut, afterCut, second, end] = summary.faded.colors
+  closeColor(middle, [255, 0, 0], 'first shot in full')
+  closeColor(beforeCut, [0, 0, 0], 'first shot has dipped to black')
+  closeColor(afterCut, [0, 0, 0], 'second shot comes up from black')
+  closeColor(second, [0, 0, 255], 'second shot in full')
+  closeColor(end, [0, 0, 0], 'the film fades out')
+  const [loud, atCut, atEnd] = summary.faded.loudness
+  assert.ok(atCut < loud / 3, `the sound dips with the picture between shots (${loud} → ${atCut})`)
+  assert.ok(atEnd < loud / 5, `the sound fades out with the film (${loud} → ${atEnd})`)
+  // Without fades the old straight cut stays exactly as it was.
+  closeColor(summary.cut.colors[1], [255, 0, 0], 'straight cut keeps the last frame')
+  closeColor(summary.cut.colors[4], [0, 0, 255], 'no fade at the end unless asked')
+  assert.ok(summary.cut.loudness[2] > summary.cut.loudness[0] / 2, 'no sound fade unless asked')
+  await page.close()
+})
+
+test('prints the caption at the size and place asked for', async () => {
+  const { page, errors } = await open()
+  const summary = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 25 }
+    const film = async (style) => {
+      const clips = [{ data: await harness.makeClip({ width: 320, height: 240, frameRate: 25, seconds: 1, color: '#0000ff' }), caption: '字幕大小位置' }]
+      const result = await harness.compose({ clips, options: { ...options, ...style } })
+      return (await harness.inspect(result.data, { bright: [{ time: 0.5, top: 0, bottom: 160 }, { time: 0.5, top: 160, bottom: 320 }, { time: 0.5, top: 320, bottom: 480 }] })).bright
+    }
+    return { plain: await film({}), top: await film({ captionPosition: 'top' }), middle: await film({ captionPosition: 'middle' }), small: await film({ captionSize: 'small' }), large: await film({ captionSize: 'large' }) }
+  })
+  assert.deepEqual(errors, [])
+  const [plainTop, plainMiddle, plainBottom] = summary.plain
+  assert.ok(plainBottom > 50 && plainTop === 0 && plainMiddle === 0, `by default the caption sits at the bottom (${summary.plain})`)
+  assert.ok(summary.top[0] > 50 && summary.top[2] === 0, `at the top when asked (${summary.top})`)
+  assert.ok(summary.middle[1] > 50 && summary.middle[0] === 0 && summary.middle[2] === 0, `in the middle when asked (${summary.middle})`)
+  assert.ok(summary.small[2] < plainBottom && plainBottom < summary.large[2], `small, medium and large grow in that order (${summary.small[2]}, ${plainBottom}, ${summary.large[2]})`)
+  await page.close()
+})
+
 test('lays a song under the film, starts it over when it runs out and fades it out at the end', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
@@ -318,6 +373,10 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   await page.getByTestId('video-result-folder').click()
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
   assert.deepEqual(await studioCalls(page, 'folder'), ['ai-output'])
+  // 另存为：对话框里默认用片名当文件名（主进程再洗一遍）。
+  await page.getByTestId('video-result-save').click()
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'save'))
+  assert.deepEqual(await studioCalls(page, 'save'), [{ assetId: opened, suggestedName: '回家的猫' }])
   assert.equal(await page.getByTestId('video-error').count(), 0)
 
   // 重开页面：分镜、片段和成片都还在，没有再发任何付费请求。
@@ -776,6 +835,230 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   await page.reload()
   await page.getByTestId('video-shot-image-preview-0').waitFor()
   assert.equal(await page.getByTestId('video-shot-image-1').textContent(), '用一张图开头')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 「让 AI 画一张」：走对话页出图那条（这里是假的桥），画好的图和自己选的图一样当这一镜的开头；停下、没画出来、余额不够各有去处。
+test('draws a shot picture with AI before paying for the clip, and starts the clip from it', async () => {
+  const { page, errors } = await openStudio('?balance=12.5')
+  await page.locator('[data-testid="video-image-model"][data-model="gpt-image-2"]').waitFor()
+  await page.waitForFunction(() => window.videoStudioPage.balance() === 12.5)
+  await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }] })
+  const [first, second] = ['d', 'e'].map((letter) => letter.repeat(43))
+  const draw = page.getByTestId('video-shot-draw-0')
+  assert.equal(await draw.textContent(), '让 AI 画一张')
+  assert.equal(await draw.getAttribute('title'), '按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费')
+
+  await draw.click()
+  const confirm = page.getByTestId('video-confirm')
+  await confirm.getByText('画一张镜头图？').waitFor()
+  await confirm.getByText('用「gpt-image-2」按第 1 个镜头的画面描述画一张图，单独计费。当前余额 $12.50。', { exact: true }).waitFor()
+  await confirm.getByText('中途停下的话，已经交给服务端的这一张照样扣费。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '开始画' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  const [request] = await studioCalls(page, 'image')
+  // 竖屏 9:16 按 720p 出图；画质不写，用模型缺省最便宜的那一档。
+  assert.deepEqual({ ...request, requestId: typeof request.requestId }, { requestId: 'string', group: '图片模型', model: 'gpt-image-2', prompt: '水杯在桌上', size: '720x1280' })
+
+  // 画着的时候：这一镜的描述、出视频、删都不让动，也不能整批生成；别的镜头照样能画。
+  const row = page.getByTestId('video-shot-0')
+  await row.getByText('正在画图').waitFor()
+  assert.equal(await page.getByTestId('video-shot-draw-stop-0').textContent(), '停止画图')
+  for (const id of ['video-shot-prompt-0', 'video-shot-generate-0', 'video-shot-remove-0', 'video-generate-all', 'video-plan']) assert.equal(await page.getByTestId(id).isDisabled(), true, id)
+  assert.equal(await page.getByTestId('video-shot-image-0').count(), 0)
+
+  await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [request.requestId, first])
+  // 假桥里的作品库地址打不开，缩略图会退成底色；换上的是哪一张，最后出视频时看请求。
+  await page.getByTestId('video-shot-image-thumb-0').waitFor()
+  assert.equal(await row.getByText('正在画图').count(), 0)
+  assert.equal(await draw.textContent(), '再画一张')
+
+  // 再画一张，中途停下：已经画好的那张留着，不报错。
+  await draw.click()
+  await confirm.getByText('再画一张？').waitFor()
+  await confirm.getByText('会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '再画一张' }).click()
+  await page.getByTestId('video-shot-draw-stop-0').click()
+  await draw.waitFor()
+  assert.equal((await studioCalls(page, 'cancel-image')).length, 1)
+  assert.equal(await page.getByTestId('video-shot-image-thumb-0').count(), 1)
+  assert.equal(await page.getByTestId('video-shot-draw-error-0').count(), 0)
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+
+  // 第二镜没画出来：原因写在这一镜下面，再画一次就清掉。
+  await page.getByTestId('video-shot-draw-1').click()
+  await confirm.getByRole('button', { name: '开始画' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  let [pending] = await page.evaluate(() => window.videoStudioPage.pendingDrawings())
+  assert.equal(pending.prompt, '倒水')
+  await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '图片没画出来：描述里有不能画的内容'), pending.requestId)
+  assert.equal(await page.getByTestId('video-shot-draw-error-1').textContent(), '图片没画出来：描述里有不能画的内容')
+
+  // 余额不够：照页面顶上那条说，带「去充值」，这一镜下面不另写。
+  await page.getByTestId('video-shot-draw-1').click()
+  await confirm.getByRole('button', { name: '开始画' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
+  pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
+  await page.evaluate((requestId) => window.videoStudioPage.failDrawing(requestId, '当前账号余额不足，充值后再试就行，不用重新登录，也不用重写密钥'), pending.requestId)
+  await page.getByTestId('video-error').getByRole('button', { name: '去充值' }).waitFor()
+  assert.equal(await page.getByTestId('video-shot-draw-error-1').count(), 0)
+
+  await page.getByTestId('video-shot-draw-1').click()
+  await confirm.getByRole('button', { name: '开始画' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingDrawings().length === 1)
+  pending = (await page.evaluate(() => window.videoStudioPage.pendingDrawings()))[0]
+  await page.evaluate(([requestId, assetId]) => window.videoStudioPage.finishDrawing(requestId, assetId), [pending.requestId, second])
+  await page.getByTestId('video-shot-image-thumb-1').waitFor()
+
+  // 重开页面画好的图还在，拿去出视频就从这两张图开头。
+  await page.reload()
+  await page.getByTestId('video-shot-image-thumb-0').waitFor()
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  assert.deepEqual((await studioCalls(page, 'generate')).map((input) => input.imageAssetIds), [[first], [second]])
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 剪头剪尾：每段开头、结尾按档剪掉几秒，拼出来的成片跟着短；换上新片段时清掉，重开页面还在。
+test('trims the start and end of each clip into the joined film, forgets the trim with a new clip and keeps it after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '早餐', { title: '早餐', shots: [{ prompt: '煎蛋' }, { prompt: '咖啡' }] })
+  assert.equal(await page.getByTestId('video-shot-trim-start-0').count(), 0)
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const requests = await studioCalls(page, 'generate')
+  await page.evaluate(([red, blue]) => Promise.all([window.videoStudioPage.finishClip(red, '#ff0000', false, 3), window.videoStudioPage.finishClip(blue, '#0000ff', false, 3)]), requests.map((input) => input.requestId))
+  await page.getByTestId('video-shot-trim-start-1').waitFor()
+  // 三秒的片段剪完至少留一秒：一头最多剪 2 秒，另一头剪了以后跟着少。
+  assert.deepEqual(await page.getByTestId('video-shot-trim-start-0').locator('option').allTextContents(), ['不剪', '0.5 秒', '1 秒', '1.5 秒', '2 秒'])
+  await page.getByTestId('video-shot-trim-start-0').selectOption('1')
+  await page.getByTestId('video-shot-trim-end-1').selectOption('0.5')
+  assert.deepEqual(await page.getByTestId('video-shot-trim-end-0').locator('option').allTextContents(), ['不剪', '0.5 秒', '1 秒'])
+  await page.getByText('共约 11 秒').waitFor()
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const inspected = await page.evaluate(() => window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { colors: [{ time: 1.5, x: 360, y: 640 }, { time: 3, x: 360, y: 640 }] }))
+  near(inspected.videoDuration, 4.5, 0.1, 'trimmed film duration')
+  closeColor(inspected.colors[0], [255, 0, 0], 'first shot keeps its last two seconds')
+  closeColor(inspected.colors[1], [0, 0, 255], 'second shot follows')
+
+  // 剪的长短一变，成片就对不上了，不再挂着。
+  await page.getByTestId('video-shot-trim-end-1').selectOption('0')
+  assert.equal(await page.getByTestId('video-result').count(), 0)
+
+  // 重开页面剪掉的还在。
+  await page.reload()
+  await page.locator('[data-testid="video-shot-trim-start-0"]').waitFor()
+  assert.equal(await page.getByTestId('video-shot-trim-start-0').inputValue(), '1')
+  assert.equal(await page.getByTestId('video-shot-trim-end-1').inputValue(), '0')
+
+  // 重新生成第一段：新片段从头用起，剪掉的清零。
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  await page.getByTestId('video-shot-generate-0').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '重新生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  // 重新生成的时候还是旧片段，剪不了。
+  assert.equal(await page.getByTestId('video-shot-trim-start-0').isDisabled(), true)
+  const [again] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff00', false, 3), again.requestId)
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-trim-start-0"]')?.value === '0')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 镜头之间淡入淡出、结尾淡出：缺省直接切、不淡；选了以后拼出来的成片跟着淡，重开页面还在。
+test('fades between shots and at the end of the joined film once chosen, and keeps the choice after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '日落', { title: '日落', shots: [{ prompt: '太阳' }, { prompt: '海面' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const requests = await studioCalls(page, 'generate')
+  await page.evaluate(([red, blue]) => Promise.all([window.videoStudioPage.finishClip(red, '#ff0000'), window.videoStudioPage.finishClip(blue, '#0000ff')]), requests.map((input) => input.requestId))
+  assert.equal(await page.getByTestId('video-transition').inputValue(), 'cut')
+  assert.equal(await page.getByTestId('video-fade-out').getByRole('switch').getAttribute('aria-checked'), 'false')
+  await page.getByTestId('video-transition').selectOption('fade')
+  await page.getByTestId('video-fade-out').getByRole('switch').click()
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const inspected = await page.evaluate(() => window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { colors: [{ time: 0.3, x: 360, y: 640 }, { time: 0.98, x: 360, y: 640 }, { time: 1.98, x: 360, y: 640 }] }))
+  closeColor(inspected.colors[0], [255, 0, 0], 'first shot in full')
+  closeColor(inspected.colors[1], [0, 0, 0], 'dips to black before the second shot')
+  closeColor(inspected.colors[2], [0, 0, 0], 'fades out at the end')
+
+  await page.reload()
+  await page.getByTestId('video-transition').waitFor()
+  assert.equal(await page.getByTestId('video-transition').inputValue(), 'fade')
+  assert.equal(await page.getByTestId('video-fade-out').getByRole('switch').getAttribute('aria-checked'), 'true')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 每个镜头单独定时长：不定就跟「每段时长」；长短不一时确认框说一共多少秒，出片按各自的长短；重开页面还在。
+test('lets one shot be longer than the rest and asks the video model for each length', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '开箱', { title: '开箱', shots: [{ prompt: '拆盒子' }, { prompt: '拿出耳机' }, { prompt: '戴上' }] })
+  assert.equal(await page.getByTestId('video-shot-seconds-0').inputValue(), '6')
+  await page.getByTestId('video-shot-seconds-2').selectOption('10')
+  await page.getByText('3 个镜头 · 共约 22 秒').waitFor()
+  await page.getByTestId('video-generate-all').click()
+  const confirm = page.getByTestId('video-confirm')
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 3 段、共 22 秒，每段单独计费。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+
+  // 改「每段时长」：没单独定的跟着走，定过的不动。
+  await page.getByTestId('video-seconds').selectOption('8')
+  assert.equal(await page.getByTestId('video-shot-seconds-0').inputValue(), '8')
+  assert.equal(await page.getByTestId('video-shot-seconds-2').inputValue(), '10')
+
+  await page.reload()
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  assert.equal(await page.getByTestId('video-shot-seconds-2').inputValue(), '10')
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 3 段、共 26 秒，每段单独计费。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  assert.deepEqual((await studioCalls(page, 'generate')).map((input) => input.seconds), ['8', '8', '10'])
+  // 出着的时候改不了时长：那一单已经按原来的长短交出去了。
+  assert.equal(await page.getByTestId('video-shot-seconds-2').isDisabled(), true)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 字幕大小、位置：关了「加字幕」就不出这两项；选了以后拼出来跟着变，重开页面还在。
+test('moves the burnt-in captions to the top once chosen, and keeps the choice after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '早安', { title: '早安', shots: [{ prompt: '窗外', caption: '早上好' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [request] = await studioCalls(page, 'generate')
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#0000ff'), request.requestId)
+  assert.equal(await page.getByTestId('video-caption-position').inputValue(), 'bottom')
+  assert.equal(await page.getByTestId('video-caption-size').inputValue(), 'medium')
+  await page.getByTestId('video-caption-position').selectOption('top')
+  await page.getByTestId('video-caption-size').selectOption('large')
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const bright = await page.evaluate(async () => (await window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { bright: [{ time: 0.5, top: 0, bottom: 400 }, { time: 0.5, top: 880, bottom: 1280 }] })).bright)
+  assert.ok(bright[0] > 50 && bright[1] === 0, `the caption is printed at the top (${bright})`)
+
+  await page.reload()
+  await page.getByTestId('video-caption-position').waitFor()
+  assert.equal(await page.getByTestId('video-caption-position').inputValue(), 'top')
+  assert.equal(await page.getByTestId('video-caption-size').inputValue(), 'large')
+  // 关了「加字幕」，这两项跟着收起来。
+  await page.getByTestId('video-captions').getByRole('switch').click()
+  assert.equal(await page.getByTestId('video-caption-position').count(), 0)
   assert.deepEqual(errors, [])
   await page.close()
 })

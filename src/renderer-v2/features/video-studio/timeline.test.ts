@@ -6,6 +6,7 @@ import {
   normalizeVideoStudioCaption,
   resolveVideoStudioOutputSize,
   videoStudioAudioSampleRate,
+  videoStudioFadeLevel,
   videoStudioFrameRates,
   videoStudioSamplesPerFrame,
   videoStudioSourceFrameTimes,
@@ -31,12 +32,40 @@ describe('video studio timeline', () => {
     ], options)
     expect(plan).toMatchObject({ width: 1280, height: 720, frameRate: 30, fit: 'cover' })
     expect(plan.segments).toEqual([
-      { clipIndex: 0, sourceStart: 0, firstFrame: 0, frameCount: 150, caption: '' },
-      { clipIndex: 1, sourceStart: 0, firstFrame: 150, frameCount: 181, caption: '第二段\n字幕' },
-      { clipIndex: 2, sourceStart: 0.52, firstFrame: 331, frameCount: 59, caption: '' },
+      { clipIndex: 0, sourceStart: 0, firstFrame: 0, frameCount: 150, caption: '', fadeInFrames: 0, fadeOutFrames: 0 },
+      { clipIndex: 1, sourceStart: 0, firstFrame: 150, frameCount: 181, caption: '第二段\n字幕', fadeInFrames: 0, fadeOutFrames: 0 },
+      { clipIndex: 2, sourceStart: 0.52, firstFrame: 331, frameCount: 59, caption: '', fadeInFrames: 0, fadeOutFrames: 0 },
     ])
     expect(plan.frameCount).toBe(390)
     expect(plan.duration).toBe(13)
+  })
+
+  it('fades between shots and at the end of the film only when asked, never eating a short shot', () => {
+    const clips = [{ start: 0, end: 5 }, { start: 0, end: 0.6 }, { start: 0, end: 3 }]
+    const fades = (extra: Partial<typeof options>) => buildVideoStudioRenderPlan(clips, { ...options, ...extra }).segments.map((segment) => [segment.fadeInFrames, segment.fadeOutFrames])
+    expect(fades({})).toEqual([[0, 0], [0, 0], [0, 0]])
+    // 0.4 s at 30 fps is 12 frames; the 0.6 s shot (18 frames) gives each end at most a third of itself.
+    expect(fades({ transition: 'fade' })).toEqual([[0, 12], [6, 6], [12, 0]])
+    expect(fades({ fadeOut: true })).toEqual([[0, 0], [0, 0], [0, 30]])
+    expect(fades({ transition: 'fade', fadeOut: true })).toEqual([[0, 12], [6, 6], [12, 30]])
+    // A single short shot fades out over at most half of itself.
+    expect(buildVideoStudioRenderPlan([{ start: 0, end: 1 }], { ...options, fadeOut: true }).segments[0].fadeOutFrames).toBe(15)
+    // @ts-expect-error A transition the engine does not know, as a poisoned request would send it.
+    expect(() => buildVideoStudioRenderPlan(clips, { ...options, transition: 'wipe' })).toThrow('不支持这种转场')
+  })
+
+  it('tells how bright a frame or a sound sample is inside its fades', () => {
+    const segment = { frameCount: 60, fadeInFrames: 10, fadeOutFrames: 20 }
+    expect(videoStudioFadeLevel(segment, 0)).toBe(0)
+    expect(videoStudioFadeLevel(segment, 5)).toBe(0.5)
+    expect(videoStudioFadeLevel(segment, 10)).toBe(1)
+    expect(videoStudioFadeLevel(segment, 40)).toBe(1)
+    expect(videoStudioFadeLevel(segment, 50)).toBe(0.5)
+    expect(videoStudioFadeLevel(segment, 60)).toBe(0)
+    // Out of range positions clamp instead of going negative or above one.
+    expect(videoStudioFadeLevel(segment, -3)).toBe(0)
+    expect(videoStudioFadeLevel(segment, 61)).toBe(0)
+    expect(videoStudioFadeLevel({ frameCount: 60, fadeInFrames: 0, fadeOutFrames: 0 }, 30)).toBe(1)
   })
 
   it('keeps the audio on a whole number of samples per frame for every frame rate', () => {

@@ -208,6 +208,46 @@ function relocatedDocuments(root: string): { home: string; documents: string } {
   return { home, documents }
 }
 
+describe('AiAudioAssetStore lookup by identifier', () => {
+  function accountWithDays(days: number): string {
+    const outputRoot = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-lookup-')))
+    roots.push(outputRoot)
+    for (let day = 0; day < days; day += 1) {
+      const directory = path.join(outputRoot, 'user-7', new Date(Date.UTC(2026, 0, 1) + day * 86_400_000).toISOString().slice(0, 10))
+      fs.mkdirSync(directory, { recursive: true })
+      fs.writeFileSync(path.join(directory, `xingmang-${String(day).padStart(2, '0').padEnd(43, 'x')}.mp3`), mp3())
+    }
+    return outputRoot
+  }
+
+  async function syncLstatsToMiss(outputRoot: string): Promise<number> {
+    const lstatSync = vi.spyOn(fs, 'lstatSync')
+    try {
+      const store = new AiAudioAssetStore({ outputRoot })
+      await expect(store.readOwned(7, 'M'.repeat(43))).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
+      await expect(store.resolveOwnedFilePath(7, 'M'.repeat(43))).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
+      return lstatSync.mock.calls.length
+    } finally {
+      lstatSync.mockRestore()
+    }
+  }
+
+  it('misses at the same synchronous cost however many days the account has', async () => {
+    expect(await syncLstatsToMiss(accountWithDays(40))).toBe(await syncLstatsToMiss(accountWithDays(1)))
+  })
+
+  it('reads audio removed outside the app as missing instead of a raw file-system error', async () => {
+    const fixtures = audioFixtureRoot()
+    const store = new AiAudioAssetStore({ outputRoot: accountWithDays(3) })
+    const asset = await store.storeLocalFile(7, path.join(fixtures, '8月14日.wav'))
+    await expect(store.readOwned(7, asset.assetId)).resolves.toMatchObject({ asset: { mimeType: 'audio/wav' } })
+    fs.rmSync(await store.resolveOwnedFilePath(7, asset.assetId))
+
+    await expect(store.readOwned(7, asset.assetId)).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
+    await expect(store.resolveOwnedFilePath(7, asset.assetId)).rejects.toThrow(/^AI 音频资产不存在或无权访问$/)
+  })
+})
+
 describe('AiAudioAssetStore on a relocated documents folder', () => {
   afterEach(() => setRelocatedFolderPolicy(null))
 

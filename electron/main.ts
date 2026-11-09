@@ -3010,6 +3010,8 @@ if (!hasSingleInstanceLock) {
         Promise.resolve().then(() => crashReporter.flush()),
         Promise.resolve().then(() => acceleration?.stopAll()),
         Promise.resolve().then(() => chatHistoryStore.idle()),
+        // 视频剪辑的分镜（含刚交出去那一单的请求号）在网页存储里，正常退出才会补写；这里退得急，先让它落盘（KR-4）。
+        Promise.resolve().then(() => { if (!mainWindow.isDestroyed()) mainWindow.webContents.session.flushStorageData() }),
       ]).then(() => runtimeLog.idle())
       void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
         try {

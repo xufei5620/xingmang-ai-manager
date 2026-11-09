@@ -1243,9 +1243,14 @@ describe('registerIpcHandlers', () => {
       await expect(generate(trustedEvent(undefined, 17), { ...input, projectId: 'p' })).rejects.toThrow('视频请求包含未知字段')
       expect(videoService.generate).not.toHaveBeenCalled()
 
-      const event = trustedEvent(undefined, 17)
+      // The page wrote this shot's request id to localStorage just before calling; it reaches disk before the paid
+      // request leaves, so a crash or power cut right after submitting cannot lose the order that was paid for.
+      const flushStorageData = vi.fn()
+      const event = { ...trustedEvent(undefined, 17), sender: { ...trustedEvent(undefined, 17).sender, session: { flushStorageData } } }
       await expect(generate(event, input)).resolves.toEqual(clip)
       expect(videoService.generate).toHaveBeenCalledWith(17, { ...input, expectedUserId: 7 }, expect.any(Object))
+      expect(flushStorageData).toHaveBeenCalledTimes(1)
+      expect(flushStorageData.mock.invocationCallOrder[0]).toBeLessThan(videoService.generate.mock.invocationCallOrder[0])
       expect(event.sender.send.mock.calls).toEqual([
         ['video:progress', { requestId: 'video-1', stage: 'processing' }],
         ['video:progress', { requestId: 'video-1', stage: 'processing', value: 42, delayed: true }],
@@ -1388,7 +1393,11 @@ describe('registerIpcHandlers', () => {
       expect(electronMocks.openPath).toHaveBeenCalledWith(filePath)
 
       await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId)).resolves.toEqual({ saved: true })
-      expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
+      expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function), undefined)
+      // The film title only becomes the dialog's default file name, washed clean of anything that reads as a path.
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId, '..\\回家的猫/第 1 集')).resolves.toEqual({ saved: true })
+      expect(videoAssets.saveAs).toHaveBeenLastCalledWith(7, clipId, expect.any(Function), '回家的猫 第 1 集.mp4')
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId, { path: 'C:\\Windows' })).rejects.toThrow('另存的文件名格式错误')
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
       dispose()
     })

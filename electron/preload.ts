@@ -489,7 +489,7 @@ const xingmangApi: XingmangApi = {
   pickVideoStudioMusic: () => invoke('pickVideoStudioMusic'),
   readVideoStudioMusic: (assetId) => invoke('readVideoStudioMusic', assetId),
   openAiVideo: (assetId) => invoke('openAiVideo', assetId),
-  saveAiVideo: (assetId) => invoke('saveAiVideo', assetId),
+  saveAiVideo: (assetId, suggestedName) => suggestedName === undefined ? invoke('saveAiVideo', assetId) : invoke('saveAiVideo', assetId, suggestedName),
   readAiChatHistory: (scope) => invoke('readAiChatHistory', scope),
   writeAiChatHistory: (input) => invoke('writeAiChatHistory', input),
   confirmAiChatHistoryFlushed: (requestId) => invoke('confirmAiChatHistoryFlushed', requestId),

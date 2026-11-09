@@ -1339,7 +1339,8 @@ export interface XingmangInvokeContract {
   readVideoStudioMusic: IpcInvokeDefinition<'video-studio:read-music', [assetId: string], Uint8Array>
   /** 用电脑上默认的播放器打开作品库里的一段视频。 */
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
-  saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string], { saved: boolean }>
+  /** suggestedName：系统对话框里默认的文件名（视频剪辑页传片名），主进程洗成干净的文件名再用。 */
+  saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string, suggestedName?: string], { saved: boolean }>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
   /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */

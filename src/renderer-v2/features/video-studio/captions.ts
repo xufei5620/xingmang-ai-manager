@@ -23,6 +23,25 @@ export interface VideoStudioCaptionPainter {
 
 export type VideoStudioTextMeasure = (text: string, fontSize: number) => number
 
+export type VideoStudioCaptionSize = 'small' | 'medium' | 'large'
+export type VideoStudioCaptionPosition = 'bottom' | 'middle' | 'top'
+export const videoStudioCaptionSizes: readonly VideoStudioCaptionSize[] = ['small', 'medium', 'large']
+export const videoStudioCaptionPositions: readonly VideoStudioCaptionPosition[] = ['bottom', 'middle', 'top']
+/** 字幕大小、放哪儿；缺省中号、底部，和加这一项以前印出来的一模一样。 */
+export interface VideoStudioCaptionStyle {
+  size?: VideoStudioCaptionSize
+  position?: VideoStudioCaptionPosition
+}
+const captionScales: Readonly<Record<VideoStudioCaptionSize, number>> = { small: 0.8, medium: 1, large: 1.25 }
+
+export function isVideoStudioCaptionSize(value: unknown): value is VideoStudioCaptionSize {
+  return typeof value === 'string' && (videoStudioCaptionSizes as readonly string[]).includes(value)
+}
+
+export function isVideoStudioCaptionPosition(value: unknown): value is VideoStudioCaptionPosition {
+  return typeof value === 'string' && (videoStudioCaptionPositions as readonly string[]).includes(value)
+}
+
 // 字体列表先放三个平台自带的中文黑体，最后才退到 sans-serif；Linux 上没装中文字体时
 // 由系统自己找替代字形。
 const captionFontFamily = '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC", sans-serif'
@@ -109,17 +128,19 @@ function ellipsize(text: string, maxWidth: number, measure: (text: string) => nu
   return `${chars.join('').trimEnd()}…`
 }
 
-// 字号按短边算，横竖屏看起来一样大。竖屏底下常被平台的按钮和文案压住，字幕抬到
-// 下五分之一的位置；横屏贴底留一点边。放不下就缩两次字号，再放不下就截断加省略号。
-export function layoutVideoStudioCaption(text: string, frame: { width: number, height: number }, measure: VideoStudioTextMeasure): VideoStudioCaptionLayout | null {
+// 字号按短边算，横竖屏看起来一样大；小号、大号按中号的 0.8、1.25 倍。放在底部时，竖屏底下常被平台的按钮和文案压住，
+// 字幕抬到下五分之一的位置，横屏贴底留一点边；放在顶部时竖屏让开状态栏和标题（上八分之一），横屏贴顶留一点边；
+// 放在中间就整块居中。放不下就缩两次字号，再放不下就截断加省略号。
+export function layoutVideoStudioCaption(text: string, frame: { width: number, height: number }, measure: VideoStudioTextMeasure, style: VideoStudioCaptionStyle = {}): VideoStudioCaptionLayout | null {
   const paragraphs = text.split('\n').map((line) => line.trim()).filter(Boolean)
   if (!paragraphs.length) return null
   const portrait = frame.height > frame.width
   const maxLines = portrait ? 3 : 2
   const maxWidth = frame.width * 0.88
   const shortSide = Math.min(frame.width, frame.height)
-  const minFontSize = Math.max(12, Math.round(shortSide * 0.035))
-  let fontSize = Math.max(minFontSize, Math.round(shortSide * 0.055))
+  const scale = captionScales[style.size ?? 'medium']
+  const minFontSize = Math.max(12, Math.round(shortSide * 0.035 * scale))
+  let fontSize = Math.max(minFontSize, Math.round(shortSide * 0.055 * scale))
   let lines: string[] = []
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const size = fontSize
@@ -132,13 +153,18 @@ export function layoutVideoStudioCaption(text: string, frame: { width: number, h
     lines = [...lines.slice(0, maxLines - 1), ellipsize(lines[maxLines - 1], maxWidth, (value) => measure(value, size))]
   }
   const lineHeight = Math.round(fontSize * 1.3)
-  const lastBaseline = Math.round(frame.height - frame.height * (portrait ? 0.2 : 0.08))
+  const blockHeight = (lines.length - 1) * lineHeight
+  const position = style.position ?? 'bottom'
+  // 基线大约在字的下沿：顶部第一行往下让一个字高，中间那块按字身的中线（基线上方约 0.35 个字高）对齐画面中线。
+  const firstBaseline = position === 'top' ? Math.round(frame.height * (portrait ? 0.125 : 0.08)) + fontSize
+    : position === 'middle' ? Math.round(frame.height / 2 - blockHeight / 2 + fontSize * 0.35)
+    : Math.round(frame.height - frame.height * (portrait ? 0.2 : 0.08)) - blockHeight
   return {
     font: videoStudioCaptionFont(fontSize),
     fontSize,
     lines,
     centerX: frame.width / 2,
-    baselines: lines.map((_, index) => lastBaseline - (lines.length - 1 - index) * lineHeight),
+    baselines: lines.map((_, index) => firstBaseline + index * lineHeight),
     strokeWidth: Math.max(2, Math.round(fontSize * 0.14)),
   }
 }

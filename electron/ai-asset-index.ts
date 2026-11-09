@@ -29,6 +29,11 @@ export interface AiAssetIndexOptions {
   filePattern: RegExp
   label: string
   maximum?: number
+  /**
+   * Tells the owning store where each indexed file lives, so the page it is
+   * about to hydrate needs no second search. The path never leaves the store.
+   */
+  onFile?: (assetId: string, filePath: string) => void
 }
 
 /**
@@ -72,14 +77,16 @@ export async function indexOwnedAssetFiles(options: AiAssetIndexOptions): Promis
       // The same identifier can appear under two date directories after a
       // restore. The newest directory wins because dates sort descending.
       if (seen.has(assetId)) continue
+      const filePath = path.join(directory, file.name)
       let createdAt: string
       try {
-        createdAt = (await fs.promises.lstat(path.join(directory, file.name))).birthtime.toISOString()
+        createdAt = (await fs.promises.lstat(filePath)).birthtime.toISOString()
       } catch {
         // A file removed between readdir and lstat is simply not in the library.
         continue
       }
       seen.add(assetId)
+      options.onFile?.(assetId, filePath)
       entries.push({ assetId, fileName: file.name, extension: match[2], createdAt, mediaType: options.mediaType })
     }
   }

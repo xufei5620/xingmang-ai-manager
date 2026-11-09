@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import { parseCanvasVideoGenerateInput } from '../../canvas-request-parser'
 import {
+  maximumVideoSaveNameLength,
   maximumVideoStudioExportBytes,
   parseAiVideoAssetId,
   parseAiVideoGenerateInput,
+  parseVideoSaveName,
   parseVideoStudioExportBytes,
   parseVideoStudioPlanInput,
 } from './ai-video'
@@ -71,6 +73,20 @@ describe('main window video request parsers', () => {
     ] as const) {
       expect(() => parseVideoStudioPlanInput(input), JSON.stringify(input)).toThrow(message)
     }
+  })
+
+  it('turns a film title into a plain file name for the save dialog and nothing that reads as a path', () => {
+    expect(parseVideoSaveName(undefined)).toBeUndefined()
+    expect(parseVideoSaveName('回家的猫')).toBe('回家的猫.mp4')
+    expect(parseVideoSaveName('  ../../Windows\\System32/回家:的*猫?  ')).toBe('Windows System32 回家 的 猫.mp4')
+    expect(parseVideoSaveName('第 1 集.')).toBe('第 1 集.mp4')
+    // Control characters and the marks that flip text direction (so "evil\u202Egpj.mp4" cannot pass for a picture) are dropped.
+    expect(parseVideoSaveName('a\u0000b\u202Egpj')).toBe('a b gpj.mp4')
+    expect(Array.from(parseVideoSaveName('长'.repeat(150))!)).toHaveLength(maximumVideoSaveNameLength + 4)
+    // Nothing left, or a name Windows keeps for devices, falls back to the stored file name.
+    for (const title of ['', '   ', '...', '<>|', 'CON', 'nul', 'com1', 'LPT9', 'aux.备份']) expect(parseVideoSaveName(title)).toBeUndefined()
+    expect(parseVideoSaveName('CONTROL')).toBe('CONTROL.mp4')
+    for (const value of [42, null, { name: 'x' }, 'x'.repeat(201)]) expect(() => parseVideoSaveName(value)).toThrow('另存的文件名格式错误')
   })
 
   it('takes only well-formed asset ids', () => {

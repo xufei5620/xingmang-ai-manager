@@ -99,7 +99,7 @@
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
 - `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点和视频剪辑页的分镜用，没有窗口、不进并发表，但 `cancelAll`（换账号、退出登录）照样停它。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
 - `ai-image-service.ts` — 生图与改图（multipart `/v1/images/edits`）：用有界队列限并发、可取消，响应体有上限；发请求前先试写保存位置，写不进就在扣费之前停下
-- `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上；同一个任务只查一份、只存一次，视频剪辑页可按原请求号接回（`resumeRequest`）
+- `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上；同一个任务只查一份、只存一次，视频剪辑页可按原请求号接回（`resumeRequest`）；轮询最多等 30 分钟只算醒着的时间（`awakeVideoPollSpan`，合盖、休眠那段不算），到了时限先再查一次，还没好才停，停下时说「暂时查不到视频进度…请勿重复提交」（0.2.24 深查睡眠 S1）
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品；取回成品时另记一笔「请求号 → 片段」（最近 100 条），视频剪辑页重开时按请求号把片段挂回镜头
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + 最后写的 `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写、单文件/总量/账号目录数上限（防被攻破的渲染层换 scope 写满磁盘）；对话数上限与渲染层 `storage.ts` 是有意重复
 - `ai-chat-attachments.ts` — 聊天里附带的图片只从系统选文件框和剪贴板在主进程里取，渲染层给不出任何路径或字节（I15 同一思路）；太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片素材目录
@@ -111,6 +111,7 @@
 - `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入（画布拖进来的，和视频剪辑页「加配乐」选的歌）。视频剪辑页拼好的成片走 `storeComposed`，和出的片段存在一处
 - `video-studio-plan.ts` — 视频剪辑「一句话出片」的分镜：给文字模型的提示词、读回答（多写的镜头只留要的几个，控制字符换空格、超长截断），上限和剪辑页共用一份；零依赖、渲染层能值导入（I6）
 - `ai-asset-index.ts` — 枚举一个账号的全部素材文件而不读任何媒体字节，替代以前"读全文件、最多 500 条"的做法，让搜索和排序面对的是完整结果、只为当前页补元数据
+- `ai-asset-locator.ts` — 按编号找作品在哪个日期文件夹：先问记下的位置（存入、找到过、索引列出的），没有再从最新的日期往回、每个候选一次异步 lstat；只答「在哪」，打开文件前的 I8 全套检查仍由各 store 做
 - `ai-asset-metadata-store.ts` — 素材的逻辑元数据（显示名、收藏、标签、最近使用、来源、生成时的提示词、回收站），每个账号文件夹下 `asset-metadata/` 里按作品编号分 16 个分片（0.2.24 起；之前是单个 `asset-metadata.json`，2 MB / 5,000 条就写满，第一次用到时并进分片、原样改名留作 `.migrated-*.bak` 备份），每片 16 MB，加新信息的写入给回收站留出余量；删除是逻辑删除
 - `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）
 - `ai-asset-protocol.ts` — `xingmang-asset://` 协议处理（image / video / audio / thumb）：每次都在最后一次 await 之后重新核对当前账号再返回，响应 `no-store`，支持单段 Range；主窗口（聊天图片）和画布都靠它显示素材，CSP 只放行这个 scheme

@@ -16,6 +16,7 @@ import {
   parseAiAudioAssetId,
   parseAiVideoAssetId,
   parseAiVideoGenerateInput,
+  parseVideoSaveName,
   parseVideoStudioExportBytes,
   parseVideoStudioPlanInput,
 } from '../parsers/ai-video'
@@ -49,6 +50,19 @@ export function toAiVideoClip(asset: Pick<AiStoredVideoAsset, 'assetId' | 'width
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
     ...(asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
+  }
+}
+
+/**
+ * 视频剪辑页先把这一镜的请求号写进 localStorage，再发 video:generate。Chromium 写 localStorage 会攒几秒才落盘，
+ * 这几秒里强退、断电或蓝屏，重开后这一镜就找不回已经付了钱的那一单，显示「还没生成」（0.2.24 深查 KR-4）。
+ * 交给服务端之前先让这个窗口的网页存储落盘。只是尽力：拿不到会话（窗口刚关）也照旧提交，和以前一样。
+ */
+export function flushPageStorage(sender: WebContents): void {
+  try {
+    sender.session.flushStorageData()
+  } catch {
+    // 落不了盘不拦这一单：页面的请求号已经写进去了，只是少了「立刻落盘」这一层保险。
   }
 }
 
@@ -165,6 +179,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     // 只拦新交出去的；接回上次没等到的（video:resume）照旧，那一段已经扣过钱。
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
+    flushPageStorage(event.sender)
     const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,
       { ...parsed, expectedUserId },
@@ -252,11 +267,13 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await externalShell.openPath(filePath)
   })
 
-  registerTrustedHandler('video:save-as', async (_event, assetId: unknown) => {
+  registerTrustedHandler('video:save-as', async (_event, assetId: unknown, suggestedName: unknown) => {
     const userId = currentUserId()
-    const saved = await videoAssets().saveAs(userId, parseAiVideoAssetId(assetId), () => {
+    const id = parseAiVideoAssetId(assetId)
+    const fileName = parseVideoSaveName(suggestedName)
+    const saved = await videoAssets().saveAs(userId, id, () => {
       if (currentUserId() !== userId) throw new Error('账号已切换，请重新另存')
-    })
+    }, fileName)
     return { saved }
   })
 }

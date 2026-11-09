@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createSharedDirectRetry, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -63,12 +63,12 @@ const macInstallHandoffFor = (client: FakeMacUpdater) => ({
   retryNativeCheck: () => client.nativeCheckForUpdates(),
 })
 
-// Chromium surfaces an unreachable proxy as a structured net error code; the
-// message alone must never be enough to take the session off the proxy.
-const proxyConnectionError = () => Object.assign(
-  new Error('net::ERR_PROXY_CONNECTION_FAILED'),
-  { code: 'ERR_PROXY_CONNECTION_FAILED' },
-)
+// What electron-updater actually rejects with when the proxy is not listening:
+// Electron's net module builds `new Error(netErrorString)` and nothing else
+// (captured from Electron 45.1.0 + electron-updater 6.8.9 against a closed
+// proxy port, for both checkForUpdates and downloadUpdate: a plain Error whose
+// only own keys are `stack` and `message`, no `code`, no `cause`).
+const proxyConnectionError = () => new Error('net::ERR_PROXY_CONNECTION_FAILED')
 
 // 下载好之后要用户点「重启安装」才会装（全面检测 Q42），这里替用户点这一下。
 // 安装没能启动时 install() 会抛错，各用例断言的是之后的快照。
@@ -474,6 +474,82 @@ describe('updater service', () => {
     expect(retryWithoutProxy).toHaveBeenCalledOnce()
     expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
     expect(order).toEqual(['direct', 'request', 'restore'])
+    service.dispose()
+  })
+
+  it('treats the real Electron proxy failure as one even though it carries no code', async () => {
+    const client = new FakeUpdater()
+    const real = proxyConnectionError()
+    expect(Object.getOwnPropertyNames(real).sort()).toEqual(['message', 'stack'])
+    client.checkForUpdates.mockRejectedValueOnce(real)
+    const retryWithoutProxy = vi.fn(async () => {
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+    })
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available', error: null })
+    expect(retryWithoutProxy).toHaveBeenCalledOnce()
+    expect(restoreProxy).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('still accepts the proxy failure when an error carries it as a structured code', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(
+      Object.assign(new Error('proxy connection failed'), { code: 'ERR_PROXY_CONNECTION_FAILED' }),
+    )
+    const retryWithoutProxy = vi.fn(async () => {
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available' })
+    expect(retryWithoutProxy).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it.each([
+    ['a longer message that ends with the code', new Error('请求失败 net::ERR_PROXY_CONNECTION_FAILED')],
+    ['the code without the net:: prefix', new Error('ERR_PROXY_CONNECTION_FAILED')],
+    ['different letter case', new Error('net::err_proxy_connection_failed')],
+    ['surrounding whitespace', new Error(' net::ERR_PROXY_CONNECTION_FAILED\n')],
+    ['a different Chromium proxy error', new Error('net::ERR_TUNNEL_CONNECTION_FAILED')],
+    [
+      'an HTTP error whose body quotes the code',
+      Object.assign(new Error('HttpError: 502 Bad Gateway\n"net::ERR_PROXY_CONNECTION_FAILED"'), { statusCode: 502 }),
+    ],
+    ['a plain object shaped like the Electron error', { message: 'net::ERR_PROXY_CONNECTION_FAILED' }],
+    ['a bare string', 'net::ERR_PROXY_CONNECTION_FAILED'],
+  ])('does not switch to direct mode for %s', async (_label, rejection) => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(rejection)
+    const retryWithoutProxy = vi.fn(async () => {})
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'error' })
+    expect(retryWithoutProxy).not.toHaveBeenCalled()
+    expect(restoreProxy).not.toHaveBeenCalled()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
     service.dispose()
   })
 
@@ -4774,5 +4850,178 @@ describe('retrying a background download that did not finish', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+
+describe('the updater session direct retry shared with the service status file (PX-1)', () => {
+  function recordingSession() {
+    const modes: string[] = []
+    const setProxy = vi.fn(async (mode: 'direct' | 'system') => { modes.push(mode) })
+    return { modes, setProxy }
+  }
+
+  it('switches to direct for a retry and back to the system proxy once it is over', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'system'])
+  })
+
+  it('stays direct until the last of two overlapping retries is over', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    // 下载在直连上重下时，定时读状态文件也撞上代理连不上、也改直连再读一次：先读完的不能把正在直连的下载甩回代理。
+    await shared.retryWithoutProxy()
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'direct'])
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'direct', 'system'])
+  })
+
+  it('still counts a retry whose switch to direct failed, so its restore keeps the pair balanced', async () => {
+    const session = recordingSession()
+    session.setProxy.mockRejectedValueOnce(new Error('setProxy failed'))
+    const shared = createSharedDirectRetry(session.setProxy)
+    await expect(shared.retryWithoutProxy()).rejects.toThrow('setProxy failed')
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct'])
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['direct', 'system'])
+  })
+
+  it('puts the session back on the system proxy when restore is called without a retry', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    await shared.restoreProxy()
+    await shared.retryWithoutProxy()
+    await shared.restoreProxy()
+    expect(session.modes).toEqual(['system', 'direct', 'system'])
+  })
+
+  it('lets the updater service retry its check off the proxy through the shared switch', async () => {
+    const session = recordingSession()
+    const shared = createSharedDirectRetry(session.setProxy)
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      expect(session.modes).toEqual(['direct'])
+      client.emit('update-not-available', updateInfo('1.0.0'))
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy: shared.retryWithoutProxy,
+      restoreProxy: shared.restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available', error: null })
+    expect(session.modes).toEqual(['direct', 'system'])
+    service.dispose()
+  })
+})
+
+describe('a newer version that would not fit on the disk while one is downloaded', () => {
+  const MB = 1024 ** 2
+  const sizedInfo = (version: string) => ({ ...updateInfo(version), files: [{ url: `XingMang-AI-Manager-${version}-Setup.exe`, sha512: 'x', size: 200 * MB }] })
+
+  // 更新目录列着 feed.version，每个版本的安装包 200 MB（下载前要空出 600 MB）。下载落下的是这会儿列着的那一版。
+  function serveSizedFeed(client: FakeUpdater, feed: { version: string }): void {
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('checking-for-update')
+      client.emit('update-available', sizedInfo(feed.version))
+      return { isUpdateAvailable: true }
+    })
+    client.downloadUpdate.mockImplementation(async () => {
+      client.emit('update-downloaded', sizedInfo(feed.version))
+    })
+  }
+
+  it('keeps the downloaded version installable instead of swapping it for one there is no room to download', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveSizedFeed(client, feed)
+    let freeBytes: number | null = 2048 * MB
+    const skipped = vi.fn()
+    const superseded = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      readFreeDiskBytes: async () => freeBytes,
+      diskShortfallSkipped: skipped,
+      downloadedSuperseded: superseded,
+    })
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+
+    feed.version = '1.2.0'
+    freeBytes = 380 * MB
+    const phases: string[] = []
+    service.subscribe((state) => phases.push(`${state.phase} ${state.availableVersion}`))
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null, diskShortfall: null })
+    expect(phases).toEqual([])
+    expect(skipped).toHaveBeenCalledWith({ neededBytes: 600 * MB, freeBytes: 380 * MB }, '1.2.0')
+    expect(superseded).not.toHaveBeenCalled()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    expect(service.install()).toEqual({ accepted: true })
+    service.dispose()
+  })
+
+  it('swaps it at the next scheduled check once there is room again, or when the free space cannot be read', async () => {
+    for (const readable of [true, false]) {
+      const client = new FakeUpdater()
+      const feed = { version: '1.1.0' }
+      serveSizedFeed(client, feed)
+      let freeBytes = 380 * MB
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        readAutoUpdate: () => true,
+        readFreeDiskBytes: async () => {
+          if (!readable && feed.version === '1.2.0') throw new Error('statfs failed')
+          return freeBytes
+        },
+      })
+      freeBytes = 2048 * MB
+      await service.scheduledCheck()
+      feed.version = '1.2.0'
+      freeBytes = 380 * MB
+      if (readable) {
+        await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+        freeBytes = 2048 * MB
+      }
+      // 量不出来照旧当够，跟下载前量盘一样，不能自己变成更新换不上新版本的原因。
+      await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.2.0', error: null })
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      service.dispose()
+    }
+  })
+
+  it('still swaps one that falls short of the minimum, showing how much room the required version needs', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveSizedFeed(client, feed)
+    let freeBytes = 2048 * MB
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      readFreeDiskBytes: async () => freeBytes,
+    })
+    await service.scheduledCheck()
+
+    feed.version = '1.2.0'
+    freeBytes = 380 * MB
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    await vi.waitFor(() => expect(service.getState()).toMatchObject({
+      phase: 'available',
+      availableVersion: '1.2.0',
+      requiredVersion: '1.2.0',
+      diskShortfall: { neededBytes: 600 * MB, freeBytes: 380 * MB },
+    }))
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
   })
 })

@@ -153,8 +153,28 @@ function GateDialog({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     const dialog = ref.current
     if (!dialog) return
+    // Chromium lets a page veto only a couple of Esc close requests in a row; the third cancel event
+    // is no longer cancelable and the <dialog> closes, leaving the outdated version usable until the
+    // app restarts (0.2.24 KB-1). Cancelling the keydown itself keeps the close request from ever being
+    // made. It listens on the document because a click on "立即更新" disables that button and focus can
+    // leave the gate. Esc aimed at a dialog raised above the gate (the support dialog) is left to it:
+    // by the time it bubbles here that dialog has either handled it or let a search field clear itself.
+    const holdEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      const target = event.target
+      if (target instanceof Element && !dialog.contains(target) && target.closest('dialog[open]')) return
+      event.preventDefault()
+    }
+    // Should the browser still close it some other way, the gate goes straight back up.
+    const reopen = () => { if (dialog.isConnected && !dialog.open) dialog.showModal() }
+    document.addEventListener('keydown', holdEscape)
+    dialog.addEventListener('close', reopen)
     if (!dialog.open) dialog.showModal()
-    return () => { if (dialog.open) dialog.close() }
+    return () => {
+      document.removeEventListener('keydown', holdEscape)
+      dialog.removeEventListener('close', reopen)
+      if (dialog.open) dialog.close()
+    }
   }, [])
   return <dialog ref={ref} className="xm-modal xm-dialog xm-dialog-480" data-testid="required-update-gate" tabIndex={-1} aria-modal="true" aria-labelledby="required-update-title"
     onCancel={(event) => event.preventDefault()}>
