@@ -8,7 +8,7 @@ import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
+import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
 import { ParametersDialog } from './ParametersDialog'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
@@ -126,8 +126,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const imagesBlockedMessage = textMode ? noImageModelMessage : noImageEditModelMessage
   const attachTitle = !seesImages ? textMode ? '当前模型看不了图片，换一个能看图的模型才能发图' : '这个模型不能照着图片改，换一个能改图的模型才能加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '加图片（也可以直接粘贴截图）' : '加参考图（也可以直接粘贴截图）'
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const hasImage = [...event.clipboardData.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    if (!hasImage) return
+    if (!shouldPasteScreenshot(event.clipboardData)) return
     // 截图只在主进程从剪贴板里读，这里只负责拦下默认粘贴。
     event.preventDefault()
     if (pending) return

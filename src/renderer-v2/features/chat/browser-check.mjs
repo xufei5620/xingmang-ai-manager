@@ -971,6 +971,29 @@ test('a model that reads images takes picked and pasted screenshots and sends th
   } finally { await page.close() }
 })
 
+// Excel and WPS copy cells as text plus a picture of the table. The composer
+// used to take every such paste as a screenshot and drop the text.
+test('pasting spreadsheet cells keeps the text instead of reading a screenshot', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    function pasteCells(element) {
+      const data = new DataTransfer()
+      data.setData('text/plain', '姓名\t金额\n张三\t12\n')
+      data.setData('text/html', '<table><tr><td>姓名</td><td>金额</td></tr></table>')
+      data.items.add(new File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' }))
+      return element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    }
+    // A synthetic paste never inserts text, so "not cancelled" is what shows the browser keeps its own paste.
+    assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that cannot read images still gets the text')
+    assert.equal(await page.getByText('当前模型看不了图片').count(), 0)
+    await pickModel(page, 'claude-test')
+    assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that reads images still gets the text, not a picture of it')
+    assert.equal((await calls(page, 'paste-image')).length, 0)
+    assert.equal(await page.locator('.chat-draft-image').count(), 0)
+  } finally { await page.close() }
+})
+
 // A long conversation used to re-parse every message's markdown on each key
 // typed into the composer. Counting renders instead of timing them keeps this
 // steady on a slow runner: React's development build stamps actualStartTime on
