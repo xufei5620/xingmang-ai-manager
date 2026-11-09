@@ -6,6 +6,8 @@ import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract
 import { BrandIcon, Button, ChoiceMenu, Confirm, Dialog, Input, Logo, Menu, Pill, SearchInput, Segment, Textarea, useToast } from '../../ui'
 import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
+import { failureWithDetail } from '../../business-common'
+import { exportFailureSentence } from '../../operation-error'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
 import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
@@ -181,7 +183,10 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     try {
       const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
       if (ticket() && result) chat.setNotice('这段对话已存成文本文件')
-    } catch { if (ticket()) chat.setError('这段对话没有导出成功，可以重试') }
+    } catch (cause) {
+      // 没权限、盘满了跟设置页导出同一套说法（D16）；认不出原因的照旧说可以重试。
+      if (ticket()) chat.setError(exportFailureSentence(failureWithDetail(cause)) ?? '这段对话没有导出成功，可以重试')
+    }
   }
   const stop = async () => { const ticket = owner.capture(); setStopping(true); await chat.stop(); if (ticket()) setStopping(false) }
   const reloadHistory = async () => {

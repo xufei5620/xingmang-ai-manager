@@ -1403,6 +1403,33 @@ test('an exported report can be revealed in its folder and says so when it moved
   } finally { await page.close() }
 })
 
+test('an export the chosen folder will not take says to pick another folder or free up the disk, not the install directory (D16)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    // 开了「受控文件夹访问」的桌面：主进程那句经 IPC 过来，是带着通道名的英文原话。
+    await page.evaluate(() => { window.v2Test.fail = 'exportDiagnostics'; window.v2Test.failMessage = "Error invoking remote method 'diagnostics:export': Error: EPERM: operation not permitted, open 'C:\\Users\\fixture\\Desktop\\.xingmang-diagnostics.txt.tmp'" })
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.waitFor()
+    await health.getByRole('button', { name: '导出检查报告', exact: true }).click()
+    const healthNotice = health.locator('.v2-business-notice.is-error')
+    await healthNotice.waitFor()
+    assert.match(await healthNotice.innerText(), /这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。/)
+    assert.doesNotMatch(await healthNotice.innerText(), /安装目录/)
+
+    // 设置页「导出聊天记录和设置」时盘满了：不再说安装用的临时文件夹。
+    await page.evaluate(() => { window.v2Test.fail = 'exportAppData'; window.v2Test.failMessage = "Error invoking remote method 'data-transfer:export': Error: ENOSPC: no space left on device, write" })
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-export').click()
+    const settingsNotice = settings.locator('.v2-business-notice.is-error')
+    await settingsNotice.waitFor()
+    assert.match(await settingsNotice.innerText(), /这块盘满了，清出一些空间，或者换一块盘再导出。/)
+    assert.doesNotMatch(await settingsNotice.innerText(), /临时文件夹|安装目录/)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the home recent card opens a record folder and says so when it cannot', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1')
   try {

@@ -33,6 +33,13 @@ function noRecheck() {}
 let failHistoryWrites = false
 // 主进程读记录失败（比如被别的程序占着）；之后能读了，「重新读取」才读得出来。
 let failHistoryReads = query.has('historyReadFail')
+// 导出这段对话存不进去时主进程交过来的原话（经 IPC 带着通道名，D16）：没权限、盘满了、别的。
+const exportFailures: Record<string, string> = {
+  denied: "Error invoking remote method 'chat-history:export-text': Error: EPERM: operation not permitted, open 'C:\\Users\\fixture\\Desktop\\.今天聊的.txt.tmp'",
+  full: "Error invoking remote method 'chat-history:export-text': Error: ENOSPC: no space left on device, write",
+  other: "Error invoking remote method 'chat-history:export-text': Error: 聊天对话导出文件写入被系统占用，请稍后重试",
+}
+const exportFailure = exportFailures[query.get('exportFail') ?? '']
 // 读记录一直不回（比如磁盘正忙）：第一次进聊天页先看到「正在加载页面」，放行以后才出现输入框。
 let openHistoryReads: (() => void) | undefined
 const heldHistoryReads = query.has('historyReadHold') ? new Promise<void>((resolve) => { openHistoryReads = resolve }) : undefined
@@ -95,7 +102,7 @@ const bridge: ChatBridge = {
   pasteAiChatImage: async () => { record('paste-image'); return query.has('emptyClipboard') ? null : { ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' } },
   readAiChatHistory: async (scope) => { record('read-history', scope); if (heldHistoryReads) await heldHistoryReads; if (failHistoryReads) throw new Error('reparse point'); return historyFiles(scope) },
   writeAiChatHistory: (input) => writeHistoryFiles(input),
-  exportAiChatConversation: async (input) => { record('export-text', input); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Desktop\\${input.title}.txt` } },
+  exportAiChatConversation: async (input) => { record('export-text', input); if (exportFailure) throw new Error(exportFailure); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Downloads\\${input.title}.txt` } },
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 // 退出前主进程那一问（electron/chat-history-flush.ts）：App 一挂上就接着，这里在模块里接，聊天页换账号、卸下都还在。

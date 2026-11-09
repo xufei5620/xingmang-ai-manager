@@ -1277,6 +1277,8 @@ export function SettingsPage({
         revealPath={operation.revealPath || undefined}
         onReveal={(path) => api.revealExportedFile(path)}
         retry={readFailed ? { label: '重新读取', onClick: reread } : undefined}
+        // 红条上是「导出聊天记录和设置」没存进去时，按换个位置再存说，不说安装目录（D16）。
+        target={!resource.error && !saveError && !systemError && operation.failed === 'transfer-export' ? 'export' : undefined}
       />
       <div className="v2-business-settings-grid">
         <div className="v2-settings-side">

@@ -20,8 +20,11 @@ export interface OperationAction { id: OperationActionId; label: string }
  * （改用当前账号、重新写入密钥、保存配置、恢复备份、扩展页……）时，多半是安全软件
  * 拦了或者文件正被别的程序占着，安装目录跟它没关系（已知29）。原话里分不出是哪一种：
  * 路径上屏前都换成了「本机路径」，只有调用方知道自己在写什么。
+ *
+ * 'export'：导出检查报告、反馈报告、聊天记录、单段对话，存的是客户在保存框里选的位置。
+ * 开了 Windows「受控文件夹访问」时的桌面、写保护的 U 盘、盘满了，都跟安装目录没关系（D16）。
  */
-export type OperationTarget = 'config'
+export type OperationTarget = 'config' | 'export'
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
   title: string
@@ -202,10 +205,24 @@ function networkFailure(message: string): boolean {
 
 export function classifyOperationError(message: string, target?: OperationTarget): OperationErrorKey {
   const key = rules.find((rule) => rule.match(message))?.key ?? 'unknown'
-  if (target !== 'config') return key
   // 写的是工具的配置文件时，磁盘满说的是配置所在的那块盘（一般是系统盘），不是安装目录，
   // 也没有安装目录可复制（#1100 第6条）。
-  return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
+  if (target === 'config') return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
+  // 导出时下一步是换个位置再存，不是去看安装目录、清系统盘的临时文件夹（D16）。
+  if (target === 'export') return key === 'permission' ? 'exportPermission' : key === 'diskFull' ? 'exportDiskFull' : key
+  return key
+}
+
+/**
+ * 导出存不进去时上屏的那一整句（D16）：目录里标题和正文连起来就是批的字。聊天页的红条
+ * 只有一行字、不走 ResultNotice，用它接上跟别的导出同样的两种说法。认法同 ResultNotice
+ * （presentOperationFailure：先看上屏那句，认不出再看脱过路径的原话）；既不是没权限
+ * 也不是盘满时返回 null，调用点留自己原来那句。
+ */
+export function exportFailureSentence(failure: { message: string; detail?: string | undefined }): string | null {
+  const hint = presentOperationFailure({ ...failure, target: 'export' })
+  if (!hint || (hint.key !== 'exportPermission' && hint.key !== 'exportDiskFull')) return null
+  return `${hint.title}，${hint.body}`
 }
 
 // 「重新写入密钥」这件事交给 perform 的动作名：错误框、「复制给客服」里都照它写，下面那张表也按它认。
