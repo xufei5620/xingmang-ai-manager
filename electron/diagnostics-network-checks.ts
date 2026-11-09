@@ -29,7 +29,6 @@ import type {
   DiagnosticsRelayRoute,
   DiagnosticState,
   NodeTlsProbeInput,
-  ProxyVariableSummary,
 } from './diagnostics'
 import { errorChainText, relayLineNames, type DiagnosticsContext } from './diagnostics-context'
 import { pathForDisplay } from './diagnostics-redaction'
@@ -60,7 +59,6 @@ const MAX_CLASH_CONFIG_BYTES = 2 * 1024 * 1024
 /** 两个站的状态接口都只回几 KB 的 JSON；门户页再大也用不着读完才认出来。 */
 const MAX_NETWORK_PROBE_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
-const PROXY_NAMES = ['HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'FTP_PROXY'] as const
 
 function clashCandidates(homeDirectory: string, env: NodeJS.ProcessEnv): string[] {
   const appData = env.APPDATA
@@ -98,16 +96,6 @@ export function parseClashTunConfig(source: string): boolean {
   return isRecord(tun) && tun.enable === true
 }
 
-async function defaultProxyVariables(env: NodeJS.ProcessEnv): Promise<ProxyVariableSummary[]> {
-  const result: ProxyVariableSummary[] = []
-  const pairs = Object.entries(env)
-  for (const name of PROXY_NAMES) {
-    const match = pairs.find(([candidate]) => candidate.toUpperCase() === name)
-    if (match?.[1]?.trim()) result.push({ name, source: 'process' })
-  }
-  return result
-}
-
 function proxyFindingDetails(findings: readonly ProxyVariableFinding[]): Record<string, string> {
   return Object.fromEntries(findings.map((finding) => [
     finding.name,
@@ -117,13 +105,21 @@ function proxyFindingDetails(findings: readonly ProxyVariableFinding[]): Record<
 
 /**
  * 「电脑里的代理设置」（第十六批 5）。看的是本软件自己的环境——从这里打开的工具
- * 拿到的就是它——再读一次当前账号与整台电脑各设了什么，决定能不能一键清掉。
+ * 拿到的就是它——指向本机的先试连一下：开着的工具会经它联网，是正常的；没开的从星芒
+ * 打开、安装工具时这一次不带它（system-service-context.ts 的 withoutDeadLoopbackProxies，
+ * Mac 上打开工具时另由启动脚本里的 buildMacosClosedProxyGuard 去掉）。
+ *
+ * readScopes 只有 Windows 给：再读一次当前账号与整台电脑各设了什么，决定能不能一键清掉。
+ * Mac、Linux 上这几条可能来自 launchctl、终端设置文件或从终端启动星芒，说不清写在哪，
+ * 不给按钮（yoyo 11-06「体检改」：客户电脑上的设置一个不动）。以前那两个系统只数设了几个，
+ * 代理好好开着也亮黄灯，NO_PROXY 这种只会少走代理的也算一个。
+ *
  * details 只写变量名和本机端口，不写原值：原值里可能带着代理的用户名和密码。
  */
-export async function windowsProxySettingsOutcome(
+export async function proxySettingsOutcome(
   env: NodeJS.ProcessEnv,
   probe: LoopbackProbe,
-  readScopes: () => Promise<ProxyVariableScopes | null>,
+  readScopes: () => Promise<ProxyVariableScopes | null> = async () => null,
 ): Promise<Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'>> {
   const findings = await inspectProxyVariables(env, probe)
   // 系统设置里的代理归「别的代理软件」那一项说（diagnostics-proxy-software-check.ts）：这里只管另外设的那几条，
@@ -164,19 +160,6 @@ export async function windowsProxySettingsOutcome(
     state: 'pass',
     summary: `电脑里设了代理（本机 ${findings[0].target?.port} 端口），工具会通过它联网。`,
     details,
-  }
-}
-
-/** Windows 以外只列环境变量的名字和来源，不探端口（旧行为）。 */
-function otherProxySettingsOutcome(
-  variables: readonly ProxyVariableSummary[],
-): Omit<DiagnosticItem, 'code' | 'title' | 'durationMs'> {
-  const unique = [...new Map(variables.map((item) => [`${item.name}:${item.source}`, item])).values()]
-    .sort((left, right) => left.name.localeCompare(right.name) || left.source.localeCompare(right.source))
-  return {
-    state: unique.length ? 'warn' : 'pass',
-    summary: unique.length ? `电脑里另外设了 ${unique.length} 处代理，详情里能看到` : '没有另外设过代理',
-    details: Object.fromEntries(unique.map((item, index) => [`variable${index + 1}`, `${item.name} (${item.source})`])),
   }
 }
 
@@ -574,7 +557,7 @@ export function buildNetworkChecks(context: DiagnosticsContext): CheckDefinition
 export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[] {
   const { dependencies, env, userHome, displayRoots, platform } = context
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
-  const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
+  const probeProxy = dependencies.probeLoopbackProxy ?? probeLoopbackProxy
 
   return [
     {
@@ -609,13 +592,11 @@ export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[]
       code: 'PROXY_ENVIRONMENT',
       title: '电脑里的代理设置',
       // 系统设置里的代理（别的代理软件）是下一项（diagnostics-proxy-software-check.ts），这里只看另外设的。
-      run: async (signal) => platform === 'win32'
-        ? windowsProxySettingsOutcome(
-          env,
-          dependencies.probeLoopbackProxy ?? probeLoopbackProxy,
-          dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()),
-        )
-        : otherProxySettingsOutcome(await inspectProxy(signal)),
+      run: () => proxySettingsOutcome(
+        env,
+        probeProxy,
+        platform === 'win32' ? dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()) : undefined,
+      ),
     },
   ]
 }

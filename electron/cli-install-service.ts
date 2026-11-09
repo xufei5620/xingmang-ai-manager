@@ -1328,25 +1328,29 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
        */
       // 解析一次就够：加速开关在一次安装中途变化时，换代理反而会让已经建立
       // 的连接和重试落到两条不同的线路上。
+      // 照系统代理补上的这几条同样先试连：代理软件关了、系统设置里还勾着本机端口时，交给 npm 的就是
+      // 一个连不上的地址（Mac 真机日志里的 ECONNREFUSED 127.0.0.1:7890 可能就是这一种，也可能是下面
+      // 那份环境里本来就有的，推测）。它排在后面会盖过环境里那几条，所以单独判，不跟环境合在一起判。
       let npmProxyVariables: NodeJS.ProcessEnv | null = null
       const resolveNpmProxyVariables = async (): Promise<NodeJS.ProcessEnv> => {
         if (!npmProxyVariables) {
-          try { npmProxyVariables = await resolveSubprocessProxyEnvironment() }
+          try { npmProxyVariables = await withoutDeadLoopbackProxies(await resolveSubprocessProxyEnvironment(), provider, 'system-proxy') }
           catch { npmProxyVariables = {} }
         }
         return npmProxyVariables
       }
       // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
       // 装不上。同一次安装只判断一次，日志也只写一条。Linux 上照着网上教程把
-      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）；
-      // macOS 维持原样。
+      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）。
+      // Mac 上从访达打开的星芒自己的环境里一般没有这几条，可从终端启动、或者 launchctl 里设过时
+      // 就有，检查页那一行说「从星芒打开的工具会自动绕开它」，装工具也得一样（yoyo 11-06「体检改」）。
       let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
       const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
         if (!npmBaseEnvironment) {
           // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
           // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
           const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment(process.env, nodeDirectories))
-          npmBaseEnvironment = platform !== 'darwin' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+          npmBaseEnvironment = withoutDeadLoopbackProxies(base, provider)
         }
         return npmBaseEnvironment
       }
