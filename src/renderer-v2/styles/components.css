@@ -273,6 +273,9 @@
 .xm-toast:is(.xm-tone-warn, .xm-tone-bad) > svg { color: var(--toast-warn); }
 .xm-toast > span { min-width: 0; overflow-wrap: anywhere; }
 @keyframes xm-toast-in { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
+.xm-toast-action { flex: none; padding: 3px 9px; border: 0; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); color: inherit; font: inherit; font-weight: 600; white-space: nowrap; cursor: pointer; }
+.xm-toast-action:hover { background: color-mix(in srgb, currentColor 22%, transparent); }
+.xm-toast-action:focus-visible { outline: 2px solid var(--toast-info); outline-offset: 1px; }
 .xm-toast-close { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 22px; height: 22px; margin-right: -6px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: inherit; opacity: .72; cursor: pointer; }
 .xm-toast-close:hover { opacity: 1; background: color-mix(in srgb, currentColor 14%, transparent); }
 .xm-menu, .xm-popover { display: inline-flex; }

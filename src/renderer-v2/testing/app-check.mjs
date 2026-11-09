@@ -7900,6 +7900,31 @@ test('a deep link that cannot be read says so and points at the order page (R-B7
   } finally { await page.close() }
 })
 
+// D69：已登录时点开邀请链接只是告诉他邀请码，不是出错：右下角一条普通提示条，不弹报错框。
+test('an invite link opened while signed in shows a plain toast with a copy button instead of an error dialog (D69)', async () => {
+  const page = await open('inviteLink=XM-7K2Q')
+  try {
+    await page.evaluate(() => {
+      window.__copied = []
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: (text) => { window.__copied.push(text); return Promise.resolve() } },
+      })
+    })
+    const toast = page.locator('.xm-toasts .xm-toast').filter({ hasText: '你已经登录了。邀请码 XM-7K2Q 要退出当前账号、注册新账号时才能用。' })
+    await toast.waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    assert.equal(await page.getByRole('button', { name: '复制给客服' }).count(), 0)
+    // 带按钮的提示条不会自己走（时长在 components.test.tsx 钉住），所以它带着 ×。
+    assert.equal(await toast.getByRole('button', { name: '关闭' }).count(), 1)
+    await toast.getByRole('button', { name: '复制邀请码', exact: true }).click()
+    await waitForToast(page, '邀请码已复制')
+    assert.deepEqual(await page.evaluate(() => window.__copied), ['XM-7K2Q'])
+    await toast.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第 10 批起 Node.js 没装时在检查页那一行直接「安装 Node.js」，装完首页运行环境卡跟着变。
 test('installing Node.js from the check page updates the home runtime card', async () => {
   const page = await open('desktopOnly=1')
