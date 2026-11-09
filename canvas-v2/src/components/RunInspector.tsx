@@ -44,6 +44,8 @@ interface RunInspectorProps {
   onOpenAgent?(): void
   onOpenCollection?(): void
   onLocateNode(nodeId: string): void
+  /** 画布上各节点现在的名字（改过名的用改过的）；运行记录只存了节点编号和种类。 */
+  nodeTitles?: Readonly<Record<string, string>>
   onRetryNode?(nodeId: string, scope: 'to-node' | 'from-node'): void
   onResumeRun?(runId: string): Promise<boolean>
   onClose(): void
@@ -66,11 +68,33 @@ const stageLabel: Record<string, string> = {
   saving: '保存到工作目录',
 }
 
-function eventLabel(event: CanvasRunRecord['events'][number]): string {
+/**
+ * What a run record calls a node. The record keeps only the node's id and kind;
+ * customers know a node by its name on the canvas, then by its kind. The id is
+ * left for a node whose kind the record no longer knows.
+ */
+export function runNodeLabel(nodeId: string, record: Pick<CanvasRunRecord, 'nodes'> | undefined, nodeTitles?: Readonly<Record<string, string>>): string {
+  const title = nodeTitles?.[nodeId]?.trim()
+  if (title) return title
+  const kind = record?.nodes.find((node) => node.nodeId === nodeId)?.kind
+  return (kind && builtinNodeRegistry.resolve(kind)?.title) || nodeId
+}
+
+// Fixed to one format: the run history reads the same on a Chinese and an
+// English Windows, and on every host.
+export function runClockTime(at: string | number): string {
+  return new Date(at).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+export function runDateTime(at: string | number): string {
+  return new Date(at).toLocaleString('zh-CN', { hour12: false })
+}
+
+export function eventLabel(event: CanvasRunRecord['events'][number], label: (nodeId: string) => string = (nodeId) => nodeId): string {
   if (event.type === 'run-terminal') return `运行${statusLabel[event.status] ?? event.status}`
   if (event.type === 'run-waiting') return canvasRunWaitingEventLabel(event)
-  if (event.type === 'node-stage') return `${event.nodeId}：${stageLabel[event.stage] ?? event.stage}`
-  return `${event.nodeId}：${statusLabel[event.state] ?? event.state}`
+  if (event.type === 'node-stage') return `${label(event.nodeId)}：${stageLabel[event.stage] ?? event.stage}`
+  return `${label(event.nodeId)}：${statusLabel[event.state] ?? event.state}`
 }
 
 export function RunInspector(props: RunInspectorProps) {
@@ -144,7 +168,7 @@ export function RunInspector(props: RunInspectorProps) {
           <select value={props.selectedScope} onChange={(event) => props.onScopeChange(event.target.value as CanvasRunScope['kind'])}>
             <option value="all">全部节点</option>
             <option value="dirty">仅变更节点 ({props.dirtyCount})</option>
-            <option value="selection">选中链路 ({props.selectionCount})</option>
+            <option value="selection">选中的节点 ({props.selectionCount})</option>
             <option value="to-node">运行到选中节点</option>
             <option value="from-node">从选中节点向后运行</option>
           </select>
@@ -168,7 +192,7 @@ export function RunInspector(props: RunInspectorProps) {
             <select value={selected?.runId ?? ''} onChange={(event) => props.onSelectRun(event.target.value)}>
               {props.records.map((record) => (
                 <option key={record.runId} value={record.runId}>
-                  {new Date(record.createdAt).toLocaleString()} · {record.purpose === 'agent-plan' ? 'Agent 规划 · ' : ''}{statusLabel[record.status] ?? record.status}
+                  {runDateTime(record.createdAt)} · {record.purpose === 'agent-plan' ? 'Agent 规划 · ' : ''}{statusLabel[record.status] ?? record.status}
                 </option>
               ))}
             </select>
@@ -176,7 +200,7 @@ export function RunInspector(props: RunInspectorProps) {
         )}
         {selected && (
           <section className="run-summary">
-            <div><strong>{statusLabel[selected.status] ?? selected.status}</strong><span>{new Date(selected.createdAt).toLocaleString()}</span></div>
+            <div><strong>{statusLabel[selected.status] ?? selected.status}</strong><span>{runDateTime(selected.createdAt)}</span></div>
             <span>{typeof selected.durationMs === 'number' ? `${(selected.durationMs / 1000).toFixed(1)} 秒` : selected.status === 'running' ? '正在执行' : '耗时未记录'}</span>
           </section>
         )}
@@ -207,10 +231,10 @@ export function RunInspector(props: RunInspectorProps) {
             <ol>
               {selected.events.slice(-24).map((event) => (
                 <li key={`${event.sequence}-${event.type}`}>
-                  <time>{new Date(event.at).toLocaleTimeString()}</time>
+                  <time>{runClockTime(event.at)}</time>
                   {'nodeId' in event && selected.purpose !== 'agent-plan'
-                    ? <button type="button" title="定位到画布节点" onClick={() => props.onLocateNode(event.nodeId)}>{eventLabel(event)}</button>
-                    : <span>{eventLabel(event)}</span>}
+                    ? <button type="button" title="定位到画布节点" onClick={() => props.onLocateNode(event.nodeId)}>{eventLabel(event, (nodeId) => runNodeLabel(nodeId, selected, props.nodeTitles))}</button>
+                    : <span>{eventLabel(event, (nodeId) => runNodeLabel(nodeId, selected, props.nodeTitles))}</span>}
                 </li>
               ))}
             </ol>
@@ -228,7 +252,7 @@ export function RunInspector(props: RunInspectorProps) {
           return (
             <section className="run-node-record" key={node.nodeId}>
               <div className="run-node-head">
-                {selected.purpose === 'agent-plan' ? <strong>Agent 文字规划</strong> : <button type="button" title={`定位到画布节点：${node.nodeId}`} onClick={() => props.onLocateNode(node.nodeId)}>{builtinNodeRegistry.resolve(node.kind)?.title ?? '未识别节点'}</button>}
+                {selected.purpose === 'agent-plan' ? <strong>Agent 文字规划</strong> : <button type="button" title={`定位到画布节点：${runNodeLabel(node.nodeId, selected, props.nodeTitles)}`} onClick={() => props.onLocateNode(node.nodeId)}>{props.nodeTitles?.[node.nodeId]?.trim() || builtinNodeRegistry.resolve(node.kind)?.title || '未识别节点'}</button>}
                 <span>{['running', 'cancelling', 'queued'].includes(node.state) && node.latestStage
                   ? stageLabel[node.latestStage]
                   : statusLabel[node.state] ?? node.state}</span>

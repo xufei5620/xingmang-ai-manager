@@ -91,6 +91,8 @@ describe('run preflight recovery actions', () => {
     const html = markup(preflight)
     expect(html).toContain('data-node-id="generation"')
     expect(html).not.toContain('打开生成配置')
+    expect(html).toContain('1 个节点还不能运行，照下面写的原因改好再运行。')
+    expect(html).not.toContain('阻塞')
   })
 
   it('does not show corrective actions for an executable local flow', () => {
@@ -122,7 +124,7 @@ describe('run preflight drama parse billing', () => {
     const preflight = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, imageModels: [], videoModels: [], textModels: ['gpt-4.1'] })
     const html = markup(preflight)
     expect(html).toContain('<strong>2</strong><span>文字请求</span>')
-    expect(html).toContain('最多 2 次独立生成，按次计费，具体金额以来源为准')
-    expect(html).toContain('本次最多提交 2 个付费请求')
+    expect(html).toContain('最多生成 2 次，每次都扣费，价格以来源为准')
+    expect(html).toContain('这次最多扣费生成 2 次')
   })
 })

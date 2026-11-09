@@ -133,13 +133,13 @@ describe('web search preflight and late-result matching', () => {
     value.nodes[1].data = { ...value.nodes[1].data, model: 'gpt-4.1', textWebSearch: true }
     const result = buildCanvasRunPreflight({ graph: value, scope: { kind: 'to-node', nodeId: 'next' }, imageModels: [], videoModels: [], textModels: ['gpt-4.1'] })
     expect(result.canStart).toBe(true)
-    expect(result.items.find((item) => item.nodeId === 'next')?.reason).toContain('将重新生成，不复用此节点结果')
-    expect(result.items.find((item) => item.nodeId === 'search')?.reason).toContain('将核对服务端缓存')
-    expect(result.warnings.join(' ')).toContain('选中目标将重新搜索，不复用此节点的旧结果；上游节点仍核对缓存')
+    expect(result.items.find((item) => item.nodeId === 'next')?.reason).toBe('这个节点重新生成，会扣费')
+    expect(result.items.find((item) => item.nodeId === 'search')?.reason).toBe('输入跟上次一样就用上次的结果，不一样才重新生成（会扣费）')
+    expect(result.warnings.join(' ')).toContain('选中的节点会重新搜索；前面的节点输入没变就用上次的搜索结果，不会重新联网')
     const selection = buildCanvasRunPreflight({ graph: value, scope: { kind: 'selection', nodeIds: ['next'] }, imageModels: [], videoModels: [], textModels: ['gpt-4.1'] })
-    expect(selection.items.every((item) => !item.reason?.includes('将重新生成'))).toBe(true)
-    expect(selection.warnings.join(' ')).not.toContain('目标将重新搜索')
-    expect(selection.warnings.join(' ')).toContain('将核对服务端缓存，命中时复用原搜索结果与时间')
+    expect(selection.items.every((item) => !item.reason?.includes('这个节点重新生成'))).toBe(true)
+    expect(selection.warnings.join(' ')).not.toContain('选中的节点会重新搜索')
+    expect(selection.warnings.join(' ')).toContain('输入跟上次一样的直接用上次的搜索结果，不会重新联网')
   })
   it('does not promise a paid rerun for local, disabled or blocked to-node targets', () => {
     const local: CanvasRunGraph = { nodes: [{ id: 'local', kind: 'prompt', definitionVersion: 1, data: { prompt: 'Body', model: '' } }], edges: [] }
@@ -152,8 +152,8 @@ describe('web search preflight and late-result matching', () => {
       else value.nodes[0].data.group = ''
       const result = buildCanvasRunPreflight({ graph: value, scope: { kind: 'to-node', nodeId: 'search' }, imageModels: [], videoModels: [], textModels: ['gpt-4.1'] })
       expect(result.items[0].action).toBe(disabled ? 'skip' : 'blocked')
-      expect(result.items[0].reason).not.toContain('将重新生成')
-      expect(result.warnings.join(' ')).not.toContain('目标将重新搜索')
+      expect(result.items[0].reason).not.toContain('这个节点重新生成')
+      expect(result.warnings.join(' ')).not.toContain('选中的节点会重新搜索')
     }
   })
 })

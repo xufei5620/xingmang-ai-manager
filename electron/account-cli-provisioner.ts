@@ -11,7 +11,7 @@ import {
   type ManagedCliGroupListing,
   type ResolvedManagedCliGroup,
 } from './managed-cli-groups'
-import type { ManagedCliGroupCheck, StoredManagedCliKey } from './managed-cli-key-store'
+import type { ManagedCliGroupCheck, ManagedSkillKeys, StoredManagedCliKey } from './managed-cli-key-store'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
@@ -72,6 +72,9 @@ export interface ManagedCliKeyStoreLike {
   /** 三把都缓存时上一次问服务端分组的记录（#1157 第 8 条）。缺省 = 只记在内存里，软件重开就忘。 */
   readGroupCheck?: (userId: number) => Promise<ManagedCliGroupCheck | undefined>
   saveGroupCheck?: (userId: number, check: ManagedCliGroupCheck) => Promise<void>
+  /** 画图技能上次记下的两把（xingmang-ai-skill.ts 用，0.2.24 深查 R1）。缺省 = 不记，技能每次开机照旧取明文。 */
+  readSkillKeys?: (userId: number) => Promise<ManagedSkillKeys | undefined>
+  saveSkillKeys?: (userId: number, keys: ManagedSkillKeys) => Promise<void>
 }
 
 interface ResolvedManagedCliKeys {

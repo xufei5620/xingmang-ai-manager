@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useMemo, useRef, useState } from 'react'
 import { ArrowLeft, Images, LoaderCircle, Search, Sparkles, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetSummary } from '../host'
 import { canvasTemplateIndustries, canvasTemplateCompatibility, estimateCanvasTemplate, searchCanvasTemplates } from '../templates/template-catalog'
@@ -48,6 +48,12 @@ export function TemplateCatalog({ open, templates, assets, imageModels, videoMod
   const dialogRef = useRef<HTMLElement>(null)
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const onCloseRef = useRef(onClose)
+  // 父组件每次重画都传一份新的模板数组；下面那个只在打开时重置的 effect 要是把它算进依赖，
+  // 画布一重画（自动保存、素材刷新）就把正在填的模板打回列表。用 effect event 读最新的数组，不算依赖。
+  const openingFields = useEffectEvent((templateId: string | null | undefined) => {
+    const initial = templates.find((template) => template.id === templateId)
+    return initial ? { ...createTemplateConfiguratorState(initial) } : {}
+  })
   onCloseRef.current = () => pickerVariable ? cancelPicker() : closeCatalog()
 
   function closeCatalog() {
@@ -130,8 +136,7 @@ export function TemplateCatalog({ open, templates, assets, imageModels, videoMod
     setPickerVariable(null)
     setImportingVariable(null)
     setReferenceMessage(null)
-    const initial = templates.find((template) => template.id === initialTemplateId)
-    setFields(initial ? { ...createTemplateConfiguratorState(initial) } : {})
+    setFields(openingFields(initialTemplateId))
     const frame = requestAnimationFrame(() => closeButtonRef.current?.focus())
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -154,7 +159,7 @@ export function TemplateCatalog({ open, templates, assets, imageModels, videoMod
     }
     document.addEventListener('keydown', keydown)
     return () => { referenceGuard.current.invalidate(); submission.current.invalidate(); cancelAnimationFrame(frame); document.removeEventListener('keydown', keydown); previousFocusRef.current?.focus() }
-  }, [initialTemplateId, open, templates])
+  }, [initialTemplateId, open])
 
   const filtered = useMemo(() => searchCanvasTemplates(templates, query).filter((template) => industry === 'all' || template.industry === industry), [industry, query, templates])
   const selected = templates.find((template) => template.id === selectedId) ?? null

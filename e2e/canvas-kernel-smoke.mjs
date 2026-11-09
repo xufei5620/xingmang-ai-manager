@@ -498,7 +498,7 @@ async function createProject(canvas, name, folder) {
   await canvas.getByRole('button', { name: '新建项目' }).first().click()
   await canvas.getByRole('textbox', { name: '项目名称' }).fill(name)
   await evaluateInMainProcess('answer the folder dialog', (_electron, value) => globalThis.__canvasSmoke.chooseFolder(value), folder)
-  await canvas.getByRole('button', { name: '选择文件夹并创建' }).click()
+  await canvas.getByRole('button', { name: '换个位置创建…' }).click()
   await canvas.getByRole('button', { name: `重命名项目：${name}`, exact: true }).waitFor({ timeout: fixtureReadyTimeoutMs })
 }
 

@@ -5,6 +5,8 @@ import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { cliCatalog, managedCliKeyProfiles, providerIds } from './catalog'
 import { resolveManagedCliGroup, resolveMappedGroup, type AccountGroupHints } from './managed-cli-groups'
+import { sameManagedSkillKey, type ManagedSkillKeys, type StoredManagedCliKey } from './managed-cli-key-store'
+import type { NewApiKnownCliKey } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { relayProviderBaseUrlEquals, relaySiteEndpointIdForBaseUrl } from './relay-sites'
 import { rewriteJsonStrings } from './tool-route-rewrite'
@@ -100,6 +102,17 @@ export const XINGMANG_IMAGE_MCP_NO_NODE_WARNING = '这台电脑上没有找到 N
 const IMAGE_MCP_RETRY_DELAY_MS = 1500
 
 type SkillAccountService = Pick<RelayBackendClient, 'getSessionState' | 'listUsableGroups' | 'provisionCliKey'>
+  & Partial<Pick<RelayBackendClient, 'getSessionRevision' | 'getActiveSiteId'>>
+
+/**
+ * 本机加密的托管 Key 缓存（managed-cli-key-store.ts）里技能用得上的几样：工具那几把，加上技能上次记下的两把。
+ */
+export interface XingmangAiSkillKeyStore {
+  read(userId: number): Promise<readonly StoredManagedCliKey[]>
+  getSiteId?: () => string
+  readSkillKeys?: (userId: number) => Promise<ManagedSkillKeys | undefined>
+  saveSkillKeys?: (userId: number, keys: ManagedSkillKeys) => Promise<void>
+}
 
 export interface XingmangAiSkillSyncOptions {
   accountService: SkillAccountService
@@ -127,6 +140,12 @@ export interface XingmangAiSkillSyncOptions {
    * 站上改了本名也跟得上；缺省或读不到 = 照旧按名单和名字里的词认。
    */
   loadAccountGroupHints?: () => Promise<AccountGroupHints | null>
+  /**
+   * 本机加密的托管 Key 缓存。有它时，服务端这次挑出来复用的正好是这台电脑已经知道明文的那把，就不再取一次明文：
+   * 取明文跟登录、续登录共用按出口 IP 的严格限流（20 分钟 20 次），以前每次开机都取，同一个出口 IP 后面几台
+   * 电脑一起开机就能把别人的登录挤掉（0.2.24 深查 R1）。缺省 = 每次照旧取。
+   */
+  keyStore?: XingmangAiSkillKeyStore
 }
 
 export interface XingmangAiSkillInstallOptions {
@@ -1019,30 +1038,79 @@ async function installBundledSkill(bundledRoot: string, targetDirectory: string)
   return wrote
 }
 
+const MAX_SKILL_CONFIG_BYTES = 64 * 1024
+
+// 内容跟这次一样就不重写：每次开机都原子替换一遍，改的只是修改时间，开着同步盘的客户每次开机都要再传一遍。
+// 读不出来（没有、不安全、太大）照旧写，写的那一步自己会查。
 async function writeSkillConfig(targetDirectory: string, config: XingmangAiSkillConfig): Promise<void> {
   ensureSafeDataDirectory(targetDirectory, '星芒AI Skill 目录')
-  await writeAtomicSafeUtf8File(
-    path.join(targetDirectory, XINGMANG_AI_CONFIG_FILE),
-    buildXingmangAiSkillConfig(config),
-    '星芒AI Skill 配置',
-  )
+  const filePath = path.join(targetDirectory, XINGMANG_AI_CONFIG_FILE)
+  const content = buildXingmangAiSkillConfig(config)
+  const existing = await readSafeUtf8File(filePath, '星芒AI Skill 配置', MAX_SKILL_CONFIG_BYTES).catch(() => null)
+  if (existing === content) return
+  await writeAtomicSafeUtf8File(filePath, content, '星芒AI Skill 配置')
 }
 
 async function provisionSkillKey(
   accountService: SkillAccountService,
   input: { name: string; group: string },
+  knownKeys: readonly NewApiKnownCliKey[],
 ): Promise<{ id: number; name: string; key: string } | null> {
   try {
-    return await accountService.provisionCliKey(input)
+    return await accountService.provisionCliKey(knownKeys.length ? { ...input, knownKeys } : input)
   } catch {
     return null
   }
 }
 
+interface KnownSkillKeys {
+  /** 缓存是不是当前站点的：不是就既不拿它认，也不往里记。 */
+  usable: boolean
+  known: NewApiKnownCliKey[]
+  skillKeys?: ManagedSkillKeys
+}
+
+// 这台电脑已经知道明文的几把：工具那几把，加上技能上次记下的两把。只认当前站点那份缓存（两个站的密钥编号
+// 各数各的）。读不到就当一把都不知道，照旧取明文。
+async function readKnownSkillKeys(
+  keyStore: XingmangAiSkillKeyStore | undefined,
+  accountService: SkillAccountService,
+  userId: number,
+): Promise<KnownSkillKeys> {
+  const siteId = keyStore?.getSiteId?.()
+  if (!keyStore || siteId === undefined || siteId !== accountService.getActiveSiteId?.()) return { usable: false, known: [] }
+  const [toolKeys, skillKeys] = await Promise.all([
+    keyStore.read(userId).catch((): readonly StoredManagedCliKey[] => []),
+    keyStore.readSkillKeys ? keyStore.readSkillKeys(userId).catch(() => undefined) : Promise.resolve(undefined),
+  ])
+  const entries = [...toolKeys, ...(skillKeys?.codex ? [skillKeys.codex] : []), ...(skillKeys?.image ? [skillKeys.image] : [])]
+  return { usable: true, known: entries.map(({ id, key }) => ({ id, key })), ...(skillKeys ? { skillKeys } : {}) }
+}
+
+// 记下这次技能用的两把，下次开机认得出来。账号中途换了不记：手上这两把不一定是这个账号的。
+// 记不下只是下次开机多取一次明文，不算这次同步失败。
+async function rememberSkillKeys(
+  keyStore: XingmangAiSkillKeyStore | undefined,
+  accountService: SkillAccountService,
+  session: { userId: number; revision: number | undefined },
+  previous: ManagedSkillKeys | undefined,
+  next: ManagedSkillKeys,
+): Promise<void> {
+  if (!keyStore?.saveSkillKeys) return
+  if (sameManagedSkillKey(previous?.codex, next.codex) && sameManagedSkillKey(previous?.image, next.image)) return
+  const current = accountService.getSessionState()
+  if (!current.authenticated || current.account?.userId !== session.userId
+    || accountService.getSessionRevision?.() !== session.revision) return
+  await keyStore.saveSkillKeys(session.userId, next).catch(() => undefined)
+}
+
 export async function syncXingmangAiSkill(
   options: XingmangAiSkillSyncOptions,
 ): Promise<XingmangAiSkillSyncResult> {
-  authenticatedUserId(options.accountService)
+  const session = {
+    userId: authenticatedUserId(options.accountService),
+    revision: options.accountService.getSessionRevision?.(),
+  }
   const bundledRoot = path.resolve(options.bundledRoot)
   const { installed, warnings } = await installXingmangAiSkillFiles(bundledRoot, options.userHome, {
     officialCodex: options.officialCodex,
@@ -1061,16 +1129,24 @@ export async function syncXingmangAiSkill(
   // 和命令行工具签 Codex Key 同一套认法：同名的 Key 在同一个分组里才会被复用，
   // 认到别处就会在另一个分组里再签一把。站上改了本名、对照写上新名字以后也跟着走。
   const codexGroup = resolveManagedCliGroup('codex', groups, undefined, [], hints).group
+  const { usable, known, skillKeys } = await readKnownSkillKeys(options.keyStore, options.accountService, session.userId)
   const codex = await provisionSkillKey(options.accountService, {
     name: codexProfile.keyName,
     group: codexGroup,
-  })
+  }, known)
   const image = imageGroup
     ? await provisionSkillKey(options.accountService, {
       name: XINGMANG_AI_SKILL_KEY_NAME,
       group: imageGroup,
-    })
+    }, known)
     : null
+  // 这次没取到的那一把（断网、服务器忙）留着上次记的，下次还认得；账号没有图片分组了才拿掉图片那把。
+  const rememberedCodex = codex ? { ...codex, group: codexGroup } : skillKeys?.codex
+  const rememberedImage = image && imageGroup ? { ...image, group: imageGroup } : imageGroup ? skillKeys?.image : undefined
+  await rememberSkillKeys(usable ? options.keyStore : undefined, options.accountService, session, skillKeys, {
+    ...(rememberedCodex ? { codex: rememberedCodex } : {}),
+    ...(rememberedImage ? { image: rememberedImage } : {}),
+  })
   if (!codex && !image) {
     return {
       ready: false,
