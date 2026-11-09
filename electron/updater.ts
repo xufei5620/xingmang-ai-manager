@@ -1051,8 +1051,8 @@ export function createUpdaterService(
   let lastProgressAt = 0
   // 撤回名单和分批放量是发版的安全网，只认最近一次读成功的那份：网差的电脑这一次没读到状态文件、
   // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。这份记在本地，打开软件时先用
-  // 上次记下的。维护提示和最低版本照旧跟着这一次读到的走，读不到就不提示、不拦人。从来没读成功过
-  // 的电脑仍按不撤回、不限量算。
+  // 上次记下的。维护提示照旧跟着这一次读到的走，读不到就不提示。最低版本只在这次运行里沿用读成功的那份
+  // （见 applyServiceStatus），不记到本地。从来没读成功过的电脑仍按不撤回、不限量、不拦人算。
   let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
   // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
   let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
@@ -1252,10 +1252,14 @@ export function createUpdaterService(
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
-    // 开发态装不了更新，拦下来只会把人困住。
-    const required = enabled && !development
-      ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
-      : null
+    // 最低版本同样只认读成功的那份：下载新版本时这一次读超时，那层「必须更新」就整层收起，下一次读到又盖回来，
+    // 客户以为没事了接着用（RC-01）。只在读到了、文件里确实撤掉了才放人。这份只在这次运行里沿用、不记到本地：
+    // 撤掉强制更新以后，重开软件还读不到文件的电脑不能一直被拦着。开发态装不了更新，拦下来只会把人困住。
+    const required = !status
+      ? minimumRequired
+      : enabled && !development
+        ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
+        : null
     const previouslyRequired = minimumRequired
     minimumRequired = required
     // 快照里的 requiredVersion 由 emit 按 minimumRequired 重算，这里只判断要不要发一次。

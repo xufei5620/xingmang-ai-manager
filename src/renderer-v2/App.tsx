@@ -581,7 +581,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       </div>
     </Dialog>}
     <RequiredUpdateGate update={update} windows={os === 'win'} linux={os === 'linux'} mac={os === 'mac'} actions={{
-      check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),
+      check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate({ askIfInstalling: true }),
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
     {/* 引导、导览开着时，登录后说一次的告知卡先等着（主路卡点 F11）。导览只在首页放，开在别的页上客户看不见它，

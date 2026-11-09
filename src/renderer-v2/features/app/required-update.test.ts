@@ -112,4 +112,11 @@ describe('requiredUpdateFollowUp', () => {
   it('does not keep re-measuring the disk on its own after a shortfall', () => {
     expect(requiredUpdateFollowUp(snapshot({ diskShortfall: { neededBytes: 2, freeBytes: 1 } }))).toBeNull()
   })
+
+  it('stops carrying on once the gate has lifted, so a finished download never restarts the app unannounced', () => {
+    expect(requiredUpdateFollowUp(snapshot({ phase: 'downloaded', requiredVersion: null }))).toBeNull()
+    expect(requiredUpdateFollowUp(snapshot({ requiredVersion: null }))).toBeNull()
+    expect(requiredUpdateFollowUp(snapshot({ phase: 'downloaded', rollback: true }))).toBeNull()
+    expect(requiredUpdateFollowUp(snapshot({ phase: 'downloaded', development: true }))).toBeNull()
+  })
 })

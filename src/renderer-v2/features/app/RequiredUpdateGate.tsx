@@ -8,10 +8,16 @@ import { updateDiskCleanupStepsFor } from '../../registry/tutorials'
 import { Button, Progress } from '../../ui'
 import { requiredUpdateFollowUp, requiredUpdateGate, type RequiredUpdateAction } from './required-update'
 
+/** postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装（已知31）。 */
+export interface RequiredUpdateInstallOutcome {
+  postponed?: true
+}
+
 export interface RequiredUpdateActions {
   check: () => Promise<unknown>
   download: (options?: UpdateDownloadOptions) => Promise<unknown>
-  install: () => Promise<unknown> | unknown
+  /** 装之前主进程要先看有没有工具在装（askIfInstalling），有就先问退出时那一句，不能直接重启把它打断。 */
+  install: () => Promise<RequiredUpdateInstallOutcome | void> | void
   openDownloadPage: () => void
   contactSupport: () => void
 }
@@ -53,6 +59,14 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
     void run(followUp)
   })
 
+  // 这层提示收起了，先前那一下「立即更新」就作废：之后再盖回来，等他自己再点，不替他接着装（RC-01）。
+  const shown = gate !== null
+  useEffect(() => {
+    if (shown) return
+    setRequested(false)
+    followed.current = ''
+  }, [shown])
+
   const short = Boolean(gate?.diskShortfall)
   useEffect(() => {
     if (!short) setStillShort(false)
@@ -73,7 +87,9 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
         if (retryingShortfall && !options?.ignoreDiskSpace) setStillShort(true)
       } else {
         setInstalling(true)
-        await actions.install()
+        const outcome = await actions.install()
+        // 客户选了先让工具装完：按钮回到「立即更新」，装完他自己再点。
+        if (outcome && outcome.postponed) setInstalling(false)
       }
     } catch {
       // 失败会体现在更新快照里（阶段与错误），这层提示照着快照换成「重试」。
