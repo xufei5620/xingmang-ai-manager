@@ -75,6 +75,7 @@ import {
   keyExpiredTime,
   keyMetaParts,
   keyToolChoice,
+  limitKeyNameEdit,
   shortDate,
   type KeyExpiryChoice,
   type KeyToolTarget,
@@ -816,6 +817,8 @@ function AccountKeys({
   // 新建成功后弹窗不关，原地说「已创建」，并告诉用户怎么让工具用它（v4）。
   const [created, setCreated] = useState('')
   const [name, setName] = useState('')
+  // 拼音输入法正在拼的那几个字母不算数：开拼时记下名称原来是什么，选完字再按字节收一次。
+  const nameCompositionBase = useRef<string | null>(null)
   const [group, setGroup] = useState('')
   const [groups, setGroups] = useState<Awaited<ReturnType<V2Bridge['getAccountUsableGroups']>>>([])
   const [groupsLoading, setGroupsLoading] = useState(false)
@@ -912,6 +915,7 @@ function AccountKeys({
     setEditing(key)
     setCreated('')
     setName(key === 'new' ? '' : key.name)
+    nameCompositionBase.current = null
     setGroup(key === 'new' ? '' : key.group)
     setGroups([])
     setUnlimited(key !== 'new' && key.unlimitedQuota)
@@ -922,6 +926,18 @@ function AccountKeys({
     setCustomExpiry(key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt))
     operation.clear()
     void refreshGroups(true)
+  }
+  // 星芒账号的名称站点按字节数限 50，中文最多 16 个字（ZW-1）：多打的打不进去，跟英文打满 50 个字母一样。
+  // 历史账号那边的上限照旧，只靠输入框的 maxLength。
+  function changeName(input: HTMLInputElement, previous: string) {
+    const limited = siteId === 'solov-api' ? null : limitKeyNameEdit(previous, input.value)
+    if (!limited) {
+      setName(input.value)
+      return
+    }
+    setName(limited.value)
+    // 输入框被改回截过的名字时光标会跳到最后，挪回刚才打字的地方。
+    window.requestAnimationFrame(() => input.setSelectionRange(limited.caret, limited.caret))
   }
   const selectedGroupAvailable = groups.some((entry) => entry.name === group)
   const groupDescription = groups.find((entry) => entry.name === group)?.description?.trim()
@@ -1287,7 +1303,18 @@ function AccountKeys({
               value={name}
               maxLength={50}
               hint="方便你认出它"
-              onChange={(event) => setName(event.target.value)}
+              onCompositionStart={(event) => {
+                nameCompositionBase.current = event.currentTarget.value
+              }}
+              onCompositionEnd={(event) => {
+                const previous = nameCompositionBase.current ?? name
+                nameCompositionBase.current = null
+                changeName(event.currentTarget, previous)
+              }}
+              onChange={(event) => {
+                if (nameCompositionBase.current === null) changeName(event.target, name)
+                else setName(event.target.value)
+              }}
             />
             {groupControl}
             {groupsError && (
