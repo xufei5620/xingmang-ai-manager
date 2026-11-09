@@ -9,6 +9,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createAwakeClock } from './awake-deadline'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, type ProviderId } from './catalog'
@@ -328,7 +329,9 @@ export interface NpmDownloadStallWatchOptions {
  * change counts, a shrink included, since npm discarding a broken partial
  * download before its own retry is activity rather than a hang. A measurement
  * that fails counts as activity too: a download is never ended on evidence the
- * watch could not collect.
+ * watch could not collect. The stall window counts only awake time
+ * (awake-deadline.ts): after a sleep it starts over, because npm's connections
+ * died with the sleep and the network is still coming back.
  */
 export function createNpmDownloadStallWatch(
   measureBytes: () => Promise<number>,
@@ -336,19 +339,30 @@ export function createNpmDownloadStallWatch(
 ): NpmDownloadStallWatch {
   const checkIntervalMs = options.checkIntervalMs ?? npmDownloadProgressCheckMs
   const stallTimeoutMs = options.stallTimeoutMs ?? npmDownloadStallTimeoutMs
-  const now = options.now ?? (() => performance.now())
+  const clock = createAwakeClock({ now: options.now, intervalMs: checkIntervalMs })
   const controller = new AbortController()
   let lastBytes: number | null = null
-  let lastChangeAt = now()
+  let lastChangeAt = 0
   let measuring = false
   let stopped = false
   let stalled = false
-  const timer = setInterval(() => { void check() }, checkIntervalMs)
+  const timer = setInterval(() => {
+    // 量着的那一拍也看一眼表：一次量得久，中间的拍子照样在走，睡眠才认得出来。
+    observe()
+    void check()
+  }, checkIntervalMs)
 
   function stop(): void {
     if (stopped) return
     stopped = true
     clearInterval(timer)
+  }
+
+  /** Awake milliseconds so far; a sleep since the last look starts the stall window over. */
+  function observe(): number {
+    const { awakeMs, woke } = clock.read()
+    if (woke) lastChangeAt = awakeMs
+    return awakeMs
   }
 
   async function check(): Promise<void> {
@@ -364,7 +378,8 @@ export function createNpmDownloadStallWatch(
       measuring = false
     }
     if (stopped) return
-    const checkedAt = now()
+    // 量到一半睡着、醒来这次先量完的话，也在这里认出那段睡眠。
+    const checkedAt = observe()
     if (bytes === null || bytes !== lastBytes) {
       if (bytes !== null) lastBytes = bytes
       lastChangeAt = checkedAt
@@ -1392,6 +1407,9 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           ...(abortSignal ? { signal: abortSignal } : {}),
           cwd,
           timeoutMs,
+          // 解析、下载、装到本机三步的时限都只算醒着的时间：下到 25 分钟合盖 10 分钟，醒来不该当场
+          // 按满 30 分钟掐掉（睡眠深查 G1）。
+          timeoutExcludesSleep: true,
           maxOutputBytes: 8 * 1024 * 1024,
           onOutput: ({ text }) => {
             const message = text.trim()
