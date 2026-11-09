@@ -444,7 +444,7 @@ describe.runIf(process.platform === 'darwin')('private Darwin CLI staging lifecy
       })
 
       const open = await listOpenDarwinFiles([executable])
-      expect(open?.some((name) => name.split('/').includes(path.basename(staged.directory)))).toBe(true)
+      expect(open?.some((name) => name.split(path.sep).includes(path.basename(staged.directory)))).toBe(true)
       await cleanupStaleDarwinCliDirectories(root, (pid) => pid === process.pid)
       expect(fs.existsSync(executable)).toBe(true)
     } finally {

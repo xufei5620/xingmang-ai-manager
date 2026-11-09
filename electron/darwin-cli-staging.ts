@@ -165,7 +165,7 @@ interface StaleDarwinCliDirectory {
 }
 
 function namesDirectory(openPath: string, directoryName: string): boolean {
-  return openPath.split('/').includes(directoryName)
+  return openPath.split(path.sep).includes(directoryName)
 }
 
 /**
