@@ -222,3 +222,45 @@ test('quality restores the download by Electron version and only a push to main 
     assert.match(String(save.if), new RegExp(`github\\.event_name == 'push' && steps\\.${restore.id}\\.outputs\\.cache-hit != 'true'$`))
   }
 })
+
+// CI-1: two packaging jobs that never load the binary still download the zip
+// electron-builder unpacks. They read the entry their OS's install job keeps
+// (linux-test, macos-test) and write nothing: only the install jobs, on a
+// push to main, populate it. electron-builder checks whatever it finds against
+// the locked checksums.json (scripts/electron-zip-checksums.cjs), so a stale
+// or foreign file is downloaded again, not packaged.
+test('the packaging-only jobs read the Electron download the install jobs keep, and never write it', () => {
+  const quality = workflows.get('quality.yml')
+  const standardKey = "electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}"
+  for (const [name, packagingCommand, keeper] of [
+    ['linux-package', /^npm run build:linux:ci$/, 'linux-test'],
+    ['macos-release-rehearsal', /^npm run test:mac:release-path$/, 'macos-test'],
+  ]) {
+    const job = quality.jobs[name]
+    const steps = job.steps
+    const runners = String(job['runs-on']).includes('matrix.runner')
+      ? job.strategy.matrix.include.map((entry) => entry.runner)
+      : [job['runs-on']]
+    const cachePath = defaultElectronCache(runners[0])
+    assert.notEqual(cachePath, null, `${name}: no known download folder for ${runners[0]}`)
+    assert.ok(runners.every((runner) => defaultElectronCache(runner) === cachePath), `${name}: every runner must share one download folder`)
+
+    const restores = steps.filter((step) => String(step.uses || '').startsWith('actions/cache/restore@') && step.with?.path === cachePath)
+    assert.equal(restores.length, 1, `${name} must restore the Electron download once`)
+    const [restore] = restores
+    assert.equal(restore.with.key, standardKey, `${name}: the key must be the one ${keeper} saves`)
+    assert.equal(restore.if, undefined)
+    const npmCi = steps.findIndex((step) => /^npm ci\b/.test(String(step.run || '').trim()))
+    const packaging = steps.findIndex((step) => packagingCommand.test(String(step.run || '').trim()))
+    const restoreIndex = steps.indexOf(restore)
+    // hashFiles reads node_modules, so the key only exists after npm ci.
+    assert.ok(npmCi !== -1 && npmCi < restoreIndex && restoreIndex < packaging, `${name}: restore after npm ci and before packaging`)
+    assert.equal(steps.some((step) => String(step.uses || '').startsWith('actions/cache/save@') && step.with?.path === cachePath), false, `${name} must not write the Electron download`)
+    assert.equal(installIndex(steps), -1, `${name} does not load the binary and must not install it`)
+
+    const keeperJob = quality.jobs[keeper]
+    const keeperInstall = installIndex(keeperJob.steps)
+    assert.equal(defaultElectronCache(keeperJob['runs-on']), cachePath)
+    assert.equal(keeperJob.steps[keeperInstall - 1].with.key, standardKey, `${keeper} must still save the entry ${name} reads`)
+  }
+})

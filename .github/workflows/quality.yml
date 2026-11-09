@@ -223,9 +223,15 @@ jobs:
       # version is unchanged and otherwise from GitHub with bounded, spaced
       # retries (scripts/ci-ensure-electron-binary.cjs). The cached folder is
       # @electron/get's own default for the runner's OS, not one passed in:
-      # electron-builder downloads Electron through the same library into the
+      # electron-builder looks for Electron through the same library in the
       # same folder, so the packaging steps later in windows-package and
-      # macos-test reuse this zip instead of fetching it again. Only a push to
+      # macos-test take this runner's zip from it. Until 2026-11 they still
+      # fetched SHASUMS256.txt from GitHub on every run (that file never enters
+      # the cache) and went red on its 504s; electron-builder.config.cjs now
+      # checks the zip against the locked package's checksums.json instead. The
+      # other architecture's zip (macos-test packages x64 as well) is not in
+      # this cache and is downloaded, with the packager's retries widened in
+      # scripts/patch-builder-fetch-compat.cjs. Only a push to
       # main writes the cache, right after the download: a pull request's cache
       # can be read by that pull request alone, so a copy per pull request would
       # only crowd the npm caches out of the repository's 10 GB, and saving
@@ -594,6 +600,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 读 macos-test 在 main 上存下的那份 Electron 压缩包（M 芯片版；Intel 版不在里面，
+      # 打包时现下，靠打包器放宽到约 4 分钟的重试兜住 504，见 CI-1）。只读不写：这个
+      # 作业不装测试用的二进制，electron-builder 用缓存里的包之前照样按锁文件钉住的
+      # checksums.json 核对。
+      - name: Restore the Electron download macos-test keeps for this version
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
       # 与 publish-release.yml 同样的先后：暂存工具用的是主进程里那套安全读写与内核
       # 校验，所以它跑之前必须先有 dist-electron；少了这一步它会在第一秒就报
       # 「请先编译主进程」。
@@ -905,6 +920,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The Electron zip linux-test keeps for this version (CI-1). Read only:
+      # this job never installs the binary the tests load, so it has nothing of
+      # its own to write back, and electron-builder checks whatever it finds
+      # here against the locked checksums.json before using it. Only x64 has a
+      # job that saves it; on arm64 this misses and the build downloads the zip
+      # with the packager's widened retries, as before.
+      - name: Restore the Electron download linux-test keeps for this version
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Build the deb for this runner's architecture
         # Compile, then electron-builder's xz-compressed deb. A few minutes;
         # the bound names this step if a download it makes ever hangs.
