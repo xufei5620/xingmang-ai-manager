@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { cliExitHintLines, macosFolderAccessHintLines } from './cli-exit-hint'
 import type { CommandSpec } from './command-runner'
 import {
+  buildMacosAppendedPathLines,
   buildMacosClosedProxyGuard,
   buildMacosTerminalScript,
   cleanupStaleTerminalDirectories,
@@ -157,7 +158,8 @@ describe('macOS terminal launcher', () => {
     })
     fs.writeFileSync(launcher, script, { mode: 0o700 })
 
-    execFileSync('/bin/zsh', ['-f', launcher])
+    // What Terminal's login shell hands down: its PATH stays in front, the app's own entries follow (D73).
+    execFileSync('/bin/zsh', ['-f', launcher], { env: { HOME: environment.HOME, PATH: '/login/bin:/usr/bin:/bin' } })
 
     const result = JSON.parse(fs.readFileSync(output, 'utf8')) as {
       cwd: string
@@ -170,7 +172,7 @@ describe('macOS terminal launcher', () => {
       env: {
         HOME: environment.HOME,
         CODEX_HOME: environment.CODEX_HOME,
-        PATH: environment.PATH,
+        PATH: '/login/bin:/usr/bin:/bin:/custom/bin',
         PWD: workspace,
       },
     })
@@ -178,8 +180,9 @@ describe('macOS terminal launcher', () => {
     expect(script.indexOf('rm -f --')).toBeLessThan(script.indexOf('cd --'))
     expect(script.indexOf('cd --')).toBeLessThan(script.indexOf('export CODEX_HOME='))
     expect(script.indexOf('export CODEX_HOME=')).toBeLessThan(script.indexOf('export HOME='))
-    expect(script.indexOf('export HOME=')).toBeLessThan(script.indexOf('export PATH='))
-    expect(script.indexOf('export PATH=')).toBeLessThan(script.indexOf("trap ':' INT"))
+    expect(script.indexOf('export HOME=')).toBeLessThan(script.indexOf('\nexport PATH\n'))
+    expect(script.indexOf('\nexport PATH\n')).toBeLessThan(script.indexOf("trap ':' INT"))
+    expect(script).not.toContain('export PATH=')
     for (const key of ['PWD', 'OLDPWD', 'SHLVL', '_']) {
       expect(script).not.toContain(`export ${key}=`)
     }
@@ -438,7 +441,9 @@ describe('macOS terminal launcher', () => {
     }, () => undefined)
 
     expect(launcherContent).toContain(`export HOME='${directory}'`)
-    expect(launcherContent).toContain("export PATH='/opt/homebrew/bin:/usr/bin:/bin'")
+    // PATH 不整份写死，三段都接在登录 shell 那份后面补（D73）。
+    expect(launcherContent).not.toContain('export PATH=')
+    expect(launcherContent).toContain("  for entry in '/opt/homebrew/bin' '/usr/bin' '/bin'; do")
     expect(launcherContent).toContain(`export CODEX_HOME='${path.join(directory, '.codex')}'`)
     expect(launcherContent).toContain("export LANG='en_US.UTF-8'")
     expect(launcherContent).toContain("export LC_CTYPE='zh_CN.UTF-8'")
@@ -612,6 +617,73 @@ describe('macOS terminal launcher', () => {
   })
 })
 
+// D73：客户登录 shell 设好的 PATH 留在前面（nvm、pyenv、conda），本软件的目录只补还没有的。
+describe('macOS terminal launcher with the PATH left by the login shell', () => {
+  it('appends each app entry once, quoted, and exports the result instead of overwriting it', () => {
+    expect(buildMacosAppendedPathLines("/usr/bin:/bin::/usr/bin:/Users/t/Library/Application Support/x:/tmp/a'b")).toEqual([
+      '() {',
+      '  local entry',
+      "  for entry in '/usr/bin' '/bin' '/Users/t/Library/Application Support/x' '/tmp/a'\\''b'; do",
+      '    case ":${PATH-}:" in',
+      '      *":$entry:"*) ;;',
+      '      *) PATH="${PATH:+$PATH:}$entry" ;;',
+      '    esac',
+      '  done',
+      '}',
+      'export PATH',
+    ])
+    expect(buildMacosAppendedPathLines(':::')).toEqual(['export PATH'])
+  })
+
+  it('keeps the app PATH out of the plain exports', () => {
+    const lines = buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: { HOME: '/Users/tester', PATH: '/usr/bin:/opt/homebrew/bin' },
+    }).split('\n')
+    expect(lines.filter((line) => line.startsWith('export PATH'))).toEqual(['export PATH'])
+    expect(lines).toContain("  for entry in '/usr/bin' '/opt/homebrew/bin'; do")
+    expect(lines.indexOf("export HOME='/Users/tester'")).toBeLessThan(lines.indexOf('export PATH'))
+  })
+
+  async function pathSeenByTool(appPath: string, loginPath: string): Promise<string | undefined> {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-path-'))
+    temporaryDirectories.push(directory)
+    const output = path.join(directory, 'env.json')
+    const launcher = path.join(fs.mkdtempSync(path.join(directory, 'launcher-')), 'launcher.zsh')
+    fs.writeFileSync(launcher, buildMacosTerminalScript({
+      executable: process.execPath,
+      argv: ['-e', 'require("node:fs").writeFileSync(process.argv[1], JSON.stringify(process.env))', output],
+      workspace: directory,
+      launcherPath: launcher,
+      env: { HOME: directory, PATH: appPath },
+    }), { mode: 0o700 })
+    // What Terminal's login shell hands down after reading ~/.zprofile and ~/.zshrc.
+    await execFileAsync('/bin/zsh', ['-f', launcher], { env: { HOME: directory, PATH: loginPath, LANG: 'en_US.UTF-8' } })
+    return (JSON.parse(fs.readFileSync(output, 'utf8')) as NodeJS.ProcessEnv).PATH
+  }
+
+  it.runIf(zshAvailable)('puts the login shell PATH first and only adds the app entries it lacks', async () => {
+    const nvm = '/Users/tester/.nvm/versions/node/v20.18.0/bin'
+    const conda = '/opt/miniconda3/bin'
+    const managedNode = '/Users/tester/Library/Application Support/xingmang-ai-manager/node/bin'
+    const seen = await pathSeenByTool(
+      `/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:${managedNode}`,
+      `${nvm}:${conda}:/opt/homebrew/bin:/usr/bin:/bin`,
+    )
+    // node、python3 先找到的是客户自己那份，/usr/bin 不再抢到最前；他没有的两段补在最后。
+    expect(seen).toBe(`${nvm}:${conda}:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${managedNode}`)
+  })
+
+  it.runIf(zshAvailable)('compares entries literally, so glob characters neither match nor expand', async () => {
+    const seen = await pathSeenByTool('/usr/bin:/bin:/tmp/[x]*:/tmp/a b', '/usr/bin:/bin:/tmp/x1')
+    expect(seen).toBe('/usr/bin:/bin:/tmp/x1:/tmp/[x]*:/tmp/a b')
+    expect(await pathSeenByTool('/usr/bin:/bin:/tmp/[x]*', '/tmp/[x]*:/usr/bin:/bin')).toBe('/tmp/[x]*:/usr/bin:/bin')
+  })
+})
+
 describe('macOS terminal launcher with proxies left by the login shell', () => {
   function probeLine(host: string, port: number): string {
     return `-z -n -G 1 ${host} ${port}`
@@ -627,7 +699,7 @@ describe('macOS terminal launcher with proxies left by the login shell', () => {
     })
     const guard = buildMacosClosedProxyGuard().join('\n')
     const start = script.indexOf(guard)
-    expect(start).toBeGreaterThan(script.indexOf('export PATH='))
+    expect(start).toBeGreaterThan(script.indexOf('\nexport PATH\n'))
     expect(start + guard.length).toBeLessThan(script.indexOf("trap ':' INT"))
     // The SIP-protected system nc by absolute path: PATH is never consulted.
     expect(guard).toContain("if failure=$('/usr/bin/nc' -z -n -G 1 $address $port 2>&1 </dev/null >/dev/null); then")
@@ -812,7 +884,7 @@ describe('macOS terminal launcher with tool settings left by the login shell', (
 
     expect(unsetLine).toBeGreaterThan(lines.indexOf('if ! /bin/ls -A -- . >/dev/null 2>&1; then'))
     expect(unsetLine).toBeLessThan(lines.indexOf("export GEMINI_API_KEY='managed-key'"))
-    expect(unsetLine).toBeLessThan(lines.indexOf("export PATH='/usr/bin'"))
+    expect(unsetLine).toBeLessThan(lines.indexOf('export PATH'))
   })
 
   it('clears nothing when the plan names nothing', () => {
