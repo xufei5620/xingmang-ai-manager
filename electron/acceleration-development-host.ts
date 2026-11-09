@@ -58,6 +58,29 @@ export function accelerationProxyJournalPath(dataDirectory: string): string {
   return path.join(accelerationDevelopmentDirectory(dataDirectory), 'proxy-lease.json')
 }
 
+/** Whether a proxy was taken and not yet handed back. Startup asks this before
+ *  anything reads the bundled kernel, so it must stay a pair of lstat calls on
+ *  paths derived from the data directory alone. */
+export async function hasAccelerationProxyRecoveryRecords(dataDirectory: string): Promise<boolean> {
+  // The directory alone proves nothing: the worker creates it on its first
+  // initialization, including the one a mere state read triggers, and keeps
+  // the free-time ledger there. Only the journal or its lease means a proxy
+  // was taken and not yet handed back. On macOS the native helper keeps its
+  // lock elsewhere, so the journal is the one record there. lstat does not
+  // follow links; anything but a clean ENOENT goes to the worker, which owns
+  // the real check and refuses a redirected record (I8).
+  const journalPath = accelerationProxyJournalPath(dataDirectory)
+  for (const file of [journalPath, `${journalPath}.lock`]) {
+    try {
+      await lstat(file)
+      return true
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return true
+    }
+  }
+  return false
+}
+
 export function parseAccelerationDevelopmentConfig(value: unknown): AccelerationDevelopmentConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('本机加速配置无效。')
   const config = value as Record<string, unknown>
@@ -575,24 +598,8 @@ export function createAccelerationDevelopmentHost(options: {
     } finally { recoveryRetrying = false }
   }
 
-  async function hasProxyRecoveryRecords(): Promise<boolean> {
-    // The directory alone proves nothing: the worker creates it on its first
-    // initialization, including the one a mere state read triggers, and keeps
-    // the free-time ledger there. Only the journal or its lease means a proxy
-    // was taken and not yet handed back. On macOS the native helper keeps its
-    // lock elsewhere, so the journal is the one record there. lstat does not
-    // follow links; anything but a clean ENOENT goes to the worker, which owns
-    // the real check and refuses a redirected record (I8).
-    const journalPath = accelerationProxyJournalPath(options.dataDirectory)
-    for (const file of [journalPath, `${journalPath}.lock`]) {
-      try {
-        await lstat(file)
-        return true
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException | null)?.code !== 'ENOENT') return true
-      }
-    }
-    return false
+  function hasProxyRecoveryRecords(): Promise<boolean> {
+    return hasAccelerationProxyRecoveryRecords(options.dataDirectory)
   }
 
   async function request(operation: string, scope: string, mode?: string, lineId?: string, ignoreConflicts?: boolean): Promise<AccelerationState> {

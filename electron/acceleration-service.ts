@@ -69,8 +69,11 @@ interface AccelerationServiceOptions {
    * 开机不等安装包里的加速文件校验完（main.ts），后端和文件坏没坏要等它才知道。给了它就以它为准，上面
    * backend、bundleDamaged 两项不看：要用到后端的操作都排在它后面；到手之前 awaitingPreviousOwner 答
    * 「没在等」，也还不给「重新检查」。缺省 = 建的时候就都知道，旧行为。
+   * 给的是函数：第一次真要用后端的操作排到了才调它，只调一次。加速 2026-10-30 下线以后多数人一次都用不到，
+   * 读那份文件却要整读三十多兆；换账号、停掉别的账号、退出这些用不着后端的操作不去调它。
    */
   ready?: Promise<Pick<AccelerationServiceOptions, 'backend' | 'bundleDamaged'>>
+    | (() => Promise<Pick<AccelerationServiceOptions, 'backend' | 'bundleDamaged'>>)
   /**
    * 状态文件关掉了网络加速（remote-features.ts）：不再连新的，用户点的、软件替他连的都一样。连着的照常用、
    * 照常能停，停不掉才是更糟的事。缺省 = 不关。
@@ -297,8 +300,10 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
   // backend that arrives later (options.ready) is settled before any of them
   // gets its turn; awaitingPreviousOwner only peeks and answers no until then.
   // One that never arrives counts as none: the page shows it cannot connect.
-  let queue: Promise<unknown> = options.ready
-    ? options.ready.then((settled) => { ({ backend, bundleDamaged } = settled) }, () => { backend = undefined; bundleDamaged = undefined })
+  const ready = options.ready
+  let loadBackend = typeof ready === 'function' ? ready : null
+  let queue: Promise<unknown> = ready && typeof ready !== 'function'
+    ? ready.then((settled) => { ({ backend, bundleDamaged } = settled) }, () => { backend = undefined; bundleDamaged = undefined })
     : Promise.resolve()
   let lastMutation: { key: string; promise: Promise<AccelerationState> } | null = null
   let revision = 0
@@ -311,6 +316,21 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     const result = queue.then(operation, operation)
     queue = result.then(() => undefined, () => undefined)
     return result
+  }
+
+  // A lazily fetched backend is settled by the first queued operation that
+  // needs it. The queue runs one operation at a time, so whoever comes next
+  // already sees the result and never fetches again. Operations that only stop
+  // sessions skip this: a session exists only after a backend did.
+  function enqueueWithBackend<T>(operation: () => Promise<T>): Promise<T> {
+    return enqueue(async () => {
+      const load = loadBackend
+      if (load) {
+        loadBackend = null
+        try { ({ backend, bundleDamaged } = await load()) } catch { backend = undefined; bundleDamaged = undefined }
+      }
+      return await operation()
+    })
   }
 
   function assertCurrent(scope: string, expectedRevision: number): void {
@@ -380,7 +400,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     // the one that raised it, so it must not be served the refusal in flight.
     const key = `${revision}:${scope}:${operation}:${mode ?? ''}:${lineId ?? ''}:${ignoreConflicts === true}:${origin ?? ''}:${connectedAt ?? ''}`
     if (operation !== 'get' && lastMutation?.key === key) return lastMutation.promise
-    const promise = enqueue(async () => {
+    const promise = enqueueWithBackend(async () => {
       await stopOtherAccounts(options.getAccountScope())
       assertCurrent(scope, expectedRevision)
       if (!backend) {
@@ -445,7 +465,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
         assertCurrent(scope, revision)
       } catch (error) { return Promise.reject(error) }
       const expectedRevision = revision
-      return enqueue(async () => {
+      return enqueueWithBackend(async () => {
         await stopOtherAccounts(options.getAccountScope())
         assertCurrent(scope, expectedRevision)
         if (!backend?.redeemAccelerationCode) throw new Error(SERVICE_UNAVAILABLE)
@@ -465,7 +485,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     listAccelerationLines(scope) {
       try { assertScope(scope); assertCurrent(scope, revision) } catch (error) { return Promise.reject(error) }
       const expectedRevision = revision
-      return enqueue(async () => {
+      return enqueueWithBackend(async () => {
         assertCurrent(scope, expectedRevision)
         if (!backend?.listAccelerationLines) return []
         try {
@@ -478,7 +498,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     pingAccelerationLine(scope, lineId) {
       try { assertScope(scope); assertLineId(lineId); assertCurrent(scope, revision) } catch (error) { return Promise.reject(error) }
       const expectedRevision = revision
-      return enqueue(async () => {
+      return enqueueWithBackend(async () => {
         assertCurrent(scope, expectedRevision)
         if (!backend?.pingAccelerationLine) throw new Error(SERVICE_UNAVAILABLE)
         // 后台那一次占着内核时后端照样拒绝，但那句话到这里只剩「暂不可用」；加速页
