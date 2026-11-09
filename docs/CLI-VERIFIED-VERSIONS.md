@@ -381,7 +381,7 @@ Key 走的型号菜单）不用抬。
 
 仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天真跑的结果：Codex 0.167.0、Claude Code 2.1.319 都在 `solov` 上通过，所以这两条的 `verifiedSites` 是 `['solov']`；Grok、Gemini 两条还是空数组。
 - Claude Code 第一次用共用那把 Key（GPT 分组），中转答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」；换成 Claude 分组的 `XINGMANG_CLI_PATROL_KEY_CLAUDE` 后通过。
-- `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了；要测它得另配一把那边的 Key。
+- `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了。yoyo 同日定「历史站不测」：探测跳过它（`scripts/probe-cli-relay.cjs` 的 `UNPROBED_SITES`），summary 里写明「未在中转实测」。
 - Grok 不在探测范围里。
 
 **Grok 进名单（2026-09-30）：它发版太密，而接当前账号靠的几项配置都挂在它的键名上。**
@@ -909,7 +909,7 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 所以 quality 工作流里有一个 `cli-relay-probe` 作业（`scripts/probe-cli-relay.cjs`）：
 
 - **什么时候跑**：PR 改到 `electron/cli-verified-versions.ts` 或本文档时。别的 PR 改不动这个答案，不值得对生产中转发真实请求。
-- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × 两个站点 = 四次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测）。
+- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × `solov` 一个站点 = 两次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测；历史账号站 `solov-api` 2026-11-09 定不测，见上文，summary 里照样列出并写明没测）。
   - Claude Code：`claude -p --output-format stream-json --verbose`，凭据走 `ANTHROPIC_AUTH_TOKEN`。输出格式只改本地打印、不改请求体；用它是因为纯 `-p` 在重试期间什么都不打，被超时杀掉时只剩退出码 143，stream-json 会把每次重试的 HTTP 状态打出来，脚本据此归类。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
 - **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。

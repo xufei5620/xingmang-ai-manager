@@ -30,6 +30,12 @@ const KEY_VARIABLE = 'XINGMANG_CLI_PATROL_KEY'
  * 共用的那把。
  */
 const PROVIDER_KEY_VARIABLES = { claude: 'XINGMANG_CLI_PATROL_KEY_CLAUDE' }
+/**
+ * 不探测的站点和原因。历史账号站 api.solov.cc 是 sub2api,它的 Key 和星芒账号
+ * (xm.solov.cc,new-api)不通用,巡检 Key 打过去只会是 401(2026-11-09 实测);
+ * yoyo 同日定「历史站不测」。summary 里照样列出它,写明没测,不算通过。
+ */
+const UNPROBED_SITES = { 'solov-api': '历史账号站，巡检密钥是星芒账号的、在那边不认，2026-11-09 定不测' }
 const PROBE_PROMPT = '回答一个字:好'
 const MAX_CAPTURED_BYTES = 16 * 1024
 const PROBE_TIMEOUT_MS = 120_000
@@ -292,6 +298,11 @@ function renderSummary(lines) {
   console.log(text)
 }
 
+/** 要探测的站点:去掉 UNPROBED_SITES 里的。 */
+function probedSites(sites) {
+  return sites.filter((site) => !Object.prototype.hasOwnProperty.call(UNPROBED_SITES, site.id))
+}
+
 /** 名单里填了推荐版本的那几个工具,按 PROBED_PROVIDERS 的顺序。 */
 function pinnedProviders(list) {
   return PROBED_PROVIDERS.filter((provider) => list[provider] && list[provider].recommended)
@@ -300,6 +311,10 @@ function pinnedProviders(list) {
 async function main() {
   const { cliVerifiedVersions } = loadTypeScriptModule('electron/cli-verified-versions.ts')
   const { relaySites } = loadTypeScriptModule('electron/relay-sites.ts')
+  const sites = probedSites(relaySites)
+  const unprobedLines = relaySites
+    .filter((site) => !sites.includes(site))
+    .map((site) => `- \`${site.id}\`：**未在中转实测**（${UNPROBED_SITES[site.id]}）`)
   const { defaultCliModels } = loadTypeScriptModule('electron/cli-model-defaults.ts')
   const { cliCatalog } = loadTypeScriptModule('electron/catalog.ts')
   const providers = pinnedProviders(cliVerifiedVersions)
@@ -322,7 +337,8 @@ async function main() {
       `**未在中转实测** —— 仓库 secret \`${KEY_VARIABLE}\` 不存在。`,
       '',
       `本次只验证了「上游 changelog 里没有与网关/第三方 base URL 相关的回归」，${pinnedList} **没有**在任何中转站点上跑过真实请求。`,
-      `补上这个 secret（一把额度很小的测试 Key）之后，这个作业会对 ${relaySites.map((site) => `\`${site.id}\``).join('、')} 各跑一次真实请求。`,
+      `补上这个 secret（一把额度很小的测试 Key）之后，这个作业会对 ${sites.map((site) => `\`${site.id}\``).join('、')} 各跑一次真实请求。`,
+      ...(unprobedLines.length ? ['', '不探测的站点：', ...unprobedLines] : []),
       '',
       `new-api 一把令牌只属于一个分组（\`catalog.ts\` 的 \`managedCliKeyProfiles\`）：这把放 GPT 分组的，Claude 另配 \`${PROVIDER_KEY_VARIABLES.claude}\`（Claude 分组）。分组不对时会报「分组里没有可用渠道」，那不是版本问题。`,
       ...(skipped.length ? ['', `名单里还没填推荐版本、因此没有探测的：${skipped.map((provider) => cliCatalog[provider].name).join('、')}。`] : []),
@@ -343,7 +359,7 @@ async function main() {
       return
     }
     const executable = await resolveGlobalCli(cliCatalog[provider].command)
-    for (const site of relaySites) {
+    for (const site of sites) {
       results.push(await probeSite(provider, executable, site, recommended.version, resolveProbeKey(provider, process.env), defaultCliModels[provider]))
     }
   }
@@ -352,7 +368,7 @@ async function main() {
   const lines = [
     '## 中转实测',
     '',
-    `**${headline}**`,
+    `**${ok && unprobedLines.length ? `${headline}（下面列出的站点没测）` : headline}**`,
     '',
     `探测对象：${pinnedList}。`,
     ...(skipped.length ? [`名单里还没填推荐版本、因此没有探测的：${skipped.map((provider) => cliCatalog[provider].name).join('、')}。`] : []),
@@ -360,6 +376,7 @@ async function main() {
     '| 工具 | 版本 | 站点 | 结论 | 说明 |',
     '| --- | --- | --- | --- | --- |',
     ...results.map((result) => `| ${cliCatalog[result.provider].name} | \`${result.version}\` | \`${result.siteId}\` | ${result.verdict === 'ok' ? '通过' : '未通过'} | ${result.detail} |`),
+    ...(unprobedLines.length ? ['', '不探测的站点：', ...unprobedLines] : []),
     '',
     '跑通的站点 id 请写进名单里对应那条 `recommended` 的 `verifiedSites`，当前分别是：',
     ...providers.map((provider) => `- ${cliCatalog[provider].name}：\`[${cliVerifiedVersions[provider].recommended.verifiedSites.join(', ')}]\``),
@@ -378,4 +395,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }
+module.exports = { probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
-  resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
+  probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
   PROBED_PROVIDERS, KEY_VARIABLE,
 } = require('./probe-cli-relay.cjs')
 
@@ -195,4 +195,14 @@ test('the report names the secret that was actually used', () => {
   const refusal = { code: 1, output: '分组 GPT 下模型 claude-opus-5-5 无可用渠道' }
   assert.match(classifyProbe(refusal, 'XINGMANG_CLI_PATROL_KEY_CLAUDE').detail, /XINGMANG_CLI_PATROL_KEY_CLAUDE/)
   assert.match(classifyProbe({ code: 1, output: '401 Invalid API key' }, 'XINGMANG_CLI_PATROL_KEY_CLAUDE').detail, /XINGMANG_CLI_PATROL_KEY_CLAUDE/)
+})
+
+test('the history-account site is listed as untested instead of being probed with a key it cannot accept', () => {
+  // 2026-11-09: every probe against api.solov.cc came back 401 -- the patrol
+  // keys belong to the Xingmang (new-api) account, which that site does not share.
+  const sites = [{ id: 'solov' }, { id: 'solov-api' }]
+  assert.deepEqual(probedSites(sites).map((site) => site.id), ['solov'])
+  assert.match(UNPROBED_SITES['solov-api'], /不测/)
+  // Only that one site is exempt; a new relay site is probed by default.
+  assert.deepEqual(probedSites([{ id: 'solov' }, { id: 'new-site' }]).map((site) => site.id), ['solov', 'new-site'])
 })
