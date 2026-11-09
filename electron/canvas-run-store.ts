@@ -25,6 +25,9 @@ const DEFAULT_MAXIMUM_BYTES = 8 * 1024 * 1024
 const DEFAULT_RUN_RETENTION = 100
 const DEFAULT_CACHE_RETENTION = 500
 const DEFAULT_ASSET_RETENTION = 2_000
+const DEFAULT_DEFERRED_WRITE_DELAY_MS = 2_000
+// The remembered state is only worth its memory while the canvas is busy.
+const CACHED_STATE_IDLE_RELEASE_MS = 60_000
 const FILE_LABEL = '画布运行记录'
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
@@ -61,8 +64,33 @@ export interface CanvasRunStoreOptions {
   runRetention?: number
   cacheRetention?: number
   assetRetention?: number
+  /** Longest a deferred progress save stays in memory only; default 2 seconds. */
+  deferredWriteDelayMs?: number
   now?: () => Date
   randomUUID?: () => string
+}
+
+export interface CanvasRunSaveOptions {
+  /**
+   * A progress-only snapshot (stage and percentage updates). It replaces the
+   * run in memory at once, so every read sees it, but reaches the disk with
+   * the next ordinary save or within `deferredWriteDelayMs`. Nothing paid
+   * hangs on it: the snapshot written before a paid request is dispatched,
+   * the one carrying its result and the terminal one are all ordinary saves.
+   */
+  deferWrite?: boolean
+}
+
+/**
+ * The parsed state of one user's file, kept so that a save does not read,
+ * parse and scan the whole file (up to 8 MB) again. `identity` is the file as
+ * it was when this state was read from or written to it; anything that
+ * changes the file behind our back changes it, and the file wins.
+ */
+interface CachedRunState {
+  state: CanvasRunStateFile
+  identity: string | null
+  dirty: boolean
 }
 
 function assertPositiveInteger(value: number, label: string, maximum = 100_000): void {
@@ -192,7 +220,7 @@ const FREE_TEXT_KEYS = new Set(['outputText', 'errorMessage'])
  * the structured fields (asset references, identifiers, mime types, task ids)
  * still must never carry a credential, a remote address or a host path.
  */
-function stateScanSubject(state: CanvasRunStateFile): string {
+function stateScanSubject(state: CanvasRunStateFile | CanvasRunRecord): string {
   return JSON.stringify(state, (key, value) => (FREE_TEXT_KEYS.has(key) ? undefined : value))
 }
 
@@ -202,10 +230,6 @@ function stateContainsSecretOrPath(content: string): boolean {
     || /"(?:apiKey|accessToken|refreshToken|remoteUrl|filePath)"\s*:/i.test(content)
     || /https?:\/\//i.test(content)
     || /(?:[A-Za-z]:\\|file:\/\/)/i.test(content)
-}
-
-function cloneState(state: CanvasRunStateFile): CanvasRunStateFile {
-  return structuredClone(state)
 }
 
 function serializeState(state: CanvasRunStateFile): string {
@@ -248,6 +272,21 @@ function serializeStateWithinBudget(state: CanvasRunStateFile, maximumBytes: num
   return content
 }
 
+/**
+ * Cheap identity of the run file: one async lstat instead of a full read.
+ * null means there is no file; undefined means it could not be told, and the
+ * caller must fall back to reading the file.
+ */
+async function runFileIdentity(filePath: string): Promise<string | null | undefined> {
+  try {
+    const stats = await fs.promises.lstat(filePath, { bigint: true })
+    if (!stats.isFile()) return undefined
+    return `${stats.dev}:${stats.ino}:${stats.nlink}:${stats.size}:${stats.mtimeNs}`
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? null : undefined
+  }
+}
+
 export class CanvasRunStore {
   private readonly rootDirectory: string
   private readonly assets: CanvasRunAssetResolver
@@ -255,9 +294,13 @@ export class CanvasRunStore {
   private readonly runRetention: number
   private readonly cacheRetention: number
   private readonly assetRetention: number
+  private readonly deferredWriteDelayMs: number
   private readonly now: () => Date
   private readonly randomUUID: () => string
   private readonly queues = new Map<number, Promise<void>>()
+  private readonly cached = new Map<number, CachedRunState>()
+  private readonly deferredWrites = new Map<number, ReturnType<typeof setTimeout>>()
+  private readonly idleReleases = new Map<number, ReturnType<typeof setTimeout>>()
 
   constructor(options: CanvasRunStoreOptions) {
     this.rootDirectory = path.resolve(options.rootDirectory)
@@ -266,12 +309,14 @@ export class CanvasRunStore {
     this.runRetention = options.runRetention ?? DEFAULT_RUN_RETENTION
     this.cacheRetention = options.cacheRetention ?? DEFAULT_CACHE_RETENTION
     this.assetRetention = options.assetRetention ?? DEFAULT_ASSET_RETENTION
+    this.deferredWriteDelayMs = options.deferredWriteDelayMs ?? DEFAULT_DEFERRED_WRITE_DELAY_MS
     this.now = options.now ?? (() => new Date())
     this.randomUUID = options.randomUUID ?? nodeRandomUUID
     assertPositiveInteger(this.maximumBytes, '画布记录大小上限', 64 * 1024 * 1024)
     assertPositiveInteger(this.runRetention, '画布运行历史保留数')
     assertPositiveInteger(this.cacheRetention, '画布缓存保留数')
     assertPositiveInteger(this.assetRetention, '画布资产清单保留数')
+    assertPositiveInteger(this.deferredWriteDelayMs, '画布进度写盘间隔', 60_000)
   }
 
   async initializeUser(userId: number): Promise<CanvasRunRecord[]> {
@@ -342,7 +387,7 @@ export class CanvasRunStore {
     })
   }
 
-  async saveRun(userId: number, run: CanvasRunRecord): Promise<void> {
+  async saveRun(userId: number, run: CanvasRunRecord, options: CanvasRunSaveOptions = {}): Promise<void> {
     return this.enqueue(userId, async () => {
       if (!safeRunRecord(run, userId)) throw new Error('画布运行记录格式错误')
       const state = await this.readState(userId)
@@ -367,8 +412,24 @@ export class CanvasRunStore {
           }
         }
       }
-      await this.writeState(userId, state)
+      // Only a state that is kept in memory can wait; one read from a file
+      // that could not be cached (a failed identity check, a corrupt file just
+      // set aside) would lose the update, so it is written now as before.
+      if (options.deferWrite && this.cached.get(userId)?.state === state) {
+        // The write that will carry it checks the whole file; a snapshot that
+        // could never be written is refused now, as an ordinary save would be.
+        if (stateContainsSecretOrPath(stateScanSubject(copy))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
+        this.scheduleDeferredWrite(userId)
+      } else {
+        await this.writeState(userId, state)
+      }
     })
+  }
+
+  /** Writes every deferred progress save now, instead of when its timer fires. */
+  async flushDeferredWrites(): Promise<void> {
+    const userIds = [...this.deferredWrites.keys()]
+    await Promise.all(userIds.map((userId) => this.enqueue(userId, () => this.writeDeferredState(userId))))
   }
 
   async resolveCache(userId: number, fingerprint: string): Promise<CanvasRunCacheEntry | null> {
@@ -531,12 +592,18 @@ export class CanvasRunStore {
   private async readState(userId: number): Promise<CanvasRunStateFile> {
     requireUserId(userId)
     const filePath = this.filePath(userId)
+    // Taken before the read: a change that lands during the read leaves the
+    // remembered identity stale, so the next call reads the file again.
+    const identity = await runFileIdentity(filePath)
+    const cached = this.cached.get(userId)
+    if (cached && identity !== undefined && cached.identity === identity) return cached.state
+    this.forgetState(userId)
     let content: string | null
     try {
       content = await readSafeUtf8File(filePath, FILE_LABEL, this.maximumBytes)
-      if (content === null) return emptyState(userId)
-      const state = parseState(content, userId)
-      if (stateContainsSecretOrPath(stateScanSubject(state))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
+      const state = content === null ? emptyState(userId) : parseState(content, userId)
+      if (content !== null && stateContainsSecretOrPath(stateScanSubject(state))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
+      if (identity !== undefined) this.cached.set(userId, { state, identity, dirty: false })
       return state
     } catch {
       await this.backupCorruptState(filePath)
@@ -556,26 +623,102 @@ export class CanvasRunStore {
   }
 
   private async writeState(userId: number, state: CanvasRunStateFile): Promise<void> {
+    // This write carries every deferred progress save along with it.
+    this.cancelDeferredWrite(userId)
     const directory = this.userDirectory(userId)
     ensureSafeDataDirectory(this.rootDirectory, FILE_LABEL)
     ensureSafeDataDirectory(directory, FILE_LABEL)
-    const normalized = cloneState(state)
-    normalized.runs = normalized.runs.slice(0, this.runRetention)
-    normalized.cache = normalized.cache.slice(0, this.cacheRetention)
-    normalized.assets = normalized.assets.slice(0, this.assetRetention)
+    // Fresh arrays are enough: eviction below only splices them, and the
+    // entries are copies this store made itself. A deep copy of the whole
+    // file here cost the main process tens of milliseconds per write.
+    const normalized: CanvasRunStateFile = {
+      ...state,
+      runs: state.runs.slice(0, this.runRetention),
+      cache: state.cache.slice(0, this.cacheRetention),
+      assets: state.assets.slice(0, this.assetRetention),
+    }
     const content = serializeStateWithinBudget(normalized, this.maximumBytes)
     if (stateContainsSecretOrPath(stateScanSubject(normalized))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
     await writeAtomicSafeUtf8File(this.filePath(userId), content, FILE_LABEL)
+    // What was just written, history evicted for the byte budget included, is
+    // exactly what reading the file back would give.
+    const identity = await runFileIdentity(this.filePath(userId))
+    if (identity === undefined) this.forgetState(userId)
+    else this.cached.set(userId, { state: normalized, identity, dirty: false })
+  }
+
+  private scheduleDeferredWrite(userId: number): void {
+    const cached = this.cached.get(userId)
+    if (!cached) return
+    cached.dirty = true
+    if (this.deferredWrites.has(userId)) return
+    // Not pushed back by later progress: a video reporting every two seconds
+    // would otherwise keep its timeline off the disk until it finished.
+    const timer = setTimeout(() => {
+      if (this.deferredWrites.get(userId) !== timer) return
+      this.deferredWrites.delete(userId)
+      void this.enqueue(userId, () => this.writeDeferredState(userId)).catch(() => undefined)
+    }, this.deferredWriteDelayMs)
+    timer.unref?.()
+    this.deferredWrites.set(userId, timer)
+  }
+
+  private cancelDeferredWrite(userId: number): void {
+    const timer = this.deferredWrites.get(userId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.deferredWrites.delete(userId)
+  }
+
+  private async writeDeferredState(userId: number): Promise<void> {
+    this.cancelDeferredWrite(userId)
+    if (!this.cached.get(userId)?.dirty) return
+    // A file changed behind our back is read back instead, and wins.
+    const state = await this.readState(userId)
+    const cached = this.cached.get(userId)
+    if (cached?.state === state && cached.dirty) await this.writeState(userId, state)
+  }
+
+  private forgetState(userId: number): void {
+    this.cached.delete(userId)
+    this.cancelDeferredWrite(userId)
+  }
+
+  private scheduleIdleRelease(userId: number): void {
+    if (!this.cached.has(userId) || this.idleReleases.has(userId)) return
+    const timer = setTimeout(() => {
+      if (this.idleReleases.get(userId) !== timer) return
+      this.idleReleases.delete(userId)
+      // Pending progress keeps it: its own write drains the queue again and
+      // schedules another release.
+      if (this.queues.has(userId) || this.deferredWrites.has(userId) || this.cached.get(userId)?.dirty) return
+      this.cached.delete(userId)
+    }, CACHED_STATE_IDLE_RELEASE_MS)
+    timer.unref?.()
+    this.idleReleases.set(userId, timer)
+  }
+
+  private cancelIdleRelease(userId: number): void {
+    const timer = this.idleReleases.get(userId)
+    if (timer === undefined) return
+    clearTimeout(timer)
+    this.idleReleases.delete(userId)
   }
 
   private enqueue<T>(userId: number, operation: () => Promise<T>): Promise<T> {
     requireUserId(userId)
+    this.cancelIdleRelease(userId)
     const previous = this.queues.get(userId) ?? Promise.resolve()
     const result = previous.then(operation)
-    const tail = result.then(() => undefined, () => undefined)
+    // A failed operation may have changed the remembered state without
+    // writing it (a rejected write, a bad asset halfway through a save), so the
+    // next one starts again from the file, as every operation used to.
+    const tail = result.then(() => undefined, () => { this.forgetState(userId) })
     this.queues.set(userId, tail)
     void tail.then(() => {
-      if (this.queues.get(userId) === tail) this.queues.delete(userId)
+      if (this.queues.get(userId) !== tail) return
+      this.queues.delete(userId)
+      this.scheduleIdleRelease(userId)
     })
     return result
   }

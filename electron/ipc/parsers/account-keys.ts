@@ -1,5 +1,5 @@
 // 账号密钥的查询、新建、修改、删除，以及把密钥写进工具配置的入参。
-import { activeProviderIds, isActiveProviderId, isProviderId, isRetiredProviderId } from '../../catalog'
+import { accountKeyNameMaxBytes, activeProviderIds, isActiveProviderId, isProviderId, isRetiredProviderId, utf8Length } from '../../catalog'
 import { isRecord } from '../../input-guards'
 import type {
   AccountKeyCliConfigurationInput,
@@ -90,11 +90,13 @@ export function parseManagedCliConfigurationInput(value: unknown): AccountManage
   }
 }
 
-// account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
-// 名称上限(rc.24 controller/token.go);expiredTime -1 = 永不过期哨兵。
+// account:create-key 的入参。new-api AddToken/UpdateToken 按 UTF-8 字节数限名称 50
+// (controller/token.go 的 len(token.Name) > 50),中文名字超过 16 个字就被拒(ZW-1),
+// 所以 new-api 这边再按字节数一遍;历史账号的 100 照旧。expiredTime -1 = 永不过期哨兵。
 export function parseAccountKeyCreateInput(value: unknown, sub2Api = false): AccountKeyCreateInput {
   if (!isRecord(value)) throw new Error('密钥信息格式错误')
-  const name = requiredString(value.name, '密钥名称', sub2Api ? 100 : 50)
+  const name = requiredString(value.name, '密钥名称', sub2Api ? 100 : accountKeyNameMaxBytes)
+  if (!sub2Api && utf8Length(name) > accountKeyNameMaxBytes) throw new Error('密钥名称格式错误')
   if (typeof value.unlimitedQuota !== 'boolean') throw new Error('额度类型格式错误')
   if (
     typeof value.remainQuota !== 'number'
