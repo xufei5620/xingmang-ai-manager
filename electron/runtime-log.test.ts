@@ -6,6 +6,7 @@ import { CommandRunnerError } from './command-runner'
 import {
   buildFeedbackAccountLine,
   describeRuntimeLogWriteFailure,
+  formatFeedbackLocalTime,
   redactHomeDirectory,
   RuntimeLogStore,
   summarizeRuntimeLogFile,
@@ -15,7 +16,7 @@ import { canCreateSymbolicLink } from './symlink-capability.test-support'
 
 const temporaryDirectories: string[] = []
 
-function createStore(options: { maxFileBytes?: number; archiveCount?: number; environmentTimeoutMs?: number } = {}) {
+function createStore(options: { maxFileBytes?: number; archiveCount?: number; environmentTimeoutMs?: number; now?: () => Date } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
   temporaryDirectories.push(directory)
   return new RuntimeLogStore({
@@ -526,6 +527,20 @@ describe('RuntimeLogStore', () => {
     expect(report.text.indexOf('工具与配置:')).toBeLessThan(report.text.indexOf('最近一次自检:'))
   })
 
+  it('adds the local generation time right under the UTC one, for the same instant', async () => {
+    const generatedAt = new Date('2026-11-09T06:05:03.456Z')
+    const store = createStore({ now: () => generatedAt })
+    const lines = (await store.captureFeedbackReport()).text.split('\n')
+    const utcLine = lines.findIndex((line) => line.startsWith('生成时间: '))
+
+    expect(lines[utcLine]).toBe('生成时间: 2026-11-09T06:05:03.456Z')
+    expect(lines[utcLine + 1]).toBe(`生成时间（本机）：${formatFeedbackLocalTime(generatedAt)}`)
+    const local = /^生成时间（本机）：(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) ([+-]\d{2}:\d{2})$/.exec(lines[utcLine + 1])
+    expect(local).not.toBeNull()
+    // Read back as ISO, the local wall clock plus its offset has to land on the same second.
+    expect(Date.parse(`${local?.[1]}T${local?.[2]}${local?.[3]}`)).toBe(Date.parse('2026-11-09T06:05:03Z'))
+  })
+
   it('puts only the numeric account id right under the app version', async () => {
     const store = createStore()
     store.attachAccountDescriber(() => ({ authenticated: true, userId: 10086 }))
@@ -595,7 +610,7 @@ describe('RuntimeLogStore', () => {
     store.log('info', 'fixture', 'entry', 'small entry')
     const unbounded = await store.captureFeedbackReport()
     const bounded = await store.captureFeedbackReport(600, unbounded.text.length)
-    expect(bounded.text.replace(/生成时间: .*/, '')).toBe(unbounded.text.replace(/生成时间: .*/, ''))
+    expect(bounded.text.replace(/生成时间.*/g, '')).toBe(unbounded.text.replace(/生成时间.*/g, ''))
     expect(bounded.text).not.toContain('日志已截断')
   })
 
@@ -810,5 +825,22 @@ describe('RuntimeLogStore', () => {
     expect(describeRuntimeLogWriteFailure(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' })))
       .toBe('日志文件被别的程序占用了')
     expect(describeRuntimeLogWriteFailure(new Error('something else'))).toBe('写入日志文件时出错了')
+  })
+})
+
+describe('formatFeedbackLocalTime', () => {
+  it('writes the wall clock and offset of the given zone, rolling the date where needed', () => {
+    const at = new Date('2026-11-09T06:05:03.456Z')
+    expect(formatFeedbackLocalTime(at, 480)).toBe('2026-11-09 14:05:03 +08:00')
+    expect(formatFeedbackLocalTime(at, -300)).toBe('2026-11-09 01:05:03 -05:00')
+    expect(formatFeedbackLocalTime(at, 0)).toBe('2026-11-09 06:05:03 +00:00')
+    expect(formatFeedbackLocalTime(new Date('2026-11-09T20:30:00Z'), 345)).toBe('2026-11-10 02:15:00 +05:45')
+    expect(formatFeedbackLocalTime(new Date('2026-11-09T02:00:00Z'), -210)).toBe('2026-11-08 22:30:00 -03:30')
+    expect(formatFeedbackLocalTime(new Date('2026-12-31T16:00:00Z'), 480)).toBe('2027-01-01 00:00:00 +08:00')
+  })
+
+  it('follows the machine clock when no offset is given', () => {
+    const at = new Date('2026-07-01T12:34:56Z')
+    expect(formatFeedbackLocalTime(at)).toBe(formatFeedbackLocalTime(at, -at.getTimezoneOffset()))
   })
 })
