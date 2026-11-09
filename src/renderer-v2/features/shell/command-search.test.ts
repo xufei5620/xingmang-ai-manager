@@ -166,6 +166,7 @@ describe('searchCommands', () => {
     const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
     expect(landing('我的订单')).toEqual({ key: 'account:orders', group: 'account', label: '我的订单', page: 'account', section: 'orders' })
     expect(landing('没到账')).toMatchObject({ section: 'orders' })
+    expect(landing('生成任务')).toEqual({ key: 'account:tasks', group: 'account', label: '生成任务', page: 'account', section: 'tasks' })
     expect(landing('异步任务')).toMatchObject({ section: 'tasks' })
     expect(landing('登录设备')).toMatchObject({ section: 'devices' })
     expect(landing('下线')).toMatchObject({ section: 'devices' })
@@ -178,7 +179,7 @@ describe('searchCommands', () => {
 
   it('leaves out the moved parts the current account cannot use', () => {
     const historical = { accountTabVisible: (tab: string) => !['tasks', 'devices'].includes(tab) }
-    expect(searchCommands('异步任务', historical).some((item) => item.section === 'tasks')).toBe(false)
+    expect(searchCommands('生成任务', historical).some((item) => item.section === 'tasks')).toBe(false)
     expect(searchCommands('登录设备', historical).some((item) => item.section === 'devices')).toBe(false)
     expect(searchCommands('修改密码', { accountTabVisible: () => false }).some((item) => item.section === 'change-password')).toBe(true)
   })

@@ -52,7 +52,7 @@ export const accountSections = [
   { value: accountSwitchAnchor, tab: 'overview', label: '切换账号', keywords: accountSwitchKeywords },
   { value: accountProfileAnchor, tab: 'overview', label: '编辑资料', keywords: ['改名', '改头像', '换头像', '显示名称'] },
   { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'], gated: true },
-  { value: 'tasks', tab: 'usage', label: '异步任务', keywords: ['任务', '生成进度'], gated: true },
+  { value: 'tasks', tab: 'usage', label: '生成任务', keywords: ['任务', '生成进度', '异步任务'], gated: true },
   { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
   { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
   { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
