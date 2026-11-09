@@ -363,10 +363,11 @@ export class AiVideoAssetStore {
     return results
   }
 
-  async saveAs(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<boolean> {
+  /** suggestedFileName 只是系统对话框里的默认文件名（调用方先洗干净），存到哪儿由用户在对话框里点。 */
+  async saveAs(userId: number, assetId: string, authorize?: () => void | Promise<void>, suggestedFileName?: string): Promise<boolean> {
     if (!this.nativeOperations) throw new Error('当前环境不支持视频另存为')
     const owned = await this.readOwned(userId, assetId)
-    const target = await this.nativeOperations.selectSavePath(owned.asset.fileName)
+    const target = await this.nativeOperations.selectSavePath(suggestedFileName ?? owned.asset.fileName)
     if (!target) return false
     await authorize?.()
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('视频另存地址无效')

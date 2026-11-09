@@ -562,8 +562,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const openClip = async (assetId: string) => {
     try { await bridge.openAiVideo(assetId) } catch (reason) { setError(videoStudioErrorMessage(reason, '没打开这段视频，请稍后再试')) }
   }
-  const saveClip = async (assetId: string): Promise<boolean> => {
-    try { return (await bridge.saveAiVideo(assetId)).saved } catch (reason) { setError(videoStudioErrorMessage(reason, '没存下来，请换个位置再试')); return false }
+  // 另存时对话框里默认用片名当文件名（主进程洗成干净的文件名），没有片名就用作品库原来的名字。
+  const saveClip = async (assetId: string, name?: string): Promise<boolean> => {
+    try { return (await bridge.saveAiVideo(assetId, name?.trim() || undefined)).saved } catch (reason) { setError(videoStudioErrorMessage(reason, '没存下来，请换个位置再试')); return false }
   }
   // 页面上好几处说「存进 AI 作品文件夹」，这里直接打开它。用的是检查页那条：路径由主进程算、过了 I8 检查才打开，这里只说要哪一个。
   const openFolder = async () => {

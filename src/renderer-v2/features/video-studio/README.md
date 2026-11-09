@@ -44,7 +44,7 @@
 - `readAiVideoClip`：读一段视频的全部字节，交给下面的拼片引擎。
 - `generateAiImage` / `cancelAiChat`：对话页出图那两条，「让 AI 画一张」照用，没加通道。
 - `pickVideoStudioMusic` / `readVideoStudioMusic`：选一首歌存进作品库的音频那一格（路径来自系统对话框，不来自页面），拼片时按编号读回来。
-- `storeVideoStudioExport`：拼好的成片存进作品库；`openAiVideo` 用电脑默认的播放器打开，`saveAiVideo` 另存。读片段和存成片在主进程按窗口排成一队、一次只搬一段（最多 512 MB），排着的超过 12 个直接拒，连发也撑不爆主进程内存。
+- `storeVideoStudioExport`：拼好的成片存进作品库；`openAiVideo` 用电脑默认的播放器打开，`saveAiVideo` 另存（页面把片名带过去当系统对话框里默认的文件名，主进程 `parseVideoSaveName` 洗成干净的文件名：路径分隔符和 Windows 不认的字换成空格、去掉改写显示方向的字、最长 80 个字、接 .mp4，保留名或洗空了就用作品库原来的名字；存到哪儿照旧由用户在对话框里点）。读片段和存成片在主进程按窗口排成一队、一次只搬一段（最多 512 MB），排着的超过 12 个直接拒，连发也撑不爆主进程内存。
 - `openDiagnosticFolder('ai-output')`：检查页那条通道，打开 AI 作品文件夹（路径由主进程算，过了 I8 检查才打开）。成片那一行和说到「AI 作品文件夹」的提示旁边都有「打开文件夹」，打不开时按失败说一句。
 
 主窗口的 CSP 没有 `media-src`，页面里放不了视频，看成片靠缩略图加「用播放器打开」。打包版里 `xingmang://` 回的每个文件都带上和 `index.html` 一样的 CSP 响应头（`electron/app-protocol.ts`）：拼片的后台线程只认自己脚本的响应头、不继承页面的 `<meta>`，这样它也连不了外站。

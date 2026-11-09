@@ -93,7 +93,7 @@ const bridge: VideoStudioBridge = {
     return { ...clipFor(assetId), width: 720, height: 1280, durationSeconds: 3 }
   },
   openAiVideo: async (assetId) => { record('open', assetId) },
-  saveAiVideo: async (assetId) => { record('save', assetId); return { saved: true } },
+  saveAiVideo: async (assetId, suggestedName) => { record('save', suggestedName === undefined ? assetId : { assetId, suggestedName }); return { saved: true } },
   openDiagnosticFolder: async (target) => { record('folder', target); return folderOpens },
   pickAiChatImages: async (remaining) => {
     record('pick-images', remaining)
