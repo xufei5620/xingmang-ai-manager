@@ -301,8 +301,8 @@ interface ConversationActions { open: (id: string) => void; exportText: (id: str
 interface ConversationListItemProps { item: Conversation; current: boolean; pageActive: boolean; actions: ConversationActions }
 
 // A streamed chunk replaces only the conversation it belongs to (see
-// filterConversations), so every other row keeps its props and skips the
-// render. The list holds up to MAX_CONVERSATIONS (200) rows, each with its own
+// conversationSearchTexts in state.ts), so every other row keeps its props and
+// skips the render. The list holds up to MAX_CONVERSATIONS (200) rows, each with its own
 // menu; re-rendering all of them for every chunk made a reply stutter.
 const ConversationListItem = memo(function ConversationListItem({ item, current, pageActive, actions }: ConversationListItemProps) {
   return <div className="chat-conversation-item" data-active={current}><button type="button" className="chat-conversation-select" onClick={() => actions.open(item.id)} aria-current={current ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></button><Menu key={pageActive ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => actions.exportText(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => actions.remove(item.id) }]} /></div>
