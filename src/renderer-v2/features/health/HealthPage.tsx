@@ -796,7 +796,7 @@ export function HealthPage({
       loadingTitle="正在检查…"
       loadingDescription={null}
       emptyTitle="还没有做过完整检查"
-      emptyDescription="点右上角「重新检查」。"
+      emptyDescription="点右上角「开始检查」。"
       loading={resource.loading}
       error={resource.error}
       count={diagnostics.length}
@@ -806,6 +806,9 @@ export function HealthPage({
     </ListState>
   )
   const connectionsTested = connections !== null
+  // 页头那颗按钮跟着下面的空状态走（UI 字表 W33）：一项结果都还没有时下面写「还没有做过完整检查」，
+  // 这里就叫「开始检查」，不叫「重新」；查出结果以后才叫「重新检查」。重查时上一轮的结果还摆着，名字不跟着跳。
+  const checked = diagnostics.length > 0
   return (
     <section
       ref={pageRef}
@@ -831,7 +834,7 @@ export function HealthPage({
               loading={resource.loading}
               onClick={() => void resource.reload()}
             >
-              重新检查
+              {checked ? '重新检查' : '开始检查'}
             </Button>
           </>
         }
@@ -848,7 +851,7 @@ export function HealthPage({
             <span className="v2-health-tile" aria-hidden="true"><Globe2 size={15} /></span>
             <div className="xm-row-main">
               <div className="xm-row-title">测试连接</div>
-              <div className="xm-row-desc">确认每个工具都能连上、账号有效；装好的外部客户端也一起测</div>
+              <div className="xm-row-desc">确认每个工具都能连上、账号有效；装好的桌面端也一起测</div>
               {connections && (
                 <div className="v2-health-lines">
                   {sortConnectionRows(connections).map((row) => (

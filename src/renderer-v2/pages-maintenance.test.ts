@@ -27,7 +27,7 @@ describe('paid Codex check in HealthPage', () => {
   it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
-    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的外部客户端也一起测')
+    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的桌面端也一起测')
   })
 })
 
@@ -61,13 +61,20 @@ describe('maintenance pages without the retired Gemini CLI', () => {
 })
 
 describe('health page order', () => {
-  it('puts the export next to re-check in the page head and the two explanation cards after the results', () => {
+  it('puts the export next to the check button in the page head and the two explanation cards after the results', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     const head = markup.indexOf('导出检查报告')
     expect(head).toBeGreaterThan(-1)
-    expect(head).toBeLessThan(markup.indexOf('重新检查'))
-    expect(markup.indexOf('重新检查')).toBeLessThan(markup.indexOf('xm-card-none'))
+    expect(head).toBeLessThan(markup.indexOf('开始检查'))
+    expect(markup.indexOf('开始检查')).toBeLessThan(markup.indexOf('xm-card-none'))
     expect(markup.indexOf('xm-card-none')).toBeLessThan(markup.indexOf('连接自检'))
+  })
+
+  // UI 字表 W33：还一项结果都没有时，页头那颗不叫「重新检查」，跟空状态那句「点右上角「开始检查」。」对得上。
+  it('names the head button 开始检查 before any check has produced results', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    expect(markup).toContain('开始检查')
+    expect(markup).not.toContain('重新检查')
   })
 
   it('lists problems before warnings before passing items and keeps the order within each', () => {

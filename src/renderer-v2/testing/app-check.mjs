@@ -4037,11 +4037,11 @@ test('a failed startup environment check stays out of the way while the manual o
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').map((entry) => entry.args[0].context))
     assert.deepEqual(reported, ['renderer-v2 startup check: diagnostics'])
-    // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。
+    // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。还没查出过结果，页头那颗叫「开始检查」（W33）。
     await page.getByTestId('nav-health').click()
     const health = page.getByTestId('page-health')
     await health.waitFor()
-    await health.getByRole('button', { name: '重新检查', exact: true }).click()
+    await health.locator('.xm-page-head').getByRole('button', { name: '开始检查', exact: true }).click()
     await health.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
