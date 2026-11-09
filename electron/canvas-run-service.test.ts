@@ -242,6 +242,26 @@ describe('createCanvasRunService', () => {
     await expect(second.promise).resolves.toMatchObject({ status: 'succeeded' })
   })
 
+  it('says whether a run is still going, which restarting to install an update would cut short (D10)', async () => {
+    const graph = workflow()
+    const gate: { finish?: () => void } = {}
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      executors: {
+        text: () => new Promise((resolve) => { gate.finish = () => resolve({ outputText: 'done' }) }),
+        image: async () => ({ assets: [] }),
+        video: async () => ({ assets: [] }),
+      },
+    })
+    expect(service.hasActiveRuns()).toBe(false)
+    const run = await service.start({ userId: 7, ownerId: 10, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    expect(service.hasActiveRuns()).toBe(true)
+    await vi.waitFor(() => expect(gate.finish).toBeDefined())
+    gate.finish?.()
+    await expect(run.promise).resolves.toMatchObject({ status: 'succeeded' })
+    await vi.waitFor(() => expect(service.hasActiveRuns()).toBe(false))
+  })
+
   it('requires the current account when cancelling a run owned by a shared canvas sender', async () => {
     const graph = workflow()
     const store = memoryStore()

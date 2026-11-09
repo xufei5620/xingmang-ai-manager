@@ -47,7 +47,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask } from './quit-blocking-tasks'
+import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -2379,7 +2379,7 @@ if (!hasSingleInstanceLock) {
       onRendererActivity: (target, activity) => {
         if (!managedMainWindow || managedMainWindow.isDestroyed() || target !== managedMainWindow.webContents) return
         mainRendererAnswering = true
-        mainRendererRelease?.reportActivity(activity.busy)
+        mainRendererRelease?.reportActivity(activity.busy, activity.work)
       },
       onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
@@ -2628,16 +2628,37 @@ if (!hasSingleInstanceLock) {
       })
       return result.response === 1
     }
-    // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句。
-    // 点「继续安装」这次就不装，新版本留着，以后再点或下次退出时照常装（已知31）。
+    // 重启装更新会把聊天的回复和出图、视频剪辑的拼片、画布出的图停下，重开以后也不会接着做（D10）。
+    // 界面开着的对话框不算：从更新页点「重启并安装」时那个确认框自己就开着，所以不看 rendererBusy。
+    const unfinishedRestartWork = (): UnfinishedRestartWorkPrompt | null => {
+      const running: UnfinishedRestartWork[] = [...(mainRendererRelease?.rendererWork ?? [])]
+      if ([...businesses.values()].some((business) => business.canvasImageService.hasPendingWork() || business.canvasRuns.hasActiveRuns())) running.push('canvas')
+      return buildUnfinishedRestartWorkPrompt(running)
+    }
+    const confirmUnfinishedRestartWork = async (prompt: UnfinishedRestartWorkPrompt): Promise<boolean> => {
+      // 托盘「重启并安装」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+      if (!mainWindow.isVisible()) showMainWindow()
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: '星芒AI管理工具', message: prompt.message, detail: prompt.detail,
+        buttons: prompt.buttons,
+        // 回车、Esc 都落在「等它做完」上：手滑不会把正在出的图停掉。
+        defaultId: 0, cancelId: 0, noLink: true,
+      })
+      return result.response === 1
+    }
+    // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句；
+    // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等它做完」这次就不装，新版本留着，
+    // 以后再点或下次退出时照常装（已知31）。
     confirmUpdateInstall = async () => {
       if (mainWindow.isDestroyed()) return true
-      const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
-      if (!task) return true
-      runtimeLog.log('info', 'updater', 'install.install-in-progress', `重启安装更新前确认：${task.key}`)
-      const proceed = await confirmInterruptingInstall(task)
-      if (!proceed) runtimeLog.log('info', 'updater', 'install.postponed', '还有工具在装，这次不装新版本，新版本留着')
-      return proceed
+      return await confirmUpdateRestart({
+        installTask: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()),
+        confirmInstall: confirmInterruptingInstall,
+        unfinishedWork: unfinishedRestartWork,
+        // 头一问问着的时候主窗口没了（正在退出），跟上面一样照常装。
+        confirmWork: async (prompt) => mainWindow.isDestroyed() || await confirmUnfinishedRestartWork(prompt),
+        log: (event, message) => runtimeLog.log('info', 'updater', event, message),
+      })
     }
     // 新版本在后台下好以后先跳框问要不要现在装，没装的 Mac 等电脑闲着时自己装（update-install-prompt.ts，#1380）。
     const updateInstallPrompter = createUpdateInstallPrompter({

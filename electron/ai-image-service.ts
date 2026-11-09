@@ -591,6 +591,12 @@ export function createAiImageService(options: {
   return {
     generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown,
     whenIdle: () => options.finishDispatchedAfterStop ? whenOwnedWorkIdle() : queue.whenIdle(),
+    // 还有图没收完，含停止以后接着收的那几张（它们不在 active、ownedWork 里，只在队列里跑）：
+    // 这时重启，已经扣了费的图就收不回来了（D10）。
+    hasPendingWork: () => {
+      const { active: running, queued } = queue.snapshot()
+      return running + queued > 0
+    },
   }
 }
 

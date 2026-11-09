@@ -243,7 +243,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const running = chat.state.conversations.some(isGenerating) || Object.values(preparations).some((item) => item.phase === 'loading')
   const anyGenerating = chat.state.conversations.some(isGenerating)
   // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
-  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation))
+  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation), 'chat')
   const searchText = search.trim()
   return <section ref={surface} className="chat-page" hidden={!active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={scope} onKeyDownCapture={(event) => { if (!active) { event.preventDefault(); event.stopPropagation() } }} onScrollCapture={(event) => { if (active && event.target instanceof HTMLElement && event.target.classList.contains('chat-conversation-list')) navigationScroll.current = event.target.scrollTop }}>
     <aside className="chat-conversations" aria-label="聊天会话">
