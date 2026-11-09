@@ -8,7 +8,7 @@ import { classifyNetworkFailure, type NetworkFailureReason } from '../../../../e
  * 不碰 React、不发请求，判断留在纯函数里才测得动（T3 同理）。
  */
 
-export const offlineBannerText = '现在连不上网。已经装好的 AI 工具照常能用；充值、聊天、安装和更新要等网络恢复。'
+export const offlineBannerText = '现在连不上网。AI 工具、聊天、充值、安装和更新都要等网络恢复；装好的工具和设置都还在，不用重装。'
 export const offlineActionMessage = '现在没网，等网络恢复后再试。'
 export const offlineBalanceText = '没网，稍后自动刷新'
 /** 断网横条上点了「重试」还是不通：横条自己会在网回来时收起，不用一直点。 */
@@ -45,12 +45,12 @@ export type OfflineCause = 'offline' | 'proxy' | 'portal'
 
 export const offlineBannerTexts: Readonly<Record<OfflineCause, string>> = {
   offline: offlineBannerText,
-  proxy: '电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理（加速）软件，或者把系统代理关掉。',
+  proxy: '电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理软件，或者把系统代理关掉。',
   portal: '这个网络要先登录认证（校园网、酒店、公共 Wi-Fi 常见）。点「打开认证页」登录后，这里会自动恢复。',
 }
 
 /** 代理连不上、星芒已经替用户改成直连之后挂的那一条：网是通的，只是说明一下。 */
-export const proxyBypassedBannerText = '电脑里设置的代理连不上，星芒已经改为直接联网，可以照常使用。浏览器等其它软件可能还上不了网，可以点右边去关掉代理。'
+export const proxyBypassedBannerText = '电脑里设置的代理连不上，星芒已经改为直接联网，可以照常使用。浏览器等其他软件可能还上不了网，可以点右边去关掉代理。'
 
 /** navigator.onLine 说没网时就是真断网；否则看最近那次本机网络失败是哪一种。 */
 export function offlineCause({ browserOnline, networkFailureReason }: Pick<OnlineSignals, 'browserOnline' | 'networkFailureReason'>): OfflineCause {

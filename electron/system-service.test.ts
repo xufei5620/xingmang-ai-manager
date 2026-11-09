@@ -7133,6 +7133,42 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
   })
 
+  // D4（0.2.24 深查安全.md 新-1）：网上下载的项目自带 hooks 之类，替客户答了信任它们一启动就会跑。
+  it.each([
+    [['.claude', 'settings.json']],
+    [['.claude', 'settings.local.json']],
+    [['.mcp.json']],
+  ])('leaves the Claude trust question to the CLI when the folder already carries %j', async (segments) => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-carried-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'downloaded-repo')
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, ...segments), JSON.stringify({ hooks: {} }))
+    const log = vi.fn()
+
+    await expect(launchService(userHome, 'claude', { log }).launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    expect(claudeConfig).toEqual({ hasCompletedOnboarding: true })
+    const events = log.mock.calls.map((call) => call[2])
+    expect(events).toContain('workspace.trust.left-to-cli')
+    expect(events).not.toContain('workspace.trust.written')
+  })
+
+  it('still trusts a folder whose .claude holds nothing Claude Code runs on trust', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-own-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(path.join(workspace, '.claude', 'commands'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'CLAUDE.md'), '# 我的项目\n')
+
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    const projects = claudeConfig.projects as Record<string, Record<string, unknown>>
+    expect(projects[workspace].hasTrustDialogAccepted).toBe(true)
+  })
+
   // #1085：换账号时还排着队的「打开」直接出队，一行都不跑；轮到它执行时才交给账号工作。
   it('runs a launch inside the queued account work, and not at all once that work was called off', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-account-work-'))
