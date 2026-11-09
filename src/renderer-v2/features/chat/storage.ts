@@ -1,4 +1,5 @@
 import { currentAccountGroupName } from '../../../../electron/catalog'
+import { redactSecretShapes } from '../../../../electron/redaction-patterns'
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, XingmangApi } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
@@ -165,14 +166,35 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
 // 刻意不照搬旧渲染层的两条规则：整条抹掉 http(s) 链接，以及把任意超长字母数字块
 // 当成编码数据。前者在 v2 没有收益（素材只存 assetId，运行时 URL 早已剥离），
 // 后者会把普通长文本也吞掉，与这里「只对真实内容无损」的既有约定冲突。
+// 原有的几条规则先照原样跑完，再过一遍日志、诊断、崩溃报告共用的那张认密钥的表
+// （redaction-patterns.ts），只是换成聊天自己的字样：以前这里只有自己抄的几条，表后来加的
+// Grok、GitHub、JWT、网址里的密码都没跟上。共用表放在最后，只会在原有结果上再多遮：
+// 放在前面，它认出的 `sk-…`、`ghp_…` 会连着吞掉紧挨着的 `api_key=` 这类名字，下面
+// 「名字 = 值」那条就认不出名字、把值漏存了。
+const secretNotSaved = '[密钥未保存]'
+const inlineImageData = /data:[^\s,;]+(?:;[^\s,;]+)*;base64,[A-Za-z0-9+/=_-]+/gi
+const runtimeBlobUrl = /blob:[^\s)\]}>"']+/gi
+// 和共用表那条一样，但要赶在下面几条之前：`?token=` 和「名字 = 值」两条吞到空格为止，
+// 碰上 `?token=Bearer 值` 只吞掉 `Bearer` 这个词，后面的值共用表就再也认不出来了。
+const bearerValue = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi
+// 比共用表那条多收 `.`，后面那截才不会漏。结尾不用 `\b`，否则以 `-` 结尾的密钥会漏掉
+// 尾巴（共用表 KEY_TAIL 那段注释说的同一件事）。
+const relayKeyWithDots = /\bsk-[A-Za-z0-9._-]{7,}[A-Za-z0-9_-](?![A-Za-z0-9_-])/gi
+const secretQueryParameter = /([?&](?:api[_-]?key|token)=)[^&\s]+/gi
+// 「名字: 值」「名字 = 值」：名字是这几个词时，后面那一截整段不存。
+const namedSecretValue = /((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi
+
 export function redactPersistentChatText(value: string): string {
-  return value
-    .replace(/data:[^\s,;]+(?:;[^\s,;]+)*;base64,[A-Za-z0-9+/=_-]+/gi, '[图片数据未保存]')
-    .replace(/blob:[^\s)\]}>"']+/gi, '[本地临时链接未保存]')
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[密钥未保存]')
-    .replace(/\bsk-[A-Za-z0-9._-]{8,}\b/gi, '[密钥未保存]')
-    .replace(/([?&](?:api[_-]?key|token)=)[^&\s]+/gi, '$1[密钥未保存]')
-    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, '$1[密钥未保存]')
+  // 图片数据和临时链接先整段换掉：base64 里随时可能夹着 `eyJ`、`sk-` 这类片段，
+  // 先过密钥规则会把它们切碎，后面就认不出整段了。
+  const ownRules = value
+    .replace(inlineImageData, '[图片数据未保存]')
+    .replace(runtimeBlobUrl, '[本地临时链接未保存]')
+    .replace(bearerValue, `$1${secretNotSaved}`)
+    .replace(relayKeyWithDots, secretNotSaved)
+    .replace(secretQueryParameter, `$1${secretNotSaved}`)
+    .replace(namedSecretValue, `$1${secretNotSaved}`)
+  return redactSecretShapes(ownRules, secretNotSaved)
 }
 function persistedSettings(settings: ChatSettings): ChatSettings {
   return { ...settings, systemPrompt: redactPersistentChatText(settings.systemPrompt) }
