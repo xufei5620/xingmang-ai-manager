@@ -293,8 +293,9 @@ export class ChatKeyStore {
   }
 
   /**
-   * A record nobody can decrypt holds no key anyone can use, so reads and
-   * removals see it as empty: the coordinator then provisions a fresh chat key
+   * A record this machine can no longer decrypt or understand holds no key
+   * this run can use, so reads and removals see it as empty: the coordinator
+   * then provisions a fresh chat key
    * (the server reuses one under the same stable name when it can) and the
    * upsert that follows replaces the file. Only upsert moves the damaged file
    * aside, so a read never rewrites anything on disk.
