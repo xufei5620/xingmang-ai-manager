@@ -977,6 +977,37 @@ test('fades between shots and at the end of the joined film once chosen, and kee
   await page.close()
 })
 
+// 每个镜头单独定时长：不定就跟「每段时长」；长短不一时确认框说一共多少秒，出片按各自的长短；重开页面还在。
+test('lets one shot be longer than the rest and asks the video model for each length', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '开箱', { title: '开箱', shots: [{ prompt: '拆盒子' }, { prompt: '拿出耳机' }, { prompt: '戴上' }] })
+  assert.equal(await page.getByTestId('video-shot-seconds-0').inputValue(), '6')
+  await page.getByTestId('video-shot-seconds-2').selectOption('10')
+  await page.getByText('3 个镜头 · 共约 22 秒').waitFor()
+  await page.getByTestId('video-generate-all').click()
+  const confirm = page.getByTestId('video-confirm')
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 3 段、共 22 秒，每段单独计费。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '取消' }).click()
+
+  // 改「每段时长」：没单独定的跟着走，定过的不动。
+  await page.getByTestId('video-seconds').selectOption('8')
+  assert.equal(await page.getByTestId('video-shot-seconds-0').inputValue(), '8')
+  assert.equal(await page.getByTestId('video-shot-seconds-2').inputValue(), '10')
+
+  await page.reload()
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  assert.equal(await page.getByTestId('video-shot-seconds-2').inputValue(), '10')
+  await page.getByTestId('video-generate-all').click()
+  await confirm.getByText('用「grok-imagine-video-1.5」生成 3 段、共 26 秒，每段单独计费。', { exact: true }).waitFor()
+  await confirm.getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  assert.deepEqual((await studioCalls(page, 'generate')).map((input) => input.seconds), ['8', '8', '10'])
+  // 出着的时候改不了时长：那一单已经按原来的长短交出去了。
+  assert.equal(await page.getByTestId('video-shot-seconds-2').isDisabled(), true)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // 「加配乐」：歌由主进程的系统对话框选、存进作品库（这里是假的桥），拼片时按编号读回来混进去；重开页面还在。
 test('lays a picked song under the joined film, with the clip sound turned down by default, and keeps it after reopening', async () => {
   const { page, errors } = await openStudio()
