@@ -364,4 +364,55 @@ describe('createAiMediaAssetService', () => {
     images.readOwned.mockRejectedValueOnce(new Error('missing image'))
     await expect(service.purge(7, assetId)).rejects.toThrow('不存在或无权访问')
   })
+
+  it('asks the store the library index named first when an action arrives with an id only', async () => {
+    const imageId = 'e'.repeat(43)
+    const videoId = 'f'.repeat(43)
+    const images = {
+      listOwnedIndex: vi.fn(async () => [indexEntry(imageId, 'image.png', '2026-08-14T00:00:00.000Z', 'image' as const)]),
+      readOwned: vi.fn(async (_userId: number, assetId: string) => {
+        if (assetId !== imageId) throw new Error('missing image')
+        return { asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' as const, fileName: 'image.png' }, bytes: Buffer.from('image') }
+      }),
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const videos = {
+      listOwnedIndex: vi.fn(async () => [indexEntry(videoId, 'video.mp4', '2026-08-14T00:01:00.000Z', 'video' as const)]),
+      readOwned: vi.fn(async (_userId: number, assetId: string) => {
+        if (assetId !== videoId) throw new Error('missing video')
+        return { asset: { assetId, localUrl: `xingmang-asset://video/${assetId}`, mimeType: 'video/mp4' as const, fileName: 'video.mp4' }, bytes: Buffer.from('video') }
+      }),
+      saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const metadata = metadataStore({
+      markUsed: vi.fn(async (_userId: number, assetId: string) => ({ assetId, lastUsedAt: '2026-08-14T03:00:00.000Z', updatedAt: '2026-08-14T03:00:00.000Z' })),
+    })
+    const service = createAiMediaAssetService({ images: images as never, videos: videos as never, metadata: metadata as never, trashItem })
+
+    // Before the library has been listed, the old order still applies.
+    await service.markUsed(7, videoId)
+    expect(images.readOwned).toHaveBeenCalledWith(7, videoId)
+    images.readOwned.mockClear()
+    videos.readOwned.mockClear()
+
+    await service.listOwnedPage(7)
+    images.readOwned.mockClear()
+    videos.readOwned.mockClear()
+    await expect(service.markUsed(7, videoId)).resolves.toMatchObject({ assetId: videoId })
+    await expect(service.markUsed(7, imageId)).resolves.toMatchObject({ assetId: imageId })
+    expect(images.readOwned).toHaveBeenCalledTimes(1)
+    expect(images.readOwned).toHaveBeenCalledWith(7, imageId)
+    expect(videos.readOwned).toHaveBeenCalledTimes(1)
+    expect(videos.readOwned).toHaveBeenCalledWith(7, videoId)
+
+    // Another account gets no hint from this one.
+    images.readOwned.mockClear()
+    await expect(service.markUsed(8, videoId)).resolves.toMatchObject({ assetId: videoId })
+    expect(images.readOwned).toHaveBeenCalledWith(8, videoId)
+
+    // A hint that went stale falls back to asking every store in turn.
+    videos.readOwned.mockRejectedValueOnce(new Error('missing video'))
+    await expect(service.markUsed(7, videoId)).rejects.toThrow('不存在或无权访问')
+    expect(metadata.markUsed).toHaveBeenCalledTimes(4)
+  })
 })
