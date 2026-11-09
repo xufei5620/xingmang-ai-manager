@@ -77,6 +77,7 @@ import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 import {
   describeDesktopBucketFallback,
+  DesktopBucketIndexStaleError,
   downloadDesktopBucketPackage,
   measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
@@ -1296,6 +1297,21 @@ export function measureCodexDesktopOfficialSpeed(
   }, fetchImplementation), signal)
 }
 
+/**
+ * 商店、官网之后回头用过期清单那一次（allowStale），桶后面只剩国内镜像：太慢时比的是它，拿主源同一个包测，
+ * 跳转照镜像那一路的规矩核。商店、官网已经试过，再拿官网来比就比错了对象。
+ */
+export function measureCodexDesktopMirrorSpeed(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed((probeSignal) => fetchTrustedCodexDesktopResource(codexDesktopMirrorPackageUrls[architecture], {
+    headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
+    signal: probeSignal,
+  }, fetchImplementation), signal)
+}
+
 export interface CodexDesktopOfficialDownloadOptions {
   architecture: 'x64' | 'arm64'
   destination: string
@@ -1381,6 +1397,8 @@ export interface CodexDesktopBucketDownloadOptions {
   destination: string
   /** 本机装着的那一版；桶里那一版不比它新就不下。null = 首次安装。 */
   installedVersion: string | null
+  /** 清单过期了也照样下（readDesktopBucketPackage 的 allowStale）。缺省 = 过期就抛 DesktopBucketIndexStaleError。 */
+  allowStale?: boolean
   /** 必填，理由同 CodexDesktopCandidateDownloadOptions.fetchImplementation。 */
   fetchImplementation: typeof fetch
   signal?: AbortSignal
@@ -1401,14 +1419,17 @@ export type CodexDesktopBucketDownloadResult =
  * 第一路：从星芒自己的存储桶下 OpenAI 官方的离线安装包（scripts/sync-chatgpt-official-cos.cjs
  * 搬过去、在 GitHub 的 Windows 机器上验过签名的那一份）。清单里的大小和 SHA-256 绑住下载，
  * 下完再照官网那一路核包身份、发布者、签名，版本还得和清单写的一模一样。读不到清单、没下成、
- * 没过校验都抛错，由调用方照旧走商店、官网、国内镜像；客户点的取消照旧原样抛出。
+ * 没过校验都抛错，由调用方照旧走商店、官网、国内镜像；清单过期抛的是 DesktopBucketIndexStaleError
+ * （allowStale 时不查），调用方据此在商店、官网之后回头再用桶。客户点的取消照旧原样抛出。
  */
 export async function downloadCodexDesktopBucketPackage(
   options: CodexDesktopBucketDownloadOptions,
 ): Promise<CodexDesktopBucketDownloadResult> {
   const { architecture, destination, installedVersion, fetchImplementation, signal } = options
   signal?.throwIfAborted()
-  const release = await readDesktopBucketPackage(`codex-windows-${architecture}`, fetchImplementation, signal)
+  const release = await readDesktopBucketPackage(`codex-windows-${architecture}`, fetchImplementation, signal, {
+    allowStale: options.allowStale === true,
+  })
   if (installedVersion) {
     const comparison = compareWindowsPackageVersions(installedVersion, release.version)
     // 桶是定时从官网同步的，会晚一些：这时多半还是本机这一版，不下，照旧走商店那几路。
@@ -1420,8 +1441,10 @@ export async function downloadCodexDesktopBucketPackage(
     ...(signal ? { signal } : {}),
     ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
     onProgress: (progress) => options.onProgress?.(release.version, progress),
-    // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
-    probeAlternative: (probeSignal) => measureCodexDesktopOfficialSpeed(architecture, fetchImplementation, probeSignal),
+    // 桶太慢时先比一比后面那一路，确实更快才换（#1061 第 6 条）：平常是官网，回头用过期清单时是国内镜像。
+    probeAlternative: (probeSignal) => (options.allowStale ? measureCodexDesktopMirrorSpeed : measureCodexDesktopOfficialSpeed)(
+      architecture, fetchImplementation, probeSignal,
+    ),
   })
   try {
     signal?.throwIfAborted()
@@ -2326,6 +2349,13 @@ export interface CodexDesktopInstallAttempt {
   officialPackage?: boolean
   /** 第一路（星芒自己的存储桶）没走通的原因，只进日志。缺省 = 没走那一路、走通了或桶里那一版不比本机新。 */
   bucketFailure?: string | null
+  /**
+   * 第一路没用桶只是因为清单过期（DesktopBucketIndexStaleError）：商店、官网都没装上时回头再用它，
+   * 排在国内镜像前面。缺省 = 没过期，或者桶因为别的原因没走通，不回头。
+   */
+  bucketStale?: boolean
+  /** 这次装的是过期清单里的那一版（已经下好、核过）。缺省 = 不是。 */
+  bucketPackage?: boolean
 }
 
 type CodexDesktopStoreOutcome = Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing'>
@@ -2405,8 +2435,10 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
   const official = attempt.officialFailure ? `${codexDesktopOfficialPackageFailedNotice}（${attempt.officialFailure}），` : ''
   // 存储桶那一路没走通不上屏（客户看不出换了路），只记在日志里那句原话的最前面。
   const bucket = attempt.bucketFailure ? `存储桶这一路没走通（${attempt.bucketFailure}），` : ''
-  // 官网的包下好、核过却装不上时不再换国内镜像重下，这时失败的是官网那一份。
-  const route = attempt.officialPackage ? 'OpenAI 官网的离线安装包' : '国内镜像'
+  // 官网的包或回头用的桶里那一版下好、核过却装不上时不再换国内镜像重下，这时失败的是那一份。
+  const route = attempt.officialPackage
+    ? 'OpenAI 官网的离线安装包'
+    : attempt.bucketPackage ? '存储桶里的离线安装包' : '国内镜像'
   const detail = `${bucket}${store || official ? `${store}${official}${route}也没装上：${raw}` : raw}`
   return new CodexDesktopInstallFailure(
     buildCodexDesktopInstallFailureMessage(reason, {
@@ -2428,12 +2460,23 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
  * Windows 防火墙服务停着（firewallOff）也原样交出：官网、国内镜像装的是同一个官方包，商店用的也是
  * 同一个安装引擎（推测，没在真机上演过），都卡在登记防火墙规则那一步。以前接着走，客户要多等商店
  * 一趟、再从官网下一遍几百兆，最后看到的还是同一句话。
+ *
+ * staleRetry 是商店、官网之后回头用过期清单的那一次：商店已经试过，剩下的国内镜像和它是同一种装法、
+ * 同一个官方包，也原样交出（同官网那一路）。
  */
-export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown): boolean {
-  if (isInstallCancelledError(error)) return false
+export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown, staleRetry = false): boolean {
+  if (staleRetry || isInstallCancelledError(error)) return false
   const message = error instanceof Error ? error.message : String(error)
   if (classifyCodexDesktopInstallFailure(message) === 'firewallOff') return false
   return !isPlainCodexDesktopInstallMessage(message)
+}
+
+/**
+ * 第一路存储桶没走通以后，商店、官网都没装上时要不要回头再用它（排在国内镜像前面）。只有清单过期这一样：
+ * 包本身没毛病，只是可能落后官方。读不到、下载或核对没过、交给 Windows 没装上的，再试一次也一样，不回头。
+ */
+export function shouldRetryCodexDesktopBucketWhenStale(error: unknown): boolean {
+  return error instanceof DesktopBucketIndexStaleError
 }
 
 /**
@@ -2686,7 +2729,8 @@ export interface CodexDesktopServiceOptions {
   resolveStoreInstaller?: (signal?: AbortSignal) => Promise<SystemWingetResolution>
   /**
    * Windows 上先从星芒自己的腾讯云存储桶下 Codex 桌面端（国内快、不用加速），桶不行再照旧走商店、
-   * 官网、国内镜像（yoyo 2026-10-10）。缺省 = 不走桶（测试与旧调用方照旧），生产由 system-service 打开。
+   * 官网、国内镜像（yoyo 2026-10-10）；桶只是清单过期的，排到官网后面、国内镜像前面再用。
+   * 缺省 = 不走桶（测试与旧调用方照旧），生产由 system-service 打开。
    */
   bucketDownloads?: DesktopBucketOptions
   /**
@@ -3228,17 +3272,24 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   /**
    * 第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。桶里那一版不比本机新、
-   * 读不到清单、下载或核对没过，都返回 null，由调用方照旧走商店、官网、国内镜像，原因只进日志。
+   * 读不到清单、清单过期、下载或核对没过，都返回 null，由调用方照旧走商店、官网、国内镜像，原因只进日志。
    * 下好、核过却没装上时多半也返回 null，见 shouldContinueAfterCodexDesktopBucketInstall。
+   *
+   * allowStale：只因清单过期没用上的桶，商店、官网都没装上以后回头再走一次（排在国内镜像前面）。这时桶里
+   * 那一版也许不是官方最新的，但比本机新就比第三方镜像可靠：包和官网是同一个，签名同样核过。这一次交给
+   * Windows 没装上就不再换国内镜像：商店已经试过了，镜像那份是同一种装法，重下一遍也一样装不上。
    */
   async function installCodexDesktopFromBucket(
     target: RendererMessageTarget,
     attempt: CodexDesktopInstallAttempt,
     architecture: 'x64' | 'arm64',
     currentPackage: CodexDesktopPackageEntry | null,
+    allowStale: boolean,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult | null> {
     if (!bucketDownloads) return null
+    // 回头那一次在商店、官网后面，开头交代前面几路怎么了，和国内镜像那一路同一句话。
+    const notice = allowStale ? describeCodexDesktopStoreNotice(attempt) : ''
     let temporaryDirectory: string | null = null
     try {
       let packagePath: string
@@ -3251,19 +3302,20 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           architecture,
           destination: packagePath,
           installedVersion: currentPackage?.version ?? null,
+          allowStale,
           fetchImplementation: downloadFetch,
           ...(cancellation ? { signal: cancellation.signal } : {}),
           onVersion: (version) => sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent: 0,
-            message: `正在从国内镜像下载 Codex 桌面端 ${version}（0%）`,
+            message: `${notice}正在从国内镜像下载 Codex 桌面端 ${version}（0%）`,
           }),
           onProgress: (version, { percent, resuming }) => sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent,
             message: resuming
               ? `网络断了一下，正在从国内镜像接着下载 Codex 桌面端 ${version}（已下 ${percent}%）`
-              : `正在从国内镜像下载 Codex 桌面端 ${version}（${percent}%）`,
+              : `${notice}正在从国内镜像下载 Codex 桌面端 ${version}（${percent}%）`,
           }),
           onValidating: () => sendCodexDesktopInstallProgress(target, {
             phase: 'validating',
@@ -3276,10 +3328,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         if (isInstallCancelledError(error)) throw error
         cancellation?.throwIfCancelled()
         attempt.bucketFailure = (error instanceof Error ? error.message : String(error)) || '下载或校验失败'
+        if (!allowStale) attempt.bucketStale = shouldRetryCodexDesktopBucketWhenStale(error)
         bucketDownloads.onFallback?.(describeDesktopBucketFallback(`codex-windows-${architecture}`, error))
         return null
       }
       if (downloaded.status === 'not-newer') return null
+      if (allowStale) attempt.bucketPackage = true
       try {
         return await installDownloadedCodexDesktopPackage(target, packagePath, {
           version: downloaded.version,
@@ -3287,7 +3341,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           contentLength: downloaded.download.size,
         }, currentPackage, cancellation)
       } catch (error) {
-        if (!shouldContinueAfterCodexDesktopBucketInstall(error)) throw error
+        if (!shouldContinueAfterCodexDesktopBucketInstall(error, allowStale)) throw error
         // 交给 Windows 装的那一步封存了取消；换下一路时又能取消了。
         cancellation?.unseal()
         attempt.bucketFailure = (error instanceof Error ? error.message : String(error)) || '安装没有完成'
@@ -3597,7 +3651,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       await reloadDownloadProxyConfig().catch(() => undefined)
     }
     // 先从星芒自己的存储桶下；没走通（或桶里不比本机新）才照旧走商店、官网、国内镜像。
-    const bucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, cancellation)
+    const bucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, false, cancellation)
     if (bucketResult) return bucketResult
     cancellation?.throwIfCancelled()
     invalidateCodexDesktopManifestCache()
@@ -3641,6 +3695,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         target, attempt, architecture, currentPackage, manifestBundle.officialVersion, cancellation,
       )
       if (officialResult) return officialResult
+    }
+    // 桶只是清单过期才没用上的：商店、官网都没装上（或者官网说没有更新的版本），国内镜像之前回头用它，
+    // 比本机新才装。官网的包下好、核过却被 Windows 拒装时上面已经直接报错，走不到这里。
+    if (attempt.bucketStale) {
+      const staleBucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, true, cancellation)
+      if (staleBucketResult) return staleBucketResult
+      cancellation?.throwIfCancelled()
     }
     const mirrorCandidates = manifestBundle.mirrorCandidates
     const mirrorCandidate = mirrorCandidates[0] ?? null

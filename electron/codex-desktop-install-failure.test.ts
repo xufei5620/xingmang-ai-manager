@@ -223,6 +223,22 @@ describe('Codex Desktop install failure wording', () => {
     )
   })
 
+  it('names the bucket package in the log when the build from an old index downloaded but would not install', () => {
+    const raw = new Error(samples.blocked[0])
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false,
+      officialFailure: 'OpenAI 官网连接或下载超时', bucketFailure: '存储桶清单超过 24 小时没和官方核对过', bucketStale: true, bucketPackage: true,
+    })
+    // The customer sentence is the one the mirror would have got; the route only shows in the log.
+    expect(failure.message).toBe(toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
+    }).message)
+    expect(failure.message).not.toContain('存储桶')
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(
+      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过），微软商店这次没装上（商店那边没说原因），OpenAI 官网的离线安装包也没下成（OpenAI 官网连接或下载超时），存储桶里的离线安装包也没装上：${samples.blocked[0]}`,
+    )
+  })
+
   it('tells a too-old Windows apart from a Windows that refused the install', () => {
     const message = buildCodexDesktopInstallFailureMessage('unsupported', { storeTried: true, updating: false })
     expect(message).toBe('Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。')

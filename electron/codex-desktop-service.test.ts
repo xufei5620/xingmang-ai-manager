@@ -74,8 +74,10 @@ import {
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopBucketPackage,
+  measureCodexDesktopMirrorSpeed,
   measureCodexDesktopOfficialSpeed,
   shouldContinueAfterCodexDesktopBucketInstall,
+  shouldRetryCodexDesktopBucketWhenStale,
   toCodexDesktopInstallFailure,
   CodexDesktopInstallFailure,
   buildCodexDesktopOfficialPackageSource,
@@ -98,7 +100,7 @@ import {
 import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import {
-  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
+  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
 import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
 import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage, macosDesktopUpdateFailedMessage } from './macos-desktop-install-failure'
@@ -3293,8 +3295,48 @@ describe('Codex Desktop from the Xingmang bucket', () => {
         architecture: 'x64', destination: bucketDestination(), installedVersion, fetchImplementation: fetchMock,
       }).catch((error: unknown) => error)
       expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect(shouldRetryCodexDesktopBucketWhenStale(failure)).toBe(true)
       expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`)
       expect(requested).toEqual([indexUrl])
+    }
+  })
+
+  it('downloads a build from an index past its day once the store and the official package are behind it', async () => {
+    // Same OpenAI package and the same checks; it may only trail OpenAI, which beats the third-party mirror.
+    const checkedAt = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString()
+    const { requested, fetchMock, version } = bucketFetch({ checkedAt })
+    const destination = bucketDestination()
+    const result = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination, installedVersion: '26.1002.0.0', allowStale: true, fetchImplementation: fetchMock,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    expect(result).toMatchObject({ status: 'downloaded', version })
+    expect(requested).toEqual([indexUrl, packageUrl(version)])
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+  })
+
+  it('still leaves a build from an old index alone when it is not newer than the installed one', async () => {
+    const checkedAt = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString()
+    for (const installedVersion of ['26.1003.4512.0', '26.1004.0.0']) {
+      const { requested, fetchMock } = bucketFetch({ checkedAt })
+      await expect(downloadCodexDesktopBucketPackage({
+        architecture: 'x64', destination: bucketDestination(), installedVersion, allowStale: true, fetchImplementation: fetchMock,
+      })).resolves.toEqual({ status: 'not-newer', version: '26.1003.4512.0' })
+      expect(requested).toEqual([indexUrl])
+    }
+  })
+
+  it('comes back to the bucket later only when its index was old, not when the bucket was broken', () => {
+    expect(shouldRetryCodexDesktopBucketWhenStale(new DesktopBucketIndexStaleError('2026-11-04T14:30:12.285Z'))).toBe(true)
+    for (const failure of [
+      new DesktopBucketUnavailableError('存储桶清单返回 HTTP 404'),
+      new DesktopBucketUnavailableError('读取存储桶清单超时'),
+      new DesktopBucketUnavailableError('存储桶的安装包 SHA-256 和清单不一致'),
+      new Error('安装包版本 26.1003.4513.0 与存储桶清单版本 26.1003.4512.0 不一致'),
+      new Error('Add-AppxPackage 部署失败：0x80073CFF'),
+      'spawn failed',
+    ]) {
+      expect(shouldRetryCodexDesktopBucketWhenStale(failure)).toBe(false)
     }
   })
 
@@ -3364,11 +3406,36 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(official).toEqual([officialUrl])
   })
 
+  it('measures the mirror, not the OpenAI package, when it came back to an old index after the official package', async () => {
+    // Only the mirror is left after this one; the official package already failed.
+    const { fetchMock, version } = bucketFetch({ checkedAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString() })
+    const mirrorUrl = buildCodexDesktopPackageSources('x64')[0].url
+    const measured: string[] = []
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).startsWith(desktopPackageBucketOrigin)) return fetchMock(input, init)
+      measured.push(String(input))
+      return new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength) } })
+    })
+    await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, allowStale: true, fetchImplementation,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toMatchObject({ totalBytes: bytes.byteLength })
+    expect(measured).toEqual([mirrorUrl])
+  })
+
   it('goes on to the Store and the other routes when Windows refuses the verified bucket package', () => {
     // The Store does not sideload, so a machine that blocks sideloading may still get Codex from it.
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'))).toBe(true)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('安装命令完成后仍未检测到 Codex 桌面端'))).toBe(true)
     expect(shouldContinueAfterCodexDesktopBucketInstall('spawn failed')).toBe(true)
+  })
+
+  it('stops after a bucket package from an old index that Windows refused, the Store being already behind it', () => {
+    // Like the official package: the mirror left after it would sideload the same OpenAI package the same way.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'), true)).toBe(false)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('安装命令完成后仍未检测到 Codex 桌面端'), true)).toBe(false)
   })
 
   it('stops after the bucket package when another route cannot help either', () => {
