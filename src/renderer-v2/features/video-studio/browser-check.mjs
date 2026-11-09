@@ -1118,3 +1118,68 @@ test('lays a picked song under the joined film, with the clip sound turned down 
   assert.deepEqual(errors, [])
   await page.close()
 })
+
+// 清单第 9 项：草稿箱。手上这一份「新建一条」以后进草稿箱，「接着做」换回来；草稿里没等到结果的那段，
+// 换回来时照重开页面那样拿请求号去接回，不再付一次钱。
+test('keeps several films in the draft box, switches between them and picks a waiting clip back up without paying again', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '咖啡馆', { title: '咖啡', shots: [{ prompt: '拉花' }, { prompt: '窗外' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const [first, second] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  // 生成着的时候不能换：出好的片段要挂回这一份。
+  assert.equal(await page.getByTestId('video-new').isDisabled(), true, 'no new film while clips are on their way')
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#884400'), first.requestId)
+  await page.evaluate((requestId) => window.videoStudioPage.failClip(requestId, '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 task_1）。'), second.requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-1').getByText('没生成出来').waitFor()
+  assert.equal(await page.getByTestId('video-drafts').count(), 0)
+
+  await page.getByTestId('video-new').click()
+  await page.getByTestId('video-drafts').waitFor()
+  assert.equal(await page.getByTestId('video-idea-input').inputValue(), '')
+  assert.equal(await page.getByTestId('video-shots').count(), 0)
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /咖啡2 个镜头 · 已生成 1 段 · 今天 \d\d:\d\d/)
+  assert.equal(await page.getByTestId('video-drafts').locator('.xm-card-head small').textContent(), '1 份')
+
+  await writeStoryboard(page, '海边日落', { title: '日落', shots: [{ prompt: '海浪' }] })
+  // 重开页面：手上这一份和草稿箱都在；草稿里那段没等到结果的，在草稿箱里不去接。
+  await page.reload()
+  await page.getByTestId('video-shot-0').waitFor()
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '海浪')
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /^咖啡/)
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+
+  // 「接着做」：咖啡换回来，日落进草稿箱；那段没等到的拿原来的请求号去接，不新提交。
+  await page.getByTestId('video-draft-open-0').click()
+  await page.waitForFunction((requestId) => window.videoStudioPage.pendingResumes().includes(requestId), second.requestId)
+  assert.deepEqual(await studioCalls(page, 'resume'), [second.requestId])
+  assert.equal(await page.getByTestId('video-shot-prompt-0').inputValue(), '拉花')
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  await page.getByTestId('video-shot-1').getByText('生成中').waitFor()
+  assert.match(await page.getByTestId('video-draft-0').textContent(), /^日落1 个镜头 · 已生成 0 段/)
+  assert.equal(await page.getByTestId('video-drafts').count(), 1)
+  assert.equal(await page.getByTestId('video-draft-0').count(), 1)
+  assert.equal(await page.getByTestId('video-draft-1').count(), 0)
+  // 接着的时候也不能换。
+  assert.equal(await page.getByTestId('video-draft-open-0').isDisabled(), true)
+  assert.equal(await page.getByTestId('video-new').isDisabled(), true)
+  await page.evaluate((requestId) => window.videoStudioPage.finishResume(requestId, '#004488'), second.requestId)
+  await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
+  // 重开页面以后一单都没新提交：那段是接回来的。
+  assert.deepEqual(await studioCalls(page, 'generate'), [])
+
+  // 删掉一份草稿要先确认。
+  await page.getByTestId('video-draft-remove-0').click()
+  await page.getByTestId('video-confirm').getByText('删掉这份草稿？').waitFor()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '删掉' }).click()
+  await page.waitForFunction(() => !document.querySelector('[data-testid="video-drafts"]'))
+  await page.reload()
+  await page.getByTestId('video-shot-1').getByText('已生成').waitFor()
+  assert.equal(await page.getByTestId('video-drafts').count(), 0)
+  assert.deepEqual(await studioCalls(page, 'resume'), [])
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+  assert.deepEqual(errors, [])
+  await page.close()
+})

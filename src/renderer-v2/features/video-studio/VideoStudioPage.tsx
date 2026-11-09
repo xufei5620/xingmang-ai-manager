@@ -1,21 +1,27 @@
 import { useState } from 'react'
-import { ArrowDown, ArrowUp, Brush, ChevronDown, Clapperboard, Download, Film, FolderOpen, ImagePlus, Music, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, Brush, ChevronDown, Clapperboard, Download, FilePlus, Film, FolderOpen, ImagePlus, Music, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2, X } from 'lucide-react'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
 import { dollars } from '../../business-common'
+import { formatClockTime } from '../../calendar-time'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { chatModelVendor, chatModelVendors, pickChatGroup, type ChatCatalogEntry, type ChatSite } from '../chat/state'
 import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, videoStudioCaptionPositions, videoStudioCaptionSizes } from './captions'
 import {
   canAddVideoStudioShot,
+  canStartVideoStudioProject,
   isVideoStudioShotBusy,
   isVideoStudioShotDrawing,
+  isVideoStudioProjectEmpty,
+  maxVideoStudioDrafts,
   videoStudioAspectNames,
   videoStudioCaptionPositionNames,
   videoStudioCaptionSizeNames,
   videoStudioClipSoundNames,
   videoStudioClipSounds,
   videoStudioCommonSeconds,
+  videoStudioDraftName,
+  videoStudioDraftProgress,
   videoStudioFitNames,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
@@ -25,6 +31,7 @@ import {
   videoStudioTotalSeconds,
   videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
+  type VideoStudioDraft,
   type VideoStudioShot,
   type VideoStudioTrimSide,
 } from './project'
@@ -48,7 +55,7 @@ export interface VideoStudioPageProps {
 }
 
 const pageLead = '说一句想拍什么，AI 写好分镜、一段一段生成，再在这台电脑上拼成一条带字幕的视频。'
-type Confirmation = { kind: 'generate', ids: string[] } | { kind: 'draw', id: string } | { kind: 'plan' } | { kind: 'reset' } | { kind: 'remove', id: string }
+type Confirmation = { kind: 'generate', ids: string[] } | { kind: 'draw', id: string } | { kind: 'plan' } | { kind: 'reset' } | { kind: 'remove', id: string } | { kind: 'drop-draft', id: string }
 
 export function VideoStudioPage({ bridge, accountScope, site, access, active = true, onLogin, onOpenAccount, options }: VideoStudioPageProps) {
   if (access !== 'ready') {
@@ -90,6 +97,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     if (current.kind === 'plan') void studio.writePlan()
     if (current.kind === 'reset') studio.reset()
     if (current.kind === 'remove') studio.removeShot(current.id)
+    if (current.kind === 'drop-draft') studio.removeDraft(current.id)
   }
   const writePlan = () => { if (shots.some((shot) => shot.clip)) setConfirmation({ kind: 'plan' }); else void studio.writePlan() }
   const confirmCount = confirmation?.kind === 'generate' ? confirmation.ids.length : 0
@@ -105,7 +113,11 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
 
   return <section className="v2-page video-studio" data-page-id="video" data-testid="page-video">
     <PageHead title="视频剪辑" lead={pageLead}
-      actions={(shots.length > 0 || settings.idea) && <Button icon={RotateCcw} disabled={studio.busy} onClick={() => setConfirmation({ kind: 'reset' })} testId="video-reset">重新开始</Button>} />
+      actions={(shots.length > 0 || settings.idea) && <>
+        <Button icon={FilePlus} disabled={studio.busy || !canStartVideoStudioProject(studio.drafts, project)} onClick={studio.startNewProject} testId="video-new"
+          title={studio.drafts.length >= maxVideoStudioDrafts ? `草稿箱满了（最多 ${maxVideoStudioDrafts} 份），先删掉几份不要的` : '把这一份放进草稿箱，再从头做一条新的'}>新建一条</Button>
+        <Button icon={RotateCcw} disabled={studio.busy} onClick={() => setConfirmation({ kind: 'reset' })} testId="video-reset">重新开始</Button>
+      </>} />
     {studio.error && <Notice tone="bad" title="没有完成" body={studio.error} onDismiss={() => studio.setError('')}
       actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '去调额度' : '去充值'}</Button> : undefined} testId="video-error" />}
     {studio.notice && <Notice tone="accent" title="提示" body={studio.notice} onDismiss={() => studio.setNotice('')}
@@ -200,17 +212,25 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       </div>}
     </Card>}
 
+    {studio.drafts.length > 0 && <Card title="草稿箱" meta={`${studio.drafts.length} 份`} testId="video-drafts">
+      <ul className="video-studio-drafts">
+        {studio.drafts.map((draft, index) => <DraftRow key={draft.id} draft={draft} index={index} disabled={studio.busy} stashes={!isVideoStudioProjectEmpty(project)}
+          onOpen={() => studio.openDraft(draft.id)} onRemove={() => setConfirmation({ kind: 'drop-draft', id: draft.id })} />)}
+      </ul>
+    </Card>}
+
     {active && confirmation && <Confirm testId="video-confirm"
-      title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'draw' ? redrawing ? '再画一张？' : '画一张镜头图？' : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : '删掉这个镜头？'}
+      title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'draw' ? redrawing ? '再画一张？' : '画一张镜头图？' : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : confirmation.kind === 'drop-draft' ? '删掉这份草稿？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
         ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
         // yoyo 2026-11-09 批的字（「画图改」）。
         : confirmation.kind === 'draw' ? <><p>{redrawing ? '会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。' : `用「${settings.imageModel}」按第 ${drawIndex + 1} 个镜头的画面描述画一张图，单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p><p>中途停下的话，已经交给服务端的这一张照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
         : confirmation.kind === 'reset' ? <p>想法、分镜和片段都从这一页清掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
+        : confirmation.kind === 'drop-draft' ? <p>这份分镜从草稿箱里拿掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
         : <p>这个镜头和它的片段从分镜里拿掉，片段还在 AI 作品文件夹里。</p>}
       okLabel={confirmation.kind === 'generate' ? regenerating ? '重新生成' : '开始生成' : confirmation.kind === 'draw' ? redrawing ? '再画一张' : '开始画' : confirmation.kind === 'plan' ? '重新写' : confirmation.kind === 'reset' ? '重新开始' : '删掉'}
-      danger={confirmation.kind === 'reset' || confirmation.kind === 'remove' || unconfirmed.length > 0}
+      danger={confirmation.kind === 'reset' || confirmation.kind === 'remove' || confirmation.kind === 'drop-draft' || unconfirmed.length > 0}
       // 同聊天页重新生成「上次请求可能仍在服务端处理」那一下：先勾「我已了解影响」才能点。
       requireAck={unconfirmed.length > 0}
       onOk={runConfirmation} onClose={() => setConfirmation(null)} />}
@@ -344,6 +364,21 @@ function ShotRow({ shot, index, total, captions, seconds, videoModel, locked, ca
         <Button size="sm" variant="ghost" icon={ArrowDown} aria-label="下移" title="下移" disabled={index === total - 1 || locked} onClick={() => onMove(1)} testId={`video-shot-down-${index}`} />
         <Button size="sm" variant="ghost" icon={Trash2} aria-label="删掉这个镜头" title="删掉这个镜头" disabled={busy || locked} onClick={onRemove} testId={`video-shot-remove-${index}`} />
       </div>
+    </div>
+  </li>
+}
+
+/** 草稿箱的一行：名字、做到哪、什么时候放进来的，「接着做」和删掉。手上有事在跑时不能换，删别的草稿不碍事。 */
+function DraftRow({ draft, index, disabled, stashes, onOpen, onRemove }: { draft: VideoStudioDraft, index: number, disabled: boolean, stashes: boolean, onOpen(): void, onRemove(): void }) {
+  const when = formatClockTime(draft.savedAt, Date.now())
+  return <li className="video-studio-draft" data-testid={`video-draft-${index}`}>
+    <div className="video-studio-draft-copy">
+      <strong>{videoStudioDraftName(draft.project)}</strong>
+      <small>{[videoStudioDraftProgress(draft.project), when ?? ''].filter(Boolean).join(' · ')}</small>
+    </div>
+    <div className="video-studio-draft-tools">
+      <Button size="sm" disabled={disabled} title={stashes ? '现在这一份会先放进草稿箱' : undefined} onClick={onOpen} testId={`video-draft-open-${index}`}>接着做</Button>
+      <Button size="sm" variant="ghost" icon={Trash2} aria-label="删掉这份草稿" title="删掉这份草稿" onClick={onRemove} testId={`video-draft-remove-${index}`} />
     </div>
   </li>
 }

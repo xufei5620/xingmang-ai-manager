@@ -26,17 +26,22 @@ import {
   isVideoStudioShotBusy,
   isVideoStudioShotDrawing,
   moveVideoStudioShot,
+  openVideoStudioDraft,
+  removeVideoStudioDraft,
   removeVideoStudioMusic,
   removeVideoStudioShot,
   removeVideoStudioShotImage,
+  restoreVideoStudioDrafts,
   restoreVideoStudioProject,
   selectVideoStudioVideoModel,
+  serializeVideoStudioDrafts,
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
   setVideoStudioShotSeconds,
   setVideoStudioShotTrim,
   settleVideoStudioModels,
+  startVideoStudioProject,
   startVideoStudioShotDrawing,
   updateVideoStudioShot,
   videoStudioComposeCaptions,
@@ -46,8 +51,10 @@ import {
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
+  videoStudioDraftsStorageKey,
   videoStudioStorageKey,
   type VideoStudioClipSound,
+  type VideoStudioDraft,
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
@@ -96,6 +103,18 @@ function loadProject(storage: VideoStudioStorage | null, scope: string): VideoSt
   return createVideoStudioProject()
 }
 
+function loadDrafts(storage: VideoStudioStorage | null, scope: string): VideoStudioDraft[] {
+  try {
+    const raw = storage?.getItem(videoStudioDraftsStorageKey(scope))
+    if (raw) return restoreVideoStudioDrafts(JSON.parse(raw))
+  } catch {
+    // 同 loadProject：读不出来就是空的草稿箱。
+  }
+  return []
+}
+
+const draftsFullWarning = '这台电脑上存不下更多草稿了，删掉几份不要的再试。'
+
 /** 只留镜头本身和上一段片段，这一次出片的请求号、进度和报错都去掉。 */
 function shotWithoutRun(shot: VideoStudioShot) {
   const { requestId: _requestId, unconfirmed: _unconfirmed, stage: _stage, progress: _progress, delayed: _delayed, error: _error, ...rest } = shot
@@ -142,6 +161,10 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const [storage] = useState(() => options.storage === undefined ? defaultStorage() : options.storage)
   const [project, setProjectState] = useState(() => loadProject(storage, scope))
   const projectRef = useRef(project)
+  const [drafts, setDraftsState] = useState(() => loadDrafts(storage, scope))
+  const draftsRef = useRef(drafts)
+  // 每换一次草稿翻一页：对话框开着时换了草稿，选回来的图、歌不挂到换上来的那一份上。
+  const projectTurn = useLatestRequest()
   const [groups, setGroups] = useState<AiChatGroupSummary[]>([])
   const groupsRef = useRef<AiChatGroupSummary[]>([])
   const [preparations, setPreparations] = useState<Record<string, ChatGroupPreparation>>({})
@@ -246,13 +269,52 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   // 上次关掉软件（或刷新页面）时还在生成、没等到结果的那几段：拿记着的请求号回主进程接回来。主进程只查不提交，
   // 同一个请求号问两遍（开发版 StrictMode 会把这里跑两遍）接的也是同一份。
-  useEffect(() => {
-    if (!enabled) return
+  const resumeOpenClips = () => {
     for (const shot of projectRef.current.shots) {
       const { requestId } = shot
       if (shot.status === 'generating' && requestId) resumeClip(shot.id, requestId)
     }
+  }
+  useEffect(() => {
+    if (!enabled) return
+    resumeOpenClips()
   }, [enabled])
+
+  /**
+   * 换一份工程（新建、从草稿箱拿一份出来）。手上有事在跑就不换：出着的片段、画着的图、拼着的片都按镜头编号挂回
+   * 「现在这一份」，换走了就挂不上。先存草稿箱再换：存不下就整个不换，手上这一份不会丢。
+   */
+  const switchProject = (change: (current: VideoStudioProject, stored: readonly VideoStudioDraft[]) => { project: VideoStudioProject, drafts: VideoStudioDraft[] } | null) => {
+    const current = projectRef.current
+    if (planning || running.current.size || queue.current.length || composeAbort.current || current.shots.some((shot) => isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot))) return
+    const next = change(current, draftsRef.current)
+    if (!next) return
+    try {
+      storage?.setItem(videoStudioDraftsStorageKey(scope), JSON.stringify(serializeVideoStudioDrafts(next.drafts)))
+    } catch {
+      setStorageWarning(draftsFullWarning)
+      return
+    }
+    draftsRef.current = next.drafts
+    setDraftsState(next.drafts)
+    projectTurn.invalidate()
+    setError(''); setNotice('')
+    commit(() => next.project)
+    settleModels()
+    // 草稿里记着上次没等到结果的片段（重开软件时读回来就是「生成中」），照重开页面那样拿请求号去接回，只查不提交。
+    resumeOpenClips()
+  }
+  const removeDraft = (id: string) => {
+    const next = removeVideoStudioDraft(draftsRef.current, id)
+    if (next.length === draftsRef.current.length) return
+    try {
+      storage?.setItem(videoStudioDraftsStorageKey(scope), JSON.stringify(serializeVideoStudioDrafts(next)))
+    } catch {
+      // 少了一份反而存不下，多半是这台电脑的存储出了问题：照旧从列表里拿掉，下次存的时候再写。
+    }
+    draftsRef.current = next
+    setDraftsState(next)
+  }
 
   const writePlan = async () => {
     const { settings } = projectRef.current
@@ -492,10 +554,10 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   // 「用一张图开头」：用对话页选图那条通道（原生对话框、过大的图主进程先缩好、存进作品库），这里只拿编号。
   // 一次能多选几张，多出来的按顺序给后面的镜头（assignVideoStudioShotImages）；一次最多几张照对话那条的上限。
   const pickShotImage = async (id: string) => {
-    const alive = owner.capture()
+    const alive = owner.capture(), sameProject = projectTurn.capture()
     try {
       const picked = await bridge.pickAiChatImages(AI_CHAT_LIMITS.imagesPerMessage)
-      if (!alive() || !picked.length) return
+      if (!alive() || !sameProject() || !picked.length) return
       commit((current) => assignVideoStudioShotImages(current, id, picked.map((asset) => asset.assetId)))
     } catch (reason) {
       if (alive()) setError(videoStudioErrorMessage(reason))
@@ -504,10 +566,11 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
 
   // 「加配乐」：歌由主进程弹系统对话框选、存进作品库，这里只拿编号、歌名和时长。
   const pickMusic = async () => {
-    const alive = owner.capture()
+    // 对话框开着时换成了别的草稿，选好的歌不挂到换上来的那一份上（歌照样在作品库里）。
+    const alive = owner.capture(), sameProject = projectTurn.capture()
     try {
       const picked = await bridge.pickVideoStudioMusic()
-      if (!alive() || !picked) return
+      if (!alive() || !sameProject() || !picked) return
       commit((current) => setVideoStudioMusic(current, picked))
     } catch (reason) {
       if (alive()) setError(videoStudioErrorMessage(reason, videoStudioMusicUnreadableMessage))
@@ -600,6 +663,10 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     removeMusic: () => commit((current) => removeVideoStudioMusic(current)),
     setClipSound: (clipSound: VideoStudioClipSound) => commit((current) => setVideoStudioClipSound(current, clipSound)),
     reset: () => commit((current) => createVideoStudioProject({ ...current.settings, idea: '' })),
+    drafts,
+    startNewProject: () => switchProject((current, stored) => startVideoStudioProject(stored, current, Date.now())),
+    openDraft: (id: string) => switchProject((current, stored) => openVideoStudioDraft(stored, id, current, Date.now())),
+    removeDraft,
   }
 }
 

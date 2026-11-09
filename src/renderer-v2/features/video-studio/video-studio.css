@@ -48,3 +48,10 @@
 .video-studio-result-copy small { color: var(--text-3); font-size: 12px; }
 .video-studio-result-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
 .video-studio button.video-studio-thumb:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+/* 草稿箱：一份一行，名字太长截断，按钮靠右。 */
+.video-studio-drafts { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.video-studio-draft { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; corner-shape: squircle; background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--line); }
+.video-studio-draft-copy { display: grid; flex: 1 1 auto; gap: 2px; min-width: 0; }
+.video-studio-draft-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 600; }
+.video-studio-draft-copy small { color: var(--text-3); font-size: 12px; }
+.video-studio-draft-tools { display: flex; flex: none; align-items: center; gap: 2px; }
