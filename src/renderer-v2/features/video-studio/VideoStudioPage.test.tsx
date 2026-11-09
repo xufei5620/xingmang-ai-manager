@@ -159,6 +159,16 @@ describe('VideoStudioPage', () => {
     expect(trimmed).toContain('2 个镜头 · 每段 6 秒 · 共约 11 秒')
   })
 
+  it('offers a straight cut or a fade between shots and a fade at the end, both off by default', () => {
+    const plain = render('ready', plannedProject())
+    expect(plain).toMatch(/<label[^>]*>镜头之间<\/label><select[^>]*data-testid="video-transition"[^>]*><option value="cut" selected="">直接切<\/option><option value="fade">淡入淡出<\/option>/)
+    expect(plain).toMatch(/data-testid="video-fade-out"[^]*?aria-checked="false"[^]*?>结尾淡出<\/label><small[^>]*>最后一秒画面和声音慢慢淡掉<\/small>/)
+    const project = plannedProject()
+    const faded = render('ready', { ...project, settings: { ...project.settings, transition: 'fade', fadeOut: true } })
+    expect(faded).toMatch(/<option value="fade" selected="">淡入淡出<\/option>/)
+    expect(faded).toMatch(/data-testid="video-fade-out"[^]*?aria-checked="true"/)
+  })
+
   it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {
     const project = plannedProject()
     expect(render('ready', project)).toMatch(/title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG"[^>]*data-testid="video-music-add"[^>]*>[^]*?加配乐/)

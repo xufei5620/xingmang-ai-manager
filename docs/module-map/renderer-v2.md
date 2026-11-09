@@ -201,7 +201,7 @@
 - `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
 - `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。
 - `features/video-studio/compose-protocol.ts` — 后台线程两头的消息格式与解析，片段字节与总量的上限。
-- `features/video-studio/timeline.ts` — 纯计算：成片尺寸（清晰度是短边）、每段的取材起点与成片帧位；48 kHz 能被 24/25/30 整除，画面和声音不会错开。
+- `features/video-studio/timeline.ts` — 纯计算：成片尺寸（清晰度是短边）、每段的取材起点与成片帧位、每段两头淡入淡出几帧和某一刻亮多少（画面和原声共用）；48 kHz 能被 24/25/30 整除，画面和声音不会错开。
 - `features/video-studio/captions.ts` — 字幕断行（汉字按字、英文按词、标点不上行首）、字号与位置、白字黑描边。
 - `features/video-studio/pcm.ts` — 声音拼接：各段重采样成 48 kHz 立体声、只写自己的时间窗、空处补静音（mediabunny 自带的重采样只认第一段的采样率，所以在这里做）。
 - `features/video-studio/music.ts` — 配乐：顺着声音块往下解一首歌、放完从头接、结尾淡出，按音量混进原声并截到 [-1, 1]。

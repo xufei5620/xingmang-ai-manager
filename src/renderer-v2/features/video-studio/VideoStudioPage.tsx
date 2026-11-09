@@ -16,13 +16,14 @@ import {
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotCounts,
+  videoStudioTransitionNames,
   videoStudioTotalSeconds,
   videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
   type VideoStudioShot,
   type VideoStudioTrimSide,
 } from './project'
-import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, videoStudioAspects, videoStudioFits, videoStudioResolutions } from './timeline'
+import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, videoStudioAspects, videoStudioFits, videoStudioResolutions, videoStudioTransitions } from './timeline'
 import { useVideoStudio, type VideoStudioBridge, type VideoStudioController, type VideoStudioOptions } from './useVideoStudio'
 import './video-studio.css'
 
@@ -153,6 +154,9 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
           onChange={(event) => { const resolution = Number(event.target.value); if (isVideoStudioResolution(resolution)) studio.changeSettings({ resolution }) }} testId="video-resolution" />
         <Select label="画面对不上时" value={settings.fit} disabled={composing} options={videoStudioFits.map((fit) => ({ value: fit, label: videoStudioFitNames[fit] }))}
           onChange={(event) => { if (isVideoStudioFit(event.target.value)) studio.changeSettings({ fit: event.target.value }) }} testId="video-fit" />
+        <Select label="镜头之间" value={settings.transition} disabled={composing} options={videoStudioTransitions.map((transition) => ({ value: transition, label: videoStudioTransitionNames[transition] }))}
+          onChange={(event) => { if (isVideoStudioTransition(event.target.value)) studio.changeSettings({ transition: event.target.value }) }} testId="video-transition" />
+        <div className="video-studio-switch"><Switch label="结尾淡出" description="最后一秒画面和声音慢慢淡掉" checked={settings.fadeOut} disabled={composing} onChange={(fadeOut) => studio.changeSettings({ fadeOut })} testId="video-fade-out" /></div>
       </div>
       <MusicRow studio={studio} disabled={composing} />
       <ComposeProgress studio={studio} />

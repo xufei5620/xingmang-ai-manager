@@ -461,7 +461,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       const run = options.compose ?? ((request, composeOptions) => composeInVideoStudioWorker(request, composeOptions))
       const request: VideoStudioComposeRequest = {
         clips,
-        options: { aspect: current.settings.aspect, resolution: current.settings.resolution, fit: current.settings.fit, frameRate: 24 },
+        options: { aspect: current.settings.aspect, resolution: current.settings.resolution, fit: current.settings.fit, frameRate: 24, transition: current.settings.transition, fadeOut: current.settings.fadeOut },
         ...(music ? { music } : {}),
         ...(sound.clipGain === undefined ? {} : { clipGain: sound.clipGain }),
       }
