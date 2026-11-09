@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode, accelerationConflictKinds } from './acceleration-contract'
-import { accelerationDevelopmentDirectory, accelerationPreviousOwnerRetryAtMs, accelerationProxyJournalPath, accelerationProxyRecoveryRetryDelaysMs, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, accelerationPreviousOwnerRetryAtMs, accelerationProxyJournalPath, accelerationProxyRecoveryRetryDelaysMs, accelerationStartFailureDescriptions, createAccelerationDevelopmentHost, hasAccelerationProxyRecoveryRecords, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
@@ -100,6 +100,38 @@ describe('development acceleration manifest', () => {
     for (const value of [null, 'server', 'local-development', 20, {}]) {
       expect(() => parseAccelerationEntitlementSource(value)).toThrow('时长来源无效')
     }
+  })
+})
+
+// 开机先问它，有记录才去读加速文件（bootstrap/acceleration.ts 的 createAccelerationHostLoader），所以它只能看数据目录下那两个文件。
+describe('proxy recovery records', () => {
+  it('finds none in a data directory the worker never wrote to, or one holding only its free-time ledger', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-acceleration-records-'))
+    try {
+      expect(await hasAccelerationProxyRecoveryRecords(root)).toBe(false)
+      await fs.mkdir(accelerationDevelopmentDirectory(root))
+      await fs.writeFile(path.join(accelerationDevelopmentDirectory(root), 'entitlement.json'), '{}')
+      expect(await hasAccelerationProxyRecoveryRecords(root)).toBe(false)
+    } finally { await fs.rm(root, { recursive: true, force: true }) }
+  })
+
+  it.each(['', '.lock'])('finds the journal%s a proxy left behind', async (suffix) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-acceleration-records-'))
+    try {
+      await fs.mkdir(accelerationDevelopmentDirectory(root))
+      await fs.writeFile(`${accelerationProxyJournalPath(root)}${suffix}`, '{}')
+      expect(await hasAccelerationProxyRecoveryRecords(root)).toBe(true)
+    } finally { await fs.rm(root, { recursive: true, force: true }) }
+  })
+
+  // Windows answers ENOENT for a path through a file, so only POSIX can stage a non-ENOENT failure this way.
+  it.runIf(process.platform !== 'win32')('leaves anything but a clean absence to the worker', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-acceleration-records-'))
+    try {
+      // A file where the directory should be: lstat says ENOTDIR, not ENOENT.
+      await fs.writeFile(accelerationDevelopmentDirectory(root), '')
+      expect(await hasAccelerationProxyRecoveryRecords(root)).toBe(true)
+    } finally { await fs.rm(root, { recursive: true, force: true }) }
   })
 })
 

@@ -131,6 +131,12 @@ describe('git-runtime-install', () => {
     expect(plan.trustedPaths).toEqual(['C:\\Temp\\git\\Git.exe'])
   })
 
+  it('counts only awake time toward the installer run', () => {
+    // 睡眠深查 G1：装的时候合盖超过 15 分钟，醒来不该按满时限当场掐掉。
+    const plan = buildGitRuntimeInstallPlan('C:\\ProgramData\\Xingmang\\git\\Git.exe', true, {}, machinePaths)
+    expect(plan.timeoutExcludesSleep).toBe(true)
+  })
+
   it('never points an elevated install at a user-writable directory', () => {
     const plan = buildGitRuntimeInstallPlan(
       'C:\\ProgramData\\Xingmang\\git\\Git.exe',
@@ -521,7 +527,7 @@ describe('Git download deadline', () => {
   }
 
   it('finishes a slow but steady mirror download that takes longer than ten minutes', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
     const body = installerBytes(8)
     const digest = createHash('sha256').update(body).digest('hex')
     const server = createSlowPackageServer()
@@ -548,7 +554,7 @@ describe('Git download deadline', () => {
   })
 
   it('still gives up on each source at the ceiling, in the words customers already see', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
     const server = createSlowPackageServer()
     // At 64 KB every 40 seconds this would need far longer than the ceiling to finish.
     const fetch = vi.fn(async (url: string) => server.respond(url, 100 * 1024 * 1024, 9, 64 * 1024))
