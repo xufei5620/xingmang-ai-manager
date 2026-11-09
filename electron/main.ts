@@ -451,8 +451,15 @@ function createWindow(
   window.webContents.on('will-navigate', (event, targetUrl) => {
     if (!isAllowedAppNavigationUrl(targetUrl, urlPolicy)) event.preventDefault()
   })
+  // 重新加载也按此刻存的深浅色拼地址：webContents.reload() 带的是开窗那一刻的 ?theme=，
+  // 中途换过深浅色的，重新加载出来第一帧又是旧的那套。缩到托盘后重新加载早就这么做了。
+  const reloadPage = () => {
+    void window.loadURL(resolveMainWindowUrl(systemService.readStoredConfig().theme)).catch((error) => {
+      runtimeLog.exception('renderer', 'page.load.failed', error)
+    })
+  }
   const crashRecovery = createRendererCrashRecovery({
-    reload: () => window.webContents.reload(),
+    reload: reloadPage,
     prompt: async () => {
       const result = await dialog.showMessageBox(window, {
         type: 'warning', title: '界面出了问题', message: '星芒AI管理工具的界面接连出错，自动重新加载也没能恢复。',
@@ -514,7 +521,7 @@ function createWindow(
       })
       return result.response === 1 ? 'reload' : 'wait'
     },
-    reload: () => window.webContents.reload(),
+    reload: reloadPage,
     log: (event) => {
       if (event === 'prompt.shown') { runtimeLog.log('warn', 'renderer', 'window.unresponsive.prompted', '已提示用户界面无响应'); return }
       if (event === 'prompt.reload') { runtimeLog.log('warn', 'renderer', 'window.unresponsive.reload', '用户选择重新加载界面'); return }
