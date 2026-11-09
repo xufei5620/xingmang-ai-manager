@@ -148,6 +148,12 @@ export interface CanvasRunEngineOptions {
   ) => Promise<CanvasRunAssetOrigin | null>
   admitRecord?: (record: CanvasRunRecord) => Promise<void>
   persistRecord?: (record: CanvasRunRecord) => Promise<void>
+  /**
+   * Saves a snapshot whose only news is a stage or progress change, or the
+   * opening `queued` entries. It may keep the snapshot in memory for a while;
+   * leaving it out sends these through `persistRecord` like everything else.
+   */
+  persistProgress?: (record: CanvasRunRecord) => Promise<void>
   onEvent?: (event: CanvasRunEvent, record: CanvasRunRecord) => void | Promise<void>
 }
 
@@ -548,9 +554,16 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     }
     appendCanvasRunTimelineEvent(record.events, complete)
     const snapshot = cloneRecord(record)
+    // A video reports progress every few seconds, and several run side by
+    // side; writing the whole run file for each report stalled the main
+    // process (R-1). Only these reports may wait. The running state written
+    // before a paid request, the result and the terminal state still reach
+    // the disk before anything proceeds.
+    const progressOnly = complete.type === 'node-stage' || (complete.type === 'node-state' && complete.state === 'queued')
+    const persist = progressOnly && options.persistProgress ? options.persistProgress : options.persistRecord
     eventQueue = eventQueue.then(async () => {
       try {
-        await options.persistRecord?.(snapshot)
+        await persist?.(snapshot)
         latestPersistenceError = undefined
       } catch (error) {
         // A later snapshot contains the complete event stream, including this
@@ -843,8 +856,8 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       try {
         const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
         if (usesRemoteGeneration(node.kind)) await updateStage(nodeId, 'submitting', attemptId)
-        // Persisting running/submitting awaits disk and event projection. A
-        // stop pressed during that window has already fired its abort event,
+        // Persisting running awaits disk, and running/submitting both await
+        // event projection. A stop pressed during that window has already fired its abort event,
         // which executors only subscribe to later, so re-check before any
         // paid request can be dispatched.
         if (options.signal.aborted) throw options.signal.reason ?? new Error('运行已取消')
