@@ -5077,8 +5077,8 @@ test('a downloaded update is one click from the install confirmation in the side
     await expect(entry).toHaveAttribute('title', '新版 v0.1.32 已经下好，点一下装上，装好自动打开')
     await expect(page.getByTestId('nav-settings')).toHaveAttribute('aria-label', '设置，有新版本')
     await page.getByTestId('nav-settings-update').waitFor()
-    // 侧栏那一项紧挨在「设置」上面。
-    assert.equal(await page.getByTestId('sidebar-pinned').evaluate((pinned) => [...pinned.querySelectorAll('[data-testid^="nav-"]')].map((item) => item.dataset.testid).join(',')), 'nav-update,nav-settings,nav-settings-update')
+    // 侧栏那一项紧挨在「设置」上面；「充值」钉在它们上面（「充值改」）。
+    assert.equal(await page.getByTestId('sidebar-pinned').evaluate((pinned) => [...pinned.querySelectorAll('[data-testid^="nav-"]')].map((item) => item.dataset.testid).join(',')), 'nav-recharge,nav-update,nav-settings,nav-settings-update')
     await entry.click()
     await confirmOpensAndClose()
 
