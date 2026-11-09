@@ -36,6 +36,7 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   codexDesktopInstallFailed: { sample: 'Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。' },
   codexDesktopInstallNoStore: { sample: 'Codex 桌面端没装上：这台电脑没有微软商店，国内下载线路这会儿连不上。' },
   codexDesktopTooOld: { sample: 'Codex 桌面端没装上：微软商店这次没装上，这台电脑的 Windows 版本太旧，装不了 Codex 桌面端。可以先用 Codex CLI，或者把 Windows 更新到最新。' },
+  codexDesktopFirewallOff: { sample: 'Codex 桌面端没装上：这台电脑的 Windows 防火墙服务被停掉了。新版 Codex 桌面端安装时要在防火墙里登记一下，服务停着 Windows 就不让装，重试和去微软商店装都绕不过去。' },
   // 主进程 claude-desktop-install-failure.ts 的 buildClaudeDesktopInstallFailureMessage。
   claudeDesktopInstallFailed: { sample: 'Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。' },
   // 主进程 macos-desktop-app-installer.ts 照 macos-desktop-install-failure.ts 拼的那几句。
@@ -379,7 +380,7 @@ describe('renderer-v2 operation error classification', () => {
   it('gives every Codex Desktop install failure a retry, the Microsoft Store, the log and support', () => {
     // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
     for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
-      if (reason === 'unsupported') continue
+      if (reason === 'unsupported' || reason === 'firewallOff') continue
       for (const storeTried of [true, false]) {
         const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried, updating: storeTried })
         const hint = presentOperationError(message)
@@ -398,12 +399,23 @@ describe('renderer-v2 operation error classification', () => {
 
   it('offers no Microsoft Store button on a computer that has no store', () => {
     for (const reason of Object.keys(codexDesktopInstallFailureReasons) as CodexDesktopInstallFailureReason[]) {
-      if (reason === 'unsupported') continue
+      if (reason === 'unsupported' || reason === 'firewallOff') continue
       const message = buildCodexDesktopInstallFailureMessage(reason, { storeTried: false, storeUnavailable: true, updating: false })
       const hint = presentOperationError(message)
       expect([message, hint?.key]).toEqual([message, 'codexDesktopInstallNoStore'])
       expect(hint?.actions.map((action) => action.id)).toEqual(['retry', 'log', 'support'])
       expect(JSON.stringify(hint)).not.toContain('去微软商店装')
+      expect(operationLogSection({ message, tool: 'codexDesktop' })).toBe('log')
+    }
+  })
+
+  it('offers neither a retry nor the store when the Windows Firewall service is stopped', () => {
+    // 哪一路装都卡在登记防火墙规则那一步：重试、去商店都是白点，出口只有日志和客服。
+    for (const [storeTried, storeUnavailable, updating] of [[true, false, true], [false, true, false], [false, false, false]]) {
+      const message = buildCodexDesktopInstallFailureMessage('firewallOff', { storeTried, storeUnavailable, updating })
+      const hint = presentOperationError(message)
+      expect([message, hint?.key]).toEqual([message, 'codexDesktopFirewallOff'])
+      expect(hint?.actions.map((action) => action.id)).toEqual(['log', 'support'])
       expect(operationLogSection({ message, tool: 'codexDesktop' })).toBe('log')
     }
   })
