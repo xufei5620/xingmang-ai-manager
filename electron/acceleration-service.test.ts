@@ -264,6 +264,42 @@ describe('acceleration-service', () => {
     }
   })
 
+  // 加速下线以后多数人一次都用不到后端，读它却要整读三十多兆的内核（0.2.24 启动速度深查 S-3）。
+  it('fetches a lazily given backend only when the first request needs it, and only once', async () => {
+    const backend = createBackend()
+    const load = vi.fn(async () => ({ backend }))
+    const service = createAccelerationService({ getAccountScope: () => scope, ready: load })
+    await service.onAccountChanged()
+    await service.stopAll()
+    expect(service.awaitingPreviousOwner()).toBe(false)
+    expect(service.recheckAccelerationBundle).toBeUndefined()
+    expect(load).not.toHaveBeenCalled()
+    const [read, lines] = await Promise.all([service.getAccelerationState(scope), service.listAccelerationLines(scope)])
+    expect(read).toEqual(state())
+    expect(lines).toEqual([])
+    expect(await service.startAcceleration(scope, 'system-proxy')).toEqual(active())
+    expect(load).toHaveBeenCalledOnce()
+    await service.dispose()
+    expect(backend.stopAcceleration).toHaveBeenCalledOnce()
+    expect(load).toHaveBeenCalledOnce()
+  })
+
+  it('quits without fetching a lazily given backend nobody asked for', async () => {
+    const load = vi.fn(async () => ({ backend: createBackend() }))
+    const service = createAccelerationService({ getAccountScope: () => scope, ready: load })
+    await service.dispose()
+    expect(load).not.toHaveBeenCalled()
+  })
+
+  it('takes a lazily given backend that cannot be fetched as acceleration being unavailable', async () => {
+    const load = vi.fn(async (): Promise<{ backend?: AccelerationApi }> => { throw new Error('read failed') })
+    const service = createAccelerationService({ getAccountScope: () => scope, backend: createBackend(), ready: load })
+    expect((await service.getAccelerationState(scope)).phase).toBe('unavailable')
+    await expect(service.startAcceleration(scope, 'system-proxy')).rejects.toThrow('加速线路暂未开通，请稍后再试。')
+    expect(load).toHaveBeenCalledOnce()
+    await service.dispose()
+  })
+
   it('offers the bundle recheck once a later answer says the bundle is damaged, and not before', async () => {
     const ready = deferred<{ bundleDamaged?: { recheck(): Promise<'repaired' | 'damaged'> } }>()
     const recheck = vi.fn(async () => 'damaged' as const)

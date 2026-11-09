@@ -209,7 +209,7 @@ describe('main process quit cleanup', () => {
       ],
       'acceleration-notices': ['accelerationExpiry?.dispose()', 'codexDesktopAcceleration.dispose()', 'claudeDesktopAcceleration.dispose()', 'accelerationInterruption?.dispose()'],
       acceleration: ["void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))"],
-      'acceleration-host': ['void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)'],
+      'acceleration-host': ['accelerationHosts.dispose()'],
       'runtime-log-hooks': [
         "runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')",
         "process.off('uncaughtExceptionMonitor', onUncaughtException)",
@@ -331,11 +331,13 @@ describe('main process quit cleanup', () => {
     expect(names.indexOf('acceleration')).toBeLessThan(names.indexOf('acceleration-host'))
     const bodies = Object.fromEntries(steps.map((step) => [step.name, step.body]))
     expect(bodies.acceleration).toContain("void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))")
-    // 退出时加速文件还没读完的，读完建出来的宿主也要放掉，所以等的是 createAccelerationHost 给的那个 Promise。
-    expect(bodies['acceleration-host']).toContain('void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)')
+    // 退出时加速文件还没读完的，读完建出来的宿主也要放掉；一次都没用到的不为它去读文件。这两样都归
+    // createAccelerationHostLoader 的 dispose（bootstrap/acceleration.test.ts 钉住），这里只许叫它一次。
+    expect(bodies['acceleration-host']).toContain('accelerationHosts.dispose()')
     const all = steps.map((step) => step.body).join('\n')
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
-    expect(all.match(/developmentAcceleration\?\.dispose\(\)/g)).toHaveLength(1)
+    expect(all.match(/accelerationHosts\.dispose\(\)/g)).toHaveLength(1)
+    expect(all).not.toMatch(/developmentAcceleration\?\.dispose\(\)/)
   })
 })
 
@@ -383,7 +385,7 @@ describe('main process startup order', () => {
       'settingsStore.normalize',
       'installXingmangAiSkillFiles',
       'accounts.restoreActive',
-      'createAccelerationHost',
+      'createAccelerationHostLoader',
       'createAccelerationServices',
       'createAccelerationPower',
       'registerIpcHandlers',
@@ -399,9 +401,10 @@ describe('main process startup order', () => {
     expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
   })
 
-  it('builds the window without waiting for the bundled acceleration files to be checked', () => {
-    // 安装包里的加速内核三十多兆，慢盘、杀毒软件逐字节扫的电脑上校验要一两秒，绝大多数客户又不用加速
-    // （0.2.22 性能体检第 4 条）。启动回调里不许 await 它：宿主由 createAccelerationHost 在读完那一刻自己建。
+  it('neither reads nor waits for the bundled acceleration files at startup', () => {
+    // 安装包里的加速内核三十多兆，慢盘、杀毒软件逐字节扫的电脑上校验要一两秒，绝大多数客户又不用加速。
+    // 0.2.22 性能体检第 4 条起建窗口不等它；网络加速下线以后（0.2.24 启动速度深查 S-3）开机连读都不读：
+    // 启动回调只把「怎么读」交给 createAccelerationHostLoader，它看过恢复记录、或者真用到加速时才调。
     const { source } = mainSource()
     const callback = startupCallback(source)
     const awaited: string[] = []
@@ -410,15 +413,19 @@ describe('main process startup order', () => {
       ts.forEachChild(node, visit)
     }
     visit(callback)
-    expect(awaited.filter((expression) => /accelerationConfigRead|accelerationHost/.test(expression))).toEqual([])
-    const calls = directCallPositions(source, callback, ['createAccelerationHost'])
+    expect(awaited.filter((expression) => /ccelerationConfig|accelerationHost|AccelerationBundle/.test(expression))).toEqual([])
+    const reads = directCallPositions(source, callback, [
+      'readAccelerationConfig', 'readBundledAccelerationConfig', 'readAccelerationDevelopmentConfig', 'readAccelerationBundleStatus',
+    ])
+    for (const { callee, positions } of reads) expect({ callee, calls: positions.length }).toEqual({ callee, calls: 0 })
+    const calls = directCallPositions(source, callback, ['createAccelerationHostLoader'])
     expect(calls[0].positions).toHaveLength(1)
     const host = calls[0].positions[0]
     function hostCall(node: ts.Node): ts.CallExpression | undefined {
       if (ts.isCallExpression(node) && node.getStart(source) === host) return node
       return ts.forEachChild(node, hostCall)
     }
-    expect(hostCall(callback)?.arguments[0]?.getText(source)).toMatch(/^\{\s*read: accelerationConfigRead,/)
+    expect(hostCall(callback)?.arguments[0]?.getText(source)).toMatch(/^\{\s*read: readAccelerationConfig,/)
   })
 
   it('builds the routes before it starts checking them, and follows tool routes once a listener is attached', () => {
