@@ -692,3 +692,55 @@ test('opens the AI output folder from a notice that mentions it', async () => {
   assert.deepEqual(errors, [])
   await page.close()
 })
+
+// 「用一张图开头」（yoyo 2026-11-09「图开头改」）：选图走对话页那条通道，选几张就按顺序给几个镜头，生成时带上这张图，重开页面还在。
+test('starts shots from pictures picked on the computer and keeps them after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '新款水杯', { title: '水杯', shots: [{ prompt: '水杯在桌上' }, { prompt: '倒水' }, { prompt: '拿起水杯' }] })
+  const [first, second] = ['m', 'n'].map((letter) => letter.repeat(43))
+  assert.equal(await page.getByTestId('video-shot-image-0').getAttribute('title'), '生成时从这张图动起来，适合商品图、人物照片')
+
+  // 在对话框里点了取消：什么都不变。
+  await page.getByTestId('video-shot-image-0').click()
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'pick-images'))
+  assert.equal(await page.getByTestId('video-shot-image-thumb-0').count(), 0)
+
+  // 一次选两张：第一镜一张，第二镜一张，第三镜还是空的。
+  await page.evaluate((ids) => window.videoStudioPage.pickImages(ids), [first, second])
+  await page.getByTestId('video-shot-image-0').click()
+  await page.getByTestId('video-shot-image-thumb-1').waitFor()
+  assert.deepEqual(await studioCalls(page, 'pick-images'), [4, 4])
+  assert.equal(await page.getByTestId('video-shot-image-thumb-0').count(), 1)
+  assert.equal(await page.getByTestId('video-shot-image-2').textContent(), '用一张图开头')
+  for (const index of [0, 1]) {
+    const row = page.getByTestId(`video-shot-${index}`)
+    assert.equal(await row.getByTestId(`video-shot-image-change-${index}`).textContent(), '换一张')
+    assert.equal(await row.getByTestId(`video-shot-image-remove-${index}`).textContent(), '不用这张图')
+  }
+
+  // 第二镜不用了，回到「用一张图开头」。
+  await page.getByTestId('video-shot-image-remove-1').click()
+  await page.getByTestId('video-shot-image-1').waitFor()
+  assert.equal(await page.getByTestId('video-shot-image-thumb-1').count(), 0)
+
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 3)
+  const requests = await studioCalls(page, 'generate')
+  assert.deepEqual(requests.map((input) => input.imageAssetIds ?? null), [[first], null, null])
+  // 生成的时候换不了图，免得出来的片段和镜头上的图对不上。
+  assert.equal(await page.getByTestId('video-shot-image-change-0').isDisabled(), true)
+
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#ff0000'), requests[0].requestId)
+  await page.getByTestId('video-shot-0').getByText('已生成').waitFor()
+  // 有了片段左边就是片段，选的图留一张小的在按钮旁边。
+  await page.getByTestId('video-shot-image-preview-0').waitFor()
+  assert.equal(await page.getByTestId('video-shot-image-thumb-0').count(), 0)
+
+  // 重开页面：第一镜的图还在。
+  await page.reload()
+  await page.getByTestId('video-shot-image-preview-0').waitFor()
+  assert.equal(await page.getByTestId('video-shot-image-1').textContent(), '用一张图开头')
+  assert.deepEqual(errors, [])
+  await page.close()
+})

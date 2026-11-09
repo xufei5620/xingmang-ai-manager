@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, ImagePlus, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2, X } from 'lucide-react'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
 import { dollars } from '../../business-common'
@@ -128,7 +128,8 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} locked={studio.planning || composing}
           onEdit={(patch) => studio.editShot(shot.id, patch)} onMove={(offset) => studio.moveShot(shot.id, offset)}
           onRemove={() => shot.clip ? setConfirmation({ kind: 'remove', id: shot.id }) : studio.removeShot(shot.id)}
-          onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)} />)}
+          onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)}
+          onPickImage={() => void studio.pickShotImage(shot.id)} onRemoveImage={() => studio.removeShotImage(shot.id)} />)}
       </ol>
       {canAddVideoStudioShot(project) && <Button variant="ghost" icon={Plus} disabled={studio.planning || composing} onClick={studio.addShot} testId="video-shot-add">加一个镜头</Button>}
     </Card>}
@@ -232,9 +233,10 @@ function ClipThumbnail({ src }: { src: string }) {
 
 const stageNames: Record<NonNullable<VideoStudioShot['stage']>, string> = { processing: '生成中', downloading: '正在下载', saving: '正在保存' }
 
-function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemove, onGenerate, onOpen }: {
+function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemove, onGenerate, onOpen, onPickImage, onRemoveImage }: {
   shot: VideoStudioShot, index: number, total: number, captions: boolean, locked: boolean
   onEdit(patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>): void, onMove(offset: -1 | 1): void, onRemove(): void, onGenerate(): void, onOpen(): void
+  onPickImage(): void, onRemoveImage(): void
 }) {
   const busy = isVideoStudioShotBusy(shot)
   const status = shot.status === 'queued' ? <Pill tone="neutral">排队中</Pill>
@@ -244,12 +246,25 @@ function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemov
   return <li className="video-studio-shot" data-status={shot.status} data-testid={`video-shot-${index}`}>
     {shot.clip
       ? <button type="button" className="video-studio-thumb" onClick={onOpen} aria-label={`用播放器打开第 ${index + 1} 段`} title="用播放器打开"><ClipThumbnail src={shot.clip.thumbnailUrl} /><Play size={18} aria-hidden="true" /><b>{index + 1}</b></button>
-      : <div className="video-studio-thumb is-empty" aria-hidden="true"><b>{index + 1}</b></div>}
+      // 还没生成片段时，选好的图就放在这里（yoyo 2026-11-09 批的字「图开头改」：选好以后左边的小图换成这张图）。
+      : shot.image
+        ? <div className="video-studio-thumb is-still" aria-hidden="true" data-testid={`video-shot-image-thumb-${index}`}><ClipThumbnail src={shot.image.url} /><b>{index + 1}</b></div>
+        : <div className="video-studio-thumb is-empty" aria-hidden="true"><b>{index + 1}</b></div>}
     <div className="video-studio-shot-body">
       <Textarea label={`第 ${index + 1} 个镜头 · 画面`} value={shot.prompt} rows={3} maxLength={videoStudioPlanLimits.maximumPromptLength} disabled={busy || locked}
         onChange={(event) => onEdit({ prompt: event.target.value })} testId={`video-shot-prompt-${index}`} />
       {captions && <Input label="字幕" value={shot.caption} maxLength={videoStudioPlanLimits.maximumCaptionLength} disabled={locked} placeholder="这一镜不要字幕就空着"
         onChange={(event) => onEdit({ caption: event.target.value })} testId={`video-shot-caption-${index}`} />}
+      <div className="video-studio-shot-image">
+        {shot.image
+          ? <>
+            {/* 已经生成过片段时左边是片段，选的图在这里留一张小的，看得出用的是哪张。 */}
+            {shot.clip && <span className="video-studio-shot-image-preview" aria-hidden="true" data-testid={`video-shot-image-preview-${index}`}><ClipThumbnail src={shot.image.url} /></span>}
+            <Button size="sm" variant="ghost" icon={ImagePlus} disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-change-${index}`}>换一张</Button>
+            <Button size="sm" variant="ghost" icon={X} disabled={busy || locked} onClick={onRemoveImage} testId={`video-shot-image-remove-${index}`}>不用这张图</Button>
+          </>
+          : <Button size="sm" variant="ghost" icon={ImagePlus} title="生成时从这张图动起来，适合商品图、人物照片" disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-${index}`}>用一张图开头</Button>}
+      </div>
       {shot.status === 'failed' && shot.error && <p className="video-studio-shot-error" role="alert">{shot.error}</p>}
       {shot.status === 'generating' && shot.progress !== undefined && <Progress value={shot.progress} label={`第 ${index + 1} 段生成进度`} />}
     </div>

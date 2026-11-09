@@ -5,6 +5,7 @@ import type { AiVideoClip } from '../../../../electron/ipc-contract'
 import {
   addVideoStudioShot,
   applyVideoStudioPlan,
+  assignVideoStudioShotImages,
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
   clampVideoStudioSeconds,
@@ -12,6 +13,7 @@ import {
   defaultVideoStudioSettings,
   moveVideoStudioShot,
   removeVideoStudioShot,
+  removeVideoStudioShotImage,
   restoreVideoStudioProject,
   serializeVideoStudioProject,
   settleVideoStudioModels,
@@ -20,6 +22,7 @@ import {
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
+  videoStudioShotImage,
   videoStudioShotProblem,
   videoStudioUnconfirmedIndexes,
   type VideoStudioProject,
@@ -86,6 +89,39 @@ describe('video studio project', () => {
     expect(buildVideoStudioClipRequest({ ...grok, videoModel: 'minimax-h3-fast', aspect: '16:9' }, shot, 'r4')).toEqual({
       requestId: 'r4', group: '图片模型', model: 'minimax-h3-fast', prompt: '橘猫', seconds: '6', mode: 't2va', resolution: '720p', aspectRatio: '16:9', promptOptimization: false,
     })
+  })
+
+  it('starts a shot from its picture: the first frame for Grok, image-to-video for MiniMax', () => {
+    const image = videoStudioShotImage('i'.repeat(43))!
+    const shot = { id: 'a', prompt: '橘猫', caption: '', image, status: 'idle' as const }
+    const grok = { ...defaultVideoStudioSettings(), videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型', secondsPerShot: 6 }
+    expect(buildVideoStudioClipRequest(grok, shot, 'r1')).toEqual({
+      requestId: 'r1', group: '图片模型', model: 'grok-imagine-video-1.5', prompt: '橘猫', seconds: '6', imageAssetIds: ['i'.repeat(43)], width: 720, height: 1280,
+    })
+    expect(buildVideoStudioClipRequest({ ...grok, videoModel: 'minimax-h3-base' }, shot, 'r2')).toEqual({
+      requestId: 'r2', group: '图片模型', model: 'minimax-h3-base', prompt: '橘猫', seconds: '6', imageAssetIds: ['i'.repeat(43)], mode: 'i2va', resolution: '720p', aspectRatio: '9:16', promptOptimization: false,
+    })
+  })
+
+  it('hands several picked pictures to the following shots that still have none, and keeps them through a new storyboard', () => {
+    const project = planned()
+    const busy = { ...project, shots: [project.shots[0], { ...project.shots[1], status: 'generating' as const, requestId: 'r' }, project.shots[2]] }
+    const [a, b, c] = ['a', 'b', 'c'].map((letter) => letter.repeat(43))
+    // The second shot is being generated, so its picture cannot change under it; the extra picture has nowhere to go.
+    const assigned = assignVideoStudioShotImages(busy, 'shot-1', [a, b, c, '../not-an-id'])
+    expect(assigned.shots.map((shot) => shot.image?.assetId)).toEqual([a, undefined, b])
+    expect(assigned.shots[0].image).toEqual({ assetId: a, url: `xingmang-asset://image/${a}` })
+    // Changing one shot's picture never touches a later shot that already has one.
+    expect(assignVideoStudioShotImages(assigned, 'shot-1', [c, a]).shots.map((shot) => shot.image?.assetId)).toEqual([c, undefined, b])
+    expect(assignVideoStudioShotImages(assigned, 'shot-2', [c])).toBe(assigned)
+    expect(assignVideoStudioShotImages(assigned, 'missing', [c])).toBe(assigned)
+    expect(assignVideoStudioShotImages(assigned, 'shot-1', [])).toBe(assigned)
+
+    expect(removeVideoStudioShotImage(assigned, 'shot-3').shots[2]).not.toHaveProperty('image')
+    expect(removeVideoStudioShotImage(assigned, 'shot-2')).toBe(assigned)
+
+    const replanned = applyVideoStudioPlan(assigned, { title: '新的', shots: [{ prompt: '一' }, { prompt: '二' }] }, () => 'new')
+    expect(replanned.shots.map((shot) => shot.image?.assetId)).toEqual([a, undefined])
   })
 
   it('offers only the clip lengths a video model can make and moves to the nearest one', () => {
@@ -230,5 +266,18 @@ describe('video studio project', () => {
     expect(restored?.shots[0]?.clip).toEqual({ ...clip('a'), thumbnailUrl: assetThumbnailUrl('a'.repeat(43), 'video') })
     expect(restored?.exported).toEqual({ ...clip('z'), thumbnailUrl: assetThumbnailUrl('z'.repeat(43), 'video') })
     expect(restored?.exported?.thumbnailUrl).not.toContain('/v1/')
+  })
+
+  it('stores only the id of a shot picture and rebuilds its address when reading it back', () => {
+    const project = planned()
+    const withImage = { ...project, shots: [{ ...project.shots[0], image: videoStudioShotImage('p'.repeat(43))! }, ...project.shots.slice(1)] }
+    const stored = JSON.parse(JSON.stringify(serializeVideoStudioProject(withImage)))
+    expect(stored.shots[0].image).toEqual({ assetId: 'p'.repeat(43) })
+    expect(restoreVideoStudioProject(stored)?.shots[0].image).toEqual({ assetId: 'p'.repeat(43), url: `xingmang-asset://image/${'p'.repeat(43)}` })
+    const tampered = restoreVideoStudioProject({
+      version: 1, settings: defaultVideoStudioSettings(), title: '',
+      shots: [{ id: 'x', prompt: '一', caption: '', image: { assetId: '../../secret', url: 'https://evil.example/a.png' } }, { id: 'y', prompt: '二', caption: '', image: 'p'.repeat(43) }],
+    })
+    expect(tampered?.shots.map((shot) => shot.image)).toEqual([undefined, undefined])
   })
 })
