@@ -2255,6 +2255,42 @@ test('deleting a session asks first, then removes it from the list and the home 
   } finally { await page.close() }
 })
 
+// 0.2.24 深查 NT-0：记录详情和「彻底删除」两个框开着时，托盘「设置」或一条系统通知把页面换走，
+// 两个框跟着记录页藏起来，浏览器却还当它们是模态框，整个窗口点什么都没反应，只能按 Esc 或重开。
+test('dialogs left open on a page the tray or a notification navigates away from stop blocking the window and come back with the page', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&sessionDelete=1')
+  const modal = () => page.evaluate(() => [...document.querySelectorAll('dialog')].filter((dialog) => dialog.matches(':modal')).map((dialog) => dialog.dataset.testid))
+  try {
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-view-claude:1').click()
+    await page.getByTestId('session-detail-delete').click()
+    const confirm = page.getByTestId('session-delete-confirm')
+    await confirm.waitFor()
+    assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
+
+    // 托盘「设置」和系统通知点进来都走这一条。
+    await page.evaluate(() => window.v2Test.emit('onNavigate', 'settings'))
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await modal(), [])
+    const tab = settings.getByRole('tab', { name: '版本更新', exact: true })
+    await tab.click()
+    await expect(tab).toHaveAttribute('aria-selected', 'true')
+
+    // 回到记录页，两个框按原来的上下次序回来，焦点在最上面那个框里，照样能答。
+    await page.getByTestId('nav-sessions').click()
+    await confirm.waitFor()
+    assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
+    assert.equal(await page.evaluate(() => document.querySelector('[data-testid="session-delete-confirm"]')?.contains(document.activeElement)), true)
+    await confirm.getByRole('button', { name: '先不删' }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await modal(), ['session-detail-drawer'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a new user opens a CLI in a folder the app creates and can still pick one from the menu (known 40)', async () => {
   const page = await open('allInstalled=1')
   try {

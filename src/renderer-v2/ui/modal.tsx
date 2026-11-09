@@ -42,9 +42,40 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
   const cancelDiscard = useCallback(() => { refocusForm.current = true; pendingAfter.current = null; setConfirmDiscard(false); setNudge(0); }, []);
   useLayoutEffect(() => {
     const element = ref.current; if (!element || !open) return;
-    returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    if (element instanceof HTMLDialogElement) element.showModal(); else { element.setAttribute('popover', 'manual'); element.showPopover(); }
-    (initialFocus?.current ?? focusable(element).find(item => item.dataset.modalClose !== 'true') ?? element).focus();
+    const focusFirst = () => (initialFocus?.current ?? focusable(element).find(item => item.dataset.modalClose !== 'true') ?? element).focus();
+    returnFocus.current = null;
+    // A page the user has left stays mounted under a hidden (and inert) wrapper, and so does a dialog
+    // left open on it, or one it opens while it is in the background. A modal <dialog> under such a
+    // wrapper draws nothing yet still blocks the whole document: the tray, a notification or ⌘, could
+    // switch pages and leave a window that ignores every click (0.2.24 NT-0). So while anything above
+    // it is hidden or inert the dialog steps out of the top layer, keeping React's open state and the
+    // draft, and steps back in when the page comes back, focus where it was. Dialogs come back in the
+    // order they first opened (observers are told in the order they started observing), so a confirm
+    // stays above the dialog it was raised from. Only a dialog this stepped out comes back here; one the
+    // browser closed on its own is the close handler's (reopen, below), not some unrelated attribute change's.
+    let observer: MutationObserver | null = null; let shown = false; let stepped = false;
+    if (element instanceof HTMLDialogElement) {
+      let resume: HTMLElement | null = null;
+      const sync = () => {
+        const concealed = Boolean(element.parentElement?.closest('[hidden], [inert]'));
+        if (concealed) {
+          if (!element.open) return;
+          resume = document.activeElement instanceof HTMLElement && element.contains(document.activeElement) ? document.activeElement : null;
+          stepped = true; element.close();
+        } else if (!element.open && (!shown || stepped)) {
+          if (!shown) returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+          element.showModal();
+          if (resume?.isConnected && element.contains(resume)) resume.focus(); else focusFirst();
+          shown = true; stepped = false; resume = null;
+        }
+      };
+      sync();
+      observer = new MutationObserver(sync);
+      observer.observe(document.body, { subtree: true, attributes: true, attributeFilter: ['hidden', 'inert'] });
+    } else {
+      returnFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      element.setAttribute('popover', 'manual'); element.showPopover(); focusFirst(); shown = true;
+    }
     // Picking another row while the drawer is open: closing it returns focus to that row, not the first one.
     const track = (event: FocusEvent) => { if (event.target instanceof HTMLElement && !element.contains(event.target)) returnFocus.current = event.target; };
     // A dialog that closes while React still has it open (Chromium gave up letting the page veto an Esc
@@ -53,12 +84,14 @@ function Modal({ open, title, subtitle, onClose, footer, dirty, initialFocus, ch
     const reopen = () => { if (element instanceof HTMLDialogElement && element.isConnected && !element.open && !element.parentElement?.closest('[hidden], [inert]')) { element.showModal(); element.focus(); } };
     if (modal) { openDialogs.push(element); element.addEventListener('close', reopen); } else document.addEventListener('focusin', track);
     return () => {
+      observer?.disconnect();
       if (modal) { element.removeEventListener('close', reopen); const index = openDialogs.lastIndexOf(element); if (index >= 0) openDialogs.splice(index, 1); }
       else document.removeEventListener('focusin', track);
-      // Focus already taken over outside a drawer (a row, a search box) stays there when it closes.
+      // Focus already taken over outside a drawer (a row, a search box) stays there when it closes. A
+      // dialog that closes while its page is out of sight leaves focus wherever the user now is.
       const active = document.activeElement; const owned = modal || !active || active === document.body || element.contains(active);
       if (element instanceof HTMLDialogElement) { if (element.open) element.close(); } else if (element.matches(':popover-open')) element.hidePopover();
-      if (owned && returnFocus.current?.isConnected) returnFocus.current.focus();
+      if (shown && !stepped && owned && returnFocus.current?.isConnected) returnFocus.current.focus();
     };
   }, [open, initialFocus, modal]);
   useEffect(() => {
