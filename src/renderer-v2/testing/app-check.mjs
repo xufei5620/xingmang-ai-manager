@@ -4991,6 +4991,50 @@ test('the required-update gate never restarts on its own once lifted, and asks a
   } finally { await page.close() }
 })
 
+// 0.2.24 深查 KB-1：Chromium 只让网页连着拦两下 Esc，第三下 <dialog> 就关了；强制更新那层一关，底下必须更新的
+// 旧版本照常能用，要重开软件才回来。焦点在门里也好、掉到页面上也好，连按多少下 Esc 门都在；叠在门上的帮助框
+// 照样按 Esc 关；万一浏览器背着程序把门关了，门马上回来。
+test('the required-update gate stays up however many times Esc is pressed', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate((state) => window.v2Test.emit('onUpdateState', state), {
+      phase: 'available', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false, requiredVersion: '0.1.32',
+    })
+    const gate = page.getByTestId('required-update-gate')
+    await gate.waitFor()
+    const modal = () => page.evaluate(() => Boolean(document.querySelector('[data-testid="required-update-gate"]')?.matches(':modal')))
+    async function pressEscape() {
+      for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape')
+    }
+
+    await gate.getByTestId('required-update-start').focus()
+    await pressEscape()
+    assert.equal(await modal(), true)
+    // 门里的按钮转圈变灰时，焦点会掉到页面上：门照样在。
+    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur() })
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true)
+    await pressEscape()
+    assert.equal(await modal(), true)
+
+    // 门里点「联系客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
+    await gate.getByTestId('required-update-support').click()
+    const support = page.getByTestId('support-dialog')
+    await support.waitFor()
+    await page.keyboard.press('Escape')
+    await support.waitFor({ state: 'detached' })
+    assert.equal(await modal(), true)
+
+    // 浏览器背着程序把门关了：马上回来，回来以后照样按不掉。
+    await page.evaluate(() => document.querySelector('[data-testid="required-update-gate"]').close())
+    await expect.poll(modal).toBe(true)
+    await pressEscape()
+    assert.equal(await modal(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
 test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {
