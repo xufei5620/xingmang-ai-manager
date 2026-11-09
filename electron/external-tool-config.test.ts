@@ -488,7 +488,7 @@ describe('followExternalToolRoute (batch 43 A)', () => {
 
 describe('followExternalToolKey (#1113)', () => {
   const baseUrl = 'https://xm-direct.solov.cc/v1'
-  const change = { baseUrl, from: 'sk-old', to: 'sk-new' }
+  const change = { baseUrl, from: 'sk-old', to: 'sk-new', offered: ['gpt-5.4', 'claude-sonnet-4-6'] }
 
   function backups(target: string): string[] {
     return fs.readdirSync(path.dirname(target)).filter((name) => name.includes('.bak.'))
@@ -509,7 +509,27 @@ describe('followExternalToolKey (#1113)', () => {
 
     expect(fs.readFileSync(target, 'utf8')).toBe(workBuddy(['sk-new', 'sk-new']))
     expect(result.backups).toHaveLength(1)
+    expect(result.unsupportedModels).toEqual([])
     expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
+  })
+
+  it('leaves a WorkBuddy entry on the old key when the new key does not offer its model', async () => {
+    const original = workBuddy(['sk-old', 'sk-old'])
+    const { home, target } = existingConfig('workbuddy', original)
+    const result = await followExternalToolKey('workbuddy', platform, { userHome: home }, { ...change, offered: ['gpt-5.4'] })
+
+    expect(fs.readFileSync(target, 'utf8')).toBe(workBuddy(['sk-new', 'sk-old']))
+    expect(result.unsupportedModels).toEqual(['claude-sonnet-4-6'])
+    expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(original)
+  })
+
+  it('writes nothing when the new key offers none of the WorkBuddy models saved with the old key', async () => {
+    const original = workBuddy(['sk-old', 'sk-old'])
+    const { home, target } = existingConfig('workbuddy', original)
+    await expect(followExternalToolKey('workbuddy', platform, { userHome: home }, { ...change, offered: ['mine', 'elsewhere'] }))
+      .rejects.toThrow('型号新密钥都不支持')
+    expect(fs.readFileSync(target, 'utf8')).toBe(original)
+    expect(backups(target)).toEqual([])
   })
 
   it('changes the OpenCode key where it is set, keeping comments, address, SDK and model', async () => {

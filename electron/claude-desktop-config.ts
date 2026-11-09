@@ -227,6 +227,23 @@ function modelNames(models: unknown): string[] {
   return Array.isArray(models) ? models.map(modelName).filter((name): name is string => name !== null) : []
 }
 
+/**
+ * 换密钥时（#1113）型号菜单留哪几项：新 Key 认的照原样留着（字符串、对象两种写法和对象里别的字段都不动），不认的
+ * 拿掉。一把 Key 管整个菜单，Claude Desktop 开机检查又挑菜单里的 Haiku（claudeDesktopStartupCheckModel），只核默认
+ * 那个、留着新 Key 不认的 Haiku，客户一打开就是「型号被拒」。默认那个（第一项）新 Key 不认时回 null：不替客户换
+ * 默认型号，这次不换。没写清单的由 Claude Desktop 自己问网关要，用新 Key 问到的就是新 Key 认的，什么都不用拿掉。
+ */
+function splitClaudeDesktopModelsByOffer(models: unknown, offered: readonly string[]): { kept: unknown[]; removed: string[] } | null {
+  if (!Array.isArray(models) || !models.length) return { kept: [], removed: [] }
+  const names = models.map(modelName)
+  const supported = names.map((name) => name !== null && offered.includes(name))
+  if (!supported[0]) return null
+  return {
+    kept: models.filter((_model, index) => supported[index]),
+    removed: names.filter((name, index): name is string => name !== null && !supported[index]),
+  }
+}
+
 function hasDynamicConfiguration(config: JsonObject): boolean {
   return Boolean(config.bootstrapUrl && config.bootstrapEnabled !== false) || Boolean(config.selfHostedUrl || config.selfHosted)
 }
@@ -344,13 +361,12 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
   }
 
   /**
-   * followRoute、followKey 的那一笔写：正在用的是星芒那份、地址和 Key 还是 expected 时，只改 field 这一项，
-   * 新值由 value 在核对完以后给出。读、比、写都在 beforeCommit 之后同步做完。
+   * followRoute、followKey 的那一笔写：正在用的是星芒那份、地址和 Key 还是 expected 时，只改 edits 给出的那几个
+   * 顶层字段，edits 拿的是核对完以后重读出来的那份。读、比、写都在 beforeCommit 之后同步做完。
    */
   function editOwnedGateway(
     expected: { baseUrl: string; apiKey: string },
-    field: 'inferenceGatewayBaseUrl' | 'inferenceGatewayApiKey',
-    value: () => string,
+    edits: (gateway: JsonObject) => ReadonlyArray<readonly [key: string, value: unknown]>,
     action: string,
     beforeCommit?: () => Promise<void>,
   ): Promise<{ path: string; backups: string[] }> {
@@ -372,7 +388,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
         || gateway.inferenceGatewayApiKey !== expected.apiKey) {
         throw new Error(`${label}在${action}前已变化，未执行修改`)
       }
-      const content = setTopLevelField(original, field, value())
+      const content = edits(gateway).reduce((text, [key, value]) => setTopLevelField(text, key, value), original)
       assertWithinSizeLimit(content)
       const saved = commitClaudeDesktopFiles([{ path: gatewayPath, content }], snapshots, assertContext)
       return { path: gatewayPath, backups: saved.backups }
@@ -464,17 +480,28 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
      * 不是这一把，一个字不写。
      */
     followRoute: (from: string, to: string, apiKey: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => (
-      editOwnedGateway({ baseUrl: from, apiKey }, 'inferenceGatewayBaseUrl',
-        () => buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey }).inferenceGatewayBaseUrl, '换线路', beforeCommit)
+      editOwnedGateway({ baseUrl: from, apiKey },
+        () => [['inferenceGatewayBaseUrl', buildClaudeDesktopGatewayConfig({ baseUrl: to, apiKey }).inferenceGatewayBaseUrl]], '换线路', beforeCommit)
     ),
     /**
-     * 跟着 Claude Code 换 Key（#1113）：只把星芒那份的网关 Key 从 from 换成 to，地址、型号清单、认证方式和
-     * 文件里别的字都不动，规矩同 followRoute。
+     * 跟着 Claude Code 换 Key（#1113）：把星芒那份的网关 Key 从 from 换成 to，地址、认证方式和文件里别的字都不动，
+     * 规矩同 followRoute。型号菜单逐项拿 offered（新 Key 能用的型号）核一遍：都认就一个字不动；有不认的，同一笔写
+     * 里从菜单拿掉，removedModels 交回是哪几个；默认那个不认就整笔不写（见 splitClaudeDesktopModelsByOffer）。
      */
-    followKey: (baseUrl: string, from: string, to: string, beforeCommit?: () => Promise<void>): Promise<{ path: string; backups: string[] }> => (
-      editOwnedGateway({ baseUrl, apiKey: from }, 'inferenceGatewayApiKey',
-        () => buildClaudeDesktopGatewayConfig({ baseUrl, apiKey: to }).inferenceGatewayApiKey, '换密钥', beforeCommit)
-    ),
+    followKey: async (
+      change: { baseUrl: string; from: string; to: string; offered: readonly string[] },
+      beforeCommit?: () => Promise<void>,
+    ): Promise<{ path: string; backups: string[]; removedModels: string[] }> => {
+      let removedModels: string[] = []
+      const saved = await editOwnedGateway({ baseUrl: change.baseUrl, apiKey: change.from }, (gateway) => {
+        const apiKey = buildClaudeDesktopGatewayConfig({ baseUrl: change.baseUrl, apiKey: change.to }).inferenceGatewayApiKey
+        const models = splitClaudeDesktopModelsByOffer(gateway.inferenceModels, change.offered)
+        if (!models) throw new Error(`新密钥不支持${label}里的默认型号，未执行修改`)
+        removedModels = models.removed
+        return models.removed.length ? [['inferenceGatewayApiKey', apiKey], ['inferenceModels', models.kept]] : [['inferenceGatewayApiKey', apiKey]]
+      }, '换密钥', beforeCommit)
+      return { ...saved, removedModels }
+    },
     /**
      * 首页「切回官方账号」：只把 claude_desktop_config.json 的 deploymentMode 改成官方登录，等于替客户在
      * Claude Desktop 的登录页选了「用 Claude 账号登录」。星芒那份配置和密钥原样留着，切回来不用重配；
