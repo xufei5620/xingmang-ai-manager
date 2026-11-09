@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { WindowBounds } from './window-preferences'
-import { recoverOffscreenWindow, type DisplayScreen, type RecoverableWindow } from './window-recovery'
+import { fitOversizedWindow, recoverOffscreenWindow, type DisplayScreen, type FittableWindow, type RecoverableWindow } from './window-recovery'
 
 const laptop = { id: 1, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }
 
@@ -73,6 +73,58 @@ describe('recoverOffscreenWindow', () => {
     ]) {
       expect(recoverOffscreenWindow(candidate.window, fakeScreen())).toBeNull()
       expect(candidate.calls).toEqual([])
+    }
+  })
+})
+
+function fakeFittableWindow(options: {
+  bounds: WindowBounds
+  minimum?: [number, number]
+  maximized?: boolean
+  minimized?: boolean
+  fullScreen?: boolean
+  destroyed?: boolean
+}) {
+  let bounds = options.bounds
+  const setBounds = vi.fn((next: Partial<WindowBounds>) => { bounds = { ...bounds, ...next } })
+  const window: FittableWindow = {
+    isDestroyed: () => options.destroyed ?? false,
+    isFullScreen: () => options.fullScreen ?? false,
+    isMinimized: () => options.minimized ?? false,
+    isMaximized: () => options.maximized ?? false,
+    getBounds: () => bounds,
+    getMinimumSize: () => options.minimum ?? [960, 560],
+    setBounds,
+  }
+  return { window, setBounds, bounds: () => bounds }
+}
+
+describe('fitOversizedWindow', () => {
+  const scaledLaptop = { id: 3, workArea: { x: 0, y: 0, width: 1280, height: 672 } }
+
+  it('shrinks a window left bigger than the laptop screen after the external monitor was unplugged', () => {
+    const oversized = fakeFittableWindow({ bounds: { x: 60, y: 30, width: 1440, height: 900 } })
+    expect(fitOversizedWindow(oversized.window, fakeScreen([scaledLaptop], 3))).toEqual({ x: 0, y: 0, width: 1280, height: 672 })
+    expect(oversized.bounds()).toEqual({ x: 0, y: 0, width: 1280, height: 672 })
+  })
+
+  it('respects the window minimum size, as the canvas window keeps 960 by 620', () => {
+    const shortLaptop = { id: 4, workArea: { x: 0, y: 0, width: 1097, height: 569 } }
+    const canvas = fakeFittableWindow({ bounds: { x: 120, y: 40, width: 1360, height: 860 }, minimum: [960, 620] })
+    expect(fitOversizedWindow(canvas.window, fakeScreen([shortLaptop], 4))).toEqual({ x: 0, y: 0, width: 1097, height: 620 })
+  })
+
+  it('leaves fitting, maximized, full-screen, minimized and destroyed windows alone', () => {
+    const oversized = { x: 60, y: 30, width: 1440, height: 900 }
+    for (const candidate of [
+      fakeFittableWindow({ bounds: { x: 100, y: 50, width: 1100, height: 600 } }),
+      fakeFittableWindow({ bounds: oversized, maximized: true }),
+      fakeFittableWindow({ bounds: oversized, fullScreen: true }),
+      fakeFittableWindow({ bounds: oversized, minimized: true }),
+      fakeFittableWindow({ bounds: oversized, destroyed: true }),
+    ]) {
+      expect(fitOversizedWindow(candidate.window, fakeScreen([scaledLaptop], 3))).toBeNull()
+      expect(candidate.setBounds).not.toHaveBeenCalled()
     }
   })
 })
