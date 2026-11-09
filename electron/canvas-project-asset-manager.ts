@@ -81,6 +81,13 @@ export class CanvasProjectAssetManager {
     return pending
   }
 
+  /** Drops the remembered folder of a project bound to another folder, so the next use reads the new one. */
+  forgetProject(userId: number, projectId: string): void {
+    assertUserId(userId)
+    assertProjectId(projectId)
+    this.contexts.delete(`${userId}:${projectId}`)
+  }
+
   async prepareProject(userId: number, projectId?: string): Promise<void> {
     if (!projectId) throw new Error('画布项目尚未选择，无法保存生成素材')
     const context = await this.forProject(userId, projectId)

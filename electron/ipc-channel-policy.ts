@@ -287,6 +287,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // 回的是整段视频的字节，拼一次片要读好几段。
   'video:read-clip': { label: '视频片段读取', log: 'quiet-success', account: 'scoped' },
   'video-studio:store-export': { label: '视频剪辑成片保存', log: 'normal', account: 'scoped' },
+  'video-studio:pick-music': { label: '视频剪辑选配乐', log: 'normal', account: 'scoped' },
+  // 回的是整首歌的字节，同 video:read-clip。
+  'video-studio:read-music': { label: '视频剪辑配乐读取', log: 'quiet-success', account: 'scoped' },
   'video:open': { label: '视频用播放器打开', log: 'normal', account: 'scoped' },
   'video:save-as': { label: '视频另存', log: 'normal', account: 'scoped' },
   // Chat history carries whole conversations and autosaves after every edit:
@@ -294,6 +297,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // (I13). Failures still log, with the Chinese reason only.
   'chat-history:read': { label: '聊天记录读取', log: 'quiet-success', account: 'none' },
   'chat-history:write': { label: '聊天记录保存', log: 'quiet-success', account: 'none' },
+  // 每次退出都有一条，成功了不值得进反馈报告；没回话的那次主进程等满时限照样退，这里也看不到。
+  'chat-history:flushed': { label: '退出前聊天记录保存回执', log: 'quiet-success', account: 'none' },
   'chat-history:export-text': { label: '聊天对话导出', log: 'normal', account: 'none' },
   'data-transfer:export': { label: '聊天记录与设置导出', log: 'normal', account: 'none' },
   'data-transfer:import': { label: '聊天记录与设置导入', log: 'normal', account: 'none' },

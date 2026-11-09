@@ -25,12 +25,16 @@ import {
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { claudePlatformSwitches } from './workspace-config-overrides'
+import { readRemovedCliHooks, rememberRemovedCliHooks, removedCliHooksRecordPath } from './removed-cli-hooks'
+import { removeCliHooksRememberingRestore } from './uninstall-cleanup'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import {
   claudeForeignModelEnvKeys,
   codexAuthSnapshotPaths,
   codexConfigSnapshotPaths,
   defaultCodexRelayProvider,
+  inspectManagedCliHookParts,
+  inspectManagedCliHookTargets,
   inspectProviderConfig,
   providerConfigPaths,
   saveProviderConfig,
@@ -5366,6 +5370,114 @@ describe('reminder settings fixed on their own after startup', () => {
     const { service } = await staleCodexFixture({ owner: 'user-1', recordOwnership: true })
     const [first, second] = await Promise.all([service.autoRepairStaleCliHooks!(), service.autoRepairStaleCliHooks!()])
     expect([...first, ...second]).toEqual(['codex'])
+  })
+})
+
+// 0.2.24 深查「安装卸载」第 1 条：卸了再装回来，卸载时收回的做完提醒、防睡和状态栏开机按记录补回。
+describe('reminder settings put back after uninstalling and reinstalling', () => {
+  async function reinstalledFixture(options: { node?: boolean } = {}) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-reinstalled-hooks-'))
+    temporaryDirectories.push(directory)
+    const roots = { userHome: directory, codexHome: path.join(directory, '.codex') }
+    const managerDataDirectory = path.join(directory, 'manager')
+    fs.mkdirSync(managerDataDirectory)
+    const oldHook = {
+      nodeExecutable: process.execPath,
+      scriptPath: path.join(directory, 'old install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs'),
+      eventsDirectory: path.join(managerDataDirectory, 'cli-events'),
+      platform: 'linux' as const,
+    }
+    const oldStatusLine = `"${process.execPath}" "${path.join(directory, 'old install', 'bundled-catalog', 'cli-status-line', 'xingmang-statusline.cjs')}"`
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-4-6', 'reset', roots, {}, providerBaseUrls, oldStatusLine, undefined, oldHook)
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'reset', roots, {}, providerBaseUrls, undefined, undefined, oldHook)
+    // What the uninstaller does before the files go.
+    await removeCliHooksRememberingRestore(managerDataDirectory, roots)
+    const cliHookScriptPath = path.join(directory, 'new install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    const claudeStatusLineScriptPath = path.join(directory, 'new install', 'bundled-catalog', 'cli-status-line', 'xingmang-statusline.cjs')
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const service = createService({
+      platform: 'linux',
+      providerRoots: roots,
+      managerDataDirectory,
+      cliHookScriptPath,
+      claudeStatusLineScriptPath,
+      findExecutable: vi.fn(async (command: string) => command === 'node' && options.node !== false ? process.execPath : null),
+      getExternalClientAccountId: () => null,
+      runtimeLog: runtimeLog as unknown as SystemServiceOptions['runtimeLog'],
+    })
+    return { service, roots, managerDataDirectory, cliHookScriptPath, claudeStatusLineScriptPath, runtimeLog }
+  }
+
+  it('puts back the hooks and status line the uninstaller took, at the new location, once', async () => {
+    const { service, roots, managerDataDirectory, cliHookScriptPath, claudeStatusLineScriptPath, runtimeLog } = await reinstalledFixture()
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual([])
+    expect(inspectManagedCliHookParts('codex', roots)).toEqual([])
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks', 'statusLine'])
+    const claudeTargets = inspectManagedCliHookTargets('claude', roots)
+    expect(claudeTargets.slice(0, 5).map((target) => target.scriptPath)).toEqual(Array(5).fill(cliHookScriptPath))
+    expect(claudeTargets[5].scriptPath).toBe(claudeStatusLineScriptPath)
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([{ nodeExecutable: process.execPath, scriptPath: cliHookScriptPath }])
+    expect(inspectProviderConfig('claude', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('codex', roots).apiKey).toBe('sk-relay')
+    expect(fs.existsSync(removedCliHooksRecordPath(managerDataDirectory))).toBe(false)
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'cli-hooks.restored', expect.any(String), { provider: 'claude', parts: ['hooks', 'statusLine'] })
+
+    // Only once per launch, and the record is gone for the next one.
+    const claudeBefore = fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
+    expect(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')).toBe(claudeBefore)
+  })
+
+  it('does not bring back reminders the customer removed without a record from the uninstaller', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture()
+    fs.rmSync(removedCliHooksRecordPath(managerDataDirectory))
+    const files = (['claude', 'codex'] as const).map((provider) => fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8'))
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect((['claude', 'codex'] as const).map((provider) => fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8'))).toEqual(files)
+  })
+
+  it('does not push out a status line the customer set up after uninstalling', async () => {
+    const { service, roots } = await reinstalledFixture()
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
+    expect((JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { statusLine: unknown }).statusLine).toEqual({ type: 'command', command: '~/.claude/line.sh' })
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+  })
+
+  it('settles a status line the customer replaced without writing or counting it', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture()
+    const [claudePath] = providerConfigPaths('claude', roots)
+    fs.rmSync(removedCliHooksRecordPath(managerDataDirectory))
+    await rememberRemovedCliHooks(managerDataDirectory, [{ provider: 'claude', parts: ['statusLine'], configPath: claudePath }])
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    const before = fs.readFileSync(claudePath, 'utf8')
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    expect(fs.existsSync(removedCliHooksRecordPath(managerDataDirectory))).toBe(false)
+  })
+
+  it('keeps the record for the next launch while this computer cannot write the hooks', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture({ node: false })
+    const record = await readRemovedCliHooks(managerDataDirectory)
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual([])
+    await expect(readRemovedCliHooks(managerDataDirectory)).resolves.toEqual(record)
+  })
+
+  it('puts them back before the first read of the config after startup, signed in or not', async () => {
+    const { service, roots } = await reinstalledFixture()
+    expect(await service.autoRepairStaleCliHooks!()).toEqual([])
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks', 'statusLine'])
+    expect(inspectManagedCliHookParts('codex', roots)).toEqual(['hooks'])
   })
 })
 

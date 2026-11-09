@@ -38,6 +38,7 @@
 - `claude-native-uninstall.ts` — 卸载 Anthropic 官方安装器装的 Claude Code（`~/.local/bin/claude` 指向 `~/.local/share/claude/versions`）：只认版本号命名的文件；Windows 上 claude.exe 还开着时改得了名删不掉，照实交代并给出手动命令。口径见 `docs/CLI-NATIVE-INSTALLS.md`
 - `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名不交路径（I5）。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `uninstall-cleanup.ts` — **Windows 卸载程序的收尾一支**：卸载程序删文件前用专用参数再拉起本程序，把系统代理改回去（加速辅助进程已被强杀，代理还指着没人听的端口会让整台电脑断网）、删开机项、收回四家工具配置里的钩子和状态行，勾了就清登录与聊天记录；跑卸载的不是桌面登录的那个人就什么都不动，结果按位写进退出码，从不让卸载卡住
+- `removed-cli-hooks.ts` — 卸载时收回了哪几家工具的提醒设置（钩子、Claude Code 状态行），记在数据目录的 `cli-hooks-removed-by-uninstall.json`；Windows 卸载清理和 Mac「卸载星芒」写，重装后开机由 `config-save-service.ts` 按记录补回、补完划掉。只认这份记录，客户自己删掉的不补
 - `uninstall-cleanup-entry.ts` — 上面那支的入口判定和两个参数名（与 `build/installer.nsh` 由 scripts 测试钉成同一个值）；刻意零 import，`platform/entry.ts` 每次启动最先读它，决定走桌面还是走清理
 
 ## Grok（Windows 原生包）
@@ -142,7 +143,7 @@
 
 - `macos-platform.ts` — **Mac 上找命令与「打开」工具**：`darwinCommandPathCandidates` 定 node / npm / CLI 的查找顺序（本软件代下的 Node.js 排最后，客户自己的优先）；打开时写一次性启动脚本，交给固定路径的 `/System/Applications/Utilities/Terminal.app`（不按名字交给 LaunchServices，I14 在 Mac 上的对应），脚本里先摘掉指向已关闭本机端口的代理变量；启动脚本的文件部分在 `terminal-launcher-files.ts`
 - `darwin-path-trust.ts` — Mac 的路径信任：问的是「除 root 和当前用户外，有没有别人能改它解析到的东西」，不是 Windows 那个问题；整条祖先链都查，属主压过权限位，admin 组（gid 80）按产品决定算可信。规则见 `.claude/rules/macos-platform.md`（T5）
-- `darwin-cli-staging.ts` — 核过签名的 CLI 经已绑定的文件描述符拷进私有暂存目录、再核一遍才执行，堵住「核完到执行之间被换掉」；终端可能晚一点才真正执行，所以留存到显式释放或进程退出
+- `darwin-cli-staging.ts` — 核过签名的 CLI 经已绑定的文件描述符拷进私有暂存目录、再核一遍才执行，堵住「核完到执行之间被换掉」；交给终端的那份在星芒退出后还留着（终端里的工具还在跑它），下次打开时用 lsof 查过没有进程在跑才删；一次性用途的副本用完即删、退出时也删
 - `macos-code-signing.ts` — Mac 上认可执行文件和应用来源的唯一办法：把钉 Team ID（和 bundle id）的 designated requirement 交给 codesign，只看退出码不看输出，因为 `codesign -dv` 的文字谁都能伪造
 - `macos-claude.ts` / `macos-codex.ts` — 起原生安装的 `claude`（Anthropic Team ID）和 Codex 官方独立安装布局（`CODEX_HOME/packages/standalone/releases/…`，OpenAI Team ID）之前先核签名，Codex 再经私有暂存执行
 - `macos-codex-app.ts` / `macos-executable-architectures.ts` — Mac 上探测、核对、打开 Codex 桌面端（钉 bundle id 与 OpenAI Team ID；深度签名核验另给更宽的时限并缓存一阵，超时降级成可重试而不是「没装」）；后者读 Mach-O / fat 头，认出可执行文件带哪几种架构

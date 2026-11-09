@@ -11,7 +11,7 @@ import { diagnosticFolderUnavailableMessage } from '../app/diagnostic-folder'
 import { inspectModel } from '../chat/api'
 import { pendingChatGroups, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { composeInVideoStudioWorker } from './compose-client'
-import { addVideoStudioClipBytes, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
+import { addVideoStudioClipBytes, videoStudioMusicUnreadableMessage, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult } from './compose-protocol'
 import { VideoStudioError, describeVideoStudioFailure, isVideoStudioAbort } from './errors'
 import {
   addVideoStudioShot,
@@ -24,24 +24,29 @@ import {
   createVideoStudioProject,
   isVideoStudioShotBusy,
   moveVideoStudioShot,
+  removeVideoStudioMusic,
   removeVideoStudioShot,
   removeVideoStudioShotImage,
   restoreVideoStudioProject,
   serializeVideoStudioProject,
+  setVideoStudioClipSound,
+  setVideoStudioMusic,
   settleVideoStudioModels,
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  videoStudioComposeSound,
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioShotProblem,
   videoStudioStorageKey,
+  type VideoStudioClipSound,
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
 } from './project'
 
-export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages'>
+export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages' | 'pickVideoStudioMusic' | 'readVideoStudioMusic'>
 export type VideoStudioStorage = Pick<Storage, 'getItem' | 'setItem'>
 
 export interface VideoStudioOptions {
@@ -424,8 +429,28 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
         clips.push({ data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer, ...(captions[index] ? { caption: captions[index] } : {}) })
       }
+      const sound = videoStudioComposeSound(current)
+      let music: VideoStudioComposeRequest['music']
+      if (sound.music) {
+        let bytes: Uint8Array
+        try {
+          bytes = await bridge.readVideoStudioMusic(sound.music.assetId)
+        } catch (reason) {
+          // 作品库里没了（客户删了那个文件）也是「这首歌用不了」；别的（没登录、排队满了）照主进程原话说。
+          throw new Error(/不存在|无权访问/.test(userFacingErrorMessage(reason)) ? videoStudioMusicUnreadableMessage : videoStudioErrorMessage(reason, videoStudioMusicUnreadableMessage))
+        }
+        if (controller.signal.aborted || !alive()) return
+        const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+        music = { data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer, gain: sound.music.gain }
+      }
       const run = options.compose ?? ((request, composeOptions) => composeInVideoStudioWorker(request, composeOptions))
-      const result = await run({ clips, options: { aspect: current.settings.aspect, resolution: current.settings.resolution, fit: current.settings.fit, frameRate: 24 } }, {
+      const request: VideoStudioComposeRequest = {
+        clips,
+        options: { aspect: current.settings.aspect, resolution: current.settings.resolution, fit: current.settings.fit, frameRate: 24 },
+        ...(music ? { music } : {}),
+        ...(sound.clipGain === undefined ? {} : { clipGain: sound.clipGain }),
+      }
+      const result = await run(request, {
         signal: controller.signal,
         onProgress: (progress) => { if (alive()) setComposeState({ phase: 'composing', progress }) },
       })
@@ -460,6 +485,18 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     }
   }
 
+  // 「加配乐」：歌由主进程弹系统对话框选、存进作品库，这里只拿编号、歌名和时长。
+  const pickMusic = async () => {
+    const alive = owner.capture()
+    try {
+      const picked = await bridge.pickVideoStudioMusic()
+      if (!alive() || !picked) return
+      commit((current) => setVideoStudioMusic(current, picked))
+    } catch (reason) {
+      if (alive()) setError(videoStudioErrorMessage(reason, videoStudioMusicUnreadableMessage))
+    }
+  }
+
   const openClip = async (assetId: string) => {
     try { await bridge.openAiVideo(assetId) } catch (reason) { setError(videoStudioErrorMessage(reason, '没打开这段视频，请稍后再试')) }
   }
@@ -490,6 +527,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     addShot: () => commit((current) => addVideoStudioShot(current)),
     pickShotImage,
     removeShotImage: (id: string) => commit((current) => removeVideoStudioShotImage(current, id)),
+    pickMusic,
+    removeMusic: () => commit((current) => removeVideoStudioMusic(current)),
+    setClipSound: (clipSound: VideoStudioClipSound) => commit((current) => setVideoStudioClipSound(current, clipSound)),
     reset: () => commit((current) => createVideoStudioProject({ ...current.settings, idea: '' })),
   }
 }

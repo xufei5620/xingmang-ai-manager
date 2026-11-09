@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, saveConversation, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation } from './state'
-import { ChatStorageError, createHistoryWriter, type LoadedChatHistory } from './storage'
+import { autosaveDelay, ChatStorageError, createHistoryWriter, registerHistoryFlusher, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { isWindowInFront } from '../tools/install-notice'
@@ -42,6 +42,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const groupFlight = useRef<{ epoch: () => boolean; promise: Promise<boolean> } | null>(null)
   const interactionTimer = useRef<number | undefined>(undefined)
   const persist = useRef(!initial.warning)
+  // 头一处还没存的改动是什么时候（performance.now）；存了就放下。回复出字时靠它最多隔两秒存一次。
+  const unsavedSince = useRef<number | null>(null)
   // 被上限拦下的那句话。编辑重发时它在编辑框里而不在输入框，得单独记住才搬得走。
   const carried = useRef<CarriedDraft | null>(null)
   // 断网时没发出去的那一下（重新生成、编辑重发也算），横幅上的「重试」原样再发一次；
@@ -198,17 +200,24 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }, [active])
   useEffect(() => {
     if (!persist.current) return
+    const now = performance.now()
+    const since = unsavedSince.current ?? now
+    unsavedSince.current = since
     const timer = window.setTimeout(() => {
+      unsavedSince.current = null
       writer.save(stateRef.current).then(() => { if (alive.current) setStorageError('') }, (reason: unknown) => {
         if (alive.current) setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录没有保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`)
       })
-    }, 250)
+    }, autosaveDelay(since, now))
     return () => window.clearTimeout(timer)
   }, [state])
   useEffect(() => () => {
     // A failed final save keeps the previous files as they were; nothing is left to show the error to.
     if (persist.current) void writer.save(stateRef.current).catch(() => undefined)
   }, [])
+  // 退出前主进程来要的那一次（storage.ts 的 answerHistoryFlushRequests）：手上的马上存。存失败了原来的文件没动，
+  // 页面上那条红条照旧由下一次自动保存来报。
+  useEffect(() => registerHistoryFlusher(() => persist.current ? writer.save(stateRef.current) : Promise.resolve()), [writer])
   const conversation = activeConversation(state)
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
   const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))

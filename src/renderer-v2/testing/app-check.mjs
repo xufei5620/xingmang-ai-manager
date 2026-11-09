@@ -2255,6 +2255,42 @@ test('deleting a session asks first, then removes it from the list and the home 
   } finally { await page.close() }
 })
 
+// 0.2.24 深查 NT-0：记录详情和「彻底删除」两个框开着时，托盘「设置」或一条系统通知把页面换走，
+// 两个框跟着记录页藏起来，浏览器却还当它们是模态框，整个窗口点什么都没反应，只能按 Esc 或重开。
+test('dialogs left open on a page the tray or a notification navigates away from stop blocking the window and come back with the page', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&sessionDelete=1')
+  const modal = () => page.evaluate(() => [...document.querySelectorAll('dialog')].filter((dialog) => dialog.matches(':modal')).map((dialog) => dialog.dataset.testid))
+  try {
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-view-claude:1').click()
+    await page.getByTestId('session-detail-delete').click()
+    const confirm = page.getByTestId('session-delete-confirm')
+    await confirm.waitFor()
+    assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
+
+    // 托盘「设置」和系统通知点进来都走这一条。
+    await page.evaluate(() => window.v2Test.emit('onNavigate', 'settings'))
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await modal(), [])
+    const tab = settings.getByRole('tab', { name: '版本更新', exact: true })
+    await tab.click()
+    await expect(tab).toHaveAttribute('aria-selected', 'true')
+
+    // 回到记录页，两个框按原来的上下次序回来，焦点在最上面那个框里，照样能答。
+    await page.getByTestId('nav-sessions').click()
+    await confirm.waitFor()
+    assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
+    assert.equal(await page.evaluate(() => document.querySelector('[data-testid="session-delete-confirm"]')?.contains(document.activeElement)), true)
+    await confirm.getByRole('button', { name: '先不删' }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await modal(), ['session-detail-drawer'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a new user opens a CLI in a folder the app creates and can still pick one from the menu (known 40)', async () => {
   const page = await open('allInstalled=1')
   try {
@@ -4948,6 +4984,89 @@ test('the required-update gate explains a full disk and lets the user retry', as
     await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'downloadUpdate').length >= 2)
     const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'downloadUpdate'))
     assert.deepEqual(calls.at(-1).args, [{ ignoreDiskSpace: true }])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// RC-01：点过「立即更新」以后那层提示收起了（读到文件里撤掉了最低版本），下好了也不替客户接着重启装；
+// 再盖回来要他自己再点。门里的「立即更新」让主进程先看有没有工具在装（askIfInstalling），客户在那一句里
+// 点了「继续安装」，按钮回到「立即更新」，不卡在「正在重启安装…」。
+test('the required-update gate never restarts on its own once lifted, and asks about running installs first', async () => {
+  const page = await open('installPostponed=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const base = {
+      currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false,
+    }
+    const emit = (patch) => page.evaluate((state) => window.v2Test.emit('onUpdateState', state), { ...base, ...patch })
+    const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).map((entry) => entry.args), method)
+    const gate = page.getByTestId('required-update-gate')
+    const progress = { percent: 40, bytesPerSecond: 1, transferred: 40, total: 100 }
+
+    await emit({ phase: 'available', requiredVersion: '0.1.32' })
+    await gate.getByRole('button', { name: '立即更新', exact: true }).click()
+    await expect.poll(async () => (await calls('downloadUpdate')).length).toBe(1)
+    await emit({ phase: 'downloading', requiredVersion: '0.1.32', progress })
+    await gate.getByTestId('required-update-progress').waitFor()
+    // 下载途中提示收起了，接着下好：不替他装。
+    await emit({ phase: 'downloading', requiredVersion: null, progress })
+    await gate.waitFor({ state: 'detached' })
+    await emit({ phase: 'downloaded', requiredVersion: null })
+    // 再盖回来：等他自己点。
+    await emit({ phase: 'downloaded', requiredVersion: '0.1.32' })
+    const start = gate.getByTestId('required-update-start')
+    await expect(start).toHaveText('立即更新')
+    assert.deepEqual(await calls('installUpdate'), [])
+    await start.click()
+    await expect.poll(() => calls('installUpdate')).toEqual([[{ askIfInstalling: true }]])
+    // 客户选了先让工具装完：按钮回到能点的「立即更新」。
+    await expect(start).toHaveText('立即更新')
+    await expect(start).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 0.2.24 深查 KB-1：Chromium 只让网页连着拦两下 Esc，第三下 <dialog> 就关了；强制更新那层一关，底下必须更新的
+// 旧版本照常能用，要重开软件才回来。焦点在门里也好、掉到页面上也好，连按多少下 Esc 门都在；叠在门上的帮助框
+// 照样按 Esc 关；万一浏览器背着程序把门关了，门马上回来。
+test('the required-update gate stays up however many times Esc is pressed', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate((state) => window.v2Test.emit('onUpdateState', state), {
+      phase: 'available', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false, requiredVersion: '0.1.32',
+    })
+    const gate = page.getByTestId('required-update-gate')
+    await gate.waitFor()
+    const modal = () => page.evaluate(() => Boolean(document.querySelector('[data-testid="required-update-gate"]')?.matches(':modal')))
+    async function pressEscape() {
+      for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape')
+    }
+
+    await gate.getByTestId('required-update-start').focus()
+    await pressEscape()
+    assert.equal(await modal(), true)
+    // 门里的按钮转圈变灰时，焦点会掉到页面上：门照样在。
+    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur() })
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true)
+    await pressEscape()
+    assert.equal(await modal(), true)
+
+    // 门里点「联系客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
+    await gate.getByTestId('required-update-support').click()
+    const support = page.getByTestId('support-dialog')
+    await support.waitFor()
+    await page.keyboard.press('Escape')
+    await support.waitFor({ state: 'detached' })
+    assert.equal(await modal(), true)
+
+    // 浏览器背着程序把门关了：马上回来，回来以后照样按不掉。
+    await page.evaluate(() => document.querySelector('[data-testid="required-update-gate"]').close())
+    await expect.poll(modal).toBe(true)
+    await pressEscape()
+    assert.equal(await modal(), true)
     await clean(page)
   } finally { await page.close() }
 })

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, ImagePlus, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2, X } from 'lucide-react'
+import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, ImagePlus, Music, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2, X } from 'lucide-react'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
 import { dollars } from '../../business-common'
@@ -9,6 +9,8 @@ import {
   canAddVideoStudioShot,
   isVideoStudioShotBusy,
   videoStudioAspectNames,
+  videoStudioClipSoundNames,
+  videoStudioClipSounds,
   videoStudioFitNames,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
@@ -141,6 +143,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         <Select label="画面对不上时" value={settings.fit} disabled={composing} options={videoStudioFits.map((fit) => ({ value: fit, label: videoStudioFitNames[fit] }))}
           onChange={(event) => { if (isVideoStudioFit(event.target.value)) studio.changeSettings({ fit: event.target.value }) }} testId="video-fit" />
       </div>
+      <MusicRow studio={studio} disabled={composing} />
       <ComposeProgress studio={studio} />
       <div className="video-studio-actions">
         {composing
@@ -278,6 +281,23 @@ function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemov
       </div>
     </div>
   </li>
+}
+
+// 配乐：歌名、换一首、不用配乐，和有歌时片段原声放多大。没选歌时只有「加配乐」一个按钮。
+function MusicRow({ studio, disabled }: { studio: VideoStudioController, disabled: boolean }) {
+  const music = studio.project.music
+  if (!music) {
+    return <div className="video-studio-music" data-testid="video-music">
+      <Button size="sm" icon={Music} title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG" disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-add">加配乐</Button>
+    </div>
+  }
+  return <div className="video-studio-music" data-testid="video-music">
+    <span className="video-studio-music-name" title={music.name} data-testid="video-music-name"><Music size={14} aria-hidden="true" /><span>{music.name}</span></span>
+    <Button size="sm" variant="ghost" icon={RefreshCw} disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-change">换一首</Button>
+    <Button size="sm" variant="ghost" icon={X} disabled={disabled} onClick={studio.removeMusic} testId="video-music-remove">不用配乐</Button>
+    <Select label="片段原声" value={music.clipSound} disabled={disabled} options={videoStudioClipSounds.map((sound) => ({ value: sound, label: videoStudioClipSoundNames[sound] }))}
+      onChange={(event) => { const sound = videoStudioClipSounds.find((candidate) => candidate === event.target.value); if (sound) studio.setClipSound(sound) }} testId="video-clip-sound" />
+  </div>
 }
 
 function ComposeProgress({ studio }: { studio: VideoStudioController }) {

@@ -28,6 +28,7 @@ import type { RemoteFeatureGate } from './remote-feature-gate'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
+import type { AiAudioAssetStore } from './ai-audio-asset-store'
 import type { AiVideoAssetStore } from './ai-video-asset-store'
 import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
@@ -51,6 +52,7 @@ import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
+import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import { isRecord } from './input-guards'
 import {
@@ -266,10 +268,14 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
+  chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
+  // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
+  audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC

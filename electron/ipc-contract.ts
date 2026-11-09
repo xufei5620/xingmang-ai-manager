@@ -650,6 +650,11 @@ export interface AiChatHistoryWrite {
   put: AiChatHistoryFile[]
 }
 
+/** 退出前主进程问聊天页要一次存盘（electron/chat-history-flush.ts）；编号每次随机，原样回给 chat-history:flushed。 */
+export interface AiChatHistoryFlushRequest {
+  requestId: string
+}
+
 /**
  * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
  * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
@@ -715,6 +720,14 @@ export interface AiVideoClip {
   thumbnailUrl: string
   width?: number
   height?: number
+  durationSeconds?: number
+}
+
+/** 视频剪辑的配乐：客户从电脑里选的一首歌，存进作品库（音频那一格）。不给路径，要字节走 video-studio:read-music。 */
+export interface VideoStudioMusic {
+  assetId: string
+  /** 页面上显示的歌名：选的那个文件的名字，去掉扩展名。 */
+  name: string
   durationSeconds?: number
 }
 
@@ -1320,11 +1333,17 @@ export interface XingmangInvokeContract {
   readAiVideoClip: IpcInvokeDefinition<'video:read-clip', [assetId: string], Uint8Array>
   /** 页面拼好的 MP4 存进作品库。 */
   storeVideoStudioExport: IpcInvokeDefinition<'video-studio:store-export', [bytes: Uint8Array], AiVideoClip>
+  /** 弹系统对话框选一首歌当配乐，存进作品库；点了取消回 null。路径不出主进程。 */
+  pickVideoStudioMusic: IpcInvokeDefinition<'video-studio:pick-music', [], VideoStudioMusic | null>
+  /** 作品库里配乐那首歌的全部字节，给页面拼片用。 */
+  readVideoStudioMusic: IpcInvokeDefinition<'video-studio:read-music', [assetId: string], Uint8Array>
   /** 用电脑上默认的播放器打开作品库里的一段视频。 */
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string], { saved: boolean }>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
+  /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */
+  confirmAiChatHistoryFlushed: IpcInvokeDefinition<'chat-history:flushed', [requestId: string], void>
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
   exportAppData: IpcInvokeDefinition<'data-transfer:export', [input: DataTransferExportInput], DataTransferExportResult | null>
   importAppData: IpcInvokeDefinition<'data-transfer:import', [], DataTransferImportPreview | null>
@@ -1440,6 +1459,8 @@ export interface XingmangEventContract {
     AccountPaymentWindowTerminalEvent
   >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
+  /** 要退出了：聊天页把手上还没交出来的那一份先存一次，存完回 confirmAiChatHistoryFlushed。 */
+  onAiChatHistoryFlushRequested: IpcEventDefinition<'chat-history:flush-requested', AiChatHistoryFlushRequest>
   onAiVideoProgress: IpcEventDefinition<'video:progress', AiVideoProgressEvent>
   /**
    * 星芒替用户绕开连不上的代理、整个改了直连以后，代理软件又连得上了，已经改回跟随系统代理
@@ -1660,10 +1681,13 @@ export const ipcInvokeChannels = {
   cancelAiVideo: 'video:cancel',
   readAiVideoClip: 'video:read-clip',
   storeVideoStudioExport: 'video-studio:store-export',
+  pickVideoStudioMusic: 'video-studio:pick-music',
+  readVideoStudioMusic: 'video-studio:read-music',
   openAiVideo: 'video:open',
   saveAiVideo: 'video:save-as',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
+  confirmAiChatHistoryFlushed: 'chat-history:flushed',
   exportAiChatConversation: 'chat-history:export-text',
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
@@ -1705,6 +1729,7 @@ export const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onAiChatHistoryFlushRequested: 'chat-history:flush-requested',
   onAiVideoProgress: 'video:progress',
   onProxyBypassEnded: 'network:proxy-bypass-ended',
   onRelayRouteChanged: 'network:relay-route-changed',

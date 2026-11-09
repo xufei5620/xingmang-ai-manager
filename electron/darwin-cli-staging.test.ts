@@ -1,10 +1,15 @@
+import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  buildOpenDarwinFilesProbeArgv,
   cleanupStaleDarwinCliDirectories,
+  disposeDarwinCliStagingAtExit,
   disposeStagedDarwinCliRecords,
+  listOpenDarwinFiles,
+  parseOpenDarwinFilesProbeOutput,
   releaseStagedDarwinCli,
   stageVerifiedDarwinCli,
 } from './darwin-cli-staging'
@@ -36,11 +41,88 @@ function sourceFixture() {
   }
 }
 
+function staleDirectoryFixture(root: string, name: string, executableName: string | null) {
+  const directory = path.join(root, name)
+  fs.mkdirSync(directory, { mode: 0o700 })
+  const executable = executableName ? path.join(directory, executableName) : null
+  if (executable) fs.writeFileSync(executable, '#!/bin/sh\n', { mode: 0o500 })
+  return { directory, executable }
+}
+
 afterEach(async () => {
   await disposeStagedDarwinCliRecords()
   for (const directory of temporaryDirectories.splice(0)) {
     await fs.promises.rm(directory, { recursive: true, force: true })
   }
+})
+
+describe('stale Darwin CLI staging cleanup', () => {
+  const onlyThisProcessIsAlive = (pid: number) => pid === process.pid
+
+  it('keeps a dead creator directory whose copy a terminal still runs and removes the unused one', async () => {
+    const root = temporaryDirectory()
+    const running = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999991-run', 'grok')
+    const finished = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999992-old', 'codex')
+    const probed: string[][] = []
+
+    await cleanupStaleDarwinCliDirectories(root, onlyThisProcessIsAlive, async (files) => {
+      probed.push([...files])
+      // lsof may answer with the /private spelling of a /var/folders path.
+      return [`/private${running.executable}`]
+    })
+
+    expect(probed).toHaveLength(1)
+    expect([...probed[0]].sort()).toEqual([running.executable, finished.executable].sort())
+    expect(fs.existsSync(running.executable!)).toBe(true)
+    expect(fs.existsSync(finished.directory)).toBe(false)
+  })
+
+  it('keeps every directory holding a file when the open-file probe cannot tell', async () => {
+    const root = temporaryDirectory()
+    const staged = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999993-unknown', 'grok')
+    const empty = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999994-empty', null)
+
+    await cleanupStaleDarwinCliDirectories(root, onlyThisProcessIsAlive, async () => null)
+
+    expect(fs.existsSync(staged.executable!)).toBe(true)
+    expect(fs.existsSync(empty.directory)).toBe(false)
+  })
+
+  it('does not run the open-file probe when no dead creator left a file behind', async () => {
+    const root = temporaryDirectory()
+    const live = staleDirectoryFixture(root, `xingmang-darwin-cli-${process.pid}-live`, 'grok')
+    const empty = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999995-empty', null)
+    let probes = 0
+
+    await cleanupStaleDarwinCliDirectories(root, onlyThisProcessIsAlive, async () => {
+      probes += 1
+      return []
+    })
+
+    expect(probes).toBe(0)
+    expect(fs.existsSync(live.executable!)).toBe(true)
+    expect(fs.existsSync(empty.directory)).toBe(false)
+  })
+
+  it('does not match a directory whose name only shares a prefix with an open path', async () => {
+    const root = temporaryDirectory()
+    const staged = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999996-ab', 'grok')
+
+    await cleanupStaleDarwinCliDirectories(root, onlyThisProcessIsAlive, async () => [
+      path.join(root, 'xingmang-darwin-cli-99999996-abc', 'grok'),
+    ])
+
+    expect(fs.existsSync(staged.directory)).toBe(false)
+  })
+
+  it('asks lsof for the named files only and reads back just the name fields', () => {
+    expect(buildOpenDarwinFilesProbeArgv(['/tmp/a/grok', '-b'])).toEqual(['-w', '-F', 'n', '--', '/tmp/a/grok', '-b'])
+    expect(parseOpenDarwinFilesProbeOutput('p123\nftxt\nn/private/var/x/grok\np456\nn/var/y/codex\nn\n')).toEqual([
+      '/private/var/x/grok',
+      '/var/y/codex',
+    ])
+    expect(parseOpenDarwinFilesProbeOutput('')).toEqual([])
+  })
 })
 
 describe.runIf(process.platform === 'darwin')('private Darwin CLI staging lifecycle', () => {
@@ -320,5 +402,58 @@ describe.runIf(process.platform === 'darwin')('private Darwin CLI staging lifecy
     // Only the newest directory survives; every superseded one was reclaimed.
     const surviving = directories.filter((directory) => fs.existsSync(directory))
     expect(surviving).toEqual([path.dirname(staged)])
+  })
+
+  it('leaves the copy handed to a terminal on disk at exit and removes a one-shot copy', async () => {
+    const fixture = sourceFixture()
+    const retained = await stageVerifiedDarwinCli({
+      executableName: 'grok',
+      sourcePath: fixture.sourcePath,
+      sourceIdentity: fixture.sourceIdentity,
+      retention: 'retained',
+      baseDirectory: fixture.root,
+      verify: async () => undefined,
+    })
+    const ephemeral = await stageVerifiedDarwinCli({
+      executableName: 'codex',
+      sourcePath: fixture.sourcePath,
+      sourceIdentity: fixture.sourceIdentity,
+      retention: 'ephemeral',
+      baseDirectory: fixture.root,
+      verify: async () => undefined,
+    })
+
+    disposeDarwinCliStagingAtExit()
+
+    expect(fs.existsSync(retained)).toBe(true)
+    expect(fs.existsSync(path.dirname(ephemeral))).toBe(false)
+  })
+
+  it('keeps a staged directory a running process executes from until that process exits', async () => {
+    const root = temporaryDirectory()
+    const staged = staleDirectoryFixture(root, 'xingmang-darwin-cli-99999997-live', null)
+    const executable = path.join(staged.directory, 'sleep')
+    fs.copyFileSync('/bin/sleep', executable)
+    fs.chmodSync(executable, 0o500)
+    const child = spawn(executable, ['60'], { stdio: 'ignore' })
+    const exited = new Promise((resolve) => child.once('exit', resolve))
+    try {
+      await new Promise((resolve, reject) => {
+        child.once('spawn', resolve)
+        child.once('error', reject)
+      })
+
+      const open = await listOpenDarwinFiles([executable])
+      expect(open?.some((name) => name.split(path.sep).includes(path.basename(staged.directory)))).toBe(true)
+      await cleanupStaleDarwinCliDirectories(root, (pid) => pid === process.pid)
+      expect(fs.existsSync(executable)).toBe(true)
+    } finally {
+      child.kill('SIGKILL')
+      await exited
+    }
+
+    expect(await listOpenDarwinFiles([executable])).toEqual([])
+    await cleanupStaleDarwinCliDirectories(root, (pid) => pid === process.pid)
+    expect(fs.existsSync(staged.directory)).toBe(false)
   })
 })

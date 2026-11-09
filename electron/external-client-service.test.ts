@@ -1446,6 +1446,25 @@ describe('Claude Desktop follows the key 星芒 replaced in Claude Code (#1113)'
       expect.objectContaining({ tool: 'claudeDesktop' })]]), { timeout: 10_000 })
     expect(fs.readFileSync(file, 'utf8')).toBe(before)
   })
+
+  it('takes the menu models the new key does not offer out of Claude Desktop, so its startup check does not land on one', async () => {
+    const f = fixture({ managedKeys: true })
+    const haiku = 'claude-haiku-4-5'
+    // 原来那把能用 Haiku（保存时试通了，进了菜单，Claude Desktop 开机检查挑的就是它）；新那把只有默认那个。
+    f.relayFetch.mockImplementation(async (url, init) => String(url).endsWith('/v1/messages')
+      ? Response.json({ id: 'msg', type: 'message', role: 'assistant', model: selectedModel, content: [], stop_reason: 'max_tokens' })
+      : Response.json({ data: new Headers(init?.headers).get('authorization')?.includes(newKey) ? [{ id: selectedModel }] : [{ id: selectedModel }, { id: haiku }] }))
+    const { file } = await connectBoth(f)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8')).inferenceModels).toEqual([{ name: selectedModel }, { name: haiku }])
+
+    await revokeClaudeCodeKey(f)
+    await followed(f)
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ inferenceGatewayApiKey: newKey, inferenceModels: [{ name: selectedModel }] })
+    expect(keyLogs(f)).toEqual([['info', 'config', 'external-client.key.followed', expect.any(String),
+      { tool: 'claudeDesktop', route: 'primary', unsupportedModels: [haiku] }]])
+    expect((await f.service.scanExternalClients(true)).find((client) => client.tool === 'claudeDesktop'))
+      .toMatchObject({ configured: true, configurationSource: 'xingmang', model: selectedModel })
+  })
 })
 
 describe('WorkBuddy and OpenCode follow the key 星芒 replaced in the tool they borrow it from (#1113)', () => {
@@ -1553,6 +1572,25 @@ describe('WorkBuddy and OpenCode follow the key 星芒 replaced in the tool they
     await f.service.scanExternalClients(true)
     expect(fs.readFileSync(file, 'utf8')).toBe(before)
     expect(keyLogs(f)).toEqual([])
+  })
+  it('moves only the WorkBuddy entries whose model the new key offers and leaves the rest on the old key', async () => {
+    const f = fixture({ managedKeys: true })
+    const { file } = await connect(f, 'workbuddy')
+    // 同一把 Codex 的密钥又存了一个 Claude 型号；新那把只认 GPT 那个。
+    await f.service.configureExternalTool('workbuddy', { apiKey: oldKey, model: selectedModel }, undefined, 'configured')
+    f.relayFetch.mockImplementation(async (_url, init) => Response.json({ data: new Headers(init?.headers).get('authorization')?.includes(newKey)
+      ? [{ id: model }] : [{ id: model }, { id: selectedModel }] }))
+    const entries = () => (JSON.parse(fs.readFileSync(file, 'utf8')) as { id: string; apiKey: string }[]).map((entry) => [entry.id, entry.apiKey])
+    expect(entries()).toEqual([[model, oldKey], [selectedModel, oldKey]])
+
+    await revoke(f)
+    await followed(f)
+    expect(entries()).toEqual([[model, newKey], [selectedModel, oldKey]])
+    expect(keyLogs(f)).toEqual([['info', 'config', 'external-client.key.followed', '已把 WorkBuddy 换成 Codex CLI 现在用的密钥',
+      { tool: 'workbuddy', route: 'primary', unsupportedModels: [selectedModel] }]])
+    // 换过一次就不再回头：留在旧密钥上的那条不再算星芒当前账号的，之后的检测不会一遍遍再试。
+    expect((await f.service.scanExternalClients(true)).find((client) => client.tool === 'workbuddy')).toMatchObject({ configured: true, model })
+    expect(keyLogs(f)).toHaveLength(1)
   })
 })
 

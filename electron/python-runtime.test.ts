@@ -15,6 +15,8 @@ import {
   type InstalledPythonRuntimeInspection,
   type PythonRuntimeInstallerDependencies,
 } from './python-runtime'
+import { downloadCeilingMs } from './download-retry'
+import { createSlowPackageServer, slowChunkEveryMs, type SlowPackageServer } from './slow-download.test-support'
 
 const temporaryDirectories: string[] = []
 const release = { version: '3.12.9', releaseId: 1_234 }
@@ -409,5 +411,87 @@ describe.runIf(process.platform === 'win32')('Python 3.12 installation flow', ()
       'direct signature',
       'direct install',
     ])
+  })
+})
+
+// 深查 D-1：和 Git 一样，以前从开始就掐着 10 分钟，慢网续多少次都白搭；现在和 Node.js 一样
+// 3 分钟没进展才停，30 分钟兜底。
+describe.runIf(process.platform === 'win32')('Python download deadline', () => {
+  const installerUrl = 'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe'
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  async function installThrough(server: SlowPackageServer, chunkBytes: number) {
+    const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-python-test-'))
+    temporaryDirectories.push(directory)
+    const releaseIndex = JSON.stringify([{
+      name: 'Python 3.12.9',
+      resource_uri: 'https://www.python.org/api/v2/downloads/release/1234/',
+      is_published: true,
+      pre_release: false,
+    }])
+    const releaseFiles = JSON.stringify([{
+      name: 'Windows installer (64-bit)',
+      release: 'https://www.python.org/api/v2/downloads/release/1234/',
+      url: installerUrl,
+      filesize: minimumInstallerBytes,
+    }])
+    const fetchMock = vi.fn<typeof globalThis.fetch>(async (input) => {
+      const url = String(input)
+      if (url.includes('/release/?')) return response(releaseIndex, url)
+      if (url.includes('/release_file/?')) return response(releaseFiles, url)
+      return server.respond(installerUrl, minimumInstallerBytes, 6, chunkBytes)
+    })
+    const runProcess = vi.fn<PythonRuntimeInstallerDependencies['runProcess']>(async (plan) => {
+      const stdout = plan.executable.toLowerCase().includes('powershell')
+        ? JSON.stringify({ status: 'Valid', subject: 'CN=Python Software Foundation' })
+        : ''
+      return commandResult(plan.executable, plan.argv, stdout)
+    })
+    return installPythonRuntime({
+      preferWinget: false,
+      onProgress: (event) => {
+        if (event.phase === 'downloading' && event.transferredBytes !== undefined) server.reported()
+      },
+      dependencies: {
+        fetch: fetchMock,
+        runProcess,
+        inspectInstalledPythonRuntime: async () => installedInspection(),
+        createTemporaryDirectory: async () => directory,
+        removeTemporaryDirectory: async () => undefined,
+        waitBeforeResume: async () => undefined,
+      },
+    })
+  }
+
+  it('finishes a slow but steady python.org download that takes longer than ten minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const server = createSlowPackageServer()
+    const startedAt = Date.now()
+
+    // 20 chunks of 512 KB, one every 40 seconds: a little over 13 minutes.
+    await expect(server.drive(installThrough(server, 512 * 1024)))
+      .resolves.toMatchObject({ method: 'exe', source: 'python-org' })
+
+    expect(Date.now() - startedAt).toBeGreaterThan(10 * 60_000)
+    expect(server.downloads).toHaveLength(1)
+  })
+
+  it('still gives up at the ceiling, in the words customers already see', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const server = createSlowPackageServer()
+    const startedAt = Date.now()
+
+    // At 64 KB every 40 seconds this would need well over the ceiling to finish.
+    await expect(server.drive(installThrough(server, 64 * 1024)))
+      .rejects.toThrow(/^Python 3\.12 自动安装失败：Python 官方安装包：Python 安装包下载超时$/)
+
+    const elapsed = Date.now() - startedAt
+    expect(elapsed).toBeGreaterThanOrEqual(downloadCeilingMs)
+    expect(elapsed).toBeLessThan(downloadCeilingMs + slowChunkEveryMs)
+    expect(server.downloads).toHaveLength(1)
+    expect(server.downloads[0].reported).toBeGreaterThan(0)
   })
 })

@@ -7,6 +7,13 @@ const BUILDER_VERSION = '26.15.3'
 const GET_VERSION = '5.0.0'
 const ORIGINAL_SOURCE_SHA256 = '3452ca5b9a2f29dd6460f0cc9937be2dc1bbbf36809f410649a015b35a607b48'
 const MAX_SOURCE_BYTES = 1024 * 1024
+// electron-builder 自带的下载重试是 3 次、间隔 2、4、6 秒，一共只等约 12 秒；GitHub 的
+// 504 常常连着几十秒到几分钟，打包就红（深查 CI-1：11-09 Mac、Linux 打包各连红两次，
+// 红在 Electron 压缩包、校验文件和 fpm 上）。放宽到 5 次、
+// 间隔 10、30、50、70、90 秒，一共约 4 分钟，跟测试前装 Electron 那一步
+// （ci-ensure-electron-binary.cjs）的等法同一个量级。只多等，不多放：哪些错误值得重试
+// 仍由 builder-fetch-compat.cjs 的 shouldRetryDownloadError 决定，每次下载照样核对校验和。
+const DOWNLOAD_RETRY = Object.freeze({ retries: 5, interval: 10000, backoff: 20000 })
 
 function digest(value) {
   return createHash('sha256').update(value).digest('hex')
@@ -59,6 +66,13 @@ function replacementPlan(helperReference) {
       replacement: '                    return xingmangFetch.shouldRetryDownloadError(e, callerSignals);',
       count: 1,
     },
+    {
+      original: '                retries: 3,\n                interval: 2000,\n                backoff: 2000,\n',
+      replacement: `                retries: ${DOWNLOAD_RETRY.retries},\n                interval: ${DOWNLOAD_RETRY.interval},\n                backoff: ${DOWNLOAD_RETRY.backoff},\n`,
+      count: 1,
+      // Added after the first release of this plan; see recoverOriginalSource.
+      widensRetry: true,
+    },
   ]
 }
 
@@ -76,19 +90,32 @@ function buildPatchedSource(original, helperReference) {
   return replacementPlan(helperReference).reduce(replaceExactly, original)
 }
 
-function recoverOriginalSource(source, helperReference) {
+function reversePlan(source, plan) {
   let recovered = source
-  for (const entry of [...replacementPlan(helperReference)].reverse()) {
+  for (const entry of [...plan].reverse()) {
     if (!entry.replacement) continue
     recovered = replaceExactly(recovered, { original: entry.replacement, replacement: entry.original, count: entry.count })
   }
   // The removed default got agent has one fixed insertion position in the
   // original source. Only the full original hash may authorize this recovery.
-  const removed = replacementPlan(helperReference).find(entry => !entry.replacement)
+  const removed = plan.find(entry => !entry.replacement)
   const marker = '        ...config.downloadOptions,\n'
-  recovered = replaceExactly(recovered, { original: marker, replacement: marker + removed.original, count: 1 })
-  if (digest(recovered) !== ORIGINAL_SOURCE_SHA256) throw new Error('打包器兼容补丁不是本项目已核实的版本，未重复修改')
-  return recovered
+  return replaceExactly(recovered, { original: marker, replacement: marker + removed.original, count: 1 })
+}
+
+function recoverOriginalSource(source, helperReference) {
+  const current = replacementPlan(helperReference)
+  // An existing node_modules may still carry the plan from before the retry
+  // window was widened; `npm install` over it must move it to the current plan
+  // rather than refuse. Each candidate is only a way to undo known edits: the
+  // result is accepted solely when it hashes to the verified original source.
+  const candidates = [current, current.filter(entry => !entry.widensRetry)]
+  for (const plan of candidates) {
+    let recovered
+    try { recovered = reversePlan(source, plan) } catch { continue }
+    if (digest(recovered) === ORIGINAL_SOURCE_SHA256) return recovered
+  }
+  throw new Error('打包器兼容补丁不是本项目已核实的版本，未重复修改')
 }
 
 async function applyBuilderFetchCompatibility(options = {}) {
@@ -110,8 +137,8 @@ async function applyBuilderFetchCompatibility(options = {}) {
   const helper = path.join(projectRoot, 'scripts', 'builder-fetch-compat.cjs')
   await readBoundedRegularFile(helper, { maxBytes: MAX_SOURCE_BYTES })
   const reference = path.relative(path.dirname(target), helper).split(path.sep).join('/')
-  const originalBytes = await readBoundedRegularFile(target, { maxBytes: MAX_SOURCE_BYTES })
-  const source = originalBytes.toString('utf8')
+  const sourceBytes = await readBoundedRegularFile(target, { maxBytes: MAX_SOURCE_BYTES })
+  const source = sourceBytes.toString('utf8')
   const original = digest(source) === ORIGINAL_SOURCE_SHA256 ? source : recoverOriginalSource(source, reference)
   const patched = buildPatchedSource(original, reference)
   if (source === patched) return { skipped: false, changed: false, version: BUILDER_VERSION }
@@ -121,8 +148,12 @@ async function applyBuilderFetchCompatibility(options = {}) {
   try {
     await fs.writeFile(temporary, patched, { flag: 'wx', mode: before.mode & 0o777 })
     const current = await fs.lstat(target)
+    // The bytes on disk must still be the ones verified above: the original
+    // source, or a known plan whose exact reversal hashes to it. Until the
+    // retry window was widened only the original could reach this point, so
+    // comparing with the original hash said the same thing.
     if (current.dev !== before.dev || current.ino !== before.ino || current.isSymbolicLink() || current.nlink !== 1
-      || digest(await readBoundedRegularFile(target, { maxBytes: MAX_SOURCE_BYTES })) !== ORIGINAL_SOURCE_SHA256) throw new Error('打包器模块在兼容补丁核对期间变化，未替换')
+      || digest(await readBoundedRegularFile(target, { maxBytes: MAX_SOURCE_BYTES })) !== digest(sourceBytes)) throw new Error('打包器模块在兼容补丁核对期间变化，未替换')
     await fs.rename(temporary, target)
   } finally { await fs.unlink(temporary).catch(() => {}) }
   return { skipped: false, changed: true, version: BUILDER_VERSION }
@@ -137,4 +168,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { BUILDER_VERSION, GET_VERSION, ORIGINAL_SOURCE_SHA256, buildPatchedSource, recoverOriginalSource, applyBuilderFetchCompatibility }
+module.exports = { BUILDER_VERSION, DOWNLOAD_RETRY, GET_VERSION, ORIGINAL_SOURCE_SHA256, buildPatchedSource, recoverOriginalSource, applyBuilderFetchCompatibility }

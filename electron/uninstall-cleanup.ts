@@ -5,14 +5,15 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { App } from 'electron'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
-import { providerIds, type ProviderId } from './catalog'
+import { isActiveProviderId, providerIds, type ProviderId } from './catalog'
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
-import { removeManagedCliHooks } from './config-files'
+import { inspectManagedCliHookParts, providerConfigPaths, removeManagedCliHooks } from './config-files'
 import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
 import { configureRelocatedFolderAccess } from './relocated-folders'
+import { rememberRemovedCliHooks, type RemovedCliHooks } from './removed-cli-hooks'
 import { assertNoReparseComponents, removeSafeDataFile } from './safe-local-data'
 import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
@@ -339,16 +340,48 @@ export function removeCliHooksFromConfigs(
   roots: ProviderConfigRoots = uninstallProviderConfigRoots(),
   report?: (line: string) => void,
   remove: (provider: ProviderId, roots: ProviderConfigRoots) => unknown = removeManagedCliHooks,
+  // 给了就把这次真收回的几家记进来（重装后开机补回，removed-cli-hooks.ts）；缺省 = 不记（旧行为）。
+  taken?: RemovedCliHooks[],
 ): boolean {
   let removed = true
   // 一家失败不耽误下一家。写入走两阶段提交与 I8 的路径检查：卸载程序带着管理员身份，
   // 配置目录被换成链接时照样拒绝，而不是跟着改到别处去。
   for (const provider of providerIds) {
+    // 收回之前先看清这家有哪几样，重装回来只补这几样。下线的工具不补，也就不记。
+    let parts: RemovedCliHooks['parts'] = []
+    if (taken && isActiveProviderId(provider)) {
+      try { parts = inspectManagedCliHookParts(provider, roots) } catch { parts = [] }
+    }
     try {
       remove(provider, roots)
+      if (taken && parts.length && isActiveProviderId(provider)) {
+        taken.push({ provider, parts, configPath: providerConfigPaths(provider, roots)[0] })
+      }
     } catch (error) {
       removed = false
       try { report?.(`cli hooks (${provider}): ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    }
+  }
+  return removed
+}
+
+/**
+ * 收回提醒设置，再把收回了哪几家记进数据目录：客户卸了再装回来（数据目录默认留着），开机按这份记录补回，
+ * 不用等他哪天重新保存一次配置。记不下只少补一次，不算没收回，原因只写进报告。
+ */
+export async function removeCliHooksRememberingRestore(
+  dataDirectory: string,
+  roots: ProviderConfigRoots,
+  report?: (line: string) => void,
+  remove: (provider: ProviderId, roots: ProviderConfigRoots) => unknown = removeManagedCliHooks,
+): Promise<boolean> {
+  const taken: RemovedCliHooks[] = []
+  const removed = removeCliHooksFromConfigs(roots, report, remove, taken)
+  if (taken.length) {
+    try {
+      await rememberRemovedCliHooks(dataDirectory, taken)
+    } catch (error) {
+      try { report?.(`cli hooks record: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
     }
   }
   return removed
@@ -361,7 +394,7 @@ export interface UninstallCleanupDependencies {
   recoverProxy(journalPath: string): Promise<void>
   removeLoginItem(): boolean
   // 收回写进四家工具配置的提醒设置；缺省 = 不动（旧行为，测试里用）。
-  removeCliHooks?: () => boolean
+  removeCliHooks?: () => boolean | Promise<boolean>
   // 只有卸载页勾了「同时清除登录记录和聊天记录」才给；缺省 = 两样都保留，跟以前一样。
   clearLoginRecords?: () => Promise<boolean>
   // 删掉自动更新留下的安装包；缺省 = 不动（旧行为，测试里用）。
@@ -410,7 +443,7 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
   // 同样是几次本地文件写入，排在可能一直等到超时的代理还原前面。
   if (dependencies.removeCliHooks) {
     try {
-      if (!dependencies.removeCliHooks()) code |= codes.cliHooksRemain
+      if (!await dependencies.removeCliHooks()) code |= codes.cliHooksRemain
     } catch (error) {
       code |= codes.cliHooksRemain
       try { dependencies.report?.(`cli hooks: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
@@ -464,7 +497,8 @@ export function startUninstallCleanup(
   argv: readonly string[] = process.argv,
   inspectAccount: () => Promise<UninstallAccountMatch> = () => inspectUninstallAccount(process.platform, report),
   // 测试替换成临时目录，免得改到跑测试这台电脑上真实的工具配置。
-  removeCliHooks: () => boolean = () => removeCliHooksFromConfigs(uninstallProviderConfigRoots(), report),
+  removeCliHooks: (dataDirectory: string) => boolean | Promise<boolean> = (dataDirectory) =>
+    removeCliHooksRememberingRestore(dataDirectory, uninstallProviderConfigRoots(), report),
   // 同上，免得删到跑测试这台电脑上真的更新缓存。
   removeUpdaterCache: () => Promise<boolean> = () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
 ): void {
@@ -486,7 +520,7 @@ export function startUninstallCleanup(
     inspectAccount,
     recoverProxy: (journalPath) => createWindowsSystemProxy({ journalPath, commandTimeoutMs: proxyCommandTimeoutMs }).recover(),
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
-    removeCliHooks,
+    removeCliHooks: () => removeCliHooks(dataDirectory),
     clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginAndChatRecords(dataDirectory, report) : undefined,
     removeUpdaterCache,
     report,

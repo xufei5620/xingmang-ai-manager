@@ -6,7 +6,8 @@ import { readMainWiringSource } from './bootstrap/main-source.test-support'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
 import { windowsAppUserModelId } from './login-launch'
 import { providerBaseUrls } from './catalog'
-import { inspectManagedCliHookTargets, inspectProviderConfig, saveProviderConfig } from './config-files'
+import { inspectManagedCliHookTargets, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
+import { readRemovedCliHooks, removedCliHooksRecordPath } from './removed-cli-hooks'
 import { activeRelocatedFolderPolicy, setRelocatedFolderPolicy } from './relocated-folders'
 import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import {
@@ -20,6 +21,7 @@ import {
   loginRecordFiles,
   parseUninstallAccountProbe,
   removeCliHooksFromConfigs,
+  removeCliHooksRememberingRestore,
   resolveUpdaterCacheDirectory,
   runUninstallCleanup,
   startUninstallCleanup,
@@ -647,6 +649,76 @@ describe('taking our CLI hooks back on uninstall', () => {
       dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem, removeCliHooks: () => { throw new Error('x') },
     })).resolves.toBe(codes.cliHooksRemain)
     expect(removeLoginItem).toHaveBeenCalledTimes(2)
+  })
+
+  it('remembers which tools it took back so a reinstall can put them back', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const roots = uninstallProviderConfigRoots(temporaryDataDirectory())
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-4-6', 'reset', roots, {}, providerBaseUrls,
+      '"/managed/node/bin/node" "/opt/app/resources/bundled-catalog/cli-status-line/xingmang-statusline.cjs"', undefined, cliHook)
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    saveProviderConfig('gemini', 'sk-relay', 'gemini-3.5-flash', 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    // Grok was saved without hooks here: nothing of ours to take back, nothing to remember.
+    saveProviderConfig('grok', 'sk-relay', 'grok-4', 'reset', roots, {}, providerBaseUrls)
+
+    await expect(removeCliHooksRememberingRestore(dataDirectory, roots)).resolves.toBe(true)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookTargets(provider, roots)).toEqual([])
+    // The retired Gemini CLI is cleaned up but never written to again, so it is not remembered.
+    await expect(readRemovedCliHooks(dataDirectory)).resolves.toEqual([
+      { provider: 'claude', parts: ['hooks', 'statusLine'], configPath: providerConfigPaths('claude', roots)[0] },
+      { provider: 'codex', parts: ['hooks'], configPath: providerConfigPaths('codex', roots)[0] },
+    ])
+  })
+
+  it('remembers nothing for a tool whose hooks could not be taken back', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const roots = uninstallProviderConfigRoots(temporaryDataDirectory())
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const report = vi.fn()
+    await expect(removeCliHooksRememberingRestore(dataDirectory, roots, report, () => { throw new Error('配置路径越过 Provider 根目录') })).resolves.toBe(false)
+    expect(fs.existsSync(removedCliHooksRecordPath(dataDirectory))).toBe(false)
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('cli hooks (codex)'))
+  })
+
+  it('still counts the hooks as taken back when the record cannot be written', async () => {
+    const roots = uninstallProviderConfigRoots(temporaryDataDirectory())
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'reset', roots, {}, providerBaseUrls, undefined, undefined, cliHook)
+    const report = vi.fn()
+    const missingDataDirectory = path.join(temporaryDataDirectory(), 'never-started')
+    await expect(removeCliHooksRememberingRestore(missingDataDirectory, roots, report)).resolves.toBe(true)
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([])
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('cli hooks record: '))
+    expect(fs.existsSync(missingDataDirectory)).toBe(false)
+  })
+
+  it('is wired into the Mac uninstall and the desktop startup that puts the hooks back', () => {
+    const main = readMainWiringSource()
+    expect(main).toContain('removeCliHooks: () => removeCliHooksRememberingRestore(managerDataDirectory, rootedOptions.system.providerRoots, report)')
+    expect(main).toContain('systemService.restoreCliHooksRemovedByUninstall?.()')
+  })
+
+  it('hands the data directory to the hook removal so the record lands next to the login', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const app = {
+      isPackaged: true,
+      getPath: vi.fn(() => dataDirectory),
+      setAppUserModelId: vi.fn(),
+      getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+      setLoginItemSettings: vi.fn(),
+    }
+    const removeCliHooks = vi.fn(async (_dataDirectory: string) => true)
+    const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, undefined, sameAccount, removeCliHooks, noUpdaterCache))
+    await expect(exited).resolves.toBe(0)
+    expect(removeCliHooks).toHaveBeenCalledWith(dataDirectory)
+  })
+
+  it('waits for a hook removal that settles later and still reports a failure', async () => {
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem: () => true, removeCliHooks: async () => false,
+    })).resolves.toBe(codes.cliHooksRemain)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), recoverProxy: async () => undefined, removeLoginItem: () => true, removeCliHooks: async () => true,
+    })).resolves.toBe(0)
   })
 
   it('touches no tool config when another account runs the uninstaller', async () => {

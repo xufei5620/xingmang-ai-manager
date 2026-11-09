@@ -10,7 +10,7 @@ import {
 } from './command-runner'
 import type { NodeRuntimeNetworkRegion, NodeRuntimeProcessPlan } from './node-runtime'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
-import { downloadWithResume } from './download-retry'
+import { createDownloadDeadline, downloadWithResume } from './download-retry'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
@@ -107,7 +107,6 @@ export interface InstallGitRuntimeOptions {
 export const gitRuntimeMissingAfterInstallMessage =
   'Git 没装上：安装程序已经跑完，但这台电脑上还是找不到 Git，可能被安全软件或公司电脑的管理规定拦下了。可以重启电脑后再点一次「安装 Git」；还不行请联系客服'
 
-const downloadTimeoutMs = 10 * 60_000
 const installerTimeoutMs = 15 * 60_000
 const minimumInstallerBytes = 20 * 1024 * 1024
 const maximumInstallerBytes = 200 * 1024 * 1024
@@ -221,7 +220,9 @@ async function downloadInstaller(
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
-  const timeout = setTimeout(() => controller.abort(new Error('下载超时')), downloadTimeoutMs)
+  // 深查 D-1：以前从开始就掐着 10 分钟，慢网续多少次都白搭。改成和 Node.js 一样 3 分钟没进展才停、
+  // 30 分钟兜底；到点的那句还是「下载超时」，会拼进「Git 没装上。…」给客户看。
+  const deadline = createDownloadDeadline('下载超时', (reason) => controller.abort(reason))
   const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
@@ -247,14 +248,17 @@ async function downloadInstaller(
         if (declared !== null && declared > maximumInstallerBytes) throw new Error('安装包超过 200 MB 安全限制')
         return declared
       },
-      onProgress: (size, total) => report(options, {
-        phase: 'downloading',
-        source: source.id,
-        message: `正在从${source.label}下载 Git`,
-        percent: percentOf(size, total),
-        transferredBytes: size,
-        totalBytes: total,
-      }),
+      onProgress: (size, total) => {
+        deadline.progressed(size)
+        report(options, {
+          phase: 'downloading',
+          source: source.id,
+          message: `正在从${source.label}下载 Git`,
+          percent: percentOf(size, total),
+          transferredBytes: size,
+          totalBytes: total,
+        })
+      },
       onResume: (size, total) => report(options, {
         phase: 'downloading',
         source: source.id,
@@ -271,7 +275,7 @@ async function downloadInstaller(
     await fs.promises.rm(targetPath, { force: true }).catch(() => undefined)
     throw error
   } finally {
-    clearTimeout(timeout)
+    deadline.stop()
     options.signal?.removeEventListener('abort', abort)
   }
 }

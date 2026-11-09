@@ -170,6 +170,80 @@ export function resolveRecoveredWindowBounds(
   }
 }
 
+// 显示器之间按 DIP 换算后可能差一两个点的缝，不算露在屏幕外面。
+const COVERAGE_TOLERANCE = 2
+
+function containsPoint(area: WindowBounds, x: number, y: number): boolean {
+  return x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height
+}
+
+// 把窗口按各块工作区的边切成小格，每一格都落在某块工作区里，窗口才算整个看得见。
+// 显示器最多几块，格子数可以忽略。
+function isCoveredByWorkAreas(bounds: WindowBounds, areas: readonly WindowBounds[]): boolean {
+  const right = bounds.x + bounds.width
+  const bottom = bounds.y + bounds.height
+  const xs = new Set([bounds.x, right])
+  const ys = new Set([bounds.y, bottom])
+  for (const area of areas) {
+    for (const x of [area.x, area.x + area.width]) if (x > bounds.x && x < right) xs.add(x)
+    for (const y of [area.y, area.y + area.height]) if (y > bounds.y && y < bottom) ys.add(y)
+  }
+  const columns = [...xs].sort((a, b) => a - b)
+  const rows = [...ys].sort((a, b) => a - b)
+  for (let i = 1; i < columns.length; i += 1) {
+    if (columns[i] - columns[i - 1] <= COVERAGE_TOLERANCE) continue
+    const x = (columns[i - 1] + columns[i]) / 2
+    for (let j = 1; j < rows.length; j += 1) {
+      if (rows[j] - rows[j - 1] <= COVERAGE_TOLERANCE) continue
+      const y = (rows[j - 1] + rows[j]) / 2
+      if (!areas.some((area) => containsPoint(area, x, y))) return false
+    }
+  }
+  return true
+}
+
+/**
+ * 拔掉外接屏或者改了系统缩放，系统会把窗口挪到剩下那块屏上，但大小（DIP）照旧：
+ * 1440×900 的窗口落到 1280×672 的笔记本工作区里，底部压在任务栏后面，右上角的
+ * 关闭键跑到屏幕外。标题栏还抓得住，`resolveRecoveredWindowBounds` 不会管它。
+ *
+ * 只认「比它所在那块屏的工作区还大、而且确实有一截露在所有工作区外面」：跨两块屏
+ * 摆的大窗口整个都在工作区里，不动；大小放得下、只是被用户拖到边上的，也不动。
+ * 收小时不小于窗口的最小尺寸（系统也不让），放不下就贴住左上角，标题栏总在屏幕里。
+ * `bounds` 是还原状态下的实际位置，最大化、全屏的窗口由调用方挡掉。返回 null 表示
+ * 不用动；完全不在任何一块屏上的窗口也返回 null，交给 `resolveRecoveredWindowBounds`。
+ */
+export function resolveFittedWindowBounds(
+  bounds: WindowBounds,
+  minimumSize: { width: number; height: number },
+  displays: readonly WindowDisplay[],
+): WindowBounds | null {
+  const available = displays.filter((display) => parseBounds(display.workArea))
+  let display: WindowDisplay | undefined
+  let visibleArea = 0
+  for (const candidate of available) {
+    const area = intersectionArea(bounds, candidate.workArea)
+    if (area > visibleArea) {
+      display = candidate
+      visibleArea = area
+    }
+  }
+  if (!display) return null
+  const area = display.workArea
+  if (bounds.width <= area.width && bounds.height <= area.height) return null
+  if (isCoveredByWorkAreas(bounds, available.map((candidate) => candidate.workArea))) return null
+  const width = Math.max(minimumSize.width, Math.min(bounds.width, area.width))
+  const height = Math.max(minimumSize.height, Math.min(bounds.height, area.height))
+  const fitted = {
+    x: Math.max(area.x, Math.min(bounds.x, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(bounds.y, area.y + area.height - height)),
+    width,
+    height,
+  }
+  const unchanged = fitted.x === bounds.x && fitted.y === bounds.y && fitted.width === bounds.width && fitted.height === bounds.height
+  return unchanged ? null : fitted
+}
+
 /**
  * Uses the complete WebContents width in DIP, before browser zoom.
  *

@@ -111,4 +111,9 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
     if (!options.chatHistory) throw new Error('聊天记录存储未就绪')
     return options.chatHistory.write(parseAiChatHistoryWrite(input))
   })
+  // 退出前那一次存完了（electron/chat-history-flush.ts）。只认正在等的那个随机编号，别的不理，
+  // 所以这里不用再分是哪个窗口发的；没接上（测试、预览）就什么都不做。
+  registerTrustedHandler('chat-history:flushed', (_event, requestId: unknown) => {
+    options.chatHistoryFlush?.acknowledge(requiredString(requestId, '聊天记录保存回执', 160))
+  })
 }

@@ -11,6 +11,11 @@
 .video-studio-model .xm-btn > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
 .video-studio-model .xm-btn > span > span { display: inline-flex; }
 .video-studio-model .video-studio-model-name { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-studio-music { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin-top: 12px; }
+.video-studio-music > .xm-field { flex: 0 1 160px; min-width: 132px; }
+.video-studio-music-name { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; min-height: 32px; color: var(--text-2); font-size: 13px; }
+.video-studio-music-name > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.video-studio-music-name svg { flex: none; color: var(--text-3); }
 .video-studio-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 16px; }
 .video-studio-hint { color: var(--text-3); font-size: 12px; line-height: 1.5; }
 .video-studio-shots { display: grid; gap: 10px; margin: 0 0 12px; padding: 0; list-style: none; }

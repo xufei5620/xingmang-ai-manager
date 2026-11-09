@@ -26,13 +26,14 @@ import { createAccelerationPreferenceStore } from './acceleration-preference-sto
 import { readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
+import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
-import { recoverOffscreenWindow } from './window-recovery'
+import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createAccelerationHost, createAccelerationRouting, createAccelerationServices } from './bootstrap/acceleration'
 import { createAccountClientFactory, createAccountStorage } from './bootstrap/accounts'
@@ -134,7 +135,7 @@ import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
-import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksFromConfigs, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
+import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksRememberingRestore, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -348,7 +349,12 @@ function setWindowTheme(contents: WebContents, theme: AppTheme): void {
 function recoverWindowPlacement(window: BrowserWindow, runtimeLog: RuntimeLogStore): void {
   try {
     const moved = recoverOffscreenWindow(window, screen)
-    if (moved) runtimeLog.log('info', 'window', 'window.recovered-offscreen', '窗口不在任何一块屏幕上，已挪回主屏', { bounds: moved })
+    if (moved) {
+      runtimeLog.log('info', 'window', 'window.recovered-offscreen', '窗口不在任何一块屏幕上，已挪回主屏', { bounds: moved })
+      return
+    }
+    const fitted = fitOversizedWindow(window, screen)
+    if (fitted) runtimeLog.log('info', 'window', 'window.fitted-to-display', '窗口比所在屏幕的可用区域大，已收进这块屏', { bounds: fitted })
   } catch (error) {
     runtimeLog.exception('window', 'window.recover.failed', error)
   }
@@ -1530,6 +1536,9 @@ if (!hasSingleInstanceLock) {
     let latestTrayBalance: AccountBalance | null = null
     let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
+    // 主窗口这一页的界面报告过手上有没有事，也就是准备好了，主进程发过去的它接得住。换页、重新加载、界面进程没了都放下，
+    // 等新的那一页再报一次。退出前问聊天页要存盘看这个（chat-history-flush.ts）。
+    let mainRendererAnswering = false
     // 缩到托盘久了关掉界面省内存（renderer-release.ts）；主窗口建好以后接上。
     let mainRendererRelease: RendererRelease | null = null
     // 界面最后一次读到的公告：界面关着时主进程拿它比对有没有新公告（released-renderer-watch.ts）。
@@ -2039,6 +2048,8 @@ if (!hasSingleInstanceLock) {
       canvasRuns,
       projects: canvasProjects,
       projectAssets: canvasProjectAssets,
+      // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
+      defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
     })
     // Session restoration may have completed before the controller was
     // constructed. Seed its ownership record so the first real account
@@ -2152,6 +2163,8 @@ if (!hasSingleInstanceLock) {
     void startupQuiet.whenOver().then(() => systemService.guardCodexModelCatalogAtStartup?.()).catch(() => undefined)
     // Gemini CLI 下线后，星芒以前写进它配置的做完提醒和画图没人维护了，开机后在后台收回。
     void startupQuiet.whenOver().then(() => systemService.reclaimRetiredToolIntegrations?.()).catch(() => undefined)
+    // 卸了星芒再装回来：卸载时收回的做完提醒、防睡和状态栏，按卸载时留下的记录补回。没登录的也补。
+    void startupQuiet.whenOver().then(() => systemService.restoreCliHooksRemovedByUninstall?.()).catch(() => undefined)
     // 启动画面最多为账号恢复等 3 秒，明确断网就不等（yoyo 2026-09-22 拍板）。
     const accountStartupGate = createAccountStartupGate({
       settled: accountSessionReady,
@@ -2229,6 +2242,17 @@ if (!hasSingleInstanceLock) {
     })
     attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
+    // 回复出字时聊天页最多隔两秒才存一次，退出时最后这一截还在界面里：退出前先问它要一次（0.2.24 深查聊天页 C1）。
+    // 只问这一页报告过手上有没有事的界面（mainRendererAnswering）：正在重新加载、关掉省内存、崩了的，还有旧回滚界面，
+    // 都没人接这一声，问了只会白等到时限。
+    const chatHistoryFlush = createChatHistoryFlush({
+      canAsk: () => {
+        const window = managedMainWindow
+        return mainRendererAnswering && Boolean(window && !window.isDestroyed() && !window.webContents.isDestroyed())
+      },
+      send: (requestId) => sendToMainWindow('onAiChatHistoryFlushRequested', { requestId }),
+      onError: (cause) => runtimeLog.exception('ai-chat', 'history.flush-failed', cause),
+    })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
@@ -2314,7 +2338,9 @@ if (!hasSingleInstanceLock) {
       chatAttachments,
       videoService: chatVideoService,
       videoAssets,
+      audioAssets,
       chatHistory: chatHistoryStore,
+      chatHistoryFlush,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -2350,7 +2376,9 @@ if (!hasSingleInstanceLock) {
         ...(mainRendererRelease?.restoredBoot ? { rendererRestored: true as const } : {}),
       }),
       onRendererActivity: (target, activity) => {
-        if (managedMainWindow && !managedMainWindow.isDestroyed() && target === managedMainWindow.webContents) mainRendererRelease?.reportActivity(activity.busy)
+        if (!managedMainWindow || managedMainWindow.isDestroyed() || target !== managedMainWindow.webContents) return
+        mainRendererAnswering = true
+        mainRendererRelease?.reportActivity(activity.busy)
       },
       onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
@@ -2531,6 +2559,10 @@ if (!hasSingleInstanceLock) {
       trayAvailable: applicationTray?.available ?? false,
     }))
     managedMainWindow = mainWindow
+    mainWindow.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) mainRendererAnswering = false
+    })
+    mainWindow.webContents.on('render-process-gone', () => { mainRendererAnswering = false })
     mainWindow.once('show', () => {
       mainWindowShown = true
       startupQuiet.end('window-shown')
@@ -2551,7 +2583,8 @@ if (!hasSingleInstanceLock) {
         if (!mainWindowShown && !mainWindow.isVisible()) app.hide()
       })
     }
-    // 拔掉外接显示器时正开着的窗口也挪回来；缩在托盘里的等下次显示时再挪。
+    // 拔掉外接显示器、改了系统缩放时正开着的窗口（主窗口、画布、付款窗口）也挪回来、
+    // 比屏幕大的收进屏幕；缩在托盘里的等下次显示时再看。
     // 稍等一下再看：Windows 自己也会挪一部分窗口，别跟系统抢。
     let displayChangeTimer: ReturnType<typeof setTimeout> | undefined
     const onDisplaysChanged = () => {
@@ -2831,10 +2864,11 @@ if (!hasSingleInstanceLock) {
         // 这里只等两秒，没收完的由加速辅助进程在退出后接着改回（Mac 上可能还要输一次电脑密码）。2026-10-25 客户
         // 日志里打开 Codex 时自动连的那一次只有「已连接」、没有「已断开」：它是重开星芒时在这里收回的，日志里却一个字都没留。
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
-        // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
+        // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。聊天页手上还没交出来的
+        // （正在出字的回复、刚打的字）先让它交出来，再等写盘。
         // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
         // 刚复制的密钥还没到 60 秒也现在清掉：剪贴板要异步读回来比对，will-quit 里来不及。
-        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle(), codexRemote.farewell(), sensitiveClipboard.flush()])
+        await Promise.all([acceleration?.stopAll(), chatHistoryFlush.request().then(() => chatHistoryStore.idle()), codexRemote.farewell(), sensitiveClipboard.flush()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
@@ -2976,6 +3010,8 @@ if (!hasSingleInstanceLock) {
         Promise.resolve().then(() => crashReporter.flush()),
         Promise.resolve().then(() => acceleration?.stopAll()),
         Promise.resolve().then(() => chatHistoryStore.idle()),
+        // 视频剪辑的分镜（含刚交出去那一单的请求号）在网页存储里，正常退出才会补写；这里退得急，先让它落盘（KR-4）。
+        Promise.resolve().then(() => { if (!mainWindow.isDestroyed()) mainWindow.webContents.session.flushStorageData() }),
       ]).then(() => runtimeLog.idle())
       void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
         try {
@@ -3007,7 +3043,7 @@ if (!hasSingleInstanceLock) {
           return queue.activeKey !== null || queue.pendingKeys.length > 0
         },
         backupCliConfigs,
-        removeCliHooks: () => removeCliHooksFromConfigs(rootedOptions.system.providerRoots, report),
+        removeCliHooks: () => removeCliHooksRememberingRestore(managerDataDirectory, rootedOptions.system.providerRoots, report),
         removeLoginItem: () => removeMacLoginItem(app),
         removeManagedTools: () => removeMacManagedTools(undefined, report),
         trashItem: (target) => shell.trashItem(target),

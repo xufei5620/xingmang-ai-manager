@@ -1028,15 +1028,19 @@ export function applyCodexRelayMachineDefaults(
 // 线路2 开着 Responses WebSocket，而中转的 WebSocket 只认 response.create 和 response.cancel，
 // 别的事件一律回 400（new-api relay/responses_websocket.go）。Codex 0.163 起会在一段回复还没
 // 说完时发 response.interrupt：主代理正说着、子代理做完了（defer_mailbox_preemption 关着时）；
-// 客户在回复途中又发一条（instant_interrupt，默认开）；0.167 起点「停止」也能发
-// （interrupt_on_cancel，默认关）。中转回 400 以后，子代理那条让这一轮直接失败，客户看到英文的
-// unsupported websocket event "response.interrupt"；插话那条 Codex 自己重连、把整段对话重传一遍，
-// 不报错，可正在出的那段白丢了。
+// 客户在回复途中又发一条（instant_interrupt，默认开）。中转回 400 以后，子代理那条让这一轮直接失败，
+// 客户看到英文的 unsupported websocket event "response.interrupt"；插话那条 Codex 自己重连、把整段
+// 对话重传一遍，不报错，可正在出的那段白丢了。
 //
-// 2026-11-06 用 0.164.0、0.166.0、0.167.0 连本地假接口实测：三项这样写以后一次打断都不发，插话等
+// 2026-11-06 用 0.164.0、0.166.0、0.167.0 连本地假接口实测：两项这样写以后一次打断都不发，插话等
 // 这一步说完再处理，子代理的结果在主代理下一次请求里带上（主代理恰好已经收尾的，到下一轮才用上）；
-// 点「停止」照样马上停，Codex 停的时候是直接断开连接，不靠这条事件。不认这几个键的版本（0.158
-// 及更早；interrupt_on_cancel 到 0.167 才有）只在日志里记一行 unknown feature key（0.155.0 实测照常启动）。
+// 点「停止」照样马上停，Codex 停的时候是直接断开连接，不靠这条事件。
+//
+// 0.167 起还有第三处：点「停止」时发（interrupt_on_cancel）。它默认关，所以不写。写成 false 的话，
+// 0.164～0.166 不认识这个键，每次打开都在第一屏右下角挂一个英文「⚠ 1 warning」（2026-11-09 用
+// 0.164.0 在真终端里核过，按 F2 看到的是 features.interrupt_on_cancel is ignored），推荐版正是 0.164.0。
+// 哪天上游把它改成默认开，每周 CLI 巡检对新版本时再补。另外两项 0.164.0 认识，不挂警告；
+// 0.158 及更早不认它们，照常启动（0.155.0 实测）。
 //
 // defer_mailbox_preemption 在 Codex 里算「开发中」的开关，打开后每开一个对话都弹一行英文的
 // Under-development features enabled（features/src/lib.rs 的 unstable_features_warning_event），
@@ -1046,7 +1050,6 @@ export function applyCodexRelayMachineDefaults(
 function keepCodexRelayResponsesUninterrupted(parsed: Record<string, unknown>, features: Record<string, unknown>): void {
   if (features.instant_interrupt === undefined) features.instant_interrupt = false
   if (features.defer_mailbox_preemption === undefined) features.defer_mailbox_preemption = true
-  if (features.interrupt_on_cancel === undefined) features.interrupt_on_cancel = false
   if (features.defer_mailbox_preemption === true && parsed.suppress_unstable_features_warning === undefined) {
     parsed.suppress_unstable_features_warning = true
   }
@@ -1210,7 +1213,6 @@ function buildCodexRelayConfigTemplate(
     'daemon_auto_start = false',
     'instant_interrupt = false',
     'defer_mailbox_preemption = true',
-    'interrupt_on_cancel = false',
     '',
     ...windowsTable,
     '[analytics]',
@@ -1928,6 +1930,16 @@ function readStoredCodexRelayConfigOrNull(filePath: string): Record<string, unkn
   }
 }
 
+/**
+ * 星芒替 Codex 存的那份当前账号配置里写着的型号：切回官方时整份存下，之后每次接当前账号保存都跟着更新。
+ * 切回官方前没记下型号的（这条记号出现之前切的），「改用当前账号」时拿它当原来的型号。没有、读不了都是 null。
+ */
+export function readStoredCodexRelayModel(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): string | null {
+  const stored = readStoredCodexRelayConfigOrNull(codexConfigSnapshotPaths(rootsInput).relay)
+  const model = stored?.model
+  return typeof model === 'string' && model.trim() ? model.trim() : null
+}
+
 function existingCodexProvider(configPath: string, siteBaseUrl: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
   if (content === null) return defaultCodexRelayProvider
@@ -2557,7 +2569,8 @@ function createPlans(
       if (availableModels) applyClaudeRelayModelPicker(settings, env, availableModels, model, seeded.claudeFallbackModel === true)
       if (cliHook) applyClaudeCliHooks(settings, cliHook)
       // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
-      const aside = claudeForeignSettingsAsidePlans(settings, readJson(paths[0]) ?? {}, roots, apiKey)
+      const existing = readJson(paths[0]) ?? {}
+      const aside = claudeForeignSettingsAsidePlans(settings, existing, roots, apiKey, claudeOfficialModelToKeep(existing))
       return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
     case 'gemini': {
@@ -2661,6 +2674,8 @@ function createMergePlans(
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
       const parsed = requireJson(paths[0], '现有 Claude settings.json', 'Claude Code')
+      // 下面就要换掉 env 和 model，先看清原来是不是官方账号的样子。
+      const officialModel = claudeOfficialModelToKeep(parsed)
       const env = ensureRecord(parsed, 'env')
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
@@ -2675,7 +2690,7 @@ function createMergePlans(
       if (cliHook) applyClaudeCliHooks(parsed, cliHook)
       if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model, seeded.claudeFallbackModel === true)
       parsed.model = model
-      const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey)
+      const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey, officialModel)
       return [...aside, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
@@ -3500,6 +3515,25 @@ export function inspectManagedCliHookTargets(
   return targets
 }
 
+/** 本软件写进某家配置的两样：钩子（Codex 是 notify）和 Claude Code 的状态行。 */
+export type ManagedCliHookPart = 'hooks' | 'statusLine'
+
+/** 某家配置里现在有本软件的哪几样（指向哪里不管）。读不出来就当没有。 */
+export function inspectManagedCliHookParts(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): ManagedCliHookPart[] {
+  const configPath = providerConfigPaths(provider, rootsInput)[0]
+  const parsed = provider === 'gemini' ? readGeminiJson(configPath)
+    : provider === 'claude' ? readJson(configPath)
+    : readToml(configPath)
+  if (!parsed) return []
+  const parts: ManagedCliHookPart[] = []
+  if (managedCliHookTargets(provider, parsed).length > 0) parts.push('hooks')
+  if (provider === 'claude' && managedClaudeStatusLineTarget(parsed)) parts.push('statusLine')
+  return parts
+}
+
 export interface ManagedCliHookRewrite {
   /** 缺省 = 这台电脑现在写不出钩子（没有 Node.js 之类），那就把我们那几条收回，不再报错。 */
   cliHook?: CliHookInvocation
@@ -3570,15 +3604,73 @@ function managedCliHookPlan(
   }
 }
 
+export interface ManagedCliHookRestore {
+  /** 卸载时收回的那几样（removed-cli-hooks.ts 的记录），只补这几样。 */
+  parts: readonly ManagedCliHookPart[]
+  /** 缺省 = 这台电脑现在写不出钩子，钩子这次不补。 */
+  cliHook?: CliHookInvocation
+  /** 缺省 = 状态行这次不补。只给 Claude Code。 */
+  claudeStatusLineCommand?: string
+}
+
+/**
+ * 卸载时收回、重装后补回：只补现在没有的那几样。已经有的（哪怕指向旧位置）一个字不动，那归
+ * 「修好它」那条路；客户自己设过的状态行、Codex notify 也不顶掉。Gemini CLI 已下线，不补。
+ */
+function managedCliHookRestorePlan(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  restore: ManagedCliHookRestore,
+): FilePlan | null {
+  const configPath = providerConfigPaths(provider, roots)[0]
+  const { cliHook, claudeStatusLineCommand } = restore
+  const hooks = restore.parts.includes('hooks')
+  switch (provider) {
+    case 'claude': {
+      if (requireConfigText(configPath, '现有 Claude settings.json') === null) return null
+      const parsed = requireJson(configPath, '现有 Claude settings.json')
+      let changed = false
+      if (hooks && cliHook && managedCliHookTargets('claude', parsed).length === 0) {
+        applyClaudeCliHooks(parsed, cliHook)
+        changed = true
+      }
+      if (restore.parts.includes('statusLine') && claudeStatusLineCommand && parsed.statusLine === undefined) {
+        applyClaudeStatusLine(parsed, claudeStatusLineCommand)
+        changed = true
+      }
+      return changed ? { path: configPath, content: jsonContent(parsed) } : null
+    }
+    case 'gemini':
+      return null
+    case 'codex': {
+      if (!hooks || !cliHook) return null
+      if (requireConfigText(configPath, '现有 Codex config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Codex config.toml')
+      if (parsed.notify !== undefined) return null
+      applyCodexCliNotify(parsed, cliHook)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+    case 'grok': {
+      // 推到 cmd 本来就不写钩子（applyGrokCliHooks 那段说明），那就别动文件。
+      if (!hooks || !cliHook || grokCliHookCommand(cliHook) === null) return null
+      if (requireConfigText(configPath, '现有 Grok config.toml') === null) return null
+      const parsed = requireToml(configPath, '现有 Grok config.toml')
+      if (managedCliHookTargets('grok', parsed).length > 0) return null
+      applyGrokCliHooks(parsed, cliHook)
+      return { path: configPath, content: tomlContent(parsed) }
+    }
+  }
+}
+
 function executeManagedCliHookPlan(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots,
-  rewrite: ManagedCliHookRewrite | null,
+  buildPlan: (roots: ProviderConfigRoots) => FilePlan | null,
 ): NativeConfigSaveResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
   for (const filePath of providerConfigPaths(provider, roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
-  const plan = managedCliHookPlan(provider, roots, rewrite)
+  const plan = buildPlan(roots)
   if (!plan) return { backups: [], files: [] }
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
@@ -3591,7 +3683,7 @@ export function rewriteManagedCliHooks(
   rootsInput: ProviderConfigRoots,
   rewrite: ManagedCliHookRewrite,
 ): NativeConfigSaveResult {
-  return executeManagedCliHookPlan(provider, rootsInput, rewrite)
+  return executeManagedCliHookPlan(provider, rootsInput, (roots) => managedCliHookPlan(provider, roots, rewrite))
 }
 
 /** 卸载时收回本软件写进这家配置的钩子与状态行。Key 和其余设置留着，卸了星芒工具照样能用。 */
@@ -3599,7 +3691,16 @@ export function removeManagedCliHooks(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigSaveResult {
-  return executeManagedCliHookPlan(provider, rootsInput, null)
+  return executeManagedCliHookPlan(provider, rootsInput, (roots) => managedCliHookPlan(provider, roots, null))
+}
+
+/** 重装后开机：把卸载时收回的那几样按这次的路径补回去，写之前照旧备份（I9）。 */
+export function restoreManagedCliHooks(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots,
+  restore: ManagedCliHookRestore,
+): NativeConfigSaveResult {
+  return executeManagedCliHookPlan(provider, rootsInput, (roots) => managedCliHookRestorePlan(provider, roots, restore))
 }
 
 // ---------------------------------------------------------------------------
@@ -3703,6 +3804,7 @@ function createOfficialAccountPlans(
       // 通知里说的是「当前账号」，官方账号出错时那些话都不对，钩子跟着收回。
       removeClaudeCliHooks(parsed)
       delete parsed.skipWebFetchPreflight
+      // 星芒的型号拿掉；客户原来在官方那边选的那个，下面跟着快照放回来（claudeOfficialModelKey）。
       delete parsed.model
       const restore = claudeForeignSettingsRestorePlans(parsed, roots)
       return [...restore, { path: paths[0], content: jsonContent(parsed) }]
@@ -3839,6 +3941,13 @@ const claudeForeignEnvKeys = [
   'CLAUDE_CODE_SUBAGENT_MODEL',
 ] as const
 const claudeForeignTopLevelKeys = ['apiKeyHelper'] as const
+/**
+ * 官方账号那边客户自己选的型号（settings.json 顶层的 model，比如 "opus"）。接当前账号时 model 要换成
+ * 星芒的型号，原值记进同一份快照，切回官方账号时放回去；以前切回官方只是删掉 model，客户悄悄回到官方
+ * 默认型号（0.2.24 深查「反复切换」N4）。它不在上面那张表里：那张表每次接当前账号都挪，model 却是
+ * 星芒自己也要写的，只能在原来是官方账号的样子时记一次。
+ */
+const claudeOfficialModelKey = 'model'
 
 /**
  * 上面选型号的那几项。客户在系统设置或 ~/.zshrc 里设的同名环境变量 Claude Code 一样认，所以用星芒账号
@@ -3868,21 +3977,36 @@ function claudeForeignSnapshotContent(snapshot: ClaudeForeignSettings): string {
 }
 
 /**
+ * 接当前账号前，这份 settings.json 是官方账号的样子（没有 ANTHROPIC_AUTH_TOKEN，也没有 ANTHROPIC_BASE_URL，
+ * 口径同 restoredAccountSide）时，交出客户在官方那边选的型号去暂存。已经接着星芒或别家中转的返回
+ * undefined：那个型号是中转那边的，放回官方账号只会选到官方没有的型号。
+ */
+function claudeOfficialModelToKeep(settings: Record<string, unknown>): string | undefined {
+  if (nestedString(settings, ['env', 'ANTHROPIC_AUTH_TOKEN']) || nestedString(settings, ['env', 'ANTHROPIC_BASE_URL'])) return undefined
+  const model = settings[claudeOfficialModelKey]
+  return typeof model === 'string' && model.trim() ? model : undefined
+}
+
+/**
  * 纯函数：把 settings 里会顶掉当前账号的几项挪进快照（会改 settings）。返回新的
  * 快照内容；null = 没有可挪的，快照不用动。settings 里又出现了同一项（用户在这
  * 期间自己改过）时以新值为准。值等于这次要写的 Key 的 ANTHROPIC_API_KEY 只删不存：
  * 放回官方那份配置等于把当前账号的 Key 塞给官方。
+ * officialModel：原来是官方账号时客户选的型号（claudeOfficialModelToKeep），记进快照，
+ * 不动 settings；缺省 = 快照里的型号原样不动。
  */
 export function moveClaudeForeignSettingsAside(
   settings: Record<string, unknown>,
   snapshotContent: string | null,
   relayApiKey: string,
+  officialModel?: string,
 ): string | null {
   const env = isJsonRecord(settings.env) ? settings.env : null
   const envKeys = env ? claudeForeignEnvKeys.filter((key) => env[key] !== undefined) : []
   const topLevelKeys = claudeForeignTopLevelKeys.filter((key) => settings[key] !== undefined)
-  if (envKeys.length === 0 && topLevelKeys.length === 0) return null
+  if (envKeys.length === 0 && topLevelKeys.length === 0 && officialModel === undefined) return null
   const snapshot = readClaudeForeignSnapshot(snapshotContent)
+  if (officialModel !== undefined) snapshot.settings[claudeOfficialModelKey] = officialModel
   for (const key of envKeys) {
     const value = env![key]
     delete env![key]
@@ -3918,7 +4042,8 @@ export function restoreClaudeForeignSettings(
     }
   }
   for (const [key, value] of Object.entries(snapshot.settings)) {
-    if (!(claudeForeignTopLevelKeys as readonly string[]).includes(key) || settings[key] !== undefined) continue
+    const known = key === claudeOfficialModelKey || (claudeForeignTopLevelKeys as readonly string[]).includes(key)
+    if (!known || settings[key] !== undefined) continue
     settings[key] = value
     restored = true
   }
@@ -3941,11 +4066,12 @@ function claudeForeignSettingsAsidePlans(
   existing: Record<string, unknown> | null,
   roots: ProviderConfigRoots,
   relayApiKey: string,
+  officialModel: string | undefined,
 ): FilePlan[] {
   // reset 从模板重建，原文件里的这几项要从 existing 里取；merge 时两者是同一个对象。
   const source = existing ?? settings
   const current = readClaudeForeignSnapshotText(roots)
-  const snapshot = moveClaudeForeignSettingsAside(source, current, relayApiKey)
+  const snapshot = moveClaudeForeignSettingsAside(source, current, relayApiKey, officialModel)
   // 只删掉了一把与这次相同的 Key、又本来没有快照时，不必为此建一个空文件。
   if (snapshot === null || (snapshot === '' && current === null)) return []
   return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]

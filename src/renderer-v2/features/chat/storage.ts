@@ -1,5 +1,5 @@
 import { currentAccountGroupName } from '../../../../electron/catalog'
-import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, XingmangApi } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
@@ -289,6 +289,41 @@ async function readChatHistory(api: { readHistory: (scope: string) => Promise<Ai
 const inFlightSaves = new Set<Promise<void>>()
 export async function settleHistoryWrites(): Promise<void> {
   while (inFlightSaves.size) await Promise.allSettled([...inFlightSaves])
+}
+
+// 自动保存等字停下 autosaveQuietMs 再存；可是回复出字时主进程每 50 毫秒推一段，一直停不下来，以前要等整段说完
+// 才存第一次，这时退出或崩了，已经扣了费的回复一个字都不剩（0.2.24 深查聊天页 C1）。所以从头一处没存的改动算起，
+// 最多等 autosaveMaxWaitMs 就存一次。
+export const autosaveQuietMs = 250
+export const autosaveMaxWaitMs = 2_000
+/** 从 firstChangeAt（头一处还没存的改动）起，到 now 这次改动之后还要等多久再存。 */
+export function autosaveDelay(firstChangeAt: number, now: number): number {
+  return Math.max(0, Math.min(autosaveQuietMs, firstChangeAt + autosaveMaxWaitMs - now))
+}
+
+// 退出前主进程来要一次（electron/chat-history-flush.ts）：开着的聊天页各自把手上的那一份交出来存一次。
+const historyFlushers = new Set<() => Promise<void>>()
+/** 聊天页挂上时登记它的「马上存一次」，卸下时撤掉。 */
+export function registerHistoryFlusher(flush: () => Promise<void>): () => void {
+  historyFlushers.add(flush)
+  return () => { historyFlushers.delete(flush) }
+}
+/** 开着的聊天页都马上存一次，连同刚卸下的那页还在路上的最后一次，写完或失败了才交回；不抛错。 */
+export async function flushChatHistory(): Promise<void> {
+  const saves: Promise<void>[] = []
+  for (const flush of [...historyFlushers]) {
+    try { saves.push(flush()) } catch { /* One page failing must not keep the others from saving. */ }
+  }
+  await Promise.allSettled([...saves, ...inFlightSaves])
+}
+/**
+ * 接住主进程退出前的那一声：存完回话，主进程这才去等写盘。存失败也照样回话，原来的文件没动，
+ * 退出不该被它拦住。聊天页开没开都要回，所以挂在 App 上，不挂在聊天页上。
+ */
+export function answerHistoryFlushRequests(bridge: Pick<XingmangApi, 'onAiChatHistoryFlushRequested' | 'confirmAiChatHistoryFlushed'>): () => void {
+  return bridge.onAiChatHistoryFlushRequested(({ requestId }) => {
+    void flushChatHistory().then(() => bridge.confirmAiChatHistoryFlushed(requestId)).catch(() => undefined)
+  })
 }
 
 // Imports still merging into an account's files (R28-2). The main process puts

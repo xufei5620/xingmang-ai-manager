@@ -17,7 +17,7 @@
 - `quit-blocking-tasks.ts` — 判断哪些排队任务值得在退出前拦一下：只有安装类（CLI、Node/Python/Git、Codex 桌面端、三个外部客户端），因为打断虽不留半成品（I11 原子替换）但白下；启动、卸载不拦。与 `install-keep-awake.ts` 认的是同一批，两边要一起改；另给自动更新算「退出时能不能装」
 - `window-preferences.ts` — 窗口尺寸与缩放的纯函数：UI 设计宽度、自动缩放上下限（v4 起最低 0.9、用户 90% 再低一档但不低于 0.85）、按显示器工作区算初始位置、拔掉显示器后的找回坐标、窗口状态的解析；`app-settings.ts` 与 `platform/zoom.ts` 共用
 - `window-presentation.ts` — 窗口外观与对用户的几句话：Windows/Linux 标题栏覆盖层高度与配色（legacy 36 高 vs v4 并进 44 高顶栏，`platform/renderer-v2.ts` 切到 v4）、启动失败的中文兜底句、资源右键菜单失败弹框、各平台窗口图标文件名
-- `window-recovery.ts` — 窗口停在已拔掉的显示器上时挪回主屏居中（最大化的先还原再挪再最大化）；只在马上要显示时调，对隐藏窗口 `unmaximize()` 在 Windows 上会把它顺手显示出来
+- `window-recovery.ts` — 窗口停在已拔掉的显示器上时挪回主屏居中（最大化的先还原再挪再最大化）；只在马上要显示时调，对隐藏窗口 `unmaximize()` 在 Windows 上会把它顺手显示出来；拔屏或改缩放后窗口比所在那块屏的工作区还大、又有一截露在所有工作区外面时，按工作区收小挪进来（`fitOversizedWindow`，不小于窗口最小尺寸，跨两块屏摆的、最大化的不动）
 - `window-responsiveness.ts` — 页面卡死时弹「等待 / 重新加载」，页面自己缓过来就把弹框收回且绝不重载
 - `renderer-crash-recovery.ts` — 页面进程被回收或崩溃后：一分钟内前两次自动重载，第三次改为问用户（画布窗口不问、停在空白等用户重开）；主窗口与 `canvas-window.ts` 共用
 - `renderer-release.ts` — 主窗口缩在托盘里满 10 分钟就关掉界面进程省内存（`forcefullyCrashRenderer`，窗口本身留着），点托盘或别的入口叫出来时按原地址重新加载。界面没报告过忙闲（legacy 回滚版）、报告手上有事（聊天在生成、视频在做、工具在装、开着对话框）、主进程在退出 / 装东西 / 付款窗口开着时都不关；关着和重新加载那一会儿，托盘、系统通知、深链要的跳页先存着，新界面第一次报告时再发（`platform/renderer-delivery-bridge.ts` 给 platform 那边的「打开某页」用同一条路）。那一声「界面进程没了」由 `main.ts` 的崩溃处理认出来不当崩溃
