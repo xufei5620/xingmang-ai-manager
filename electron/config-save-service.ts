@@ -791,12 +791,13 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
         continue
       }
       try {
-        await serializeConfigWrite(async () => {
-          restoreManagedCliHooks(provider, providerRoots, { parts: step.restore, cliHook, claudeStatusLineCommand })
-        })
+        const result = await serializeConfigWrite(async () => restoreManagedCliHooks(provider, providerRoots, { parts: step.restore, cliHook, claudeStatusLineCommand }))
         if (step.keep) remaining.push(step.keep)
-        restored.push(provider)
-        runtimeLog?.log('info', 'config', 'cli-hooks.restored', '重装后把卸载时收回的提醒设置补回来了', { provider, parts: step.restore })
+        // 没写文件 = 客户已经有自己的状态栏或 notify，照样划掉，只是不算补过。
+        if (result.files.length) {
+          restored.push(provider)
+          runtimeLog?.log('info', 'config', 'cli-hooks.restored', '重装后把卸载时收回的提醒设置补回来了', { provider, parts: step.restore })
+        }
       } catch (error) {
         // 这次没写成的几样原样留着，下次开机再补。
         remaining.push({ ...entry, parts: [...step.restore, ...(step.keep?.parts ?? [])] })

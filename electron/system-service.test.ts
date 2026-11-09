@@ -25,7 +25,7 @@ import {
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { claudePlatformSwitches } from './workspace-config-overrides'
-import { readRemovedCliHooks, removedCliHooksRecordPath } from './removed-cli-hooks'
+import { readRemovedCliHooks, rememberRemovedCliHooks, removedCliHooksRecordPath } from './removed-cli-hooks'
 import { removeCliHooksRememberingRestore } from './uninstall-cleanup'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import {
@@ -5448,6 +5448,21 @@ describe('reminder settings put back after uninstalling and reinstalling', () =>
     expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
     expect((JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { statusLine: unknown }).statusLine).toEqual({ type: 'command', command: '~/.claude/line.sh' })
     expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+  })
+
+  it('settles a status line the customer replaced without writing or counting it', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture()
+    const [claudePath] = providerConfigPaths('claude', roots)
+    fs.rmSync(removedCliHooksRecordPath(managerDataDirectory))
+    await rememberRemovedCliHooks(managerDataDirectory, [{ provider: 'claude', parts: ['statusLine'], configPath: claudePath }])
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    const before = fs.readFileSync(claudePath, 'utf8')
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    expect(fs.existsSync(removedCliHooksRecordPath(managerDataDirectory))).toBe(false)
   })
 
   it('keeps the record for the next launch while this computer cannot write the hooks', async () => {
