@@ -30,6 +30,17 @@ export const maxVideoStudioDurationSeconds = 600
 export const minVideoStudioSegmentSeconds = 0.2
 export const maxVideoStudioCaptionLength = 200
 
+/**
+ * 视频剪辑里给人看的时长：「45 秒」「10 分 2 秒」「1 小时 5 分钟」。先整体取整到秒再拆，
+ * 不会出「10 分 60 秒」；秒不补零；到一小时就不再数秒。
+ */
+export function formatVideoStudioDuration(seconds: number): string {
+  const whole = Math.max(0, Math.round(seconds))
+  if (whole >= 3600) return `${Math.floor(whole / 3600)} 小时 ${Math.floor((whole % 3600) / 60)} 分钟`
+  if (whole >= 60) return `${Math.floor(whole / 60)} 分 ${whole % 60} 秒`
+  return `${whole} 秒`
+}
+
 export interface VideoStudioClipSpec {
   /**
    * 片段第一帧的时间（秒）。大多数文件是 0，带编辑表的文件可能不是；可能是负数，负的那几帧播放器不放，
@@ -175,9 +186,8 @@ export function buildVideoStudioRenderPlan(clips: readonly VideoStudioClipSpec[]
 
   const duration = nextFrame / options.frameRate
   if (duration > maxVideoStudioDurationSeconds) {
-    const minutes = Math.floor(duration / 60)
-    const seconds = Math.round(duration % 60)
-    throw new VideoStudioError(`成片最长 ${maxVideoStudioDurationSeconds / 60} 分钟，现在是 ${minutes} 分 ${seconds} 秒`)
+    // 往上取整：只超出零点几秒时不写成「现在是 10 分 0 秒」，看着像没超。
+    throw new VideoStudioError(`成片最长 ${maxVideoStudioDurationSeconds / 60} 分钟，现在是 ${formatVideoStudioDuration(Math.ceil(duration))}`)
   }
   const { width, height } = resolveVideoStudioOutputSize(options.aspect, options.resolution)
   return { width, height, frameRate: options.frameRate, fit: options.fit, frameCount: nextFrame, duration, segments }
