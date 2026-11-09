@@ -66,6 +66,7 @@ import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
+import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
@@ -129,6 +130,8 @@ export const canvasHostSaveProjectChannel = canvasHostChannels.saveProject
 export const canvasHostRenameProjectChannel = canvasHostChannels.renameProject
 export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicateProject
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
+export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.createProjectInDefaultFolder
+export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
@@ -165,6 +168,12 @@ export interface CanvasWindowControllerOptions {
   canvasRuns: CanvasRunService
   projects?: CanvasProjectStore
   projectAssets?: CanvasProjectAssetManager
+  /**
+   * The folder new projects go into without a folder dialog (Documents/星芒画布).
+   * Left out, creating in the default folder is refused and the canvas still
+   * creates through the folder dialog.
+   */
+  defaultProjectsDirectory?: () => string
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
   /** How long quitting waits for the canvas page to answer at all before treating it as hung. Defaults to 4 seconds. */
@@ -679,6 +688,58 @@ export function createCanvasWindowController(
     const duplicated = await options.projects.duplicate(userId, projectId, name, result.filePaths[0])
     assertCanvasUserUnchanged(userId)
     return duplicated
+  })
+
+  // 新建项目默认放进「文档 › 星芒画布」，不弹选文件夹的框。画布只给一个名字：文件夹建在哪由主进程定，
+  // 文件夹名由主进程从名字里去掉不能进文件名的字符，每次新建一个，已经在的文件夹不用（canvas-default-project-folder.ts）。
+  registerCanvasHandler(canvasHostCreateProjectInDefaultFolderChannel, async (event, nameInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点「换个位置创建…」自己选文件夹')
+    const userId = authenticatedCanvasUserId()
+    const name = requiredCanvasString(nameInput, '画布项目名称', 128)
+    let directory: string
+    try {
+      directory = claimCanvasDefaultProjectFolder(options.defaultProjectsDirectory(), name)
+    } catch (error) {
+      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），可以点「换个位置创建…」自己选文件夹`)
+    }
+    let created: Awaited<ReturnType<CanvasProjectStore['create']>>
+    try {
+      created = await options.projects.create(userId, name, directory)
+    } catch (error) {
+      releaseCanvasDefaultProjectFolder(directory)
+      throw error
+    }
+    assertCanvasUserUnchanged(userId)
+    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    return created
+  })
+
+  // 项目文件夹被挪走、改了名，重新选它现在在哪。和新建、复制一样由客户在系统对话框里选，画布只给项目标识；
+  // 只有文件夹已经找不到的项目能换（先查一遍，store 里再查一遍），画布没法把好好的项目改指到别处。
+  registerCanvasHandler(canvasHostRelinkProjectFolderChannel, async (event, projectIdInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
+    if (!project) throw new Error('画布项目不存在')
+    if (project.workspaceStatus !== 'missing') throw new Error('项目的工作文件夹还在，不用重新选择')
+    assertCanvasUserUnchanged(userId)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: `重新选择「${project.name}」的工作文件夹`,
+      buttonLabel: '使用此文件夹',
+      properties: ['openDirectory'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    assertCanvasUserUnchanged(userId)
+    const relinked = await options.projects.relinkWorkspace(userId, projectId, result.filePaths[0])
+    assertCanvasUserUnchanged(userId)
+    options.projectAssets?.forgetProject(userId, projectId)
+    return relinked
   })
 
   registerCanvasHandler(canvasHostSetProjectArchivedChannel, async (event, projectIdInput, archivedInput) => {

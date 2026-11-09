@@ -1,10 +1,13 @@
+import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import type { SafeStorageLike } from './account-session-store'
 import { currentAccountGroupName } from './catalog'
 import { inspectSafeStorageBackend, safeStoragePlaintextMessage, type CredentialPersistence } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
+  removeSafeDataFile,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
 import { isRecord } from './input-guards'
@@ -18,6 +21,7 @@ const MAX_GROUP_LENGTH = 128
 const MAX_KEY_NAME_LENGTH = 50
 const MAX_KEY_LENGTH = 512
 const FILE_LABEL = 'AI 聊天分组 API Key'
+const MAX_QUARANTINED_RECORDS = 3
 
 export interface StoredChatKey {
   userId: number
@@ -146,6 +150,18 @@ export function renameRetiredChatKeyGroups(keys: readonly StoredChatKey[]): Stor
   return renamed
 }
 
+/**
+ * Only a record the current cipher cannot decrypt, or one whose shape no
+ * longer validates, means the cache itself is unusable -- typically the OS
+ * key behind safeStorage changed (a Windows password reset by an
+ * administrator, a deleted macOS "Safe Storage" keychain item, a data folder
+ * copied to another machine). Every other read failure (a reparse component,
+ * nlink !== 1, a size overrun, a file an antivirus scanner is holding) is
+ * transient or environmental and still surfaces as an error, so it never
+ * discards a cache that may be readable a moment later.
+ */
+export class ChatKeyCacheCorruptError extends Error {}
+
 export class ChatKeyStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private invalidationRevision = 0
@@ -167,7 +183,7 @@ export class ChatKeyStore {
     this.assertUserId(userId)
     this.assertEncryptionAvailable()
     await this.writeQueue.catch(() => undefined)
-    const record = await this.readRecord()
+    const record = await this.readUsableRecord()
     return record?.keys
       .filter((entry) => entry.userId === userId && this.isVisible(entry))
       .map((entry) => ({ ...entry })) ?? []
@@ -185,7 +201,16 @@ export class ChatKeyStore {
     return this.enqueue(async () => {
       this.assertEncryptionAvailable()
       if (this.invalidationRevision !== expectedRevision) return false
-      const existing = await this.readRecord()
+      let existing: PersistedChatKeys | null = null
+      try {
+        existing = await this.readRecord()
+      } catch (error) {
+        if (!(error instanceof ChatKeyCacheCorruptError)) throw error
+        // 跟托管 CLI Key 缓存（managed-cli-key-store.ts）同一个办法：解不开的那份改名留给客服看，
+        // 这次只存刚签好的这一把。以前原样留着、每次都抛同一句错，AI 聊天、生图、画布、视频剪辑
+        // 从此准备不了分组，重启重登都没用（0.2.24 深查 DM-1）。
+        await this.quarantineCorruptRecord()
+      }
       const keys = pruneChatKeys([
         entry,
         ...(existing?.keys.filter((candidate) => this.isVisible(candidate) && !(
@@ -208,7 +233,7 @@ export class ChatKeyStore {
     return this.enqueue(async () => {
       try {
         this.assertEncryptionAvailable()
-        const existing = await this.readRecord()
+        const existing = await this.readUsableRecord()
         if (existing?.keys.some((entry) => entry.userId === userId && entry.group === group)) {
           const keys = existing.keys.filter((entry) => !(entry.userId === userId && entry.group === group))
           await this.writeRecord({ version: CURRENT_VERSION, keys })
@@ -228,7 +253,7 @@ export class ChatKeyStore {
     return this.enqueue(async () => {
       try {
         this.assertEncryptionAvailable()
-        const existing = await this.readRecord()
+        const existing = await this.readUsableRecord()
         if (existing?.keys.some((entry) => entry.userId === userId && entry.keyId === keyId)) {
           const keys = existing.keys.filter((entry) => !(entry.userId === userId && entry.keyId === keyId))
           await this.writeRecord({ version: CURRENT_VERSION, keys })
@@ -246,7 +271,7 @@ export class ChatKeyStore {
     return this.enqueue(async () => {
       try {
         this.assertEncryptionAvailable()
-        const existing = await this.readRecord()
+        const existing = await this.readUsableRecord()
         if (existing?.keys.some((entry) => entry.userId === userId)) {
           const keys = existing.keys.filter((entry) => entry.userId !== userId)
           await this.writeRecord({ version: CURRENT_VERSION, keys })
@@ -262,9 +287,69 @@ export class ChatKeyStore {
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedChatKeys(content, this.storage)
-    if (!record) throw new Error('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
+    if (!record) throw new ChatKeyCacheCorruptError('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
     // 只有星芒账号（xm 站）改过名；文件里的老名字等下次写入时跟着换掉。
     return this.siteId === 'solov' ? { ...record, keys: renameRetiredChatKeyGroups(record.keys) } : record
+  }
+
+  /**
+   * A record this machine can no longer decrypt or understand holds no key
+   * this run can use, so reads and removals see it as empty: the coordinator
+   * then provisions a fresh chat key
+   * (the server reuses one under the same stable name when it can) and the
+   * upsert that follows replaces the file. Only upsert moves the damaged file
+   * aside, so a read never rewrites anything on disk.
+   */
+  private async readUsableRecord(): Promise<PersistedChatKeys | null> {
+    try {
+      return await this.readRecord()
+    } catch (error) {
+      if (error instanceof ChatKeyCacheCorruptError) return null
+      throw error
+    }
+  }
+
+  private async quarantineCorruptRecord(): Promise<void> {
+    // A decrypt that fails while the OS cipher itself is broken proves nothing
+    // about the file. Only move it once the current cipher demonstrably
+    // round-trips, the same check realm-account-vault.ts makes before it
+    // replaces an unreadable account vault.
+    try {
+      const probe = `xingmang-chat-key-probe:${randomUUID()}`
+      if (this.storage.decryptString(this.storage.encryptString(probe)) !== probe) throw new Error()
+    } catch {
+      throw new ChatKeyCacheCorruptError('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
+    }
+    try {
+      await fs.promises.rename(this.filePath, `${this.filePath}.corrupt-${Date.now()}`)
+    } catch {
+      // A missing or locked file is still replaced by the write that follows.
+    }
+    await this.pruneQuarantinedRecords()
+  }
+
+  // Quarantined copies are still encrypted API Keys, so they are kept for
+  // support but never without a bound.
+  private async pruneQuarantinedRecords(): Promise<void> {
+    try {
+      const directory = path.dirname(this.filePath)
+      const prefix = `${path.basename(this.filePath)}.corrupt-`
+      const stale = (await fs.promises.readdir(directory))
+        .flatMap((name) => {
+          if (!name.startsWith(prefix)) return []
+          const stamp = Number(name.slice(prefix.length))
+          return Number.isSafeInteger(stamp) && stamp > 0 ? [{ name, stamp }] : []
+        })
+        .sort((left, right) => right.stamp - left.stamp)
+        .slice(MAX_QUARANTINED_RECORDS)
+      // removeSafeDataFile re-validates the path, so a symlink planted under
+      // the quarantine name is left in place rather than followed.
+      for (const entry of stale) {
+        await removeSafeDataFile(path.join(directory, entry.name), FILE_LABEL)
+      }
+    } catch {
+      // Housekeeping never blocks the write that follows.
+    }
   }
 
   private assertUserId(userId: number): void {

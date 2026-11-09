@@ -3,7 +3,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 const YAML = require('yaml')
-const { attemptTimeoutMs, describeAttempt, ensureElectronBinary, retryDelaysSeconds } = require('./ci-ensure-electron-binary.cjs')
+const { attemptTimeoutMs, describeAttempt, downloadElectronZip, ensureElectronBinary, ensureElectronZip, parseArguments, retryDelaysSeconds, zipArchitectures } = require('./ci-ensure-electron-binary.cjs')
+const { resolveLockedElectronZipChecksums } = require('./electron-zip-checksums.cjs')
 
 const root = path.resolve(__dirname, '..')
 const workflowDirectory = path.join(root, '.github', 'workflows')
@@ -67,6 +68,25 @@ function electronJobs() {
 function installIndex(steps) {
   return steps.findIndex((step) => step.run === installCommand)
 }
+
+const zipCommand = /^node scripts\/ci-ensure-electron-binary\.cjs --zip (x64|arm64)$/
+
+function zipArch(step) {
+  return zipCommand.exec(String(step?.run || ''))?.[1] ?? null
+}
+
+// The architecture each hosted runner label runs on, for the cache keys that
+// name the zips they hold.
+const runnerArch = new Map([
+  ['windows-latest', 'x64'],
+  ['macos-15', 'arm64'],
+  ['macos-15-intel', 'x64'],
+  ['ubuntu-latest', 'x64'],
+  ['ubuntu-24.04', 'x64'],
+  ['ubuntu-24.04-arm', 'arm64'],
+])
+
+const electronVersionHash = "${{ hashFiles('node_modules/electron/package.json') }}"
 
 function exited(status) {
   return { status, signal: null }
@@ -137,8 +157,9 @@ test('the waits outlast an outage like #319 and the worst case still ends before
   // under the step cap, or the cap fires mid-retry and the job reports a
   // cancellation instead of the script's own error.
   const worstCaseSeconds = (retryDelaysSeconds.length + 1) * attemptTimeoutMs / 1000 + waited
-  const installSteps = allJobs().flatMap(({ label, steps }) => steps.filter((step) => step.run === installCommand).map((step) => ({ label, step })))
-  assert.ok(installSteps.length > 0)
+  // The zip steps run the same schedule with the same per-attempt bound.
+  const installSteps = allJobs().flatMap(({ label, steps }) => steps.filter((step) => step.run === installCommand || zipArch(step)).map((step) => ({ label, step })))
+  assert.ok(installSteps.some(({ step }) => zipArch(step)))
   for (const { label, step } of installSteps) {
     assert.ok(step['timeout-minutes'] * 60 > worstCaseSeconds, `${label}: ${step['timeout-minutes']} minutes cannot hold ${worstCaseSeconds}s`)
   }
@@ -200,7 +221,13 @@ test('quality restores the download by Electron version and only a push to main 
 
   for (const { name, job, steps } of qualityJobs) {
     const install = installIndex(steps)
-    const [restore, save] = [steps[install - 1], steps[install + 1]]
+    // Any zip steps sit between the install and the save, so the entry saved
+    // holds every zip they put in the folder.
+    let afterZips = install + 1
+    while (zipArch(steps[afterZips])) afterZips += 1
+    const zips = steps.slice(install + 1, afterZips).map(zipArch)
+    assert.equal(steps.some((step, index) => zipArch(step) && (index <= install || index >= afterZips)), false, `${name}: zip steps must follow the install directly`)
+    const [restore, save] = [steps[install - 1], steps[afterZips]]
     const cachePath = defaultElectronCache(job['runs-on'])
 
     assert.match(String(restore.uses), /^actions\/cache\/restore@[0-9a-f]{40}$/, `${name}: the restore must sit right before the install`)
@@ -214,11 +241,116 @@ test('quality restores the download by Electron version and only a push to main 
     assert.equal(restore.with.path, cachePath, `${name}: the cache must hold @electron/get's own folder`)
     assert.equal(save.with.path, cachePath)
     // One entry per OS, architecture and Electron version: the zip changes
-    // with nothing else.
-    assert.equal(restore.with.key, "electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}")
+    // with nothing else. An entry that also holds other architectures' zips
+    // names every architecture in it instead, so a runner of another
+    // architecture can read it and no entry from before the zips were added
+    // is mistaken for it.
+    for (const zip of zips) {
+      assert.ok(zipArchitectures.includes(zip))
+      assert.equal(steps.find((step) => zipArch(step) === zip)['timeout-minutes'], steps[install]['timeout-minutes'], `${name}: the --zip ${zip} step gets the install's bound`)
+    }
+    if (zips.length === 0) {
+      assert.equal(restore.with.key, `electron-\${{ runner.os }}-\${{ runner.arch }}-${electronVersionHash}`)
+    } else {
+      const host = runnerArch.get(job['runs-on'])
+      assert.ok(host, `${name}: no known architecture for ${job['runs-on']}`)
+      assert.ok(!zips.includes(host), `${name}: the install already caches the ${host} zip`)
+      const held = [...new Set([host, ...zips])].sort()
+      assert.equal(restore.with.key, `electron-\${{ runner.os }}-${held.join('-')}-${electronVersionHash}`)
+    }
     assert.equal(save.with.key, `\${{ steps.${restore.id}.outputs.cache-primary-key }}`)
     // A pull request's cache can only be read by that pull request, so one
     // written there is a second copy nobody reuses.
     assert.match(String(save.if), new RegExp(`github\\.event_name == 'push' && steps\\.${restore.id}\\.outputs\\.cache-hit != 'true'$`))
   }
+})
+
+// CI-1: the packaging jobs that never load the binary still unpack Electron's
+// zip. They read the entry their OS's install job keeps (linux-test,
+// macos-test), which holds every architecture they package, and write
+// nothing: only the install jobs, on a push to main, populate it.
+// electron-builder checks whatever it finds against the locked checksums.json
+// (scripts/electron-zip-checksums.cjs), so a stale or foreign file is
+// downloaded again, not packaged. On #1600 macos-intel, which read no cache,
+// went red when GitHub answered 504 for the darwin-arm64 zip for over four
+// minutes.
+test('the packaging-only jobs read the Electron download the install jobs keep, and never write it', () => {
+  const quality = workflows.get('quality.yml')
+  for (const [name, packagingCommand, keeper, packagedArchs] of [
+    ['linux-package', /^npm run build:linux:ci$/, 'linux-test', ['x64', 'arm64']],
+    ['macos-release-rehearsal', /^npm run test:mac:release-path$/, 'macos-test', ['arm64', 'x64']],
+    ['macos-intel', /^node scripts\/run-macos-free-build\.cjs\b/, 'macos-test', ['arm64', 'x64']],
+  ]) {
+    const job = quality.jobs[name]
+    const steps = job.steps
+    const runners = String(job['runs-on']).includes('matrix.runner')
+      ? job.strategy.matrix.include.map((entry) => entry.runner)
+      : [job['runs-on']]
+    const cachePath = defaultElectronCache(runners[0])
+    assert.notEqual(cachePath, null, `${name}: no known download folder for ${runners[0]}`)
+    assert.ok(runners.every((runner) => defaultElectronCache(runner) === cachePath), `${name}: every runner must share one download folder`)
+
+    const restores = steps.filter((step) => String(step.uses || '').startsWith('actions/cache/restore@') && step.with?.path === cachePath)
+    assert.equal(restores.length, 1, `${name} must restore the Electron download once`)
+    const [restore] = restores
+    assert.equal(restore.if, undefined)
+    const npmCi = steps.findIndex((step) => /^npm ci\b/.test(String(step.run || '').trim()))
+    const packaging = steps.findIndex((step) => packagingCommand.test(String(step.run || '').trim()))
+    const restoreIndex = steps.indexOf(restore)
+    // hashFiles reads node_modules, so the key only exists after npm ci.
+    assert.ok(npmCi !== -1 && npmCi < restoreIndex && restoreIndex < packaging, `${name}: restore after npm ci and before packaging`)
+    assert.equal(steps.some((step) => String(step.uses || '').startsWith('actions/cache/save@') && step.with?.path === cachePath), false, `${name} must not write the Electron download`)
+    assert.equal(installIndex(steps), -1, `${name} does not load the binary and must not install it`)
+
+    // The very entry the keeper saves, and it holds every zip this job packages.
+    const keeperJob = quality.jobs[keeper]
+    const keeperInstall = installIndex(keeperJob.steps)
+    assert.equal(defaultElectronCache(keeperJob['runs-on']), cachePath)
+    assert.equal(restore.with.key, keeperJob.steps[keeperInstall - 1].with.key, `${name}: the key must be the one ${keeper} saves`)
+    const held = new Set([runnerArch.get(keeperJob['runs-on']), ...keeperJob.steps.map(zipArch).filter(Boolean)])
+    for (const arch of packagedArchs) assert.ok(held.has(arch), `${keeper}'s entry must hold the ${arch} zip ${name} packages`)
+  }
+})
+
+test('the zip mode takes only an architecture a packaging job uses', () => {
+  assert.deepEqual(parseArguments([]), { mode: 'binary' })
+  assert.deepEqual(parseArguments(['--zip', 'x64']), { mode: 'zip', arch: 'x64' })
+  assert.deepEqual(parseArguments(['--zip', 'arm64']), { mode: 'zip', arch: 'arm64' })
+  assert.deepEqual(parseArguments(['--download-zip', 'arm64']), { mode: 'download-zip', arch: 'arm64' })
+  for (const argv of [['--zip'], ['--zip', 'ia32'], ['--zip', 'x64', '--zip', 'arm64'], ['x64'], ['--zip', '../x64']]) {
+    assert.throws(() => parseArguments(argv), /参数不认识/, argv.join(' '))
+  }
+})
+
+test('a zip download is retried on the same schedule and names the architecture', async () => {
+  const { calls, options } = fakeInstaller([exited(1), exited(0)])
+  assert.equal(await ensureElectronZip({ arch: 'x64', download: options.install, sleep: options.sleep, log: options.log }), 2)
+  assert.deepEqual(calls.sleeps, [retryDelaysSeconds[0] * 1000])
+  assert.match(calls.logs[0], /^::warning::第 1 次下载 x64 版 Electron 压缩包失败（下载脚本退出码 1），10 秒后重试/)
+
+  const failing = fakeInstaller([exited(1)])
+  await assert.rejects(ensureElectronZip({ arch: 'arm64', download: failing.options.install, sleep: failing.options.sleep, log: failing.options.log }),
+    /下了 5 次 arm64 版 Electron 压缩包都没成功（最后一次：下载脚本退出码 1）/)
+  assert.deepEqual(failing.calls.sleeps, retryDelaysSeconds.map((seconds) => seconds * 1000))
+})
+
+test('each zip attempt asks @electron/get for the default cache with the locked checksums', async () => {
+  const packageDirectory = path.join(root, 'node_modules', 'electron')
+  const { version } = JSON.parse(fs.readFileSync(path.join(packageDirectory, 'package.json'), 'utf8'))
+  const requests = []
+  const file = await downloadElectronZip({
+    arch: 'arm64',
+    platform: 'darwin',
+    packageDirectory,
+    async downloadArtifact(details) {
+      requests.push(details)
+      return '/cache/zip'
+    },
+  })
+
+  assert.equal(file, '/cache/zip')
+  // No cacheRoot: the folder the workflow caches and electron-builder reads.
+  // With checksums, a cached zip is checked without a request and a fetched
+  // one is checked before it is kept.
+  assert.deepEqual(requests, [{ version, artifactName: 'electron', platform: 'darwin', arch: 'arm64', checksums: resolveLockedElectronZipChecksums() }])
 })

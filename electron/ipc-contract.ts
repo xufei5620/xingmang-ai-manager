@@ -723,6 +723,14 @@ export interface AiVideoClip {
   durationSeconds?: number
 }
 
+/** 视频剪辑的配乐：客户从电脑里选的一首歌，存进作品库（音频那一格）。不给路径，要字节走 video-studio:read-music。 */
+export interface VideoStudioMusic {
+  assetId: string
+  /** 页面上显示的歌名：选的那个文件的名字，去掉扩展名。 */
+  name: string
+  durationSeconds?: number
+}
+
 export interface AiVideoProgressEvent {
   requestId: string
   stage: 'processing' | 'downloading' | 'saving'
@@ -1325,6 +1333,10 @@ export interface XingmangInvokeContract {
   readAiVideoClip: IpcInvokeDefinition<'video:read-clip', [assetId: string], Uint8Array>
   /** 页面拼好的 MP4 存进作品库。 */
   storeVideoStudioExport: IpcInvokeDefinition<'video-studio:store-export', [bytes: Uint8Array], AiVideoClip>
+  /** 弹系统对话框选一首歌当配乐，存进作品库；点了取消回 null。路径不出主进程。 */
+  pickVideoStudioMusic: IpcInvokeDefinition<'video-studio:pick-music', [], VideoStudioMusic | null>
+  /** 作品库里配乐那首歌的全部字节，给页面拼片用。 */
+  readVideoStudioMusic: IpcInvokeDefinition<'video-studio:read-music', [assetId: string], Uint8Array>
   /** 用电脑上默认的播放器打开作品库里的一段视频。 */
   openAiVideo: IpcInvokeDefinition<'video:open', [assetId: string], void>
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string], { saved: boolean }>
@@ -1669,6 +1681,8 @@ export const ipcInvokeChannels = {
   cancelAiVideo: 'video:cancel',
   readAiVideoClip: 'video:read-clip',
   storeVideoStudioExport: 'video-studio:store-export',
+  pickVideoStudioMusic: 'video-studio:pick-music',
+  readVideoStudioMusic: 'video-studio:read-music',
   openAiVideo: 'video:open',
   saveAiVideo: 'video:save-as',
   readAiChatHistory: 'chat-history:read',

@@ -21,6 +21,8 @@ const bridge: VideoStudioBridge = {
   saveAiVideo: unused,
   openDiagnosticFolder: unused,
   pickAiChatImages: unused,
+  pickVideoStudioMusic: unused,
+  readVideoStudioMusic: unused,
 }
 
 function clip(letter: string): AiVideoClip {
@@ -124,6 +126,18 @@ describe('VideoStudioPage', () => {
     expect(markup).toMatch(/data-testid="video-shot-image-remove-1"[^>]*>[^]*?不用这张图/)
     expect(markup).toMatch(/title="生成时从这张图动起来，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
     expect(markup).not.toContain('data-testid="video-shot-image-0"')
+  })
+
+  it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {
+    const project = plannedProject()
+    expect(render('ready', project)).toMatch(/title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG"[^>]*data-testid="video-music-add"[^>]*>[^]*?加配乐/)
+    const markup = render('ready', { ...project, music: { assetId: 'm'.repeat(43), name: '晴天 <live>', clipSound: 'quiet' } })
+    expect(markup).not.toContain('data-testid="video-music-add"')
+    expect(markup).toMatch(/data-testid="video-music-name"[^>]*>[^]*?晴天 &lt;live&gt;/)
+    expect(markup).toMatch(/data-testid="video-music-change"[^>]*>[^]*?换一首/)
+    expect(markup).toMatch(/data-testid="video-music-remove"[^>]*>[^]*?不用配乐/)
+    expect(markup).toMatch(/<label[^>]*>片段原声<\/label><select[^>]*data-testid="video-clip-sound"/)
+    expect(markup).toMatch(/<option value="normal">照常<\/option><option value="quiet" selected="">调小<\/option><option value="off">关掉<\/option>/)
   })
 
   it('shows the joined film with open, save and open folder once every clip is there', () => {

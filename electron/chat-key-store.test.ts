@@ -37,6 +37,20 @@ function fakeSafeStorage(overrides: Partial<SafeStorageLike> = {}): SafeStorageL
   }
 }
 
+// Stands in for the cipher the cache was written with before the OS key behind
+// safeStorage changed: an administrator reset the Windows password, the macOS
+// "Safe Storage" keychain item was deleted, or the data folder moved machines.
+function previousOsKeyStorage(): SafeStorageLike {
+  return fakeSafeStorage({
+    encryptString: (plainText) => Buffer.from(`chat-key-old:${plainText}`, 'utf8'),
+  })
+}
+
+function quarantinedCopies(filePath: string): string[] {
+  const prefix = `${path.basename(filePath)}.corrupt-`
+  return fs.readdirSync(path.dirname(filePath)).filter((name) => name.startsWith(prefix))
+}
+
 function chatKey(userId: number, group: string, keyId = 1): StoredChatKey {
   return {
     userId,
@@ -236,18 +250,129 @@ describe('ChatKeyStore', () => {
     await expect(store.read(42)).resolves.toEqual([chatKey(42, 'codex-pro', 8)])
   })
 
-  it('fails closed on corruption and never overwrites the damaged file', async () => {
+  it('reads a cache the current OS key cannot decrypt as empty and never rewrites it from a read or removal', async () => {
+    const filePath = temporaryFilePath()
+    seedStore(filePath, previousOsKeyStorage(), [chatKey(42, 'codex-pro', 1)])
+    const damaged = fs.readFileSync(filePath, 'utf8')
+    const store = new ChatKeyStore(filePath, fakeSafeStorage())
+
+    await expect(store.read(42)).resolves.toEqual([])
+    await expect(store.remove(42, 'codex-pro')).resolves.toBeUndefined()
+    await expect(store.removeByKeyId(42, 1)).resolves.toBeUndefined()
+    await expect(store.removeAccount(42)).resolves.toBeUndefined()
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(damaged)
+    expect(quarantinedCopies(filePath)).toEqual([])
+  })
+
+  it('moves an undecryptable cache aside and stores the freshly signed key on the next upsert', async () => {
+    const filePath = temporaryFilePath()
+    seedStore(filePath, previousOsKeyStorage(), [chatKey(42, 'codex-pro', 1), chatKey(99, 'GPT', 2)])
+    const damaged = fs.readFileSync(filePath, 'utf8')
+    const store = new ChatKeyStore(filePath, fakeSafeStorage())
+
+    await expect(store.upsert(chatKey(42, 'codex-pro', 3))).resolves.toBe(true)
+
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'codex-pro', 3)])
+    await expect(store.read(99)).resolves.toEqual([])
+    const copies = quarantinedCopies(filePath)
+    expect(copies).toHaveLength(1)
+    expect(fs.readFileSync(path.join(path.dirname(filePath), copies[0]), 'utf8')).toBe(damaged)
+  })
+
+  it('treats malformed ciphertext like an undecryptable cache', async () => {
     const filePath = temporaryFilePath()
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
     fs.writeFileSync(filePath, 'broken encrypted payload', 'utf8')
     const store = new ChatKeyStore(filePath, fakeSafeStorage())
 
-    await expect(store.read(42)).rejects.toThrow('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
-    await expect(store.upsert(chatKey(42, 'codex-pro', 1)))
+    await expect(store.read(42)).resolves.toEqual([])
+    await expect(store.upsert(chatKey(42, 'codex-pro', 1))).resolves.toBe(true)
+
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'codex-pro', 1)])
+    expect(quarantinedCopies(filePath)).toHaveLength(1)
+  })
+
+  it('leaves the cache in place when the OS cipher cannot round-trip a probe either', async () => {
+    const filePath = temporaryFilePath()
+    seedStore(filePath, fakeSafeStorage(), [chatKey(42, 'codex-pro', 1)])
+    const intact = fs.readFileSync(filePath, 'utf8')
+    // A keyring that answers but cannot decrypt anything right now says
+    // nothing about the file, which may read fine once the keyring recovers.
+    const store = new ChatKeyStore(filePath, fakeSafeStorage({
+      decryptString: () => { throw new Error('keyring locked') },
+    }))
+
+    await expect(store.read(42)).resolves.toEqual([])
+    await expect(store.upsert(chatKey(42, 'codex-pro', 3)))
       .rejects.toThrow('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
-    await expect(store.removeAccount(42))
-      .rejects.toThrow('本地 AI 聊天分组 API Key 配置已损坏或无法解密')
-    expect(fs.readFileSync(filePath, 'utf8')).toBe('broken encrypted payload')
+
+    expect(fs.readFileSync(filePath, 'utf8')).toBe(intact)
+    expect(quarantinedCopies(filePath)).toEqual([])
+    await expect(new ChatKeyStore(filePath, fakeSafeStorage()).read(42)).resolves.toEqual([chatKey(42, 'codex-pro', 1)])
+  })
+
+  it('rethrows a non-decrypt read failure instead of discarding the cache', async () => {
+    const filePath = temporaryFilePath()
+    seedStore(filePath, fakeSafeStorage(), [chatKey(42, 'codex-pro', 1)])
+    const intact = fs.readFileSync(filePath, 'utf8')
+    // A file over the read limit is rejected before any decryption is
+    // attempted -- the same class as an nlink !== 1 or mid-read change that an
+    // antivirus scanner or a sync client can produce at any moment.
+    fs.appendFileSync(filePath, 'x'.repeat(256 * 1024))
+    const store = new ChatKeyStore(filePath, fakeSafeStorage())
+
+    await expect(store.read(42)).rejects.toThrow('超过 256 KB 安全上限')
+    await expect(store.upsert(chatKey(42, 'codex-pro', 3))).rejects.toThrow('超过 256 KB 安全上限')
+    await expect(store.removeAccount(42)).rejects.toThrow('超过 256 KB 安全上限')
+
+    expect(fs.readFileSync(filePath, 'utf8').startsWith(intact)).toBe(true)
+    expect(quarantinedCopies(filePath)).toEqual([])
+  })
+
+  it('keeps at most three quarantined copies of a damaged cache', async () => {
+    const filePath = temporaryFilePath()
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, 'broken encrypted payload', 'utf8')
+    for (const stamp of [1, 2, 3, 4, 5]) {
+      fs.writeFileSync(`${filePath}.corrupt-${stamp}`, 'older damaged payload', 'utf8')
+    }
+    const store = new ChatKeyStore(filePath, fakeSafeStorage())
+
+    await expect(store.upsert(chatKey(42, 'codex-pro', 1))).resolves.toBe(true)
+
+    const copies = quarantinedCopies(filePath)
+    expect(copies).toHaveLength(3)
+    expect(copies.some((name) => name.endsWith('.corrupt-1'))).toBe(false)
+    expect(copies.some((name) => name.endsWith('.corrupt-5'))).toBe(true)
+    expect(copies.some((name) => name.endsWith('.corrupt-3'))).toBe(false)
+  })
+
+  it('gets AI chat working again after the OS key changed and reuses the replacement key afterwards', async () => {
+    const filePath = temporaryFilePath()
+    seedStore(filePath, previousOsKeyStorage(), [{ ...chatKey(7, 'GPT', 3), keyName: 'xingmang-chat-1' }])
+    const provisionCliKey = vi.fn(async () => ({ id: 10, name: 'xingmang-chat-2', key: 'sk-7-10-replacement-chat-key' }))
+    const coordinator = createChatCredentialCoordinator({
+      accountService: {
+        getSessionState: () => ({ authenticated: true, account: { userId: 7 } }),
+        getSessionRevision: () => 0,
+        getActiveSiteId: () => 'solov',
+        listUsableGroups: async () => [{ name: 'GPT', description: '', ratio: 1 }],
+        provisionCliKey,
+        listKeys: async () => ({ page: 1, pageSize: 100, total: 0, keys: [] }),
+      } as unknown as Parameters<typeof createChatCredentialCoordinator>[0]['accountService'],
+      keyStore: new ChatKeyStore(filePath, fakeSafeStorage()),
+      modelService: { fetchAvailableModels: async () => ['gpt-5.5'] },
+    })
+
+    const first = await coordinator.resolveCredential('GPT')
+    expect(first).toMatchObject({ keyCreated: true, apiKey: 'sk-7-10-replacement-chat-key', keyId: 10 })
+    expect(first.storageWarning).toBeUndefined()
+    expect(quarantinedCopies(filePath)).toHaveLength(1)
+
+    await expect(coordinator.resolveCredential('GPT'))
+      .resolves.toMatchObject({ keyCreated: false, apiKey: 'sk-7-10-replacement-chat-key', keyId: 10 })
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
   })
 
   it('stops hiding a group once its failed removal is over, instead of re-signing forever', async () => {

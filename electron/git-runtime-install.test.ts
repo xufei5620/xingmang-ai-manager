@@ -18,7 +18,9 @@ import {
   type GitRuntimeInstallerDependencies,
   type GitRuntimeInstallProgress,
 } from './git-runtime-install'
+import { downloadCeilingMs } from './download-retry'
 import type { NodeRuntimeProcessPlan } from './node-runtime'
+import { createSlowPackageServer, slowChunkEveryMs, type SlowPackageServer } from './slow-download.test-support'
 
 const temporaryDirectories: string[] = []
 const machinePaths = {
@@ -502,5 +504,70 @@ describe('git-runtime-install', () => {
       environment: userEnvironment,
       verifyInstalled: async () => { throw new Error('probe crashed') },
     }, deps)).rejects.toThrow(gitRuntimeMissingAfterInstallMessage)
+  })
+})
+
+// 深查 D-1：以前从开始就掐着 10 分钟，慢网下 Git 续多少次都白搭，到点整份作废、换源从 0 开始。
+// 现在和 Node.js 一样，3 分钟没进展才停，30 分钟兜底。
+describe('Git download deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  function countReported(server: SlowPackageServer): (event: GitRuntimeInstallProgress) => void {
+    return (event) => {
+      if (event.phase === 'downloading' && event.transferredBytes !== undefined) server.reported()
+    }
+  }
+
+  it('finishes a slow but steady mirror download that takes longer than ten minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const body = installerBytes(8)
+    const digest = createHash('sha256').update(body).digest('hex')
+    const server = createSlowPackageServer()
+    // 21 chunks of 1 MB, one every 40 seconds: 14 minutes.
+    const fetch = vi.fn(async (url: string) => server.respond(url, body.byteLength, 8, 1024 * 1024))
+    const deps = dependencies({
+      fetch: fetch as unknown as typeof globalThis.fetch,
+      expectedSha256: () => digest,
+      waitBeforeResume: async () => undefined,
+    })
+    const startedAt = Date.now()
+
+    const result = await server.drive(installGitRuntimeWith('x64', {
+      networkRegion: 'mainland-china',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      onProgress: countReported(server),
+    }, deps))
+
+    expect(Date.now() - startedAt).toBeGreaterThan(10 * 60_000)
+    expect(result.source).toBe('npmmirror')
+    expect(server.downloads).toHaveLength(1)
+    expect(deps.plans).toHaveLength(1)
+  })
+
+  it('still gives up on each source at the ceiling, in the words customers already see', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    const server = createSlowPackageServer()
+    // At 64 KB every 40 seconds this would need far longer than the ceiling to finish.
+    const fetch = vi.fn(async (url: string) => server.respond(url, 100 * 1024 * 1024, 9, 64 * 1024))
+    const deps = dependencies({ fetch: fetch as unknown as typeof globalThis.fetch, waitBeforeResume: async () => undefined })
+    const startedAt = Date.now()
+
+    await expect(server.drive(installGitRuntimeWith('x64', {
+      networkRegion: 'mainland-china',
+      temporaryDirectoryMode: 'same-user',
+      environment: userEnvironment,
+      onProgress: countReported(server),
+    }, deps))).rejects.toThrow(/^Git 没装上。国内镜像：下载超时；Git 官方源：下载超时$/)
+
+    // Each source gets its own full window: the second one starts when the first gives up.
+    const elapsed = Date.now() - startedAt
+    expect(elapsed).toBeGreaterThanOrEqual(2 * downloadCeilingMs)
+    expect(elapsed).toBeLessThan(2 * downloadCeilingMs + slowChunkEveryMs)
+    expect(server.downloads).toHaveLength(2)
+    expect(server.downloads.every((download) => download.reported > 0)).toBe(true)
+    expect(deps.plans).toEqual([])
   })
 })

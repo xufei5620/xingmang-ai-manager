@@ -8,6 +8,7 @@ const { Arch } = require('builder-util')
 const packageVersion = require('./package.json').version
 const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
 const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs')
+const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-checksums.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
@@ -176,6 +177,15 @@ module.exports = {
   // 少 47 MB、安装包少约 7 MB（2026-10-30 yoyo 同意）。这里是 Windows、Linux 的 .pak 名字，
   // macOS 用 .lproj 的名字，另列在 mac 里。
   electronLanguages: ['zh-CN', 'zh-TW', 'en-US'],
+  // 打包要的 Electron 压缩包按锁文件钉住的 checksums.json 核对，不再每次去 GitHub 现拉
+  // SHASUMS256.txt（那个文件从不进缓存，GitHub 一回 504 打包就红，原因与信任链见
+  // scripts/electron-zip-checksums.cjs）。unsafelyDisableChecksums: false 不只是写明「校验
+  // 开着」：electron-builder 26.15.3 只在这一组键出现时才把 checksums 原样交给
+  // @electron/get，换成 electronDownload 的另一种写法，checksums 会被悄悄丢掉。
+  electronDownload: {
+    unsafelyDisableChecksums: false,
+    checksums: resolveLockedElectronZipChecksums(),
+  },
   asar: true,
   electronFuses: {
     runAsNode: false,
