@@ -7851,7 +7851,7 @@ test('a permission failure hands over the install directory instead of offering 
     await page.getByTestId('operation-error-copyPath').click()
     await page.getByTestId('operation-error-copied').waitFor()
     assert.deepEqual(await page.evaluate(() => window.__copied), [target])
-    // 复制不关对话框：后端原话和「查看日志」都还在。
+    // 复制不关对话框：后端原话和「找客服」都还在。
     assert.equal(await dialog.count(), 1)
     await page.getByRole('button', { name: '返回', exact: true }).click()
     await clean(page)

@@ -250,8 +250,8 @@ describe('renderer-v2 operation error classification', () => {
     const message = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。`
     expect(presentOperationError(message)).toMatchObject({
       key: 'officialRegistryUnreachable',
-      title: '连不上 npm 官方源',
-      body: '这一步只能走官方源，换国内镜像也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
+      title: '连不上工具的官方下载站',
+      body: '这一步只能从官方下载站拿，换国内下载站也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
       actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
     })
   })
@@ -312,12 +312,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError("Access to the path '本机路径 is denied.", 'config')).toBe('configPermission')
   })
 
-  it('sends a permission failure to the directory and the log, never to an elevated retry', () => {
+  it('sends a permission failure to retry, the directory and support, never to an elevated retry', () => {
     // A2 余项：这一类以前只有「以管理员身份重试」这一颗按钮，没有提权通道
-    // 接得住它，于是整条落回「找客服」。现在两颗按钮都是这个应用真做得到的事。
+    // 接得住它，于是整条落回「找客服」。现在几颗按钮都是这个应用真做得到的事；
+    // 「找客服」是 D14 补上的：这一类客户自己最难处理。
     const hint = presentOperationError('安装失败：EACCES permission denied')
     expect(hint?.title).toBe('写不进安装目录')
-    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'log', label: '查看日志' }])
+    expect(hint?.body).toBe('这个文件夹不让星芒写东西，常见是杀毒软件拦了。点「复制路径」看是哪个文件夹，把它加进杀毒软件的信任名单后再点「重试」；还不行点「找客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '找客服' }])
   })
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
@@ -575,9 +577,10 @@ describe('renderer-v2 operation error classification', () => {
     }
   })
 
-  it('offers 复制路径 on the antivirus block, where the catalog has asked for it all along', () => {
+  it('offers retry, 复制路径 and support on the antivirus block', () => {
     const hint = presentOperationError('Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录')
-    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }])
+    expect(hint?.body).toBe('杀毒软件把安装拦下了。打开杀毒软件，在「隔离区」或「恢复区」里把星芒放出来，再点「重试」；不会弄就点「找客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '找客服' }])
   })
 
   it('accounts for every catalog entry, either with a real message or a reason it cannot be reached', () => {
