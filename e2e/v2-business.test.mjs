@@ -725,7 +725,7 @@ test('the transfer dialog starts from what is transferable now, also after part 
     const transferable = panel.locator('.v2-acct-kv').filter({ hasText: '可转入余额' })
     const transfer = panel.getByTestId('account-invite-transfer')
     const dialog = page.getByRole('dialog', { name: /返利转入余额？$/ })
-    const amount = dialog.getByLabel('转入金额（USD）', { exact: true })
+    const amount = dialog.getByLabel('转入金额（美元）', { exact: true })
     await transfer.click()
     await dialog.waitFor()
     assert.equal(await amount.inputValue(), '1')

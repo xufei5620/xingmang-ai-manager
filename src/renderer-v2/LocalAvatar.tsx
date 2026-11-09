@@ -191,7 +191,7 @@ export function LocalAvatarDialog({
     <Dialog
       open
       title="更换头像"
-      subtitle="只保存在当前设备，不会上传到账户服务器。"
+      subtitle="只保存在当前设备，不会上传。"
       width={480}
       onClose={onClose}
       dirty={Boolean(bitmap)}

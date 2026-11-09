@@ -4,8 +4,8 @@ import { networkFailureMessages } from '../../../../electron/network-failure'
 
 describe('account read error presentation', () => {
   it('discards only obsolete account reads even when Electron wraps the rejection', () => {
-    expect(formatAccountReadError(new Error("Error invoking remote method 'account:get-balance': Error: 账号上下文已变化，请重试"), 'balance')).toBeNull()
-    expect(formatAccountReadError(new Error('账号上下文已变化，请重试'), 'session')).toBeNull()
+    expect(formatAccountReadError(new Error("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"), 'balance')).toBeNull()
+    expect(formatAccountReadError(new Error('账号刚切换过，请再试一次'), 'session')).toBeNull()
     expect(formatAccountReadError(new Error('请先登录账号'), 'balance')).toBe('当前登录已失效，请重新登录。')
   })
 
@@ -48,7 +48,7 @@ describe('account read error presentation', () => {
     expect(balance('RealmAccountError: 账号服务请求失败，请重试')).toBe('余额暂时没有读到，请稍后重试。')
     expect(balance('RealmAccountError: 登录已失效，请重新登录')).toBe('当前登录已失效，请重新登录。')
     expect(balance('RealmAccountError: 请先登录账号')).toBe('当前登录已失效，请重新登录。')
-    expect(balance('RealmAccountError: 账号上下文已变化，请重试')).toBeNull()
+    expect(balance('RealmAccountError: 账号刚切换过，请再试一次')).toBeNull()
     expect(balance('TypeError: fetch failed')).toBe('余额暂时没有读到，请检查网络后重试。')
     expect(balance('AbortError: This operation was aborted')).toBe('余额暂时没有读到，请稍后重试。')
   })

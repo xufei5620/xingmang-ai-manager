@@ -128,7 +128,7 @@ describe('shared account balance refresh', () => {
     const { store, read } = create()
     store.setScope('new-api:1')
     await store.refresh()
-    read.mockRejectedValueOnce(new Error("Error invoking remote method 'account:get-balance': Error: 账号上下文已变化，请重试"))
+    read.mockRejectedValueOnce(new Error("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"))
     await store.refresh()
     expect(store.getSnapshot()).toMatchObject({ balance: balance(100), error: null, loading: false })
   })

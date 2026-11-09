@@ -381,7 +381,7 @@ describe('recovery password change outcome', () => {
     expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov-api' }, login, 'solov')).toBe(false)
   })
   it('does not take a change that lost its login halfway or got no answer as proof the new password was not set', () => {
-    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试")
+    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号刚切换过，请再试一次")
     const unanswered = new Error(`Error invoking remote method 'account:change-password': Error: ${networkFailureMessages.timeout}（修改密码请求失败）`)
     expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
     expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)

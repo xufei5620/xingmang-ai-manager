@@ -172,7 +172,7 @@ export function AccountOverview({
       <div className="v2-acct-overview">
         <section className="v2-acct-card is-focus" data-testid="account-overview-balance">
           <div className="v2-acct-card-head">
-            <h2>账户余额</h2>
+            <h2>账号余额</h2>
             {supportsUsage && <MoreLink label="用量账单" onClick={() => onNavigate('usage')} />}
           </div>
           <div className="v2-acct-balance-top">
