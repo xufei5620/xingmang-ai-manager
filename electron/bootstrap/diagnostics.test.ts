@@ -26,7 +26,7 @@ function create(overrides: Partial<DiagnosticsWiringOptions> = {}) {
     codexContext: {} as DiagnosticsWiringOptions['codexContext'],
     managerDataDirectory: '/tmp/xingmang-diagnostics-test',
     windowsCliExecution: { mode: 'same-user', elapsedMs: 0 } as DiagnosticsWiringOptions['windowsCliExecution'],
-    accelerationBundleStatus: Promise.resolve(null),
+    readAccelerationBundleStatus: async () => null,
     accelerationRunning: async () => false,
     readDocumentsDirectory: () => null,
     runtimeLog: runtimeLog as unknown as RuntimeLogStore,

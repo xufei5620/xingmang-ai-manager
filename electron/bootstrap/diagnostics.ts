@@ -36,7 +36,8 @@ export interface DiagnosticsWiringOptions {
   codexContext: CodexHomeContext
   managerDataDirectory: string
   windowsCliExecution: WindowsCliExecutionModeResolution
-  accelerationBundleStatus: Promise<'intact' | 'damaged' | null>
+  /** 检查页「加速功能」那一行要报的；加速下线以后是 null，不去读加速文件。 */
+  readAccelerationBundleStatus: () => Promise<'intact' | 'damaged' | null>
   accelerationRunning: () => Promise<boolean>
   readDocumentsDirectory: () => string | null
   runtimeLog: RuntimeLogStore
@@ -57,7 +58,7 @@ export interface FeedbackDescriberOptions {
 export function createDiagnostics(options: DiagnosticsWiringOptions) {
   const {
     routes: { relayRouting, relayRouteController, toolRouting, toolRouteController, latestRouteStatus, latestToolProbes, observedRelayFetch, resolveSystemProxy, systemProxyFetch, siteDirectFetch },
-    systemService, rootedOptions, codexContext, managerDataDirectory, windowsCliExecution, accelerationBundleStatus, accelerationRunning,
+    systemService, rootedOptions, codexContext, managerDataDirectory, windowsCliExecution, readAccelerationBundleStatus, accelerationRunning,
     readDocumentsDirectory, runtimeLog, readBillingAccountScope, currentBusiness, assetStore,
   } = options
   const windowsCliExecutionMode = windowsCliExecution.mode
@@ -150,7 +151,7 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
         aiOutputPlacement: () => currentBusiness().aiOutputPlacement,
         // 「文档文件夹能不能写」一项（Windows）：新项目与 AI 作品默认都放在它下面。
         documentsDirectory: readDocumentsDirectory(),
-        ...await accelerationBundleStatus.then((status) => status ? { accelerationBundle: status } : {}),
+        ...await readAccelerationBundleStatus().then((status) => status ? { accelerationBundle: status } : {}),
         windowsExecution: windowsCliExecution,
         windowsProcessor: await systemService.inspectWindowsProcessor(),
         macRosetta: process.platform === 'darwin' && app.runningUnderARM64Translation,
