@@ -22,6 +22,17 @@ describe('launchWarning', () => {
   it('surfaces a workspace setting that overrides the current account', () => {
     expect(launchWarning({ configOverrideNotice: '这个项目文件夹里有自己的设置' })).toBe('这个项目文件夹里有自己的设置')
   })
+
+  // D17：打开前试写不进去，照样打开，首页说这一句。
+  it('says the folder can only be read when the launch found it refuses writes', () => {
+    expect(launchWarning({ workspaceReadOnly: true })).toBe('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。')
+    expect(launchWarning({ workspaceReadOnly: false })).toBeNull()
+  })
+
+  it('says both when a read-only folder also carries settings that override the account', () => {
+    expect(launchWarning({ workspaceReadOnly: true, configOverrideNotice: '这个项目文件夹里有自己的设置。' }))
+      .toBe('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。这个项目文件夹里有自己的设置。')
+  })
 })
 
 describe('launchDeclined', () => {

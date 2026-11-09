@@ -21,10 +21,21 @@ const permissionErrorCodes = new Set(['EACCES', 'EPERM'])
 
 /** 顺着 cause 链找系统错误码：包成中文的错误把原始错误挂在 cause 上。 */
 export function isWritePermissionError(error: unknown): boolean {
+  return hasErrorCodeInChain(error, permissionErrorCodes)
+}
+
+const readOnlyFileSystemCodes = new Set(['EROFS'])
+
+/** 盘本身只读（光盘、写保护的 U 盘、只读挂载）。跟权限类分开：换个文件夹一定好，但不是「受控文件夹访问」。 */
+export function isReadOnlyFileSystemError(error: unknown): boolean {
+  return hasErrorCodeInChain(error, readOnlyFileSystemCodes)
+}
+
+function hasErrorCodeInChain(error: unknown, codes: ReadonlySet<string>): boolean {
   let current: unknown = error
   for (let depth = 0; depth < 5 && current instanceof Error; depth += 1) {
     const code = (current as NodeJS.ErrnoException).code
-    if (typeof code === 'string' && permissionErrorCodes.has(code)) return true
+    if (typeof code === 'string' && codes.has(code)) return true
     current = current.cause
   }
   return false
@@ -64,16 +75,34 @@ export async function probeDirectoryWritable(directory: string, randomBytes: (si
   }
 }
 
-export type WorkspaceWritability = 'writable' | 'denied' | 'unknown'
+/**
+ * denied = 不让写（权限类，EACCES / EPERM）；read-only = 盘本身只读（EROFS：光盘、拨了写保护的
+ * U 盘、只读挂载的共享盘）。
+ */
+export type WorkspaceWritability = 'writable' | 'denied' | 'read-only' | 'unknown'
+
+/** 系统目录、盘根、主目录这类本来就不该写的，选的时候已经提醒过，不在里面试写，也不再多说一句。 */
+function workspaceTakesWriteCheck(sensitivity: SensitiveWorkspaceKind | null): boolean {
+  return sensitivity === null || sensitivity === 'desktop' || sensitivity === 'documents' || sensitivity === 'downloads'
+}
 
 /**
- * 打开工具前要不要先试写一下选中的文件夹。只在 Windows：受控文件夹访问和安全软件的
- * 文档保护是 Windows 上的事，Mac 的文稿权限走系统询问那一套（终端启动脚本里已有中文说明）。
- * 系统目录、盘根、主目录这类本来就不该写的，选的时候已经提醒过，不再多问一句。
+ * 打开工具前要不要先试写一下选中的文件夹、写不进就先问一句（buildWorkspaceNotWritablePrompt）。
+ * 只在 Windows：受控文件夹访问和安全软件的文档保护是 Windows 上的事，Mac 的文稿权限走系统询问
+ * 那一套（终端启动脚本里已有中文说明）。
  */
 export function shouldCheckWorkspaceWritable(sensitivity: SensitiveWorkspaceKind | null, platform: NodeJS.Platform): boolean {
   if (platform !== 'win32') return false
-  return sensitivity === null || sensitivity === 'desktop' || sensitivity === 'documents' || sensitivity === 'downloads'
+  return workspaceTakesWriteCheck(sensitivity)
+}
+
+/**
+ * Mac、Linux 打开工具前试写一次，写不进不拦、打开后在首页说一句（D17）。Windows 上同样这些文件夹
+ * 已经在 shouldCheckWorkspaceWritable 那一步试写过，只读盘那一句由它顺带说，这里不再写第二次。
+ */
+export function shouldNoteReadOnlyWorkspace(sensitivity: SensitiveWorkspaceKind | null, platform: NodeJS.Platform): boolean {
+  if (platform === 'win32') return false
+  return workspaceTakesWriteCheck(sensitivity)
 }
 
 export interface InspectWorkspaceWritableOptions {
@@ -82,8 +111,8 @@ export interface InspectWorkspaceWritableOptions {
 }
 
 /**
- * 试写一次。只有「不让写」（权限类）才算 denied；文件夹不见了、磁盘满、试写超时都算
- * unknown，照原来直接打开，由各自已有的提示接手——多了这一步不能让以前打得开的打不开。
+ * 试写一次。「不让写」（权限类）算 denied，盘本身只读算 read-only；文件夹不见了、磁盘满、
+ * 试写超时都算 unknown，照原来直接打开，由各自已有的提示接手——多了这一步不能让以前打得开的打不开。
  */
 export async function inspectWorkspaceWritable(
   workspace: string,
@@ -96,7 +125,10 @@ export async function inspectWorkspaceWritable(
   })
   const attempt = probe(workspace).then(
     (): WorkspaceWritability => 'writable',
-    (error: unknown): WorkspaceWritability => (isWritePermissionError(error) ? 'denied' : 'unknown'),
+    (error: unknown): WorkspaceWritability => {
+      if (isWritePermissionError(error)) return 'denied'
+      return isReadOnlyFileSystemError(error) ? 'read-only' : 'unknown'
+    },
   )
   try {
     return await Promise.race([attempt, timeout])

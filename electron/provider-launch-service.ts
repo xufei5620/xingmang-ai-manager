@@ -36,6 +36,7 @@ import {
   trustCodexWorkspace,
   trustManagedWorkspace,
 } from './config-files'
+import { inspectWorkspaceWritable, shouldNoteReadOnlyWorkspace } from './documents-fallback'
 import { errorCodeOf, toolLaunchFailureMessage } from './failure-wording'
 import { type LinuxTerminalAttempt, LinuxTerminalLaunchError } from './linux-terminal'
 import type { MacosTerminalLaunchPlan } from './macos-platform'
@@ -434,6 +435,8 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         kind: workspaceSensitivity,
       })
     }
+    const workspaceReadOnly = shouldNoteReadOnlyWorkspace(workspaceSensitivity, platform)
+      && await workspaceRefusesWrites(provider, workspace)
     // 目录是用户刚在本软件的对话框里亲自选的，再让他去读一遍 CLI 自己的英文
     // 信任问答没有意义，所以打开之前先把这一项写进 CLI 的配置。写不进去
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
@@ -506,7 +509,10 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         })
       }
     }
-    const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
+    const launchResult: CliLaunchResult = {
+      ...inspectLaunchConfigOverrides(provider, workspace, nativeConfig),
+      ...(workspaceReadOnly ? { workspaceReadOnly } : {}),
+    }
     const accountMode = providerAccountMode(nativeConfig)
     const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
     // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
@@ -654,6 +660,20 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
    * 项目文件夹里（或公司统一下发）的设置会盖过当前账号时，打开照常，只带回一句
    * 提醒并记一条日志。只读，不动那些文件；查的过程出任何错都不能挡住打开。
    */
+  // 光盘、只读挂载的共享盘、没有改的权限的文件夹，工具照样起得来，AI 一改文件就是一串英文报错（D17）。
+  // 打开前试写一次，写不进不拦，打开后首页说一句。Windows 不走这里：同样这些文件夹在 cli:launch 那一步
+  // 已经试写过（ipc/handlers/launch.ts 的 launchIfWritable）。
+  async function workspaceRefusesWrites(provider: ProviderId, workspace: string): Promise<boolean> {
+    const startedAt = Date.now()
+    const writability = await inspectWorkspaceWritable(workspace, serviceOptions.probeWorkspaceWritable ? { probe: serviceOptions.probeWorkspaceWritable } : {})
+    const refused = writability === 'denied' || writability === 'read-only'
+    // 不记路径（I13）：客服要的是结果和耗时，跟 Windows 那一条同名。
+    runtimeLog?.log(refused ? 'warn' : 'info', 'config', 'workspace.write-check', refused
+      ? '选中的文件夹写不进去，照常打开，打开后在首页提醒'
+      : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    return refused
+  }
+
   function inspectLaunchConfigOverrides(
     provider: ProviderId,
     workspace: string,

@@ -7271,9 +7271,11 @@ describe('opening a CLI on Linux', () => {
     launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>,
     runtimeLog?: SystemServiceOptions['runtimeLog'],
     account: Partial<NativeConfigInspection> = {},
+    extra: Partial<SystemServiceOptions> = {},
   ) {
     return createService({
       platform: 'linux',
+      ...extra,
       ...(runtimeLog ? { runtimeLog } : {}),
       providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
       inspectProviderConfig: vi.fn(() => ({
@@ -7328,6 +7330,69 @@ describe('opening a CLI on Linux', () => {
     expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
     expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  // D17：只读盘、没有改的权限的文件夹照样打开，结果里带上「写不进去」，首页说一句。
+  it.runIf(process.platform !== 'win32')('still opens a folder it cannot write to and reports that for the home page', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-readonly-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const log = vi.fn()
+    const probeWorkspaceWritable = vi.fn(async () => { throw Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' }) })
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }, {}, { probeWorkspaceWritable }).launchProvider('claude', workspace))
+      .resolves.toMatchObject({ workspaceReadOnly: true })
+
+    expect(probeWorkspaceWritable).toHaveBeenCalledWith(workspace)
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith('warn', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({ provider: 'claude', result: 'read-only' }))
+    const entry = log.mock.calls.find((call) => call[2] === 'workspace.write-check')
+    expect(JSON.stringify(entry)).not.toContain(userHome)
+  })
+
+  it.runIf(process.platform !== 'win32')('treats a folder without write permission the same way', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-denied-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const probeWorkspaceWritable = vi.fn(async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) })
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable }).launchProvider('claude', workspace))
+      .resolves.toMatchObject({ workspaceReadOnly: true })
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it.runIf(process.platform !== 'win32')('says nothing extra when the folder takes the probe or the probe fails for another reason', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-writable-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+
+    // 不注入：真在临时文件夹里试写一次，写完不留东西。
+    const opened = await linuxLaunchService(userHome, launchLinuxTerminal).launchProvider('claude', workspace)
+    expect(opened).not.toHaveProperty('workspaceReadOnly')
+    expect(fs.readdirSync(workspace).filter((name) => name.startsWith('.write-check-'))).toEqual([])
+
+    const full = vi.fn(async () => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }) })
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable: full }).launchProvider('claude', workspace))
+      .resolves.not.toHaveProperty('workspaceReadOnly')
+  })
+
+  it.runIf(process.platform !== 'win32')('does not probe the home folder the user was already warned about', async () => {
+    const { userHome } = project('xingmang-linux-open-home-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const probeWorkspaceWritable = vi.fn(async () => undefined)
+
+    await linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable }).launchProvider('claude', userHome)
+    expect(probeWorkspaceWritable).not.toHaveBeenCalled()
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
   })
 
   // 已知45 跟进、#1081：用星芒账号时，客户环境里的 Key、配置目录和选型号的变量不交给 Claude Code；交给已经

@@ -8,10 +8,12 @@ import {
   createStarterWorkspaceWithFallback,
   inspectDocumentsWritability,
   inspectWorkspaceWritable,
+  isReadOnlyFileSystemError,
   isWritePermissionError,
   probeDirectoryWritable,
   probeDirectoryWritableSync,
   shouldCheckWorkspaceWritable,
+  shouldNoteReadOnlyWorkspace,
 } from './documents-fallback'
 import { createStarterWorkspace, type StarterWorkspaceLocationContext } from './starter-workspace'
 
@@ -31,6 +33,20 @@ describe('isWritePermissionError', () => {
     expect(isWritePermissionError(systemError('EROFS'))).toBe(false)
     expect(isWritePermissionError(new Error('项目文件夹必须是普通目录'))).toBe(false)
     expect(isWritePermissionError('EPERM')).toBe(false)
+  })
+})
+
+describe('isReadOnlyFileSystemError', () => {
+  it('recognises a read-only disk, also when wrapped in a Chinese message', () => {
+    expect(isReadOnlyFileSystemError(systemError('EROFS'))).toBe(true)
+    expect(isReadOnlyFileSystemError(new Error('写不进去', { cause: systemError('EROFS') }))).toBe(true)
+  })
+
+  it('leaves permission errors and a full disk to their own handling', () => {
+    expect(isReadOnlyFileSystemError(systemError('EPERM'))).toBe(false)
+    expect(isReadOnlyFileSystemError(systemError('EACCES'))).toBe(false)
+    expect(isReadOnlyFileSystemError(systemError('ENOSPC'))).toBe(false)
+    expect(isReadOnlyFileSystemError('EROFS')).toBe(false)
   })
 })
 
@@ -108,6 +124,25 @@ describe('shouldCheckWorkspaceWritable', () => {
   })
 })
 
+describe('shouldNoteReadOnlyWorkspace', () => {
+  // Windows 上同样这些文件夹打开前已经试写过（shouldCheckWorkspaceWritable），不再写第二次。
+  it('checks on Mac and Linux, not on Windows', () => {
+    expect(shouldNoteReadOnlyWorkspace(null, 'darwin')).toBe(true)
+    expect(shouldNoteReadOnlyWorkspace(null, 'linux')).toBe(true)
+    expect(shouldNoteReadOnlyWorkspace(null, 'win32')).toBe(false)
+  })
+
+  it('checks ordinary project folders but stays out of the ones the user was already warned about', () => {
+    expect(shouldNoteReadOnlyWorkspace('documents', 'darwin')).toBe(true)
+    expect(shouldNoteReadOnlyWorkspace('desktop', 'linux')).toBe(true)
+    expect(shouldNoteReadOnlyWorkspace('downloads', 'darwin')).toBe(true)
+    expect(shouldNoteReadOnlyWorkspace('home', 'darwin')).toBe(false)
+    expect(shouldNoteReadOnlyWorkspace('drive-root', 'linux')).toBe(false)
+    expect(shouldNoteReadOnlyWorkspace('system', 'linux')).toBe(false)
+    expect(shouldNoteReadOnlyWorkspace('provider-config', 'darwin')).toBe(false)
+  })
+})
+
 describe('inspectWorkspaceWritable', () => {
   it('reports a folder that takes the probe as writable', async () => {
     await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => undefined })).resolves.toBe('writable')
@@ -116,6 +151,10 @@ describe('inspectWorkspaceWritable', () => {
   it('reports permission errors as denied', async () => {
     await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => { throw systemError('EPERM') } })).resolves.toBe('denied')
     await expect(inspectWorkspaceWritable('C:\\work', { probe: async () => { throw systemError('EACCES') } })).resolves.toBe('denied')
+  })
+
+  it('reports a read-only disk apart from permission errors', async () => {
+    await expect(inspectWorkspaceWritable('/Volumes/CD', { probe: async () => { throw systemError('EROFS') } })).resolves.toBe('read-only')
   })
 
   it('does not blame permissions for a missing folder or a full disk', async () => {
