@@ -67,8 +67,8 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
     recommended: {
       version: '2.1.319',
       verifiedAt: '2026-11-09',
-      verifiedSites: [],
-      note: '当前 npm latest(2.1.313 没发到 npm);2.1.311～2.1.319 没有一条写成网关回归,反而补了几处:网关按名字拒收某个 beta 头时去掉重发(2.1.314)、拒收工具搜索的 tool_reference 时重发一次不带它并在本会话记住(2.1.314)、压缩过的回复被截断时请求不再卡住(2.1.316)、网关对自动模式的服务端检查回 403/422 时不再每轮失败(2.1.317);2.1.314 引入、2.1.318 修好的 --continue 偶尔丢前文不是每次都坏,不进 blocked;沿用 2.1.304 起的默认工具搜索;沙箱本地假接口:-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头同 2.1.316,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 改为发现原生包装了两份时让安装失败,沙箱里同一前缀从 2.1.316 全局升到 2.1.319 正常',
+      verifiedSites: ['solov'],
+      note: '当前 npm latest(2.1.313 没发到 npm);2.1.311～2.1.319 没有一条写成网关回归,反而补了几处:网关按名字拒收某个 beta 头时去掉重发(2.1.314)、拒收工具搜索的 tool_reference 时重发一次不带它并在本会话记住(2.1.314)、压缩过的回复被截断时请求不再卡住(2.1.316)、网关对自动模式的服务端检查回 403/422 时不再每轮失败(2.1.317);2.1.314 引入、2.1.318 修好的 --continue 偶尔丢前文不是每次都坏,不进 blocked;沿用 2.1.304 起的默认工具搜索;沙箱本地假接口:-p hi 拿到回复、只带 Authorization,请求体字段与 beta 头同 2.1.316,假接口对工具搜索回 400 时试三次后重发一次不带它的请求照常回复,haiku 别名仍发 claude-haiku-5-5,/context 仍是 1M,主型号回 503 时换到备用型号;install.cjs 改为发现原生包装了两份时让安装失败,沙箱里同一前缀从 2.1.316 全局升到 2.1.319 正常;2026-11-09 cli-relay-probe 用 Claude 分组的巡检 Key 在 solov(xm.solov.cc)上真跑通过,solov-api 是 Key 不属于那个站(401)、没测成',
       userNote: '修好了一些情况下提问被拒要反复重试、网络不稳时回复卡住、接着上次聊时偶尔丢掉前面对话的问题',
     },
     blocked: [

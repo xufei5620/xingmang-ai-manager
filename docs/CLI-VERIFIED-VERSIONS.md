@@ -379,8 +379,8 @@ Key 走的型号菜单）不用抬。
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
 | Grok CLI | `1.0.77`（2026-11-09） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70、1.0.77 各一遍，见下文；1.0.62 核过、没合） |
 
-仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天第一次真跑的结果：Codex 0.167.0 在 `solov` 上通过，所以它的 `verifiedSites` 是 `['solov']`；另外三条还是空数组。
-- Claude Code 2.1.319 在 `solov` 上连着 9 次 503，中转回的原话被重试吞掉了，所以加了重试上限再跑。按 new-api 的习惯推测，是这把 Key 的分组里没有 Claude 的渠道。
+仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天真跑的结果：Codex 0.167.0、Claude Code 2.1.319 都在 `solov` 上通过，所以这两条的 `verifiedSites` 是 `['solov']`；Grok、Gemini 两条还是空数组。
+- Claude Code 第一次用共用那把 Key（GPT 分组），中转答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」；换成 Claude 分组的 `XINGMANG_CLI_PATROL_KEY_CLAUDE` 后通过。
 - `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了；要测它得另配一把那边的 Key。
 - Grok 不在探测范围里。
 
