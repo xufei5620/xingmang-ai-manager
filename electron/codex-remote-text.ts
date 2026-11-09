@@ -34,7 +34,7 @@ export const remoteMessages = {
   idleClosingSoon: '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。',
 } as const
 
-/** 超过 10 分钟、或者遥控打开以前发的消息照旧不执行，只给绑定的人回这一句（D66 / YKS-9）。 */
+/** 遥控开着时发的、到电脑时已超过 10 分钟的消息照旧不执行，只给绑定的人回这一句（D66 / YKS-9）。 */
 export function staleMessageNotice(minutes: number): string {
   return `这条是 ${minutes} 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。`
 }
