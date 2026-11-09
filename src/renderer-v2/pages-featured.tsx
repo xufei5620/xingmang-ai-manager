@@ -1,5 +1,5 @@
 import { useCallback, useState } from 'react'
-import { Download, FolderOpen, MessageSquare, Plus, Sparkles } from 'lucide-react'
+import { Download, FolderOpen, Headset, MessageSquare, Plus, Sparkles } from 'lucide-react'
 import { BrandIcon, Button, Dialog, Empty, Notice, PageHead, Pill, Segment } from './ui'
 import { ResultNotice, useOperation, useReloadWhenShown, useResource } from './business-common'
 import {
@@ -343,17 +343,27 @@ export function FeaturedPage({
             body={runtimeNotice.body}
             testId="curated-runtime-notice"
             actions={
-              runtimeNotice.installPython ? (
-                <Button
-                  size="sm"
-                  icon={Download}
-                  loading={operation.busy === 'python'}
-                  disabled={Boolean(operation.busy)}
-                  onClick={installPython}
-                  testId="mcp-install-python"
-                >
-                  自动安装 Python
-                </Button>
+              runtimeNotice.installPython || (runtimeNotice.support && onOpenHelp) ? (
+                <>
+                  {runtimeNotice.installPython && (
+                    <Button
+                      size="sm"
+                      icon={Download}
+                      loading={operation.busy === 'python'}
+                      disabled={Boolean(operation.busy)}
+                      onClick={installPython}
+                      testId="mcp-install-python"
+                    >
+                      自动安装 Python
+                    </Button>
+                  )}
+                  {/* 缺 uv 星芒装不了，交给客服教（D20）。 */}
+                  {runtimeNotice.support && onOpenHelp && (
+                    <Button size="sm" icon={Headset} onClick={onOpenHelp} testId="mcp-runtime-support">
+                      找客服
+                    </Button>
+                  )}
+                </>
               ) : undefined
             }
           />

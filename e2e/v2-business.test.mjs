@@ -1479,6 +1479,23 @@ test('adding a uvx connection without Python says so first and still lets it thr
   }
 })
 
+// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「找客服」。
+test('a uvx connection missing uv points to customer support with a button instead of a pip command', async () => {
+  const page = await fixture('page=mcp&help')
+  try {
+    await page.getByTestId('mcp-add').click()
+    await page.getByRole('button', { name: '本地程序', exact: true }).click()
+    await page.getByTestId('mcp-source').fill('uvx')
+    const notice = page.getByTestId('mcp-runtime-notice')
+    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。/).waitFor()
+    assert.equal(await notice.getByText(/pip install uv/).count(), 0)
+    await notice.getByTestId('mcp-runtime-support').click()
+    assert.equal((await callsNamed(page, 'open-help')).length, 1)
+  } finally {
+    await page.close()
+  }
+})
+
 test('curated MCP install confirms the exact command before writing any configuration', async () => {
   const page = await fixture('page=mcp')
   try {
@@ -1922,10 +1939,37 @@ test('removing a connection says which tool it leaves and that the others keep t
     await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    await dialog.getByText('其他工具里的不受影响。以后可以在官方目录或精选里重新添加。', { exact: true }).waitFor()
+    await dialog.getByText('其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '移除', exact: true }).click()
     await page.getByText('已从 Claude Code 移除「测试扩展」', { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'test-extension', scope: 'user' })
+  } finally {
+    await page.close()
+  }
+})
+
+// D67：自己加的市场点「移除市场」先问一句，点「移除」才真的移除，点「取消」什么都不动。
+test('removing a custom plugin market asks first and only removes it after confirming', async () => {
+  const page = await fixture('page=plugins&customMarket')
+  try {
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    const markets = page.getByTestId('plugins-custom-markets')
+    const openRemoval = async () => {
+      await markets.getByRole('button', { name: '市场 my-market 的更多操作', exact: true }).click()
+      await page.getByRole('menuitem', { name: '移除市场', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '移除市场「my-market」？', exact: true })
+      await dialog.getByText('移除后，这个市场就不在列表里了，要用时得重新添加。', { exact: true }).waitFor()
+      return dialog
+    }
+    let dialog = await openRemoval()
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal((await callsNamed(page, 'remove-marketplace')).length, 0)
+    dialog = await openRemoval()
+    await dialog.getByRole('button', { name: '移除', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'remove-marketplace')).map((call) => call.args), ['my-market'])
+    await markets.waitFor({ state: 'detached' })
   } finally {
     await page.close()
   }
