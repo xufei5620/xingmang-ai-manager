@@ -118,11 +118,12 @@ export function resolveManagedCliKeyProfiles(siteId?: string): Record<ProviderId
   return siteId === 'solov-api' ? sub2ApiManagedCliKeyProfiles : managedCliKeyProfiles
 }
 
-// new-api 按 UTF-8 字节数限令牌名 50（rc.44 controller/token.go AddToken 的 len(token.Name) > 50），
-// 用户名最长 20 个字、可以是中文，所以按字节截，不按字数截。
-const accountKeyNameMaxBytes = 50
+// new-api 按 UTF-8 字节数限令牌名 50（rc.44 controller/token.go AddToken 和 UpdateToken 的 len(token.Name) > 50），
+// 一个汉字占 3 个字节，中文名字最多 16 个字。用户名最长 20 个字、可以是中文，所以自动起名按字节截；
+// 客户在密钥页手填的名字也按字节拦（ZW-1），不按字数。
+export const accountKeyNameMaxBytes = 50
 
-function utf8Length(text: string): number {
+export function utf8Length(text: string): number {
   let bytes = 0
   for (const char of text) {
     const codePoint = char.codePointAt(0) ?? 0
@@ -131,7 +132,7 @@ function utf8Length(text: string): number {
   return bytes
 }
 
-function truncateUtf8(text: string, maxBytes: number): string {
+export function truncateUtf8(text: string, maxBytes: number): string {
   let kept = ''
   let bytes = 0
   for (const char of text) {
