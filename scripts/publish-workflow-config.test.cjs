@@ -880,6 +880,8 @@ function runPlanStep({
   confirm = version,
   platforms = 'all',
   publishLinux = '',
+  // 默认不挂代码里的 Linux 暂停，下面这些用例测的是开关本身；暂停另有一条用例。
+  linuxHold = '',
   ref = 'refs/heads/main',
   tagSha = null,
   annotated = false,
@@ -968,6 +970,7 @@ fi
       CONFIRM_VERSION: confirm,
       PLATFORMS: platforms,
       PUBLISH_LINUX: publishLinux,
+      LINUX_PUBLISH_HOLD: linuxHold,
       DISPATCH_REF: ref,
       SHIPPED_SHA: SHIPPED,
     },
@@ -989,6 +992,41 @@ test('a Linux-only run with Linux publishing off neither checks nor reserves a t
   const on = runPlanStep({ platforms: 'linux', publishLinux: 'TRUE' })
   assert.equal(on.status, 0, on.output)
   assert.deepEqual(on.outputs, { tag: 'v0.2.15', action: 'create' })
+})
+
+test('while Linux is held back in code, a run that would ship Linux stops before any tag is looked at', posixOnly, () => {
+  // yoyo 2026-11-09「Linux先不发」。仓库变量只有能改仓库设置的人能动，代码里的这道暂停只能
+  // 把 Linux 关上：开关开着、这次又选了 Linux，就在占 tag、出包之前停下。解除暂停时删掉
+  // 工作流里那一行和这一条。
+  const hold = planStep.env.LINUX_PUBLISH_HOLD
+  assert.equal(typeof hold, 'string')
+  assert.match(hold, /Linux先不发/)
+  for (const platforms of ['all', 'linux']) {
+    for (const publishLinux of ['true', 'TRUE']) {
+      const run = runPlanStep({ platforms, publishLinux, linuxHold: hold })
+      const label = `${platforms}，开关 ${publishLinux}`
+      assert.notEqual(run.status, 0, label)
+      assert.ok(run.output.includes(`::error::Linux 暂停对外发（${hold}）`), `${label}\n${run.output}`)
+      assert.ok(run.output.includes(`这次又选了 ${platforms}；什么都没动`), `${label}\n${run.output}`)
+      assert.deepEqual(run.outputs, {}, label)
+      assert.equal(run.log, '', label)
+    }
+  }
+  // 不带 Linux 的发布照常占 tag：0.2.24 选 both 就只发 Windows 与 macOS。
+  for (const platforms of ['both', 'windows', 'macos']) {
+    const run = runPlanStep({ platforms, publishLinux: 'true', linuxHold: hold })
+    assert.equal(run.status, 0, `${platforms}\n${run.output}`)
+    assert.deepEqual(run.outputs, { tag: 'v0.2.15', action: 'create' }, platforms)
+  }
+  // 开关关着时 Linux 本来就不上传，选 all 照常发 Windows 与 macOS，只选 linux 照旧只出包。
+  for (const publishLinux of ['', 'false']) {
+    const all = runPlanStep({ platforms: 'all', publishLinux, linuxHold: hold })
+    assert.equal(all.status, 0, all.output)
+    assert.deepEqual(all.outputs, { tag: 'v0.2.15', action: 'create' })
+    const linuxOnly = runPlanStep({ platforms: 'linux', publishLinux, linuxHold: hold })
+    assert.equal(linuxOnly.status, 0, linuxOnly.output)
+    assert.deepEqual(linuxOnly.outputs, { action: 'none' })
+  }
 })
 
 test('the tag is reserved whenever the publish job could run', posixOnly, () => {
