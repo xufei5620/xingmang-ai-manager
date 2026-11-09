@@ -248,6 +248,44 @@ export function isTlsHandshakeFailure(error: unknown): boolean {
   return matchingPattern(text) === handshakeFailurePattern
 }
 
+// The only reaction to an unreachable proxy is taking the updater session off
+// the user's proxy, so the match must never be made against free text: a
+// release note, a mirror's HTML error page or a manifest field that merely
+// mentions the code would otherwise be enough to bypass a proxy the user
+// deliberately configured.
+//
+// Electron's net module (lib/common/api/net-client-request.ts, which
+// electron-updater's executor uses for both the check and the download, and
+// which session.fetch rejects with as well) does not attach a code: it rejects
+// with `new Error('net::ERR_PROXY_CONNECTION_FAILED')` and builder-util-runtime
+// passes that error through untouched. Running Electron 45.1.0 +
+// electron-updater 6.8.9 against a closed proxy port gives a plain Error whose
+// only own keys are `stack` and `message`, for checkForUpdates, downloadUpdate
+// and session.fetch alike. So the message is accepted, but only when it is the
+// whole message of an Error -- exactly what Electron constructs -- never when
+// the code appears inside a longer text. The structured `code` is still
+// accepted for errors that do carry one.
+const PROXY_CONNECTION_FAILED_CODE = 'ERR_PROXY_CONNECTION_FAILED'
+const PROXY_CONNECTION_FAILED_NET_MESSAGE = `net::${PROXY_CONNECTION_FAILED_CODE}`
+
+/**
+ * 更新会话（检查更新、下载更新、服务状态文件）撞上「系统代理指着的代理软件没在听」时，只认这一种才改直连再试一次。
+ * 和上面 classifyNetworkFailure 的 proxy 那类不是一回事：那边按文本归类、给客户看一句话，这里决定绕不绕开客户的代理，
+ * 所以只认 Electron 原样抛出的那种。
+ */
+export function isProxyConnectionFailure(error: unknown): boolean {
+  // electron-updater wraps executor failures, so follow a bounded cause chain
+  // rather than only inspecting the outermost error.
+  let candidate: unknown = error
+  for (let depth = 0; depth < 4 && candidate !== null && candidate !== undefined; depth += 1) {
+    const code = (candidate as { code?: unknown }).code
+    if (typeof code === 'string' && code.toUpperCase() === PROXY_CONNECTION_FAILED_CODE) return true
+    if (candidate instanceof Error && candidate.message === PROXY_CONNECTION_FAILED_NET_MESSAGE) return true
+    candidate = (candidate as { cause?: unknown }).cause
+  }
+  return false
+}
+
 /** 渲染层用：认出主进程那句话就原样上屏，认不出来交还给调用方兜底。 */
 export function matchNetworkFailureMessage(text: unknown): string | null {
   const reason = networkFailureReasonForMessage(typeof text === 'string' ? text : text instanceof Error ? text.message : '')
