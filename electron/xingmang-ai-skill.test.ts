@@ -9,6 +9,7 @@ import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
 import { managedCliKeyProfiles, providerBaseUrls } from './catalog'
 import { writeCodexDesktopLocale } from './codex-desktop-locale'
 import { classifyCodexConfigProfile, codexConfigSnapshotPaths, saveProviderConfig, switchProviderToOfficialAccount } from './config-files'
+import type { ManagedSkillKeys, StoredManagedCliKey } from './managed-cli-key-store'
 import type { RelayBackendClient } from './relay-backend'
 import {
   BUNDLED_SKILL_NAME_LINE,
@@ -1366,6 +1367,146 @@ describe('xingmang-ai-skill folder rename to images', () => {
     await installXingmangAiSkillFiles(bundledRoot, userHome, { officialCodex: false, renameLegacyDirectory: true })
 
     expect(await readFile(configPath, 'utf8')).toBe(theirs)
+  })
+})
+
+// 0.2.24 深查 R1：取明文跟登录共用按出口 IP 的严格限流，以前每次开机都给两把各取一次。现在把这台电脑已经
+// 知道明文的几把交给签发那一步认，自己写进技能配置的两把也记下来，下次开机认得出就不再取。
+describe('xingmang-ai-skill reusing plaintexts this machine already holds', () => {
+  const codexTool: StoredManagedCliKey = {
+    id: 7,
+    provider: 'codex',
+    group: managedCliKeyProfiles.codex.group,
+    name: managedCliKeyProfiles.codex.keyName,
+    key: 'sk-test-codex-group-secret-12345678',
+  }
+  const written: ManagedSkillKeys = {
+    codex: { id: 7, group: managedCliKeyProfiles.codex.group, name: managedCliKeyProfiles.codex.keyName, key: 'sk-test-codex-group-secret-12345678' },
+    image: { id: 42, group: '图片模型', name: XINGMANG_AI_SKILL_KEY_NAME, key: 'sk-test-image-group-secret-12345678' },
+  }
+
+  function keyStore(remembered?: ManagedSkillKeys, siteId = 'solov') {
+    return {
+      read: vi.fn(async (_userId: number): Promise<StoredManagedCliKey[]> => [codexTool]),
+      getSiteId: () => siteId,
+      readSkillKeys: vi.fn(async (_userId: number) => remembered),
+      saveSkillKeys: vi.fn(async (_userId: number, _keys: ManagedSkillKeys) => undefined),
+    }
+  }
+
+  function onSite(account: ReturnType<typeof loggedInAccount>, revisions: number[] = [3]) {
+    let call = 0
+    return Object.assign(account.accountService, {
+      getActiveSiteId: () => 'solov' as const,
+      getSessionRevision: () => revisions[Math.min(call++, revisions.length - 1)],
+    })
+  }
+
+  it('offers the tool keys and the ones it wrote last time, then remembers what it wrote', async () => {
+    const userHome = await temporaryHome()
+    const account = loggedInAccount()
+    const oldImage = { id: 41, group: '图片模型', name: XINGMANG_AI_SKILL_KEY_NAME, key: 'sk-old-image-group-secret-123456' }
+    const store = keyStore({ image: oldImage })
+
+    const result = await syncXingmangAiSkill({ accountService: onSite(account), bundledRoot, userHome, keyStore: store })
+
+    expect(result.ready).toBe(true)
+    const knownKeys = [{ id: 7, key: codexTool.key }, { id: 41, key: oldImage.key }]
+    expect(account.provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: managedCliKeyProfiles.codex.group, knownKeys })
+    expect(account.provisionCliKey).toHaveBeenCalledWith({ name: XINGMANG_AI_SKILL_KEY_NAME, group: '图片模型', knownKeys })
+    expect(store.read).toHaveBeenCalledWith(9)
+    expect(store.saveSkillKeys).toHaveBeenCalledTimes(1)
+    expect(store.saveSkillKeys).toHaveBeenCalledWith(9, written)
+  })
+
+  it('does not write the cache again when it wrote the keys it remembered', async () => {
+    const userHome = await temporaryHome()
+    const account = loggedInAccount()
+    const store = keyStore(written)
+
+    await syncXingmangAiSkill({ accountService: onSite(account), bundledRoot, userHome, keyStore: store })
+
+    expect(store.saveSkillKeys).not.toHaveBeenCalled()
+  })
+
+  it('keeps the one it could not get this time, and drops the image key once the account has no image group', async () => {
+    const userHome = await temporaryHome()
+    const failing = loggedInAccount({
+      provision: vi.fn(async (input: { name?: string; group?: string } = {}) => {
+        if (input.name === XINGMANG_AI_SKILL_KEY_NAME) throw new Error('服务暂时不可用')
+        return { id: 8, name: input.name ?? 'generated', key: 'sk-test-new-codex-secret-12345678' }
+      }),
+    })
+    const store = keyStore(written)
+    await syncXingmangAiSkill({ accountService: onSite(failing), bundledRoot, userHome, keyStore: store })
+    expect(store.saveSkillKeys).toHaveBeenCalledWith(9, {
+      codex: { id: 8, group: managedCliKeyProfiles.codex.group, name: managedCliKeyProfiles.codex.keyName, key: 'sk-test-new-codex-secret-12345678' },
+      image: written.image,
+    })
+
+    const noImageGroup = loggedInAccount({ groups: [{ name: 'GPT' }] })
+    const later = keyStore(written)
+    await syncXingmangAiSkill({ accountService: onSite(noImageGroup), bundledRoot, userHome, keyStore: later })
+    expect(later.saveSkillKeys).toHaveBeenCalledWith(9, { codex: written.codex })
+  })
+
+  it('neither offers nor fills a cache that belongs to the other site', async () => {
+    const userHome = await temporaryHome()
+    const account = loggedInAccount()
+    const store = keyStore(written, 'solov-api')
+
+    await syncXingmangAiSkill({ accountService: onSite(account), bundledRoot, userHome, keyStore: store })
+
+    expect(account.provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: managedCliKeyProfiles.codex.group })
+    expect(account.provisionCliKey).toHaveBeenCalledWith({ name: XINGMANG_AI_SKILL_KEY_NAME, group: '图片模型' })
+    expect(store.read).not.toHaveBeenCalled()
+    expect(store.saveSkillKeys).not.toHaveBeenCalled()
+  })
+
+  it('does not remember keys when the login changed before it could save them', async () => {
+    const userHome = await temporaryHome()
+    const account = loggedInAccount()
+    const store = keyStore()
+
+    await syncXingmangAiSkill({ accountService: onSite(account, [3, 4]), bundledRoot, userHome, keyStore: store })
+
+    expect(store.saveSkillKeys).not.toHaveBeenCalled()
+  })
+
+  it('goes on revealing as before when the cache cannot be read or saved', async () => {
+    const userHome = await temporaryHome()
+    const account = loggedInAccount()
+    const store = {
+      ...keyStore(),
+      read: vi.fn(async (): Promise<StoredManagedCliKey[]> => { throw new Error('系统安全存储不可用') }),
+      readSkillKeys: vi.fn(async (): Promise<ManagedSkillKeys | undefined> => { throw new Error('系统安全存储不可用') }),
+      saveSkillKeys: vi.fn(async (): Promise<void> => { throw new Error('系统安全存储不可用') }),
+    }
+
+    const result = await syncXingmangAiSkill({ accountService: onSite(account), bundledRoot, userHome, keyStore: store })
+
+    expect(result.ready).toBe(true)
+    expect(account.provisionCliKey).toHaveBeenCalledWith({ name: managedCliKeyProfiles.codex.keyName, group: managedCliKeyProfiles.codex.group })
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).apiKey).toBe('sk-test-image-group-secret-12345678')
+  })
+
+  it('leaves a skill config alone when this sync would write the same thing', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+    const configPath = path.join(resolveXingmangAiSkillDirectories(userHome)[0], XINGMANG_AI_CONFIG_FILE)
+    const past = new Date('2026-01-01T00:00:00.000Z')
+    fs.utimesSync(configPath, past, past)
+
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+    expect(fs.statSync(configPath).mtime.getTime()).toBe(past.getTime())
+
+    const replaced = loggedInAccount({
+      provision: vi.fn(async (input: { name?: string } = {}) => ({ id: 50, name: input.name ?? 'generated', key: 'sk-test-replaced-secret-12345678' })),
+    })
+    await syncXingmangAiSkill({ accountService: replaced.accountService, bundledRoot, userHome })
+    expect(fs.statSync(configPath).mtime.getTime()).not.toBe(past.getTime())
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).apiKey).toBe('sk-test-replaced-secret-12345678')
   })
 })
 
