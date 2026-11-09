@@ -367,10 +367,10 @@ describe('guide install failure wording', () => {
 
   it('keeps the next step the main process wrote when the official registry check could not connect', () => {
     const network = guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。换个网络（比如手机热点）后再试。'), 'Claude Code')
-    expect(network.message).toBe('Claude Code 没装上（连不上 npm 官方源）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
-    expect(network.reason).toBe('连不上 npm 官方源')
+    expect(network.message).toBe('Claude Code 没装上（连不上工具的官方下载站）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
+    expect(network.reason).toBe('连不上工具的官方下载站')
     expect(guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。到「设置 › 网络加速」开启加速后再试。'), 'Claude Code').message)
-      .toBe('Claude Code 没装上（连不上 npm 官方源）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
+      .toBe('Claude Code 没装上（连不上工具的官方下载站）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
   })
 })
 
@@ -629,10 +629,11 @@ describe('guide switch failure exits', () => {
     expect(guideFailureExits(new Error('something odd'))).toEqual([])
   })
 
-  it('keeps the same buttons when the switch could not write the config file (known 29)', () => {
-    // 改的只是那句话：按钮照旧是「再试一次」「复制给客服」和这里的「查看日志」，不多出「找客服」。
+  it('offers 找客服 when the switch could not write the config file (known 29, D14)', () => {
+    // 已知29 改的只是那句话。出口按「写不进」那一类的按钮走：D14 把它换成「重试、复制路径、找客服」，
+    // 引导里「重试」是「再试一次」、「复制路径」不出，剩下「找客服」。
     expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
-      .toEqual([{ id: 'log', label: '查看日志' }])
+      .toEqual([{ id: 'support', label: '找客服' }])
   })
 })
 

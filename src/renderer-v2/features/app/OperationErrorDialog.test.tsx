@@ -95,14 +95,16 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).not.toContain('operation-error-copyPath')
     expect(markup).not.toContain('operation-error-path')
     // 按钮被过滤光了也不能只剩「返回」：目录的另一颗按钮仍在。
-    expect(markup).toContain('operation-error-log')
+    expect(markup).toContain('operation-error-support')
   })
 
   it('filters 复制路径 the same way it filters 重试', () => {
     const permission = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
-    expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['log'])
+    expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['support'])
     expect(operationErrorActions({ message: permission }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
-      .toEqual(['copyPath', 'log'])
+      .toEqual(['copyPath', 'support'])
+    expect(operationErrorActions({ message: permission, retry: () => undefined }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
+      .toEqual(['retry', 'copyPath', 'support'])
   })
 
   it('offers to replace an outdated Node.js as the way out, and 找客服 where it cannot', () => {

@@ -235,7 +235,7 @@ export function operationTargetOf(action: string): OperationTarget | undefined {
  * 起按普通权限运行，诊断页还把「以管理员身份运行」标成风险；Windows 上提权
  * 重试等于换一套安装事务（落点从用户 npm 目录变成 ProgramData），而 npm 会
  * 执行 registry 上的包脚本，把它交给提权令牌正是可信路径那套规矩拒绝的事；
- * macOS 从不提权。permission 这一类的下一步是看目录、看日志，不是提权。
+ * macOS 从不提权。permission 这一类的下一步是看目录、重试、找客服，不是提权。
  */
 const actionIds: Record<string, OperationActionId | undefined> = {
   重试: 'retry',
