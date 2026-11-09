@@ -356,8 +356,9 @@ export class AiAudioAssetStore {
   async revealInFolder(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {
     if (!this.nativeOperations) throw new Error('当前环境不支持在文件夹中定位')
     await this.readOwned(userId, assetId)
-    // Used to look the file up a second time with a synchronous exists check
-    // per date folder; the located path has already passed the full checks.
+    // The path handed to the OS gets the same checks as every other one,
+    // instead of a second pass over the date folders with a synchronous
+    // exists check in each.
     const filePath = await this.resolveOwnedFilePath(userId, assetId)
     await authorize?.()
     await this.nativeOperations.revealInFolder(filePath)
