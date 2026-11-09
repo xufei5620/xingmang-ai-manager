@@ -1148,6 +1148,8 @@ export function createUpdaterService(
   // 已经排过几次。换了版本从头数，下好了清掉。
   let downloadRetry: { version: string; attempts: number } | null = null
   let downloadRetryTimer: NodeJS.Timeout | null = null
+  // 这一趟对比开始前量到的剩余空间（见 refreshDownloaded）；量不出来时为 null。
+  let refreshFreeDiskBytes: number | null = null
   // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
   // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
   const abandonedDownloads = new Set<Promise<unknown>>()
@@ -1285,6 +1287,16 @@ export function createUpdaterService(
 
   // 这一趟检查是在拿手里那一版对比。阶段一离开「已下载」（被撤回了），事件就照平常那样进快照。
   const probingDownloaded = () => refreshingDownloaded && snapshot.phase === 'downloaded'
+
+  // 更新目录上新的那一版这会儿下不下得了（深查 Z-1）。下不了还换，手里这份从此不算「下好了」，退出时、
+  // 开机时都没东西可装，新的却停在「有新版本」等客户清盘。所以盘不够时不换，手里这份照旧能装。用的是
+  // download() 下载前量盘的同一个算法：这里放行的，换完那一步也放行。手里这份够不上最低版本时照样换：
+  // 装上它也过不了「必须更新」那道门，不如摆出新的那一版，让客户在门里看到要清多少空间。
+  const supersedeShortfall = (info: UpdateInfo): UpdateDiskShortfall | null => {
+    if (downloadedBelowMinimum()) return null
+    const packageBytes = resolveUpdatePackageBytes(intelMac ? buildIntelMacUpdateInfo(info) : info)
+    return resolveUpdateDiskShortfall(refreshFreeDiskBytes, requiredUpdateDiskBytes(packageBytes))
+  }
 
   const adoptReleaseGuard = (guard: ReleaseGuard) => {
     // 某条线路、某个 CDN 节点给了一份比手上旧的状态文件：撤回名单和放量不跟着它退回去（#1157 第 10 条）。
@@ -1638,6 +1650,15 @@ export function createUpdaterService(
       if (probingDownloaded()) {
         // 一样新（多半就是手里这份）、比它旧的都不换。比它新的顶掉它：旧的那份不再装，下面照找到新版本那样落进快照。
         if (!mayReplaceDownloaded() || !isOlderVersion(snapshot.availableVersion ?? '', info.version)) return
+        const shortfall = supersedeShortfall(info)
+        if (shortfall) {
+          try {
+            runtime.diskShortfallSkipped?.(shortfall, info.version)
+          } catch {
+            // 记日志失败不影响留着手里那份。
+          }
+          return
+        }
         const replaced = snapshot.availableVersion
         verifiedPackagePath = null
         try {
@@ -1935,18 +1956,20 @@ export function createUpdaterService(
     return cloneSnapshot(snapshot)
   }
 
-  // 下载前先量一下盘。量不出来就当够：这一步只为省掉注定失败的下载，不能自己
-  // 变成更新下不来的原因。
-  const measureShortfall = async (): Promise<UpdateDiskShortfall | null> => {
+  // 量不出来就是 null，当够：量盘只为省掉注定失败的下载，不能自己变成更新下不来的原因。
+  const readFreeDiskBytes = async (): Promise<number | null> => {
     if (!runtime.readFreeDiskBytes) return null
-    let freeBytes: number | null
     try {
-      freeBytes = await runtime.readFreeDiskBytes()
+      return await runtime.readFreeDiskBytes()
     } catch {
       return null
     }
-    return resolveUpdateDiskShortfall(freeBytes, requiredUpdateDiskBytes(offeredPackageBytes))
   }
+
+  // 下载前先量一下盘。
+  const measureShortfall = async (): Promise<UpdateDiskShortfall | null> => (
+    resolveUpdateDiskShortfall(await readFreeDiskBytes(), requiredUpdateDiskBytes(offeredPackageBytes))
+  )
 
   // 下载停住时快照里一直是停住前那个速度。还在报进度时不动它（免得多发快照）；停了一拍
   // 以上，按「这段时间没进账」重算：10 秒没进账速度就是 0，界面只留「已下载多少」。
@@ -2195,11 +2218,18 @@ export function createUpdaterService(
       // 状态文件刚说手里这一版撤回了，withdrawOffer 已经把它收回：下面照平常那样查一次，换下替它的那一版。
       if (currentPhase() !== 'downloaded') withdrawn = true
       else if (mayReplaceDownloaded()) {
-        client.allowDowngrade = isWithdrawn(runtime.currentVersion)
-        await checkWithFallback(() => undefined)
+        // 查到更新的版本时要当场决定换不换（见 supersedeShortfall），事件处理里等不了量盘，先量好。
+        refreshFreeDiskBytes = await readFreeDiskBytes()
+        if (disposed) return cloneSnapshot(snapshot)
+        if (currentPhase() !== 'downloaded') withdrawn = true
+        else if (mayReplaceDownloaded()) {
+          client.allowDowngrade = isWithdrawn(runtime.currentVersion)
+          await checkWithFallback(() => undefined)
+        }
       }
     } finally {
       refreshingDownloaded = false
+      refreshFreeDiskBytes = null
     }
     return withdrawn ? check() : cloneSnapshot(snapshot)
   }
