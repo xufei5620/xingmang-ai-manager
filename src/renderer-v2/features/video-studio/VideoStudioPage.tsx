@@ -5,11 +5,14 @@ import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, Pag
 import { dollars } from '../../business-common'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { chatModelVendor, chatModelVendors, pickChatGroup, type ChatCatalogEntry, type ChatSite } from '../chat/state'
+import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, videoStudioCaptionPositions, videoStudioCaptionSizes } from './captions'
 import {
   canAddVideoStudioShot,
   isVideoStudioShotBusy,
   isVideoStudioShotDrawing,
   videoStudioAspectNames,
+  videoStudioCaptionPositionNames,
+  videoStudioCaptionSizeNames,
   videoStudioClipSoundNames,
   videoStudioClipSounds,
   videoStudioCommonSeconds,
@@ -163,6 +166,13 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         <Select label="镜头之间" value={settings.transition} disabled={composing} options={videoStudioTransitions.map((transition) => ({ value: transition, label: videoStudioTransitionNames[transition] }))}
           onChange={(event) => { if (isVideoStudioTransition(event.target.value)) studio.changeSettings({ transition: event.target.value }) }} testId="video-transition" />
         <div className="video-studio-switch"><Switch label="结尾淡出" description="最后一秒画面和声音慢慢淡掉" checked={settings.fadeOut} disabled={composing} onChange={(fadeOut) => studio.changeSettings({ fadeOut })} testId="video-fade-out" /></div>
+        {/* 关了「加字幕」就不印字幕，这两项也不用出来。 */}
+        {settings.captions && <>
+          <Select label="字幕大小" value={settings.captionSize} disabled={composing} options={videoStudioCaptionSizes.map((size) => ({ value: size, label: videoStudioCaptionSizeNames[size] }))}
+            onChange={(event) => { if (isVideoStudioCaptionSize(event.target.value)) studio.changeSettings({ captionSize: event.target.value }) }} testId="video-caption-size" />
+          <Select label="字幕位置" value={settings.captionPosition} disabled={composing} options={videoStudioCaptionPositions.map((position) => ({ value: position, label: videoStudioCaptionPositionNames[position] }))}
+            onChange={(event) => { if (isVideoStudioCaptionPosition(event.target.value)) studio.changeSettings({ captionPosition: event.target.value }) }} testId="video-caption-position" />
+        </>}
       </div>
       <MusicRow studio={studio} disabled={composing} />
       <ComposeProgress studio={studio} />

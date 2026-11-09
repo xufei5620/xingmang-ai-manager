@@ -5,6 +5,7 @@ import type { AiChatGroupSummary, AiChatImageInput, AiVideoClip, AiVideoGenerate
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { inspectModel } from '../chat/api'
+import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, type VideoStudioCaptionPosition, type VideoStudioCaptionSize } from './captions'
 import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, normalizeVideoStudioCaption, type VideoStudioAspect, type VideoStudioFit, type VideoStudioResolution, type VideoStudioTransition } from './timeline'
 
 // 视频剪辑页的一份工程：想法、分镜、每个镜头生成好的片段，以及上一次拼好的成片。这里全是纯计算，
@@ -88,6 +89,9 @@ export interface VideoStudioSettings {
   transition: VideoStudioTransition
   /** 成片结尾淡出；缺省不淡。 */
   fadeOut: boolean
+  /** 字幕大小、放哪儿；缺省中号、底部，和加这两项以前印出来的一样。 */
+  captionSize: VideoStudioCaptionSize
+  captionPosition: VideoStudioCaptionPosition
 }
 
 export interface VideoStudioProject {
@@ -115,6 +119,8 @@ const grokDimensions: Readonly<Record<VideoStudioAspect, { width: number, height
 export const videoStudioAspectNames: Readonly<Record<VideoStudioAspect, string>> = { '16:9': '横屏 16:9', '9:16': '竖屏 9:16', '1:1': '方形 1:1' }
 export const videoStudioFitNames: Readonly<Record<VideoStudioFit, string>> = { cover: '裁边铺满', contain: '补黑边' }
 export const videoStudioTransitionNames: Readonly<Record<VideoStudioTransition, string>> = { cut: '直接切', fade: '淡入淡出' }
+export const videoStudioCaptionSizeNames: Readonly<Record<VideoStudioCaptionSize, string>> = { small: '小', medium: '中', large: '大' }
+export const videoStudioCaptionPositionNames: Readonly<Record<VideoStudioCaptionPosition, string>> = { bottom: '底部', middle: '中间', top: '顶部' }
 export const videoStudioClipSounds = ['normal', 'quiet', 'off'] as const satisfies readonly VideoStudioClipSound[]
 export const videoStudioClipSoundNames: Readonly<Record<VideoStudioClipSound, string>> = { normal: '照常', quiet: '调小', off: '关掉' }
 // 两路声音各放多大。照常：人声、现场声在前，歌垫在底下；调小：歌在前，原声留一点；关掉：只剩歌，
@@ -130,7 +136,7 @@ export function createVideoStudioId(): string {
 }
 
 export function defaultVideoStudioSettings(): VideoStudioSettings {
-  return { idea: '', shotCount: 4, secondsPerShot: 6, aspect: '9:16', captions: true, textModel: '', textGroup: '', videoModel: '', videoGroup: '', imageModel: '', imageGroup: '', resolution: 720, fit: 'cover', transition: 'cut', fadeOut: false }
+  return { idea: '', shotCount: 4, secondsPerShot: 6, aspect: '9:16', captions: true, textModel: '', textGroup: '', videoModel: '', videoGroup: '', imageModel: '', imageGroup: '', resolution: 720, fit: 'cover', transition: 'cut', fadeOut: false, captionSize: 'medium', captionPosition: 'bottom' }
 }
 
 export function createVideoStudioProject(settings: VideoStudioSettings = defaultVideoStudioSettings()): VideoStudioProject {
@@ -503,9 +509,9 @@ export function videoStudioComposeSound(project: VideoStudioProject): { music?: 
 
 /** 一次拼片用到的全部东西：哪几段、什么顺序、烧什么字、什么画面、配什么歌。拼完时和工程对不上，说明中途改过，成片不能挂到改过的分镜上。 */
 export function videoStudioComposeKey(project: VideoStudioProject): string {
-  const { aspect, resolution, fit, transition, fadeOut } = project.settings
+  const { aspect, resolution, fit, transition, fadeOut, captionSize, captionPosition } = project.settings
   const sound = project.music ? [project.music.assetId, project.music.clipSound] : []
-  return JSON.stringify([aspect, resolution, fit, transition, fadeOut, project.shots.map((shot) => [shot.clip?.assetId ?? '', shot.trimStart ?? 0, shot.trimEnd ?? 0]), videoStudioComposeCaptions(project), sound])
+  return JSON.stringify([aspect, resolution, fit, transition, fadeOut, captionSize, captionPosition, project.shots.map((shot) => [shot.clip?.assetId ?? '', shot.trimStart ?? 0, shot.trimEnd ?? 0]), videoStudioComposeCaptions(project), sound])
 }
 
 /**
@@ -618,6 +624,8 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     fit: isVideoStudioFit(stored.fit) ? stored.fit : defaults.fit,
     transition: isVideoStudioTransition(stored.transition) ? stored.transition : defaults.transition,
     fadeOut: typeof stored.fadeOut === 'boolean' ? stored.fadeOut : defaults.fadeOut,
+    captionSize: isVideoStudioCaptionSize(stored.captionSize) ? stored.captionSize : defaults.captionSize,
+    captionPosition: isVideoStudioCaptionPosition(stored.captionPosition) ? stored.captionPosition : defaults.captionPosition,
   }
   const ids = new Set<string>()
   const shots: VideoStudioShot[] = []

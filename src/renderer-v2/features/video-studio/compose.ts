@@ -25,7 +25,7 @@ import {
   type InputVideoTrack,
   type WrappedCanvas,
 } from 'mediabunny'
-import { layoutVideoStudioCaption, paintVideoStudioCaption, videoStudioCaptionFont } from './captions'
+import { layoutVideoStudioCaption, paintVideoStudioCaption, videoStudioCaptionFont, type VideoStudioCaptionStyle } from './captions'
 import { videoStudioMusicUnreadableMessage, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult, type VideoStudioComposeStage } from './compose-protocol'
 import { chooseVideoStudioEncoding, type VideoStudioEncodeProbe } from './encoding'
 import { isVideoStudioAbort, throwIfVideoStudioAborted, VideoStudioError } from './errors'
@@ -169,6 +169,7 @@ async function renderSegmentFrames(
   clip: ReadClip,
   segment: VideoStudioSegment,
   plan: VideoStudioRenderPlan,
+  captionStyle: VideoStudioCaptionStyle,
   context: OffscreenCanvasRenderingContext2D,
   source: CanvasSource,
   onFrame: () => void,
@@ -179,7 +180,7 @@ async function renderSegmentFrames(
   // lands upright. Two pooled canvases are enough: each one is drawn onto the
   // output canvas before the next frame is requested.
   const sink = new CanvasSink(clip.video, { width: plan.width, height: plan.height, fit: plan.fit, poolSize: 2 })
-  const caption = segment.caption ? layoutVideoStudioCaption(segment.caption, plan, captionMeasure(context)) : null
+  const caption = segment.caption ? layoutVideoStudioCaption(segment.caption, plan, captionMeasure(context), captionStyle) : null
   const step = 1 / plan.frameRate
   let previous: WrappedCanvas | null = null
   let index = 0
@@ -337,10 +338,11 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
       })
       : null
 
+    const captionStyle = { size: request.options.captionSize, position: request.options.captionPosition }
     let framesDone = 0
     for (const segment of plan.segments) {
       const clip = clips[segment.clipIndex]
-      await renderSegmentFrames(clip, segment, plan, context, videoSource, () => {
+      await renderSegmentFrames(clip, segment, plan, captionStyle, context, videoSource, () => {
         framesDone += 1
         report('rendering', framesDone / plan.frameCount)
       }, signal)

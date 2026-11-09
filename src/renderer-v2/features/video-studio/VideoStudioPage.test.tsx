@@ -170,6 +170,16 @@ describe('VideoStudioPage', () => {
     expect(mixed).not.toContain('每段 6 秒 ·')
   })
 
+  it('offers the caption size and place only while captions are on', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>字幕大小<\/label><select[^>]*data-testid="video-caption-size"[^>]*><option value="small">小<\/option><option value="medium" selected="">中<\/option><option value="large">大<\/option>/)
+    expect(plain).toMatch(/<label[^>]*>字幕位置<\/label><select[^>]*data-testid="video-caption-position"[^>]*><option value="bottom" selected="">底部<\/option><option value="middle">中间<\/option><option value="top">顶部<\/option>/)
+    const off = render('ready', { ...project, settings: { ...project.settings, captions: false } })
+    expect(off).not.toContain('data-testid="video-caption-size"')
+    expect(off).not.toContain('data-testid="video-caption-position"')
+  })
+
   it('offers a straight cut or a fade between shots and a fade at the end, both off by default', () => {
     const plain = render('ready', plannedProject())
     expect(plain).toMatch(/<label[^>]*>镜头之间<\/label><select[^>]*data-testid="video-transition"[^>]*><option value="cut" selected="">直接切<\/option><option value="fade">淡入淡出<\/option>/)

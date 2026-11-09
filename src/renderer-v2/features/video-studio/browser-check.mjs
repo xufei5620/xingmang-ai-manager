@@ -159,6 +159,27 @@ test('dips to black between shots and fades out at the end, picture and sound to
   await page.close()
 })
 
+test('prints the caption at the size and place asked for', async () => {
+  const { page, errors } = await open()
+  const summary = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 25 }
+    const film = async (style) => {
+      const clips = [{ data: await harness.makeClip({ width: 320, height: 240, frameRate: 25, seconds: 1, color: '#0000ff' }), caption: '字幕大小位置' }]
+      const result = await harness.compose({ clips, options: { ...options, ...style } })
+      return (await harness.inspect(result.data, { bright: [{ time: 0.5, top: 0, bottom: 160 }, { time: 0.5, top: 160, bottom: 320 }, { time: 0.5, top: 320, bottom: 480 }] })).bright
+    }
+    return { plain: await film({}), top: await film({ captionPosition: 'top' }), middle: await film({ captionPosition: 'middle' }), small: await film({ captionSize: 'small' }), large: await film({ captionSize: 'large' }) }
+  })
+  assert.deepEqual(errors, [])
+  const [plainTop, plainMiddle, plainBottom] = summary.plain
+  assert.ok(plainBottom > 50 && plainTop === 0 && plainMiddle === 0, `by default the caption sits at the bottom (${summary.plain})`)
+  assert.ok(summary.top[0] > 50 && summary.top[2] === 0, `at the top when asked (${summary.top})`)
+  assert.ok(summary.middle[1] > 50 && summary.middle[0] === 0 && summary.middle[2] === 0, `in the middle when asked (${summary.middle})`)
+  assert.ok(summary.small[2] < plainBottom && plainBottom < summary.large[2], `small, medium and large grow in that order (${summary.small[2]}, ${plainBottom}, ${summary.large[2]})`)
+  await page.close()
+})
+
 test('lays a song under the film, starts it over when it runs out and fades it out at the end', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
@@ -1008,6 +1029,36 @@ test('lets one shot be longer than the rest and asks the video model for each le
   assert.deepEqual((await studioCalls(page, 'generate')).map((input) => input.seconds), ['8', '8', '10'])
   // 出着的时候改不了时长：那一单已经按原来的长短交出去了。
   assert.equal(await page.getByTestId('video-shot-seconds-2').isDisabled(), true)
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 字幕大小、位置：关了「加字幕」就不出这两项；选了以后拼出来跟着变，重开页面还在。
+test('moves the burnt-in captions to the top once chosen, and keeps the choice after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '早安', { title: '早安', shots: [{ prompt: '窗外', caption: '早上好' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  const [request] = await studioCalls(page, 'generate')
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#0000ff'), request.requestId)
+  assert.equal(await page.getByTestId('video-caption-position').inputValue(), 'bottom')
+  assert.equal(await page.getByTestId('video-caption-size').inputValue(), 'medium')
+  await page.getByTestId('video-caption-position').selectOption('top')
+  await page.getByTestId('video-caption-size').selectOption('large')
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const bright = await page.evaluate(async () => (await window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { bright: [{ time: 0.5, top: 0, bottom: 400 }, { time: 0.5, top: 880, bottom: 1280 }] })).bright)
+  assert.ok(bright[0] > 50 && bright[1] === 0, `the caption is printed at the top (${bright})`)
+
+  await page.reload()
+  await page.getByTestId('video-caption-position').waitFor()
+  assert.equal(await page.getByTestId('video-caption-position').inputValue(), 'top')
+  assert.equal(await page.getByTestId('video-caption-size').inputValue(), 'large')
+  // 关了「加字幕」，这两项跟着收起来。
+  await page.getByTestId('video-captions').getByRole('switch').click()
+  assert.equal(await page.getByTestId('video-caption-position').count(), 0)
   assert.deepEqual(errors, [])
   await page.close()
 })
