@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel } from './CodexRemoteCard'
+import { CodexRemoteCard, CodexRemotePanel, codexRemoteConfirmText } from './CodexRemoteCard'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
   return { channel: 'feishu', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null, ...patch }
@@ -101,6 +101,22 @@ describe('codex remote card', () => {
     expect(after).toContain('已登录：ClawBot decb')
     expect(after).toContain('aria-label="退出微信登录"')
     expect(after).toContain('在微信的 ClawBot 对话里发送这 6 位数字。10 分钟内有效。')
+  })
+
+  it('asks before unbinding the person or logging out, and says what has to be redone afterwards', () => {
+    const markup = render(snapshot(
+      { workspaceDirectory: '~/projects/demo' },
+      { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' }, boundPeer: { displayName: '小明', userIdTail: '9f3c', boundAt: 1 } },
+    ))
+    expect(markup).toContain('data-testid="settings-remote-feishu-unbind"')
+    expect(markup).toContain('aria-label="退出飞书登录"')
+    // 框只在点了以后才出来。
+    expect(markup).not.toContain('settings-remote-feishu-confirm')
+    expect(codexRemoteConfirmText.unbind).toEqual({ title: '解绑？', body: '解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', ok: '解绑' })
+    expect(codexRemoteConfirmText.logout.title('飞书')).toBe('退出飞书登录？')
+    expect(codexRemoteConfirmText.logout.title('微信')).toBe('退出微信登录？')
+    expect(codexRemoteConfirmText.logout.body).toBe('退出后要重新填机器人的凭据，才能再用手机遥控。')
+    expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
   })
 
   it('warns when the credentials only last until the manager closes', () => {

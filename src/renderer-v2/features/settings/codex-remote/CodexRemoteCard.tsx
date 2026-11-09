@@ -1,6 +1,6 @@
-import { useCallback, useEffect, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { FolderOpen } from 'lucide-react'
-import { Button, Card, Notice, Pill, SettingRow, Switch } from '../../../ui'
+import { Button, Card, Confirm, Notice, Pill, SettingRow, Switch } from '../../../ui'
 import { ResultNotice, useOperation, useResource } from '../../../business-common'
 import { remoteChannelIds } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
@@ -27,6 +27,15 @@ export const codexRemotePersistenceNotices = {
   unavailable: { tone: 'warn', title: '凭据存不下', body: '这台电脑没法安全保存凭据，手机遥控暂时用不了。' },
 } as const
 
+/**
+ * 「解绑」「退出登录」点了先问一句（0.2.24 D67）：做完那个人立刻用不了，得重新配对或重新登录。
+ * 退出登录那个框的标题带渠道名，跟按钮的读屏名字（退出飞书登录 / 退出微信登录）一样。
+ */
+export const codexRemoteConfirmText = {
+  unbind: { title: '解绑？', body: '解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', ok: '解绑' },
+  logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, body: '退出后要重新填机器人的凭据，才能再用手机遥控。', ok: '退出登录' },
+} as const
+
 function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
   id: RemoteChannelId
   definition: RemoteChannelSectionDefinition
@@ -37,6 +46,14 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
   const { Section } = definition
   const canEnable = channel.hasCredential && Boolean(snapshot.workspaceDirectory)
   const pairing = channel.pairing
+  const [asking, setAsking] = useState<'unbind' | 'logout' | null>(null)
+  // 先关框再做：做不成的原因摆在卡上的红条里，框开着会挡住它。
+  function confirmAsked() {
+    const action = asking
+    setAsking(null)
+    if (action === 'unbind') void run(`${id}-unbind`, () => api.unbindCodexRemotePeer(id))
+    else if (action === 'logout') void run(`${id}-logout`, () => api.clearCodexRemoteCredentials(id))
+  }
   let binding = null
   if (channel.hasCredential && pairing) {
     binding = (
@@ -75,7 +92,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
                 variant="ghost"
                 disabled={Boolean(busy)}
                 loading={busy === `${id}-unbind`}
-                onClick={() => void run(`${id}-unbind`, () => api.unbindCodexRemotePeer(id))}
+                onClick={() => setAsking('unbind')}
                 testId={`settings-remote-${id}-unbind`}
               >
                 解绑
@@ -101,7 +118,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
               variant="ghost"
               disabled={Boolean(busy)}
               loading={busy === `${id}-logout`}
-              onClick={() => void run(`${id}-logout`, () => api.clearCodexRemoteCredentials(id))}
+              onClick={() => setAsking('logout')}
               aria-label={`退出${definition.title}登录`}
               testId={`settings-remote-${id}-logout`}
             >
@@ -129,6 +146,16 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
         testId={`settings-remote-${id}-enable`}
       />
       {binding}
+      <Confirm
+        open={asking !== null}
+        title={asking === 'logout' ? codexRemoteConfirmText.logout.title(definition.title) : codexRemoteConfirmText.unbind.title}
+        body={<p>{asking === 'logout' ? codexRemoteConfirmText.logout.body : codexRemoteConfirmText.unbind.body}</p>}
+        okLabel={asking === 'logout' ? codexRemoteConfirmText.logout.ok : codexRemoteConfirmText.unbind.ok}
+        danger
+        onOk={confirmAsked}
+        onClose={() => setAsking(null)}
+        testId={`settings-remote-${id}-confirm`}
+      />
     </section>
   )
 }
