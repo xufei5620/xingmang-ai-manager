@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, isTransientDownloadFailure, requiredUpdateDiskBytes, resolveDownloadRetryDelay, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadRetryDelaysMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadRetry, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -4497,5 +4497,234 @@ describe('a downloaded version the feed has moved past', () => {
     expect(client.quitAndInstall).toHaveBeenCalledOnce()
     expect(client.downloadUpdate).toHaveBeenCalledOnce()
     service.dispose()
+  })
+})
+
+describe('retrying a background download that did not finish', () => {
+  const MINUTE = 60_000
+  const connectionReset = () => Object.assign(new Error('net::ERR_CONNECTION_RESET'), { code: 'ERR_CONNECTION_RESET' })
+  const disconnected = () => Object.assign(new Error('net::ERR_INTERNET_DISCONNECTED'), { code: 'ERR_INTERNET_DISCONNECTED' })
+  // builder-util-runtime 的 HttpError 长这样：状态码在 statusCode 上。
+  const httpError = (statusCode: number) => Object.assign(new Error(`HTTP error: ${statusCode}`), { name: 'HttpError', statusCode, code: `HTTP_ERROR_${statusCode}` })
+
+  // 更新目录一直列着 1.1.0：feed.checkError 在时检查没查成；下载按 feed.downloads 依次失败，排完了就下好。
+  function serveFlakyFeed(client: FakeUpdater, feed: { checkError?: Error; downloads: Error[] }): void {
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('checking-for-update')
+      if (feed.checkError) {
+        client.emit('error', feed.checkError)
+        throw feed.checkError
+      }
+      client.emit('update-available', updateInfo('1.1.0'))
+      return { isUpdateAvailable: true }
+    })
+    client.downloadUpdate.mockImplementation(async () => {
+      const failure = feed.downloads.shift()
+      if (failure) throw failure
+      client.emit('update-downloaded', updateInfo('1.1.0'))
+    })
+  }
+
+  function flakyService(feed: { checkError?: Error; downloads: Error[] }, runtime: Partial<UpdaterRuntime> = {}) {
+    const client = new FakeUpdater()
+    serveFlakyFeed(client, feed)
+    const retries: UpdateDownloadRetry[] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      downloadRetryScheduled: (retry) => { retries.push(retry) },
+      ...runtime,
+    })
+    return { client, service, retries }
+  }
+
+  it('waits longer before each retry and runs out after a few', () => {
+    expect(updateDownloadRetryDelaysMs).toEqual([5 * MINUTE, 15 * MINUTE, 45 * MINUTE])
+    expect(resolveDownloadRetryDelay(0)).toBe(5 * MINUTE)
+    expect(resolveDownloadRetryDelay(1)).toBe(15 * MINUTE)
+    expect(resolveDownloadRetryDelay(2)).toBe(45 * MINUTE)
+    expect(resolveDownloadRetryDelay(3)).toBeNull()
+    expect(resolveDownloadRetryDelay(-1)).toBeNull()
+    expect(resolveDownloadRetryDelay(0.5)).toBeNull()
+  })
+
+  it('only retries failures that waiting a while can fix', () => {
+    expect(isTransientDownloadFailure(connectionReset())).toBe(true)
+    expect(isTransientDownloadFailure(Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))).toBe(true)
+    expect(isTransientDownloadFailure(new Error('net::ERR_NETWORK_CHANGED'))).toBe(true)
+    expect(isTransientDownloadFailure(new Error('net::ERR_TIMED_OUT'))).toBe(true)
+    expect(isTransientDownloadFailure(disconnected())).toBe(true)
+    expect(isTransientDownloadFailure(httpError(502))).toBe(true)
+    expect(isTransientDownloadFailure(httpError(500))).toBe(true)
+    expect(isTransientDownloadFailure(Object.assign(new Error('download failed'), { cause: httpError(503) }))).toBe(true)
+    // 门户认证、证书、磁盘、权限、更新目录里没有这个包：过几分钟还是一样，留给三小时那次。
+    expect(isTransientDownloadFailure(httpError(404))).toBe(false)
+    expect(isTransientDownloadFailure(httpError(403))).toBe(false)
+    expect(isTransientDownloadFailure(new Error('net::ERR_CERT_AUTHORITY_INVALID'))).toBe(false)
+    expect(isTransientDownloadFailure(new Error('net::ERR_CERT_DATE_INVALID'))).toBe(false)
+    expect(isTransientDownloadFailure(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }))).toBe(false)
+    expect(isTransientDownloadFailure(Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }))).toBe(false)
+    expect(isTransientDownloadFailure(new Error('sha512 checksum mismatch, expected a, got b'))).toBe(false)
+    expect(isTransientDownloadFailure(null)).toBe(false)
+    expect(isTransientDownloadFailure('boom')).toBe(false)
+  })
+
+  it('downloads again a few minutes after the connection drops instead of waiting for the three-hour check', async () => {
+    vi.useFakeTimers()
+    try {
+      const { client, service, retries } = flakyService({ downloads: [connectionReset()] })
+      await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'error', failedStep: 'download', availableVersion: '1.1.0' })
+      expect(retries).toEqual([{ version: '1.1.0', attempt: 1, delayMs: 5 * MINUTE, failedStep: 'download' }])
+
+      await vi.advanceTimersByTimeAsync(5 * MINUTE - 1)
+      expect(client.checkForUpdates).toHaveBeenCalledOnce()
+      await vi.advanceTimersByTimeAsync(1)
+      await vi.waitFor(() => expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null }))
+      expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('backs off between retries and leaves the version to the three-hour check once they run out', async () => {
+    vi.useFakeTimers()
+    try {
+      const feed = { downloads: [connectionReset(), httpError(502), connectionReset(), connectionReset(), connectionReset()] }
+      const { client, service, retries } = flakyService(feed)
+      await service.scheduledCheck()
+      await vi.advanceTimersByTimeAsync(5 * MINUTE)
+      await vi.advanceTimersByTimeAsync(15 * MINUTE)
+      await vi.advanceTimersByTimeAsync(45 * MINUTE)
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(4)
+      expect(retries.map((retry) => [retry.attempt, retry.delayMs])).toEqual([[1, 5 * MINUTE], [2, 15 * MINUTE], [3, 45 * MINUTE]])
+
+      await vi.advanceTimersByTimeAsync(3 * 60 * MINUTE)
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(4)
+      expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'download', availableVersion: '1.1.0' })
+      // 三小时那次还是没下成：这一版的补试已经用完，不再排。
+      await service.scheduledCheck()
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(5)
+      expect(retries).toHaveLength(3)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not retry while auto-update is off or when waiting would not help', async () => {
+    vi.useFakeTimers()
+    try {
+      const cases: Array<{ autoUpdate: boolean; failure: Error }> = [
+        { autoUpdate: false, failure: connectionReset() },
+        { autoUpdate: true, failure: httpError(404) },
+        { autoUpdate: true, failure: Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }) },
+        { autoUpdate: true, failure: new Error('net::ERR_CERT_AUTHORITY_INVALID') },
+      ]
+      for (const { autoUpdate, failure } of cases) {
+        const { client, service, retries } = flakyService({ downloads: [failure] }, { readAutoUpdate: () => autoUpdate })
+        await service.check()
+        await expect(service.download()).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+        await vi.advanceTimersByTimeAsync(60 * MINUTE)
+        expect(client.checkForUpdates).toHaveBeenCalledOnce()
+        expect(retries).toEqual([])
+        service.dispose()
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps retrying when the retry cannot reach the update feed either', async () => {
+    vi.useFakeTimers()
+    try {
+      const feed: { checkError?: Error; downloads: Error[] } = { downloads: [connectionReset()] }
+      const { client, service, retries } = flakyService(feed)
+      await service.scheduledCheck()
+      feed.checkError = disconnected()
+      await vi.advanceTimersByTimeAsync(5 * MINUTE)
+      expect(service.getState()).toMatchObject({ phase: 'error', failedStep: 'check', availableVersion: '1.1.0' })
+      expect(retries.at(-1)).toEqual({ version: '1.1.0', attempt: 2, delayMs: 15 * MINUTE, failedStep: 'check' })
+
+      // 网回来了：下一次补试照常查到、下好。
+      delete feed.checkError
+      await vi.advanceTimersByTimeAsync(15 * MINUTE)
+      await vi.waitFor(() => expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' }))
+      expect(client.checkForUpdates).toHaveBeenCalledTimes(3)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not start retrying over a failed check alone, and a download the user starts meanwhile does not use one up', async () => {
+    vi.useFakeTimers()
+    try {
+      const feed: { checkError?: Error; downloads: Error[] } = { checkError: disconnected(), downloads: [connectionReset(), connectionReset()] }
+      const { client, service, retries } = flakyService(feed)
+      // 只是三小时那次没查成：照旧等下一轮。
+      await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'error', failedStep: 'check' })
+      await vi.advanceTimersByTimeAsync(60 * MINUTE)
+      expect(client.checkForUpdates).toHaveBeenCalledOnce()
+      expect(retries).toEqual([])
+
+      delete feed.checkError
+      await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+      expect(retries).toHaveLength(1)
+      // 排着补试时客户自己点了「重新下载」，又没下成：还是排着的那一次，不另排、不多算。
+      await vi.advanceTimersByTimeAsync(MINUTE)
+      await service.check()
+      await expect(service.download()).resolves.toMatchObject({ phase: 'error', failedStep: 'download' })
+      expect(retries).toHaveLength(1)
+
+      await vi.advanceTimersByTimeAsync(4 * MINUTE)
+      await vi.waitFor(() => expect(service.getState()).toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' }))
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(3)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops a pending retry once the user got the version down, the package failed its check, or the updater shut down', async () => {
+    vi.useFakeTimers()
+    try {
+      // 客户自己下好了：到点时已经不是那次失败的局面，不再查。
+      const fixed = flakyService({ downloads: [connectionReset()] })
+      await fixed.service.scheduledCheck()
+      await fixed.service.check()
+      await expect(fixed.service.download()).resolves.toMatchObject({ phase: 'downloaded' })
+      await vi.advanceTimersByTimeAsync(60 * MINUTE)
+      expect(fixed.client.checkForUpdates).toHaveBeenCalledTimes(2)
+      fixed.service.dispose()
+
+      // 下好了却核对不过：不是网络的事，排着的那次也取消。
+      const downloadedFile = '/cache/XingMang-AI-Manager-1.1.0-Setup.exe'
+      const rejected = flakyService({ downloads: [connectionReset()] }, { verifyPackageDigest: async () => false })
+      await rejected.service.scheduledCheck()
+      rejected.client.downloadUpdate.mockImplementationOnce(async () => {
+        rejected.client.emit('update-downloaded', {
+          ...updateInfo('1.1.0'),
+          files: [{ url: 'XingMang-AI-Manager-1.1.0-Setup.exe', sha512: 'manifest-digest', size: 42 }],
+          downloadedFile,
+        })
+      })
+      await rejected.service.check()
+      await rejected.service.download()
+      await vi.waitFor(() => expect(rejected.service.getState()).toMatchObject({ phase: 'error', error: { code: 'UPDATE_PACKAGE_DIGEST_MISMATCH' } }))
+      await vi.advanceTimersByTimeAsync(60 * MINUTE)
+      expect(rejected.client.checkForUpdates).toHaveBeenCalledTimes(2)
+      rejected.service.dispose()
+
+      const closed = flakyService({ downloads: [connectionReset()] })
+      await closed.service.scheduledCheck()
+      closed.service.dispose()
+      await vi.advanceTimersByTimeAsync(60 * MINUTE)
+      expect(closed.client.checkForUpdates).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
