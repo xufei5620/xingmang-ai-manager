@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { videoStudioAspectNames, videoStudioClipSoundNames, videoStudioTransitionNames } from '../features/video-studio/project';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -141,6 +142,16 @@ describe('tutorial wording that follows the current app', () => {
     expect(JSON.stringify(tutorialTopics)).not.toContain('Gemini CLI');
     for (const topic of tutorialTopics) expect(topic.keywords).not.toContain('Gemini');
     expect(JSON.stringify(tutorialTopicsFor('linux'))).not.toContain('Gemini CLI');
+  });
+
+  // 视频剪辑一章（清单第 11 项）：每个按钮都落到视频剪辑页；下拉里的选项名取自页面用的那份，页面按钮名由 VideoStudioPage.test.tsx 核对。
+  it('teaches the video studio on its own page with the choices the page offers', () => {
+    const video = tutorialTopics.find((topic) => topic.id === 'video');
+    expect(video?.category).toBe('tools');
+    for (const entry of video?.steps ?? []) expect(entry.page, entry.action).toBe('video');
+    const text = JSON.stringify(video);
+    for (const name of [videoStudioTransitionNames.fade, ...Object.values(videoStudioClipSoundNames), ...Object.values(videoStudioAspectNames).map((label) => label.split(' ')[0])]) expect(text).toContain(name);
+    for (const os of ['win', 'mac', 'linux'] as const) expect(tutorialTopicsFor(os).map((topic) => topic.id)).toContain('video');
   });
 
   it('keeps npm and the bare word CLI out of what customers read', () => {
