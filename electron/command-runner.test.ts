@@ -130,6 +130,29 @@ describe('secure command runner', () => {
     })
   })
 
+  it('still ends a hung command at its timeout when only awake time counts', async () => {
+    // 睡眠深查 G1：装工具的长命令只算醒着的时间，可醒着时该停照样停。
+    const execution = runCommand(nodeCommand('setInterval(() => {}, 1_000)'), {
+      timeoutMs: 40,
+      timeoutExcludesSleep: true,
+      killGraceMs: 20,
+    })
+
+    await expect(execution).rejects.toMatchObject({
+      name: 'CommandRunnerError',
+      code: 'TIMED_OUT',
+      message: expect.stringContaining('命令执行时间过长，已中止：'),
+    })
+  })
+
+  it('lets a command that finishes in time succeed when only awake time counts', async () => {
+    const result = await runCommand(nodeCommand("process.stdout.write('done')"), {
+      timeoutMs: 10_000,
+      timeoutExcludesSleep: true,
+    })
+    expect(result.stdout).toBe('done')
+  })
+
   it('settles after exit even when inherited stdio pipes stay open', async () => {
     const script = [
       "const { spawn } = require('node:child_process')",

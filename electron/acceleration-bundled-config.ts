@@ -57,9 +57,10 @@ export async function readBundledAccelerationConfig(options: {
     if (Object.keys(expected).some(key => manifest[key] !== expected[key])) throw new Error(invalidBundle)
     // Names are exact constants, not general relative paths. A manifest cannot
     // point outside the installed resources or select a user-data config.
-    // Each file is hashed in chunks rather than read whole: this runs on every
-    // launch, and the core alone is tens of megabytes. Never return any node
-    // contents through this config object.
+    // Each file is hashed in chunks rather than read whole: the core alone is
+    // tens of megabytes. Startup no longer runs this unless a crash left a proxy
+    // to restore (bootstrap/acceleration.ts), but every caller still pays the
+    // full check. Never return any node contents through this config object.
     for (const resource of resourceDefinitions(options.platform)) {
       const filePath = path.join(directory, resource.name)
       if (!assertSafeDataFile(filePath, resource.label)) throw new Error(invalidBundle)
