@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { platformCapabilitiesFor } from '../../../../electron/platform-capabilities'
-import { cliInstallStageLabel, cliNeedsNodeRuntime, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, runtimeStageFailureMessage } from './runtime-readiness'
+import { cliInstallStageLabel, cliNeedsNodeRuntime, cliRuntimeBlockMessage, nodeRuntimeReady, planCliInstall, prepareSharedRuntime, runtimeStageFailureMessage } from './runtime-readiness'
 
 const base = { installed: true, version: '1.0.0', path: null, installDirectory: null }
 
@@ -119,5 +119,62 @@ describe('install stage wording', () => {
     const rejected = new Error("Error invoking remote method 'runtime:install-node': Error: Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。")
     expect(runtimeStageFailureMessage('node', 'Claude Code', rejected))
       .toBe('Node.js 运行环境没装上，Claude Code 还没开始安装。Node.js 自动安装失败：下载安装包时网络不通。检查网络后再点「重试」。')
+  })
+})
+
+describe('prepareSharedRuntime', () => {
+  // 同首页 toolbox.run：一把按运行环境记的锁，占着时直接回 false。
+  function lockedRunner() {
+    let held = false
+    return async (work: () => Promise<void>) => {
+      if (held) return false
+      held = true
+      try { await work() } finally { held = false }
+      return true
+    }
+  }
+
+  it('runs the preparation itself when the runtime is free', async () => {
+    const prepare = vi.fn(async () => 'installed')
+    await expect(prepareSharedRuntime(lockedRunner(), prepare)).resolves.toBe('installed')
+    expect(prepare).toHaveBeenCalledTimes(1)
+  })
+
+  it('waits for the install already running instead of failing the second tool (BF3)', async () => {
+    // 主进程按 runtime:node 一个键排队：装完之前再要一次，拿到的是同一次安装。
+    let finish!: (value: string) => void
+    let inFlight: Promise<string> | null = null
+    const installs: number[] = []
+    function prepare() {
+      inFlight ??= new Promise<string>((resolve) => { installs.push(1); finish = resolve })
+      return inFlight
+    }
+    const claim = lockedRunner()
+    const first = prepareSharedRuntime(claim, prepare)
+    const second = prepareSharedRuntime(claim, prepare)
+    let secondSettled = false
+    void second.then(() => { secondSettled = true }, () => { secondSettled = true })
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(secondSettled).toBe(false)
+    finish('installed')
+    await expect(first).resolves.toBe('installed')
+    await expect(second).resolves.toBe('installed')
+    expect(installs).toHaveLength(1)
+  })
+
+  it('hands the shared install failure to the waiting tool too', async () => {
+    let fail!: (error: Error) => void
+    let inFlight: Promise<string> | null = null
+    function prepare() {
+      inFlight ??= new Promise<string>((_resolve, reject) => { fail = reject })
+      return inFlight
+    }
+    const claim = lockedRunner()
+    const first = prepareSharedRuntime(claim, prepare)
+    const second = prepareSharedRuntime(claim, prepare)
+    fail(new Error('下载 Node.js 时 ETIMEDOUT'))
+    await expect(first).rejects.toThrow('ETIMEDOUT')
+    await expect(second).rejects.toThrow('ETIMEDOUT')
   })
 })

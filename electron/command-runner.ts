@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
 import { promisify } from 'node:util'
+import { createAwakeDeadline, type AwakeDeadline } from './awake-deadline'
 import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { isLinuxForeignWritablePath } from './linux-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
@@ -55,6 +56,13 @@ export interface RunCommandOptions {
   cwd?: string
   env?: NodeJS.ProcessEnv
   timeoutMs?: number
+  /**
+   * Count only the time this computer was awake toward timeoutMs (awake-deadline.ts). On
+   * macOS and Windows a plain timer runs on through sleep and fires the moment the machine
+   * wakes, so a long install interrupted by closing the lid would be ended on wake for time
+   * it never had. Off by default: a short probe keeps its exact timer.
+   */
+  timeoutExcludesSleep?: boolean
   maxOutputBytes?: number
   signal?: AbortSignal
   killSignal?: NodeJS.Signals
@@ -1304,6 +1312,7 @@ export async function runCommand(
     let outputBytes = 0
     let forcedCode: CommandErrorCode | null = null
     let timeout: NodeJS.Timeout | undefined
+    let awakeTimeout: AwakeDeadline | undefined
     let hardKill: NodeJS.Timeout | undefined
     let exitSettleTimer: NodeJS.Timeout | undefined
     let settled = false
@@ -1320,6 +1329,7 @@ export async function runCommand(
 
     const cleanup = () => {
       if (timeout) clearTimeout(timeout)
+      awakeTimeout?.stop()
       if (hardKill) clearTimeout(hardKill)
       if (exitSettleTimer) clearTimeout(exitSettleTimer)
       stdoutDecoder.end()
@@ -1464,7 +1474,9 @@ export async function runCommand(
 
     options.signal?.addEventListener('abort', abort, { once: true })
     if (options.signal?.aborted) abort()
-    if (timeoutMs > 0) {
+    if (timeoutMs > 0 && options.timeoutExcludesSleep) {
+      awakeTimeout = createAwakeDeadline({ ceilingMs: timeoutMs }, () => stop('TIMED_OUT'))
+    } else if (timeoutMs > 0) {
       timeout = setTimeout(() => stop('TIMED_OUT'), timeoutMs)
       timeout.unref()
     }

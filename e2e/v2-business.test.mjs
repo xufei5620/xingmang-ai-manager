@@ -1188,6 +1188,45 @@ test('refreshing key groups preserves the draft and requires a new choice when t
   } finally { await page.close() }
 })
 
+// 站点按 UTF-8 字节数限名称 50，一个汉字 3 个字节：中文名字打到 16 个字就打不进去，跟英文打满 50 个字母一样，
+// 不再等点了保存才被站点拒（ZW-1）。
+test('a Chinese key name stops at 16 characters, the 50 bytes the server counts, instead of being refused on save', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-1').waitFor()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
+    await page.getByTestId('account-key-add').click()
+    const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
+    await keyGroupChoice(page, 'group-A').and(page.locator('[aria-pressed="true"]')).waitFor()
+    const name = dialog.getByLabel('名称', { exact: true })
+    await name.fill('星芒'.repeat(9))
+    assert.equal(await name.inputValue(), '星芒'.repeat(8))
+    await name.press('End')
+    await page.keyboard.type('abc')
+    assert.equal(await name.inputValue(), `${'星芒'.repeat(8)}ab`)
+    // A character typed into the middle of a full name is refused and the caret stays put.
+    await name.press('Home')
+    await name.press('ArrowRight')
+    await page.keyboard.type('x')
+    assert.equal(await name.inputValue(), `${'星芒'.repeat(8)}ab`)
+    await page.waitForFunction(() => document.activeElement instanceof HTMLInputElement && document.activeElement.selectionStart === 1)
+    // Pinyin still being composed does not count; the characters picked are cut to what fits.
+    await name.fill('星'.repeat(15))
+    await name.press('End')
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Input.imeSetComposition', { text: 'xingmang', selectionStart: 8, selectionEnd: 8 })
+    assert.equal(await name.inputValue(), `${'星'.repeat(15)}xingmang`)
+    await cdp.send('Input.insertText', { text: '星芒' })
+    await page.waitForFunction(() => document.activeElement instanceof HTMLInputElement && document.activeElement.value.length === 16)
+    assert.equal(await name.inputValue(), '星'.repeat(16))
+    await dialog.getByRole('button', { name: '创建密钥', exact: true }).click()
+    await page.getByTestId('account-key-created').waitFor()
+    const args = (await calls(page)).find((call) => call.name === 'create-key').args
+    assert.equal(args.name, '星'.repeat(16))
+  } finally { await page.close() }
+})
+
 test('pending or failed key group requests block saves and can be retried without clearing inputs', async () => {
   const page = await fixture('page=account')
   try {
