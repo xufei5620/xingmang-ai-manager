@@ -23,7 +23,7 @@ import { shouldVerifyUpdateSignature, verifyUpdateEntrySignature } from '../upda
 import { createUpdateRequestGuard } from '../update-request-guard'
 import { buildUpdateDownloadMeasureLog } from '../update-state-log'
 import { installStrictUpdateCodeSignatureVerifier } from '../update-signature'
-import { createUpdaterService } from '../updater'
+import { createSharedDirectRetry, createUpdaterService } from '../updater'
 import type { NetworkRoutes } from './network-routes'
 
 export interface UpdateFeedOptions {
@@ -104,6 +104,10 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
     // （见 update-request-guard.ts）。httpExecutor 没写进 electron-updater 对外的类型，只能这样取；
     // 取不到就只剩取消令牌。
     const updateRequests = createUpdateRequestGuard(Reflect.get(autoUpdater, 'httpExecutor'))
+    // Bypassing the proxy is a per-request escape hatch for the update check, the download and the service
+    // status file alike (PX-1), so the updater session goes back to the default resolution as soon as the
+    // last retry is over. 'system' is the mode a freshly created session already has.
+    const updateSessionDirectRetry = createSharedDirectRetry((mode) => autoUpdater.netSession.setProxy({ mode }))
     const updaterService = createUpdaterService(autoUpdater, {
       installMethod: updateInstallMethod,
       openSystemInstaller: updateInstallMethod === 'system-installer'
@@ -228,15 +232,8 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       prepareInstallQuit: () => updateQuitHandoff()?.prepare(),
       installQuitAborted: () => { updateQuitHandoff()?.abort() },
       reportBackgroundError: (error) => runtimeLog.exception('updater', 'download.background.failed', error),
-      retryWithoutProxy: async () => {
-        await autoUpdater.netSession.setProxy({ mode: 'direct' })
-      },
-      // Bypassing the proxy is a per-request escape hatch, so the updater
-      // session goes back to the default resolution as soon as the request is
-      // over. 'system' is the mode a freshly created session already has.
-      restoreProxy: async () => {
-        await autoUpdater.netSession.setProxy({ mode: 'system' })
-      },
+      retryWithoutProxy: updateSessionDirectRetry.retryWithoutProxy,
+      restoreProxy: updateSessionDirectRetry.restoreProxy,
       feedRoute: directUpdateFeed
         ? {
             prepare: () => useUpdateFeedLine(currentUpdateFeedLine()),
@@ -267,9 +264,12 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
     const serviceStatusMonitor = serviceStatusUrl
       ? createServiceStatusMonitor({
         // 状态文件和更新目录在一起：更新走直连那份时，状态文件也读直连上的那份。
+        // 系统代理指着已经关掉的代理软件时也照检查更新那样改直连再读一次：强制更新、撤回名单、远程开关都在这份文件里。
         read: () => readServiceStatus({
           url: directUpdateFeed && updateFeedLine === 'direct' ? directUpdateFeed.serviceStatusUrl : serviceStatusUrl,
           fetch: chromiumSessionFetch(autoUpdater.netSession),
+          retryWithoutProxy: updateSessionDirectRetry.retryWithoutProxy,
+          restoreProxy: updateSessionDirectRetry.restoreProxy,
         }),
         onChange: (status) => {
           updaterService.setServiceStatus(status)
