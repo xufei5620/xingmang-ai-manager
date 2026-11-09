@@ -11,6 +11,7 @@ import {
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
   type SaveDialogOptions,
+  type WebContents,
 } from 'electron'
 import {
   canvasPackagedBaseUrl,
@@ -166,6 +167,8 @@ export interface CanvasWindowControllerOptions {
   projectAssets?: CanvasProjectAssetManager
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
+  /** How long quitting waits for the canvas page to answer at all before treating it as hung. Defaults to 4 seconds. */
+  quitResponseTimeoutMs?: number
   /** Test seam; production starts a probe renderer on Linux and answers sandboxed elsewhere. */
   inspectRendererSandbox?: () => Promise<LinuxRendererSandboxVerdict>
 }
@@ -180,10 +183,36 @@ export interface CanvasWindowController {
   setAccountUser(userId: number | null): void
   /** Resolves only after renderer confirmation and the native closed event. */
   requestClose(): Promise<boolean>
+  /**
+   * requestClose() for quitting the app: a canvas page that does not answer at
+   * all is destroyed and counts as closed, so a hung canvas cannot hold the quit.
+   */
+  requestCloseForQuit(): Promise<boolean>
   /** Closes the canvas window if one is open; a no-op otherwise. */
   closeIfOpen(): void
   /** Removes every IPC handler this controller registered. */
   dispose(): void
+}
+
+/**
+ * Whether the page in `contents` still runs script. A page stuck in a loop
+ * neither answers nor fails, so the timer decides; a page that answers with an
+ * error is still alive and keeps the normal close handshake.
+ */
+export function canvasRendererAnswers(contents: Pick<WebContents, 'executeJavaScript'>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs)
+    function answered(): void {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    try {
+      contents.executeJavaScript('1').then(answered, answered)
+    } catch {
+      // Thrown synchronously: the contents are gone, which requestClose() handles.
+      answered()
+    }
+  })
 }
 
 function senderUrlOf(event: IpcMainInvokeEvent): string {
@@ -392,6 +421,27 @@ export function createCanvasWindowController(
       finishPendingClose(false, error instanceof Error ? error.message : '画布关闭请求发送失败')
     }
     return promise
+  }
+
+  // 退出软件时先看画布页面还回不回话。卡死但没崩的画布不会触发 render-process-gone，rendererReady 还是 true，
+  // 关闭请求发过去没人回，要白等 60 秒再按取消算，软件就退不掉了（退出改成先关画布之前，这种画布至少能随软件直接销毁）。
+  // 没回话就跟上面处理失效画布一样直接销毁、照常退出；回了话就照常走关闭确认，正弹着「还有进行中的任务」的框也一直等用户点。
+  async function requestCloseForQuit(): Promise<boolean> {
+    const window = canvasWindow
+    if (pendingClose || disposed || !window || window.isDestroyed() || rendererUnavailable || !rendererReady || window.webContents.isDestroyed()) {
+      return requestClose()
+    }
+    const requestedTimeout = options.quitResponseTimeoutMs ?? 4_000
+    const timeout = Number.isFinite(requestedTimeout) ? Math.max(100, Math.min(requestedTimeout, 30_000)) : 4_000
+    if (await canvasRendererAnswers(window.webContents, timeout)) return requestClose()
+    if (window.isDestroyed()) return true
+    options.runtimeLog.log('warn', 'canvas', 'close.unresponsive', '画布没响应，退出时直接关掉', { waitedMs: timeout })
+    try { window.destroy() } catch (error) {
+      options.runtimeLog.log('warn', 'canvas', 'close.unresponsive-destroy-failed', '没响应的画布窗口无法销毁', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+    return true
   }
 
   function activeProjectId(ownerId: number, userId: number): string | undefined {
@@ -1339,6 +1389,7 @@ export function createCanvasWindowController(
     },
     setAccountUser,
     requestClose,
+    requestCloseForQuit,
     closeIfOpen() {
       void requestClose()
     },
