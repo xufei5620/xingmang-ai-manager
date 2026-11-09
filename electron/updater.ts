@@ -1,6 +1,6 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { isChineseSentence } from './chinese-sentence'
-import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { RemoteFeatureId } from './remote-features'
 import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
@@ -311,6 +311,16 @@ export interface UpdateFeedRouting {
   fallBack(error: unknown): boolean
 }
 
+/** 排好的一次下载补试，见 UpdaterRuntime.downloadRetryScheduled。*/
+export interface UpdateDownloadRetry {
+  version: string
+  /** 这是第几次补试，从 1 数。*/
+  attempt: number
+  delayMs: number
+  /** 这一次没成在哪一步：补试里那次检查没查成的是 check。*/
+  failedStep: 'check' | 'download'
+}
+
 export interface UpdaterRuntime {
   currentVersion: string
   isPackaged: boolean
@@ -465,6 +475,8 @@ export interface UpdaterRuntime {
   downloadReceivedBytes?: () => number | null
   /** 一个版本下好了（不论随后核对过没过）。宿主拿去记一条日志，见 UpdateDownloadMeasure。*/
   downloadMeasured?: (measure: UpdateDownloadMeasure) => void
+  /** 后台下载没下成，排好了一次补试（见 updateDownloadRetryDelaysMs）。宿主拿去记一条日志。*/
+  downloadRetryScheduled?: (retry: UpdateDownloadRetry) => void
   /**
    * 手里下好的那一版被更新目录上更新的一版顶掉了（见 refreshDownloaded）：旧的那份不再装，阶段回到
    * 「有新版本」，接着下新的。宿主拿去记一条日志。
@@ -669,6 +681,45 @@ class UpdateDownloadAborted extends Error {
  */
 function isDownloadCancellation(error: unknown): boolean {
   return error instanceof UpdateDownloadAborted || (error instanceof Error && error.message === 'cancelled')
+}
+
+/**
+ * 后台下载没下成以后，隔多久自己再试一次（深查 Z-3）。以前只有停住、代理连不上这两种当场重下一次，
+ * 别的失败（连接被重置、更新服务器回 5xx、换了网络）都要等三小时那次定时检查从头再下，网络不稳的
+ * 客户可能一天都下不完一次。一次比一次隔得久，同一个版本最多补这几次，再不行回到三小时那一轮：
+ * 网一直不通时，不能每隔几分钟拉一次一两百 MB 的安装包。
+ */
+export const updateDownloadRetryDelaysMs: readonly number[] = [5 * 60_000, 15 * 60_000, 45 * 60_000]
+
+/** 已经补过 attempts 次以后，下一次补试要等多久；次数用完返回 null。*/
+export function resolveDownloadRetryDelay(attempts: number): number | null {
+  if (!Number.isInteger(attempts) || attempts < 0) return null
+  return updateDownloadRetryDelaysMs[attempts] ?? null
+}
+
+// electron-updater 的 HttpError 把状态码放在 statusCode 上，外面可能还包着一两层。
+function httpStatusOf(error: unknown): number | null {
+  let candidate: unknown = error
+  for (let depth = 0; depth < 4 && candidate !== null && typeof candidate === 'object'; depth += 1) {
+    const status = (candidate as { statusCode?: unknown }).statusCode
+    if (typeof status === 'number' && Number.isInteger(status)) return status
+    candidate = (candidate as { cause?: unknown }).cause
+  }
+  return null
+}
+
+/**
+ * 这次没下成，过一会儿再试有没有用。网络那头的事（断网、解析不出、连接被重置、超时、代理连不上、
+ * 要先过门户认证、更新服务器暂时不可用）和看门狗停掉的那次都算。证书被换掉、本机时间不准要客户
+ * 自己处理，磁盘满了、文件被占着、更新目录里没有这个包也一样，过几分钟还是这样，不补试，照旧等
+ * 三小时那次。下好以后核对不过不走这里（见 rejectDownloadedUpdate）。
+ */
+export function isTransientDownloadFailure(error: unknown): boolean {
+  if (error instanceof UpdateDownloadStalled || error instanceof UpdateCheckAborted) return true
+  const reason = classifyNetworkFailure(error)
+  if (reason) return reason !== 'tls' && reason !== 'certDate'
+  const status = httpStatusOf(error)
+  return status !== null && isServiceUnavailableResponse({ status, json: false })
 }
 
 /** 只比 x.y.z；比不出来（版本号写法不认识）按「不更旧」处理。 */
@@ -1081,6 +1132,10 @@ export function createUpdaterService(
   let latestCheck = 0
   // 正在拿手里下好的那一版跟更新目录对一对（见 refreshDownloaded）。
   let refreshingDownloaded = false
+  // 后台下载没下成以后的补试（见 scheduleDownloadRetry）：version 是这一串补试在下的版本，attempts 是
+  // 已经排过几次。换了版本从头数，下好了清掉。
+  let downloadRetry: { version: string; attempts: number } | null = null
+  let downloadRetryTimer: NodeJS.Timeout | null = null
   // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
   // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
   const abandonedDownloads = new Set<Promise<unknown>>()
@@ -1303,6 +1358,43 @@ export function createUpdaterService(
     installWatchdogTimer = null
   }
 
+  const clearDownloadRetry = () => {
+    if (downloadRetryTimer) clearTimeout(downloadRetryTimer)
+    downloadRetryTimer = null
+    downloadRetry = null
+  }
+
+  // 后台下载没下成、自动更新开着、失败的又是网络那头的事：隔一会儿自己再查一次、再下一次，不等三小时（深查 Z-3）。
+  // 补试里那次检查没查成照样接着排；别的检查没查成不在这里起头，那是三小时那一轮自己的事。已经排着一次的不再排，
+  // 客户自己点重新下载、三小时那次碰巧在这中间失败，都不多用掉一次补试。
+  const scheduleDownloadRetry = (error: unknown, failedStep: 'check' | 'download') => {
+    const version = snapshot.availableVersion
+    if (disposed || downloadRetryTimer || !version || snapshot.phase !== 'error' || !autoDownload()) return
+    if (failedStep === 'check' && downloadRetry?.version !== version) return
+    if (!isTransientDownloadFailure(error)) return
+    const attempts = downloadRetry?.version === version ? downloadRetry.attempts : 0
+    const delayMs = resolveDownloadRetryDelay(attempts)
+    if (delayMs === null) return
+    downloadRetry = { version, attempts: attempts + 1 }
+    downloadRetryTimer = setTimeout(runDownloadRetry, delayMs)
+    downloadRetryTimer.unref?.()
+    try {
+      runtime.downloadRetryScheduled?.({ version, attempt: attempts + 1, delayMs, failedStep })
+    } catch {
+      // 记日志失败不影响排好的这次补试。
+    }
+  }
+
+  // 到点时还是那次失败的局面才动手：这段时间里客户自己点过重新下载、三小时那次接着查过下过、版本被撤回、
+  // 自动更新关了，都不再插手。走的是和三小时那次一样的路：先对一次更新目录（撤回、放量、线路照旧过一遍），
+  // 有可下的再下。
+  function runDownloadRetry(): void {
+    downloadRetryTimer = null
+    if (disposed || snapshot.phase !== 'error' || !autoDownload()) return
+    if (!downloadRetry || snapshot.availableVersion !== downloadRetry.version) return
+    void scheduledCheck().catch((error: unknown) => runtime.reportBackgroundError?.(error))
+  }
+
   const reportInstallFailure = (error: unknown) => {
     clearInstallWatchdog()
     installRequested = false
@@ -1426,6 +1518,7 @@ export function createUpdaterService(
   // 都写着安装由你确认。「自动更新」开着时也不在这里装，而是由主进程等到用户退出、
   // 或下次一打开时再装（auto-update-install.ts），同样不打断正在用的人。
   const acceptDownloadedUpdate = (info: UpdateInfo) => {
+    clearDownloadRetry()
     // 下载途中被撤回的版本：下好了也不留，免得用户一点「重启安装」装上它。
     if (isWithdrawn(info.version)) {
       withdrawOffer()
@@ -1443,6 +1536,8 @@ export function createUpdaterService(
     clearInstallWatchdog()
     installRequested = false
     verifiedPackagePath = null
+    // 核对不过不是网络的事，排着的补试也不再跑：同一次运行里再下多半拿回的还是这一份。
+    clearDownloadRetry()
     emit({
       phase: 'error',
       checkedAt: now().toISOString(),
@@ -1777,6 +1872,7 @@ export function createUpdaterService(
       failedStep: 'check',
       progress: null,
     })
+    scheduleDownloadRetry(error, 'check')
   }
 
   const check = async (options: UpdateCheckOptions = {}): Promise<UpdateSnapshot> => {
@@ -2056,9 +2152,11 @@ export function createUpdaterService(
         } catch (retryError) {
           if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)
           emit({ phase: 'error', error: downloadFailure(retryError), failedStep: 'download', progress: null })
+          scheduleDownloadRetry(retryError, 'download')
         }
       } else {
         emit({ phase: 'error', error: downloadFailure(error), failedStep: 'download', progress: null })
+        scheduleDownloadRetry(error, 'download')
       }
     }
     return cloneSnapshot(snapshot)
@@ -2205,6 +2303,7 @@ export function createUpdaterService(
       disposed = true
       listeners.clear()
       clearInstallWatchdog()
+      clearDownloadRetry()
       downloadWatch?.stop()
       checkWatch?.stop()
       for (const [event, handler] of Object.entries(eventHandlers)) {
