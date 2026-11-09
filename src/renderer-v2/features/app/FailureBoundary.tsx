@@ -1,12 +1,13 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import type { XingmangApi } from '../../../../electron/ipc-contract'
 import { Splash } from '../auth/Splash'
+import { buildFailureBoundaryReport } from './failure-report'
 
 export class FailureBoundary extends Component<{ native: XingmangApi; children: ReactNode }, { failed: boolean }> {
   state = { failed: false }
   static getDerivedStateFromError() { return { failed: true } }
   componentDidCatch(error: Error, info: ErrorInfo) {
-    void this.props.native.reportRendererError({ message: error.message.slice(0, 2000), stack: error.stack?.slice(0, 6000), context: `renderer-v2 ${info.componentStack?.slice(0, 1500) ?? ''}` }).catch(() => undefined)
+    void this.props.native.reportRendererError(buildFailureBoundaryReport(error, info.componentStack)).catch(() => undefined)
   }
   render() {
     return this.state.failed
