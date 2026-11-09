@@ -7,7 +7,6 @@ export const canvasHostChannels = {
   saveFile: 'canvas-host:save-file',
   pickFile: 'canvas-host:pick-file',
   notify: 'canvas-host:notify',
-  openExternal: 'canvas-host:open-external',
   listGroups: 'canvas-host:list-groups',
   prepareGroup: 'canvas-host:prepare-group',
   generateImage: 'canvas-host:generate-image',
