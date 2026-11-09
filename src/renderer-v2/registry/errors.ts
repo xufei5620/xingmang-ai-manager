@@ -7,7 +7,7 @@ export const errors = {
   tooManyRequests: { title: '请求太频繁', body: '稍等几秒再试', actions: ['重试'] },
   server: { title: '星芒服务器暂时出错', body: '已装好的工具照常能用', actions: ['重试', '看状态'] },
   serviceUnavailable: { title: '服务暂时不可用', body: '维护或线路繁忙，你这边不用做任何改动，稍后再试就行。', actions: ['重试'] },
-  timeout: { title: '网络连不上', body: '已装好的工具照常能用', actions: ['重试', '检查网络'] },
+  timeout: { title: '网络连不上', body: '已装好的工具不受影响。检查网络后再点「重试」。', actions: ['重试', '检查网络'] },
   toolRunning: { title: '工具正在运行', body: '文件被占用。先关掉正在使用这个工具的窗口，再重试。', actions: ['重试', '查看日志'] },
   installBlocked: { title: '安装被杀毒软件拦住了', body: '请检查隔离记录，并把安装目录加入信任。', actions: ['复制路径', '重试'] },
   downloadTimeout: { title: '下载超时', body: '下载没有完成，已安装的工具不受影响。', actions: ['重试', '检查网络'] },
