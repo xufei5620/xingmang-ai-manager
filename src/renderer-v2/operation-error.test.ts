@@ -195,7 +195,7 @@ describe('renderer-v2 operation error classification', () => {
       '原密码错误，请重新输入',
       '该账号已被封禁，请联系客服',
       '用户名或密码错误',
-      '当前账号未设置密码，请先通过“找回密码”设置密码',
+      '这个账号还没设过密码，先点「找回密码」设一个',
     ]) expect(presentOperationError(resolved)).toBeNull()
   })
 
