@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
-  classifyProbe, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
+  classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
   PROBED_PROVIDERS, KEY_VARIABLE,
 } = require('./probe-cli-relay.cjs')
 
@@ -86,6 +86,9 @@ test('each CLI is pointed at its own relay base URL and told which model to use'
   assert.equal(probeRunners.codex.baseUrlFor(site), 'https://relay.invalid/v1')
 
   assert.deepEqual(probeRunners.claude.argv('claude-opus-5').slice(-2), ['--model', 'claude-opus-5'])
+  // Plain -p prints nothing while it retries, so a probe killed at the
+  // timeout left only exit code 143. stream-json reports every retry's status.
+  assert.deepEqual(probeRunners.claude.argv('claude-opus-5').slice(2, 5), ['--output-format', 'stream-json', '--verbose'])
   // Codex takes its model from config.toml, not argv -- that is the file a
   // customer actually gets, so the probe exercises the same request shape.
   assert.equal(probeRunners.codex.argv('gpt-6-astra').includes('gpt-6-astra'), false)
@@ -122,4 +125,47 @@ test('only the tools the list actually pins are probed', () => {
   assert.deepEqual(pinnedProviders(list), ['claude', 'codex'])
   assert.equal(probeRunners.gemini, undefined)
   assert.deepEqual(pinnedProviders({ claude: { recommended: null }, codex: { recommended: null }, gemini: { recommended: null }, grok: { recommended: null } }), [])
+})
+
+const initLine = JSON.stringify({ type: 'system', subtype: 'init', tools: ['Bash'], usage: { input_tokens: 401, output_tokens: 503 }, model: 'claude-opus-5-5' })
+function retryLine(attempt, status, error) {
+  return JSON.stringify({ type: 'system', subtype: 'api_retry', attempt, max_retries: 10, retry_delay_ms: 1000, error_status: status, error })
+}
+
+test('a Claude probe killed while retrying is classified by the status it kept getting back', () => {
+  // 2026-11-09: the first real run ended with exit 143 and no output at all.
+  const output = [initLine, retryLine(1, 401, 'authentication_failed'), retryLine(2, 401, 'authentication_failed')].join('\n')
+  const verdict = classifyProbe({ code: 1, timedOut: true, output })
+  assert.equal(verdict.verdict, 'credential')
+  assert.match(verdict.detail, /HTTP 401 authentication_failed,已重试 2 次/)
+  assert.equal(classifyProbe({ code: 1, timedOut: true, output: [initLine, retryLine(1, 503, 'server_error')].join('\n') }).verdict, 'unreachable')
+  assert.equal(classifyProbe({ code: 1, timedOut: true, output: [initLine, retryLine(1, 429, 'rate_limit')].join('\n') }).verdict, 'quota')
+})
+
+test('the numbers in Claude stream-json bookkeeping are not mistaken for an HTTP status', () => {
+  // The init line carries token counts like 401 and 503; only reported errors count.
+  const verdict = classifyProbe({ code: 1, timedOut: true, output: initLine })
+  assert.equal(verdict.verdict, 'timeout')
+  assert.match(verdict.detail, /120 秒内没答完/)
+  assert.equal(claudeStreamEvidence(initLine), '')
+})
+
+test('a Claude request the relay rejects outright still condemns the version', () => {
+  const result = JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 400, result: 'API Error: 400 Input tag found' })
+  assert.equal(classifyProbe({ code: 1, output: [initLine, result].join('\n') }).verdict, 'rejected')
+  assert.equal(claudeStreamEvidence([initLine, result].join('\n')), 'HTTP 400 API Error: 400 Input tag found')
+})
+
+test('plain-text output and timeouts without any evidence keep their old readings', () => {
+  assert.equal(claudeStreamEvidence('Reading additional input from stdin...'), null)
+  assert.equal(classifyProbe({ code: 1, timedOut: true, output: 'Reading additional input from stdin...' }).verdict, 'timeout')
+  // A clean exit only counts when the process was not killed for running long.
+  assert.equal(classifyProbe({ code: 0, timedOut: true, output: '' }).verdict, 'timeout')
+  assert.equal(summarize([{ verdict: 'ok' }, { verdict: 'timeout' }]).ok, false)
+})
+
+test('the job summary drops the Claude init line but keeps the errors', () => {
+  const shown = displayOutput([initLine, retryLine(1, 401, 'authentication_failed')].join('\n'))
+  assert.equal(shown.includes('"subtype":"init"'), false)
+  assert.match(shown, /api_retry/)
 })

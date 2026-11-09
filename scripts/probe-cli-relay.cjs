@@ -71,25 +71,68 @@ function redact(text, secret) {
  * 版本的问题,报告要说清需要的是一把什么样的 Key。关键词与
  * connection-check.ts 的 groupHints 同源。
  */
-function classifyProbe({ code, output }) {
-  if (code === 0) return { verdict: 'ok', detail: '请求成功返回' }
-  const text = String(output)
+function classifyProbe({ code, output, timedOut }) {
+  if (code === 0 && !timedOut) return { verdict: 'ok', detail: '请求成功返回' }
+  const evidence = claudeStreamEvidence(output)
+  // Claude Code 的 stream-json 里除了出错的那一行,还有一大段带数字的初始化信息
+  // (工具清单、token 计数),拿整段去匹配「401」「5xx」会认错;只看它报出的错误。
+  const text = evidence === null ? String(output) : evidence
+  const suffix = evidence ? `(最后一次:${evidence})` : ''
   if (/无可用渠道|无可用的渠道|当前分组|no available channel/i.test(text)) {
-    return { verdict: 'group', detail: `探测 Key 的分组里没有这个工具的渠道,换一把覆盖该分组的 ${KEY_VARIABLE}` }
+    return { verdict: 'group', detail: `探测 Key 的分组里没有这个工具的渠道,换一把覆盖该分组的 ${KEY_VARIABLE}${suffix}` }
   }
   if (/\b400\b|invalid_request_error|Input tag|must be non-empty/i.test(text)) {
-    return { verdict: 'rejected', detail: '端点拒绝了 CLI 发出的请求(400 类)' }
+    return { verdict: 'rejected', detail: `端点拒绝了 CLI 发出的请求(400 类)${suffix}` }
   }
-  if (/\b401\b|\b403\b|authentication_error|permission_error|invalid api key|无效的令牌/i.test(text)) {
-    return { verdict: 'credential', detail: `探测凭据被拒(401/403),请检查仓库 secret ${KEY_VARIABLE}` }
+  if (/\b401\b|\b403\b|authentication_error|authentication_failed|permission_error|invalid api key|无效的令牌/i.test(text)) {
+    return { verdict: 'credential', detail: `探测凭据被拒(401/403),请检查仓库 secret ${KEY_VARIABLE}${suffix}` }
   }
   if (/\b429\b|rate_limit|quota|额度|余额/i.test(text)) {
-    return { verdict: 'quota', detail: '探测账号额度或速率受限,这次判定不了版本' }
+    return { verdict: 'quota', detail: `探测账号额度或速率受限,这次判定不了版本${suffix}` }
   }
   if (/\b5\d\d\b|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(text)) {
-    return { verdict: 'unreachable', detail: '中转不可达或返回 5xx,这次判定不了版本' }
+    return { verdict: 'unreachable', detail: `中转不可达或返回 5xx,这次判定不了版本${suffix}` }
   }
-  return { verdict: 'unknown', detail: `CLI 以退出码 ${code} 结束,原因未归类` }
+  if (timedOut) {
+    return { verdict: 'timeout', detail: `${PROBE_TIMEOUT_MS / 1000} 秒内没答完,被强制结束,这次判定不了版本${suffix}` }
+  }
+  return { verdict: 'unknown', detail: `CLI 以退出码 ${code} 结束,原因未归类${suffix}` }
+}
+
+/**
+ * Claude Code 跑在 `--output-format stream-json --verbose` 下时,每次重试都会打一行
+ * `{"type":"system","subtype":"api_retry","error_status":401,...}`,结束时打一行带
+ * `api_error_status` 的 result。纯 `-p` 在重试期间什么都不输出,被超时杀掉时作业
+ * 只剩一个退出码 143,看不出中转回的是什么(2026-11-09 第一次真跑就是这样)。
+ * 不是 stream-json 的输出返回 null,调用方照旧拿整段文本去判。
+ */
+function claudeStreamEvidence(output) {
+  const events = []
+  for (const line of String(output).split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed.type === 'string') events.push(parsed)
+    } catch {
+      // A line cut off by the timeout or the capture bound is just skipped.
+    }
+  }
+  if (events.length === 0) return null
+  const result = events.filter((event) => event.type === 'result').pop()
+  if (result && (result.is_error || result.api_error_status)) {
+    return [result.api_error_status ? `HTTP ${result.api_error_status}` : '', typeof result.result === 'string' ? result.result.slice(0, 300) : '']
+      .filter(Boolean).join(' ')
+  }
+  const retries = events.filter((event) => event.type === 'system' && event.subtype === 'api_retry')
+  const last = retries.pop()
+  if (last) return `HTTP ${last.error_status} ${last.error || ''}`.trim() + `,已重试 ${retries.length + 1} 次`
+  return ''
+}
+
+/** 写进 job summary 的输出:stream-json 的初始化那一行只是工具清单,去掉免得挤掉真正的错误。 */
+function displayOutput(output) {
+  return String(output).split('\n').filter((line) => !/^\{"type":"system","subtype":"init"/.test(line.trim())).join('\n')
 }
 
 /** 只有 rejected 才让作业变红 —— 那是名单要挡的那一类。其余是探测自身的问题,也要红,但文案不同。 */
@@ -101,7 +144,7 @@ function summarize(results) {
 
 function runCommand(file, argv, options) {
   return new Promise((resolve) => {
-    execFile(file, argv, {
+    const child = execFile(file, argv, {
       cwd: options.cwd,
       env: options.env,
       timeout: options.timeoutMs,
@@ -112,9 +155,16 @@ function runCommand(file, argv, options) {
     }, (error, stdout, stderr) => {
       resolve({
         code: error && typeof error.code === 'number' ? error.code : error ? 1 : 0,
+        // execFile's own timeout kills with SIGTERM and reports `killed`; the
+        // child's exit code is then null, which used to read as a bare 1 / 143.
+        timedOut: Boolean(error && (error.killed || error.signal)),
         output: `${stdout || ''}${stderr || ''}`,
       })
     })
+    // Nobody will ever type into these children. Left open, Codex 0.167.0
+    // `exec` sits on "Reading additional input from stdin..." until the probe
+    // timeout, and Claude Code waits 3s before giving up on stdin.
+    if (child.stdin) child.stdin.end()
   })
 }
 
@@ -161,7 +211,9 @@ const probeRunners = {
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
       CI: '1',
     }),
-    argv: (model) => ['-p', PROBE_PROMPT, '--model', model],
+    // stream-json + --verbose 让每次重试的 HTTP 状态都打出来(见 claudeStreamEvidence);
+    // 请求体与纯 -p 一样,改的只是本地输出格式。
+    argv: (model) => ['-p', PROBE_PROMPT, '--output-format', 'stream-json', '--verbose', '--model', model],
   },
   codex: {
     baseUrlFor: (site) => site.providerBaseUrls.codex,
@@ -208,7 +260,7 @@ async function probeSite(provider, executable, site, version, secret, model) {
       timeoutMs: PROBE_TIMEOUT_MS,
     })
     const classified = classifyProbe(result)
-    return { provider, siteId: site.id, baseUrl, version, output: redact(result.output, secret), ...classified }
+    return { provider, siteId: site.id, baseUrl, version, output: redact(displayOutput(result.output), secret), ...classified }
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
@@ -306,4 +358,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { classifyProbe, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }
+module.exports = { classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }

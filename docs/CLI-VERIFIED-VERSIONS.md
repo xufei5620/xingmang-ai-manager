@@ -907,7 +907,7 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 
 - **什么时候跑**：PR 改到 `electron/cli-verified-versions.ts` 或本文档时。别的 PR 改不动这个答案，不值得对生产中转发真实请求。
 - **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × 两个站点 = 四次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测）。
-  - Claude Code：`claude -p`，凭据走 `ANTHROPIC_AUTH_TOKEN`。
+  - Claude Code：`claude -p --output-format stream-json --verbose`，凭据走 `ANTHROPIC_AUTH_TOKEN`。输出格式只改本地打印、不改请求体；用它是因为纯 `-p` 在重试期间什么都不打，被超时杀掉时只剩退出码 143，stream-json 会把每次重试的 HTTP 状态打出来，脚本据此归类。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
 - **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
 - **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key。**探测的工具共用这一把**，不另设第二个 secret。
@@ -915,6 +915,7 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
   - 探测脚本把这种回答单独归成 `group` 一类并在 summary 里写清「换一把覆盖该分组的 Key」，**不会**把它误报成「这个版本不能用」。
   - Claude Code 从子进程环境变量拿 Key。Codex 对自定义 model provider **不认** `OPENAI_API_KEY` 环境变量（对 0.155.1 实测：设了这个变量，请求里 `auth.header_attached=false`），只读 `$CODEX_HOME/auth.json`，所以它那一份是以 0600 写进一次性临时 HOME 的，跑完即删。两种路径都不经 argv——argv 在共享主机上是全员可读的。
 - **没有配密钥时**：作业照常通过，但 summary 里明确写「未在中转实测」，并列出这次本该探测的是哪几个工具的哪几个版本。一句诚实的「没验证」比一个看着绿的空作业有用。
+- **子进程的标准输入一律关掉**：2026-11-09 第一次带密钥真跑，四次全部「原因未归类」。原因是脚本没关子进程的标准输入：Codex 0.167.0 的 `exec` 一直停在「Reading additional input from stdin...」直到超时；Claude Code 等 3 秒才放弃。超时现在单独归成 `timeout` 一类，不再报成一个光秃秃的退出码。
 - **结论怎么读**：只有「端点拒绝了 CLI 发出的请求（400 类）」才说明这个版本不能推给客户。分组不对、401/403、额度不足、5xx 是**探测本身坏了**，作业同样变红，但那是去换密钥或等中转恢复，不是去改名单。
 
 跑通之后，把跑通的站点 id 写进对应那条 `recommended` 的 `verifiedSites`。
