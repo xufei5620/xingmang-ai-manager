@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { ProviderId } from './catalog'
 import type { ConnectionCheckLayer, ConnectionCheckResult } from './connection-check'
-import { AccountSourceServiceUnavailableError, shouldRollBackAfterCheck, switchAccountSource, type AccountSourceSwitchDependencies } from './account-source-switch'
+import { AccountSourceServiceUnavailableError, accountSourcePreferredModel, shouldRollBackAfterCheck, switchAccountSource, type AccountSourceSwitchDependencies } from './account-source-switch'
 import type { RunningToolsReport } from './running-tools'
 
 function check(
@@ -166,6 +166,20 @@ describe('shouldRollBackAfterCheck', () => {
     for (const layer of ['unconfigured', 'config', 'credential', 'group', 'model', 'protocol'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(true)
     for (const layer of ['network', 'service', 'quota', 'unknown'] as const) expect(shouldRollBackAfterCheck({ ...base, ok: false, layer })).toBe(false)
     expect(shouldRollBackAfterCheck({ ...base, ok: true, layer: 'credential' })).toBe(false)
+  })
+})
+
+// 0.2.24 深查「反复切换」N5：改用当前账号时客户原来选的型号要带上，签发那边账号还列着就留着。
+describe('accountSourcePreferredModel', () => {
+  it('keeps the model of a config already on the account site and otherwise the one remembered before the official switch', () => {
+    const remembered = vi.fn(() => 'gpt-5.6-sol')
+    expect(accountSourcePreferredModel({ matchesRelay: true, model: ' gpt-5.4-mini ' }, remembered)).toBe('gpt-5.4-mini')
+    expect(remembered).not.toHaveBeenCalled()
+    // On the official account the config holds the official side's model, never the account's.
+    expect(accountSourcePreferredModel({ matchesRelay: false, model: 'gpt-5.5' }, () => 'gpt-5.4-mini')).toBe('gpt-5.4-mini')
+    expect(accountSourcePreferredModel({ matchesRelay: true, model: '' }, () => 'grok-code-fast')).toBe('grok-code-fast')
+    expect(accountSourcePreferredModel({ matchesRelay: false, model: 'glm-5' }, () => null)).toBeUndefined()
+    expect(accountSourcePreferredModel(undefined, () => undefined)).toBeUndefined()
   })
 })
 

@@ -3273,6 +3273,90 @@ describe('switching a provider back to the official subscription account', () =>
     expect(moveClaudeForeignSettingsAside(own, null, 'sk-relay')).toBeNull()
   })
 
+  // 0.2.24 深查「反复切换」N4：官方账号那边客户自己选的型号，接当前账号再切回官方以后还得在。
+  it('puts the official Claude model back after a round trip through the account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const snapshotPath = path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'opus', theme: 'dark' }, null, 2))
+
+    for (let round = 0; round < 2; round += 1) {
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe(testModels.claude)
+      // Saving again on the account (new key, another model) must not replace the stashed official model.
+      saveProviderConfig('claude', 'sk-relay-2', 'claude-other-model', 'merge', roots, {}, providerBaseUrls)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+      const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+      expect(official.model).toBe('opus')
+      expect(official.theme).toBe('dark')
+      expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+    }
+  })
+
+  it('keeps the official Claude model through an account reset and an official reset', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'claude-opus-5' }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe(testModels.claude)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe('claude-opus-5')
+  })
+
+  it('leaves the Claude model unset for the official account when it never had one', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ theme: 'dark' }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBeUndefined()
+    expect(fs.existsSync(path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName))).toBe(false)
+  })
+
+  // 别家中转的型号放回官方账号只会选到官方没有的型号：接当前账号前已经接着别家的，不记它。
+  it('never hands a model chosen on another relay to the official Claude account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-other-relay', ANTHROPIC_BASE_URL: 'https://other.example' },
+      model: 'glm-4.6',
+    }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBeUndefined()
+  })
+
+  it('stashes the official Claude model without touching settings and prefers a model set again', () => {
+    const settings: Record<string, unknown> = { model: 'claude-sonnet-5' }
+    const snapshot = moveClaudeForeignSettingsAside(settings, null, 'sk-relay', 'opus')
+    expect(settings).toEqual({ model: 'claude-sonnet-5' })
+    expect(JSON.parse(String(snapshot)).settings).toEqual({ model: 'opus' })
+
+    const official: Record<string, unknown> = {}
+    expect(restoreClaudeForeignSettings(official, snapshot)).toBe(true)
+    expect(official.model).toBe('opus')
+    const changed: Record<string, unknown> = { model: 'haiku' }
+    expect(restoreClaudeForeignSettings(changed, snapshot)).toBe(false)
+    expect(changed.model).toBe('haiku')
+    // Without an official model the snapshot stays as it was.
+    expect(moveClaudeForeignSettingsAside({ model: 'claude-sonnet-5' }, snapshot, 'sk-relay')).toBeNull()
+  })
+
   // 从星芒打开 Claude Code 时不交给它的选型号变量（system-service.ts，已知45 跟进），得和接账号时
   // 从 settings.json 挪开的是同一批，只差那把 Key。
   it('names as model choices exactly what connecting the account moves aside, less the key', () => {

@@ -753,6 +753,27 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('seededToolDefaults')
   })
 
+  // 0.2.24 深查「反复切换」N5：切回官方前记下的型号，每家各记各的，改别的设置时原样留着。
+  it('remembers the relay model per tool before an official switch and drops what it cannot read', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('relayModelsBeforeOfficial')
+    await updateAppSettings(filePath, { version: 2, relayModelsBeforeOfficial: { grok: 'grok-code-fast' } })
+    await updateAppSettings(filePath, { version: 2, relayModelsBeforeOfficial: { codex: ' gpt-5.4-mini ' } })
+    await updateAppSettings(filePath, { version: 2, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath).relayModelsBeforeOfficial).toEqual({ codex: 'gpt-5.4-mini', grok: 'grok-code-fast' })
+    await updateAppSettings(filePath, { version: 2, relayModelsBeforeOfficial: { grok: 'grok-4' } })
+    expect(readAppSettings(filePath).relayModelsBeforeOfficial).toEqual({ codex: 'gpt-5.4-mini', grok: 'grok-4' })
+
+    fs.writeFileSync(filePath, JSON.stringify({
+      ...settings(),
+      relayModelsBeforeOfficial: { claude: 'claude-sonnet-5', codex: '', grok: 42, cursor: 'x', gemini: 'bad\u0007name' },
+    }), 'utf8')
+    expect(readAppSettings(filePath).relayModelsBeforeOfficial).toEqual({ claude: 'claude-sonnet-5' })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), relayModelsBeforeOfficial: ['claude-sonnet-5'] }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('relayModelsBeforeOfficial')
+  })
+
   it('keeps the crash reporting notice marker once set without touching the reporting switch', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())

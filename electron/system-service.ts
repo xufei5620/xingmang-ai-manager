@@ -428,6 +428,11 @@ export interface SystemService {
     ownership?: { source: 'account'; automatic: boolean },
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
+  /**
+   * 切回官方以后再「改用当前账号」时，拿来当原来型号的那个（切回官方前记下的，Codex 还会看星芒存的那份
+   * 当前账号配置）；null = 没有，照旧挑默认。可选 = 旧实现不提供。
+   */
+  relayModelBeforeOfficial?(provider: ProviderId): string | null
   /** 切换失败回滚时把「是否选了官方账号」这个记号恢复成切换前的值；可选 = 旧实现不提供。 */
   setOfficialSourcePreference?(provider: ProviderId, official: boolean): Promise<void>
   /** 把切到当前账号时挪开的官方凭据放回原处；可选 = 旧实现不提供。 */
@@ -1155,6 +1160,7 @@ export function createSystemService(
     withCredentialUndo,
     applyXingmangAiSkillForCodexAccount,
     switchToOfficialAccount,
+    relayModelBeforeOfficial,
     adoptRestoredConfig,
     setOfficialSourcePreference,
     alignRestoredAccountSource,
@@ -1311,6 +1317,7 @@ export function createSystemService(
     repairCliHooks,
     autoRepairStaleCliHooks,
     switchToOfficialAccount,
+    relayModelBeforeOfficial,
     setOfficialSourcePreference,
     restoreOfficialCredentials,
     inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),

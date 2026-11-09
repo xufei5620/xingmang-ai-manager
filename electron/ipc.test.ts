@@ -18,6 +18,7 @@ import { createAccountWorkGate, type QueuedAccountWork } from './account-work-ga
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { DEFAULT_CODEX_MODEL } from './cli-model-defaults'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
@@ -6901,6 +6902,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
             expect.objectContaining({ provider: 'codex', mode }), false, expect.any(Function),
             { source: 'account', automatic: false },
           )
+        }
+      })
+
+      // 0.2.24 深查「反复切换」N5：以前这里一个型号都不带，切回过官方再改用当前账号就回到默认型号。
+      it('carries the model the customer chose into the account source switch', async () => {
+        for (const [current, remembered, expected] of [
+          [{ matchesRelay: false, model: 'gpt-5.5' }, 'gpt-5.4-mini', 'gpt-5.4-mini'],
+          [{ matchesRelay: true, model: 'gpt-5.4-mini' }, 'gpt-5.6-sol', 'gpt-5.4-mini'],
+          // Nothing to go by: the default, as before.
+          [{ matchesRelay: false, model: '' }, null, DEFAULT_CODEX_MODEL],
+        ] as const) {
+          electronMocks.handlers.clear()
+          const { service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+          vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.4-mini', 'gpt-5.6-sol', DEFAULT_CODEX_MODEL])
+          vi.mocked(service.getConfig).mockReturnValue({ workspace: 'C:\\workspace', providers: { codex: current } } as never)
+          const relayModelBeforeOfficial = vi.fn(() => remembered)
+          service.relayModelBeforeOfficial = relayModelBeforeOfficial
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account' })
+
+          expect(service.saveConfig).toHaveBeenCalledWith(
+            expect.objectContaining({ provider: 'codex', model: expected }), false, expect.any(Function),
+            { source: 'account', automatic: false },
+          )
+          // A config already on the account site speaks for itself.
+          expect(relayModelBeforeOfficial).toHaveBeenCalledTimes(current.matchesRelay ? 0 : 1)
         }
       })
 
