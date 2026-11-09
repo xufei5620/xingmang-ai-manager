@@ -14,6 +14,7 @@ const electronMocks = vi.hoisted(() => ({
   removeAllListeners: vi.fn(),
   showSaveDialog: vi.fn(async () => ({ canceled: true, filePath: undefined })),
   showOpenDialog: vi.fn<() => Promise<{ canceled: boolean; filePaths: string[] }>>(async () => ({ canceled: true, filePaths: [] })),
+  showMessageBox: vi.fn<(...args: unknown[]) => Promise<{ response: number; checkboxChecked: boolean }>>(async () => ({ response: 1, checkboxChecked: false })),
   browserWindowFromWebContents: vi.fn(() => undefined),
   registerFileProtocol: vi.fn(),
   notificationShow: vi.fn(),
@@ -80,6 +81,7 @@ vi.mock('electron', () => ({
   dialog: {
     showSaveDialog: electronMocks.showSaveDialog,
     showOpenDialog: electronMocks.showOpenDialog,
+    showMessageBox: electronMocks.showMessageBox,
   },
   ipcMain: {
     handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
@@ -143,6 +145,7 @@ import {
   canvasHostRestoreAssetChannel,
   canvasHostPurgeAssetChannel,
   canvasHostRelinkProjectFolderChannel,
+  canvasHostDeleteProjectChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostAccountChangedChannel,
@@ -156,6 +159,8 @@ import {
   canvasWindowBackgroundColor,
   canvasWindowLightBackgroundColor,
   canvasRendererAnswers,
+  canvasProjectDeleteDetail,
+  canvasProjectFolderToTrash,
   createCanvasWindowController,
   importedCanvasProjectName,
   type CanvasWindowControllerOptions,
@@ -300,6 +305,8 @@ beforeEach(() => {
   electronMocks.showSaveDialog.mockResolvedValue({ canceled: true, filePath: undefined })
   electronMocks.showOpenDialog.mockClear()
   electronMocks.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] })
+  electronMocks.showMessageBox.mockClear()
+  electronMocks.showMessageBox.mockResolvedValue({ response: 1, checkboxChecked: false })
   electronMocks.registerFileProtocol.mockClear()
   electronMocks.notificationShow.mockClear()
   electronMocks.notificationSupported.mockReset()
@@ -364,6 +371,7 @@ describe('createCanvasWindowController', () => {
       canvasHostRestoreAssetChannel,
       canvasHostPurgeAssetChannel,
       canvasHostRelinkProjectFolderChannel,
+      canvasHostDeleteProjectChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -787,6 +795,133 @@ describe('createCanvasWindowController', () => {
     await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
     await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  describe('deleting a project', () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+
+    function deletable(workspaceName: string, archived = true) {
+      return {
+        id: projectId, name: '旧海报', createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+        lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+        workspaceName, workspaceConfigured: true, workspaceStatus: 'ready' as CanvasProjectWorkspaceStatus,
+        ...(archived ? { archivedAt: '2026-11-09T01:00:00.000Z' } : {}),
+      }
+    }
+
+    async function deleteController(workspace: string, root: string, archived = true, trashProjectFolder = vi.fn(async (_directory: string) => undefined)) {
+      const list = vi.fn(async () => [deletable(path.basename(workspace), archived)])
+      const remove = vi.fn(async () => ({ project: deletable(path.basename(workspace), archived), workspaceDirectory: workspace }))
+      const forgetProject = vi.fn()
+      const projects = { list, create: vi.fn(), open: vi.fn(), save: vi.fn(), remove, getWorkspaceDirectory: vi.fn(async () => workspace) }
+      const controller = createCanvasWindowController(controllerOptions({
+        projects: projects as never, projectAssets: { forgetProject } as never, defaultProjectsDirectory: () => root, trashProjectFolder,
+      }))
+      await controller.open()
+      return { handler: electronMocks.handlers.get(canvasHostDeleteProjectChannel)!, remove, forgetProject, trashProjectFolder }
+    }
+
+    it('deletes an archived project only after the user says so in the system dialog', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = path.join(root, '旧海报')
+      fs.mkdirSync(workspace, { recursive: true })
+      const { handler, remove, forgetProject, trashProjectFolder } = await deleteController(workspace, root)
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toBeNull()
+      expect(electronMocks.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: 'warning', title: '删除项目', message: '删除「旧海报」？', buttons: ['删除', '取消'], defaultId: 1, cancelId: 1,
+        detail: expect.stringContaining('项目文件夹「星芒画布 › 旧海报」连同里面的图片、视频移到'),
+      }))
+      expect(remove).not.toHaveBeenCalled()
+      expect(trashProjectFolder).not.toHaveBeenCalled()
+
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: true })
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(forgetProject).toHaveBeenCalledWith(7, projectId)
+      expect(trashProjectFolder).toHaveBeenCalledWith(workspace)
+    })
+
+    it('never asks about or deletes a project that is not archived, and refuses a malformed id', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const { handler, remove } = await deleteController(path.join(root, '旧海报'), root, false)
+      electronMocks.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
+
+      await expect(handler(trustedEvent(), projectId)).rejects.toThrow('请先归档这个项目再删除')
+      await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
+      await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(remove).not.toHaveBeenCalled()
+    })
+
+    it('leaves a folder the user picked elsewhere where it is', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = temporaryDirectory()
+      const { handler, remove, trashProjectFolder } = await deleteController(workspace, root)
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: false })
+      expect(electronMocks.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+        detail: `项目从列表里删掉，删了不能撤销。电脑上的文件一个都不删，项目文件夹「${path.basename(workspace)}」留在原处。`,
+      }))
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(trashProjectFolder).not.toHaveBeenCalled()
+    })
+
+    it('still deletes the project when its folder cannot go to the trash', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = path.join(root, '旧海报')
+      fs.mkdirSync(workspace, { recursive: true })
+      const { handler, remove } = await deleteController(workspace, root, true, vi.fn(async () => { throw new Error('trash unavailable') }))
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: false })
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(fs.existsSync(workspace)).toBe(true)
+    })
+
+    it.runIf(process.platform !== 'win32')('leaves a folder alone that became a link while the dialog was open', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = path.join(root, '旧海报')
+      fs.mkdirSync(workspace, { recursive: true })
+      const elsewhere = temporaryDirectory()
+      const { handler, remove, trashProjectFolder } = await deleteController(workspace, root)
+      electronMocks.showMessageBox.mockImplementationOnce(async () => {
+        fs.rmSync(workspace, { recursive: true })
+        fs.symlinkSync(elsewhere, workspace)
+        return { response: 0, checkboxChecked: false }
+      })
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: false })
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(trashProjectFolder).not.toHaveBeenCalled()
+    })
+
+    it('moves only a project folder directly under the default folder to the trash', () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const own = path.join(root, '旧海报')
+      fs.mkdirSync(path.join(own, 'nested'), { recursive: true })
+      fs.writeFileSync(path.join(root, '文件'), '')
+      expect(canvasProjectFolderToTrash(own, root)).toBe(own)
+      expect(canvasProjectFolderToTrash(path.join(own, 'nested'), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(root, root)).toBeNull()
+      expect(canvasProjectFolderToTrash(path.join(root, '文件'), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(path.join(root, '不在了'), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(temporaryDirectory(), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(null, root)).toBeNull()
+      expect(canvasProjectFolderToTrash(own, undefined)).toBeNull()
+      if (process.platform !== 'win32') {
+        fs.symlinkSync(temporaryDirectory(), path.join(root, '链接'))
+        expect(canvasProjectFolderToTrash(path.join(root, '链接'), root)).toBeNull()
+      }
+    })
+
+    it('names the trash the way each system does', () => {
+      const folder = path.join('/docs', '星芒画布', '旧海报')
+      expect(canvasProjectDeleteDetail(folder, '旧海报', 'darwin')).toBe('项目从列表里删掉，删了不能撤销。项目文件夹「星芒画布 › 旧海报」连同里面的图片、视频移到废纸篓，还能从废纸篓里拿回来。')
+      expect(canvasProjectDeleteDetail(folder, '旧海报', 'win32')).toBe('项目从列表里删掉，删了不能撤销。项目文件夹「星芒画布 › 旧海报」连同里面的图片、视频移到回收站，还能从回收站里拿回来。')
+      expect(canvasProjectDeleteDetail(null, undefined, 'linux')).toBe('项目从列表里删掉，删了不能撤销。电脑上的文件一个都不删。')
+    })
   })
 
   it('accepts pretty-printed project JSON and forwards saved node layout and viewport', async () => {

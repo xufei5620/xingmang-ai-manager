@@ -9,6 +9,7 @@ import {
   Notification,
   protocol,
   type IpcMainInvokeEvent,
+  type MessageBoxOptions,
   type OpenDialogOptions,
   type SaveDialogOptions,
   type WebContents,
@@ -30,7 +31,7 @@ import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
-import { canvasHostChannels, type CanvasAppearance, type CanvasProjectImportResult } from './canvas-contract'
+import { canvasHostChannels, type CanvasAppearance, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
   linuxRendererSandboxRefusalMessage,
@@ -132,6 +133,7 @@ export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicatePro
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
 export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.createProjectInDefaultFolder
 export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
+export const canvasHostDeleteProjectChannel = canvasHostChannels.deleteProject
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
@@ -152,6 +154,31 @@ interface PendingCanvasProjectImport {
   /** Imported as a new project in the default folder, leaving the open one alone. */
   createsProject: boolean
   projectName: string
+}
+
+/**
+ * The folder deleting a project may move to the trash: only a project's own
+ * folder directly under the default projects folder, the kind creating and
+ * importing make there. A folder the user picked elsewhere may hold their
+ * own files next to the project, so it is never touched, and neither is a
+ * link or anything that is not a directory.
+ */
+export function canvasProjectFolderToTrash(workspaceDirectory: string | null, defaultProjectsDirectory: string | undefined): string | null {
+  if (!workspaceDirectory || !defaultProjectsDirectory) return null
+  const folder = path.resolve(workspaceDirectory)
+  if (path.dirname(folder) !== path.resolve(defaultProjectsDirectory)) return null
+  try {
+    return fs.lstatSync(folder).isDirectory() ? folder : null
+  } catch {
+    return null
+  }
+}
+
+/** What the confirmation says happens to the files, in the words of each system's trash. */
+export function canvasProjectDeleteDetail(folderToTrash: string | null, workspaceName: string | undefined, platform: NodeJS.Platform): string {
+  const trash = platform === 'darwin' ? '废纸篓' : '回收站'
+  if (folderToTrash) return `项目从列表里删掉，删了不能撤销。项目文件夹「星芒画布 › ${path.basename(folderToTrash)}」连同里面的图片、视频移到${trash}，还能从${trash}里拿回来。`
+  return `项目从列表里删掉，删了不能撤销。电脑上的文件一个都不删${workspaceName ? `，项目文件夹「${workspaceName}」留在原处` : ''}。`
 }
 
 /**
@@ -197,6 +224,8 @@ export interface CanvasWindowControllerOptions {
    * creates through the folder dialog.
    */
   defaultProjectsDirectory?: () => string
+  /** Moves a deleted project's own folder to the system trash (shell.trashItem in production). */
+  trashProjectFolder?: (directory: string) => Promise<void>
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
   /** How long quitting waits for the canvas page to answer at all before treating it as hung. Defaults to 4 seconds. */
@@ -762,6 +791,57 @@ export function createCanvasWindowController(
     assertCanvasUserUnchanged(userId)
     options.projectAssets?.forgetProject(userId, projectId)
     return relinked
+  })
+
+  // 删除项目（画布完善第 14 条）：只删已归档的，主进程弹系统确认框，客户点了「删除」才删；画布只给项目标识，
+  // 给不了路径，也绕不过这个框。删的是项目记录；文件夹只有「星芒画布」下面直接那一层（新建、导入时主进程建的）
+  // 才移到回收站，客户自己选的文件夹里可能还有别的东西，一律不动。
+  registerCanvasHandler(canvasHostDeleteProjectChannel, async (event, projectIdInput): Promise<CanvasProjectDeleteResult | null> => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
+    if (!project) throw new Error('画布项目不存在')
+    if (!project.archivedAt) throw new Error('请先归档这个项目再删除')
+    const folderToTrash = options.trashProjectFolder
+      ? canvasProjectFolderToTrash(await options.projects.getWorkspaceDirectory(userId, projectId), options.defaultProjectsDirectory?.())
+      : null
+    assertCanvasUserUnchanged(userId)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const messageOptions: MessageBoxOptions = {
+      type: 'warning',
+      title: '删除项目',
+      message: `删除「${project.name}」？`,
+      detail: canvasProjectDeleteDetail(folderToTrash, project.workspaceName, process.platform),
+      buttons: ['删除', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageOptions)
+      : await dialog.showMessageBox(messageOptions)
+    if (answer.response !== 0) return null
+    assertCanvasUserUnchanged(userId)
+    await options.projects.remove(userId, projectId)
+    options.projectAssets?.forgetProject(userId, projectId)
+    for (const [senderId, active] of activeProjects) {
+      if (active.userId === userId && active.projectId === projectId) activeProjects.delete(senderId)
+    }
+    // The dialog may have stayed open a long time: look again, so a folder swapped for a link meanwhile is left alone.
+    const confirmedFolder = folderToTrash ? canvasProjectFolderToTrash(folderToTrash, options.defaultProjectsDirectory?.()) : null
+    let folderMovedToTrash = false
+    if (confirmedFolder && options.trashProjectFolder) {
+      try {
+        await options.trashProjectFolder(confirmedFolder)
+        folderMovedToTrash = true
+      } catch (error) {
+        options.runtimeLog.log('warn', 'canvas', 'project.folder.trash.failed', '项目已删除，但项目文件夹没能移到回收站', {
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return { projectId, folderMovedToTrash }
   })
 
   registerCanvasHandler(canvasHostSetProjectArchivedChannel, async (event, projectIdInput, archivedInput) => {

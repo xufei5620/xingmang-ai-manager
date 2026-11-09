@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { randomUUID } from 'node:crypto'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -18,6 +19,20 @@ function workflow(name: string, nodeId = 'audio'): string {
     nodes: [{ id: nodeId, kind: 'audio-input', definitionVersion: 1, position: { x: 742.5, y: -318.25 }, width: 280, height: 340, locked: true, data: { prompt: '', model: '', result: { kind: 'audio', assetId, localUrl: `xingmang-asset://audio/${assetId}`, mimeType: 'audio/wav' } } }],
     edges: [],
   }, null, 2)
+}
+
+/** Writes project records straight into the store, so limits can be reached without a hundred folders. */
+function seedProjects(root: string, userId: number, count: number, archived: boolean): void {
+  const directory = path.join(root, `user-${userId}`)
+  fs.mkdirSync(directory, { recursive: true })
+  for (let index = 0; index < count; index += 1) {
+    const id = randomUUID()
+    const now = new Date(Date.UTC(2026, 10, 9, 0, 0, index % 60)).toISOString()
+    fs.writeFileSync(path.join(directory, `${id}.json`), JSON.stringify({
+      version: 3, id, createdAt: now, updatedAt: now, lastOpenedAt: now, ...(archived ? { archivedAt: now } : {}),
+      workflow: { schemaVersion: 2, name: `${archived ? '归档' : '项目'} ${index}`, viewport: { x: 0, y: 0, zoom: 1 }, nodes: [], edges: [] },
+    }))
+  }
 }
 
 function createFixture(prefix: string) {
@@ -268,6 +283,48 @@ describe('CanvasProjectStore', () => {
     await expect(store.createImported(36, '不安全', other, JSON.stringify(unsafe))).rejects.toThrow('未知或敏感字段')
     await expect(store.createImported(36, '不在的文件夹', path.join(other, 'missing'), workflow('包'))).rejects.toThrow()
     await expect(store.list(36)).resolves.toHaveLength(1)
+  })
+
+  it('does not count archived projects toward the hundred and refuses to restore one past it', async () => {
+    const { root, workspace, store } = createFixture('limit')
+    seedProjects(root, 36, 99, false)
+    seedProjects(root, 36, 150, true)
+    const hundredth = await store.create(36, '第一百个', workspace)
+    expect((await store.list(36)).filter((project) => !project.archivedAt)).toHaveLength(100)
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-limit-other-'))
+    roots.push(other)
+    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('画布项目最多 100 个（已归档的不算），请先归档一些不用的项目')
+    await expect(store.createImported(36, '导入的', other, workflow('包'))).rejects.toThrow('已归档的不算')
+    const archived = (await store.list(36)).find((project) => project.archivedAt)!
+    await expect(store.setArchived(36, archived.id, false)).rejects.toThrow('请先归档一个再恢复')
+
+    await store.setArchived(36, hundredth.project.id, true)
+    await expect(store.setArchived(36, archived.id, false)).resolves.not.toHaveProperty('archivedAt')
+    await expect(store.create(36, '第一百零一个', other)).rejects.toThrow('已归档的不算')
+  })
+
+  it('stops at five hundred projects counting the archived ones', async () => {
+    const { root, workspace, store } = createFixture('stored-limit')
+    seedProjects(root, 36, 500, true)
+    await expect(store.list(36)).resolves.toHaveLength(500)
+    await expect(store.create(36, '新项目', workspace)).rejects.toThrow('画布项目连同已归档的最多 500 个，请先在「已归档」里删掉一些')
+  })
+
+  it('removes only an archived project and only its record', async () => {
+    const { workspace, store } = createFixture('remove')
+    const created = await store.create(36, '旧海报', workspace)
+    fs.writeFileSync(path.join(workspace, 'assets', 'image.png'), 'png')
+    await expect(store.remove(36, created.project.id)).rejects.toThrow('请先归档这个项目再删除')
+    await store.setArchived(36, created.project.id, true)
+    await expect(store.remove(37, created.project.id)).rejects.toThrow()
+
+    const removed = await store.remove(36, created.project.id)
+    expect(removed).toMatchObject({ project: { id: created.project.id, name: '旧海报' }, workspaceDirectory: path.resolve(workspace) })
+    await expect(store.list(36)).resolves.toEqual([])
+    await expect(store.open(36, created.project.id)).rejects.toThrow()
+    expect(fs.readFileSync(path.join(workspace, 'assets', 'image.png'), 'utf8')).toBe('png')
+    // The folder is free again for a new project.
+    await expect(store.create(36, '新海报', workspace)).resolves.toMatchObject({ project: { name: '新海报' } })
   })
 
   it('rejects non-empty duplicate targets and legacy project copies without deleting user files', async () => {
