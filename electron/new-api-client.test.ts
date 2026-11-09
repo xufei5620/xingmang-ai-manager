@@ -2862,6 +2862,16 @@ describe('createKey', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('counts the name cap in UTF-8 bytes as the server does, so a 17-character Chinese name never reaches it', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    const input = { group: 'default', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }
+    await expect(client.createKey({ ...input, name: '星'.repeat(17) })).rejects.toThrow('密钥名称不能超过 50 个字符')
+    await expect(client.updateKey({ ...input, id: 7, name: '星'.repeat(17) })).rejects.toThrow('密钥名称不能超过 50 个字符')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('rejects an unavailable group after the preflight without sending POST /api/token/', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
