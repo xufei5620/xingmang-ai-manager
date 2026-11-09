@@ -71,7 +71,7 @@ describe('canvasInspectorParameterRows', () => {
       { label: '模型', value: 'GPT Image 2' },
       { label: '画质', value: '标准' },
       // 内核多一行生成数量；老桌面一次只出一张。
-      { label: '生成数量', value: '×1 · 按次计费' },
+      { label: '生成数量', value: '1 张' },
       { label: '清晰度', value: '2K' },
       // v2 这里写「尺寸 16:9 · 1280x720」。2K、4K 的像素由老桌面自己换算，内核不替它报尺寸。
     ])
