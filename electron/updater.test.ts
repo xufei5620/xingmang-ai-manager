@@ -4922,3 +4922,106 @@ describe('the updater session direct retry shared with the service status file (
     service.dispose()
   })
 })
+
+describe('a newer version that would not fit on the disk while one is downloaded', () => {
+  const MB = 1024 ** 2
+  const sizedInfo = (version: string) => ({ ...updateInfo(version), files: [{ url: `XingMang-AI-Manager-${version}-Setup.exe`, sha512: 'x', size: 200 * MB }] })
+
+  // 更新目录列着 feed.version，每个版本的安装包 200 MB（下载前要空出 600 MB）。下载落下的是这会儿列着的那一版。
+  function serveSizedFeed(client: FakeUpdater, feed: { version: string }): void {
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('checking-for-update')
+      client.emit('update-available', sizedInfo(feed.version))
+      return { isUpdateAvailable: true }
+    })
+    client.downloadUpdate.mockImplementation(async () => {
+      client.emit('update-downloaded', sizedInfo(feed.version))
+    })
+  }
+
+  it('keeps the downloaded version installable instead of swapping it for one there is no room to download', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveSizedFeed(client, feed)
+    let freeBytes: number | null = 2048 * MB
+    const skipped = vi.fn()
+    const superseded = vi.fn()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      readFreeDiskBytes: async () => freeBytes,
+      diskShortfallSkipped: skipped,
+      downloadedSuperseded: superseded,
+    })
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+
+    feed.version = '1.2.0'
+    freeBytes = 380 * MB
+    const phases: string[] = []
+    service.subscribe((state) => phases.push(`${state.phase} ${state.availableVersion}`))
+    await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0', error: null, diskShortfall: null })
+    expect(phases).toEqual([])
+    expect(skipped).toHaveBeenCalledWith({ neededBytes: 600 * MB, freeBytes: 380 * MB }, '1.2.0')
+    expect(superseded).not.toHaveBeenCalled()
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    expect(service.install()).toEqual({ accepted: true })
+    service.dispose()
+  })
+
+  it('swaps it at the next scheduled check once there is room again, or when the free space cannot be read', async () => {
+    for (const readable of [true, false]) {
+      const client = new FakeUpdater()
+      const feed = { version: '1.1.0' }
+      serveSizedFeed(client, feed)
+      let freeBytes = 380 * MB
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        readAutoUpdate: () => true,
+        readFreeDiskBytes: async () => {
+          if (!readable && feed.version === '1.2.0') throw new Error('statfs failed')
+          return freeBytes
+        },
+      })
+      freeBytes = 2048 * MB
+      await service.scheduledCheck()
+      feed.version = '1.2.0'
+      freeBytes = 380 * MB
+      if (readable) {
+        await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.1.0' })
+        freeBytes = 2048 * MB
+      }
+      // 量不出来照旧当够，跟下载前量盘一样，不能自己变成更新换不上新版本的原因。
+      await expect(service.scheduledCheck()).resolves.toMatchObject({ phase: 'downloaded', availableVersion: '1.2.0', error: null })
+      expect(client.downloadUpdate).toHaveBeenCalledTimes(2)
+      service.dispose()
+    }
+  })
+
+  it('still swaps one that falls short of the minimum, showing how much room the required version needs', async () => {
+    const client = new FakeUpdater()
+    const feed = { version: '1.1.0' }
+    serveSizedFeed(client, feed)
+    let freeBytes = 2048 * MB
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      readAutoUpdate: () => true,
+      readFreeDiskBytes: async () => freeBytes,
+    })
+    await service.scheduledCheck()
+
+    feed.version = '1.2.0'
+    freeBytes = 380 * MB
+    service.setServiceStatus({ maintenance: null, minimumVersion: '1.2.0' })
+    await vi.waitFor(() => expect(service.getState()).toMatchObject({
+      phase: 'available',
+      availableVersion: '1.2.0',
+      requiredVersion: '1.2.0',
+      diskShortfall: { neededBytes: 600 * MB, freeBytes: 380 * MB },
+    }))
+    expect(client.downloadUpdate).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+})
