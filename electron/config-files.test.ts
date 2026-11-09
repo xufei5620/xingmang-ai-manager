@@ -3932,6 +3932,30 @@ describe('workspace trust for the directory the user picked', () => {
     expect(asRecord(projects?.['D:\\Work'])?.hasTrustDialogAccepted).toBe(true)
   })
 
+  // D4：文件夹自带 Claude Code 的项目设置时，信任那一问留给 Claude Code 自己。
+  it('skips only the first-run wizard when the folder trust is left to Claude Code', () => {
+    const fresh = trustClaudeWorkspaceInRootConfigText(null, 'D:\\Download\\repo', { leaveFolderTrustToCli: true })
+    expect(fresh.changed).toBe(true)
+    // 连空的项目条目都不建，Claude Code 打开时照常问信任。
+    expect(JSON.parse(fresh.content)).toEqual({ hasCompletedOnboarding: true })
+
+    const existing = JSON.stringify({
+      hasCompletedOnboarding: true,
+      projects: {
+        'D:\\Download\\repo': { allowedTools: ['Bash'] },
+        'D:\\Work': { hasTrustDialogAccepted: true },
+      },
+    })
+    const kept = trustClaudeWorkspaceInRootConfigText(existing, 'D:\\Download\\repo', { leaveFolderTrustToCli: true })
+    expect(kept.changed).toBe(false)
+    expect(JSON.parse(kept.content)).toEqual(JSON.parse(existing))
+  })
+
+  it('still refuses a damaged Claude project record when the folder trust is left to Claude Code', () => {
+    expect(() => trustClaudeWorkspaceInRootConfigText('{"projects": ["D:\\\\Work"]}', 'D:\\Work', { leaveFolderTrustToCli: true }))
+      .toThrow('项目记录已损坏')
+  })
+
   it('trusts an unknown Gemini folder and leaves an existing answer alone', () => {
     const fresh = trustGeminiWorkspaceInTrustedFoldersText('{}', '/home/tester/work')
     expect(fresh.changed).toBe(true)
@@ -4017,6 +4041,21 @@ describe('workspace trust for the directory the user picked', () => {
     const again = trustClaudeWorkspace(roots, path.join(home, 'project'))
     expect(again.changed).toBe(false)
     expect(again.backups).toEqual([])
+  })
+
+  it('writes no Claude folder trust to disk when it is left to Claude Code', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = path.join(home, '.claude.json')
+    fs.writeFileSync(configPath, JSON.stringify({ numStartups: 3 }), 'utf8')
+
+    const result = trustManagedWorkspace('claude', roots, path.join(home, 'project'), { leaveFolderTrustToCli: true })
+    expect(result.changed).toBe(true)
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ numStartups: 3, hasCompletedOnboarding: true })
+
+    // 向导已经跳过、信任又不替他写，就没有要改的了，不再堆备份。
+    expect(trustManagedWorkspace('claude', roots, path.join(home, 'project'), { leaveFolderTrustToCli: true }))
+      .toEqual({ backups: [], files: [], changed: false })
   })
 
   it('creates the Gemini trust file when the CLI has never written one', () => {
