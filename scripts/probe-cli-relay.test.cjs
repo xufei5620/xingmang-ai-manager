@@ -89,6 +89,9 @@ test('each CLI is pointed at its own relay base URL and told which model to use'
   // Plain -p prints nothing while it retries, so a probe killed at the
   // timeout left only exit code 143. stream-json reports every retry's status.
   assert.deepEqual(probeRunners.claude.argv('claude-opus-5').slice(2, 5), ['--output-format', 'stream-json', '--verbose'])
+  // With the default ten retries the relay's own words never reach the
+  // result line before the probe timeout (2026-11-09: nine bare 503s).
+  assert.equal(probeRunners.claude.environment('https://relay.invalid', 'sk-probe', '/tmp/home').CLAUDE_CODE_MAX_RETRIES, '2')
   // Codex takes its model from config.toml, not argv -- that is the file a
   // customer actually gets, so the probe exercises the same request shape.
   assert.equal(probeRunners.codex.argv('gpt-6-astra').includes('gpt-6-astra'), false)
@@ -168,4 +171,11 @@ test('the job summary drops the Claude init line but keeps the errors', () => {
   const shown = displayOutput([initLine, retryLine(1, 401, 'authentication_failed')].join('\n'))
   assert.equal(shown.includes('"subtype":"init"'), false)
   assert.match(shown, /api_retry/)
+})
+
+test('the relay message in a Claude result line decides the verdict over the bare status', () => {
+  // new-api answers a key whose group has no Claude channel with a 503.
+  const result = JSON.stringify({ type: 'result', is_error: true, api_error_status: 503, result: 'API Error: 503 当前分组 default 下对于模型 x 无可用渠道' })
+  const output = [initLine, retryLine(1, 503, 'server_error'), result].join('\n')
+  assert.equal(classifyProbe({ code: 1, output }).verdict, 'group')
 })

@@ -93,8 +93,8 @@ export const cliVerifiedVersions: Record<ProviderId, CliVersionCompatibility> = 
     recommended: {
       version: '0.167.0',
       verifiedAt: '2026-11-09',
-      verifiedSites: [],
-      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.167.0(models.json 与 rust-v0.165.0、rust-v0.166.0 逐字相同,比 rust-v0.164.0 多一个 gpt-6.1-terra;openai_models.rs 只加了可选字段);0.165.0～0.167.0 的 release note 没有一条碰自定义 model_providers / base_url / wire_api,型号不存在的错误不再重试、恢复或分叉对话时保留审批与权限设置、换过 provider 后旧对话仍然看得到;daemon_auto_start = false 与 --no-daemon 在 0.167.0 上仍然认,沙箱 debug models 列出全部 12 个型号,exec 与手机遥控用的 app-server 一轮对话的请求字段与出网记录同 0.166.0',
+      verifiedSites: ['solov'],
+      note: '当前 npm latest,随包型号名单的 tag 换成 rust-v0.167.0(models.json 与 rust-v0.165.0、rust-v0.166.0 逐字相同,比 rust-v0.164.0 多一个 gpt-6.1-terra;openai_models.rs 只加了可选字段);0.165.0～0.167.0 的 release note 没有一条碰自定义 model_providers / base_url / wire_api,型号不存在的错误不再重试、恢复或分叉对话时保留审批与权限设置、换过 provider 后旧对话仍然看得到;daemon_auto_start = false 与 --no-daemon 在 0.167.0 上仍然认,沙箱 debug models 列出全部 12 个型号,exec 与手机遥控用的 app-server 一轮对话的请求字段与出网记录同 0.166.0;2026-11-09 cli-relay-probe 在 solov(xm.solov.cc)上用默认型号真跑通过,solov-api 是探测 Key 不属于那个站(401)、没测成',
       userNote: '修好了重新打开对话时权限设置丢失、选到不存在的型号时反复重试、换过账号后旧对话找不到的问题',
     },
     blocked: [

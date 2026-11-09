@@ -209,6 +209,10 @@ const probeRunners = {
       ANTHROPIC_BASE_URL: baseUrl,
       ANTHROPIC_AUTH_TOKEN: secret,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      // 默认要重试 10 次、退避到 40 秒一次,超过探测的 120 秒;而且重试那几行只有
+      // 状态码,中转回的原话(比如「当前分组下无可用渠道」)只在最后那行 result
+      // 里。只重试两次,作业才拿得到原话、归得了类。不碰请求体。
+      CLAUDE_CODE_MAX_RETRIES: '2',
       CI: '1',
     }),
     // stream-json + --verbose 让每次重试的 HTTP 状态都打出来(见 claudeStreamEvidence);
