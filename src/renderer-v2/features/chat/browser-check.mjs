@@ -169,7 +169,8 @@ test('legacy read failures cannot establish an empty history via autosave or unm
   const raw = JSON.stringify({ version: 1, userId: '8', data: { messages: [{ id: 'old', role: 'user', content: 'belongs to someone else' }] } })
   const page = await open('strict=1', { [legacyChatKey]: raw })
   try {
-    await page.getByRole('alert').filter({ hasText: '原始记录已保留' }).waitFor()
+    // 原因只进日志，红条一律说同一句（W24）。
+    await page.getByRole('alert').filter({ hasText: '以前的聊天记录暂时读不出来，原文件没动。现在聊的内容不会保存，关掉软件就没了。' }).waitFor()
     await page.getByTestId('chat-composer-input').fill('not persisted')
     await page.waitForTimeout(400)
     assert.equal(await saved(page), null)
@@ -1063,6 +1064,47 @@ test('history that cannot be read is left alone, and reading it again brings it 
     await waitSaved(page, (workspace) => workspace.conversations.length === 2)
     const merged = await saved(page)
     assert.deepEqual(merged.conversations.map((conversation) => conversation.messages[0].content), ['said meanwhile', 'said before'])
+  } finally { await page.close() }
+})
+
+// 0.2.24 深查聊天页 C2：以前一段对话的文件坏了，整份记录读不出来，以后聊的也全都不存，「重新读取」永远读不出来。
+test('one broken conversation file is set aside on its own while the rest keep loading and saving', async () => {
+  const page = await open()
+  try {
+    for (const [index, prompt] of ['first topic', 'second topic', 'third topic'].entries()) {
+      if (index) await page.getByTestId('chat-conversation-new').click()
+      await ready(page)
+      await page.getByTestId('chat-composer-input').fill(prompt)
+      await page.getByTestId('chat-send').click()
+      await page.waitForFunction((count) => window.chatHarness.calls.filter((item) => item.method === 'start').length === count, index + 1)
+      const request = (await calls(page, 'start')).at(-1).input
+      await emit(page, { type: 'content', requestId: request.requestId, content: `answer to ${prompt}` })
+      await emit(page, { type: 'complete', requestId: request.requestId })
+    }
+    await waitSaved(page, (workspace) => workspace.conversations.length === 3 && workspace.conversations.every((conversation) => conversation.messages.length === 2))
+    const brokenKey = await page.evaluate(() => window.chatHarness.breakConversation(1, 'truncate'))
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await page.getByRole('status').filter({ hasText: '有 1 段对话读不出来，已经单独留着，其余照常。' }).waitFor()
+    assert.equal(await page.getByRole('alert').count(), 0, 'the rest still saves, so there is no red bar')
+    assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    const logged = (await calls(page, 'log')).map((call) => call.input)
+    assert.ok(logged.some((entry) => entry.context === 'chat-history' && entry.level === 'warn' && entry.message.includes(`c-${brokenKey}.json 读不出来`)), JSON.stringify(logged))
+
+    // Saving goes on, and the broken file is moved aside exactly as it was instead of being deleted.
+    await page.getByTestId('chat-composer-input').fill('typed after the broken file')
+    await waitSaved(page, (workspace) => workspace.conversations.length === 2 && JSON.stringify(workspace).includes('typed after the broken file'))
+    const aside = await page.evaluate(() => window.chatHarness.asideFiles())
+    assert.deepEqual(aside.map((file) => file.key), [brokenKey])
+    assert.throws(() => JSON.parse(aside[0].content), 'the copy kept aside is the truncated file, untouched')
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await page.locator('.chat-conversation-select').nth(1).waitFor()
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    assert.equal(await page.getByText('读不出来', { exact: false }).count(), 0, 'once set aside it is not reported again')
   } finally { await page.close() }
 })
 
