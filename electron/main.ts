@@ -1771,8 +1771,9 @@ if (!hasSingleInstanceLock) {
       // 马上答「没开」才改直连，以前加速服务还没建好的那段也是这么答的。
       if (!scope || !acceleration || !developmentAcceleration) return false
       // 加速在等上一个星芒交出网络设置时读状态要陪着等最多半分钟：这里只问开没开（绕不绕代理、导出诊断），
-      // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。
-      if (acceleration.awaitingPreviousOwner()) return true
+      // 不等，按「可能开着」答，同以前当场报错时的结论（0.2.22 回归第 10 条）。问宿主本身：开机改回网络设置时宿主先建好，
+      // 加速服务要等第一次真用到它才接手（createAccelerationHostLoader），那之前问加速服务只会答「没在等」。
+      if (developmentAcceleration.awaitingPreviousOwner()) return true
       const { phase } = await acceleration.getAccelerationState(scope)
       return phase === 'active' || phase === 'connecting' || phase === 'stopping'
     }
