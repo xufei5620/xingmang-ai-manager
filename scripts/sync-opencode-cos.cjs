@@ -10,18 +10,23 @@ const { checkFailure, observedArchitectures, observedProcessFailure, safeSyncFai
 // Mac 上一键装 OpenCode 从 GitHub 下官方的 .app.tar.gz（electron/macos-desktop-app-installer.ts），国内时好时坏，
 // 以前靠加速。yoyo 2026-10-14 定「做」：和 Codex、Claude 桌面端一样放进星芒的腾讯云存储桶，客户端先从桶里下
 // （electron/desktop-package-bucket.ts），解开后照旧核 bundle id、Team ID 签名和 Gatekeeper；桶里没有或对不上，
-// 照旧去 GitHub。每次同步问 OpenCode 最新一版的 latest.json（客户端问的就是它），版本变了才下两种芯片的包。
+// 照旧去 GitHub。每次同步问 OpenCode 最新一版的 latest-mac.yml（客户端问的就是它），版本变了才下两种芯片的包。
+// 以前问的是 latest.json：那份只给旧版 Tauri 自动更新用，OpenCode 1.19.5（2026-10-28）起不再放（#1519，
+// 同步从那天起每次都卡在问版本这一步）。
 //
 // Trust: the feed and the packages come only from github.com's release paths of
 // anomalyco/opencode and GitHub's two release-asset hosts; every redirect hop is checked
 // against that allow-list before it is followed, and the download itself never follows one.
-// The feed may only name the package URL this script builds for that version itself (the
-// client's selectOpenCodeRelease rule). A package is uploaded only after this macOS runner
+// The package URL is always the one this script builds for that version itself, and the feed
+// must list both Mac chips' packages for that version (the client's selectOpenCodeRelease
+// rule). A package is uploaded only after this macOS runner
 // unpacks it to exactly OpenCode.app with bundle ai.opencode.desktop, codesign accepts the
 // Developer ID requirement pinned to team 5NZ4Q7NXJ4 and Gatekeeper accepts it, so the
 // client never downloads a package it would refuse. Nothing from the package is run.
 
-const FEED_URL = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
+const FEED_URL = 'https://github.com/anomalyco/opencode/releases/latest/download/latest-mac.yml'
+// 桶里 1.19.5 之前写的清单记的是这个来源；照样认，下一次同步写新清单时换成 FEED_URL。
+const RETIRED_FEED_URL = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
 const RELEASE_PATH_PREFIX = '/anomalyco/opencode/releases/'
 const ASSET_HOSTS = Object.freeze(['release-assets.githubusercontent.com', 'objects.githubusercontent.com'])
 // Keep the packages inside the already authorized manager prefix (docs/cos-sync-policy.json).
@@ -42,8 +47,8 @@ const HEAD_TIMEOUT_MS = 30000
 const VERSION_PATTERN = /^\d{1,4}\.\d{1,4}\.\d{1,6}$/
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
 const PLATFORMS = Object.freeze({
-  'macos-arm64': Object.freeze({ architecture: 'arm64', feedKey: 'darwin-aarch64', machine: 'arm64' }),
-  'macos-x64': Object.freeze({ architecture: 'x64', feedKey: 'darwin-x86_64', machine: 'x86_64' }),
+  'macos-arm64': Object.freeze({ architecture: 'arm64', machine: 'arm64' }),
+  'macos-x64': Object.freeze({ architecture: 'x64', machine: 'x86_64' }),
 })
 const PLATFORM_IDS = Object.freeze(Object.keys(PLATFORMS))
 const stageFailures = new WeakMap()
@@ -75,20 +80,34 @@ function validateHop(value) {
   throw checkFailure('source-url-rejected', `OpenCode 下载被转到了不认识的地址（${url.hostname}）`)
 }
 
-/** Same rule as selectOpenCodeRelease in electron/macos-desktop-app-installer.ts. */
+function zipFileName(platformId) {
+  return `opencode-desktop-mac-${PLATFORMS[platformId].architecture}.zip`
+}
+
+/**
+ * Same rule as selectOpenCodeRelease in electron/macos-desktop-app-installer.ts: latest-mac.yml is
+ * electron-updater's feed, written by OpenCode's finalize-latest-yml.ts. Only the one top-level
+ * version line is read, and the feed must list each Mac chip's zip for that version, which proves
+ * this release shipped the Mac desktop app; the .app.tar.gz of the same build sits beside it.
+ */
 function parseFeed(value) {
-  if (!isRecord(value) || !isRecord(value.platforms) || typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version)) throw checkFailure('metadata-invalid', 'OpenCode 的 latest.json 格式无效')
+  if (typeof value !== 'string') throw checkFailure('metadata-invalid', 'OpenCode 的 latest-mac.yml 格式无效')
+  const lines = value.split(/\r?\n/)
+  const versionLines = lines.filter(function (line) { return line.startsWith('version:') })
+  const version = versionLines.length === 1 ? /^version:[ \t]*(['"]?)(\d{1,4}\.\d{1,4}\.\d{1,6})\1[ \t]*$/.exec(versionLines[0])?.[2] : undefined
+  if (!version) throw checkFailure('metadata-invalid', 'OpenCode 的 latest-mac.yml 格式无效')
+  const urls = lines.map(function (line) { return /^[ \t]*-[ \t]+url:[ \t]*(\S+)[ \t]*$/.exec(line)?.[1] }).filter(Boolean)
   for (const platformId of PLATFORM_IDS) {
-    const entry = value.platforms[PLATFORMS[platformId].feedKey]
-    if (!isRecord(entry) || entry.url !== packageSourceUrl(value.version, platformId)) throw checkFailure('metadata-invalid', 'OpenCode 的 latest.json 没有写这一版的 Mac 安装包')
+    const zip = zipFileName(platformId)
+    if (!urls.some(function (url) { return url === zip || url === `https://github.com${RELEASE_PATH_PREFIX}download/v${version}/${zip}` })) throw checkFailure('metadata-invalid', 'OpenCode 的 latest-mac.yml 没有写这一版的 Mac 安装包')
   }
-  return value.version
+  return version
 }
 
 function validateLatest(value, publicUrl) {
   if (value === null || value === undefined) return null
   if (!isRecord(value) || value.schemaVersion !== 1 || value.product !== PRODUCT || typeof value.generatedAt !== 'string'
-    || typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version) || !isRecord(value.source) || value.source.feedUrl !== FEED_URL
+    || typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version) || !isRecord(value.source) || ![FEED_URL, RETIRED_FEED_URL].includes(value.source.feedUrl)
     || !Array.isArray(value.files) || value.files.length !== PLATFORM_IDS.length) throw checkFailure('cos-index-invalid', 'COS 现有 OpenCode 清单格式无效，已保留现有清单')
   const platforms = new Set()
   for (const file of value.files) {
@@ -177,7 +196,7 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
   })
   const version = await stage('source-feed', {}, async function () {
     const feedUrl = await resolveAssetUrl(FEED_URL, dependencies)
-    return parseFeed(await dependencies.fetchJson({ url: feedUrl, allowedHosts: ASSET_HOSTS, maxBytes: MAX_FEED_BYTES, headers: { accept: 'application/json', 'user-agent': 'xingmang-opencode-cos-sync/1' } }))
+    return parseFeed(await dependencies.fetchText({ url: feedUrl, allowedHosts: ASSET_HOSTS, maxBytes: MAX_FEED_BYTES, headers: { accept: '*/*', 'user-agent': 'xingmang-opencode-cos-sync/1' } }))
   })
   if (old && old.version === version) {
     let intact = true
@@ -202,7 +221,7 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
       })
       await stage('verify-package', { ...context, expectedBytes: downloaded.bytes }, async function () {
         const inspected = await dependencies.inspectPackage(filePath, workDirectory, PLATFORMS[platformId].machine)
-        if (inspected.version !== version) throw checkFailure('package-identity-mismatch', 'OpenCode 应用里写的版本和 latest.json 不一致', { expectedVersion: version, packageVersion: inspected.version, bundleIdentifier: inspected.bundleIdentifier })
+        if (inspected.version !== version) throw checkFailure('package-identity-mismatch', 'OpenCode 应用里写的版本和 latest-mac.yml 不一致', { expectedVersion: version, packageVersion: inspected.version, bundleIdentifier: inspected.bundleIdentifier })
       })
       const key = packageKey(platformId, downloaded.sha256)
       const published = await stage('cos-publish-package', { ...context, expectedBytes: downloaded.bytes }, async function (onProgress) {
@@ -320,7 +339,7 @@ async function inspectPackage(filePath, workDirectory, machine, run = promisify(
 
 function createRuntimeDependencies(common) {
   return {
-    fetchJson: common.fetchJson,
+    fetchText: common.fetchText,
     downloadResource: common.downloadResource,
     requestHead: function (url) { return requestHead(url) },
     inspectPackage: function (filePath, workDirectory, machine) { return inspectPackage(filePath, workDirectory, machine) },
@@ -351,6 +370,6 @@ if (require.main === module) {
   })
 }
 
-module.exports = { FEED_URL, ASSET_HOSTS, LATEST_KEY, PRODUCT, CONTENT_TYPE, VERIFICATION, BUNDLE_IDENTIFIER, TEAM_IDENTIFIER, MIN_PACKAGE_BYTES, MAX_PACKAGE_BYTES, PLATFORMS,
+module.exports = { FEED_URL, RETIRED_FEED_URL, ASSET_HOSTS, LATEST_KEY, PRODUCT, CONTENT_TYPE, VERIFICATION, BUNDLE_IDENTIFIER, TEAM_IDENTIFIER, MIN_PACKAGE_BYTES, MAX_PACKAGE_BYTES, PLATFORMS,
   packageFileName, packageSourceUrl, packageKey, validateHop, parseFeed, validateLatest, resolveAssetUrl, darwinOpenCodeRequirement, requestHead, inspectPackage,
   synchronizeOpenCode, createRuntimeDependencies, safeOpenCodeSyncFailure }
