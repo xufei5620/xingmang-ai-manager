@@ -16,8 +16,11 @@ import {
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotCounts,
+  videoStudioTotalSeconds,
+  videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
   type VideoStudioShot,
+  type VideoStudioTrimSide,
 } from './project'
 import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, videoStudioAspects, videoStudioFits, videoStudioResolutions } from './timeline'
 import { useVideoStudio, type VideoStudioBridge, type VideoStudioController, type VideoStudioOptions } from './useVideoStudio'
@@ -128,17 +131,18 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       </div>
     </Card>
 
-    {shots.length > 0 && <Card title={project.title || '分镜'} meta={`${shots.length} 个镜头 · 每段 ${settings.secondsPerShot} 秒 · 共约 ${shots.length * settings.secondsPerShot} 秒`} testId="video-shots"
+    {shots.length > 0 && <Card title={project.title || '分镜'} meta={`${shots.length} 个镜头 · 每段 ${settings.secondsPerShot} 秒 · 共约 ${videoStudioTotalSeconds(project)} 秒`} testId="video-shots"
       actions={generating
         ? <Button icon={Square} onClick={() => void studio.stopGenerating()} testId="video-generate-stop">停止生成</Button>
         : missing > 0 && <Button variant="primary" icon={Sparkles} disabled={studio.planning || composing || drawing} onClick={() => confirmGenerate(shots.filter((shot) => !shot.clip).map((shot) => shot.id))} testId="video-generate-all">{missing === shots.length ? `生成全部 ${missing} 段` : `生成剩下的 ${missing} 段`}</Button>}>
       <ol className="video-studio-shots">
-        {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} locked={studio.planning || composing}
+        {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} secondsPerShot={settings.secondsPerShot} locked={studio.planning || composing}
           onEdit={(patch) => studio.editShot(shot.id, patch)} onMove={(offset) => studio.moveShot(shot.id, offset)}
           onRemove={() => shot.clip ? setConfirmation({ kind: 'remove', id: shot.id }) : studio.removeShot(shot.id)}
           onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)}
           onPickImage={() => void studio.pickShotImage(shot.id)} onRemoveImage={() => studio.removeShotImage(shot.id)}
-          canDraw={Boolean(settings.imageModel && settings.imageGroup)} onDraw={() => setConfirmation({ kind: 'draw', id: shot.id })} onStopDrawing={() => void studio.stopDrawing(shot.id)} />)}
+          canDraw={Boolean(settings.imageModel && settings.imageGroup)} onDraw={() => setConfirmation({ kind: 'draw', id: shot.id })} onStopDrawing={() => void studio.stopDrawing(shot.id)}
+          onTrim={(side, seconds) => studio.setShotTrim(shot.id, side, seconds)} />)}
       </ol>
       {canAddVideoStudioShot(project) && <Button variant="ghost" icon={Plus} disabled={studio.planning || composing} onClick={studio.addShot} testId="video-shot-add">加一个镜头</Button>}
     </Card>}
@@ -257,10 +261,10 @@ const stageNames: Record<NonNullable<VideoStudioShot['stage']>, string> = { proc
 // yoyo 2026-11-09 批的字（「画图改」）。
 const drawTip = '按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费'
 
-function ShotRow({ shot, index, total, captions, locked, canDraw, onEdit, onMove, onRemove, onGenerate, onOpen, onPickImage, onRemoveImage, onDraw, onStopDrawing }: {
-  shot: VideoStudioShot, index: number, total: number, captions: boolean, locked: boolean, canDraw: boolean
+function ShotRow({ shot, index, total, captions, secondsPerShot, locked, canDraw, onEdit, onMove, onRemove, onGenerate, onOpen, onPickImage, onRemoveImage, onDraw, onStopDrawing, onTrim }: {
+  shot: VideoStudioShot, index: number, total: number, captions: boolean, secondsPerShot: number, locked: boolean, canDraw: boolean
   onEdit(patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>): void, onMove(offset: -1 | 1): void, onRemove(): void, onGenerate(): void, onOpen(): void
-  onPickImage(): void, onRemoveImage(): void, onDraw(): void, onStopDrawing(): void
+  onPickImage(): void, onRemoveImage(): void, onDraw(): void, onStopDrawing(): void, onTrim(side: VideoStudioTrimSide, seconds: number): void
 }) {
   // 画着图的这一镜和出着视频一样：画面描述、图、出视频、删都先不让动，画好的图才对得上这一镜。
   const drawing = isVideoStudioShotDrawing(shot)
@@ -300,6 +304,11 @@ function ShotRow({ shot, index, total, captions, locked, canDraw, onEdit, onMove
             <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked || !canDraw} onClick={onDraw} testId={`video-shot-draw-${index}`}>让 AI 画一张</Button>
           </>}
       </div>
+      {shot.clip && <div className="video-studio-shot-trim">
+        {(['start', 'end'] as const).map((side) => <Select key={side} label={side === 'start' ? '开头剪掉' : '结尾剪掉'} value={String((side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0)} disabled={busy || locked}
+          options={videoStudioTrimOptions(shot, side, secondsPerShot).map((seconds) => ({ value: String(seconds), label: seconds ? `${seconds} 秒` : '不剪' }))}
+          onChange={(event) => onTrim(side, Number(event.target.value))} testId={`video-shot-trim-${side}-${index}`} />)}
+      </div>}
       {shot.drawError && !drawing && <p className="video-studio-shot-error" role="alert" data-testid={`video-shot-draw-error-${index}`}>{shot.drawError}</p>}
       {shot.status === 'failed' && shot.error && <p className="video-studio-shot-error" role="alert">{shot.error}</p>}
       {shot.status === 'generating' && shot.progress !== undefined && <Progress value={shot.progress} label={`第 ${index + 1} 段生成进度`} />}

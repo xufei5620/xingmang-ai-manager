@@ -146,6 +146,19 @@ describe('VideoStudioPage', () => {
     expect(ready).not.toContain('data-testid="video-shot-draw-stop-1"')
   })
 
+  it('offers to trim the start and end of a shot only once it has a clip, and counts the trimmed seconds off the total', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>开头剪掉<\/label><select[^>]*data-testid="video-shot-trim-start-0"/)
+    expect(plain).toMatch(/<label[^>]*>结尾剪掉<\/label><select[^>]*data-testid="video-shot-trim-end-0"/)
+    expect(plain).toMatch(/data-testid="video-shot-trim-start-0"[^>]*><option value="0" selected="">不剪<\/option><option value="0.5">0.5 秒<\/option><option value="1">1 秒<\/option>/)
+    expect(plain).not.toContain('data-testid="video-shot-trim-start-1"')
+    const trimmed = render('ready', { ...project, shots: [{ ...project.shots[0], trimStart: 1, trimEnd: 0.5 }, project.shots[1]] })
+    expect(trimmed).toMatch(/data-testid="video-shot-trim-start-0"[^]*?<option value="1" selected="">1 秒<\/option>/)
+    expect(trimmed).toMatch(/data-testid="video-shot-trim-end-0"[^]*?<option value="0.5" selected="">0.5 秒<\/option>/)
+    expect(trimmed).toContain('2 个镜头 · 每段 6 秒 · 共约 11 秒')
+  })
+
   it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {
     const project = plannedProject()
     expect(render('ready', project)).toMatch(/title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG"[^>]*data-testid="video-music-add"[^>]*>[^]*?加配乐/)

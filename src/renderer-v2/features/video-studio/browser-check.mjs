@@ -865,6 +865,55 @@ test('draws a shot picture with AI before paying for the clip, and starts the cl
   await page.close()
 })
 
+// 剪头剪尾：每段开头、结尾按档剪掉几秒，拼出来的成片跟着短；换上新片段时清掉，重开页面还在。
+test('trims the start and end of each clip into the joined film, forgets the trim with a new clip and keeps it after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '早餐', { title: '早餐', shots: [{ prompt: '煎蛋' }, { prompt: '咖啡' }] })
+  assert.equal(await page.getByTestId('video-shot-trim-start-0').count(), 0)
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const requests = await studioCalls(page, 'generate')
+  await page.evaluate(([red, blue]) => Promise.all([window.videoStudioPage.finishClip(red, '#ff0000', false, 3), window.videoStudioPage.finishClip(blue, '#0000ff', false, 3)]), requests.map((input) => input.requestId))
+  await page.getByTestId('video-shot-trim-start-1').waitFor()
+  // 三秒的片段剪完至少留一秒：一头最多剪 2 秒，另一头剪了以后跟着少。
+  assert.deepEqual(await page.getByTestId('video-shot-trim-start-0').locator('option').allTextContents(), ['不剪', '0.5 秒', '1 秒', '1.5 秒', '2 秒'])
+  await page.getByTestId('video-shot-trim-start-0').selectOption('1')
+  await page.getByTestId('video-shot-trim-end-1').selectOption('0.5')
+  assert.deepEqual(await page.getByTestId('video-shot-trim-end-0').locator('option').allTextContents(), ['不剪', '0.5 秒', '1 秒'])
+  await page.getByText('共约 11 秒').waitFor()
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const inspected = await page.evaluate(() => window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { colors: [{ time: 1.5, x: 360, y: 640 }, { time: 3, x: 360, y: 640 }] }))
+  near(inspected.videoDuration, 4.5, 0.1, 'trimmed film duration')
+  closeColor(inspected.colors[0], [255, 0, 0], 'first shot keeps its last two seconds')
+  closeColor(inspected.colors[1], [0, 0, 255], 'second shot follows')
+
+  // 剪的长短一变，成片就对不上了，不再挂着。
+  await page.getByTestId('video-shot-trim-end-1').selectOption('0')
+  assert.equal(await page.getByTestId('video-result').count(), 0)
+
+  // 重开页面剪掉的还在。
+  await page.reload()
+  await page.locator('[data-testid="video-shot-trim-start-0"]').waitFor()
+  assert.equal(await page.getByTestId('video-shot-trim-start-0').inputValue(), '1')
+  assert.equal(await page.getByTestId('video-shot-trim-end-1').inputValue(), '0')
+
+  // 重新生成第一段：新片段从头用起，剪掉的清零。
+  await page.locator('[data-testid="video-video-model"][data-model="grok-imagine-video-1.5"]').waitFor()
+  await page.getByTestId('video-shot-generate-0').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '重新生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
+  // 重新生成的时候还是旧片段，剪不了。
+  assert.equal(await page.getByTestId('video-shot-trim-start-0').isDisabled(), true)
+  const [again] = await page.evaluate(() => window.videoStudioPage.pendingClips())
+  await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff00', false, 3), again.requestId)
+  await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-trim-start-0"]')?.value === '0')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
 // 「加配乐」：歌由主进程的系统对话框选、存进作品库（这里是假的桥），拼片时按编号读回来混进去；重开页面还在。
 test('lays a picked song under the joined film, with the clip sound turned down by default, and keeps it after reopening', async () => {
   const { page, errors } = await openStudio()
