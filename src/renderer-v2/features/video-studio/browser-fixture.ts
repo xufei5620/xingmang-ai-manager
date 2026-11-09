@@ -27,6 +27,8 @@ interface FixtureClipSpec {
   seconds: number
   color: string
   tone?: { frequency: number, channels: number }
+  /** 正片前面再藏几帧负时间的画面（编辑表那种，播放器不放），声音照样从 0 开始。 */
+  lead?: { seconds: number, color: string }
 }
 
 interface FixtureProbe {
@@ -55,6 +57,12 @@ async function makeClip(spec: FixtureClipSpec): Promise<ArrayBuffer> {
   const audio = spec.tone ? new AudioSampleSource({ codec: 'opus', quality: QUALITY_HIGH }) : null
   if (audio) output.addAudioTrack(audio)
   await output.start()
+  const leadFrames = Math.round((spec.lead?.seconds ?? 0) * spec.frameRate)
+  for (let index = -leadFrames; index < 0; index += 1) {
+    context.fillStyle = spec.lead?.color ?? spec.color
+    context.fillRect(0, 0, spec.width, spec.height)
+    await video.add(index / spec.frameRate, 1 / spec.frameRate)
+  }
   const frames = Math.round(spec.seconds * spec.frameRate)
   for (let index = 0; index < frames; index += 1) {
     context.fillStyle = spec.color
