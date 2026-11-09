@@ -665,3 +665,88 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
 export function videoStudioStorageKey(scope: string): string {
   return `xingmang-ui-v2:video-studio:${scope}`
 }
+
+/**
+ * 草稿箱：换下来的工程。正在做的那一份照旧存在 videoStudioStorageKey 那一格（老版本存的工程原样接得上），
+ * 草稿箱另存一格。只有手上什么都没在跑（没在写分镜、出片、画图、拼片）时才换，所以放进来的都是停着的工程；
+ * 上次关软件时没等到结果的片段在草稿里记着请求号，换回来时照重开页面那样去接回，不会再付一次。
+ */
+export interface VideoStudioDraft {
+  id: string
+  /** 放进草稿箱的时间（毫秒）。 */
+  savedAt: number
+  project: VideoStudioProject
+}
+
+// 一份工程存下来多是字（十几个镜头的描述和字幕），二十份也就几百 KB，localStorage 放得下；再多就请客户先删几份。
+export const maxVideoStudioDrafts = 20
+
+export function videoStudioDraftsStorageKey(scope: string): string {
+  return `${videoStudioStorageKey(scope)}:drafts`
+}
+
+/** 什么都没写的工程：没想法、没镜头。新建、换草稿时它不进草稿箱，直接扔掉。 */
+export function isVideoStudioProjectEmpty(project: VideoStudioProject): boolean {
+  return !project.settings.idea.trim() && project.shots.length === 0
+}
+
+export function serializeVideoStudioDrafts(drafts: readonly VideoStudioDraft[]): unknown {
+  return { version: 1, drafts: drafts.map((draft) => ({ id: draft.id, savedAt: draft.savedAt, project: serializeVideoStudioProject(draft.project) })) }
+}
+
+/** 读回草稿箱。认不出的那一份丢掉，别的照留；整格认不出就是空的。 */
+export function restoreVideoStudioDrafts(value: unknown, createId: () => string = createVideoStudioId): VideoStudioDraft[] {
+  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.drafts)) return []
+  const ids = new Set<string>()
+  const drafts: VideoStudioDraft[] = []
+  for (const entry of value.drafts) {
+    if (drafts.length >= maxVideoStudioDrafts) break
+    if (!isRecord(entry) || typeof entry.savedAt !== 'number' || !Number.isFinite(entry.savedAt) || entry.savedAt < 0) continue
+    const project = restoreVideoStudioProject(entry.project, createId)
+    if (!project || isVideoStudioProjectEmpty(project)) continue
+    let id = typeof entry.id === 'string' && requestIdPattern.test(entry.id) ? entry.id : createId()
+    if (ids.has(id)) id = createId()
+    ids.add(id)
+    drafts.push({ id, savedAt: entry.savedAt, project })
+  }
+  return drafts
+}
+
+/** 把手上这一份放到草稿箱最前面；空的不放。 */
+function stashVideoStudioProject(drafts: readonly VideoStudioDraft[], project: VideoStudioProject, now: number, createId: () => string): VideoStudioDraft[] {
+  return isVideoStudioProjectEmpty(project) ? [...drafts] : [{ id: createId(), savedAt: now, project }, ...drafts]
+}
+
+export function canStartVideoStudioProject(drafts: readonly VideoStudioDraft[], project: VideoStudioProject): boolean {
+  return !isVideoStudioProjectEmpty(project) && drafts.length < maxVideoStudioDrafts
+}
+
+/** 「新建一条」：手上这一份进草稿箱，换一份空的，画面比例、模型这些设置照旧。草稿箱满了或手上是空的就不动（null）。 */
+export function startVideoStudioProject(drafts: readonly VideoStudioDraft[], project: VideoStudioProject, now: number, createId: () => string = createVideoStudioId): { project: VideoStudioProject, drafts: VideoStudioDraft[] } | null {
+  if (!canStartVideoStudioProject(drafts, project)) return null
+  return { project: createVideoStudioProject({ ...project.settings, idea: '' }), drafts: stashVideoStudioProject(drafts, project, now, createId) }
+}
+
+/** 「接着做」：拿出草稿箱里的那一份，手上这一份放回草稿箱（空的扔掉），所以草稿箱不会变多。找不到那一份就不动（null）。 */
+export function openVideoStudioDraft(drafts: readonly VideoStudioDraft[], id: string, project: VideoStudioProject, now: number, createId: () => string = createVideoStudioId): { project: VideoStudioProject, drafts: VideoStudioDraft[] } | null {
+  const picked = drafts.find((draft) => draft.id === id)
+  if (!picked) return null
+  return { project: picked.project, drafts: stashVideoStudioProject(drafts.filter((draft) => draft.id !== id), project, now, createId) }
+}
+
+export function removeVideoStudioDraft(drafts: readonly VideoStudioDraft[], id: string): VideoStudioDraft[] {
+  return drafts.filter((draft) => draft.id !== id)
+}
+
+/** 草稿箱一行上的名字：片名，没有就用想法开头那几个字。 */
+export function videoStudioDraftName(project: VideoStudioProject): string {
+  const idea = videoStudioPlainText(project.settings.idea).replace(/\s+/g, ' ')
+  return project.title.trim() || (idea.length > 24 ? `${idea.slice(0, 24)}…` : idea) || '没起名的草稿'
+}
+
+/** 草稿箱一行上的说明：几个镜头、生成了几段、拼没拼成片。时间由页面接在后面。 */
+export function videoStudioDraftProgress(project: VideoStudioProject): string {
+  if (!project.shots.length) return '还没写分镜'
+  const made = project.shots.filter((shot) => shot.clip).length
+  return [`${project.shots.length} 个镜头`, `已生成 ${made} 段`, project.exported ? '已拼成片' : ''].filter(Boolean).join(' · ')
+}
