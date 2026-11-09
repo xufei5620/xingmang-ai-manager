@@ -32,6 +32,13 @@ export interface WindowLifecycleOptions {
    */
   confirmQuit?(): QuitConfirmation | Promise<QuitConfirmation>
   /**
+   * 退出放行前先让开着的画布按它自己的关窗流程收尾：存下最后不到一秒的改动；还有在生成的，
+   * 画布自己问一句（返回画布 / 停止本地任务并保存 / 等待完成后关闭）。返回 false = 用户回了画布，
+   * 这次退出作废，画布窗口已经回到前面。排在 confirmQuit 前面：画布不开着时它不弹也不等。
+   * 关机时不调，没人回答（#1368 第 9 条）。缺省 = 旧行为，画布直接被关掉。
+   */
+  closeCanvas?(): Promise<boolean>
+  /**
    * 拉起已经下载好的更新的安装器，只在 confirmQuit 选了 'install-update' 之后
    * 调用。安装器自己会让程序退出，所以它必须在 quitting 置位之后才跑，否则那次
    * 退出会被这套流程再拦一遍。抛错也不能否决用户已经做出的退出选择。
@@ -223,10 +230,23 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       return 'quit-requested'
     })
   }
+  // 画布收尾出错不能否决用户已经做出的退出选择；Mac 关机时系统来让程序退出，画布里开着的框也不等。
+  const canvasClosed = async (): Promise<boolean> => {
+    if (!options.closeCanvas || systemShuttingDown()) return true
+    try {
+      return await answerUnlessPowerOff(options.closeCanvas(), true)
+    } catch (error) {
+      reportError(error)
+      return true
+    }
+  }
   const confirmedQuit = async (): Promise<WindowCloseResult> => {
     // 关机 / 重启 / 注销时不问也不装：Windows 只给几秒钟，拦住它只会让系统强杀这个进程；
     // Mac 的确认框没人回答就拦住了关机，安装器在本进程里准备，也会被关机一起结束。
     // 下好的更新留到下次打开再装。
+    if (systemShuttingDown()) return performQuit()
+    if (!await canvasClosed()) return 'cancelled'
+    if (disposed) return 'cancelled'
     if (systemShuttingDown() || !options.confirmQuit) return performQuit()
     let confirmation: QuitConfirmation
     try {
@@ -256,6 +276,8 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       : Promise.resolve()
     if (explicitQuit || decision === 'quit') {
       await rememberChoice
+      if (!await canvasClosed()) return 'cancelled'
+      if (disposed) return 'cancelled'
       return performQuit()
     }
     if (decision === 'cancel') return cancelled()
