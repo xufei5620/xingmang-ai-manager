@@ -70,3 +70,36 @@ export function releaseCanvasDefaultProjectFolder(directory: string): void {
     }
   }
 }
+
+/**
+ * Clears a folder an import claimed a moment ago, after the import failed and
+ * its files were removed: every directory left empty, deepest first. Never a
+ * file or a link, so anything else that ended up in there stays where it is.
+ */
+export function releaseCanvasDefaultProjectFolderTree(directory: string): void {
+  removeEmptyDirectories(directory, 0)
+}
+
+function removeEmptyDirectories(directory: string, depth: number): void {
+  let stat: fs.Stats
+  try {
+    stat = fs.lstatSync(directory)
+  } catch {
+    return
+  }
+  if (!stat.isDirectory() || stat.isSymbolicLink()) return
+  if (depth < 8) {
+    let entries: string[] = []
+    try {
+      entries = fs.readdirSync(directory)
+    } catch {
+      return
+    }
+    for (const entry of entries) removeEmptyDirectories(path.join(directory, entry), depth + 1)
+  }
+  try {
+    fs.rmdirSync(directory)
+  } catch {
+    // Not empty: leave whatever is there.
+  }
+}

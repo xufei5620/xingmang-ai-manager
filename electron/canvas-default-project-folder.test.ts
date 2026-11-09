@@ -7,6 +7,7 @@ import {
   claimCanvasDefaultProjectFolder,
   describeCanvasDefaultProjectFolderFailure,
   releaseCanvasDefaultProjectFolder,
+  releaseCanvasDefaultProjectFolderTree,
 } from './canvas-default-project-folder'
 
 // 新建画布项目默认放进「文档 › 星芒画布 › 项目名」：文件夹名能在三个系统上建出来，已经在的文件夹绝不复用。
@@ -82,6 +83,36 @@ describe('canvas default project folder', () => {
     releaseCanvasDefaultProjectFolder(used)
     expect(fs.readFileSync(path.join(used, 'assets', 'image.png'), 'utf8')).toBe('png')
     expect(() => releaseCanvasDefaultProjectFolder(path.join(root, 'gone'))).not.toThrow()
+  })
+
+  it('clears the empty folders a failed import left behind but keeps every file and link', () => {
+    const root = defaultRoot()
+    const emptied = claimCanvasDefaultProjectFolder(root, '导入失败')
+    fs.mkdirSync(path.join(emptied, 'assets', 'images', '2026-11'), { recursive: true })
+    fs.mkdirSync(path.join(emptied, 'assets', 'videos'))
+    releaseCanvasDefaultProjectFolderTree(emptied)
+    expect(fs.existsSync(emptied)).toBe(false)
+
+    const kept = claimCanvasDefaultProjectFolder(root, '留了文件')
+    fs.mkdirSync(path.join(kept, 'assets', 'images'), { recursive: true })
+    fs.mkdirSync(path.join(kept, 'assets', 'videos'))
+    fs.writeFileSync(path.join(kept, 'assets', 'images', 'left.png'), 'png')
+    releaseCanvasDefaultProjectFolderTree(kept)
+    expect(fs.readFileSync(path.join(kept, 'assets', 'images', 'left.png'), 'utf8')).toBe('png')
+    expect(fs.existsSync(path.join(kept, 'assets', 'videos'))).toBe(false)
+    expect(() => releaseCanvasDefaultProjectFolderTree(path.join(root, 'gone'))).not.toThrow()
+  })
+
+  it.runIf(process.platform !== 'win32')('never follows a link while clearing a failed import', () => {
+    const root = defaultRoot()
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-default-folder-outside-'))
+    roots.push(outside)
+    fs.mkdirSync(path.join(outside, 'empty-but-mine'))
+    const claimed = claimCanvasDefaultProjectFolder(root, '带链接')
+    fs.symlinkSync(outside, path.join(claimed, 'assets'))
+    releaseCanvasDefaultProjectFolderTree(claimed)
+    expect(fs.existsSync(path.join(outside, 'empty-but-mine'))).toBe(true)
+    expect(fs.lstatSync(path.join(claimed, 'assets')).isSymbolicLink()).toBe(true)
   })
 
   it('describes failures without the system message or the path', () => {

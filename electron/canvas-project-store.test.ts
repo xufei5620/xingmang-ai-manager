@@ -249,6 +249,27 @@ describe('CanvasProjectStore', () => {
     await expect(store.list(36)).resolves.toHaveLength(1)
   })
 
+  it('registers an imported project whose assets are already in its folder, with the folder checks of create', async () => {
+    const { workspace, store } = createFixture('imported')
+    fs.mkdirSync(path.join(workspace, 'assets'))
+    fs.writeFileSync(path.join(workspace, 'assets', 'already-imported.wav'), 'wav')
+
+    const created = await store.createImported(36, '导入的项目', workspace, workflow('包里的名字'))
+    expect(JSON.parse(created.content)).toMatchObject({ name: '导入的项目', nodes: [{ id: 'audio' }] })
+    expect(created.project).toMatchObject({ name: '导入的项目', nodeCount: 1, assetCount: 1, workspaceStatus: 'ready' })
+    expect(fs.readFileSync(path.join(workspace, 'assets', 'already-imported.wav'), 'utf8')).toBe('wav')
+    await expect(store.open(36, created.project.id)).resolves.toMatchObject({ project: { id: created.project.id } })
+
+    await expect(store.createImported(36, '再导一次', workspace, workflow('包'))).rejects.toThrow('已绑定项目「导入的项目」')
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-imported-other-'))
+    roots.push(other)
+    await expect(store.createImported(36, '名字\n带换行', other, workflow('包'))).rejects.toThrow('项目名称无效')
+    const unsafe = { ...JSON.parse(workflow('包')), apiKey: 'sk-should-not-be-stored' }
+    await expect(store.createImported(36, '不安全', other, JSON.stringify(unsafe))).rejects.toThrow('未知或敏感字段')
+    await expect(store.createImported(36, '不在的文件夹', path.join(other, 'missing'), workflow('包'))).rejects.toThrow()
+    await expect(store.list(36)).resolves.toHaveLength(1)
+  })
+
   it('rejects non-empty duplicate targets and legacy project copies without deleting user files', async () => {
     const { root, workspace, store } = createFixture('duplicate-reject')
     const created = await store.create(36, '源项目', workspace)

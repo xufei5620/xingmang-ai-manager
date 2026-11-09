@@ -30,7 +30,7 @@ import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
-import { canvasHostChannels, type CanvasAppearance } from './canvas-contract'
+import { canvasHostChannels, type CanvasAppearance, type CanvasProjectImportResult } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
   linuxRendererSandboxRefusalMessage,
@@ -66,9 +66,9 @@ import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
-import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder } from './canvas-default-project-folder'
+import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
-import type { CanvasProjectAssetManager } from './canvas-project-asset-manager'
+import type { CanvasProjectAssetContext, CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { CanvasGenerationAdmission } from './canvas-generation-admission'
 import {
@@ -144,6 +144,29 @@ const maximumBodyLength = 2_000
 const canvasNotificationIntervalMs = 5_000
 const defaultCanvasProjectFileName = 'xingmang-project.xingcanvas'
 const canvasProjectFileFilter = { name: '星芒画布项目', extensions: ['xingcanvas'] }
+
+interface PendingCanvasProjectImport {
+  previewId: string
+  userId: number
+  parsed: ParsedCanvasProjectPackage
+  /** Imported as a new project in the default folder, leaving the open one alone. */
+  createsProject: boolean
+  projectName: string
+}
+
+/**
+ * The new project's name: the package's own workflow name, else the file's
+ * name without its extension. The package comes from anyone, so control
+ * characters become spaces here instead of failing the import at the very end.
+ */
+export function importedCanvasProjectName(workflowName: unknown, filePath: string): string {
+  function cleaned(value: string): string {
+    return value.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim()
+  }
+  const named = typeof workflowName === 'string' ? cleaned(workflowName) : ''
+  if (named) return named
+  return cleaned(path.basename(filePath).replace(/\.xingcanvas$/i, '')) || '导入的项目'
+}
 
 export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
@@ -332,7 +355,7 @@ export function createCanvasWindowController(
     window: BrowserWindow; requestId: string; authorized: boolean
     promise: Promise<boolean>; resolve(result: boolean): void; timer: ReturnType<typeof setTimeout>
   } | null = null
-  const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
+  const pendingProjects = new Map<number, PendingCanvasProjectImport>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
   const generationAdmission = new CanvasGenerationAdmission()
   let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
@@ -1149,13 +1172,16 @@ export function createCanvasWindowController(
     const parsed = parseCanvasProjectPackage(await readBoundedUtf8File(filePath, maximumCanvasProjectBytes, '画布项目导入文件'))
     assertCanvasUserUnchanged(userId)
     const previewId = createCanvasProjectPreviewId()
-    pendingProjects.set(event.sender.id, { previewId, userId, parsed })
+    // 有默认项目文件夹时导入成一个新项目（画布完善第 16 条），现在打开的项目不动；没有时照旧换掉当前画布。
+    const createsProject = Boolean(options.projects && options.projectAssets && options.defaultProjectsDirectory)
+    pendingProjects.set(event.sender.id, { previewId, userId, parsed, createsProject, projectName: importedCanvasProjectName(parsed.workflow.name, filePath) })
     return {
       previewId, name: path.basename(filePath), workflowName: String(parsed.workflow.name),
       nodeCount: (parsed.workflow.nodes as unknown[]).length,
       edgeCount: (parsed.workflow.edges as unknown[]).length,
       assetCount: parsed.assets.length,
       warnings: parsed.warnings,
+      ...(createsProject ? { createsProject: true } : {}),
     }
   })
 
@@ -1166,6 +1192,7 @@ export function createCanvasWindowController(
     if (!pending || pending.previewId !== previewId) throw new Error('画布项目预览已失效，请重新选择文件')
     pendingProjects.delete(event.sender.id)
     if (pending.userId !== userId) throw new Error('星芒账号已切换，请重新选择画布项目')
+    if (pending.createsProject) return importAsNewProject(userId, pending)
     const imported: string[] = []
     const mappings = new Map<string, string>()
     const context = await activeAssetContext(event.sender.id, userId)
@@ -1195,6 +1222,55 @@ export function createCanvasWindowController(
       importedAssetCount: imported.length,
     }
   })
+
+  // 导入成新项目：文件夹跟「创建」一样建在「文档 › 星芒画布」下面（不带 recursive、同名加「 (2)」，不会用已经在的文件夹），
+  // 素材先放进新文件夹，最后才登记项目；中途出错就删掉刚放进去的素材和空文件夹，项目中心里不会多出一个半成品。
+  // 这里不换当前项目：画布拿到 projectId 以后自己走「打开项目」，打不开时原来那个项目照旧能保存。
+  async function importAsNewProject(userId: number, pending: PendingCanvasProjectImport): Promise<CanvasProjectImportResult> {
+    const projects = options.projects
+    const projectAssets = options.projectAssets
+    const projectsDirectory = options.defaultProjectsDirectory
+    if (!projects || !projectAssets || !projectsDirectory) throw new Error('导入成新项目暂时不可用，请重新选择文件')
+    let directory: string
+    try {
+      directory = claimCanvasDefaultProjectFolder(projectsDirectory(), pending.projectName)
+    } catch (error) {
+      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），这次没有导入`)
+    }
+    const imported: string[] = []
+    const mappings = new Map<string, string>()
+    let context: CanvasProjectAssetContext | undefined
+    let created: Awaited<ReturnType<CanvasProjectStore['createImported']>>
+    try {
+      context = projectAssets.forNewWorkspace(directory)
+      for (const entry of pending.parsed.assets) {
+        assertCanvasUserUnchanged(userId)
+        const asset = await context.images.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
+        imported.push(asset.assetId)
+        await context.media.setSource(userId, asset.assetId, 'imported').catch((error) => {
+          options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '项目素材已导入，但来源信息保存失败', {
+            assetId: asset.assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        })
+        mappings.set(entry.assetId, asset.assetId)
+      }
+      assertCanvasUserUnchanged(userId)
+      created = await projects.createImported(userId, pending.projectName, directory, remapCanvasProjectWorkflow(pending.parsed.workflow, mappings))
+    } catch (error) {
+      const images = context?.images
+      if (images) await Promise.all(imported.map((assetId) => images.removeOwned(userId, assetId).catch(() => undefined)))
+      releaseCanvasDefaultProjectFolderTree(directory)
+      throw error
+    }
+    assertCanvasUserUnchanged(userId)
+    return {
+      content: created.content,
+      warnings: pending.parsed.warnings,
+      importedAssetCount: imported.length,
+      projectId: created.project.id,
+    }
+  }
 
   const unsubscribeRunEvents = options.canvasRuns.subscribe(({ event, userId, ownerId }) => {
     if (!canvasWindow || canvasWindow.isDestroyed()) return

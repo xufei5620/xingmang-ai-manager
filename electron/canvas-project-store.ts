@@ -359,6 +359,34 @@ export class CanvasProjectStore {
     })
   }
 
+  /**
+   * A project package imported as a new project. The caller has already put
+   * the package's assets into this folder's own asset stores, so unlike
+   * createWithContent() the content may use assets; the folder goes through
+   * the same checks as create() and is registered last, after the files are in.
+   */
+  async createImported(userId: number, nameInput: string, workspaceInput: string, content: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
+    return this.enqueue(userId, async () => {
+      const name = normalizedProjectName(nameInput)
+      const parsed = parseCanvasProjectWorkflow(content)
+      const workflow = { ...parsed.workflow, name }
+      const workspaceDirectory = normalizedWorkspaceDirectory(workspaceInput, true)
+      const existing = await this.list(userId)
+      if (existing.length >= maximumProjects) throw new Error('画布项目已达到数量上限')
+      for (const project of existing) {
+        const bound = await this.getWorkspaceDirectory(userId, project.id)
+        if (bound && sameLocalPathIdentity(bound, workspaceDirectory)) {
+          throw new Error(`该工作文件夹已绑定项目「${project.name}」，请为新项目选择单独的文件夹`)
+        }
+      }
+      ensureSafeDataDirectory(path.join(workspaceDirectory, 'assets'), '画布项目素材')
+      const now = new Date().toISOString()
+      const stored = { id: randomUUID(), createdAt: now, updatedAt: now, lastOpenedAt: now, workspaceDirectory, workflow }
+      await this.write(userId, stored)
+      return { project: this.summary(stored), content: JSON.stringify(workflow) }
+    })
+  }
+
   async open(userId: number, projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string }> {
     return this.enqueue(userId, async () => {
       const stored = await this.readProject(userId, projectId)
