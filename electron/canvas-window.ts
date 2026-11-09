@@ -1466,7 +1466,7 @@ export function createCanvasWindowController(
     // Every popup request is denied. A link the canvas opens with
     // window.open or target="_blank" reaches the OS browser only when it is
     // an exact match on the canvas's own allowlist (main.ts), and that list is
-    // empty: the synced kernel opens no external page, and
+    // empty: the synced kernel links to no fixed external page, and
     // scripts/verify-canvas-external-links.test.cjs fails if an entry is added
     // that the kernel source does not contain.
     window.webContents.setWindowOpenHandler(({ url }) => {
