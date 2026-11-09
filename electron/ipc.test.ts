@@ -1681,6 +1681,57 @@ describe('registerIpcHandlers', () => {
     }
   })
 
+  // 0.2.24 深查 R1：开机同步画图技能时，把这台电脑加密缓存里已经知道明文的几把交给签发那一步认，
+  // 认出来就不再取明文（取明文跟登录共用按出口 IP 的限流），写进去的两把也记回同一份缓存。
+  it('lets the image Skill reuse plaintexts from the encrypted key cache of the active site', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { baseUrl: 'https://xm.solov.cc/v1' } } } as never)
+    const accountService = Object.assign(accountServiceStub(), { getActiveSiteId: vi.fn(() => 'solov' as const) })
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 9 } } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: input?.name === XINGMANG_AI_SKILL_KEY_NAME ? 42 : 2,
+      name: input?.name ?? 'key',
+      key: input?.name === XINGMANG_AI_SKILL_KEY_NAME ? 'sk-ipc-skill-image-key-123456' : 'sk-cached-codex-not-for-ipc',
+    }))
+    const cached = providerIds.map((provider, index) => ({
+      id: index + 1,
+      provider,
+      group: managedCliKeyProfiles[provider].group,
+      name: managedCliKeyProfiles[provider].keyName,
+      key: `sk-cached-${provider}-not-for-ipc`,
+    }))
+    const saveSkillKeys = vi.fn(async () => undefined)
+    register(service, 'C:\\app-data\\logs', undefined, accountService, undefined, {
+      read: vi.fn(async () => cached),
+      save: vi.fn(),
+      remove: vi.fn(),
+      captureRevision: vi.fn(() => 1),
+      getSiteId: () => 'solov',
+      readSkillKeys: vi.fn(async () => undefined),
+      saveSkillKeys,
+    }, {
+      xingmangAiSkill: { bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')), userHome },
+    })
+
+    try {
+      const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
+      expect(JSON.stringify(summary)).not.toContain('not-for-ipc')
+      expect(JSON.stringify(summary)).not.toContain('sk-ipc-skill-image-key-123456')
+      const knownKeys = cached.map(({ id, key }) => ({ id, key }))
+      expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ name: managedCliKeyProfiles.codex.keyName, knownKeys }))
+      expect(accountService.provisionCliKey).toHaveBeenCalledWith(expect.objectContaining({ name: XINGMANG_AI_SKILL_KEY_NAME, knownKeys }))
+      expect(saveSkillKeys).toHaveBeenCalledWith(9, expect.objectContaining({
+        image: expect.objectContaining({ id: 42, key: 'sk-ipc-skill-image-key-123456' }),
+      }))
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
+  })
+
   // 画图技能签 Codex Key 跟工具那一轮走同一层包装：读不到撤销后待补的额度记录就不签，不能绕过去另签一把不限额的。
   it('does not let the image Skill issue a Codex key the tool round would hold back', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
