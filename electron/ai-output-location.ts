@@ -2,7 +2,13 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
 import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8File } from './safe-local-data'
-import { AiAssetMetadataStore, aiAssetMetadataFileName, aiAssetMetadataMaximumBytes } from './ai-asset-metadata-store'
+import {
+  AiAssetMetadataStore,
+  aiAssetMetadataDirectoryName,
+  aiAssetMetadataFileName,
+  aiAssetMetadataMaximumBytes,
+  aiAssetMetadataShardFilePattern,
+} from './ai-asset-metadata-store'
 import { resolveStarterWorkspaceParent, type StarterWorkspaceLocationContext } from './starter-workspace'
 import { isWritePermissionError, probeDirectoryWritableSync } from './documents-fallback'
 
@@ -144,8 +150,8 @@ export interface MigrateLegacyAiOutputOptions {
 const userDirectoryPattern = /^user-[1-9]\d*$/
 
 /**
- * 把老位置里各账号的作品搬到新位置，布局不变（user-<id>/<日期>/xingmang-<编号>.<扩展名>
- * 与 user-<id>/asset-metadata.json）。
+ * 把老位置里各账号的作品搬到新位置，布局不变（user-<id>/<日期>/xingmang-<编号>.<扩展名>、
+ * user-<id>/asset-metadata/ 下的分片，以及 0.2.24 之前的 user-<id>/asset-metadata.json）。
  *
  * 画布、聊天记录、视频任务存的都是作品编号，从不存路径（xingmang-asset://<类型>/<编号>
  * 按编号在输出根下查找），所以只要布局不变，搬完之后老作品照样打开，无需改任何引用。
@@ -159,9 +165,10 @@ const userDirectoryPattern = /^user-[1-9]\d*$/
  * move. An existing file at the destination is never replaced (AGENTS.md I8).
  * Anything refused stays where it was; nothing is ever deleted unless its bytes
  * now exist at the new location. The one exception to "never replace" is each
- * account's metadata file, which is merged record by record into the new one
- * (see mergeMetadataFile). Safe to run again: a finished move leaves nothing to
- * do, and merging the same records twice changes nothing.
+ * account's metadata (the single file from before 0.2.24 and every shard),
+ * which is merged record by record into the new one (see mergeMetadataFile).
+ * Safe to run again: a finished move leaves nothing to do, and merging the
+ * same records twice changes nothing.
  */
 export async function migrateLegacyAiOutput(
   from: string,
@@ -251,7 +258,8 @@ async function moveTree(
   for (const entry of entries) {
     const from = path.join(source, entry.name)
     const to = path.join(target, entry.name)
-    if (entry.isDirectory()) await moveTree(from, to, result, options, null)
+    if (entry.isDirectory() && account && entry.name === aiAssetMetadataDirectoryName) await mergeMetadataDirectory(from, to, account, result, options)
+    else if (entry.isDirectory()) await moveTree(from, to, result, options, null)
     else if (entry.isFile() && account && entry.name === aiAssetMetadataFileName) await mergeMetadataFile(from, account, result)
     else if (entry.isFile()) await moveFile(from, to, result, options)
     else result.kept += 1
@@ -302,12 +310,13 @@ async function moveFile(
 }
 
 /**
- * The account's metadata file carries favorites, tags, prompts and recycle-bin
- * state keyed by asset id. Skipping it when the new folder already has one
- * (as plain files are skipped) would move the assets but leave their records
- * behind, so trashed assets would reappear and favorites vanish. It is merged
- * instead, and the old copy goes only after the merged state is written; a file
- * that cannot be read or merged stays where it was.
+ * The account's metadata (the single file, or one shard) carries favorites,
+ * tags, prompts and recycle-bin state keyed by asset id. Skipping it when the
+ * new folder already has one (as plain files are skipped) would move the assets
+ * but leave their records behind, so trashed assets would reappear and
+ * favorites vanish. It is merged instead, and the old copy goes only after the
+ * merged state is written; a file that cannot be read or merged stays where it
+ * was.
  */
 async function mergeMetadataFile(source: string, account: AccountFolder, result: AiOutputMigrationResult): Promise<void> {
   try {
@@ -324,6 +333,55 @@ async function mergeMetadataFile(source: string, account: AccountFolder, result:
   } catch {
     result.failed += 1
   }
+}
+
+/**
+ * The shard folder is never renamed into place whole, even when the new
+ * account folder has none: the live store may be writing a shard at that very
+ * moment, and a folder dropped in beside its read-modify-write would be
+ * overwritten. Every shard goes through the store's queue instead, and leaves
+ * the old folder only once its records are written. Anything else in there (a
+ * backup the store set aside) moves like any other file.
+ */
+async function mergeMetadataDirectory(
+  source: string,
+  target: string,
+  account: AccountFolder,
+  result: AiOutputMigrationResult,
+  options: MigrateLegacyAiOutputOptions,
+): Promise<void> {
+  let entries: fs.Dirent[]
+  try {
+    assertNoReparseComponents(source, LABEL)
+    const stats = await fs.promises.lstat(source)
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      result.kept += 1
+      return
+    }
+    entries = await fs.promises.readdir(source, { withFileTypes: true })
+  } catch {
+    result.failed += 1
+    return
+  }
+  for (const entry of entries) {
+    const from = path.join(source, entry.name)
+    if (entry.isFile() && aiAssetMetadataShardFilePattern.test(entry.name)) {
+      await mergeMetadataFile(from, account, result)
+      continue
+    }
+    if (!entry.isFile()) {
+      result.kept += 1
+      continue
+    }
+    try {
+      ensureSafeDataDirectory(target, LABEL)
+    } catch {
+      result.failed += 1
+      continue
+    }
+    await moveFile(from, path.join(target, entry.name), result, options)
+  }
+  await removeIfEmpty(source)
 }
 
 async function pathExists(target: string): Promise<boolean> {
