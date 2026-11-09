@@ -19,7 +19,7 @@ import { managedSwitchVersion } from './managed-switch'
 import { canSwitchToManagedInstall, presentTools, providerFor, recommendedVersionVerb, spacedName, type ToolId } from './model'
 import { describeNodeReplaceOutcome } from './node-replace'
 import { describeRuntimeInstallOutcome, type RuntimeInstallOutcome } from './runtime-install-outcome'
-import { cliInstallStageLabel, cliNeedsNodeRuntime, planCliInstall, runtimeStageFailureMessage, type InstallRuntimeId } from './runtime-readiness'
+import { cliInstallStageLabel, cliNeedsNodeRuntime, planCliInstall, prepareSharedRuntime, runtimeStageFailureMessage, type InstallRuntimeId } from './runtime-readiness'
 import { jobToolName, withoutTool } from './tool-jobs'
 import { rememberRevertedToolUpdate } from './update-notice'
 import { uninstallHandOffNotice } from './uninstall-handoff'
@@ -191,17 +191,15 @@ export function useToolInstall(options: ToolInstallOptions) {
     return false
   }
   /**
-   * 串在「安装」里的运行环境那一段。单独占一个 node / python 任务，运行环境卡上
-   * 的进度条照常走；那个任务已经在跑（用户先点过运行环境卡）时不重复发起。
+   * 串在「安装」里的运行环境那一段。单独占一个 node 任务，运行环境卡上的进度条照常走；
+   * 那个任务已经在跑（先点的另一个工具、运行环境卡）时不重复发起，跟着等它装完（BF3）。
    */
   async function prepareRuntimeForInstall(runtime: InstallRuntimeId, toolName: string): Promise<RuntimeInstallOutcome> {
     try {
-      const done: { outcome?: RuntimeInstallOutcome } = {}
-      const started = await toolbox.run(runtime, '正在准备运行环境', async () => {
-        done.outcome = describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime))
-      })
-      if (!started || !done.outcome) throw new Error('运行环境正在准备，请等它完成后再点「安装」。')
-      return done.outcome
+      return await prepareSharedRuntime(
+        (work) => toolbox.run(runtime, '正在准备运行环境', work),
+        async () => describeRuntimeInstallOutcome(runtime, await toolsApi.prepareRuntime(runtime)),
+      )
     } catch (cause) {
       // 原话留着不先翻成中文：外层的错误分类要靠 ENOSPC、ETIMEDOUT 这类原词认出
       //「磁盘满」「下载超时」，展示前 errorMessage 会统一脱敏。

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { sanitizeUpstreamDetail } from './command-runner'
 import { managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage } from './account-key-quota'
-import { buildAccountKeyName } from './catalog'
+import { accountKeyNameMaxBytes, buildAccountKeyName, utf8Length } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
@@ -3919,11 +3919,13 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   // Shared guards for createKey/updateKey -- same defense-in-depth posture
   // as revokeKey above (I5: this client is callable outside the IPC layer).
-  // 50 is AddToken/UpdateToken's own server-side name cap (rc.24).
+  // AddToken/UpdateToken cap the name at 50 UTF-8 bytes (Go len), not 50
+  // characters: a 17-character Chinese name is 51 bytes and the server
+  // refuses it (ZW-1), so count what the server counts.
   function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): { name: string; group: string } {
     const name = input.name.trim()
     if (!name) throw new Error('请输入密钥名称')
-    if (name.length > 50) throw new Error('密钥名称不能超过 50 个字符')
+    if (utf8Length(name) > accountKeyNameMaxBytes) throw new Error('密钥名称不能超过 50 个字符')
     const group = input.group.trim()
     if (!group || group.length > 128) throw new Error('请选择有效分组')
     if (!input.unlimitedQuota && (!Number.isInteger(input.remainQuota) || input.remainQuota < 0)) {

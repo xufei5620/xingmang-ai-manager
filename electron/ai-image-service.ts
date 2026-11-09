@@ -13,7 +13,9 @@ import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
+import { networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { unsentRequestFailure } from './relay-line-fetch'
 
 const DEFAULT_TIMEOUT_MS = 320_000
 const DEFAULT_MAX_ACTIVE = 2
@@ -315,6 +317,13 @@ export function createAiImageService(options: {
           response = await request(credential, signal, () => { operation.dispatched = true })
         } catch (error) {
           if (!signal.aborted && operation.dispatched) {
+            // 断网、解析不出地址、连不上、代理回绝：请求根本没出去，没扣钱，照网络原因说，客户放心再点一次。
+            // 说成「结果不明确，请勿重复提交」，客户会以为扣了钱还不敢重试（深查 W-1）。
+            const unsent = unsentRequestFailure(error)
+            if (unsent) {
+              operation.dispatched = false
+              throw new Error(networkFailureMessages[unsent])
+            }
             throw ambiguousImageSubmission()
           }
           throw error
