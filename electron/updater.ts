@@ -749,12 +749,23 @@ export function decideUpdateOffer(input: {
   return { offer: true }
 }
 
-// Chromium reports an unreachable proxy as a structured net error code. The
-// only reaction to it is taking the updater session off the user's proxy, so
-// the match must never be made against free text: a release note, a mirror's
-// HTML error page or a manifest field that merely mentions the code would
-// otherwise be enough to bypass a proxy the user deliberately configured.
+// The only reaction to an unreachable proxy is taking the updater session off
+// the user's proxy, so the match must never be made against free text: a
+// release note, a mirror's HTML error page or a manifest field that merely
+// mentions the code would otherwise be enough to bypass a proxy the user
+// deliberately configured.
+//
+// Electron's net module (lib/common/api/net-client-request.ts, which
+// electron-updater's executor uses for both the check and the download) does
+// not attach a code: it rejects with `new Error('net::ERR_PROXY_CONNECTION_FAILED')`
+// and builder-util-runtime passes that error through untouched. Running
+// Electron 45.1.0 + electron-updater 6.8.9 against a closed proxy port gives a
+// plain Error whose only own keys are `stack` and `message`. So the message is
+// accepted, but only when it is the whole message of an Error -- exactly what
+// Electron constructs -- never when the code appears inside a longer text.
+// The structured `code` is still accepted for errors that do carry one.
 const PROXY_CONNECTION_FAILED_CODE = 'ERR_PROXY_CONNECTION_FAILED'
+const PROXY_CONNECTION_FAILED_NET_MESSAGE = `net::${PROXY_CONNECTION_FAILED_CODE}`
 
 function isProxyConnectionFailure(error: unknown): boolean {
   // electron-updater wraps executor failures, so follow a bounded cause chain
@@ -763,6 +774,7 @@ function isProxyConnectionFailure(error: unknown): boolean {
   for (let depth = 0; depth < 4 && candidate !== null && candidate !== undefined; depth += 1) {
     const code = (candidate as { code?: unknown }).code
     if (typeof code === 'string' && code.toUpperCase() === PROXY_CONNECTION_FAILED_CODE) return true
+    if (candidate instanceof Error && candidate.message === PROXY_CONNECTION_FAILED_NET_MESSAGE) return true
     candidate = (candidate as { cause?: unknown }).cause
   }
   return false
