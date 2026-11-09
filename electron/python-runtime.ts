@@ -16,7 +16,7 @@ import {
   type NodeRuntimeProcessPlan,
   type SystemWingetResolution,
 } from './node-runtime'
-import { downloadWithResume } from './download-retry'
+import { createDownloadDeadline, downloadWithResume } from './download-retry'
 import { sameLocalPathIdentity } from './path-identity'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
@@ -102,7 +102,6 @@ function releaseFilesUrl(releaseId: number) {
   return `https://www.python.org/api/v2/downloads/release_file/?os=1&release=${releaseId}`
 }
 const metadataTimeoutMs = 30_000
-const downloadTimeoutMs = 10 * 60_000
 const installerTimeoutMs = 15 * 60_000
 const maximumReleaseIndexBytes = 512 * 1024
 const maximumReleaseFilesBytes = 256 * 1024
@@ -408,7 +407,8 @@ async function downloadInstaller(
 ): Promise<{ filePath: string; sha256: string }> {
   const filePath = path.join(directory, asset.fileName)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new Error('Python 安装包下载超时')), downloadTimeoutMs)
+  // 深查 D-1：和 Node.js 一样 3 分钟没进展才停、30 分钟兜底，不再从开始就掐着 10 分钟；到点的那句不变。
+  const deadline = createDownloadDeadline('Python 安装包下载超时', (reason) => controller.abort(reason))
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   const progress = (transferredBytes: number, message: string) => report(options, {
@@ -443,7 +443,10 @@ async function downloadInstaller(
         // 官方发布信息里的大小是可信的总长，没有 Content-Length 时也拿它核对续传。
         return asset.fileSize
       },
-      onProgress: (transferredBytes) => progress(transferredBytes, `正在下载 Python ${asset.version} 官方安装包`),
+      onProgress: (transferredBytes) => {
+        deadline.progressed(transferredBytes)
+        progress(transferredBytes, `正在下载 Python ${asset.version} 官方安装包`)
+      },
       onResume: (transferredBytes) => progress(
         transferredBytes,
         `网络断了一下，正在接着下载 Python ${asset.version} 官方安装包`,
@@ -455,7 +458,7 @@ async function downloadInstaller(
     await fs.promises.rm(filePath, { force: true }).catch(() => undefined)
     throw error
   } finally {
-    clearTimeout(timeout)
+    deadline.stop()
     options.signal?.removeEventListener('abort', abort)
   }
 }
