@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
+import { tutorialTopics } from '../../registry/tutorials'
 import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioShotImage, videoStudioStorageKey, type VideoStudioProject } from './project'
 import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
 import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
@@ -213,5 +214,20 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('data-testid="video-result-save"')
     expect(markup).toMatch(/data-testid="video-result-folder"[^>]*>[^]*?打开文件夹/)
     expect(markup).toContain('12 秒 · 720 × 1280')
+  })
+
+  // 教程「视频剪辑」一章（清单第 11 项）照这一页的字教：页面改了按钮名、忘了改教程，这里会红。
+  it('shows every button and field the video tutorial tells the customer to look for', () => {
+    const topic = tutorialTopics.find((entry) => entry.id === 'video')
+    const quoted = [...JSON.stringify(topic?.steps).matchAll(/「([^」]+)」/g)].map((match) => match[1])
+    expect(quoted.length).toBeGreaterThan(20)
+    const project = plannedProject()
+    const fresh: VideoStudioProject = { ...project, shots: project.shots.map((shot) => ({ ...shot, clip: undefined, status: 'idle' })) }
+    const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('ab'[index]), status: 'done' })), music: { assetId: 'm'.repeat(43), name: '晴天', clipSound: 'quiet' }, exported: clip('z') }
+    const markup = [render('ready', fresh), render('ready', project), render('ready', done)].join('')
+    // 这几个只在确认框、生成中、报余额不够时出现，首屏渲染不到；「生成全部 … 段」里的数是现算的。
+    const elsewhere = ['开始生成', '停止生成', '去充值']
+    for (const label of quoted.filter((entry) => !elsewhere.includes(entry))) expect(markup, label).toContain(label.replace(' … ', ' 2 '))
+    expect(render('unsupported')).toContain(topic?.steps[0].extra?.[0].detail ?? '-')
   })
 })
