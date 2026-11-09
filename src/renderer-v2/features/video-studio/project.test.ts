@@ -8,9 +8,12 @@ import {
   assignVideoStudioShotImages,
   buildVideoStudioCatalogs,
   buildVideoStudioClipRequest,
+  buildVideoStudioImageRequest,
   clampVideoStudioSeconds,
   createVideoStudioProject,
   defaultVideoStudioSettings,
+  finishVideoStudioShotDrawing,
+  isVideoStudioShotDrawing,
   moveVideoStudioShot,
   removeVideoStudioMusic,
   removeVideoStudioShot,
@@ -20,9 +23,11 @@ import {
   setVideoStudioClipSound,
   setVideoStudioMusic,
   settleVideoStudioModels,
+  startVideoStudioShotDrawing,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
   videoStudioComposeSound,
+  videoStudioImageSize,
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
@@ -136,7 +141,7 @@ describe('video studio project', () => {
     expect(clampVideoStudioSeconds(6, 'gpt-5.6-sol')).toBe(6)
   })
 
-  it('lists text and video models from every prepared group and settles the defaults', () => {
+  it('lists text, video and image models from every prepared group and settles the defaults', () => {
     const groups = [{ name: 'GPT', recommended: true, ratio: 1 }, { name: '图片模型', ratio: 1 }, { name: '其他', ratio: 0.5 }]
     const preparations = {
       GPT: { phase: 'ready' as const, models: ['gpt-5.6-sol', 'gpt-5.4'] },
@@ -146,14 +151,70 @@ describe('video studio project', () => {
     const catalogs = buildVideoStudioCatalogs(groups, preparations)
     expect(catalogs.text.map((entry) => entry.model)).toEqual(['gpt-5.6-sol', 'gpt-5.4', 'deepseek-v4'])
     expect(catalogs.video).toEqual([{ model: 'minimax-h3-base', groups: ['图片模型'] }, { model: 'grok-imagine-video-1.5', groups: ['图片模型', '其他'] }])
+    // Video models never show up as picture models, even though the chat catalog files both under images.
+    expect(catalogs.image).toEqual([{ model: 'gpt-image-2', groups: ['图片模型'] }])
     const context = { groups, site: 'solov' as const, settled: true }
     expect(settleVideoStudioModels({ ...defaultVideoStudioSettings(), secondsPerShot: 3 }, catalogs, context)).toEqual({
-      textModel: 'gpt-5.6-sol', textGroup: 'GPT', videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型', secondsPerShot: 3,
+      textModel: 'gpt-5.6-sol', textGroup: 'GPT', videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型', imageModel: 'gpt-image-2', imageGroup: '图片模型', secondsPerShot: 3,
     })
     // A remembered MiniMax model stays, and the clip length moves up to what it can make.
     expect(settleVideoStudioModels({ ...defaultVideoStudioSettings(), videoModel: 'minimax-h3-base', secondsPerShot: 3 }, catalogs, context)).toMatchObject({ videoModel: 'minimax-h3-base', videoGroup: '图片模型', secondsPerShot: 5 })
     // While groups are still loading a missing remembered model is kept rather than replaced.
     expect(settleVideoStudioModels({ ...defaultVideoStudioSettings(), textModel: 'claude-x', textGroup: 'Claude' }, catalogs, { ...context, settled: false })).toMatchObject({ textModel: 'claude-x', textGroup: 'Claude' })
+  })
+
+  it('draws a shot picture in the frame the film uses, at the model default quality', () => {
+    const shot = { id: 'a', prompt: '橘猫\u0007在雨里', caption: '', status: 'idle' as const }
+    const request = (imageModel: string, aspect: '16:9' | '9:16' | '1:1') => buildVideoStudioImageRequest({ ...defaultVideoStudioSettings(), imageModel, imageGroup: '图片模型', aspect }, shot, 'd1')
+    expect(request('gpt-image-2', '9:16')).toEqual({ requestId: 'd1', group: '图片模型', model: 'gpt-image-2', prompt: '橘猫在雨里', size: '720x1280' })
+    expect(request('gpt-image-2', '16:9').size).toBe('1280x720')
+    expect(request('gpt-image-2', '1:1').size).toBe('720x720')
+    // Jimeng stops at 1024 on the long side; both sides stay multiples of 16.
+    expect(request('jimeng_high_aes_general_v21_L', '9:16').size).toBe('576x1024')
+    // Fixed-size models get the size whose shape is closest to the frame.
+    expect(request('gemini-3.1-flash-image', '9:16').size).toBe('720x1280')
+    expect(request('gemini-3.1-flash-image', '1:1').size).toBe('1024x1024')
+    expect(request('gpt-image-1', '9:16').size).toBe('1024x1536')
+    expect(request('gpt-image-1', '16:9').size).toBe('1536x1024')
+    expect(request('grok-imagine-image', '16:9').size).toBe('auto')
+    // A model the page cannot read is sent without a size and left to the main process to refuse.
+    expect(request('not-a-picture-model', '9:16')).not.toHaveProperty('size')
+    expect(request('gpt-image-2', '9:16')).not.toHaveProperty('quality')
+    expect(videoStudioImageSize({ kind: 'allow-list', values: ['odd'], default: '512x512' }, '16:9')).toBe('512x512')
+    expect(videoStudioImageSize({ kind: 'divisible', divisor: 64, min: 768, max: 4096, default: '1024x1024' }, '9:16')).toBe('768x1280')
+  })
+
+  it('puts a drawn picture only on the shot still waiting for that drawing', () => {
+    const project = planned()
+    const first = videoStudioShotImage('a'.repeat(43))!
+    const withImage = { ...project, shots: [{ ...project.shots[0], image: first, drawError: '上次没画出来' }, { ...project.shots[1], status: 'generating' as const, requestId: 'r' }, project.shots[2]] }
+    const started = startVideoStudioShotDrawing(withImage, 'shot-1', 'd1')
+    expect(started.shots[0]).toMatchObject({ drawing: 'd1', image: first })
+    expect(started.shots[0]).not.toHaveProperty('drawError')
+    expect(isVideoStudioShotDrawing(started.shots[0])).toBe(true)
+    // A shot already drawing, or one making its clip, does not start another drawing.
+    expect(startVideoStudioShotDrawing(started, 'shot-1', 'd2')).toBe(started)
+    expect(startVideoStudioShotDrawing(started, 'shot-2', 'd3')).toBe(started)
+    expect(startVideoStudioShotDrawing(started, 'missing', 'd4')).toBe(started)
+
+    // A late answer for an older drawing never lands.
+    expect(finishVideoStudioShotDrawing(started, 'shot-1', 'old', { assetId: 'b'.repeat(43) })).toBe(started)
+    const drawn = finishVideoStudioShotDrawing(started, 'shot-1', 'd1', { assetId: 'b'.repeat(43) })
+    expect(drawn.shots[0].image).toEqual({ assetId: 'b'.repeat(43), url: `xingmang-asset://image/${'b'.repeat(43)}` })
+    expect(drawn.shots[0]).not.toHaveProperty('drawing')
+    expect(isVideoStudioShotDrawing(drawn.shots[0])).toBe(false)
+
+    const failed = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(drawn, 'shot-1', 'd5'), 'shot-1', 'd5', { error: '没有收到生成的图片' })
+    expect(failed.shots[0]).toMatchObject({ image: drawn.shots[0].image, drawError: '没有收到生成的图片' })
+    expect(failed.shots[0]).not.toHaveProperty('drawing')
+    const stopped = finishVideoStudioShotDrawing(startVideoStudioShotDrawing(failed, 'shot-1', 'd6'), 'shot-1', 'd6', 'stopped')
+    expect(stopped.shots[0].image).toEqual(drawn.shots[0].image)
+    expect(stopped.shots[0]).not.toHaveProperty('drawing')
+    expect(stopped.shots[0]).not.toHaveProperty('drawError')
+
+    // Drawing state lives only while the page is open.
+    const stored = serializeVideoStudioProject(startVideoStudioShotDrawing(failed, 'shot-1', 'd7'))
+    expect(JSON.stringify(stored)).not.toMatch(/d7|drawError|没有收到生成的图片/)
   })
 
   it('composes only when every shot has a clip, and burns captions only when they are on', () => {
