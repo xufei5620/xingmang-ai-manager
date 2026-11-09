@@ -62,6 +62,7 @@
 - `path-identity.ts` — `sameLocalPathIdentity`：跨平台判断两个路径是不是同一个东西（Windows 逐级比 dev/ino/mode 且不分大小写，Mac 认 /var、/tmp、/etc 的 /private 别名）；可信路径、卸载、资产存储等二十多处用它而不是字符串比较
 - `windows-cli-shell-access.ts` — 让客户自己的终端能直接敲 `claude`：删掉 npm 生成的 `.ps1` 启动文件（Windows 默认执行策略会拦它，删了 PowerShell 就落到 `.cmd`，不用放宽执行策略），只认 cmd-shim 指向本包的那份；装完把 npm 目录加进用户 PATH、卸空后撤掉。提权令牌下只碰管理员所有的托管目录，用户可写目录一律不动（I8）；Mac/Linux 的对应动作由宿主注入
 - `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），拼出「现在新开终端会拿到的」PATH；只给推 Grok 跑钩子用哪个 shell、从星芒打开 Grok 时补新段用，不改 `process.env`，不进提权路径解析
+- `windows-taskbar-theme.ts` — 读当前账号的任务栏是不是深色（异步 reg.exe 读 `SystemUsesLightTheme`），给托盘换浅色外圈图标用（D94）；Electron 的 `shouldUseDarkColorsForSystemIntegratedUI` 开机时答的是应用模式、只换任务栏深浅时也不通知，所以自己读
 - `windows-processor.ts` — 认出 ARM 版 Windows：x64 星芒在 ARM 上被模拟时 `process.arch` 和本进程环境变量都报 x64，只有注册表里机器级的那份说真话；另读 PE 头判断某个 exe 是哪种架构，据此选 Node.js 安装包架构；诊断与 `system-service.ts` 用
 - `windows-store-availability.ts` — 问「这台电脑有没有微软商店」（LTSC、精简版、组策略关掉的都没有），只有确定没有时才跳过商店那条安装路；`codex-desktop-service.ts` 用。原名 `windows-store-app-launch.ts`，原先的「内置 Administrator / 关了 UAC 可能打不开」判断已于 2026-10-02 撤掉，文件头写了恢复它的前提
 
@@ -95,7 +96,7 @@
 - `network-location-cache.ts` — 合并并缓存「网络位置」（境内/境外，决定安装源顺序）的探测：显式刷新会让旧的在途结果作废重读；`system-service.ts` 用
 
 ## 托盘
-- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问
+- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问；Windows 用多尺寸 ICO（`tray.ico` / `tray-dark.ico`，`scripts/generate-tray-icons.mjs` 生成），任务栏深色时换浅色外圈那份
 - `tray-acceleration.ts` — 托盘里加速那一行状态与连接/断开动作的纯逻辑：不新增第二条连接逻辑（走加速页同一条路、用落了盘的线路偏好）、不新增轮询（剩余时长只按读到的时刻往前推算来显示）、失败不弹窗只换一句短原因
 
 ## 更新与发布
