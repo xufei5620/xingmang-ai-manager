@@ -274,6 +274,67 @@ test('switch account found from the command palette lands on the current-login b
   } finally { await page.close() }
 })
 
+// KB-5：聊天页去过一次就藏着挂在正文最前面，它的「搜索对话」永远排第一；原来按「/」取的是它，
+// 聚焦不上又把「/」吞了，别的页按「/」都没反应。
+async function pressSlashFromPage(page) {
+  await page.getByTestId('page-viewport').focus()
+  await page.evaluate(() => {
+    window.slashPrevented = null
+    window.addEventListener('keydown', (event) => { if (event.key === '/') window.slashPrevented = event.defaultPrevented }, { once: true })
+  })
+  await page.keyboard.press('/')
+  return page.evaluate(() => ({
+    testId: document.activeElement?.getAttribute('data-testid') ?? '',
+    label: document.activeElement?.getAttribute('aria-label') ?? '',
+    id: document.activeElement?.id ?? '',
+    value: document.activeElement instanceof HTMLInputElement ? document.activeElement.value : null,
+    prevented: window.slashPrevented,
+  }))
+}
+
+test('pressing / focuses the search box of the page in front, also after the chat page was opened once', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-search').waitFor()
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索对话', id: '', value: '', prevented: true })
+
+    await page.getByTestId('nav-tutorial').click()
+    await page.getByTestId('page-tutorial').waitFor()
+    await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'tutorial-search', label: '搜索教程', id: '', value: '', prevented: true })
+
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').waitFor()
+    const settings = await pressSlashFromPage(page)
+    assert.equal(settings.label, '搜索设置')
+    assert.equal(settings.value, '', 'the / is not typed into the box')
+
+    // 首页没有搜索框：焦点不动，「/」也不吞。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'page-viewport', label: '', id: 'v2-main', value: null, prevented: false })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a / typed while a menu is open stays with the menu', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-search').waitFor()
+    await page.getByTestId('chat-model').click()
+    const menu = page.getByRole('menu', { name: '模型', exact: true })
+    await menu.waitFor()
+    await page.waitForFunction(() => Boolean(document.activeElement?.closest('[role="menu"]')))
+    await page.keyboard.press('/')
+    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest('[role="menu"]'))), true, 'focus is still inside the menu')
+    assert.equal(await menu.isVisible(), true)
+    assert.notEqual(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'chat-conversation-search')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('collapsing and expanding the sidebar from the keyboard keeps focus on the toggle', async () => {
   const page = await open()
   try {
