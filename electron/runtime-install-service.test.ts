@@ -111,6 +111,11 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     systemRestartRequired: false,
   }
 
+  // 下面几条在本机磁盘上搭一个 Mac / Linux 的用户目录，产品目录只认 POSIX 绝对路径（managed-cli-paths.ts），
+  // Windows 的临时目录（D:\a\_temp…）搭不出来，和 macos-node-runtime.test.ts 一样在 Windows 上不跑；
+  // Windows 上不做这件事由「never refreshes on Windows」那条钉住，它照常在三个平台上跑。
+  const posixHomeIt = it.skipIf(process.platform === 'win32')
+
   /** HOME（Linux 上还有 XDG_DATA_HOME）指到临时目录，返回代装那份 node 的位置；present 时放一个假的进去。 */
   function managedNodeAt(platform: 'darwin' | 'linux', present: boolean): string {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-refresh-home-'))
@@ -155,7 +160,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(decide({ installed: false, path: null, version: null })).toBe(false)
   })
 
-  it('downloads the pinned release over an outdated managed copy on Linux and forgets what it knew about node', async () => {
+  posixHomeIt('downloads the pinned release over an outdated managed copy on Linux and forgets what it knew about node', async () => {
     const managedNode = managedNodeAt('linux', true)
     const installNodeRuntime = vi.fn(async () => refreshed)
     const inspectTool = vi.fn(async () => nodeStatus(managedNode, 'v24.11.0'))
@@ -181,7 +186,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(spies.forgetRoots).toHaveBeenCalledTimes(1)
   })
 
-  it('looks at nothing but the file when there is no managed copy', async () => {
+  posixHomeIt('looks at nothing but the file when there is no managed copy', async () => {
     managedNodeAt('linux', false)
     const installNodeRuntime = vi.fn(async () => refreshed)
     const inspectTool = vi.fn(async () => nodeStatus('/usr/bin/node', 'v18.19.1'))
@@ -193,7 +198,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(installNodeRuntime).not.toHaveBeenCalled()
   })
 
-  it('leaves the managed copy alone on a Mac whose own Node.js is found first', async () => {
+  posixHomeIt('leaves the managed copy alone on a Mac whose own Node.js is found first', async () => {
     managedNodeAt('darwin', true)
     const installNodeRuntime = vi.fn(async () => refreshed)
     const inspectTool = vi.fn(async () => nodeStatus('/opt/homebrew/bin/node', 'v24.1.0'))
@@ -205,7 +210,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(installNodeRuntime).not.toHaveBeenCalled()
   })
 
-  it('refreshes the managed copy on a Mac when it is the one in use', async () => {
+  posixHomeIt('refreshes the managed copy on a Mac when it is the one in use', async () => {
     const managedNode = managedNodeAt('darwin', true)
     const installNodeRuntime = vi.fn(async () => ({ ...refreshed, version: darwinNodeRuntimeVersion, architecture: 'arm64' as const }))
     const { service } = createService({ platform: 'darwin', installNodeRuntime }, { inspectTool: async () => nodeStatus(managedNode, 'v24.11.0') })
@@ -226,7 +231,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(installNodeRuntime).not.toHaveBeenCalled()
   })
 
-  it('keeps the CLI install going on the old copy when the download fails', async () => {
+  posixHomeIt('keeps the CLI install going on the old copy when the download fails', async () => {
     const managedNode = managedNodeAt('linux', true)
     const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => {
       throw new Error(`Node.js 没有下载成功（${managedNode}：ETIMEDOUT）`)
@@ -252,7 +257,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(spies.forgetRoots).toHaveBeenCalledTimes(1)
   })
 
-  it('does not report a cancelled CLI install as a failed refresh', async () => {
+  posixHomeIt('does not report a cancelled CLI install as a failed refresh', async () => {
     const managedNode = managedNodeAt('linux', true)
     const controller = new AbortController()
     const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => {
@@ -272,7 +277,7 @@ describe('refreshing an outdated managed Node.js before a CLI install (D86)', ()
     expect(events).not.toContain('node.refresh.failed')
   })
 
-  it('yields to a Node.js install that is already running', async () => {
+  posixHomeIt('yields to a Node.js install that is already running', async () => {
     const managedNode = managedNodeAt('linux', true)
     const installNodeRuntime = vi.fn(async () => refreshed)
     const { context, service } = createService(
