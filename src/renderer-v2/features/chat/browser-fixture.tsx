@@ -1,7 +1,8 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { AiChatAsset, AiChatGroupSummary, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatGroupSummary, AiChatHistoryFlushRequest, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
 import type { ChatBridge } from './api'
+import { answerHistoryFlushRequests } from './storage'
 import { ChatPage } from './ChatPage'
 import { ToastProvider } from '../../ui'
 import { OnlineStatusContext, useBrowserOnline } from '../shell/useOnlineStatus'
@@ -97,8 +98,21 @@ const bridge: ChatBridge = {
   exportAiChatConversation: async (input) => { record('export-text', input); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Desktop\\${input.title}.txt` } },
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
+// 退出前主进程那一问（electron/chat-history-flush.ts）：App 一挂上就接着，这里在模块里接，聊天页换账号、卸下都还在。
+const flushListeners = new Set<(request: AiChatHistoryFlushRequest) => void>()
+const flushAnswers = new Map<string, () => void>()
+answerHistoryFlushRequests({
+  onAiChatHistoryFlushRequested: (listener) => { flushListeners.add(listener); return () => { flushListeners.delete(listener) } },
+  confirmAiChatHistoryFlushed: async (requestId) => { record('flushed', requestId); flushAnswers.get(requestId)?.(); flushAnswers.delete(requestId) },
+})
+function askBeforeQuit(requestId: string): Promise<void> {
+  return new Promise((resolve) => {
+    flushAnswers.set(requestId, resolve)
+    for (const listener of flushListeners) listener({ requestId })
+  })
+}
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
+  interface Window { chatHarness: { calls: typeof calls; askBeforeQuit: typeof askBeforeQuit; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -107,7 +121,7 @@ function Fixture() {
   const [openParameters, setOpenParameters] = useState(query.has('openParameters'))
   // context.setOffline() 翻的是 navigator.onLine；App 里同一个信号交给 OnlineStatusContext。
   const online = useBrowserOnline()
-  window.chatHarness = { calls, emit: (event) => { for (const listener of listeners) listener(event) }, completeImage: (id) => images.get(id)?.resolve([imageAsset]), failImage: (id) => images.get(id)?.reject(new Error('network error')), finishPreparation: () => { for (const item of preparations) item.resolve({ group: item.group, models: ['gpt-test', 'gpt-image-2'], keyCreated: false }) }, switchScope: (id) => { userId = id; setScope(`xm-account:${id}`) }, resetGroupFailure: () => { failedGroupList = false }, setActive,
+  window.chatHarness = { calls, askBeforeQuit, emit: (event) => { for (const listener of listeners) listener(event) }, completeImage: (id) => images.get(id)?.resolve([imageAsset]), failImage: (id) => images.get(id)?.reject(new Error('network error')), finishPreparation: () => { for (const item of preparations) item.resolve({ group: item.group, models: ['gpt-test', 'gpt-image-2'], keyCreated: false }) }, switchScope: (id) => { userId = id; setScope(`xm-account:${id}`) }, resetGroupFailure: () => { failedGroupList = false }, setActive,
     setGroups: (names) => { groupOverride = names.map((name) => ({ name, description: name, ratio: 1 })) },
     failGroupList: () => { failedGroupList = true },
     failPreparation: (group) => { failingPreparation = group },

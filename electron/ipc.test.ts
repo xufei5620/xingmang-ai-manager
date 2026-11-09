@@ -1173,6 +1173,27 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  it('hands the chat page answer to a quit that asked for one, and only from the app itself', () => {
+    const chatHistoryFlush = { acknowledge: vi.fn() }
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistoryFlush })
+    const flushed = electronMocks.handlers.get('chat-history:flushed')!
+
+    expect(() => flushed(trustedEvent('https://attacker.example/', 9), 'request-1')).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => flushed(trustedEvent(), 7)).toThrow()
+    expect(() => flushed(trustedEvent(), 'x'.repeat(161))).toThrow()
+    expect(chatHistoryFlush.acknowledge).not.toHaveBeenCalled()
+
+    expect(flushed(trustedEvent(), 'request-1')).toBeUndefined()
+    expect(chatHistoryFlush.acknowledge).toHaveBeenCalledWith('request-1')
+    dispose()
+  })
+
+  it('accepts the chat page answer without anything waiting for it', () => {
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    expect(electronMocks.handlers.get('chat-history:flushed')!(trustedEvent(), 'request-1')).toBeUndefined()
+    dispose()
+  })
+
   describe('video channels', () => {
     const clipId = 'C'.repeat(43)
     const imageId = 'I'.repeat(43)
@@ -8920,6 +8941,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'chat-history:flushed',
         'chat-history:read',
         'chat-history:write',
         'chat:asset-menu',

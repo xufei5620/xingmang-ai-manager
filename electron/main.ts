@@ -26,6 +26,7 @@ import { createAccelerationPreferenceStore } from './acceleration-preference-sto
 import { readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
+import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
@@ -1530,6 +1531,9 @@ if (!hasSingleInstanceLock) {
     let latestTrayBalance: AccountBalance | null = null
     let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
+    // 主窗口这一页的界面报告过手上有没有事，也就是准备好了，主进程发过去的它接得住。换页、重新加载、界面进程没了都放下，
+    // 等新的那一页再报一次。退出前问聊天页要存盘看这个（chat-history-flush.ts）。
+    let mainRendererAnswering = false
     // 缩到托盘久了关掉界面省内存（renderer-release.ts）；主窗口建好以后接上。
     let mainRendererRelease: RendererRelease | null = null
     // 界面最后一次读到的公告：界面关着时主进程拿它比对有没有新公告（released-renderer-watch.ts）。
@@ -2229,6 +2233,17 @@ if (!hasSingleInstanceLock) {
     })
     attachProxyBypassState(() => proxyBypass.active(), () => proxyBypass.siteDirect())
     const chatHistoryStore = createAiChatHistoryStore({ root: path.join(managerDataDirectory, 'chat-history') })
+    // 回复出字时聊天页最多隔两秒才存一次，退出时最后这一截还在界面里：退出前先问它要一次（0.2.24 深查聊天页 C1）。
+    // 只问这一页报告过手上有没有事的界面（mainRendererAnswering）：正在重新加载、关掉省内存、崩了的，还有旧回滚界面，
+    // 都没人接这一声，问了只会白等到时限。
+    const chatHistoryFlush = createChatHistoryFlush({
+      canAsk: () => {
+        const window = managedMainWindow
+        return mainRendererAnswering && Boolean(window && !window.isDestroyed() && !window.webContents.isDestroyed())
+      },
+      send: (requestId) => sendToMainWindow('onAiChatHistoryFlushRequested', { requestId }),
+      onError: (cause) => runtimeLog.exception('ai-chat', 'history.flush-failed', cause),
+    })
     // 下载中大约每秒一份更新快照，界面照收；日志只在阶段、版本、错误变了或进度过了
     // 一档 10% 时记，不然一次下载就把反馈报告附的 600 条挤满（第二十六批 B）。
     const shouldLogUpdateState = createUpdateStateLogFilter()
@@ -2315,6 +2330,7 @@ if (!hasSingleInstanceLock) {
       videoService: chatVideoService,
       videoAssets,
       chatHistory: chatHistoryStore,
+      chatHistoryFlush,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -2350,7 +2366,9 @@ if (!hasSingleInstanceLock) {
         ...(mainRendererRelease?.restoredBoot ? { rendererRestored: true as const } : {}),
       }),
       onRendererActivity: (target, activity) => {
-        if (managedMainWindow && !managedMainWindow.isDestroyed() && target === managedMainWindow.webContents) mainRendererRelease?.reportActivity(activity.busy)
+        if (!managedMainWindow || managedMainWindow.isDestroyed() || target !== managedMainWindow.webContents) return
+        mainRendererAnswering = true
+        mainRendererRelease?.reportActivity(activity.busy)
       },
       onAccountNotice: (notice) => { lastRendererNotice = noticeFingerprint(notice) },
       relaunchApp: () => requestRelaunch?.() ?? Promise.resolve(false),
@@ -2531,6 +2549,10 @@ if (!hasSingleInstanceLock) {
       trayAvailable: applicationTray?.available ?? false,
     }))
     managedMainWindow = mainWindow
+    mainWindow.webContents.on('did-start-navigation', (details) => {
+      if (details.isMainFrame && !details.isSameDocument) mainRendererAnswering = false
+    })
+    mainWindow.webContents.on('render-process-gone', () => { mainRendererAnswering = false })
     mainWindow.once('show', () => {
       mainWindowShown = true
       startupQuiet.end('window-shown')
@@ -2829,10 +2851,11 @@ if (!hasSingleInstanceLock) {
         // 这里只等两秒，没收完的由加速辅助进程在退出后接着改回（Mac 上可能还要输一次电脑密码）。2026-10-25 客户
         // 日志里打开 Codex 时自动连的那一次只有「已连接」、没有「已断开」：它是重开星芒时在这里收回的，日志里却一个字都没留。
         if (acceleration?.hasPossibleSession()) runtimeLog.log('info', 'network', 'acceleration.quit.stop', '退出前断开加速、改回网络设置')
-        // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。
+        // 聊天记录最后一次保存可能还在写盘，写完再退，别让刚聊的那几句丢在半路。聊天页手上还没交出来的
+        // （正在出字的回复、刚打的字）先让它交出来，再等写盘。
         // 开着手机遥控的跟手机说一句「星芒关了」，最多等 1.5 秒（打磨 B8，比 prepareToQuit 那 2 秒的清理预算短）；will-quit 里的 dispose 来不及等网络。
         // 刚复制的密钥还没到 60 秒也现在清掉：剪贴板要异步读回来比对，will-quit 里来不及。
-        await Promise.all([acceleration?.stopAll(), chatHistoryStore.idle(), codexRemote.farewell(), sensitiveClipboard.flush()])
+        await Promise.all([acceleration?.stopAll(), chatHistoryFlush.request().then(() => chatHistoryStore.idle()), codexRemote.farewell(), sensitiveClipboard.flush()])
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
