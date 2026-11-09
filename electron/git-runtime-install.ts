@@ -320,6 +320,7 @@ export function buildGitRuntimeInstallPlan(
     executable: installerPath,
     argv,
     timeoutMs: installerTimeoutMs,
+    timeoutExcludesSleep: true,
     acceptedExitCodes: [0],
     env: trustedCommandEnvironment(env, roots, roots ? 'win32' : process.platform),
     trustedPaths: [installerPath],
@@ -330,6 +331,7 @@ export function buildGitRuntimeInstallPlan(
 async function defaultRunProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult> {
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
+    timeoutExcludesSleep: plan.timeoutExcludesSleep,
     acceptedExitCodes: plan.acceptedExitCodes,
     maxOutputBytes: 2 * 1024 * 1024,
     windowsHide: true,

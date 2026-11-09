@@ -19,8 +19,9 @@ import type { AiVideoTaskStore, FinishedAiVideoAsset, StoredAiVideoTask } from '
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
 import { aiVideoTaskRecordLostPrefix, aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
-import { isServiceUnavailableResponse } from './network-failure'
+import { isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
+import { unsentRequestFailure } from './relay-line-fetch'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const DEFAULT_MAXIMUM_POLL_INTERVAL_MS = 10_000
@@ -787,6 +788,14 @@ export function createAiVideoService(options: {
         })
       } catch (error) {
         if (operation.controller.signal.aborted) throw error
+        // 断网、解析不出地址、连不上、代理回绝：这一单根本没出去，没扣钱。照网络原因说，也不留「结果不明」
+        // 那条记录，不然这一镜一直挂着「结果不明」、重开以后还这么说（深查 W-1）。
+        const unsent = unsentRequestFailure(error)
+        if (unsent) {
+          operation.dispatched = false
+          await forgetSubmission()
+          throw new Error(networkFailureMessages[unsent])
+        }
         throw ambiguousVideoSubmission()
       }
       const { response } = submitted
