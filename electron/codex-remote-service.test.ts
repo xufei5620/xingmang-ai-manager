@@ -26,6 +26,7 @@ import {
   codexRemoteBusyMessages,
   CodexRemoteService,
   commandApprovalKind,
+  countChangedLines,
   generateApprovalNonce,
   generatePairingCode,
   grantRequestedPermissions,
@@ -34,9 +35,11 @@ import {
   isStaleOnlyByClock,
   nextApprovalNumber,
   permissionsShowInFull,
+  readFileChange,
   readRequestedPermissions,
   validateRemoteWorkspace,
 } from './codex-remote-service'
+import type { RemoteFileChangeLine } from './codex-remote-text'
 
 const roots: string[] = []
 const apiKey = 'sk-xingmang-0123456789abcdef'
@@ -325,6 +328,15 @@ const staleCardText = '这张卡片已经失效了（处理过、超时了，或
 
 const clockAheadText = '电脑上的时间和手机差得太多，这条消息没有执行。请把电脑时间调准后再发。'
 
+function staleNotice(minutes: number): string {
+  return `这条是 ${minutes} 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。`
+}
+
+/** 老版本 Codex 只给路径时卡片上列的样子：不带新建、删除这些字，也不带行数。 */
+function pathsOnly(paths: readonly string[]): RemoteFileChangeLine[] {
+  return paths.map((entry) => ({ path: entry, kind: null }))
+}
+
 afterEach(() => {
   vi.useRealTimers()
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
@@ -486,7 +498,7 @@ describe('codex-remote-service helpers', () => {
     expect(request.cwd).toBe('~/projects/demo')
     expect(request.reason).toBe('needs network')
     const files = Array.from({ length: 25 }, (_, index) => `/Users/alice/projects/demo/f${index}.ts`)
-    const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, files, { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
+    const change = buildApprovalRequest('8', 'nonce-eight', 'file-change', {}, pathsOnly(files), { homeDirectory: '/Users/alice', platform: 'darwin', secrets: [] })
     expect(change.summary.split('\n')).toHaveLength(21)
     expect(change.summary).toContain('另外还有 5 个文件')
   })
@@ -534,20 +546,49 @@ describe('codex-remote-service helpers', () => {
     const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [apiKey] }
     // Twenty 81-character paths no longer fit: cutting the joined text used to drop the last lines.
     const files = Array.from({ length: 25 }, (_, index) => `/Volumes/Work/customer-portal/frontend/src/components/orders/details/panel-${String(index).padStart(2, '0')}.tsx`)
-    const summary = buildApprovalRequest('8', 'nonce-eight', 'file-change', { grantRoot: '/Volumes/Work/customer-portal' }, files, display).summary
+    const summary = buildApprovalRequest('8', 'nonce-eight', 'file-change', { grantRoot: '/Volumes/Work/customer-portal' }, pathsOnly(files), display).summary
     expect(summary.length).toBeLessThanOrEqual(1500)
     expect(summary).not.toContain('…')
     expect(summary.split('\n')).toEqual([...files.slice(0, 17), '另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
     // Without a write scope the whole budget goes to the file list.
-    expect(buildFileChangeSummary({}, files, display)?.split('\n')).toEqual([...files.slice(0, 18), '另外还有 7 个文件'])
+    expect(buildFileChangeSummary({}, pathsOnly(files), display)?.split('\n')).toEqual([...files.slice(0, 18), '另外还有 7 个文件'])
     expect(buildFileChangeSummary({}, [], display)).toBe('')
     // A write scope that cannot be shown whole leaves nothing to put to the person.
-    expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, files, display)).toBeNull()
+    expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, pathsOnly(files), display)).toBeNull()
     expect(buildFileChangeSummary({ grantRoot: `/${'deep/'.repeat(300)}` }, [], display)).toBeNull()
     // What counts is what the phone would show, after the key is hidden.
     const keyedRoot = `/Volumes/${apiKey}/${'x'.repeat(1475)}`
     expect(`可写范围：${keyedRoot}`.length).toBeGreaterThan(1500)
     expect(buildFileChangeSummary({ grantRoot: keyedRoot }, [], display)).toBe(`可写范围：${keyedRoot}`)
+  })
+
+  // D66 / YKS-10：删文件和改一行在手机上要看得出不一样。
+  it('says whether each file is created, deleted, changed or moved, with how many lines', () => {
+    const display = { homeDirectory: '/Users/alice', platform: 'darwin' as const, secrets: [] }
+    const changes = [
+      { path: '/Users/alice/projects/demo/new.ts', kind: { type: 'add' }, diff: 'a\nb\nc\n' },
+      { path: '/Users/alice/projects/demo/old.ts', kind: { type: 'delete' }, diff: 'x\ny' },
+      { path: '/Users/alice/projects/demo/app.ts', kind: { type: 'update', move_path: null }, diff: '@@ -1,3 +1,3 @@\n keep\n-old\n+new\n+more\n' },
+      { path: '/Users/alice/projects/demo/a.ts', kind: { type: 'update', move_path: '/Users/alice/projects/demo/b.ts' }, diff: '@@ -1 +1 @@\n-x\n+y\n\nMoved to: /Users/alice/projects/demo/b.ts' },
+      { path: '/Users/alice/projects/demo/legacy.ts' },
+    ].map((change) => readFileChange(change))
+    expect(changes.every((change) => change !== null)).toBe(true)
+    expect(buildFileChangeSummary({}, changes.filter((change): change is RemoteFileChangeLine => change !== null), display)?.split('\n')).toEqual([
+      '新建 ~/projects/demo/new.ts +3 -0 行',
+      '删除 ~/projects/demo/old.ts +0 -2 行',
+      '改 ~/projects/demo/app.ts +2 -1 行',
+      '~/projects/demo/a.ts 挪到 ~/projects/demo/b.ts +1 -1 行',
+      '~/projects/demo/legacy.ts',
+    ])
+    expect(readFileChange({ kind: { type: 'add' } })).toBeNull()
+    expect(readFileChange({ path: '/x', kind: { type: 'update' } })).toEqual({ path: '/x', kind: 'update' })
+  })
+
+  it('counts only the changed lines of a diff, not its file header or context', () => {
+    expect(countChangedLines('update', '--- a/x\n+++ b/x\n@@ -1,2 +1,2 @@\n same\n--- removed dashes\n+++ added pluses\n\\ No newline at end of file')).toEqual({ added: 1, removed: 1 })
+    expect(countChangedLines('add', '')).toEqual({ added: 0, removed: 0 })
+    expect(countChangedLines('add', 'one line without newline')).toEqual({ added: 1, removed: 0 })
+    expect(countChangedLines('delete', 'a\r\nb\r\n')).toEqual({ added: 0, removed: 2 })
   })
 })
 
@@ -691,6 +732,24 @@ describe('codex-remote-service pairing', () => {
     expect((await s.service.snapshot()).channels.feishu.boundPeer).toBeNull()
   })
 
+  // D66 / YKS-21：电脑卡片上看得到错了几次、错满作废；手机那边照旧不回。
+  it('shows the window how many wrong codes came in and that the code was voided', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    expect((await s.service.snapshot()).channels.feishu.pairing).toEqual({ code: '000042', expiresAt: expect.any(Number) })
+    channel.handlers?.onInbound(text(mallory, '123456'))
+    channel.handlers?.onInbound(text(mallory, '654321'))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.channels.feishu.pairing?.failures).toBe(2))
+    for (let index = 0; index < 18; index += 1) channel.handlers?.onInbound(text(mallory, String(100000 + index)))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.channels.feishu).toMatchObject({ pairing: null, pairingLocked: true }))
+    expect(channel.sent).toHaveLength(0)
+    // Starting again clears it; so does cancelling.
+    await s.service.startPairing('feishu')
+    expect((await s.service.snapshot()).channels.feishu.pairingLocked).toBeUndefined()
+  })
+
   it('drops the code by itself after ten minutes and tells the window', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup()
@@ -768,25 +827,57 @@ describe('codex-remote-service clock running fast', () => {
     channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: 0 }))
     await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
     expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
-    // Something sent before the clock was set right is still too old to run.
+    // Something sent before the clock was set right is still too old to run; the phone only hears it was not run.
     channel.handlers?.onInbound(text(alice, '调钟以前发的', { sentAt: Date.now() - 2 * 60_000, clockAheadMs: 0 }))
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
+    await vi.waitFor(() => expect(channel.texts()).toHaveLength(3))
+    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。', staleNotice(2)])
+    expect(s.codex[0].requests('turn/start')).toHaveLength(1)
   })
 
-  it('stays silent for really old messages, unknown clocks and strangers', async () => {
+  it('does not blame the clock for really old messages or unknown clocks, and stays silent for strangers', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
+    // Someone else, even when the clock is to blame.
+    channel.handlers?.onInbound(text(mallory, '你好', { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 }))
     // Old by the platform's clock too: sent twenty minutes ago on a clock five minutes fast.
     channel.handlers?.onInbound(text(alice, '昨天的话', { sentAt: Date.now() - 20 * 60_000, clockAheadMs: 5 * 60_000 }))
     // The channel could not tell how far off this computer is.
     channel.handlers?.onInbound(text(alice, '不知道钟准不准', { sentAt: Date.now() - 15 * 60_000 }))
-    // Someone else, even when the clock is to blame.
-    channel.handlers?.onInbound(text(mallory, '你好', { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 }))
+    await vi.waitFor(() => expect(channel.sent.length).toBeGreaterThan(0))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(channel.sent).toHaveLength(0)
+    // The bound person hears once that the batch was not run (D66), not that the clock is off.
+    expect(channel.texts()).toEqual([staleNotice(20)])
+    expect(channel.sent[0].peer).toEqual(alice)
     expect(s.codex).toHaveLength(0)
     expect(s.logs).not.toContain('remote.clock-ahead')
+  })
+
+  // D66 / YKS-9：合盖、断网时发的话回来已经太旧，照旧不执行，但要跟绑定的人说一声。
+  it('tells the bound person once per batch that old messages were not run, and again for a later batch', async () => {
+    let now = Date.now()
+    const s = await setup({ now: () => now })
+    const channel = await enabledAndPaired(s)
+    now += 60 * 60_000
+    const first = text(alice, '帮我跑测试', { sentAt: now - 35 * 60_000, replyContext: 'ctx-old-1' })
+    channel.handlers?.onInbound(first)
+    channel.handlers?.onInbound(first)
+    channel.handlers?.onInbound(text(alice, '再看看日志', { sentAt: now - 30 * 60_000 }))
+    channel.handlers?.onInbound({ kind: 'unsupported', peer: alice, direct: true, messageId: 'img-1', sentAt: now - 29 * 60_000 })
+    await vi.waitFor(() => expect(channel.sent.length).toBeGreaterThan(0))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts()).toEqual([staleNotice(35)])
+    expect(channel.sent[0].replyContext).toBe('ctx-old-1')
+    expect(s.codex).toHaveLength(0)
+    // The next time the computer comes back, the new batch gets its own line.
+    now += 2 * 60 * 60_000
+    channel.handlers?.onInbound(text(alice, '晚上的话', { sentAt: now - 12 * 60_000 }))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([staleNotice(35), staleNotice(12)]))
+    // A message that runs as usual starts a new batch straight away.
+    channel.handlers?.onInbound(text(alice, '帮助', { sentAt: now }))
+    channel.handlers?.onInbound(text(alice, '更早的', { sentAt: now - 11 * 60_000 }))
+    await vi.waitFor(() => expect(channel.texts()).toHaveLength(4))
+    expect(channel.texts()[3]).toBe(staleNotice(11))
+    expect(s.codex).toHaveLength(0)
   })
 })
 
@@ -932,6 +1023,38 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这一轮没做完：401 for key [已隐去]'))
   })
 
+  // D66 / YKS-8：余额不够、登录失效这类原话（英文、JSON）不再原样发到手机，原话进日志。
+  it('says what went wrong in plain words for the failures the customer can fix, and logs the original', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const quota = 'unexpected status 403 Forbidden: {"error":{"message":"用户额度不足, 剩余额度: $0.01","code":"insufficient_user_quota"}}, url: https://relay.example.test/v1/responses'
+    codex.notify('error', { threadId: 'th-1', turnId: 'tu-1', willRetry: false, error: { message: quota, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } }, additionalDetails: null } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: null } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('余额不够了，充值后再发一次。'))
+    expect(channel.texts().join('\n')).not.toContain('insufficient_user_quota')
+    const logged = s.logDetails.find((entry) => entry.event === 'remote.turn-failed')?.detail
+    expect(logged).toMatchObject({ channel: 'feishu', kind: 'balance' })
+    expect(String(logged?.reason)).toContain('insufficient_user_quota')
+
+    channel.handlers?.onInbound(text(alice, '再来'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: 'Codex ran out of room in the model\'s context window.', codexErrorInfo: 'contextWindowExceeded' } } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这段对话太长了，发「新对话」重新开始。'))
+
+    channel.handlers?.onInbound(text(alice, '再来'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(3))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-3', status: 'failed', error: { message: `unexpected status 401 Unauthorized: {"error":{"message":"无效的令牌 ${apiKey}"}}`, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } } } } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑上的登录失效了，请在电脑上的星芒里重新登录。'))
+    const loginLog = s.logDetails.filter((entry) => entry.event === 'remote.turn-failed').at(-1)?.detail
+    expect(String(loginLog?.reason)).not.toContain(apiKey)
+
+    channel.handlers?.onInbound(text(alice, '再来'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(4))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-4', status: 'failed', error: { message: 'stream disconnected before completion: error sending request', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } } } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑这会儿连不上星芒的线路，过一会儿再发。'))
+  })
+
   it('tells the phone when Codex dies mid-turn', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -953,6 +1076,104 @@ describe('codex-remote-service turns', () => {
     expect(detail).toMatchObject({ code: 1 })
     expect(String(detail?.stderr)).toContain('panic: config.toml is broken')
     expect(String(detail?.stderr)).not.toContain(apiKey)
+  })
+
+  // D66 / YKS-3：起 Codex 排在全局安装队列里，可能等好几分钟；这期间「状态」「停止」要有人理，「停止」要拦得住。
+  it('answers status and stop while Codex is still starting, and hands nothing over once stopped', async () => {
+    let release!: () => void
+    const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(channel.texts()).toEqual(['收到，Codex 开始处理。']))
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('现在：正在处理'))
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('已停止。'))
+    release()
+    await vi.waitFor(() => expect(s.codex).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(s.codex[0].requests('thread/start')).toHaveLength(0)
+    expect(s.codex[0].requests('turn/start')).toHaveLength(0)
+    expect((await s.service.snapshot()).task).toBe('idle')
+  })
+
+  it('hands the next turn to Codex only after the one stopped on its way has been interrupted', async () => {
+    let release!: () => void
+    const s = await setup({ replyGates: new Map([['turn/start', new Promise<void>((resolve) => { release = resolve })]]) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
+    const codex = s.codex[0]
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('已停止。'))
+    channel.handlers?.onInbound(text(alice, '换个做法'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('收到，Codex 开始处理。'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(codex.requests('turn/start')).toHaveLength(1)
+    release()
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    const interrupt = codex.written.findIndex((message) => message.method === 'turn/interrupt')
+    expect(interrupt).toBeGreaterThan(-1)
+    expect(codex.written.findIndex((message) => message === codex.requests('turn/start')[1])).toBeGreaterThan(interrupt)
+    expect(codex.requests('turn/interrupt')[0].params).toEqual({ threadId: 'th-1', turnId: 'tu-1' })
+  })
+
+  it('tells the phone Codex is still being prepared when starting takes more than fifteen seconds', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let release!: () => void
+    const s = await setup({ spawnGate: new Promise<void>((resolve) => { release = resolve }) })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await channel.sentUntil(() => channel.texts().length === 1)
+    await vi.advanceTimersByTimeAsync(14_000)
+    expect(channel.texts()).toEqual(['收到，Codex 开始处理。'])
+    await vi.advanceTimersByTimeAsync(1_000)
+    await channel.sentUntil(() => channel.texts().length === 2)
+    expect(channel.texts()[1]).toBe('电脑正在准备 Codex，稍等一下；想取消就发「停止」。')
+    release()
+    await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
+    // A Codex that is already running answers at once: no such line on the next turn.
+    s.codex[0].notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await channel.sentUntil(() => channel.texts().length === 3)
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await vi.waitFor(() => expect(s.codex[0].requests('turn/start')).toHaveLength(2))
+    await vi.advanceTimersByTimeAsync(20_000)
+    expect(channel.texts().filter((line) => line.startsWith('电脑正在准备 Codex'))).toHaveLength(1)
+  })
+
+  // D66 / YKS-16：对话不是他自己发「新对话」丢的，下一次回复前说一声。
+  it('says the conversation starts afresh only when it was dropped without the phone asking', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    // The same thread goes on: nothing to warn about.
+    channel.handlers?.onInbound(text(alice, '接着改'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    expect(channel.texts().filter((line) => line.includes('这是新对话'))).toHaveLength(0)
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    // The folder changed on the computer: the old conversation is gone.
+    const other = path.join(path.dirname(s.workspace), 'other')
+    fs.mkdirSync(other)
+    await s.service.setWorkspace(other)
+    channel.sent.length = 0
+    channel.handlers?.onInbound(text(alice, '再改一下'))
+    await vi.waitFor(() => expect(codex.requests('thread/start')).toHaveLength(2))
+    expect(channel.texts()[0]).toBe('这是新对话，前面的记不得了。\n收到，Codex 开始处理。')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-3', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    // Asked for by the phone: no warning afterwards.
+    channel.handlers?.onInbound(text(alice, '新对话'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已开始新对话。'))
+    channel.sent.length = 0
+    channel.handlers?.onInbound(text(alice, '从头来'))
+    await vi.waitFor(() => expect(codex.requests('thread/start')).toHaveLength(3))
+    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
   })
 
   // #1407 P3-1：起 Codex 要一会儿，这期间电脑上关了遥控。话不能再交给 Codex（交了就扣钱、只读命令先跑），
@@ -1227,7 +1448,9 @@ describe('codex-remote-service approvals', () => {
     const asked = codex.ask('item/fileChange/requestApproval', { ...fileChange, grantRoot: '/Volumes/Work/customer-portal' })
     await vi.waitFor(() => expect(approvalsSent(channel)).toHaveLength(1))
     expect(approvalsSent(channel)[0]).toMatchObject({ approvalId: '1', kind: 'file-change' })
-    expect(approvalsSent(channel)[0].summary.split('\n').slice(-2)).toEqual(['另外还有 8 个文件', '可写范围：/Volumes/Work/customer-portal'])
+    const lines = approvalsSent(channel)[0].summary.split('\n')
+    expect(lines[0]).toBe(`改 ${files[0]} +0 -0 行`)
+    expect(lines.slice(-2)).toEqual(['另外还有 10 个文件', '可写范围：/Volumes/Work/customer-portal'])
     channel.handlers?.onInbound(text(alice, '拒绝'))
     expect((await asked).result).toEqual({ decision: 'decline' })
   })
@@ -1526,6 +1749,60 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  // D66 / YKS-19：自动关之前 10 分钟提醒一次，回什么都续上。
+  it('warns ten minutes before the idle close and stays open when the phone answers', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const warning = '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60_000 + 49 * 60_000)
+    expect(channel.texts()).toEqual([])
+    await vi.advanceTimersByTimeAsync(60_000)
+    await channel.sentUntil(() => channel.texts().includes(warning))
+    expect(channel.sent[0].peer).toEqual(alice)
+    channel.handlers?.onInbound(text(alice, '帮助'))
+    await channel.sentUntil(() => channel.texts().length === 2)
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60_000)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
+    expect(channel.texts().filter((line) => line === warning)).toHaveLength(1)
+  })
+
+  // D66 / YKS-18：解绑、换人、退出登录，原来那个人要知道之后发的话不会再执行。
+  it('tells the bound person before unbinding, handing over to someone else, or logging out', async () => {
+    const unboundText = '电脑上已经把你解绑了，之后发的消息不会再执行。'
+    const s = await setup()
+    await s.service.saveChannelCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'x'.repeat(16) }), 'cli_abcdef')
+    let channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '帮助', { replyContext: 'ctx-alice-last' }))
+    await channel.sentUntil(() => channel.texts().length === 1)
+    await s.service.unbind('feishu')
+    expect(channel.texts().at(-1)).toBe(unboundText)
+    expect(channel.sent.at(-1)).toMatchObject({ peer: alice, replyContext: 'ctx-alice-last' })
+
+    // Alice pairs again, then the computer hands over to Mallory.
+    channel.sent.length = 0
+    await s.service.startPairing('feishu')
+    channel.handlers?.onInbound(text(alice, '000042'))
+    await channel.sentUntil(() => channel.texts().length === 1)
+    await s.service.startPairing('feishu')
+    channel.handlers?.onInbound(text(mallory, '000042'))
+    await channel.sentUntil(() => channel.sent.some((entry) => entry.peer.userId === mallory.userId))
+    const toAlice = channel.sent.filter((entry) => entry.peer.userId === alice.userId)
+    expect(toAlice.at(-1)?.message).toEqual({ kind: 'text', text: unboundText })
+    expect(channel.sent.findIndex((entry) => entry.peer.userId === mallory.userId))
+      .toBeGreaterThan(channel.sent.findIndex((entry) => entry.message.kind === 'text' && entry.message.text === unboundText))
+
+    // Logging out tells Mallory before the credential is gone.
+    channel.sent.length = 0
+    await s.service.saveChannelCredential('feishu', null, null)
+    expect(channel.sent).toEqual([{ peer: mallory, message: { kind: 'text', text: unboundText }, replyContext: expect.any(String) }])
+    // Nothing to say when nobody is bound or the channel is off.
+    channel = s.channels[0]
+    channel.sent.length = 0
+    await s.service.unbind('feishu')
+    expect(channel.sent).toHaveLength(0)
   })
 
   it('reports every open, login loss and close to the state listener so the sleep blocker can follow', async () => {
