@@ -244,6 +244,18 @@ describe('video studio project', () => {
     expect(videoStudioComposeKey(applyVideoStudioPlan(done, { title: '新的', shots: [{ prompt: '新镜头' }] }, ids()))).not.toBe(key)
     expect(videoStudioComposeKey(setVideoStudioShotTrim(done, 'shot-1', 'start', 1))).not.toBe(key)
     expect(videoStudioComposeKey(setVideoStudioShotTrim(done, 'shot-1', 'end', 0.5))).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, transition: 'fade' } })).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, fadeOut: true } })).not.toBe(key)
+  })
+
+  it('cuts straight between shots without a fade at the end unless asked, also for projects saved before the choice existed', () => {
+    expect(defaultVideoStudioSettings()).toMatchObject({ transition: 'cut', fadeOut: false })
+    const stored = JSON.parse(JSON.stringify(serializeVideoStudioProject(planned())))
+    delete stored.settings.transition
+    delete stored.settings.fadeOut
+    expect(restoreVideoStudioProject(stored)!.settings).toMatchObject({ transition: 'cut', fadeOut: false })
+    expect(restoreVideoStudioProject({ ...stored, settings: { ...stored.settings, transition: 'fade', fadeOut: true } })!.settings).toMatchObject({ transition: 'fade', fadeOut: true })
+    expect(restoreVideoStudioProject({ ...stored, settings: { ...stored.settings, transition: 'wipe', fadeOut: 'yes' } })!.settings).toMatchObject({ transition: 'cut', fadeOut: false })
   })
 
   it('trims a clip by a few fixed steps, keeps at least a second of it and lets go of the film it no longer matches', () => {

@@ -74,6 +74,14 @@ describe('video studio compose protocol', () => {
     expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, clipGain: Number.NaN })).toThrow('拼片请求的格式不对')
   })
 
+  it('carries the fades between shots and at the end, and turns away a transition it does not know', () => {
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, transition: 'fade', fadeOut: true } }).options).toEqual({ ...options, transition: 'fade', fadeOut: true })
+    // The defaults (a straight cut, no fade at the end) are left out, as before.
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, transition: 'cut', fadeOut: false } }).options).toEqual(options)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, transition: 'wipe' } })).toThrow('成片的画面设置不对')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, fadeOut: 'yes' } })).toThrow('成片的画面设置不对')
+  })
+
   it('stops the page reading clips at the same total, with the same words, as the worker', () => {
     expect(addVideoStudioClipBytes(0, maxVideoStudioClipBytes)).toBe(maxVideoStudioClipBytes)
     expect(addVideoStudioClipBytes(maxVideoStudioClipBytes, maxVideoStudioClipBytes)).toBe(maxVideoStudioTotalBytes)

@@ -6,6 +6,7 @@ import {
   isVideoStudioFit,
   isVideoStudioFrameRate,
   isVideoStudioResolution,
+  isVideoStudioTransition,
   maxVideoStudioCaptionLength,
   maxVideoStudioClips,
   type VideoStudioRenderOptions,
@@ -115,8 +116,9 @@ function parseCodecList<T>(value: unknown, guard: (item: unknown) => item is T):
 
 export function parseVideoStudioComposeRequest(value: unknown): VideoStudioComposeRequest {
   if (!isRecord(value) || !Array.isArray(value.clips) || !isRecord(value.options)) throw new VideoStudioError('拼片请求的格式不对')
-  const { aspect, resolution, fit, frameRate } = value.options
-  if (!isVideoStudioAspect(aspect) || !isVideoStudioResolution(resolution) || !isVideoStudioFit(fit) || !isVideoStudioFrameRate(frameRate)) {
+  const { aspect, resolution, fit, frameRate, transition, fadeOut } = value.options
+  if (!isVideoStudioAspect(aspect) || !isVideoStudioResolution(resolution) || !isVideoStudioFit(fit) || !isVideoStudioFrameRate(frameRate)
+    || (transition !== undefined && !isVideoStudioTransition(transition)) || (fadeOut !== undefined && typeof fadeOut !== 'boolean')) {
     throw new VideoStudioError('成片的画面设置不对')
   }
   if (value.clips.length === 0) throw new VideoStudioError('至少要放一段片段才能拼成片')
@@ -147,7 +149,8 @@ export function parseVideoStudioComposeRequest(value: unknown): VideoStudioCompo
   }
   const music = parseMusic(value.music)
   const clipGain = optionalGain(value.clipGain)
-  return { clips, options: { aspect, resolution, fit, frameRate }, encoding, ...(music ? { music } : {}), ...(clipGain === undefined ? {} : { clipGain }) }
+  const options = { aspect, resolution, fit, frameRate, ...(transition === 'fade' ? { transition } : {}), ...(fadeOut ? { fadeOut } : {}) }
+  return { clips, options, encoding, ...(music ? { music } : {}), ...(clipGain === undefined ? {} : { clipGain }) }
 }
 
 /**

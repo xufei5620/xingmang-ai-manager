@@ -125,6 +125,40 @@ test('drops the hidden lead-in of a clip whose first frames are stamped before z
   await page.close()
 })
 
+test('dips to black between shots and fades out at the end, picture and sound together', async () => {
+  const { page, errors } = await open()
+  const summary = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const toned = (color) => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color, tone: { frequency: 440, channels: 2 } })
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30 }
+    const clips = async () => [{ data: await toned('#ff0000') }, { data: await toned('#0000ff') }]
+    const faded = await harness.compose({ clips: await clips(), options: { ...options, transition: 'fade', fadeOut: true } }, { worker: true })
+    const cut = await harness.compose({ clips: await clips(), options })
+    const probe = {
+      // 第一段中间、换段前最后一帧、换段后第一帧、第二段中间、片尾最后一帧。
+      colors: [{ time: 1, x: 427, y: 240 }, { time: 1.98, x: 427, y: 240 }, { time: 2.02, x: 427, y: 240 }, { time: 3, x: 427, y: 240 }, { time: 3.98, x: 427, y: 240 }],
+      loudness: [{ from: 0.5, to: 1.5 }, { from: 1.96, to: 2.04 }, { from: 3.94, to: 4 }],
+    }
+    return { duration: faded.duration, faded: await harness.inspect(faded.data, probe), cut: await harness.inspect(cut.data, probe) }
+  })
+  assert.deepEqual(errors, [])
+  near(summary.duration, 4, 0.01, 'fades do not change the length')
+  const [middle, beforeCut, afterCut, second, end] = summary.faded.colors
+  closeColor(middle, [255, 0, 0], 'first shot in full')
+  closeColor(beforeCut, [0, 0, 0], 'first shot has dipped to black')
+  closeColor(afterCut, [0, 0, 0], 'second shot comes up from black')
+  closeColor(second, [0, 0, 255], 'second shot in full')
+  closeColor(end, [0, 0, 0], 'the film fades out')
+  const [loud, atCut, atEnd] = summary.faded.loudness
+  assert.ok(atCut < loud / 3, `the sound dips with the picture between shots (${loud} → ${atCut})`)
+  assert.ok(atEnd < loud / 5, `the sound fades out with the film (${loud} → ${atEnd})`)
+  // Without fades the old straight cut stays exactly as it was.
+  closeColor(summary.cut.colors[1], [255, 0, 0], 'straight cut keeps the last frame')
+  closeColor(summary.cut.colors[4], [0, 0, 255], 'no fade at the end unless asked')
+  assert.ok(summary.cut.loudness[2] > summary.cut.loudness[0] / 2, 'no sound fade unless asked')
+  await page.close()
+})
+
 test('lays a song under the film, starts it over when it runs out and fades it out at the end', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
@@ -910,6 +944,35 @@ test('trims the start and end of each clip into the joined film, forgets the tri
   const [again] = await page.evaluate(() => window.videoStudioPage.pendingClips())
   await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#00ff00', false, 3), again.requestId)
   await page.waitForFunction(() => document.querySelector('[data-testid="video-shot-trim-start-0"]')?.value === '0')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 镜头之间淡入淡出、结尾淡出：缺省直接切、不淡；选了以后拼出来的成片跟着淡，重开页面还在。
+test('fades between shots and at the end of the joined film once chosen, and keeps the choice after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '日落', { title: '日落', shots: [{ prompt: '太阳' }, { prompt: '海面' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const requests = await studioCalls(page, 'generate')
+  await page.evaluate(([red, blue]) => Promise.all([window.videoStudioPage.finishClip(red, '#ff0000'), window.videoStudioPage.finishClip(blue, '#0000ff')]), requests.map((input) => input.requestId))
+  assert.equal(await page.getByTestId('video-transition').inputValue(), 'cut')
+  assert.equal(await page.getByTestId('video-fade-out').getByRole('switch').getAttribute('aria-checked'), 'false')
+  await page.getByTestId('video-transition').selectOption('fade')
+  await page.getByTestId('video-fade-out').getByRole('switch').click()
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const inspected = await page.evaluate(() => window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { colors: [{ time: 0.3, x: 360, y: 640 }, { time: 0.98, x: 360, y: 640 }, { time: 1.98, x: 360, y: 640 }] }))
+  closeColor(inspected.colors[0], [255, 0, 0], 'first shot in full')
+  closeColor(inspected.colors[1], [0, 0, 0], 'dips to black before the second shot')
+  closeColor(inspected.colors[2], [0, 0, 0], 'fades out at the end')
+
+  await page.reload()
+  await page.getByTestId('video-transition').waitFor()
+  assert.equal(await page.getByTestId('video-transition').inputValue(), 'fade')
+  assert.equal(await page.getByTestId('video-fade-out').getByRole('switch').getAttribute('aria-checked'), 'true')
   assert.deepEqual(errors, [])
   await page.close()
 })
