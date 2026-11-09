@@ -39,6 +39,9 @@
 # 出包不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准；两份 Linux
 # 清单和 Windows 那份一样，在 publish 作业里上传之前加发布者签名。
 #
+# 代码里另有一道只关不开的暂停（release-tag 判断那一步的 LINUX_PUBLISH_HOLD）：挂着的
+# 时候，开关开着又选了 all 或 linux，这次运行在占 tag 之前就停下，要选 both 重来。
+#
 # ## 上传顺序
 #
 # `latest.yml` / `latest-mac.yml` / `latest-linux*.yml` 是客户端用来判断"有没有新版本"
@@ -144,6 +147,10 @@ jobs:
           CONFIRM_VERSION: ${{ inputs.confirm_version }}
           PLATFORMS: ${{ inputs.platforms }}
           PUBLISH_LINUX: ${{ vars.XINGMANG_PUBLISH_LINUX }}
+          # 代码里的 Linux 暂停：非空时，仓库变量开着也不许这次带 Linux 对外发。代码只能把 Linux
+          # 关上、打不开它（打开仍只认仓库变量）。解除时删掉这一行，连同
+          # scripts/publish-workflow-config.test.cjs 里钉住它的那条。
+          LINUX_PUBLISH_HOLD: 'yoyo 2026-11-09 定「Linux先不发」，等 Ubuntu 上的自动更新修好、真机点过再发'
           DISPATCH_REF: ${{ github.ref }}
           SHIPPED_SHA: ${{ github.sha }}
         run: |
@@ -155,6 +162,14 @@ jobs:
             echo '这次只出 Linux 的包、不对外发，不占 tag'
             echo 'action=none' >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          # Linux 暂停期间开关却开着、这次又选了 Linux：publish 的 if 和下载那一步直接读仓库变量，
+          # 这里改不了它们，只能在占 tag、出包之前停下。选 both 重新触发就只发 Windows 与 macOS，
+          # 开关关着时选 all 也照常（Linux 只出包、不上传）。
+          if [ -n "${LINUX_PUBLISH_HOLD:-}" ] && [ "$publish_linux" = 'true' ] \
+            && { [ "$PLATFORMS" = 'all' ] || [ "$PLATFORMS" = 'linux' ]; }; then
+            echo "::error::Linux 暂停对外发（$LINUX_PUBLISH_HOLD），可仓库变量 XINGMANG_PUBLISH_LINUX 还开着、这次又选了 $PLATFORMS；什么都没动。选 both 重新触发（只发 Windows 与 macOS），或者先删掉这个变量"
+            exit 1
           fi
           # release 环境只放行 main：从别处触发，Mac 出包和上传都会被环境拒掉，tag 却已经
           # 占在一个发不出去的提交上了。唯一的例外是热修：上一版加一两个提交单独发，main 上
