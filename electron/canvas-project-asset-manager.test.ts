@@ -208,6 +208,29 @@ describe('CanvasProjectAssetManager', () => {
     expect(onMetadataError).toHaveBeenCalledWith(metadataError, { userId: 7, assetId: asset.assetId, source: 'generated' })
   })
 
+  it('fills a folder that is not a project yet and finds the same files once the folder is registered', async () => {
+    const projectDataRoot = temporaryRoot('xingmang-import-projects-')
+    const workspace = temporaryRoot('xingmang-import-workspace-')
+    const globalOutput = temporaryRoot('xingmang-import-global-')
+    const projects = new CanvasProjectStore(projectDataRoot)
+    const manager = new CanvasProjectAssetManager({ projects, global: context(globalOutput, 2), create: context })
+
+    const stored = await manager.forNewWorkspace(workspace).images.storeBase64(7, png)
+    expect(fs.readdirSync(path.join(workspace, 'assets', 'user-7', '2026-08-14'))).toHaveLength(1)
+    expect(fs.readdirSync(globalOutput)).toEqual([])
+    const created = await projects.createImported(7, '导入的项目', workspace, JSON.stringify({
+      schemaVersion: 2, name: '包', edges: [],
+      nodes: [{ id: 'image', kind: 'image-input', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', result: { kind: 'image', assetId: stored.assetId, localUrl: stored.localUrl, mimeType: 'image/png' } } }],
+    }))
+    await expect((await manager.forProject(7, created.project.id)).images.readOwned(7, stored.assetId)).resolves.toBeTruthy()
+
+    const api = new CanvasProjectAssetManager({ projects, realmId: 'api-account', global: context(temporaryRoot('xingmang-import-api-global-')), create: context })
+    const apiWorkspace = temporaryRoot('xingmang-import-api-workspace-')
+    await api.forNewWorkspace(apiWorkspace).images.storeBase64(7, png)
+    expect(fs.existsSync(path.join(apiWorkspace, 'assets', 'realms', 'api-account', 'user-7'))).toBe(true)
+    expect(() => manager.forNewWorkspace('relative/folder')).toThrow('画布项目工作文件夹无效')
+  })
+
   it('isolates generated and imported media in each selected project folder while leaving global output unchanged', async () => {
     const projectDataRoot = temporaryRoot('xingmang-project-data-')
     const globalOutput = temporaryRoot('xingmang-global-output-')

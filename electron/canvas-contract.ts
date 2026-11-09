@@ -377,12 +377,16 @@ export interface CanvasProjectPreview {
   edgeCount: number
   assetCount: number
   warnings: string[]
+  /** Set when the import becomes a new project in the default folder instead of replacing the open one. */
+  createsProject?: true
 }
 
 export interface CanvasProjectImportResult {
   content: string
   warnings: string[]
   importedAssetCount: number
+  /** The new project the import created, which the canvas opens next. */
+  projectId?: string
 }
 
 export interface CanvasStoredProjectSummary {

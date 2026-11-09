@@ -68,17 +68,32 @@ export class CanvasProjectAssetManager {
     if (existing) return existing
     const pending = this.projects.getUsableWorkspaceDirectory(userId, projectId).then((workspaceDirectory) => {
       if (!workspaceDirectory) return this.global
-      const context = this.createContext(this.realmId === 'api-account'
-        ? path.join(workspaceDirectory, 'assets', 'realms', 'api-account')
-        : path.join(workspaceDirectory, 'assets'))
-      context.images.ensureOutputDirectory()
-      return context
+      return this.forWorkspace(workspaceDirectory)
     }).catch((error) => {
       this.contexts.delete(key)
       throw error
     })
     this.contexts.set(key, pending)
     return pending
+  }
+
+  /**
+   * The asset stores of a folder that is not a project yet. Importing a
+   * project package as a new project fills its folder first and registers the
+   * project last, so a failed import leaves no half-made project in the list.
+   * Not remembered: the project registered afterwards goes through forProject().
+   */
+  forNewWorkspace(workspaceDirectory: string): CanvasProjectAssetContext {
+    if (typeof workspaceDirectory !== 'string' || !path.isAbsolute(workspaceDirectory)) throw new Error('画布项目工作文件夹无效')
+    return this.forWorkspace(workspaceDirectory)
+  }
+
+  private forWorkspace(workspaceDirectory: string): CanvasProjectAssetContext {
+    const context = this.createContext(this.realmId === 'api-account'
+      ? path.join(workspaceDirectory, 'assets', 'realms', 'api-account')
+      : path.join(workspaceDirectory, 'assets'))
+    context.images.ensureOutputDirectory()
+    return context
   }
 
   /** Drops the remembered folder of a project bound to another folder, so the next use reads the new one. */
