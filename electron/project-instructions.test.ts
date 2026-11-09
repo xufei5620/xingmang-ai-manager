@@ -159,6 +159,15 @@ describe('hasUntouchedHomeProjectInstructions', () => {
 
   it('keeps every template version ever shipped, including the bundled one', () => {
     expect(PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS).toContain(projectInstructionsDigest(BUNDLED_TEMPLATE))
+    // 老客户个人文件夹里留的是 #288 那一版，换模板时不能把它丢了。
+    expect(PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS).toContain('ca1295d8cade9f6598e687d6650ccdc1488ff44d50d9e16ec70e84e229f38643')
+  })
+
+  it('names only the tools still offered and tells Windows PowerShell to call npm.cmd', () => {
+    // D50：Gemini CLI 10-14 已下线；D75：PowerShell 默认禁止运行 npm.ps1，写成 .cmd 不碰执行策略。
+    expect(BUNDLED_TEMPLATE).toContain('Claude Code、Codex 打开这个目录时都会自动读它')
+    expect(BUNDLED_TEMPLATE).not.toContain('Gemini')
+    expect(BUNDLED_TEMPLATE).toContain('- 在 Windows 的 PowerShell 里调用 npm、npx、pnpm 时，写成 npm.cmd、npx.cmd、pnpm.cmd。')
   })
 
   it('recognises the template this app left in the home folder, whatever its line endings', () => {
