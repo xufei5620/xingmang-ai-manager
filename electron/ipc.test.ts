@@ -711,12 +711,12 @@ describe('registerIpcHandlers', () => {
 
     it('rejects cross-account, logged-out and Sub2API contexts even with the same numeric user ID', async () => {
       const f = setup()
-      await expect(f.handler(trustedEvent(), 'xm-account:8', [])).rejects.toThrow('账号刚切换过')
+      await expect(f.handler(trustedEvent(), 'xm-account:8', [])).rejects.toThrow('账号上下文已变化')
       vi.mocked(f.accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
-      await expect(f.handler(trustedEvent(), 'xm-account:7', [])).rejects.toThrow('账号刚切换过')
+      await expect(f.handler(trustedEvent(), 'xm-account:7', [])).rejects.toThrow('账号上下文已变化')
       for (const metadata of [{ siteId: 'solov-api' }, { realmId: 'api-account' }]) {
         vi.mocked(f.accountService.getSessionState).mockReturnValue({ ...authenticated, ...metadata })
-        await expect(f.handler(trustedEvent(), 'xm-account:7', [])).rejects.toThrow('账号刚切换过')
+        await expect(f.handler(trustedEvent(), 'xm-account:7', [])).rejects.toThrow('账号上下文已变化')
       }
       expect(f.announcementReads.sync).not.toHaveBeenCalled()
     })
@@ -729,7 +729,7 @@ describe('registerIpcHandlers', () => {
       else if (change === 'different-realm') vi.mocked(f.accountService.getSessionState).mockReturnValue({ ...authenticated, ...{ realmId: 'api-account' } })
       else vi.mocked(f.accountService.getSessionRevision).mockReturnValue(1)
       complete([marker])
-      await expect(pending).rejects.toThrow('账号刚切换过')
+      await expect(pending).rejects.toThrow('账号上下文已变化')
     })
 
     it('reports unavailable persistence instead of pretending a marker was saved', async () => {
