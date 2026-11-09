@@ -51,6 +51,7 @@ import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
+import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import { isRecord } from './input-guards'
 import {
@@ -266,6 +267,8 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
+  chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>

@@ -202,6 +202,12 @@ export interface AppSettings {
   offeredModelUpgrades?: string[]
   /** 见 seededToolDefaultIds。只增不减，读到不认识的项就丢掉。 */
   seededToolDefaults?: SeededToolDefault[]
+  /**
+   * 切回官方账号前，这家工具接着当前账号时客户选的型号。切回官方以后配置里就没有它了（Grok 连那张表一起
+   * 拿掉），再「改用当前账号」时拿它当原来的型号，账号还列着就留着，不再悄悄回到默认（0.2.24 深查
+   * 「反复切换」N5）。每次从当前账号切回官方都换成那一刻的型号；只有主进程写，渲染层改不了它。
+   */
+  relayModelsBeforeOfficial?: Partial<Record<ProviderId, string>>
   windowState?: AppWindowState
 }
 
@@ -257,6 +263,8 @@ export interface AppSettingsUpdate {
   offeredModelUpgrades?: string[]
   /** Same as offeredModelUpgrades. */
   seededToolDefaults?: SeededToolDefault[]
+  /** Only the host sets this; each provider named replaces its stored entry, the others stay. */
+  relayModelsBeforeOfficial?: Partial<Record<ProviderId, string>>
   /** null explicitly resets saved placement; absence preserves it. */
   windowState?: AppWindowState | null
 }
@@ -375,6 +383,22 @@ function parseOfferedModelUpgrades(value: unknown): string[] {
   return [...seen].slice(-MAX_OFFERED_MODEL_UPGRADES)
 }
 
+const MAX_REMEMBERED_MODEL_LENGTH = 256
+
+/** 读不懂的项丢掉：它只是「原来选的型号」的线索，用之前还要对账号列着的型号，读坏了不该挡住读设置。 */
+function parseRelayModelsBeforeOfficial(value: unknown): Partial<Record<ProviderId, string>> {
+  if (!isRecord(value)) return {}
+  const models: Partial<Record<ProviderId, string>> = {}
+  for (const provider of providerIds) {
+    const model = value[provider]
+    if (typeof model !== 'string') continue
+    const trimmed = model.trim()
+    if (!trimmed || trimmed.length > MAX_REMEMBERED_MODEL_LENGTH || /[\u0000-\u001F\u007F]/.test(trimmed)) continue
+    models[provider] = trimmed
+  }
+  return models
+}
+
 function parseSeededToolDefaults(value: unknown): SeededToolDefault[] {
   if (!Array.isArray(value)) return []
   return seededToolDefaultIds.filter((entry) => value.includes(entry))
@@ -423,6 +447,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   const windowState = parseWindowState(value.windowState)
   const offeredModelUpgrades = parseOfferedModelUpgrades(value.offeredModelUpgrades)
   const seededToolDefaults = parseSeededToolDefaults(value.seededToolDefaults)
+  const relayModelsBeforeOfficial = parseRelayModelsBeforeOfficial(value.relayModelsBeforeOfficial)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -459,6 +484,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
     ...(seededToolDefaults.length > 0 ? { seededToolDefaults } : {}),
+    ...(Object.keys(relayModelsBeforeOfficial).length > 0 ? { relayModelsBeforeOfficial } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }
@@ -634,6 +660,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
   const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
   const seededToolDefaults = parseSeededToolDefaults([...(base.seededToolDefaults ?? []), ...(update.seededToolDefaults ?? [])])
+  const relayModelsBeforeOfficial = parseRelayModelsBeforeOfficial({ ...base.relayModelsBeforeOfficial, ...update.relayModelsBeforeOfficial })
   return {
     version: 2,
     workspace: update.workspace ?? base.workspace,
@@ -663,6 +690,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
     ...(seededToolDefaults.length > 0 ? { seededToolDefaults } : {}),
+    ...(Object.keys(relayModelsBeforeOfficial).length > 0 ? { relayModelsBeforeOfficial } : {}),
     ...(windowState !== undefined ? { windowState } : {}),
   }
 }

@@ -8,6 +8,7 @@ import {
   type ClaudeDesktopGatewayInput, type ClaudeDesktopConfigOptions,
 } from './claude-desktop-config'
 import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
+import { claudeDesktopStartupCheckModel } from './claude-desktop-models'
 
 // Pass-through: every save still commits for real; the recorded calls show which files each
 // write checked for outside edits and what it saw in them.
@@ -808,6 +809,10 @@ describe('Claude Desktop connection route follow (batch 43 A)', () => {
 describe('Claude Desktop key follow (#1113)', () => {
   const baseUrl = 'https://xm.solov.cc'
   const nextKey = 'sk-claude-code-replacement'
+  // 新 Key 能用的型号：默认用例里菜单上的都在。
+  const offered = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5']
+  const change = (overrides: Partial<{ baseUrl: string; from: string; to: string; offered: readonly string[] }> = {}) => (
+    { baseUrl, from: input.apiKey, to: nextKey, offered, ...overrides })
 
   it('changes only the gateway key of the toolbox profile and keeps everything the customer set', async () => {
     const f = fixture()
@@ -816,8 +821,9 @@ describe('Claude Desktop key follow (#1113)', () => {
     const before = fs.readFileSync(saved.path, 'utf8')
     const others = snapshot([f.metadataPath, f.configPath, markerPath(f), path.join(f.profileDirectory, 'developer_settings.json'), path.join(f.developerDirectory, 'developer_settings.json')])
 
-    const result = await f.service.followKey(`${baseUrl}/`, input.apiKey, nextKey)
+    const result = await f.service.followKey(change({ baseUrl: `${baseUrl}/` }))
     expect(result.path).toBe(saved.path)
+    expect(result.removedModels).toEqual([])
     expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${input.apiKey}"`, `"${nextKey}"`))
     expect(result.backups).toHaveLength(1)
     expect(fs.readFileSync(result.backups[0], 'utf8')).toBe(before)
@@ -826,12 +832,54 @@ describe('Claude Desktop key follow (#1113)', () => {
     expect(await f.service.inspectOwnedRoute()).toEqual({ baseUrl, apiKey: nextKey, model: 'claude-opus-5' })
   })
 
+  it('takes the menu models the new key does not offer out in the same write, so the startup check cannot pick one', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'] })
+    write(saved.path, { ...read(saved.path), custom: { preserved: true } })
+    const original = read(saved.path) as Record<string, unknown>
+    // 原来那把能用 Haiku，Claude Desktop 开机检查挑的就是它；新那把没有 Haiku。
+    expect(claudeDesktopStartupCheckModel(['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-5'])).toBe('claude-haiku-5')
+
+    const result = await f.service.followKey(change({ offered: ['claude-opus-5', 'claude-sonnet-5'] }))
+    expect(result.removedModels).toEqual(['claude-haiku-5'])
+    expect(result.backups).toHaveLength(1)
+    expect(read(saved.path)).toEqual({ ...original, inferenceGatewayApiKey: nextKey, inferenceModels: [{ name: 'claude-opus-5' }, { name: 'claude-sonnet-5' }] })
+    expect(await f.service.inspectGatewayCredential(baseUrl)).toEqual({ apiKey: nextKey, model: 'claude-opus-5', startupCheckModel: 'claude-sonnet-5' })
+  })
+
+  it('keeps the entries it leaves in the menu exactly as the customer wrote them', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway(input)
+    write(saved.path, { ...read(saved.path), inferenceModels: ['claude-opus-5', { name: 'claude-haiku-5', displayName: 'Haiku' }, { name: 'claude-sonnet-5', displayName: 'Sonnet' }] })
+    const result = await f.service.followKey(change({ offered: ['claude-opus-5', 'claude-sonnet-5'] }))
+    expect(result.removedModels).toEqual(['claude-haiku-5'])
+    expect((read(saved.path) as { inferenceModels: unknown }).inferenceModels).toEqual(['claude-opus-5', { name: 'claude-sonnet-5', displayName: 'Sonnet' }])
+  })
+
+  it('writes nothing when the new key does not offer the default model in the profile it reads again before writing', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: ['claude-opus-5', 'claude-sonnet-5'] })
+    const previous = snapshot([saved.path, f.metadataPath, f.configPath, markerPath(f)])
+    await expect(f.service.followKey(change({ offered: ['claude-sonnet-5'] }))).rejects.toThrow('新密钥不支持Claude Desktop 第三方推理配置里的默认型号')
+    expectSnapshot(previous)
+  })
+
+  it('changes only the key when the profile leaves the model list to Claude Desktop', async () => {
+    const f = fixture()
+    const saved = await f.service.saveGateway({ ...input, models: undefined })
+    const before = fs.readFileSync(saved.path, 'utf8')
+    expect(before).not.toContain('inferenceModels')
+    const result = await f.service.followKey(change({ offered: [] }))
+    expect(result.removedModels).toEqual([])
+    expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${input.apiKey}"`, `"${nextKey}"`))
+  })
+
   it('keeps the layout Claude Desktop wrote the profile in', async () => {
     const f = fixture()
     const saved = await f.service.saveGateway(input)
     const before = JSON.stringify(read(saved.path), null, 4).replaceAll('\n', '\r\n')
     fs.writeFileSync(saved.path, before, 'utf8')
-    await f.service.followKey(baseUrl, input.apiKey, nextKey)
+    await f.service.followKey(change())
     expect(fs.readFileSync(saved.path, 'utf8')).toBe(before.replace(`"${input.apiKey}"`, `"${nextKey}"`))
   })
 
@@ -839,7 +887,7 @@ describe('Claude Desktop key follow (#1113)', () => {
     const f = fixture()
     const saved = await f.service.saveGateway(input)
     const previous = snapshot([saved.path])
-    await expect(f.service.followKey(baseUrl, input.apiKey, nextKey, async () => {
+    await expect(f.service.followKey(change(), async () => {
       throw new Error('Claude Desktop 还开着，已保留原配置')
     })).rejects.toThrow('还开着')
     expectSnapshot(previous)
@@ -853,7 +901,7 @@ describe('Claude Desktop key follow (#1113)', () => {
     const saved = await f.service.saveGateway(input)
     write(saved.path, { ...read(saved.path), ...edit })
     const previous = snapshot([saved.path, f.metadataPath, f.configPath, markerPath(f)])
-    await expect(f.service.followKey(baseUrl, input.apiKey, nextKey)).rejects.toThrow('在换密钥前已变化')
+    await expect(f.service.followKey(change())).rejects.toThrow('在换密钥前已变化')
     expectSnapshot(previous)
   })
 
@@ -865,7 +913,7 @@ describe('Claude Desktop key follow (#1113)', () => {
     const metadata = read(f.metadataPath) as { entries: unknown[] }
     write(f.metadataPath, { ...metadata, appliedId: otherId, entries: [...metadata.entries, { id: otherId, name: '星芒 AI 副本' }] })
     const previous = snapshot([saved.path, copyPath, f.metadataPath])
-    await expect(f.service.followKey(baseUrl, input.apiKey, nextKey)).rejects.toThrow('在换密钥前已变化')
+    await expect(f.service.followKey(change())).rejects.toThrow('在换密钥前已变化')
     expectSnapshot(previous)
   })
 
@@ -873,7 +921,7 @@ describe('Claude Desktop key follow (#1113)', () => {
     const f = fixture()
     const saved = await f.service.saveGateway(input)
     const previous = snapshot([saved.path])
-    await expect(f.service.followKey(baseUrl, input.apiKey, 'sk-bad\nkey')).rejects.toThrow('API Key无效')
+    await expect(f.service.followKey(change({ to: 'sk-bad\nkey' }))).rejects.toThrow('API Key无效')
     expectSnapshot(previous)
   })
 })
@@ -1116,7 +1164,7 @@ describe('Claude Desktop write snapshots', () => {
 
   it.each([
     ['route', (service: ReturnType<typeof fixture>['service']) => service.followRoute(input.baseUrl, 'https://xm-direct.solov.cc', input.apiKey)],
-    ['key', (service: ReturnType<typeof fixture>['service']) => service.followKey(input.baseUrl, input.apiKey, 'sk-next')],
+    ['key', (service: ReturnType<typeof fixture>['service']) => service.followKey({ baseUrl: input.baseUrl, from: input.apiKey, to: 'sk-next', offered: ['claude-opus-5'] })],
   ])('records the client settings, library, marker and toolbox profile when following the %s', async (_case, follow) => {
     const f = fixture()
     const saved = await f.service.saveGateway(input)
@@ -1222,7 +1270,7 @@ describe('Claude Desktop write size limit', () => {
     const compact = JSON.stringify({ ...read(saved.path), custom: '' })
     fs.writeFileSync(saved.path, compact.replace('"custom":""', `"custom":"${'x'.repeat(limit - compact.length - 4)}"`), 'utf8')
     const previous = snapshot([saved.path])
-    await expect(f.service.followKey(input.baseUrl, input.apiKey, `${input.apiKey}-longer`)).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')
+    await expect(f.service.followKey({ baseUrl: input.baseUrl, from: input.apiKey, to: `${input.apiKey}-longer`, offered: ['claude-opus-5'] })).rejects.toThrow('Claude Desktop 第三方推理配置超过文件大小上限')
     expectSnapshot(previous)
   })
 

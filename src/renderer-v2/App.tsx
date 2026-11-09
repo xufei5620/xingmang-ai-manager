@@ -7,6 +7,7 @@ import { appReleaseDownloadUrl } from '../../electron/app-download-page'
 import type { RemoteFeatureId } from '../../electron/remote-features'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createChatTransfer } from './features/chat/transfer'
+import { answerHistoryFlushRequests } from './features/chat/storage'
 import { OnlineStatusContext } from './features/shell/useOnlineStatus'
 import { buildEnvironmentStatus, environmentJobsFinished, markDiagnosticsStale, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
@@ -386,6 +387,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   })
   const toolboxSettled = !toolboxEnabled || toolbox.snapshot !== null || toolbox.error !== ''
   useRendererActivityReport(native, boot !== 'loading' && pageRestored && toolboxSettled)
+  // 退出前主进程问一声，聊天页手上还没存的（正在出字的回复、刚打的字）先存下来（electron/chat-history-flush.ts）。
+  // 聊天页没开也得回话，不然主进程白等到时限，所以挂在 App 上，不挂在聊天页上。
+  useEffect(() => answerHistoryFlushRequests(native), [native])
   // Account switches can happen while the chat route is active. The retained
   // chat host deliberately keeps its previous scope in state, but rendering
   // must follow the newly authenticated account immediately; otherwise the
@@ -581,7 +585,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       </div>
     </Dialog>}
     <RequiredUpdateGate update={update} windows={os === 'win'} linux={os === 'linux'} mac={os === 'mac'} actions={{
-      check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate(),
+      check: () => native.checkForUpdates(), download: (options) => native.downloadUpdate(options), install: () => native.installUpdate({ askIfInstalling: true }),
       openDownloadPage: () => void perform('打开下载页', () => app.openExternal(appReleaseDownloadUrl)), contactSupport: () => setHelp(true),
     }} />
     {/* 引导、导览开着时，登录后说一次的告知卡先等着（主路卡点 F11）。导览只在首页放，开在别的页上客户看不见它，

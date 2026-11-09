@@ -709,12 +709,16 @@ export function resolveGatedRequiredVersion(input: {
 }
 
 /**
- * 退回的下限。撤回名单让更新目录有了「把客户端装回旧版本」的能力；更新目录一旦被
- * 人拿到，这条路就能被用来把大家退回一个有已知安全问题的老版本。所以退回只能退到
- * 这个版本及以后：它是第一个有清单备份、能被正规回退流程选中的版本。以后哪一版修了
- * 安全问题，就把这里抬到那一版，更新目录再也没法把客户端退到它之前。
+ * 退回的下限。撤回名单让更新目录有了「把客户端装回旧版本」的能力；撤回名单所在的状态
+ * 文件没有签名，更新目录或直连那台转发机一旦被人拿到，不用签名私钥就能把本机版本写进
+ * 撤回名单、再换上一份真签过名的旧清单，把大家退回一个有已知问题的老版本（发布者签名
+ * 只防得住装恶意包，防不住装旧的真包）。所以退回只能退到这个版本及以后。
+ *
+ * 它跟着状态文件里的最低版本走：0.2.22 是现在的最低版本，比它旧的有已撤回的 0.2.20、
+ * 0.2.21。比最低版本还旧的退回去也过不了「必须更新」那道门，正规回退流程本来就不会选它。
+ * 以后每次抬最低版本（或者哪一版修了安全问题），就顺手把这里抬到那一版。
  */
-export const rollbackFloorVersion = '0.2.9'
+export const rollbackFloorVersion = '0.2.22'
 
 export type UpdateOfferDecision =
   | { offer: false }
@@ -1051,8 +1055,8 @@ export function createUpdaterService(
   let lastProgressAt = 0
   // 撤回名单和分批放量是发版的安全网，只认最近一次读成功的那份：网差的电脑这一次没读到状态文件、
   // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。这份记在本地，打开软件时先用
-  // 上次记下的。维护提示和最低版本照旧跟着这一次读到的走，读不到就不提示、不拦人。从来没读成功过
-  // 的电脑仍按不撤回、不限量算。
+  // 上次记下的。维护提示照旧跟着这一次读到的走，读不到就不提示。最低版本只在这次运行里沿用读成功的那份
+  // （见 applyServiceStatus），不记到本地。从来没读成功过的电脑仍按不撤回、不限量、不拦人算。
   let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
   // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
   let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
@@ -1252,10 +1256,14 @@ export function createUpdaterService(
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
-    // 开发态装不了更新，拦下来只会把人困住。
-    const required = enabled && !development
-      ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
-      : null
+    // 最低版本同样只认读成功的那份：下载新版本时这一次读超时，那层「必须更新」就整层收起，下一次读到又盖回来，
+    // 客户以为没事了接着用（RC-01）。只在读到了、文件里确实撤掉了才放人。这份只在这次运行里沿用、不记到本地：
+    // 撤掉强制更新以后，重开软件还读不到文件的电脑不能一直被拦着。开发态装不了更新，拦下来只会把人困住。
+    const required = !status
+      ? minimumRequired
+      : enabled && !development
+        ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
+        : null
     const previouslyRequired = minimumRequired
     minimumRequired = required
     // 快照里的 requiredVersion 由 emit 按 minimumRequired 重算，这里只判断要不要发一次。

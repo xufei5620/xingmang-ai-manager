@@ -33,6 +33,11 @@ describe('parseSettingsUpdate', () => {
       .toThrow('窗口位置格式错误')
   })
 
+  // 切回官方前记下的型号只有主进程写（app-settings.ts 的 relayModelsBeforeOfficial），渲染层改不了它。
+  it('never lets the renderer write the models remembered before an official switch', () => {
+    expect(parseSettingsUpdate({ version: 2, relayModelsBeforeOfficial: { codex: 'gpt-5.4-mini' } })).toEqual({ version: 2 })
+  })
+
   it('rejects a workspace path with a NUL byte', () => {
     expect(() => parseSettingsUpdate({ version: 2, workspace: '/home/user\0/etc' })).toThrow('工作目录格式错误')
   })

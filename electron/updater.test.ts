@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -1323,9 +1323,57 @@ describe('minimum version from the update feed', () => {
     expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
     expect(service.getState()).toMatchObject({ requiredVersion: '1.1.0', availableVersion: '1.1.0' })
 
+    // 一次没读到不放人（RC-01）；读到了、文件里撤掉了才放。
     service.setServiceStatus(null)
+    expect(service.getState().requiredVersion).toBe('1.1.0')
+    service.setServiceStatus({ maintenance: null, minimumVersion: null })
     expect(service.getState().requiredVersion).toBeNull()
     service.dispose()
+  })
+
+  it('keeps the required-update gate up when a status read times out during the download', async () => {
+    const client = new FakeUpdater()
+    let status: ServiceStatus | null = { maintenance: null, minimumVersion: '1.1.0' }
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true, refreshServiceStatus: async () => status })
+    client.checkForUpdates.mockImplementation(async () => {
+      client.emit('update-available', updateInfo('1.1.0'))
+    })
+    const download: { finish: (() => void) | null } = { finish: null }
+    client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => {
+      download.finish = resolve
+    }))
+    await service.check()
+    expect(service.getState()).toMatchObject({ phase: 'available', requiredVersion: '1.1.0' })
+    const seen: Array<string | null | undefined> = []
+    service.subscribe((state) => seen.push(state.requiredVersion))
+    const downloading = service.download()
+    await vi.waitFor(() => expect(client.downloadUpdate).toHaveBeenCalledTimes(1))
+    client.emit('download-progress', { percent: 10, bytesPerSecond: 1, transferred: 10, total: 100, delta: 10 })
+    expect(service.getState().phase).toBe('downloading')
+
+    // 下载中后台那一次读状态文件超时。
+    status = null
+    service.setServiceStatus(null)
+    expect(service.getState()).toMatchObject({ phase: 'downloading', requiredVersion: '1.1.0' })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    download.finish?.()
+    await downloading
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', requiredVersion: '1.1.0' })
+    expect(seen).not.toContain(null)
+    service.dispose()
+  })
+
+  it('does not carry the minimum over to the next launch when the first read there fails', () => {
+    const client = new FakeUpdater()
+    const first = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    first.setServiceStatus({ maintenance: null, minimumVersion: '1.1.0' })
+    expect(first.getState().requiredVersion).toBe('1.1.0')
+    first.dispose()
+    // 重开软件：撤掉强制更新以后读不到文件的电脑不能一直被拦着，所以这份不记到本地。
+    const next = createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true })
+    next.setServiceStatus(null)
+    expect(next.getState().requiredVersion).toBeNull()
+    next.dispose()
   })
 
   it('lets a machine below the minimum past a staged rollout', async () => {
@@ -1371,7 +1419,13 @@ describe('withdrawn versions and staged rollout', () => {
 
   it('never rolls back below the floor, whatever the feed says', () => {
     const base = { currentVersion: '0.3.0', badVersions: ['0.3.0'], rollout: null, manual: true }
-    expect(decideUpdateOffer({ ...base, version: '0.2.9' })).toEqual({ offer: true })
+    expect(rollbackFloorVersion).toBe('0.2.22')
+    expect(decideUpdateOffer({ ...base, version: '0.2.22' })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...base, version: '0.2.23' })).toEqual({ offer: true })
+    // 已撤回的 0.2.20、0.2.21 和红队修复之前的老版本，状态文件写什么都退不回去。
+    expect(decideUpdateOffer({ ...base, version: '0.2.21' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: '0.2.20' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: '0.2.9' })).toEqual({ offer: false })
     expect(decideUpdateOffer({ ...base, version: '0.2.8' })).toEqual({ offer: false })
     expect(decideUpdateOffer({ ...base, version: '0.2.12', rollbackFloor: '0.2.12' })).toEqual({ offer: true })
     expect(decideUpdateOffer({ ...base, version: '0.2.11', rollbackFloor: '0.2.12' })).toEqual({ offer: false })
