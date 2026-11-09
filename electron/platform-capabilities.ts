@@ -74,7 +74,8 @@ export function platformCapabilitiesFor(
     }),
     // 网络加速 2026-10-30 下线（线路被封，yoyo 回「下线改」）：Windows、Mac 跟 Linux 第一版一样，
     // 界面上不再有加速的入口，也不再替打开的桌面端连。安装包里的加速内核这一版还带着：上次加速时
-    // 崩了、留在半路的系统代理，开机靠它改回去（bootstrap/acceleration.ts 的 createAccelerationHost）。
+    // 崩了、留在半路的系统代理，开机靠它改回去（bootstrap/acceleration.ts 的 createAccelerationHost）；
+    // 开机只看一眼有没有恢复记录，有才去读它（createAccelerationHostLoader）。
     acceleration: false,
     // Gemini 要 Python 只是为了在没有预编译包时现场编译一个可选组件，那一步还得有编译器；
     // 缺了它照样能装能用，不该拦着。Linux 先去掉（Linux 版拆分 ③）；它自带的现成包也覆盖
