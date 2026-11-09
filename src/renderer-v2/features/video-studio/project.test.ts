@@ -294,6 +294,8 @@ describe('video studio project', () => {
     expect(videoStudioComposeKey(setVideoStudioShotTrim(done, 'shot-1', 'end', 0.5))).not.toBe(key)
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, transition: 'fade' } })).not.toBe(key)
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, fadeOut: true } })).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, captionSize: 'large' } })).not.toBe(key)
+    expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, captionPosition: 'top' } })).not.toBe(key)
   })
 
   it('cuts straight between shots without a fade at the end unless asked, also for projects saved before the choice existed', () => {
@@ -304,6 +306,16 @@ describe('video studio project', () => {
     expect(restoreVideoStudioProject(stored)!.settings).toMatchObject({ transition: 'cut', fadeOut: false })
     expect(restoreVideoStudioProject({ ...stored, settings: { ...stored.settings, transition: 'fade', fadeOut: true } })!.settings).toMatchObject({ transition: 'fade', fadeOut: true })
     expect(restoreVideoStudioProject({ ...stored, settings: { ...stored.settings, transition: 'wipe', fadeOut: 'yes' } })!.settings).toMatchObject({ transition: 'cut', fadeOut: false })
+  })
+
+  it('prints captions medium-sized at the bottom unless asked, also for projects saved before the choice existed', () => {
+    expect(defaultVideoStudioSettings()).toMatchObject({ captionSize: 'medium', captionPosition: 'bottom' })
+    const stored = JSON.parse(JSON.stringify(serializeVideoStudioProject(planned())))
+    delete stored.settings.captionSize
+    delete stored.settings.captionPosition
+    expect(restoreVideoStudioProject(stored)!.settings).toMatchObject({ captionSize: 'medium', captionPosition: 'bottom' })
+    expect(restoreVideoStudioProject({ ...stored, settings: { ...stored.settings, captionSize: 'small', captionPosition: 'middle' } })!.settings).toMatchObject({ captionSize: 'small', captionPosition: 'middle' })
+    expect(restoreVideoStudioProject({ ...stored, settings: { ...stored.settings, captionSize: 'huge', captionPosition: 'left' } })!.settings).toMatchObject({ captionSize: 'medium', captionPosition: 'bottom' })
   })
 
   it('trims a clip by a few fixed steps, keeps at least a second of it and lets go of the film it no longer matches', () => {

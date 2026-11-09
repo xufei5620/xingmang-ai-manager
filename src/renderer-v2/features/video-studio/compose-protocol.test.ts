@@ -82,6 +82,13 @@ describe('video studio compose protocol', () => {
     expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, fadeOut: 'yes' } })).toThrow('成片的画面设置不对')
   })
 
+  it('carries the caption size and place, leaves out the defaults and turns away anything else', () => {
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionSize: 'large', captionPosition: 'top' } }).options).toEqual({ ...options, captionSize: 'large', captionPosition: 'top' })
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionSize: 'medium', captionPosition: 'bottom' } }).options).toEqual(options)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionSize: 'huge' } })).toThrow('成片的画面设置不对')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionPosition: 'left' } })).toThrow('成片的画面设置不对')
+  })
+
   it('stops the page reading clips at the same total, with the same words, as the worker', () => {
     expect(addVideoStudioClipBytes(0, maxVideoStudioClipBytes)).toBe(maxVideoStudioClipBytes)
     expect(addVideoStudioClipBytes(maxVideoStudioClipBytes, maxVideoStudioClipBytes)).toBe(maxVideoStudioTotalBytes)

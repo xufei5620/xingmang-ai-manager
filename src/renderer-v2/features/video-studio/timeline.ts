@@ -1,3 +1,4 @@
+import type { VideoStudioCaptionPosition, VideoStudioCaptionSize } from './captions'
 import { VideoStudioError } from './errors'
 
 export type VideoStudioAspect = '16:9' | '9:16' | '1:1'
@@ -54,6 +55,9 @@ export interface VideoStudioRenderOptions {
   transition?: VideoStudioTransition
   /** 成片最后淡到黑、声音一起淡掉，缺省不淡。 */
   fadeOut?: boolean
+  /** 字幕大小和放哪儿，缺省中号、底部（captions.ts）。 */
+  captionSize?: VideoStudioCaptionSize
+  captionPosition?: VideoStudioCaptionPosition
 }
 
 export interface VideoStudioSegment {
