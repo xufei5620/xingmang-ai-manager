@@ -108,10 +108,23 @@ describe('renderer-v2 start guide first run', () => {
     // 「打开」照样能点，只是不再抢主按钮。
     expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool"/)
     expect(markup).not.toMatch(/data-testid="guide-open-tool"[^>]*disabled/)
+    // D47：下面的结果卡跟着说先充值，不再两句叫人去打开。
+    expect(markup).toContain('设置已读到。')
+    expect(markup).toContain('>先充值<')
+    expect(markup).toContain('充值后回来点「打开」就能用。')
+    expect(markup).not.toContain('打开工具试一次')
     stubResumedGuide('chat', 'ready')
     const chat = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
     expect(chat).toContain('data-testid="guide-wallet-empty"')
     expect(chat).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-chat"/)
+  })
+
+  // W9：自称一律「星芒」。
+  it('opens the chat route with 星芒 as the name of the app', () => {
+    stubResumedGuide('chat', 'ready')
+    const markup = render([guideTool()])
+    expect(markup).toContain('从一个问题开始，慢慢熟悉星芒。')
+    expect(markup).not.toContain('AI 工作台')
   })
 
   it('keeps the ready wording when the empty wallet is not what the tool spends', () => {
@@ -646,6 +659,20 @@ describe('guide connect step after the account key was not written', () => {
   function buttonClass(markup: string, testId: string): string {
     return new RegExp(`<button class="([^"]*)"[^>]*data-testid="${testId}"`).exec(markup)?.[1] ?? ''
   }
+
+  // W81 W82：「下一步」灰着时悬停说还差什么；那颗配置按钮叫「去连好」。
+  it('says what is missing on the grey next button and names the configure button plainly', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ configured: false, source: 'none' })])
+    expect(markup).toMatch(/<button title="先把上面那项连好"[^>]*data-testid="guide-next"[^>]*disabled/)
+    expect(markup).toMatch(/data-testid="guide-config"[^>]*>.*?<span>去连好<\/span>/)
+    expect(markup).not.toContain('去完成连接配置')
+    // 连好了就不灰，也不挂这句。
+    const connected = render([guideTool()])
+    expect(connected).not.toContain('先把上面那项连好')
+    // 正忙着的时候灰着是别的原因，不说这句。
+    expect(render([guideTool({ configured: false, source: 'none' })], { busy: true })).not.toContain('先把上面那项连好')
+  })
 
   it('says why with the home banner sentence and makes resync the main button', () => {
     stubResumedGuide('claude', 'connect')

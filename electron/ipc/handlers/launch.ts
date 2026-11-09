@@ -148,7 +148,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   // 返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
   async function pickWorkspace(parentWindow: BrowserWindow | undefined): Promise<string | null> {
     const dialogOptions: OpenDialogOptions = {
-      title: '选择 CLI 工作目录',
+      title: '选一个项目文件夹',
       properties: ['openDirectory', 'createDirectory'],
     }
     for (;;) {
