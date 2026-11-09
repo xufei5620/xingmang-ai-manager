@@ -155,6 +155,41 @@ test('Dialog traps focus, protects dirty backdrop/escape, preserves draft and re
     assert.equal(await focused(trigger), true);
   } finally { await page.close(); }
 });
+test('A busy Dialog keeps Esc away once focus has dropped out of it, and stays React\'s', async () => {
+  const page = await gallery();
+  try {
+    const trigger = page.getByRole('button', { name: '打开处理中', exact: true });
+    await trigger.click();
+    const dialog = page.getByTestId('gallery-busy-dialog');
+    const isOpen = () => dialog.evaluate(element => element.open);
+    const blur = () => page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur(); });
+    await dialog.getByRole('button', { name: '开始处理' }).click();
+    // The pressed button turns into a disabled spinner and focus falls out of the dialog onto the page,
+    // where the dialog's own keydown handler cannot see Esc.
+    assert.equal(await dialog.getByRole('button', { name: '开始处理' }).isDisabled(), true);
+    assert.equal(await dialog.evaluate(element => element.contains(document.activeElement)), false);
+    for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape');
+    assert.equal(await isOpen(), true);
+    assert.equal(await dialog.isVisible(), true);
+    assert.equal(await dialog.evaluate(element => element === document.activeElement), true, 'Esc pulls focus back into the dialog');
+    // Should the <dialog> still close behind React's back, it comes straight back instead of staying gone.
+    await dialog.evaluate(element => element.close());
+    await page.waitForFunction(() => document.querySelector('[data-testid="gallery-busy-dialog"]')?.open === true);
+    assert.equal(await dialog.isVisible(), true);
+    // A dialog stacked on top owns an Esc that lands outside every dialog; the busy one underneath stays.
+    await dialog.getByRole('button', { name: '再确认' }).click();
+    const confirm = page.getByRole('dialog', { name: '删除配置' });
+    await confirm.waitFor();
+    await blur(); await page.keyboard.press('Escape');
+    await confirm.waitFor({ state: 'detached' });
+    assert.equal(await isOpen(), true);
+    // Once the work is done, the same stray Esc closes it for real and focus goes back to the trigger.
+    await dialog.getByRole('button', { name: '处理完成' }).click();
+    await blur(); await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached' });
+    assert.equal(await focused(trigger), true);
+  } finally { await page.close(); }
+});
 test('Menu keyboard, typeahead, disabled item, outside close and nested drawer escape work', async () => {
   const page = await gallery();
   try {
