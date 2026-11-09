@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
-import { createProviderLaunchService } from './provider-launch-service'
+import { createProviderLaunchService, workspaceCarriesClaudeProjectSettings } from './provider-launch-service'
 import type { DesktopAppStatus, SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
 
@@ -88,5 +88,53 @@ describe('provider launch service', () => {
     await expect(first).rejects.toThrow('请先安装')
     await expect(second).rejects.toThrow('请先安装')
     expect(inspectCliTool).toHaveBeenCalledTimes(1)
+  })
+})
+
+// D4：只有「确实没有」才替客户答信任，看不清的一律交还给 Claude Code 自己问。
+describe('telling whether a folder carries Claude Code project settings', () => {
+  function folder(): string {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-project-settings-'))
+    temporaryDirectories.push(root)
+    return root
+  }
+
+  function errno(code: string): Error {
+    return Object.assign(new Error(`${code}: test`), { code })
+  }
+
+  it('finds none in an empty folder or one whose .claude is a plain file', async () => {
+    const empty = folder()
+    await expect(workspaceCarriesClaudeProjectSettings(empty)).resolves.toBe(false)
+
+    const notADirectory = folder()
+    fs.writeFileSync(path.join(notADirectory, '.claude'), 'not a folder')
+    await expect(workspaceCarriesClaudeProjectSettings(notADirectory)).resolves.toBe(false)
+  })
+
+  it('finds each settings file Claude Code only applies after the trust question', async () => {
+    for (const segments of [['.claude', 'settings.json'], ['.claude', 'settings.local.json'], ['.mcp.json']]) {
+      const workspace = folder()
+      fs.mkdirSync(path.join(workspace, '.claude'))
+      fs.writeFileSync(path.join(workspace, ...segments), '{}')
+      await expect(workspaceCarriesClaudeProjectSettings(workspace)).resolves.toBe(true)
+    }
+  })
+
+  it('treats a settings file it cannot look at as present', async () => {
+    const lstat = vi.fn(async () => { throw errno('EACCES') })
+    await expect(workspaceCarriesClaudeProjectSettings('/work/repo', lstat)).resolves.toBe(true)
+    expect(lstat).toHaveBeenCalledTimes(1)
+  })
+
+  it('looks at one file at a time and stops at the first one found', async () => {
+    const seen: string[] = []
+    const lstat = vi.fn(async (file: string) => {
+      seen.push(path.relative('/work/repo', file).split(path.sep).join('/'))
+      if (file.endsWith('settings.local.json')) return {}
+      throw errno('ENOENT')
+    })
+    await expect(workspaceCarriesClaudeProjectSettings('/work/repo', lstat)).resolves.toBe(true)
+    expect(seen).toEqual(['.claude/settings.json', '.claude/settings.local.json'])
   })
 })
