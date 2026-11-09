@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
+import { awakeVideoPollSpan, createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
 import { aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
 import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type FinishedAiVideoAsset, type FinishedAiVideoTask, type StoredAiVideoTask } from './ai-video-task-store'
 
@@ -132,6 +132,71 @@ describe('createAiVideoService', () => {
     expect(remove).toHaveBeenCalledWith('abort', expect.any(Function))
     vi.useRealTimers()
   })
+  it('counts only awake time between polls toward the wait limit', () => {
+    expect(awakeVideoPollSpan(1_000, 1_500, 1_000)).toBe(500)
+    expect(awakeVideoPollSpan(1_000, 4_000, 1_000)).toBe(3_000)
+    // A gap the poll schedule cannot explain is a closed lid: it counts as one ordinary round, not forty minutes.
+    expect(awakeVideoPollSpan(1_000, 1_000 + 40 * 60_000, 1_000)).toBe(1_000)
+    // A clock that jumped back says nothing about how long we waited.
+    expect(awakeVideoPollSpan(5_000, 1_000, 1_000)).toBe(0)
+  })
+
+  it('keeps waiting for a paid clip after the computer slept past the wait limit', async () => {
+    vi.useFakeTimers()
+    try {
+      let polls = 0
+      const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse({ id: 'video_sleep', status: 'queued' })
+        if (String(input).endsWith('/content')) return mp4Response()
+        polls += 1
+        // The lid closes for forty minutes between the second and third poll; timers do not run meanwhile.
+        if (polls === 2) vi.setSystemTime(Date.now() + 40 * 60_000)
+        return jsonResponse({ id: 'video_sleep', status: polls < 4 ? 'processing' : 'completed' })
+      }) as unknown as typeof fetch
+      const { service, tasks } = setup(fetchImpl, { requestTimeoutMs: 100 })
+      const pending = service.generate(41, {
+        requestId: 'lid-closed', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(100)
+      expect(await pending).toMatchObject({ taskId: 'video_sleep', mimeType: 'video/mp4' })
+      expect(polls).toBe(4)
+      expect(tasks.remove).toHaveBeenCalledWith(7, 'video_sleep')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('checks once more when the wait limit is reached, and stops with the do-not-pay-again message only if it is still not done', async () => {
+    vi.useFakeTimers()
+    try {
+      const startedAt = Date.now()
+      let finishAfterLimit = true
+      const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+        if (init?.method === 'POST') return jsonResponse({ id: 'video_limit', status: 'queued' })
+        if (String(input).endsWith('/content')) return mp4Response()
+        return jsonResponse({ id: 'video_limit', status: finishAfterLimit && Date.now() - startedAt > 2_000 ? 'completed' : 'processing' })
+      }) as unknown as typeof fetch
+      const { service, tasks } = setup(fetchImpl, { requestTimeoutMs: 100 })
+      // Done right as the limit passes: the last look finds it and the clip comes back.
+      const done = service.generate(41, {
+        requestId: 'limit-done', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(2_100)
+      expect(await done).toMatchObject({ taskId: 'video_limit' })
+
+      finishAfterLimit = false
+      const stuck = service.generate(41, {
+        requestId: 'limit-stuck', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      }).catch((error: unknown) => error)
+      await vi.advanceTimersByTimeAsync(2_100)
+      expect(await stuck).toMatchObject({ message: '暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 video_limit）。' })
+      await service.whenIdle()
+      expect(tasks.remove).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('submits once, persists id before polling, then downloads an owned MP4', async () => {
     const order: string[] = []
     const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
