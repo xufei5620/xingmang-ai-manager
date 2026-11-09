@@ -141,6 +141,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
         resolveAdmission()
       },
       persistRecord: (record) => options.store.saveRun(input.userId, record),
+      persistProgress: (record) => options.store.saveRun(input.userId, record, { deferWrite: true }),
       onEvent: (event) => publish(event, input.userId, input.ownerId),
     }).finally(() => {
       if (active.get(runId)?.handle === handle) active.delete(runId)
