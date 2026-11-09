@@ -2526,9 +2526,8 @@ test('feedback shows the latest 100 entries first and 100 more on request', asyn
 test('feedback copy and export retain the preview snapshot id', async () => {
   const page = await fixture('page=feedback')
   try {
-    await page
-      .getByRole('button', { name: '预览反馈报告', exact: true })
-      .click()
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    await page.getByTestId('feedback-preview').click()
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
     const privacy = page.getByTestId('feedback-privacy')
@@ -2563,9 +2562,8 @@ test('feedback copy and export retain the preview snapshot id', async () => {
 test('the feedback preview sends the customer to the check page when the report has no check result', async () => {
   const page = await fixture('page=feedback&selfCheckMissing')
   try {
-    await page
-      .getByRole('button', { name: '预览反馈报告', exact: true })
-      .click()
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    await page.getByTestId('feedback-preview').click()
     const hint = page.getByTestId('feedback-report-unchecked')
     await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
     await hint.getByText('点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
