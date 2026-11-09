@@ -1,5 +1,6 @@
 import type { AccountLoginSession, AccountSubscriptionBillingPreference, AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import { subscriptionExpiringDays, subscriptionLowUsd } from '../../../../electron/subscription-summary'
+import { accountKeyNameMaxBytes, truncateUtf8, utf8Length } from '../../../../electron/catalog'
 
 /**
  * 个人中心 v4（账号概览、账号安全、密钥管理、邀请返利）上那些由数据拼出来的话。都是纯函数，
@@ -201,6 +202,32 @@ export function keyExpiredTime(choice: KeyExpiryChoice, { custom, current, now }
   const at = new Date(custom).getTime()
   if (!Number.isFinite(at) || at <= now) throw new Error('到期时间必须晚于现在。')
   return Math.floor(at / 1000)
+}
+
+/**
+ * 星芒账号的密钥名称，站点按 UTF-8 字节数限 50，一个汉字 3 个字节，中文最多 16 个字（ZW-1）；输入框的
+ * maxLength 数的是字数，中文打到 17 个字照样放行，点保存才被站点拒。这里照 maxLength 的样子收一次编辑：
+ * 这一下新打进来或贴进来的那段装不下，就只留装得下的前半截，已经有的字一个不动。装得下返回 null，照原样用；
+ * caret 是截完以后光标该在的位置（新留下那段的后面）。原来的名字本身就超了的（站点按说存不下，防个万一），
+ * 没法只截新打的那段，整个从后面截到装得下。
+ */
+export function limitKeyNameEdit(previous: string, next: string, maxBytes: number = accountKeyNameMaxBytes): { value: string; caret: number } | null {
+  if (utf8Length(next) <= maxBytes) return null
+  const before = Array.from(previous)
+  const after = Array.from(next)
+  let start = 0
+  while (start < before.length && start < after.length && before[start] === after[start]) start++
+  let end = 0
+  while (end < before.length - start && end < after.length - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++
+  const head = after.slice(0, start).join('')
+  const tail = after.slice(after.length - end).join('')
+  const room = maxBytes - utf8Length(head) - utf8Length(tail)
+  if (room < 0) {
+    const value = truncateUtf8(next, maxBytes)
+    return { value, caret: value.length }
+  }
+  const kept = truncateUtf8(after.slice(start, after.length - end).join(''), room)
+  return { value: head + kept + tail, caret: head.length + kept.length }
 }
 
 /** 编辑时「不改」下面那行「现在：{X}」的 X。 */
