@@ -2455,12 +2455,20 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
 /**
  * 存储桶的包下好、核过，交给 Windows 却没装上以后，要不要照旧走商店、官网、国内镜像。商店和侧载
  * 是两种装法，这台电脑不让侧载时商店往往还装得上，所以默认接着走，同存储桶上线前一样。客户自己
- * 取消、取消了授权、盘满了这几样，换一路也救不了，原样交出。staleRetry 是商店、官网之后回头用过期
- * 清单的那一次：商店已经试过，剩下的国内镜像和它是同一种装法、同一个官方包，也原样交出（同官网那一路）。
+ * 取消、取消了授权、盘满了这几样，换一路也救不了，原样交出。
+ *
+ * Windows 防火墙服务停着（firewallOff）也原样交出：官网、国内镜像装的是同一个官方包，商店用的也是
+ * 同一个安装引擎（推测，没在真机上演过），都卡在登记防火墙规则那一步。以前接着走，客户要多等商店
+ * 一趟、再从官网下一遍几百兆，最后看到的还是同一句话。
+ *
+ * staleRetry 是商店、官网之后回头用过期清单的那一次：商店已经试过，剩下的国内镜像和它是同一种装法、
+ * 同一个官方包，也原样交出（同官网那一路）。
  */
 export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown, staleRetry = false): boolean {
   if (staleRetry || isInstallCancelledError(error)) return false
-  return !isPlainCodexDesktopInstallMessage(error instanceof Error ? error.message : String(error))
+  const message = error instanceof Error ? error.message : String(error)
+  if (classifyCodexDesktopInstallFailure(message) === 'firewallOff') return false
+  return !isPlainCodexDesktopInstallMessage(message)
 }
 
 /**

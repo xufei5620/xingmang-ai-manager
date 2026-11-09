@@ -78,6 +78,8 @@ import {
   measureCodexDesktopOfficialSpeed,
   shouldContinueAfterCodexDesktopBucketInstall,
   shouldRetryCodexDesktopBucketWhenStale,
+  toCodexDesktopInstallFailure,
+  CodexDesktopInstallFailure,
   buildCodexDesktopOfficialPackageSource,
   codexDesktopOfficialDownloadLimitMs,
   codexDesktopSlowDownloadGraceMs,
@@ -95,6 +97,7 @@ import {
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
+import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import {
   desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
@@ -3439,6 +3442,28 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(shouldContinueAfterCodexDesktopBucketInstall(new InstallCancelledError())).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('已取消管理员授权，Codex 桌面端安装未开始。'))).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Codex 桌面端安装失败：磁盘空间不足'))).toBe(false)
+  })
+
+  it('stops after the bucket package when the Windows Firewall service is off, instead of downloading it again', () => {
+    // From the 2026-11-06 customer log, wrapped at the console width the way PowerShell printed it.
+    const firewallOff = new Error([
+      'Add-AppxPackage 安装失败：Add-AppxPackage : 部署失败，原因是 HRESULT: 0x80073CF6, 无法注册包。\r\n',
+      'AppxManifest.xml(38,6): 错误 0x800706D9: 无法注册 OpenAI.Codex_26.1103.3517.0_x64__2p2nqsd0c76g0 程序包，因为在注册 windows.firewallRu\r\n',
+      'les 扩展时遇到以下错误: 终结点映射器中没有更多的终结点可用。\r\n',
+    ].join(''))
+    const englishFirewallOff = new Error(
+      'Add-AppxPackage 安装失败：Deployment failed with HRESULT: 0x80073CF6, Package could not be registered. error 0x800706D9: While processing the request, the system failed to register the windows.firewallRules extension due to the following error: There are no more endpoints available from the endpoint mapper.',
+    )
+    // The Store, the official package and the mirror all register the same firewall rules.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(firewallOff)).toBe(false)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(englishFirewallOff)).toBe(false)
+    // Only the firewall code stops it: the same registration failure without it still goes on.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 安装失败：部署失败，原因是 HRESULT: 0x80073CF6, 无法注册包。'))).toBe(true)
+    // Handed over as is, it is the firewall card right away, with no Store or official route in it.
+    const failure = toCodexDesktopInstallFailure(firewallOff, { storeFailure: null, storeExitCode: null, updating: true })
+    expect(failure).toBeInstanceOf(CodexDesktopInstallFailure)
+    expect(failure.message).toBe(`Codex 桌面端没装上：${codexDesktopInstallFailureReasons.firewallOff}`)
+    expect(failure).toMatchObject({ reason: 'firewallOff', detail: firewallOff.message })
   })
 })
 
