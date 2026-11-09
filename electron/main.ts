@@ -2101,6 +2101,7 @@ if (!hasSingleInstanceLock) {
             status: event.status,
             hasTradeNo: Boolean(event.tradeNo),
             ...(event.confirming ? { confirming: true } : {}),
+            ...(context.autoClosed ? { autoClosed: context.autoClosed } : {}),
           })
         sendToMainWindow('onAccountPaymentWindowTerminal', event)
         // 关窗后才到账：人多半已经去干别的了。正看着星芒时界面上那条提示自己会变，不再弹。
