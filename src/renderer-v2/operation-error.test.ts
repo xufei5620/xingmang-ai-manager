@@ -439,7 +439,7 @@ describe('renderer-v2 operation error classification', () => {
     }
   })
 
-  it('gives every failed Windows Claude Desktop install a retry, the download page, the log and support', () => {
+  it('gives every failed Windows Claude Desktop install a retry, the offline packages first, the Claude site second, the log and support', () => {
     // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
     for (const reason of Object.keys(claudeDesktopInstallFailureReasons) as ClaudeDesktopInstallFailureReason[]) {
       for (const wingetTried of [true, false]) {
@@ -448,10 +448,13 @@ describe('renderer-v2 operation error classification', () => {
         expect([message, hint?.key]).toEqual([message, 'claudeDesktopInstallFailed'])
         expect(hint?.actions).toEqual([
           { id: 'retry', label: '重试' },
-          { id: 'claudeDesktopDownload', label: '去官网下载' },
+          { id: 'claudeDesktopOfflinePackages', label: '下载离线安装包' },
+          { id: 'claudeDesktopDownload', label: '去 Claude 官网' },
           { id: 'log', label: '查看日志' },
           { id: 'support', label: '找客服' },
         ])
+        // 正文点名的那颗按钮得真的在（D64 以前点名的是「去官网下载」）。
+        expect(hint?.body).toBe('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
         // 原话（签名、HTTP 状态码）只记在运行日志里。
         expect(operationLogSection({ message, tool: 'claudeDesktop' })).toBe('log')
       }
