@@ -62,6 +62,63 @@ export class DownloadStalledError extends Error {
   }
 }
 
+/**
+ * 整份安装包的时限。以前整次下载限死 10 分钟，慢网下到一半到点就掐断，换个源从 0 开始。现在只要
+ * 还在来数据就接着下，3 分钟一个字节都没来才停；下得再慢也有个头，30 分钟兜底（I10 的超时还在）。
+ * Node.js 先改（#1061 第5条），Git 和 Python 后跟上（深查 D-1）。两个数和装工具时 npm 那一步
+ * （npmDownloadStallTimeoutMs / npmDownloadCeilingMs）一样。
+ */
+export const downloadStallTimeoutMs = 3 * 60_000
+export const downloadCeilingMs = 30 * 60_000
+
+export interface DownloadDeadline {
+  /** Restarts the stall window, but only when the byte count actually grew. */
+  progressed(transferred: number): void
+  stop(): void
+}
+
+/**
+ * downloadWithResume already ends a single request that goes quiet for 45 seconds and
+ * resumes it; this watches the download as a whole, so a slow link that keeps delivering
+ * is never cut off at a fixed time. The stall window is a backstop for any quiet stretch
+ * the per-request timer does not see, and the ceiling bounds a link that trickles just
+ * fast enough never to look idle. Neither keeps a broken route alive: a route whose
+ * resumes keep failing is still handed back by downloadWithResume after its own few
+ * retries, and the caller moves on to the next source as before. Both end the download
+ * with `timeoutMessage`, which each caller sets to the words its old fixed limit used,
+ * so what the customer is told does not change.
+ */
+export function createDownloadDeadline(
+  timeoutMessage: string,
+  expire: (reason: Error) => void,
+): DownloadDeadline {
+  let stopped = false
+  let transferred = 0
+  let stall = setTimeout(timeOut, downloadStallTimeoutMs)
+  const ceiling = setTimeout(timeOut, downloadCeilingMs)
+
+  function stop(): void {
+    stopped = true
+    clearTimeout(stall)
+    clearTimeout(ceiling)
+  }
+
+  function timeOut(): void {
+    stop()
+    expire(new Error(timeoutMessage))
+  }
+
+  return {
+    progressed(next) {
+      if (stopped || next <= transferred) return
+      transferred = next
+      clearTimeout(stall)
+      stall = setTimeout(timeOut, downloadStallTimeoutMs)
+    },
+    stop,
+  }
+}
+
 export const defaultDownloadResumeDelaysMs: readonly number[] = [3_000, 10_000]
 const defaultResponseTimeoutMs = 45_000
 const defaultIdleTimeoutMs = 45_000
