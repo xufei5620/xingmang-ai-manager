@@ -114,6 +114,7 @@ import {
   classifyCodexDesktopInstallFailure,
   codexDesktopNoStoreNotice,
   codexDesktopOfficialPackageFailedNotice,
+  codexDesktopStoreNoUpdateExitCode,
   codexDesktopTechnicalWords,
   isCodexDesktopInstallFailureMessage,
   isPlainCodexDesktopInstallMessage,
@@ -673,7 +674,7 @@ export function describeCodexDesktopStoreFailure(error: unknown): string {
   // WinINet timeout, name resolution, connection and connection-reset failures.
   if ([0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(exitCode)) return '连不上微软商店'
   // APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE：商店那边还没有比本机更新的版本。
-  if (exitCode === 0x8a15002b) return '商店里暂时还没有更新的版本'
+  if (exitCode === codexDesktopStoreNoUpdateExitCode) return '商店里暂时还没有更新的版本'
   // APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND：这台电脑所在地区的商店查不到它。
   if (exitCode === 0x8a150014) return '商店里没找到 Codex 桌面端'
   // 认不出的退出码不上屏（客户看了也不知道做什么），原样进日志：见 codexDesktopStoreExitCode。
@@ -683,7 +684,11 @@ export function describeCodexDesktopStoreFailure(error: unknown): string {
 /** 商店那一路的原始退出码，只写进日志，客服查的时候用。 */
 export function codexDesktopStoreExitCode(error: unknown): string | null {
   if (!(error instanceof CommandRunnerError) || error.exitCode === null) return null
-  return `0x${(error.exitCode >>> 0).toString(16)}`
+  return codexDesktopStoreExitCodeText(error.exitCode)
+}
+
+function codexDesktopStoreExitCodeText(exitCode: number): string {
+  return `0x${(exitCode >>> 0).toString(16)}`
 }
 
 /**
@@ -2406,6 +2411,7 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
   return new CodexDesktopInstallFailure(
     buildCodexDesktopInstallFailureMessage(reason, {
       storeTried: attempt.storeFailure !== null,
+      storeNoUpdate: attempt.storeExitCode === codexDesktopStoreExitCodeText(codexDesktopStoreNoUpdateExitCode),
       storeUnavailable: attempt.storeUnavailable === true,
       officialTried: Boolean(attempt.officialFailure),
       updating: attempt.updating,
