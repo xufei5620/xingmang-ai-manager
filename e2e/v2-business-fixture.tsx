@@ -415,8 +415,9 @@ const profile = {
   requestCount: 12,
   affCode: 'TEST',
   affCount: 2,
-  affQuota: 100,
-  affHistoryQuota: 150,
+  // noRebate 演从来没赚过返利的账号：可转和累计都是 0。
+  affQuota: query.has('noRebate') ? 0 : 100,
+  affHistoryQuota: query.has('noRebate') ? 0 : 150,
 }
 const balance = {
   quota: 1000,

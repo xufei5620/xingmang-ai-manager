@@ -743,6 +743,33 @@ test('the transfer dialog starts from what is transferable now, also after part 
   }
 })
 
+test('the empty transfer button tells a drained rebate from one never earned', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const transfer = panel.getByTestId('account-invite-transfer')
+    await transfer.click()
+    const dialog = page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true })
+    await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await transfer.getByText('已全部转入', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+  const fresh = await fixture('page=account&noRebate=1')
+  try {
+    await fresh.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const transfer = fresh.getByRole('tabpanel').filter({ visible: true }).getByTestId('account-invite-transfer')
+    // 从来没赚过时写「已全部转入」像是转过了（W44）。
+    await transfer.getByText('还没有返利', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await fresh.close()
+  }
+})
+
 test('subscription rows name each state in Chinese instead of the value the server sent', async () => {
   const page = await fixture('page=account&subscriptionStates=1')
   try {
