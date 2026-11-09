@@ -650,6 +650,11 @@ export interface AiChatHistoryWrite {
   put: AiChatHistoryFile[]
 }
 
+/** 退出前主进程问聊天页要一次存盘（electron/chat-history-flush.ts）；编号每次随机，原样回给 chat-history:flushed。 */
+export interface AiChatHistoryFlushRequest {
+  requestId: string
+}
+
 /**
  * 「搬到新电脑」导出：聊天对话由渲染层按它自己的格式整理好交过来（已去掉图片和
  * 运行时字段），设置由主进程自己从 settings.json 里挑能带走的几项，渲染层塞不进别的。
@@ -1325,6 +1330,8 @@ export interface XingmangInvokeContract {
   saveAiVideo: IpcInvokeDefinition<'video:save-as', [assetId: string], { saved: boolean }>
   readAiChatHistory: IpcInvokeDefinition<'chat-history:read', [scope: string], AiChatHistorySnapshot>
   writeAiChatHistory: IpcInvokeDefinition<'chat-history:write', [input: AiChatHistoryWrite], void>
+  /** 聊天页把退出前那一次存完了（不管存没存成），回 onAiChatHistoryFlushRequested 给的编号。 */
+  confirmAiChatHistoryFlushed: IpcInvokeDefinition<'chat-history:flushed', [requestId: string], void>
   exportAiChatConversation: IpcInvokeDefinition<'chat-history:export-text', [input: ChatConversationExportInput], { outputPath: string } | null>
   exportAppData: IpcInvokeDefinition<'data-transfer:export', [input: DataTransferExportInput], DataTransferExportResult | null>
   importAppData: IpcInvokeDefinition<'data-transfer:import', [], DataTransferImportPreview | null>
@@ -1440,6 +1447,8 @@ export interface XingmangEventContract {
     AccountPaymentWindowTerminalEvent
   >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
+  /** 要退出了：聊天页把手上还没交出来的那一份先存一次，存完回 confirmAiChatHistoryFlushed。 */
+  onAiChatHistoryFlushRequested: IpcEventDefinition<'chat-history:flush-requested', AiChatHistoryFlushRequest>
   onAiVideoProgress: IpcEventDefinition<'video:progress', AiVideoProgressEvent>
   /**
    * 星芒替用户绕开连不上的代理、整个改了直连以后，代理软件又连得上了，已经改回跟随系统代理
@@ -1664,6 +1673,7 @@ export const ipcInvokeChannels = {
   saveAiVideo: 'video:save-as',
   readAiChatHistory: 'chat-history:read',
   writeAiChatHistory: 'chat-history:write',
+  confirmAiChatHistoryFlushed: 'chat-history:flushed',
   exportAiChatConversation: 'chat-history:export-text',
   exportAppData: 'data-transfer:export',
   importAppData: 'data-transfer:import',
@@ -1705,6 +1715,7 @@ export const ipcEventChannels = {
   onUpdateState: 'update:state-changed',
   onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
+  onAiChatHistoryFlushRequested: 'chat-history:flush-requested',
   onAiVideoProgress: 'video:progress',
   onProxyBypassEnded: 'network:proxy-bypass-ended',
   onRelayRouteChanged: 'network:relay-route-changed',

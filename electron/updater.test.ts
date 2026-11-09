@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { updateNetworkFailureMessages } from './network-failure'
 import type { ServiceStatus } from './service-status'
 import { UPDATE_SIGNATURE_FIELD, buildUpdateSignaturePayload, verifyUpdateEntrySignature } from './update-package-signature'
-import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
+import { buildIntelMacUpdateInfo, createUpdaterService, decideUpdateOffer, resolveDownloadedPackageBytes, resolveGatedRequiredVersion, downloadRateWindowMs, recordDownloadProgressSample, resolveAverageDownloadRate, resolveDownloadRateAt, resolveDownloadSecondsRemaining, describeUnrecognizedUpdateFailure, isMacUpdateSignatureRejection, isOlderVersion, requiredUpdateDiskBytes, rollbackFloorVersion, resolveRequiredVersion, resolveUpdateDiskShortfall, resolveUpdatePackageBytes, updateDiskFallbackBytes, updateDiskMinimumBytes, updateCheckStallMs, updateDownloadCancelWaitMs, updateDownloadRetryStallMs, updateDownloadSettleMs, updateDownloadStallMs, updateDownloadWatchMs, updateSignatureRejectedCode, type UpdateClient, type UpdateDownloadCancellation, type UpdateDownloadMeasure, type UpdateDownloadStall, type UpdaterRuntime, type UpdaterService } from './updater'
 
 // What electron-updater's Provider.resolveFiles hands MacUpdater.filterFilesForArch.
 interface ResolvedUpdateFile {
@@ -1447,7 +1447,13 @@ describe('withdrawn versions and staged rollout', () => {
 
   it('never rolls back below the floor, whatever the feed says', () => {
     const base = { currentVersion: '0.3.0', badVersions: ['0.3.0'], rollout: null, manual: true }
-    expect(decideUpdateOffer({ ...base, version: '0.2.9' })).toEqual({ offer: true })
+    expect(rollbackFloorVersion).toBe('0.2.22')
+    expect(decideUpdateOffer({ ...base, version: '0.2.22' })).toEqual({ offer: true })
+    expect(decideUpdateOffer({ ...base, version: '0.2.23' })).toEqual({ offer: true })
+    // 已撤回的 0.2.20、0.2.21 和红队修复之前的老版本，状态文件写什么都退不回去。
+    expect(decideUpdateOffer({ ...base, version: '0.2.21' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: '0.2.20' })).toEqual({ offer: false })
+    expect(decideUpdateOffer({ ...base, version: '0.2.9' })).toEqual({ offer: false })
     expect(decideUpdateOffer({ ...base, version: '0.2.8' })).toEqual({ offer: false })
     expect(decideUpdateOffer({ ...base, version: '0.2.12', rollbackFloor: '0.2.12' })).toEqual({ offer: true })
     expect(decideUpdateOffer({ ...base, version: '0.2.11', rollbackFloor: '0.2.12' })).toEqual({ offer: false })

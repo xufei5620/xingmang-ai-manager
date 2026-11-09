@@ -199,6 +199,43 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
   } finally { await page.close() }
 })
 
+// 主进程每 50 毫秒推一段字，以前「停下 250 毫秒才存」一直被重置，整段说完之前一个字都不存（0.2.24 深查聊天页 C1）。
+test('a reply that keeps streaming is saved every couple of seconds, not only once it ends', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'a long answer please')
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages.length === 2)
+    // Four seconds of chunks with no pause the old 250 ms debounce could catch.
+    await page.evaluate(async (requestId) => {
+      for (let index = 0; index < 80; index += 1) {
+        window.chatHarness.emit({ type: 'content', requestId, content: `chunk-${index} ` })
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }, request.requestId)
+    const reply = (await saved(page)).conversations[0].messages[1]
+    assert.equal(reply.status, 'streaming')
+    assert.ok(reply.content.startsWith('chunk-0 chunk-1 '), `saved reply so far: ${JSON.stringify(reply.content.slice(0, 40))}`)
+  } finally { await page.close() }
+})
+
+test('quitting mid-reply saves what has arrived before answering the main process', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'quit while answering')
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages.length === 2)
+    await emit(page, { type: 'reasoning', requestId: request.requestId, content: 'THINKING-BEFORE-QUIT' })
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'ARRIVED-BEFORE-QUIT' })
+    // Read straight after the answer, well inside the 250 ms the autosave would still be waiting.
+    const reply = await page.evaluate(async () => {
+      await window.chatHarness.askBeforeQuit('quit-1')
+      return (await window.chatHarness.savedWorkspace('xm-account:7')).conversations[0].messages[1]
+    })
+    assert.equal(reply.content, 'ARRIVED-BEFORE-QUIT')
+    assert.equal(reply.reasoning, 'THINKING-BEFORE-QUIT')
+    assert.deepEqual((await calls(page, 'flushed')).map((call) => call.input), ['quit-1'])
+  } finally { await page.close() }
+})
+
 test('one menu lists the models of every group by vendor, each naming the group it bills to', async () => {
   const page = await open('theme=dark&preferredGroup=1')
   try {

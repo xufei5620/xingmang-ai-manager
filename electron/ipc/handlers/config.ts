@@ -5,7 +5,7 @@ import os from 'node:os'
 import { apiKeyDigest } from '../../backups'
 import { isActiveProviderId, type ProviderId } from '../../catalog'
 import { configureManagedClis, type ManagedCliKeyStoreLike } from '../../account-cli-provisioner'
-import { AccountSourceServiceUnavailableError, switchAccountSource } from '../../account-source-switch'
+import { AccountSourceServiceUnavailableError, accountSourcePreferredModel, switchAccountSource } from '../../account-source-switch'
 import { emptyRunningToolsReport } from '../../running-tools'
 import { redactHomeDirectory } from '../../startup-log'
 import { isExternalToolId, parseExternalClientConfigRequest } from '../../external-client-contract'
@@ -161,10 +161,12 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
         // 开头已经在「备份」页留过一份，切不成照样从它恢复。
         const current = service.getConfig(options.previewOnboarding).providers[id]
         const mode = current?.configBroken === true || current?.codexAuthBroken === true ? 'reset' : 'merge'
+        // 客户原来选的型号带上，账号还列着就留着；以前这里什么都不带，切回过官方再切回来就回到默认（N5）。
+        const model = accountSourcePreferredModel(current, () => service.relayModelBeforeOfficial?.(id))
         // 用户亲手点的切换：intent 'explicit' 才穿得过「来源未确认不自动改写」那道闸。
         // 切换来源没有确认丢弃读坏的额度记录；签发仍走保留限制、读坏就停止的入口。
         const outcome = await configureManagedClis(
-          automaticProvisioning, service, [id], {}, options.previewOnboarding, options.managedCliKeys, mode, 'explicit',
+          automaticProvisioning, service, [id], model ? { [id]: model } : {}, options.previewOnboarding, options.managedCliKeys, mode, 'explicit',
         )
         logManagedCliFailures(outcome)
         if (outcome.failed.some((item) => item.serviceUnavailable)) throw new AccountSourceServiceUnavailableError()

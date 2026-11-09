@@ -18,6 +18,7 @@ import { createAccountWorkGate, type QueuedAccountWork } from './account-work-ga
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { DEFAULT_CODEX_MODEL } from './cli-model-defaults'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
@@ -1170,6 +1171,27 @@ describe('registerIpcHandlers', () => {
     await expect(read(trustedEvent(), 'xm-account:7')).resolves.toMatchObject({ conversations: [{ key: 'a' }] })
     expect(chatHistory.read).toHaveBeenCalledWith('xm-account:7')
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('chat body')
+    dispose()
+  })
+
+  it('hands the chat page answer to a quit that asked for one, and only from the app itself', () => {
+    const chatHistoryFlush = { acknowledge: vi.fn() }
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistoryFlush })
+    const flushed = electronMocks.handlers.get('chat-history:flushed')!
+
+    expect(() => flushed(trustedEvent('https://attacker.example/', 9), 'request-1')).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => flushed(trustedEvent(), 7)).toThrow()
+    expect(() => flushed(trustedEvent(), 'x'.repeat(161))).toThrow()
+    expect(chatHistoryFlush.acknowledge).not.toHaveBeenCalled()
+
+    expect(flushed(trustedEvent(), 'request-1')).toBeUndefined()
+    expect(chatHistoryFlush.acknowledge).toHaveBeenCalledWith('request-1')
+    dispose()
+  })
+
+  it('accepts the chat page answer without anything waiting for it', () => {
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    expect(electronMocks.handlers.get('chat-history:flushed')!(trustedEvent(), 'request-1')).toBeUndefined()
     dispose()
   })
 
@@ -6904,6 +6926,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         }
       })
 
+      // 0.2.24 深查「反复切换」N5：以前这里一个型号都不带，切回过官方再改用当前账号就回到默认型号。
+      it('carries the model the customer chose into the account source switch', async () => {
+        for (const [current, remembered, expected] of [
+          [{ matchesRelay: false, model: 'gpt-5.5' }, 'gpt-5.4-mini', 'gpt-5.4-mini'],
+          [{ matchesRelay: true, model: 'gpt-5.4-mini' }, 'gpt-5.6-sol', 'gpt-5.4-mini'],
+          // Nothing to go by: the default, as before.
+          [{ matchesRelay: false, model: '' }, null, DEFAULT_CODEX_MODEL],
+        ] as const) {
+          electronMocks.handlers.clear()
+          const { service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+          vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.4-mini', 'gpt-5.6-sol', DEFAULT_CODEX_MODEL])
+          vi.mocked(service.getConfig).mockReturnValue({ workspace: 'C:\\workspace', providers: { codex: current } } as never)
+          const relayModelBeforeOfficial = vi.fn(() => remembered)
+          service.relayModelBeforeOfficial = relayModelBeforeOfficial
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account' })
+
+          expect(service.saveConfig).toHaveBeenCalledWith(
+            expect.objectContaining({ provider: 'codex', model: expected }), false, expect.any(Function),
+            { source: 'account', automatic: false },
+          )
+          // A config already on the account site speaks for itself.
+          expect(relayModelBeforeOfficial).toHaveBeenCalledTimes(current.matchesRelay ? 0 : 1)
+        }
+      })
+
       it('does not lift a used-up key cap through the account source switch', async () => {
         const { accountService, service } = setup(accountKey({ remainQuota: 0, status: 4 }), undefined, true, sourceSwitchOptions())
         await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
@@ -8920,6 +8968,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'chat-history:flushed',
         'chat-history:read',
         'chat-history:write',
         'chat:asset-menu',
