@@ -19,12 +19,15 @@ import {
   removeVideoStudioShot,
   removeVideoStudioShotImage,
   restoreVideoStudioProject,
+  selectVideoStudioVideoModel,
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
+  setVideoStudioShotSeconds,
   setVideoStudioShotTrim,
   settleVideoStudioModels,
   startVideoStudioShotDrawing,
+  videoStudioCommonSeconds,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
   videoStudioComposeSound,
@@ -34,6 +37,7 @@ import {
   videoStudioSecondsChoices,
   videoStudioShotImage,
   videoStudioShotProblem,
+  videoStudioShotSeconds,
   videoStudioTotalSeconds,
   videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
@@ -219,6 +223,50 @@ describe('video studio project', () => {
     // Drawing state lives only while the page is open.
     const stored = serializeVideoStudioProject(startVideoStudioShotDrawing(failed, 'shot-1', 'd7'))
     expect(JSON.stringify(stored)).not.toMatch(/d7|drawError|没有收到生成的图片/)
+  })
+
+  it('gives a shot its own length, lets the rest follow the shot length and moves both to what a new video model can make', () => {
+    const base = planned()
+    const project: VideoStudioProject = { ...base, settings: { ...base.settings, videoModel: 'grok-imagine-video-1.5', videoGroup: '图片模型' } }
+    expect(project.shots.map((shot) => videoStudioShotSeconds(shot, project.settings))).toEqual([6, 6, 6])
+    expect(videoStudioCommonSeconds(project)).toBe(6)
+    const longer = setVideoStudioShotSeconds(project, 'shot-2', 10)
+    expect(longer.shots[1].seconds).toBe(10)
+    expect(buildVideoStudioClipRequest(longer.settings, longer.shots[1], 'r').seconds).toBe('10')
+    expect(buildVideoStudioClipRequest(longer.settings, longer.shots[0], 'r').seconds).toBe('6')
+    expect(videoStudioCommonSeconds(longer)).toBeNull()
+    expect(videoStudioCommonSeconds(longer, [longer.shots[0], longer.shots[2]])).toBe(6)
+    expect(videoStudioTotalSeconds(longer)).toBe(22)
+    // Picking the shot length again means following it, so a later change of the shot length carries the shot along.
+    expect(setVideoStudioShotSeconds(longer, 'shot-2', 6).shots[1]).not.toHaveProperty('seconds')
+    // A length the model cannot make, the same length, or a shot already on its way change nothing.
+    expect(setVideoStudioShotSeconds(longer, 'shot-2', 7)).toBe(longer)
+    expect(setVideoStudioShotSeconds(longer, 'shot-2', 10)).toBe(longer)
+    const queued = { ...longer, shots: longer.shots.map((shot, index) => index === 0 ? { ...shot, status: 'queued' as const } : shot) }
+    expect(setVideoStudioShotSeconds(queued, 'shot-1', 8)).toBe(queued)
+
+    // MiniMax makes 5 seconds at least: a 3 second shot moves up, and one landing on the shot length follows it again.
+    const short = setVideoStudioShotSeconds(setVideoStudioShotSeconds(longer, 'shot-1', 3), 'shot-3', 5)
+    const minimax = selectVideoStudioVideoModel(short, 'minimax-h3-base', '图片模型')
+    expect(minimax.settings).toMatchObject({ videoModel: 'minimax-h3-base', videoGroup: '图片模型', secondsPerShot: 6 })
+    expect(minimax.shots.map((shot) => shot.seconds)).toEqual([5, 10, 5])
+    const fromThree = selectVideoStudioVideoModel({ ...short, settings: { ...short.settings, secondsPerShot: 3 } }, 'minimax-h3-base', '图片模型')
+    expect(fromThree.settings.secondsPerShot).toBe(5)
+    expect(fromThree.shots.map((shot) => shot.seconds)).toEqual([undefined, 10, undefined])
+    // A length remembered from before the model changed is still read as one the model can make.
+    expect(videoStudioShotSeconds({ seconds: 3 }, minimax.settings)).toBe(5)
+  })
+
+  it('stores a shot length of its own and reads back only one it can trust', () => {
+    const project = setVideoStudioShotSeconds({ ...planned(), settings: { ...planned().settings, videoModel: 'grok-imagine-video-1.5' } }, 'shot-1', 10)
+    const raw = JSON.parse(JSON.stringify(serializeVideoStudioProject(project)))
+    expect(raw.shots[0].seconds).toBe(10)
+    expect(raw.shots[1]).not.toHaveProperty('seconds')
+    expect(restoreVideoStudioProject(raw)!.shots[0].seconds).toBe(10)
+    for (const seconds of [99, 6.5, '10', 6]) {
+      raw.shots[0].seconds = seconds
+      expect(restoreVideoStudioProject(raw)!.shots[0]).not.toHaveProperty('seconds')
+    }
   })
 
   it('composes only when every shot has a clip, and burns captions only when they are on', () => {

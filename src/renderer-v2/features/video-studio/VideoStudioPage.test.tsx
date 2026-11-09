@@ -159,6 +159,17 @@ describe('VideoStudioPage', () => {
     expect(trimmed).toContain('2 个镜头 · 每段 6 秒 · 共约 11 秒')
   })
 
+  it('lets each shot pick its own length and stops saying every shot is as long once they differ', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>时长<\/label><select[^>]*data-testid="video-shot-seconds-1"[^>]*>[^]*?<option value="6" selected="">6 秒<\/option>/)
+    expect(plain).toContain('2 个镜头 · 每段 6 秒 · 共约 12 秒')
+    const mixed = render('ready', { ...project, shots: [project.shots[0], { ...project.shots[1], seconds: 10 }] })
+    expect(mixed).toMatch(/data-testid="video-shot-seconds-1"[^>]*>[^]*?<option value="10" selected="">10 秒<\/option>/)
+    expect(mixed).toContain('2 个镜头 · 共约 16 秒')
+    expect(mixed).not.toContain('每段 6 秒 ·')
+  })
+
   it('offers a straight cut or a fade between shots and a fade at the end, both off by default', () => {
     const plain = render('ready', plannedProject())
     expect(plain).toMatch(/<label[^>]*>镜头之间<\/label><select[^>]*data-testid="video-transition"[^>]*><option value="cut" selected="">直接切<\/option><option value="fade">淡入淡出<\/option>/)

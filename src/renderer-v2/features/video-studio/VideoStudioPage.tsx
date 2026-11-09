@@ -12,10 +12,12 @@ import {
   videoStudioAspectNames,
   videoStudioClipSoundNames,
   videoStudioClipSounds,
+  videoStudioCommonSeconds,
   videoStudioFitNames,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotCounts,
+  videoStudioShotSeconds,
   videoStudioTransitionNames,
   videoStudioTotalSeconds,
   videoStudioTrimOptions,
@@ -91,6 +93,10 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const regenerating = confirmation?.kind === 'generate' && confirmation.ids.some((id) => shots.find((shot) => shot.id === id)?.clip)
   // 上次提交没收到答复的那几段：钱可能已经扣了，再生成可能多扣一次，确认框要另外说清（#1489 N2）。
   const unconfirmed = confirmation?.kind === 'generate' ? videoStudioUnconfirmedIndexes(project, confirmation.ids) : []
+  // 各镜单独定了时长、长短不一时，分镜卡和确认框不说「每段 S 秒」，改说一共多少秒。
+  const commonSeconds = videoStudioCommonSeconds(project)
+  const confirmShots = confirmation?.kind === 'generate' ? shots.filter((shot) => confirmation.ids.includes(shot.id)) : []
+  const confirmSeconds = confirmShots.length ? videoStudioCommonSeconds(project, confirmShots) : null
   const drawIndex = confirmation?.kind === 'draw' ? shots.findIndex((shot) => shot.id === confirmation.id) : -1
   const redrawing = drawIndex >= 0 && Boolean(shots[drawIndex].image)
 
@@ -132,18 +138,18 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
       </div>
     </Card>
 
-    {shots.length > 0 && <Card title={project.title || '分镜'} meta={`${shots.length} 个镜头 · 每段 ${settings.secondsPerShot} 秒 · 共约 ${videoStudioTotalSeconds(project)} 秒`} testId="video-shots"
+    {shots.length > 0 && <Card title={project.title || '分镜'} meta={[`${shots.length} 个镜头`, commonSeconds === null ? '' : `每段 ${commonSeconds} 秒`, `共约 ${videoStudioTotalSeconds(project)} 秒`].filter(Boolean).join(' · ')} testId="video-shots"
       actions={generating
         ? <Button icon={Square} onClick={() => void studio.stopGenerating()} testId="video-generate-stop">停止生成</Button>
         : missing > 0 && <Button variant="primary" icon={Sparkles} disabled={studio.planning || composing || drawing} onClick={() => confirmGenerate(shots.filter((shot) => !shot.clip).map((shot) => shot.id))} testId="video-generate-all">{missing === shots.length ? `生成全部 ${missing} 段` : `生成剩下的 ${missing} 段`}</Button>}>
       <ol className="video-studio-shots">
-        {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} secondsPerShot={settings.secondsPerShot} locked={studio.planning || composing}
+        {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} seconds={videoStudioShotSeconds(shot, settings)} videoModel={settings.videoModel} locked={studio.planning || composing}
           onEdit={(patch) => studio.editShot(shot.id, patch)} onMove={(offset) => studio.moveShot(shot.id, offset)}
           onRemove={() => shot.clip ? setConfirmation({ kind: 'remove', id: shot.id }) : studio.removeShot(shot.id)}
           onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)}
           onPickImage={() => void studio.pickShotImage(shot.id)} onRemoveImage={() => studio.removeShotImage(shot.id)}
           canDraw={Boolean(settings.imageModel && settings.imageGroup)} onDraw={() => setConfirmation({ kind: 'draw', id: shot.id })} onStopDrawing={() => void studio.stopDrawing(shot.id)}
-          onTrim={(side, seconds) => studio.setShotTrim(shot.id, side, seconds)} />)}
+          onTrim={(side, seconds) => studio.setShotTrim(shot.id, side, seconds)} onSeconds={(seconds) => studio.setShotSeconds(shot.id, seconds)} />)}
       </ol>
       {canAddVideoStudioShot(project) && <Button variant="ghost" icon={Plus} disabled={studio.planning || composing} onClick={studio.addShot} testId="video-shot-add">加一个镜头</Button>}
     </Card>}
@@ -187,7 +193,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     {active && confirmation && <Confirm testId="video-confirm"
       title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'draw' ? redrawing ? '再画一张？' : '画一张镜头图？' : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、每段 ${settings.secondsPerShot} 秒，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
         // yoyo 2026-11-09 批的字（「画图改」）。
         : confirmation.kind === 'draw' ? <><p>{redrawing ? '会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。' : `用「${settings.imageModel}」按第 ${drawIndex + 1} 个镜头的画面描述画一张图，单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p><p>中途停下的话，已经交给服务端的这一张照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
@@ -265,10 +271,10 @@ const stageNames: Record<NonNullable<VideoStudioShot['stage']>, string> = { proc
 // yoyo 2026-11-09 批的字（「画图改」）。
 const drawTip = '按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费'
 
-function ShotRow({ shot, index, total, captions, secondsPerShot, locked, canDraw, onEdit, onMove, onRemove, onGenerate, onOpen, onPickImage, onRemoveImage, onDraw, onStopDrawing, onTrim }: {
-  shot: VideoStudioShot, index: number, total: number, captions: boolean, secondsPerShot: number, locked: boolean, canDraw: boolean
+function ShotRow({ shot, index, total, captions, seconds, videoModel, locked, canDraw, onEdit, onMove, onRemove, onGenerate, onOpen, onPickImage, onRemoveImage, onDraw, onStopDrawing, onTrim, onSeconds }: {
+  shot: VideoStudioShot, index: number, total: number, captions: boolean, seconds: number, videoModel: string, locked: boolean, canDraw: boolean
   onEdit(patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>): void, onMove(offset: -1 | 1): void, onRemove(): void, onGenerate(): void, onOpen(): void
-  onPickImage(): void, onRemoveImage(): void, onDraw(): void, onStopDrawing(): void, onTrim(side: VideoStudioTrimSide, seconds: number): void
+  onPickImage(): void, onRemoveImage(): void, onDraw(): void, onStopDrawing(): void, onTrim(side: VideoStudioTrimSide, seconds: number): void, onSeconds(seconds: number): void
 }) {
   // 画着图的这一镜和出着视频一样：画面描述、图、出视频、删都先不让动，画好的图才对得上这一镜。
   const drawing = isVideoStudioShotDrawing(shot)
@@ -308,11 +314,14 @@ function ShotRow({ shot, index, total, captions, secondsPerShot, locked, canDraw
             <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked || !canDraw} onClick={onDraw} testId={`video-shot-draw-${index}`}>让 AI 画一张</Button>
           </>}
       </div>
-      {shot.clip && <div className="video-studio-shot-trim">
-        {(['start', 'end'] as const).map((side) => <Select key={side} label={side === 'start' ? '开头剪掉' : '结尾剪掉'} value={String((side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0)} disabled={busy || locked}
-          options={videoStudioTrimOptions(shot, side, secondsPerShot).map((seconds) => ({ value: String(seconds), label: seconds ? `${seconds} 秒` : '不剪' }))}
+      {/* 这一镜出多长（重新生成才用上），生成好以后再加剪头剪尾。 */}
+      <div className="video-studio-shot-length">
+        <Select label="时长" value={String(seconds)} disabled={busy || locked} options={secondsOptions(videoModel, seconds)}
+          onChange={(event) => onSeconds(Number(event.target.value))} testId={`video-shot-seconds-${index}`} />
+        {shot.clip && (['start', 'end'] as const).map((side) => <Select key={side} label={side === 'start' ? '开头剪掉' : '结尾剪掉'} value={String((side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0)} disabled={busy || locked}
+          options={videoStudioTrimOptions(shot, side, seconds).map((trim) => ({ value: String(trim), label: trim ? `${trim} 秒` : '不剪' }))}
           onChange={(event) => onTrim(side, Number(event.target.value))} testId={`video-shot-trim-${side}-${index}`} />)}
-      </div>}
+      </div>
       {shot.drawError && !drawing && <p className="video-studio-shot-error" role="alert" data-testid={`video-shot-draw-error-${index}`}>{shot.drawError}</p>}
       {shot.status === 'failed' && shot.error && <p className="video-studio-shot-error" role="alert">{shot.error}</p>}
       {shot.status === 'generating' && shot.progress !== undefined && <Progress value={shot.progress} label={`第 ${index + 1} 段生成进度`} />}
