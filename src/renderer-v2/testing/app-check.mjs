@@ -6787,6 +6787,7 @@ test('logging out yourself does not warn that the login ended from either entry 
         await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
         await page.getByTestId('command-result-account:logout').click()
       }
+      // 两个入口的确认框按钮都写「退出登录」，不写「退出」，免得当成退出星芒（W83）。
       await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
       await page.getByTestId('welcome-login').waitFor()
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))

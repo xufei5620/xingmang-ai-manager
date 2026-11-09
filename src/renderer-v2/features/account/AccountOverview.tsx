@@ -271,7 +271,7 @@ export function AccountOverview({
                 )
               }
             >
-              退出
+              退出登录
             </Button>
           </>
         }
