@@ -302,7 +302,7 @@ git push origin v0.2.6
 
 这次选了 Windows 或 macOS，它的出包作业没有成功（失败、超时被取消都算），publish 作业就不跑，不会悄悄只发另一个平台、让这个平台的客户收不到这一版（#1090）。Linux 算不算数看下面的开关。
 
-**Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
+**Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 和分两片的 `linux-renderer-v2-browser` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
 
 - 不是 `true`（包括没建这个变量，现在就是没建）：publish 作业不下载 Linux 的包，客户看不到任何 Linux 的东西；Linux 两个作业红了**不代表这次发布失败**，也不挡 Windows / macOS；只选 `linux` 时 publish 作业整个跳过，不会停下来等批准。Linux 包留在那次运行的 Actions artifact（`linux-release-<架构>-<版本>`）里 14 天，可以下下来装机验收。
 - 是 `true`：Linux 和别的平台一样，这次选了 Linux 而 Linux 作业没有成功（失败、超时被取消都算）就不发；两个架构的清单必须一起到，只到一个就在上传前停下。
