@@ -1019,9 +1019,37 @@ export function applyCodexRelayMachineDefaults(
   if (isJsonRecord(features) && features.daemon_auto_start === undefined) {
     features.daemon_auto_start = false
   }
+  if (isJsonRecord(features)) keepCodexRelayResponsesUninterrupted(parsed, features)
   if (platform !== 'win32') return
   const windows = parsed.windows === undefined ? ensureRecord(parsed, 'windows') : parsed.windows
   if (isJsonRecord(windows) && windows.sandbox === undefined) windows.sandbox = 'unelevated'
+}
+
+// 线路2 开着 Responses WebSocket，而中转的 WebSocket 只认 response.create 和 response.cancel，
+// 别的事件一律回 400（new-api relay/responses_websocket.go）。Codex 0.163 起会在一段回复还没
+// 说完时发 response.interrupt：主代理正说着、子代理做完了（defer_mailbox_preemption 关着时）；
+// 客户在回复途中又发一条（instant_interrupt，默认开）；0.167 起点「停止」也能发
+// （interrupt_on_cancel，默认关）。中转回 400 以后，子代理那条让这一轮直接失败，客户看到英文的
+// unsupported websocket event "response.interrupt"；插话那条 Codex 自己重连、把整段对话重传一遍，
+// 不报错，可正在出的那段白丢了。
+//
+// 2026-11-06 用 0.164.0、0.166.0、0.167.0 连本地假接口实测：三项这样写以后一次打断都不发，插话等
+// 这一步说完再处理，子代理的结果在主代理下一次请求里带上（主代理恰好已经收尾的，到下一轮才用上）；
+// 点「停止」照样马上停，Codex 停的时候是直接断开连接，不靠这条事件。不认这几个键的版本（0.158
+// 及更早；interrupt_on_cancel 到 0.167 才有）只在日志里记一行 unknown feature key（0.155.0 实测照常启动）。
+//
+// defer_mailbox_preemption 在 Codex 里算「开发中」的开关，打开后每开一个对话都弹一行英文的
+// Under-development features enabled（features/src/lib.rs 的 unstable_features_warning_event），
+// 所以它最后是 true 时，顶层的 suppress_unstable_features_warning 一起补上。
+//
+// 都只在键缺省时写，用户自己写过的一律不动。
+function keepCodexRelayResponsesUninterrupted(parsed: Record<string, unknown>, features: Record<string, unknown>): void {
+  if (features.instant_interrupt === undefined) features.instant_interrupt = false
+  if (features.defer_mailbox_preemption === undefined) features.defer_mailbox_preemption = true
+  if (features.interrupt_on_cancel === undefined) features.interrupt_on_cancel = false
+  if (features.defer_mailbox_preemption === true && parsed.suppress_unstable_features_warning === undefined) {
+    parsed.suppress_unstable_features_warning = true
+  }
 }
 
 /**
@@ -1165,6 +1193,7 @@ function buildCodexRelayConfigTemplate(
     'approval_policy = "on-request"',
     'sandbox_mode = "workspace-write"',
     'check_for_update_on_startup = false',
+    'suppress_unstable_features_warning = true',
     ...catalogLine,
     ...notifyLine,
     '',
@@ -1179,6 +1208,9 @@ function buildCodexRelayConfigTemplate(
     'goals = true',
     'prevent_idle_sleep = true',
     'daemon_auto_start = false',
+    'instant_interrupt = false',
+    'defer_mailbox_preemption = true',
+    'interrupt_on_cancel = false',
     '',
     ...windowsTable,
     '[analytics]',
@@ -3166,7 +3198,8 @@ function withManagedCodexModelCatalogLine(text: string): string | null {
 //    Claude Code 自己的配置里，由开机补设置那一轮在 Claude Code 那份到期时顺带做（editor-claude-login-prompt.ts）。
 // 6：Codex、Grok 配置目录里一份全局说明都没有的，放一份「用中文回复」（2026-10-26）。这一项不是
 //    配置里的键，是另放一个文件（globalResponseLanguagePlans），同一次两阶段提交里写。
-export const relayTemplateRevision = 6
+// 7：Codex 没写的补上回复途中不发「打断」那几项（keepCodexRelayResponsesUninterrupted，2026-11-06）。
+export const relayTemplateRevision = 7
 
 function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBaseUrl: string, platform: NodeJS.Platform): void {
   if (parsed.check_for_update_on_startup === undefined) parsed.check_for_update_on_startup = false
