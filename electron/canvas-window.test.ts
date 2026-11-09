@@ -5,6 +5,7 @@ import path from 'node:path'
 import type { SaveDialogOptions } from 'electron'
 import type { NewApiClientService } from './new-api-client'
 import type { SystemService } from './system-service'
+import type { CanvasProjectWorkspaceStatus } from './canvas-project-store'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -109,6 +110,7 @@ import {
   canvasHostCancelRequestChannel,
   canvasHostCopyAssetChannel,
   canvasHostCreateProjectChannel,
+  canvasHostCreateProjectInDefaultFolderChannel,
   canvasHostCreatePromptPresetChannel,
   canvasHostDeletePromptPresetChannel,
   canvasHostDuplicateProjectChannel,
@@ -140,6 +142,7 @@ import {
   canvasHostDeleteAssetChannel,
   canvasHostRestoreAssetChannel,
   canvasHostPurgeAssetChannel,
+  canvasHostRelinkProjectFolderChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostAccountChangedChannel,
@@ -327,6 +330,7 @@ describe('createCanvasWindowController', () => {
       canvasHostCancelRequestChannel,
       canvasHostCopyAssetChannel,
       canvasHostCreateProjectChannel,
+      canvasHostCreateProjectInDefaultFolderChannel,
       canvasHostCreatePromptPresetChannel,
       canvasHostDeletePromptPresetChannel,
       canvasHostDuplicateProjectChannel,
@@ -358,6 +362,7 @@ describe('createCanvasWindowController', () => {
       canvasHostDeleteAssetChannel,
       canvasHostRestoreAssetChannel,
       canvasHostPurgeAssetChannel,
+      canvasHostRelinkProjectFolderChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -686,6 +691,101 @@ describe('createCanvasWindowController', () => {
     electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
     await handler(trustedEvent(), '副本', content)
     expect(createWithContent).toHaveBeenLastCalledWith(7, '副本', workspace, content, undefined)
+  })
+
+  it('creates a project in its own new folder under the default folder without a folder dialog', async () => {
+    const root = path.join(temporaryDirectory(), '星芒画布')
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const create = vi.fn(async (_userId: number, name: string, selected: string) => ({
+      project: {
+        id: projectId, name, createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+        lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 0, assetCount: 0,
+        workspaceName: path.basename(selected), workspaceConfigured: true, workspaceStatus: 'ready' as const,
+      },
+      content: JSON.stringify({ schemaVersion: 2, name, nodes: [], edges: [] }),
+    }))
+    const projects = { list: vi.fn(async () => []), create, open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => root }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!
+
+    const created = await handler(trustedEvent(), '海报/第一版')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledWith(7, '海报/第一版', path.join(root, '海报 第一版'))
+    expect(JSON.stringify(created)).not.toContain(root)
+    // The same name again gets a new folder; the first one is never reused.
+    await handler(trustedEvent(), '海报/第一版')
+    expect(create).toHaveBeenLastCalledWith(7, '海报/第一版', path.join(root, '海报 第一版 (2)'))
+    await expect(handler(trustedEvent(), '')).rejects.toThrow('画布项目名称')
+    await expect(handler(trustedEvent(), { name: 'x' })).rejects.toThrow('画布项目名称')
+  })
+
+  it('removes the new folder again when the project cannot be created there', async () => {
+    const root = path.join(temporaryDirectory(), '星芒画布')
+    const projects = { list: vi.fn(async () => []), create: vi.fn(async () => { throw new Error('画布项目已达到数量上限') }), open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => root }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!
+
+    await expect(handler(trustedEvent(), '海报')).rejects.toThrow('画布项目已达到数量上限')
+    expect(fs.readdirSync(root)).toEqual([])
+  })
+
+  it('says to choose a folder when the default folder cannot be made or is not configured', async () => {
+    const blocked = path.join(temporaryDirectory(), 'blocked')
+    fs.writeFileSync(blocked, '')
+    const projects = { list: vi.fn(async () => []), create: vi.fn(), open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => path.join(blocked, '星芒画布') }))
+    await controller.open()
+    await expect(electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!(trustedEvent(), '海报'))
+      .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），可以点「换个位置创建…」自己选文件夹$/)
+    expect(projects.create).not.toHaveBeenCalled()
+    controller.dispose()
+
+    const unconfigured = createCanvasWindowController(controllerOptions({ projects: projects as never }))
+    await unconfigured.open()
+    await expect(electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!(trustedEvent(), '海报'))
+      .rejects.toThrow('换个位置创建…')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  it('asks where a missing project folder is now and only for a project whose folder is missing', async () => {
+    const workspace = temporaryDirectory()
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const summary = {
+      id: projectId, name: '搬走的项目', createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+      lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+      workspaceName: 'old', workspaceConfigured: true, workspaceStatus: 'missing' as CanvasProjectWorkspaceStatus,
+    }
+    const list = vi.fn(async () => [summary])
+    const relinkWorkspace = vi.fn(async (_userId: number, _projectId: string, selected: string) => ({ ...summary, workspaceName: path.basename(selected), workspaceStatus: 'ready' as const }))
+    const forgetProject = vi.fn()
+    const projects = { list, create: vi.fn(), open: vi.fn(), save: vi.fn(), relinkWorkspace }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, projectAssets: { forgetProject } as never }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostRelinkProjectFolderChannel)!
+
+    await expect(handler(trustedEvent(), projectId)).resolves.toBeNull()
+    expect(electronMocks.showOpenDialog).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: '重新选择「搬走的项目」的工作文件夹',
+      properties: ['openDirectory'],
+    }))
+    expect(relinkWorkspace).not.toHaveBeenCalled()
+
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
+    const relinked = await handler(trustedEvent(), projectId)
+    expect(relinkWorkspace).toHaveBeenCalledWith(7, projectId, workspace)
+    expect(forgetProject).toHaveBeenCalledWith(7, projectId)
+    expect(JSON.stringify(relinked)).not.toContain(workspace)
+    expect(relinked).toMatchObject({ workspaceStatus: 'ready', workspaceName: path.basename(workspace) })
+
+    // A project whose folder is still there, or one this account does not have, never gets the dialog.
+    electronMocks.showOpenDialog.mockClear()
+    list.mockResolvedValueOnce([{ ...summary, workspaceStatus: 'ready' as const }])
+    await expect(handler(trustedEvent(), projectId)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
+    await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
   })
 
   it('accepts pretty-printed project JSON and forwards saved node layout and viewport', async () => {
