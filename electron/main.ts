@@ -2577,7 +2577,7 @@ if (!hasSingleInstanceLock) {
     // （0.2.22 发版前回归检查第 5 条）。
     mainWindow.on('show', dropBackgroundInstall)
     // Mac 的安装器打开新版本时会把它切到前台（ShipIt 用 NSWorkspaceLaunchDefault）：没有窗口，
-    // 菜单栏却换成了星芒的，这时按 Command + Q 退出的是星芒。后台装完重新拉起、窗口留在
+    // 菜单栏却换成了星芒的，这时按 ⌘Q 退出的是星芒。后台装完重新拉起、窗口留在
     // 菜单栏的这一次，把前台还给刚才在用的程序。
     if (process.platform === 'darwin' && relaunchedAfterBackgroundInstall) {
       mainWindow.once('ready-to-show', () => {
@@ -2952,7 +2952,7 @@ if (!hasSingleInstanceLock) {
     })
     // Mac 关机 / 重启 / 注销时系统挨个让程序退出，拖着不退会被说成取消了关机：听到这一声，
     // 接下来的退出和 Windows 关机一样不问、不装（下好的更新下次打开再装），开着的确认框和
-    // 正在等的安装器都不等了。Electron 只在系统发出关机通知时发它，Command + Q 不发。
+    // 正在等的安装器都不等了。Electron 只在系统发出关机通知时发它，⌘Q 不发。
     if (process.platform === 'darwin') {
       const onPowerOff = () => {
         runtimeLog.log('info', 'window', 'shutdown.power-off', '系统要关机、重启或注销')
