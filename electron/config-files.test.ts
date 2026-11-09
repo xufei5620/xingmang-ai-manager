@@ -17,7 +17,9 @@ import {
   claudeForeignModelEnvKeys,
   claudeForeignSettingsSnapshotName,
   moveClaudeForeignSettingsAside,
+  recordClaudeFilledDefaults,
   restoreClaudeForeignSettings,
+  withdrawClaudeFilledDefaults,
   planProviderPickerRefresh,
   restoreManagedCliHooks,
   rewriteManagedCliHooks,
@@ -2833,7 +2835,10 @@ describe('switching a provider back to the official subscription account', () =>
     // Gemini 另有一份「统计开关是星芒写的」记录，重置成官方模板后它没用了，跟着写空。
     const recordPath = path.join(path.dirname(paths[0]), geminiUsageStatisticsRecordName)
     if (provider === 'gemini') expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
-    expect(result.backups.length).toBe(paths.length + (provider === 'gemini' ? 1 : 0))
+    // Claude 同理：快照里记着「不逐条确认」是星芒补的（D5），重置成官方模板后跟着写空。
+    const snapshotPath = path.join(path.dirname(paths[0]), claudeForeignSettingsSnapshotName)
+    if (provider === 'claude') expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+    expect(result.backups.length).toBe(paths.length + 1)
     expect(result.files).not.toContain(credentialPath)
     expect(result.files).not.toContain(historyPath)
   })
@@ -3152,10 +3157,10 @@ describe('switching a provider back to the official subscription account', () =>
     expect(afterEnv.ANTHROPIC_BASE_URL).toBeUndefined()
     expect(afterEnv.MY_OWN_VARIABLE).toBe('keep-me')
     // Claude 的订阅凭据在 .credentials.json / 钥匙串里,本模块从不触碰。
-    expect(after.permissions).toBeDefined()
-    // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉。
-    expect(asRecord(after.permissions)?.deny).toBeUndefined()
-    expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
+    // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉；
+    // 「不逐条确认」是星芒替这个新客户补的，也撤掉（D5），permissions 空了连键一起删。
+    expect(after.permissions).toBeUndefined()
+    expect(after.skipDangerousModePermissionPrompt).toBeUndefined()
   })
 
   // 全面检测 Q7：照别家中转教程配过 Claude Code 的人，settings.json 里留着的这几项
@@ -3267,7 +3272,12 @@ describe('switching a provider back to the official subscription account', () =>
     const roots = providerRoots(home)
     const [configPath] = providerConfigPaths('claude', roots)
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
-    fs.writeFileSync(configPath, JSON.stringify({ env: { MY_OWN_VARIABLE: 'x' } }, null, 2))
+    // 权限模式客户自己设过，星芒不补，也就没有记号要记。
+    fs.writeFileSync(configPath, JSON.stringify({
+      env: { MY_OWN_VARIABLE: 'x' },
+      permissions: { defaultMode: 'acceptEdits' },
+      skipDangerousModePermissionPrompt: false,
+    }, null, 2))
 
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
     switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
@@ -3331,13 +3341,218 @@ describe('switching a provider back to the official subscription account', () =>
     const roots = providerRoots(home)
     const [configPath] = providerConfigPaths('claude', roots)
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
-    fs.writeFileSync(configPath, JSON.stringify({ theme: 'dark' }, null, 2))
+    // 权限模式客户自己设过，快照里不会有「不逐条确认」的记号，只看型号存没存。
+    fs.writeFileSync(configPath, JSON.stringify({
+      theme: 'dark',
+      permissions: { defaultMode: 'default' },
+      skipDangerousModePermissionPrompt: false,
+    }, null, 2))
 
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
     switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
 
     expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBeUndefined()
     expect(fs.existsSync(path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName))).toBe(false)
+  })
+
+  // 0.2.24 深查 D5（反复切换 N7）：接当前账号时星芒补上的「不逐条确认」记在快照里，切回官方只撤这几项。
+  describe('Claude command-confirmation defaults filled by the account', () => {
+    function claudeFiles(home: string) {
+      const roots = providerRoots(home)
+      const [configPath] = providerConfigPaths('claude', roots)
+      return { roots, configPath, snapshotPath: path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName) }
+    }
+
+    function readSettings(configPath: string): Record<string, unknown> {
+      return JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    }
+
+    function writeSettings(configPath: string, settings: Record<string, unknown>): void {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, JSON.stringify(settings, null, 2))
+    }
+
+    it('withdraws both defaults for a customer who never set them, on every round trip', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+
+      for (let round = 0; round < 2; round += 1) {
+        saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+        const relay = readSettings(configPath)
+        expect(asRecord(relay.permissions)?.defaultMode).toBe('bypassPermissions')
+        expect(relay.skipDangerousModePermissionPrompt).toBe(true)
+        expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).filled)
+          .toEqual(['permissions.defaultMode', 'skipDangerousModePermissionPrompt'])
+        // Saving again on the account must keep the marks: the values are still the ones Xingmang wrote.
+        saveProviderConfig('claude', 'sk-relay-2', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+
+        switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+        const official = readSettings(configPath)
+        expect(official).not.toHaveProperty('permissions')
+        expect(official).not.toHaveProperty('skipDangerousModePermissionPrompt')
+        expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+      }
+    })
+
+    it.each([
+      ['a stricter mode', { defaultMode: 'acceptEdits' }, false],
+      ['the same bypass mode', { defaultMode: 'bypassPermissions' }, true],
+    ] as const)('keeps %s the customer set before connecting', (_label, permissions, skipPrompt) => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { permissions: { ...permissions }, skipDangerousModePermissionPrompt: skipPrompt })
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual(permissions)
+      expect(official.skipDangerousModePermissionPrompt).toBe(skipPrompt)
+    })
+
+    it('keeps a mode the customer changed while on the account and withdraws only the untouched one', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      const relay = readSettings(configPath)
+      asRecord(relay.permissions)!.defaultMode = 'plan'
+      writeSettings(configPath, relay)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual({ defaultMode: 'plan' })
+      expect(official).not.toHaveProperty('skipDangerousModePermissionPrompt')
+    })
+
+    it('drops a mark the customer took over while on the account, even if they set the value back later', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      const changed = readSettings(configPath)
+      asRecord(changed.permissions)!.defaultMode = 'plan'
+      writeSettings(configPath, changed)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      const back = readSettings(configPath)
+      asRecord(back.permissions)!.defaultMode = 'bypassPermissions'
+      writeSettings(configPath, back)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      expect(asRecord(readSettings(configPath).permissions)?.defaultMode).toBe('bypassPermissions')
+    })
+
+    it('ignores stale marks when the settings went back to the official account without the snapshot', () => {
+      // 切到当前账号失败按备份退回官方时，备份里没有这份快照，记号还在；客户随后自己开的同一项不能算星芒补的。
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(snapshotPath, 'utf8')).toContain('permissions.defaultMode')
+      writeSettings(configPath, { permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true })
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual({ defaultMode: 'bypassPermissions' })
+      expect(official.skipDangerousModePermissionPrompt).toBe(true)
+    })
+
+    it('leaves defaults written before the marks existed alone when switching to the official account', () => {
+      // 0.2.24 之前接过星芒的配置：快照里没有记号，分不清是不是客户自己设的，照旧不动。
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact', 'DesignSync'] },
+        skipDangerousModePermissionPrompt: true,
+        model: testModels.claude,
+      })
+      fs.writeFileSync(snapshotPath, JSON.stringify({ version: 1, env: {}, settings: { model: 'opus' } }))
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual({ defaultMode: 'bypassPermissions' })
+      expect(official.skipDangerousModePermissionPrompt).toBe(true)
+      expect(official.model).toBe('opus')
+    })
+
+    it('marks the defaults an account reset fills over an official config that never had them', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { theme: 'dark', skipDangerousModePermissionPrompt: false })
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+      expect(readSettings(configPath).skipDangerousModePermissionPrompt).toBe(true)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      // The reset overwrote the customer's own false, so only the mode Xingmang added is withdrawn.
+      const official = readSettings(configPath)
+      expect(official).not.toHaveProperty('permissions')
+      expect(official.skipDangerousModePermissionPrompt).toBe(true)
+    })
+
+    it('marks the mode the startup template fill adds so the official switch withdraws it too', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { deny: ['Artifact', 'DesignSync'] },
+        skipDangerousModePermissionPrompt: false,
+        model: testModels.claude,
+      })
+
+      fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+      expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).filled).toEqual(['permissions.defaultMode'])
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official).not.toHaveProperty('permissions')
+      expect(official.skipDangerousModePermissionPrompt).toBe(false)
+    })
+
+    it('does not touch the snapshot when the startup fill has no confirmation default to add', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { defaultMode: 'default', deny: ['Artifact', 'DesignSync'] },
+        skipDangerousModePermissionPrompt: false,
+      })
+
+      fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+      expect(fs.existsSync(snapshotPath)).toBe(false)
+    })
+
+    it('reads only known marks and withdraws a mark only while the value is still the one written', () => {
+      const snapshot = JSON.stringify({ version: 1, env: {}, settings: {}, filled: ['permissions.defaultMode', 'theme', 7, 'skipDangerousModePermissionPrompt'] })
+      const settings: Record<string, unknown> = {
+        permissions: { defaultMode: 'bypassPermissions', allow: ['Read'] },
+        skipDangerousModePermissionPrompt: 'yes',
+        theme: 'dark',
+      }
+      expect(withdrawClaudeFilledDefaults(settings, snapshot)).toEqual(['permissions.defaultMode'])
+      expect(settings).toEqual({ permissions: { allow: ['Read'] }, skipDangerousModePermissionPrompt: 'yes', theme: 'dark' })
+      expect(withdrawClaudeFilledDefaults({ permissions: 'bypassPermissions' }, snapshot)).toEqual([])
+      expect(withdrawClaudeFilledDefaults(settings, null)).toEqual([])
+    })
+
+    it('keeps the stashed foreign settings when recording or clearing marks', () => {
+      const stashed = JSON.stringify({ version: 1, env: { ANTHROPIC_MODEL: 'glm-4.6' }, settings: { model: 'opus' } })
+      const marked = recordClaudeFilledDefaults(stashed, { skipDangerousModePermissionPrompt: true }, ['skipDangerousModePermissionPrompt'], true)
+      expect(JSON.parse(String(marked))).toEqual({
+        version: 1, env: { ANTHROPIC_MODEL: 'glm-4.6' }, settings: { model: 'opus' }, filled: ['skipDangerousModePermissionPrompt'],
+      })
+      // Nothing new to record and the mark still holds: the snapshot stays as it is.
+      expect(recordClaudeFilledDefaults(marked, { skipDangerousModePermissionPrompt: true }, [], false)).toBeNull()
+      // Coming from the official account clears old marks without dropping what was stashed.
+      expect(JSON.parse(String(recordClaudeFilledDefaults(marked, {}, [], true)))).toEqual(JSON.parse(stashed))
+      expect(recordClaudeFilledDefaults(JSON.stringify({ version: 1, env: {}, settings: {}, filled: ['skipDangerousModePermissionPrompt'] }), {}, [], true)).toBe('')
+    })
   })
 
   // 别家中转的型号放回官方账号只会选到官方没有的型号：接当前账号前已经接着别家的，不记它。
@@ -3491,8 +3706,8 @@ describe('switching a provider back to the official subscription account', () =>
     switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls)
 
     const after = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    // defaultMode 是星芒替新客户补的，跟着撤掉（D5）；客户自己加的 deny、allow 原样留着。
     expect(asRecord(after.permissions)).toEqual({
-      defaultMode: 'bypassPermissions',
       deny: ['Bash(curl:*)', 'WebFetch'],
       allow: ['Read'],
     })
