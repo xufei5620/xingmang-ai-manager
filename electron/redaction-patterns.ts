@@ -50,14 +50,14 @@ const PRIVATE_KEY_BEGIN = /-----BEGIN ((?:[A-Z]+ )*PRIVATE KEY(?: BLOCK)?)-----/
  * from every BEGIN line again would reread the rest of the text once per BEGIN
  * line, and a log that quotes a key file a few hundred times is not rare.
  */
-function redactPrivateKeyBlocks(value: string): string {
+function redactPrivateKeyBlocks(value: string, replacement: string): string {
   let output = ''
   let cursor = 0
   for (const begin of value.matchAll(PRIVATE_KEY_BEGIN)) {
     // A BEGIN line inside a body that is already hidden.
     if (begin.index < cursor) continue
     const bodyStart = begin.index + begin[0].length
-    output += `${value.slice(cursor, bodyStart)}\n${REDACTED}`
+    output += `${value.slice(cursor, bodyStart)}\n${replacement}`
     const end = `-----END ${begin[1]}-----`
     const endIndex = value.indexOf(end, bodyStart)
     if (endIndex === -1) return output
@@ -88,20 +88,27 @@ function redactPrivateKeyBlocks(value: string): string {
  *   printed (#1407 P2-4).
  * - Cloud access key IDs (`AKIA…`, `ASIA…`, `LTAI…`, `AKID…`), for the same
  *   reason.
+ *
+ * Each value becomes `replacement`, `[REDACTED]` unless the caller names its
+ * own wording: chat history hides the same shapes under the text its readers
+ * already know. The text is inserted as written, `$` included.
  */
-export function redactSecretShapes(value: string): string {
-  return redactPrivateKeyBlocks(value)
-    .replace(/\b(https?:\/\/)[^\s/?#@]+@/gi, `$1${REDACTED}@`)
-    .replace(URL_USERINFO_WITH_PASSWORD, `$1${REDACTED}@`)
-    .replace(new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}${KEY_TAIL}`, 'g'), REDACTED)
-    .replace(new RegExp(`\\bgithub_pat_[A-Za-z0-9_]{20,}${KEY_TAIL}`, 'g'), REDACTED)
-    .replace(new RegExp(`\\bglpat-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'g'), REDACTED)
-    .replace(JSON_WEB_TOKEN, REDACTED)
-    .replace(CLOUD_ACCESS_KEY_ID, REDACTED)
-    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, `$1${REDACTED}`)
-    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, REDACTED)
-    .replace(new RegExp(`\\bAIza[A-Za-z0-9_-]{35,}${KEY_TAIL}`, 'g'), REDACTED)
-    .replace(new RegExp(`\\bxai-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'gi'), REDACTED)
+export function redactSecretShapes(value: string, replacement = REDACTED): string {
+  // A string passed to `replace` reads `$1`, `$&` and `$$` as patterns, so a
+  // caller's `$` is doubled to come out as a single `$`.
+  const text = replacement.replaceAll('$', '$$$$')
+  return redactPrivateKeyBlocks(value, replacement)
+    .replace(/\b(https?:\/\/)[^\s/?#@]+@/gi, `$1${text}@`)
+    .replace(URL_USERINFO_WITH_PASSWORD, `$1${text}@`)
+    .replace(new RegExp(`\\bgh[pousr]_[A-Za-z0-9]{20,}${KEY_TAIL}`, 'g'), text)
+    .replace(new RegExp(`\\bgithub_pat_[A-Za-z0-9_]{20,}${KEY_TAIL}`, 'g'), text)
+    .replace(new RegExp(`\\bglpat-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'g'), text)
+    .replace(JSON_WEB_TOKEN, text)
+    .replace(CLOUD_ACCESS_KEY_ID, text)
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, `$1${text}`)
+    .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/gi, text)
+    .replace(new RegExp(`\\bAIza[A-Za-z0-9_-]{35,}${KEY_TAIL}`, 'g'), text)
+    .replace(new RegExp(`\\bxai-[A-Za-z0-9_-]{20,}${KEY_TAIL}`, 'gi'), text)
 }
 
 // A command-line flag that carries a credential: the name ends in one of these

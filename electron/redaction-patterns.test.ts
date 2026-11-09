@@ -123,6 +123,31 @@ describe('redactSecretShapes', () => {
     expect(performance.now() - started).toBeLessThan(2_000)
   })
 
+  // Chat history hides the same shapes under its own wording. Every rule takes
+  // the caller's text, the URL rules keep what stands in front of it, and a `$`
+  // in it is not read as a replacement pattern.
+  it('puts the caller\'s replacement text, taken literally, where every shape was', () => {
+    const classic = `ghp_${'FakeClassicTokenFiller0123'}`
+    const text = [
+      `Bearer ${fakeRelayKey}`,
+      `grok ${fakeGrokKey} gemini ${fakeGoogleKey} ${classic}`,
+      'https://fake-user:fake-pass-value@git.example.invalid/acme',
+      'ssh://oauth2:fake-pass-value@git.example.invalid/acme',
+      `login ${fakeJwt} ${fakeAwsKeyId}`,
+      '-----BEGIN RSA PRIVATE KEY-----\nfake-rsa-body\n-----END RSA PRIVATE KEY-----',
+    ].join('\n')
+    const expected = [
+      'Bearer <$1 $& $$>',
+      'grok <$1 $& $$> gemini <$1 $& $$> <$1 $& $$>',
+      'https://<$1 $& $$>@git.example.invalid/acme',
+      'ssh://<$1 $& $$>@git.example.invalid/acme',
+      'login <$1 $& $$> <$1 $& $$>',
+      '-----BEGIN RSA PRIVATE KEY-----\n<$1 $& $$>\n-----END RSA PRIVATE KEY-----',
+    ].join('\n')
+    expect(redactSecretShapes(text, '<$1 $& $$>')).toBe(expected)
+    expect(redactSecretShapes(text)).toBe(expected.replaceAll('<$1 $& $$>', '[REDACTED]'))
+  })
+
   it('does not treat short look-alikes as keys', () => {
     expect(redactSecretShapes('AIzaShort and xai-short and desk-toolbar')).toBe('AIzaShort and xai-short and desk-toolbar')
   })
