@@ -46,7 +46,9 @@ const environmentSecrets = new Map([
 // 2026-10-18 yoyo 定：这两把照旧放仓库级（#1090）。访问统计令牌只有 Cloudflare
 // 两项读权限；巡检密钥是额度很小的测试密钥，而且要在抬 CLI 版本的 PR 分支上实测，
 // 挪进只给 main 的环境就测不了。往这张表里加名字等于放宽，要他亲手同意。
-const repositoryLevelSecrets = ['CLOUDFLARE_ANALYTICS_TOKEN', 'XINGMANG_CLI_PATROL_KEY']
+// 2026-11-09 加 XINGMANG_CLI_PATROL_KEY_CLAUDE：new-api 一把令牌只属于一个分组，
+// 共用那把在 GPT 分组测不了 Claude；yoyo 亲手在仓库级建了这把 Claude 分组的小额密钥。
+const repositoryLevelSecrets = ['CLOUDFLARE_ANALYTICS_TOKEN', 'XINGMANG_CLI_PATROL_KEY', 'XINGMANG_CLI_PATROL_KEY_CLAUDE']
 
 // The token GitHub mints for each run is not a stored secret and has its own
 // `permissions:` scoping.
@@ -155,6 +157,7 @@ test('the scan sees the secrets the release, sync and repository-level jobs real
     'service-status.yml publish R2_ACCESS_KEY_ID',
     'acceleration-nodes.yml publish XINGMANG_UPDATE_SIGNING_KEY',
     'quality.yml cli-relay-probe XINGMANG_CLI_PATROL_KEY',
+    'quality.yml cli-relay-probe XINGMANG_CLI_PATROL_KEY_CLAUDE',
     'update-feed-stats.yml stats CLOUDFLARE_ANALYTICS_TOKEN',
   ]) {
     assert.ok(reads.includes(expected), `expected the scan to find: ${expected}`)
@@ -164,8 +167,8 @@ test('the scan sees the secrets the release, sync and repository-level jobs real
   assert.equal(reads.some((read) => read.startsWith('quality.yml secret-scan ')), false)
 })
 
-test('only the two keys agreed on 2026-10-18 live at repository level, and both are still in use', () => {
-  assert.deepEqual([...repositoryLevelSecrets].sort(), ['CLOUDFLARE_ANALYTICS_TOKEN', 'XINGMANG_CLI_PATROL_KEY'])
+test('only the keys agreed on 2026-10-18 and 2026-11-09 live at repository level, and all are still in use', () => {
+  assert.deepEqual([...repositoryLevelSecrets].sort(), ['CLOUDFLARE_ANALYTICS_TOKEN', 'XINGMANG_CLI_PATROL_KEY', 'XINGMANG_CLI_PATROL_KEY_CLAUDE'])
   for (const name of repositoryLevelSecrets) {
     assert.equal(environmentSecrets.has(name), false, `${name} cannot be both repository-level and environment-level`)
   }

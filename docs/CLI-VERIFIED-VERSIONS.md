@@ -913,8 +913,8 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
   - Claude Code：`claude -p --output-format stream-json --verbose`，凭据走 `ANTHROPIC_AUTH_TOKEN`。输出格式只改本地打印、不改请求体；用它是因为纯 `-p` 在重试期间什么都不打，被超时杀掉时只剩退出码 143，stream-json 会把每次重试的 HTTP 状态打出来，脚本据此归类。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
 - **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
-- **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key。**探测的工具共用这一把**，不另设第二个 secret。
-  - 但它必须覆盖这几个工具各自的分组（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅`）。只覆盖其中一个分组时，另一个工具会被中转答成「当前分组下无可用渠道」。
+- **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key，在 GPT 分组。new-api 一把令牌只属于一个分组，所以 Claude 另用 `XINGMANG_CLI_PATROL_KEY_CLAUDE`（Claude 分组，2026-11-09 加）；没配这把时 Claude 退回共用的那把。
+  - 每把 Key 要落在它那个工具的分组里（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅`）。分组不对时，中转会答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」这样的话（11-09 第一次真跑，Claude 用 GPT 分组那把就是这样）。
   - 探测脚本把这种回答单独归成 `group` 一类并在 summary 里写清「换一把覆盖该分组的 Key」，**不会**把它误报成「这个版本不能用」。
   - Claude Code 从子进程环境变量拿 Key。Codex 对自定义 model provider **不认** `OPENAI_API_KEY` 环境变量（对 0.155.1 实测：设了这个变量，请求里 `auth.header_attached=false`），只读 `$CODEX_HOME/auth.json`，所以它那一份是以 0600 写进一次性临时 HOME 的，跑完即删。两种路径都不经 argv——argv 在共享主机上是全员可读的。
 - **没有配密钥时**：作业照常通过，但 summary 里明确写「未在中转实测」，并列出这次本该探测的是哪几个工具的哪几个版本。一句诚实的「没验证」比一个看着绿的空作业有用。

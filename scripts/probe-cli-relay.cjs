@@ -22,6 +22,14 @@ const { execFile } = require('node:child_process')
 
 const root = path.resolve(__dirname, '..')
 const KEY_VARIABLE = 'XINGMANG_CLI_PATROL_KEY'
+/**
+ * new-api 的一把令牌只属于一个分组,而每个 CLI 的托管 Key 绑在各自的分组上
+ * (catalog.ts 的 managedCliKeyProfiles)。所以一把共用的巡检 Key 只能覆盖其中
+ * 一个工具:2026-11-09 配上的那把在 GPT 分组,Claude 被答成「分组 GPT 下模型
+ * claude-opus-5-5 无可用渠道」。某个工具单独配了这里的 secret 就用它,没配就退回
+ * 共用的那把。
+ */
+const PROVIDER_KEY_VARIABLES = { claude: 'XINGMANG_CLI_PATROL_KEY_CLAUDE' }
 const PROBE_PROMPT = '回答一个字:好'
 const MAX_CAPTURED_BYTES = 16 * 1024
 const PROBE_TIMEOUT_MS = 120_000
@@ -54,6 +62,13 @@ function loadTypeScriptModule(entry) {
   }
 }
 
+/** 这个工具用哪一把探测 Key:单独配了就用单独的,否则用共用的。 */
+function resolveProbeKey(provider, environment) {
+  const dedicated = PROVIDER_KEY_VARIABLES[provider]
+  if (dedicated && environment[dedicated]) return { variable: dedicated, secret: environment[dedicated] }
+  return { variable: KEY_VARIABLE, secret: environment[KEY_VARIABLE] || '' }
+}
+
 /** 密钥永远不许进日志或 job summary。 */
 function redact(text, secret) {
   const bounded = String(text).slice(0, MAX_CAPTURED_BYTES)
@@ -71,7 +86,7 @@ function redact(text, secret) {
  * 版本的问题,报告要说清需要的是一把什么样的 Key。关键词与
  * connection-check.ts 的 groupHints 同源。
  */
-function classifyProbe({ code, output, timedOut }) {
+function classifyProbe({ code, output, timedOut }, keyVariable = KEY_VARIABLE) {
   if (code === 0 && !timedOut) return { verdict: 'ok', detail: '请求成功返回' }
   const evidence = claudeStreamEvidence(output)
   // Claude Code 的 stream-json 里除了出错的那一行,还有一大段带数字的初始化信息
@@ -79,13 +94,13 @@ function classifyProbe({ code, output, timedOut }) {
   const text = evidence === null ? String(output) : evidence
   const suffix = evidence ? `(最后一次:${evidence})` : ''
   if (/无可用渠道|无可用的渠道|当前分组|no available channel/i.test(text)) {
-    return { verdict: 'group', detail: `探测 Key 的分组里没有这个工具的渠道,换一把覆盖该分组的 ${KEY_VARIABLE}${suffix}` }
+    return { verdict: 'group', detail: `探测 Key 的分组里没有这个工具的渠道,换一把覆盖该分组的 ${keyVariable}${suffix}` }
   }
   if (/\b400\b|invalid_request_error|Input tag|must be non-empty/i.test(text)) {
     return { verdict: 'rejected', detail: `端点拒绝了 CLI 发出的请求(400 类)${suffix}` }
   }
   if (/\b401\b|\b403\b|authentication_error|authentication_failed|permission_error|invalid api key|无效的令牌/i.test(text)) {
-    return { verdict: 'credential', detail: `探测凭据被拒(401/403),请检查仓库 secret ${KEY_VARIABLE}${suffix}` }
+    return { verdict: 'credential', detail: `探测凭据被拒(401/403),请检查仓库 secret ${keyVariable}${suffix}` }
   }
   if (/\b429\b|rate_limit|quota|额度|余额/i.test(text)) {
     return { verdict: 'quota', detail: `探测账号额度或速率受限,这次判定不了版本${suffix}` }
@@ -252,7 +267,8 @@ async function resolveGlobalCli(command) {
   throw new Error(`装完之后找不到 ${command} 可执行文件`)
 }
 
-async function probeSite(provider, executable, site, version, secret, model) {
+async function probeSite(provider, executable, site, version, key, model) {
+  const { secret, variable } = key
   const runner = probeRunners[provider]
   const baseUrl = runner.baseUrlFor(site)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cli-home-'))
@@ -263,7 +279,7 @@ async function probeSite(provider, executable, site, version, secret, model) {
       env: runner.environment(baseUrl, secret, home),
       timeoutMs: PROBE_TIMEOUT_MS,
     })
-    const classified = classifyProbe(result)
+    const classified = classifyProbe(result, variable)
     return { provider, siteId: site.id, baseUrl, version, output: redact(displayOutput(result.output), secret), ...classified }
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
@@ -308,7 +324,7 @@ async function main() {
       `本次只验证了「上游 changelog 里没有与网关/第三方 base URL 相关的回归」，${pinnedList} **没有**在任何中转站点上跑过真实请求。`,
       `补上这个 secret（一把额度很小的测试 Key）之后，这个作业会对 ${relaySites.map((site) => `\`${site.id}\``).join('、')} 各跑一次真实请求。`,
       '',
-      '这把 Key 要能覆盖上面每个工具各自的分组（`catalog.ts` 的 `managedCliKeyProfiles`）；只覆盖其中一个分组时，别的工具会报「分组里没有可用渠道」而不是版本问题。',
+      `new-api 一把令牌只属于一个分组（\`catalog.ts\` 的 \`managedCliKeyProfiles\`）：这把放 GPT 分组的，Claude 另配 \`${PROVIDER_KEY_VARIABLES.claude}\`（Claude 分组）。分组不对时会报「分组里没有可用渠道」，那不是版本问题。`,
       ...(skipped.length ? ['', `名单里还没填推荐版本、因此没有探测的：${skipped.map((provider) => cliCatalog[provider].name).join('、')}。`] : []),
     ])
     return
@@ -328,7 +344,7 @@ async function main() {
     }
     const executable = await resolveGlobalCli(cliCatalog[provider].command)
     for (const site of relaySites) {
-      results.push(await probeSite(provider, executable, site, recommended.version, secret, defaultCliModels[provider]))
+      results.push(await probeSite(provider, executable, site, recommended.version, resolveProbeKey(provider, process.env), defaultCliModels[provider]))
     }
   }
 
@@ -362,4 +378,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }
+module.exports = { resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }

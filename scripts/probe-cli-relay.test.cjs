@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
-  classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
+  resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
   PROBED_PROVIDERS, KEY_VARIABLE,
 } = require('./probe-cli-relay.cjs')
 
@@ -178,4 +178,21 @@ test('the relay message in a Claude result line decides the verdict over the bar
   const result = JSON.stringify({ type: 'result', is_error: true, api_error_status: 503, result: 'API Error: 503 当前分组 default 下对于模型 x 无可用渠道' })
   const output = [initLine, retryLine(1, 503, 'server_error'), result].join('\n')
   assert.equal(classifyProbe({ code: 1, output }).verdict, 'group')
+})
+
+test('a tool with a key of its own uses it, and every other tool falls back to the shared key', () => {
+  // 2026-11-09: the shared key sat in the GPT group, and Claude was answered
+  // with "分组 GPT 下模型 claude-opus-5-5 无可用渠道".
+  const environment = { XINGMANG_CLI_PATROL_KEY: 'sk-shared', XINGMANG_CLI_PATROL_KEY_CLAUDE: 'sk-claude' }
+  assert.deepEqual(resolveProbeKey('claude', environment), { variable: 'XINGMANG_CLI_PATROL_KEY_CLAUDE', secret: 'sk-claude' })
+  assert.deepEqual(resolveProbeKey('codex', environment), { variable: KEY_VARIABLE, secret: 'sk-shared' })
+  // An unset (or empty, as GitHub passes a missing secret) dedicated key falls back.
+  assert.deepEqual(resolveProbeKey('claude', { XINGMANG_CLI_PATROL_KEY: 'sk-shared', XINGMANG_CLI_PATROL_KEY_CLAUDE: '' }), { variable: KEY_VARIABLE, secret: 'sk-shared' })
+  assert.equal(PROVIDER_KEY_VARIABLES.codex, undefined)
+})
+
+test('the report names the secret that was actually used', () => {
+  const refusal = { code: 1, output: '分组 GPT 下模型 claude-opus-5-5 无可用渠道' }
+  assert.match(classifyProbe(refusal, 'XINGMANG_CLI_PATROL_KEY_CLAUDE').detail, /XINGMANG_CLI_PATROL_KEY_CLAUDE/)
+  assert.match(classifyProbe({ code: 1, output: '401 Invalid API key' }, 'XINGMANG_CLI_PATROL_KEY_CLAUDE').detail, /XINGMANG_CLI_PATROL_KEY_CLAUDE/)
 })

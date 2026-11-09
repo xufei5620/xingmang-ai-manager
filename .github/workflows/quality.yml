@@ -988,6 +988,8 @@ jobs:
       - name: Probe every pinned CLI version against every relay site
         env:
           XINGMANG_CLI_PATROL_KEY: ${{ secrets.XINGMANG_CLI_PATROL_KEY }}
+          # new-api 的令牌一把只属于一个分组；Claude 单独一把，没配就退回上面那把。
+          XINGMANG_CLI_PATROL_KEY_CLAUDE: ${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}
         run: node scripts/probe-cli-relay.cjs
 
   audit:
