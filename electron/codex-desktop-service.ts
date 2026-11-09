@@ -2425,9 +2425,9 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
  * 是两种装法，这台电脑不让侧载时商店往往还装得上，所以默认接着走，同存储桶上线前一样。客户自己
  * 取消、取消了授权、盘满了这几样，换一路也救不了，原样交出。
  *
- * Windows 防火墙服务停着（firewallOff）也原样交出：后面几路装的是同一个官方包，商店也走同一个安装
- * 引擎，都卡在登记防火墙规则那一步。以前接着走，客户要多等商店一趟、再从官网下一遍几百兆，最后看到
- * 的还是同一句话。
+ * Windows 防火墙服务停着（firewallOff）也原样交出：官网、国内镜像装的是同一个官方包，商店用的也是
+ * 同一个安装引擎（推测，没在真机上演过），都卡在登记防火墙规则那一步。以前接着走，客户要多等商店
+ * 一趟、再从官网下一遍几百兆，最后看到的还是同一句话。
  */
 export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown): boolean {
   if (isInstallCancelledError(error)) return false
