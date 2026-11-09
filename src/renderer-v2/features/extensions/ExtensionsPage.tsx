@@ -383,7 +383,7 @@ export function ExtensionsPage({
       'python',
       async () => {
         await api.installPythonRuntime()
-        // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未装」、还给安装按钮。先叫、再读本页：
+        // 不叫的话回首页，「运行环境」里 Python 还写「可选 · 未安装」、还给安装按钮。先叫、再读本页：
         // 本页那次读接上 App 刚起的那一轮检测。
         onSystemChanged?.()
         await reloadList()

@@ -99,7 +99,7 @@ type ToolDef = {
 | 工具 | keyRevoked | 密钥失效 | bad | 修复 |
 | 工具 | zeroBalance | 余额为零 | bad | 马上充值 |
 | 工具 | unknownSource | 已有第三方配置 | neutral | 查看处理步骤 |
-| 环境 | ok / missing / optional | 已找到 x / 未安装 / 可选 · 未装 | ok / warn / neutral | 一键安装 / 安装指南 |
+| 环境 | ok / missing / optional | 已找到 x / 未安装 / 可选 · 未安装 | ok / warn / neutral | 一键安装 / 安装指南 |
 | Key | active / disabled / expired / exhausted / revoked | 有效 / 已停用 / 已过期 / 额度用完 / 已撤销 | ok / neutral / warn / warn / neutral | 启用 / 编辑 / 撤销 |
 | 余额 | ok / warn / bad / zero | — | ok / warn / bad / bad | 充值 / 马上充值 |
 | 订单 | pending / paid / failed / timeout / unknown | 等待支付 / 已到账 / 支付失败 / 已超时 / 待确认 | warn / ok / bad / neutral / neutral | 重新支付 / 查询 |
