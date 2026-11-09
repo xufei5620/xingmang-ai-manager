@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountSwitchDesktopClientsHint, accountSwitchedTitle, defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
+import { accountSwitchDesktopClientsHint, accountSwitchedTitle, chatImageSwitchWarning, defaultSyncSelection, savedAccountLoginTarget, savedAccountSourceLabel } from './SavedAccounts'
 
 describe('saved account list labels', () => {
   it('names the account source with the login page tab names instead of a hash fragment', () => {
@@ -24,6 +24,12 @@ describe('saved account list labels', () => {
     expect(accountSwitchedTitle('old@example.com', 'https://api.solov.cc')).toBe('已切换到「old@example.com」（历史账号）')
     expect(accountSwitchedTitle(undefined, 'https://xm.solov.cc')).toBe('账号已切换')
     expect(accountSwitchedTitle('peaker', 'https://xm.solov.cc.evil.com')).toBe('账号已切换')
+  })
+})
+
+describe('saved account switch while the chat page draws an image', () => {
+  it('asks with the approved sentence word for word (D44)', () => {
+    expect(chatImageSwitchWarning).toBe('对话还在出图，换账号会停掉这张图，可能已经扣费。')
   })
 })
 
