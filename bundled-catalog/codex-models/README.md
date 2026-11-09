@@ -5,7 +5,7 @@
 | 项 | 值 |
 | --- | --- |
 | 仓库 | <https://github.com/openai/codex> |
-| tag | `rust-v0.166.0`（提交 `6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`） |
+| tag | `rust-v0.167.0`（提交 `086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`） |
 | 路径 | `codex-rs/models-manager/models.json` |
 | sha256 | `1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10` |
 | 许可 | Apache-2.0，`LICENSE` 与 `NOTICE` 原样拷自同一 tag 的仓库根目录 |
