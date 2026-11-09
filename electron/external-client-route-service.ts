@@ -663,8 +663,9 @@ export function createExternalClientRouteService(context: ServiceContext, depend
    * 把客户端那份换成借的那个工具现在的 Key（#1113），只换 Key，地址、型号和别的设置都不动。全都对上才换：
    * 正在用的是星芒替当前账号写的那份、地址是这个站的线路；它那把是缓存记着「被换掉」的某个工具的旧 Key；
    * 不是客户自己填的（保存时记下的来源，0.2.20 以前保存的没记，凭「就是工具换下来的那把」认）；新 Key 认它
-   * 用着的型号。换了账号的（已知37）认的是上一个账号：见 externalClientKeyChange。客户端开着就先不写，等它退出
-   * 再换（同换线路 C11），那一行带 keyPending、pending 交回去记着。
+   * 用着的型号。用着的不止默认那一个：Claude Desktop 菜单里的、WorkBuddy 存的每一条都拿新 Key 的清单核一遍，
+   * 不认的不跟着换（见 moveExternalClientKey）。换了账号的（已知37）认的是上一个账号：见 externalClientKeyChange。
+   * 客户端开着就先不写，等它退出再换（同换线路 C11），那一行带 keyPending、pending 交回去记着。
    */
   async function followExternalClientKey(
     status: ExternalClientRuntimeStatus,
@@ -691,7 +692,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     }
     const latest = { status }
     try {
-      // 新 Key 认它用着的型号才换，不替客户换型号；Claude Desktop 没写型号（由它自动获取）的，新 Key 能用就够了。
+      // 新 Key 认它默认那个型号才换，不替客户换型号；Claude Desktop 没写型号（由它自动获取）的，新 Key 能用就够了。
+      // 别的型号写之前在重读出来的那份上逐个核（moveExternalClientKey）。
       const models = await fetchAvailableModels(next.apiKey, { bypassCache: true, site: activeSite })
       assertContext()
       if (found.model !== null && !models.includes(found.model)) throw new Error(`新密钥不支持 ${name} 现在用的型号`)
@@ -702,19 +704,22 @@ export function createExternalClientRouteService(context: ServiceContext, depend
         if (!latest.status.installed || latest.status.detectionError) throw new Error(`${name} 这次没认出来开没开，已保留原配置`)
         assertContext()
       }
-      const keyChange = { baseUrl: found.baseUrl, from: found.apiKey, to: next.apiKey }
+      const keyChange = { baseUrl: found.baseUrl, from: found.apiKey, to: next.apiKey, offered: models }
+      let unsupportedModels: string[]
       if (switched) {
         // 换了账号：归属先记到当前账号名下（来源照上一个账号那份记），再改客户端。中途断了，客户端手上还是上一个
         // 账号那把，上一个账号的归属也还在，下次检测照样认出来再换。
         await externalOwnership.write(tool, owner, found.route.baseUrl, next.apiKey, change.source)
-        await moveExternalClientKey(status, keyChange, assertContext, recheck)
+        unsupportedModels = await moveExternalClientKey(status, keyChange, assertContext, recheck)
       } else {
         await externalOwnership.stageKey(tool, owner, found.route.baseUrl, found.apiKey, next.apiKey)
-        await moveExternalClientKey(status, keyChange, assertContext, recheck)
+        unsupportedModels = await moveExternalClientKey(status, keyChange, assertContext, recheck)
         await externalOwnership.rewrite(tool, owner, found.route.baseUrl, next.apiKey)
       }
       externalKeysFollowed += 1
-      runtimeLog?.log('info', 'config', 'external-client.key.followed', `已把 ${name} 换成 ${cliCatalog[next.provider].name} 现在用的密钥`, detail)
+      // 新 Key 不认、没跟过去的那几个型号只进运行日志，客服看得到是哪几个。
+      runtimeLog?.log('info', 'config', 'external-client.key.followed', `已把 ${name} 换成 ${cliCatalog[next.provider].name} 现在用的密钥`,
+        unsupportedModels.length ? { ...detail, unsupportedModels } : detail)
       return { client: await describeExternalClient(latest.status), pending: false }
     } catch (error) {
       if (latest.status.running) {
@@ -800,23 +805,26 @@ export function createExternalClientRouteService(context: ServiceContext, depend
     }
     return null
   }
-  /** 只改 Key 的那一笔写，recheck 的位置同 moveExternalClientRoute。 */
+  /**
+   * 只改 Key 的那一笔写，recheck 的位置同 moveExternalClientRoute。offered 是新 Key 能用的型号：Claude Desktop 一把
+   * Key 管整个菜单，新 Key 不认的从菜单里拿掉；WorkBuddy 每条各带各的 Key，新 Key 不认的那条留着原来的 Key。
+   * 交回这次没跟过去的型号。
+   */
   async function moveExternalClientKey(
     status: ExternalClientRuntimeStatus,
-    change: { baseUrl: string; from: string; to: string },
+    change: { baseUrl: string; from: string; to: string; offered: readonly string[] },
     assertContext: () => void,
     recheck: () => Promise<void>,
-  ): Promise<void> {
+  ): Promise<string[]> {
     if (status.tool === 'claudeDesktop') {
-      await (await claudeDesktopConfig(status, assertContext)).followKey(change.baseUrl, change.from, change.to, recheck)
-      return
+      return (await (await claudeDesktopConfig(status, assertContext)).followKey(change, recheck)).removedModels
     }
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
     if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
     await recheck()
-    await followExternalToolKey(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
+    return (await followExternalToolKey(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
       userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, change, { beforeReplace: assertContext })
+    }, change, { beforeReplace: assertContext })).unsupportedModels
   }
   /** followExternalClientRoutes 里的一个客户端：那一行要换成什么就回什么，不用动时回 null。 */
   async function followExternalClientRoute(

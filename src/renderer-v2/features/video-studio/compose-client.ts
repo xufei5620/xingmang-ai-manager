@@ -80,7 +80,7 @@ export function composeInVideoStudioWorker(request: VideoStudioComposeRequest, o
       },
     }
     try {
-      worker.start({ kind: 'compose', request }, request.clips.map((clip) => clip.data), listener)
+      worker.start({ kind: 'compose', request }, [...request.clips.map((clip) => clip.data), ...(request.music ? [request.music.data] : [])], listener)
     } catch {
       settle(() => reject(new VideoStudioError('片段交不给拼片线程，请重新读一遍片段再试')))
     }

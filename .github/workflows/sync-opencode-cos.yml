@@ -1,5 +1,5 @@
 # Mac 上一键装 OpenCode 要的官方 .app.tar.gz 放进腾讯云 COS，星芒装 OpenCode 时先从这里下。
-# 只问 OpenCode 在 GitHub 发布页的 latest.json，版本变了才下两种芯片的包；在 Mac 机器上解开核过
+# 只问 OpenCode 在 GitHub 发布页的 latest-mac.yml，版本变了才下两种芯片的包；在 Mac 机器上解开核过
 # bundle id、5NZ4Q7NXJ4 团队的 Developer ID 签名和 Gatekeeper 才传。
 name: sync-opencode-cos
 

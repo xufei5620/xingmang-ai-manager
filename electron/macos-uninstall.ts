@@ -21,7 +21,8 @@ export interface MacUninstallDependencies {
   installationBusy(): boolean
   /** 改之前按「保存配置」同一份备份，「设置 › 备份迁移」里能找回。 */
   backupCliConfigs(): Promise<void>
-  removeCliHooks(): boolean
+  /** 收回时顺手记下收回了哪几家（removed-cli-hooks.ts），重装回来开机补回。 */
+  removeCliHooks(): boolean | Promise<boolean>
   removeLoginItem(): boolean
   removeManagedTools(): Promise<boolean>
   trashItem(target: string): Promise<void>

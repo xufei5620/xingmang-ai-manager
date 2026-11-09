@@ -1,6 +1,6 @@
 import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 import { isChineseSentence } from './chinese-sentence'
-import { classifyNetworkFailure, updateNetworkFailureMessages } from './network-failure'
+import { classifyNetworkFailure, isServiceUnavailableResponse, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { RemoteFeatureId } from './remote-features'
 import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
@@ -311,6 +311,16 @@ export interface UpdateFeedRouting {
   fallBack(error: unknown): boolean
 }
 
+/** 排好的一次下载补试，见 UpdaterRuntime.downloadRetryScheduled。*/
+export interface UpdateDownloadRetry {
+  version: string
+  /** 这是第几次补试，从 1 数。*/
+  attempt: number
+  delayMs: number
+  /** 这一次没成在哪一步：补试里那次检查没查成的是 check。*/
+  failedStep: 'check' | 'download'
+}
+
 export interface UpdaterRuntime {
   currentVersion: string
   isPackaged: boolean
@@ -465,6 +475,8 @@ export interface UpdaterRuntime {
   downloadReceivedBytes?: () => number | null
   /** 一个版本下好了（不论随后核对过没过）。宿主拿去记一条日志，见 UpdateDownloadMeasure。*/
   downloadMeasured?: (measure: UpdateDownloadMeasure) => void
+  /** 后台下载没下成，排好了一次补试（见 updateDownloadRetryDelaysMs）。宿主拿去记一条日志。*/
+  downloadRetryScheduled?: (retry: UpdateDownloadRetry) => void
   /**
    * 手里下好的那一版被更新目录上更新的一版顶掉了（见 refreshDownloaded）：旧的那份不再装，阶段回到
    * 「有新版本」，接着下新的。宿主拿去记一条日志。
@@ -671,6 +683,45 @@ function isDownloadCancellation(error: unknown): boolean {
   return error instanceof UpdateDownloadAborted || (error instanceof Error && error.message === 'cancelled')
 }
 
+/**
+ * 后台下载没下成以后，隔多久自己再试一次（深查 Z-3）。以前只有停住、代理连不上这两种当场重下一次，
+ * 别的失败（连接被重置、更新服务器回 5xx、换了网络）都要等三小时那次定时检查从头再下，网络不稳的
+ * 客户可能一天都下不完一次。一次比一次隔得久，同一个版本最多补这几次，再不行回到三小时那一轮：
+ * 网一直不通时，不能每隔几分钟拉一次一两百 MB 的安装包。
+ */
+export const updateDownloadRetryDelaysMs: readonly number[] = [5 * 60_000, 15 * 60_000, 45 * 60_000]
+
+/** 已经补过 attempts 次以后，下一次补试要等多久；次数用完返回 null。*/
+export function resolveDownloadRetryDelay(attempts: number): number | null {
+  if (!Number.isInteger(attempts) || attempts < 0) return null
+  return updateDownloadRetryDelaysMs[attempts] ?? null
+}
+
+// electron-updater 的 HttpError 把状态码放在 statusCode 上，外面可能还包着一两层。
+function httpStatusOf(error: unknown): number | null {
+  let candidate: unknown = error
+  for (let depth = 0; depth < 4 && candidate !== null && typeof candidate === 'object'; depth += 1) {
+    const status = (candidate as { statusCode?: unknown }).statusCode
+    if (typeof status === 'number' && Number.isInteger(status)) return status
+    candidate = (candidate as { cause?: unknown }).cause
+  }
+  return null
+}
+
+/**
+ * 这次没下成，过一会儿再试有没有用。网络那头的事（断网、解析不出、连接被重置、超时、代理连不上、
+ * 要先过门户认证、更新服务器暂时不可用）和看门狗停掉的那次都算。证书被换掉、本机时间不准要客户
+ * 自己处理，磁盘满了、文件被占着、更新目录里没有这个包也一样，过几分钟还是这样，不补试，照旧等
+ * 三小时那次。下好以后核对不过不走这里（见 rejectDownloadedUpdate）。
+ */
+export function isTransientDownloadFailure(error: unknown): boolean {
+  if (error instanceof UpdateDownloadStalled || error instanceof UpdateCheckAborted) return true
+  const reason = classifyNetworkFailure(error)
+  if (reason) return reason !== 'tls' && reason !== 'certDate'
+  const status = httpStatusOf(error)
+  return status !== null && isServiceUnavailableResponse({ status, json: false })
+}
+
 /** 只比 x.y.z；比不出来（版本号写法不认识）按「不更旧」处理。 */
 export function isOlderVersion(candidate: string, current: string): boolean {
   return (compareVersionsBy(parseUpdateVersion, candidate, current) ?? 0) < 0
@@ -709,12 +760,16 @@ export function resolveGatedRequiredVersion(input: {
 }
 
 /**
- * 退回的下限。撤回名单让更新目录有了「把客户端装回旧版本」的能力；更新目录一旦被
- * 人拿到，这条路就能被用来把大家退回一个有已知安全问题的老版本。所以退回只能退到
- * 这个版本及以后：它是第一个有清单备份、能被正规回退流程选中的版本。以后哪一版修了
- * 安全问题，就把这里抬到那一版，更新目录再也没法把客户端退到它之前。
+ * 退回的下限。撤回名单让更新目录有了「把客户端装回旧版本」的能力；撤回名单所在的状态
+ * 文件没有签名，更新目录或直连那台转发机一旦被人拿到，不用签名私钥就能把本机版本写进
+ * 撤回名单、再换上一份真签过名的旧清单，把大家退回一个有已知问题的老版本（发布者签名
+ * 只防得住装恶意包，防不住装旧的真包）。所以退回只能退到这个版本及以后。
+ *
+ * 它跟着状态文件里的最低版本走：0.2.22 是现在的最低版本，比它旧的有已撤回的 0.2.20、
+ * 0.2.21。比最低版本还旧的退回去也过不了「必须更新」那道门，正规回退流程本来就不会选它。
+ * 以后每次抬最低版本（或者哪一版修了安全问题），就顺手把这里抬到那一版。
  */
-export const rollbackFloorVersion = '0.2.9'
+export const rollbackFloorVersion = '0.2.22'
 
 export type UpdateOfferDecision =
   | { offer: false }
@@ -749,12 +804,23 @@ export function decideUpdateOffer(input: {
   return { offer: true }
 }
 
-// Chromium reports an unreachable proxy as a structured net error code. The
-// only reaction to it is taking the updater session off the user's proxy, so
-// the match must never be made against free text: a release note, a mirror's
-// HTML error page or a manifest field that merely mentions the code would
-// otherwise be enough to bypass a proxy the user deliberately configured.
+// The only reaction to an unreachable proxy is taking the updater session off
+// the user's proxy, so the match must never be made against free text: a
+// release note, a mirror's HTML error page or a manifest field that merely
+// mentions the code would otherwise be enough to bypass a proxy the user
+// deliberately configured.
+//
+// Electron's net module (lib/common/api/net-client-request.ts, which
+// electron-updater's executor uses for both the check and the download) does
+// not attach a code: it rejects with `new Error('net::ERR_PROXY_CONNECTION_FAILED')`
+// and builder-util-runtime passes that error through untouched. Running
+// Electron 45.1.0 + electron-updater 6.8.9 against a closed proxy port gives a
+// plain Error whose only own keys are `stack` and `message`. So the message is
+// accepted, but only when it is the whole message of an Error -- exactly what
+// Electron constructs -- never when the code appears inside a longer text.
+// The structured `code` is still accepted for errors that do carry one.
 const PROXY_CONNECTION_FAILED_CODE = 'ERR_PROXY_CONNECTION_FAILED'
+const PROXY_CONNECTION_FAILED_NET_MESSAGE = `net::${PROXY_CONNECTION_FAILED_CODE}`
 
 function isProxyConnectionFailure(error: unknown): boolean {
   // electron-updater wraps executor failures, so follow a bounded cause chain
@@ -763,6 +829,7 @@ function isProxyConnectionFailure(error: unknown): boolean {
   for (let depth = 0; depth < 4 && candidate !== null && candidate !== undefined; depth += 1) {
     const code = (candidate as { code?: unknown }).code
     if (typeof code === 'string' && code.toUpperCase() === PROXY_CONNECTION_FAILED_CODE) return true
+    if (candidate instanceof Error && candidate.message === PROXY_CONNECTION_FAILED_NET_MESSAGE) return true
     candidate = (candidate as { cause?: unknown }).cause
   }
   return false
@@ -1051,8 +1118,8 @@ export function createUpdaterService(
   let lastProgressAt = 0
   // 撤回名单和分批放量是发版的安全网，只认最近一次读成功的那份：网差的电脑这一次没读到状态文件、
   // 却读到了更新清单，不能就当成「什么都没撤回、全部放开」（#1055）。这份记在本地，打开软件时先用
-  // 上次记下的。维护提示和最低版本照旧跟着这一次读到的走，读不到就不提示、不拦人。从来没读成功过
-  // 的电脑仍按不撤回、不限量算。
+  // 上次记下的。维护提示照旧跟着这一次读到的走，读不到就不提示。最低版本只在这次运行里沿用读成功的那份
+  // （见 applyServiceStatus），不记到本地。从来没读成功过的电脑仍按不撤回、不限量、不拦人算。
   let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
   // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
   let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
@@ -1077,6 +1144,12 @@ export function createUpdaterService(
   let latestCheck = 0
   // 正在拿手里下好的那一版跟更新目录对一对（见 refreshDownloaded）。
   let refreshingDownloaded = false
+  // 后台下载没下成以后的补试（见 scheduleDownloadRetry）：version 是这一串补试在下的版本，attempts 是
+  // 已经排过几次。换了版本从头数，下好了清掉。
+  let downloadRetry: { version: string; attempts: number } | null = null
+  let downloadRetryTimer: NodeJS.Timeout | null = null
+  // 这一趟对比开始前量到的剩余空间（见 refreshDownloaded）；量不出来时为 null。
+  let refreshFreeDiskBytes: number | null = null
   // 看门狗放弃了、electron-updater 那边还没收尾的下载。取消的只有看门狗，所以这期间它发来的
   // 「已取消」都是回声，没人盯着时来的进度、晚到的出错也都是这几次的。
   const abandonedDownloads = new Set<Promise<unknown>>()
@@ -1215,6 +1288,16 @@ export function createUpdaterService(
   // 这一趟检查是在拿手里那一版对比。阶段一离开「已下载」（被撤回了），事件就照平常那样进快照。
   const probingDownloaded = () => refreshingDownloaded && snapshot.phase === 'downloaded'
 
+  // 更新目录上新的那一版这会儿下不下得了（深查 Z-1）。下不了还换，手里这份从此不算「下好了」，退出时、
+  // 开机时都没东西可装，新的却停在「有新版本」等客户清盘。所以盘不够时不换，手里这份照旧能装。用的是
+  // download() 下载前量盘的同一个算法：这里放行的，换完那一步也放行。手里这份够不上最低版本时照样换：
+  // 装上它也过不了「必须更新」那道门，不如摆出新的那一版，让客户在门里看到要清多少空间。
+  const supersedeShortfall = (info: UpdateInfo): UpdateDiskShortfall | null => {
+    if (downloadedBelowMinimum()) return null
+    const packageBytes = resolveUpdatePackageBytes(intelMac ? buildIntelMacUpdateInfo(info) : info)
+    return resolveUpdateDiskShortfall(refreshFreeDiskBytes, requiredUpdateDiskBytes(packageBytes))
+  }
+
   const adoptReleaseGuard = (guard: ReleaseGuard) => {
     // 某条线路、某个 CDN 节点给了一份比手上旧的状态文件：撤回名单和放量不跟着它退回去（#1157 第 10 条）。
     if (isOlderReleaseGuard(guard, releaseGuard)) return
@@ -1252,10 +1335,14 @@ export function createUpdaterService(
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
-    // 开发态装不了更新，拦下来只会把人困住。
-    const required = enabled && !development
-      ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
-      : null
+    // 最低版本同样只认读成功的那份：下载新版本时这一次读超时，那层「必须更新」就整层收起，下一次读到又盖回来，
+    // 客户以为没事了接着用（RC-01）。只在读到了、文件里确实撤掉了才放人。这份只在这次运行里沿用、不记到本地：
+    // 撤掉强制更新以后，重开软件还读不到文件的电脑不能一直被拦着。开发态装不了更新，拦下来只会把人困住。
+    const required = !status
+      ? minimumRequired
+      : enabled && !development
+        ? resolveRequiredVersion(runtime.currentVersion, resolveMinimumVersionFor(status, releasePlatforms))
+        : null
     const previouslyRequired = minimumRequired
     minimumRequired = required
     // 快照里的 requiredVersion 由 emit 按 minimumRequired 重算，这里只判断要不要发一次。
@@ -1293,6 +1380,43 @@ export function createUpdaterService(
   const clearInstallWatchdog = () => {
     if (installWatchdogTimer) clearTimeout(installWatchdogTimer)
     installWatchdogTimer = null
+  }
+
+  const clearDownloadRetry = () => {
+    if (downloadRetryTimer) clearTimeout(downloadRetryTimer)
+    downloadRetryTimer = null
+    downloadRetry = null
+  }
+
+  // 后台下载没下成、自动更新开着、失败的又是网络那头的事：隔一会儿自己再查一次、再下一次，不等三小时（深查 Z-3）。
+  // 补试里那次检查没查成照样接着排；别的检查没查成不在这里起头，那是三小时那一轮自己的事。已经排着一次的不再排，
+  // 客户自己点重新下载、三小时那次碰巧在这中间失败，都不多用掉一次补试。
+  const scheduleDownloadRetry = (error: unknown, failedStep: 'check' | 'download') => {
+    const version = snapshot.availableVersion
+    if (disposed || downloadRetryTimer || !version || snapshot.phase !== 'error' || !autoDownload()) return
+    if (failedStep === 'check' && downloadRetry?.version !== version) return
+    if (!isTransientDownloadFailure(error)) return
+    const attempts = downloadRetry?.version === version ? downloadRetry.attempts : 0
+    const delayMs = resolveDownloadRetryDelay(attempts)
+    if (delayMs === null) return
+    downloadRetry = { version, attempts: attempts + 1 }
+    downloadRetryTimer = setTimeout(runDownloadRetry, delayMs)
+    downloadRetryTimer.unref?.()
+    try {
+      runtime.downloadRetryScheduled?.({ version, attempt: attempts + 1, delayMs, failedStep })
+    } catch {
+      // 记日志失败不影响排好的这次补试。
+    }
+  }
+
+  // 到点时还是那次失败的局面才动手：这段时间里客户自己点过重新下载、三小时那次接着查过下过、版本被撤回、
+  // 自动更新关了，都不再插手。走的是和三小时那次一样的路：先对一次更新目录（撤回、放量、线路照旧过一遍），
+  // 有可下的再下。
+  function runDownloadRetry(): void {
+    downloadRetryTimer = null
+    if (disposed || snapshot.phase !== 'error' || !autoDownload()) return
+    if (!downloadRetry || snapshot.availableVersion !== downloadRetry.version) return
+    void scheduledCheck().catch((error: unknown) => runtime.reportBackgroundError?.(error))
   }
 
   const reportInstallFailure = (error: unknown) => {
@@ -1418,6 +1542,7 @@ export function createUpdaterService(
   // 都写着安装由你确认。「自动更新」开着时也不在这里装，而是由主进程等到用户退出、
   // 或下次一打开时再装（auto-update-install.ts），同样不打断正在用的人。
   const acceptDownloadedUpdate = (info: UpdateInfo) => {
+    clearDownloadRetry()
     // 下载途中被撤回的版本：下好了也不留，免得用户一点「重启安装」装上它。
     if (isWithdrawn(info.version)) {
       withdrawOffer()
@@ -1435,6 +1560,8 @@ export function createUpdaterService(
     clearInstallWatchdog()
     installRequested = false
     verifiedPackagePath = null
+    // 核对不过不是网络的事，排着的补试也不再跑：同一次运行里再下多半拿回的还是这一份。
+    clearDownloadRetry()
     emit({
       phase: 'error',
       checkedAt: now().toISOString(),
@@ -1523,6 +1650,15 @@ export function createUpdaterService(
       if (probingDownloaded()) {
         // 一样新（多半就是手里这份）、比它旧的都不换。比它新的顶掉它：旧的那份不再装，下面照找到新版本那样落进快照。
         if (!mayReplaceDownloaded() || !isOlderVersion(snapshot.availableVersion ?? '', info.version)) return
+        const shortfall = supersedeShortfall(info)
+        if (shortfall) {
+          try {
+            runtime.diskShortfallSkipped?.(shortfall, info.version)
+          } catch {
+            // 记日志失败不影响留着手里那份。
+          }
+          return
+        }
         const replaced = snapshot.availableVersion
         verifiedPackagePath = null
         try {
@@ -1769,6 +1905,7 @@ export function createUpdaterService(
       failedStep: 'check',
       progress: null,
     })
+    scheduleDownloadRetry(error, 'check')
   }
 
   const check = async (options: UpdateCheckOptions = {}): Promise<UpdateSnapshot> => {
@@ -1819,18 +1956,20 @@ export function createUpdaterService(
     return cloneSnapshot(snapshot)
   }
 
-  // 下载前先量一下盘。量不出来就当够：这一步只为省掉注定失败的下载，不能自己
-  // 变成更新下不来的原因。
-  const measureShortfall = async (): Promise<UpdateDiskShortfall | null> => {
+  // 量不出来就是 null，当够：量盘只为省掉注定失败的下载，不能自己变成更新下不来的原因。
+  const readFreeDiskBytes = async (): Promise<number | null> => {
     if (!runtime.readFreeDiskBytes) return null
-    let freeBytes: number | null
     try {
-      freeBytes = await runtime.readFreeDiskBytes()
+      return await runtime.readFreeDiskBytes()
     } catch {
       return null
     }
-    return resolveUpdateDiskShortfall(freeBytes, requiredUpdateDiskBytes(offeredPackageBytes))
   }
+
+  // 下载前先量一下盘。
+  const measureShortfall = async (): Promise<UpdateDiskShortfall | null> => (
+    resolveUpdateDiskShortfall(await readFreeDiskBytes(), requiredUpdateDiskBytes(offeredPackageBytes))
+  )
 
   // 下载停住时快照里一直是停住前那个速度。还在报进度时不动它（免得多发快照）；停了一拍
   // 以上，按「这段时间没进账」重算：10 秒没进账速度就是 0，界面只留「已下载多少」。
@@ -2048,9 +2187,11 @@ export function createUpdaterService(
         } catch (retryError) {
           if (retryError instanceof UpdateDownloadStalled) noteDownloadStall(retryError, false)
           emit({ phase: 'error', error: downloadFailure(retryError), failedStep: 'download', progress: null })
+          scheduleDownloadRetry(retryError, 'download')
         }
       } else {
         emit({ phase: 'error', error: downloadFailure(error), failedStep: 'download', progress: null })
+        scheduleDownloadRetry(error, 'download')
       }
     }
     return cloneSnapshot(snapshot)
@@ -2077,11 +2218,18 @@ export function createUpdaterService(
       // 状态文件刚说手里这一版撤回了，withdrawOffer 已经把它收回：下面照平常那样查一次，换下替它的那一版。
       if (currentPhase() !== 'downloaded') withdrawn = true
       else if (mayReplaceDownloaded()) {
-        client.allowDowngrade = isWithdrawn(runtime.currentVersion)
-        await checkWithFallback(() => undefined)
+        // 查到更新的版本时要当场决定换不换（见 supersedeShortfall），事件处理里等不了量盘，先量好。
+        refreshFreeDiskBytes = await readFreeDiskBytes()
+        if (disposed) return cloneSnapshot(snapshot)
+        if (currentPhase() !== 'downloaded') withdrawn = true
+        else if (mayReplaceDownloaded()) {
+          client.allowDowngrade = isWithdrawn(runtime.currentVersion)
+          await checkWithFallback(() => undefined)
+        }
       }
     } finally {
       refreshingDownloaded = false
+      refreshFreeDiskBytes = null
     }
     return withdrawn ? check() : cloneSnapshot(snapshot)
   }
@@ -2197,6 +2345,7 @@ export function createUpdaterService(
       disposed = true
       listeners.clear()
       clearInstallWatchdog()
+      clearDownloadRetry()
       downloadWatch?.stop()
       checkWatch?.stop()
       for (const [event, handler] of Object.entries(eventHandlers)) {

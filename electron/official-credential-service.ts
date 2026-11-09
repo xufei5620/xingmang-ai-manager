@@ -10,10 +10,12 @@ import {
   forgetStaleGeminiUsageStatisticsRecord,
   moveClaudeConsoleKeyAside,
   type NativeConfigInspection,
+  readStoredCodexRelayModel,
   restoreClaudeConsoleKey,
   switchProviderToOfficialAccount,
 } from './config-files'
 import { errorCodeClause } from './failure-wording'
+import { relayProviderBaseUrlMatches, type RelaySite } from './relay-sites'
 import type { ConfigSavePayload } from './system-service'
 import type { ServiceContext } from './system-service-context'
 import type { ToolConfigOwnership } from './tool-config-ownership'
@@ -59,6 +61,20 @@ export function restoredAccountSide(
   if (!restored.exists || restored.hasApiKey || restored.actualBaseUrl) return null
   if (provider === 'grok' && !restored.grokLoginMode) return null
   return 'official'
+}
+
+/**
+ * 切回官方账号前，配置接着的是不是当前账号这个站（哪条线路都算），是的话交出那时的型号记下来（0.2.24 深查
+ * 「反复切换」N5）。别家中转、已经是官方的（重置官方配置）返回 null：那不是客户在当前账号上选的型号。
+ */
+export function relayModelBeforeOfficialSwitch(
+  provider: ProviderId,
+  current: Pick<NativeConfigInspection, 'actualBaseUrl' | 'model'>,
+  site: Pick<RelaySite, 'providerBaseUrls'>,
+): string | null {
+  const model = current.model.trim()
+  if (!model || !current.actualBaseUrl) return null
+  return relayProviderBaseUrlMatches(provider, current.actualBaseUrl, site.providerBaseUrls[provider]) ? model : null
 }
 
 export function createOfficialCredentialService(context: ServiceContext) {
@@ -211,7 +227,9 @@ export function createOfficialCredentialService(context: ServiceContext) {
 
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     return serializeConfigWrite(async () => {
-      const activeSite = providerRelaySite(provider, inspectNativeProviderConfig(provider), true)
+      const current = inspectNativeProviderConfig(provider)
+      const activeSite = providerRelaySite(provider, current, true)
+      const relayModel = relayModelBeforeOfficialSwitch(provider, current, activeSite)
       // 与 saveConfig 对称：先放回官方 Key，放不回就不切；切换失败再把 Key 挪开。
       const restoredConsoleKey = provider === 'claude' && restoreOfficialCredentialsNow()
       let result: ReturnType<typeof switchProviderToOfficialAccount>
@@ -222,9 +240,36 @@ export function createOfficialCredentialService(context: ServiceContext) {
         throw error
       }
       await store.setOfficialProvider(provider, true)
+      if (relayModel) await rememberRelayModel(provider, relayModel)
       if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
       return result
     })
+  }
+
+  // 配置已经切过去了：记不下只是以后切回来要重挑型号，不能为它把这次切换说成失败（失败会整份回滚）。
+  async function rememberRelayModel(provider: ProviderId, model: string): Promise<void> {
+    try {
+      await store.update({ version: 2, relayModelsBeforeOfficial: { [provider]: model } })
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'official-switch.relay-model-unsaved', '已切回官方账号，但没记下原来选的型号，下次改用当前账号时会重新挑', {
+        provider, reason: credentialFailureReason(error),
+      })
+    }
+  }
+
+  /**
+   * 「改用当前账号」时配置里已经没有当前账号那份了（切回过官方），拿哪个当原来的型号：切回官方前记下的；
+   * 没记过的 Codex 再看星芒存的那份当前账号配置。都没有是 null，照旧挑默认。
+   */
+  function relayModelBeforeOfficial(provider: ProviderId): string | null {
+    const remembered = store.read().relayModelsBeforeOfficial?.[provider]
+    if (remembered) return remembered
+    if (provider !== 'codex') return null
+    try {
+      return readStoredCodexRelayModel(providerRoots)
+    } catch {
+      return null
+    }
   }
 
   async function applyXingmangAiSkillForCodexAccount(official: boolean): Promise<void> {
@@ -240,5 +285,5 @@ export function createOfficialCredentialService(context: ServiceContext) {
     }
   }
 
-  return { restoreOfficialCredentialsNow, moveOfficialCredentialsAside, withCredentialUndo, applyXingmangAiSkillForCodexAccount, switchToOfficialAccount, adoptRestoredConfig, setOfficialSourcePreference, alignRestoredAccountSource, restoreOfficialCredentials }
+  return { restoreOfficialCredentialsNow, moveOfficialCredentialsAside, withCredentialUndo, applyXingmangAiSkillForCodexAccount, switchToOfficialAccount, relayModelBeforeOfficial, adoptRestoredConfig, setOfficialSourcePreference, alignRestoredAccountSource, restoreOfficialCredentials }
 }

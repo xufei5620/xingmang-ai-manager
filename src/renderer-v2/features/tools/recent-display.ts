@@ -8,11 +8,13 @@ type SessionSummary = MultiProviderSessionPage['items'][number]
 /**
  * 首页「最近」右边那一格的时间。以前只写「14:05」，三天前的对话看着像今天的，
  * 所以按本机日历写清是哪天（写法见 formatCalendarTime）。
- * updatedAt 是秒；now 是毫秒，方便测试注入。
+ * updatedAt 和 now 都是毫秒：主进程给的记录时间本来就是毫秒（provider-sessions.ts 的
+ * timestampMilliseconds / statTimestamp）。以前这里当成秒又乘了 1000，算出来是几万年后，
+ * 首页「上次」和「接着上次」于是永远写「今天」，钟点也不对。
  */
 export function formatRecentTime(updatedAt: number | null, now: number): string {
   if (updatedAt === null || !Number.isFinite(updatedAt)) return '时间未记录'
-  return formatCalendarTime(updatedAt * 1000, now) ?? '时间未记录'
+  return formatCalendarTime(updatedAt, now) ?? '时间未记录'
 }
 
 /** 这条记录是哪个工具的，用的是工具行上同一个名字。 */

@@ -171,13 +171,40 @@ describe('migrateLegacyAiOutput', () => {
 
     expect(result).toEqual({ moved: 2, kept: 0, failed: 0 })
     expect(listFiles(from)).toEqual([])
-    const items = readMetadata(path.join(to, 'user-1', 'asset-metadata.json'))
-    expect(items).toEqual([
-      { assetId: assetD, source: 'generated', prompt: '一条狗', updatedAt: '2026-09-23T08:00:00.000Z' },
-      { assetId: assetC, displayName: '旧名字', tags: ['新'], updatedAt: '2026-09-23T09:00:00.000Z' },
-      { assetId: assetA, favorite: true, tags: ['海报'], source: 'generated', prompt: '一只猫', updatedAt: '2026-09-01T08:00:00.000Z' },
-      { assetId: assetB, deletedAt: '2026-09-02T08:00:00.000Z', updatedAt: '2026-09-02T08:00:00.000Z' },
+    await expect(new AiAssetMetadataStore({ outputRoot: to }).getAll(1)).resolves.toEqual({
+      [assetD]: { source: 'generated', prompt: '一条狗', updatedAt: '2026-09-23T08:00:00.000Z' },
+      [assetC]: { displayName: '旧名字', tags: ['新'], updatedAt: '2026-09-23T09:00:00.000Z' },
+      [assetA]: { favorite: true, tags: ['海报'], source: 'generated', prompt: '一只猫', updatedAt: '2026-09-01T08:00:00.000Z' },
+      [assetB]: { deletedAt: '2026-09-02T08:00:00.000Z', updatedAt: '2026-09-02T08:00:00.000Z' },
+    })
+    // The new folder's own single file went into its shards and was kept aside.
+    expect(listFiles(to).filter((name) => name.startsWith('user-1/asset-metadata.json'))).toEqual([
+      expect.stringMatching(/^user-1\/asset-metadata\.json\.migrated-\d+-[0-9a-f-]+\.bak$/),
     ])
+  })
+
+  it('merges shard folders record by record when both folders have one', async () => {
+    const root = temporaryDirectory()
+    const from = path.join(root, 'output')
+    const to = path.join(root, 'XingmangAI')
+    const old = new AiAssetMetadataStore({ outputRoot: from, now: () => new Date('2026-11-01T08:00:00.000Z') })
+    await old.setSource(1, assetA, 'generated', '一只猫')
+    await old.softDelete(1, assetB)
+    writeFile(path.join(from, 'user-1', 'asset-metadata', 'shard-0.json.corrupt-1-x.bak'), 'kept bytes')
+    const current = new AiAssetMetadataStore({ outputRoot: to, now: () => new Date('2026-11-02T08:00:00.000Z') })
+    await current.updatePreferences(1, assetC, { favorite: true })
+    await current.rename(1, assetA, '新名字')
+
+    const result = await migrateLegacyAiOutput(from, to, { mergeMetadata: (userId, content) => current.mergeLegacy(userId, content) })
+
+    expect(result.failed).toBe(0)
+    expect(listFiles(from)).toEqual([])
+    await expect(current.getAll(1)).resolves.toEqual({
+      [assetA]: { displayName: '新名字', source: 'generated', prompt: '一只猫', updatedAt: '2026-11-02T08:00:00.000Z' },
+      [assetB]: { deletedAt: '2026-11-01T08:00:00.000Z', updatedAt: '2026-11-01T08:00:00.000Z' },
+      [assetC]: { favorite: true, updatedAt: '2026-11-02T08:00:00.000Z' },
+    })
+    expect(fs.readFileSync(path.join(to, 'user-1', 'asset-metadata', 'shard-0.json.corrupt-1-x.bak'), 'utf8')).toBe('kept bytes')
   })
 
   it('hands the metadata to the live store so writes made during the move are kept', async () => {
@@ -215,9 +242,9 @@ describe('migrateLegacyAiOutput', () => {
 
     expect(result).toEqual({ moved: 0, kept: 0, failed: 1 })
     expect(fs.readFileSync(path.join(from, 'user-1', 'asset-metadata.json'), 'utf8')).toBe('not json')
-    expect(readMetadata(path.join(to, 'user-1', 'asset-metadata.json'))).toEqual([
-      { assetId: assetD, favorite: true, updatedAt: '2026-09-23T08:00:00.000Z' },
-    ])
+    await expect(new AiAssetMetadataStore({ outputRoot: to }).getAll(1)).resolves.toEqual({
+      [assetD]: { favorite: true, updatedAt: '2026-09-23T08:00:00.000Z' },
+    })
   })
 
   it('keeps the old metadata when the merged state cannot be written', async () => {

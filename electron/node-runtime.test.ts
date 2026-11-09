@@ -4,17 +4,15 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError } from './command-runner'
+import { downloadCeilingMs } from './download-retry'
 import {
   buildNodeRuntimeElevatedInstallScript,
   buildNodeRuntimeInstallPlan,
   buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
-  createNodeDownloadDeadline,
   downloadNodeRuntimePackage,
   fetchTrustedNodeResource,
   installNodeRuntime,
-  nodeDownloadCeilingMs,
-  nodeDownloadStallTimeoutMs,
   nodeRuntimeDownloadSources,
   nodeRuntimeTriesWingetFirst,
   normalizeNodeRuntimeArchitecture,
@@ -839,61 +837,6 @@ describe('Node.js package download deadline', () => {
     vi.useRealTimers()
   })
 
-  it('keeps a download that is still receiving bytes alive past the old ten-minute limit', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    for (let minute = 1; minute <= 20; minute += 1) {
-      await vi.advanceTimersByTimeAsync(60_000)
-      deadline.progressed(minute * 1024)
-    }
-    expect(expire).not.toHaveBeenCalled()
-    deadline.stop()
-  })
-
-  it('ends the download once no new bytes have arrived for the stall window', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    await vi.advanceTimersByTimeAsync(60_000)
-    deadline.progressed(4096)
-    // 字节数没变（续传前后报的同一个数）不算进展。
-    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs - 1_000)
-    deadline.progressed(4096)
-    expect(expire).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(expire).toHaveBeenCalledTimes(1)
-    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
-  })
-
-  it('still ends a download that trickles forever at the ceiling', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    let transferred = 0
-    for (let elapsed = 30_000; elapsed < nodeDownloadCeilingMs; elapsed += 30_000) {
-      await vi.advanceTimersByTimeAsync(30_000)
-      transferred += 1
-      deadline.progressed(transferred)
-    }
-    expect(expire).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(expire).toHaveBeenCalledTimes(1)
-    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
-    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs)
-    expect(expire).toHaveBeenCalledTimes(1)
-  })
-
-  it('does nothing once the download has finished', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    deadline.stop()
-    deadline.progressed(1)
-    await vi.advanceTimersByTimeAsync(nodeDownloadCeilingMs * 2)
-    expect(expire).not.toHaveBeenCalled()
-  })
-
   describe('through the real download', () => {
     const chunkBytes = 64 * 1024
     const chunkEveryMs = 40_000
@@ -985,7 +928,7 @@ describe('Node.js package download deadline', () => {
           nodeRuntimeDownloadSources('outside-mainland-china')[0],
           async () => undefined,
         ), () => received)).rejects.toThrow('安装包下载超时')
-        expect(Date.now() - startedAt).toBe(nodeDownloadCeilingMs)
+        expect(Date.now() - startedAt).toBe(downloadCeilingMs)
         expect(received).toBeGreaterThan(0)
         expect(fs.existsSync(target)).toBe(false)
       } finally {

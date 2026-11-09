@@ -1,4 +1,5 @@
 import {
+  ADTS,
   AudioSample,
   AudioSampleSink,
   AudioSampleSource,
@@ -8,23 +9,28 @@ import {
   CanvasSource,
   canEncodeAudio,
   canEncodeVideo,
+  FLAC,
   Input,
   MATROSKA,
+  MP3,
   MP4,
   Mp4OutputFormat,
+  OGG,
   Output,
   QTFF,
   QUALITY_HIGH,
+  WAVE,
   WEBM,
   type InputAudioTrack,
   type InputVideoTrack,
   type WrappedCanvas,
 } from 'mediabunny'
 import { layoutVideoStudioCaption, paintVideoStudioCaption, videoStudioCaptionFont } from './captions'
-import type { VideoStudioComposeProgress, VideoStudioComposeRequest, VideoStudioComposeResult, VideoStudioComposeStage } from './compose-protocol'
+import { videoStudioMusicUnreadableMessage, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult, type VideoStudioComposeStage } from './compose-protocol'
 import { chooseVideoStudioEncoding, type VideoStudioEncodeProbe } from './encoding'
-import { throwIfVideoStudioAborted, VideoStudioError } from './errors'
-import { createVideoStudioPcmAssembler, type VideoStudioPcmAssembler, type VideoStudioPcmChunk } from './pcm'
+import { isVideoStudioAbort, throwIfVideoStudioAborted, VideoStudioError } from './errors'
+import { createVideoStudioMusicMixer, type VideoStudioMusicMixer, type VideoStudioMusicSource } from './music'
+import { createVideoStudioPcmAssembler, type VideoStudioDecodedAudio, type VideoStudioPcmAssembler, type VideoStudioPcmChunk } from './pcm'
 import {
   buildVideoStudioRenderPlan,
   videoStudioAudioChannels,
@@ -57,6 +63,17 @@ const stageWeights: Record<VideoStudioComposeStage, [number, number]> = {
   finishing: [0.95, 1],
 }
 const readableFormats = [MP4, QTFF, WEBM, MATROSKA]
+// 配乐是客户自己电脑里的歌：MP3、M4A（MP4 容器）、WAV、OGG，顺带认 AAC 裸流和 FLAC。
+const musicFormats = [MP3, MP4, QTFF, WAVE, OGG, ADTS, FLAC]
+// 配乐收尾时淡出的长度（秒）。
+const musicFadeSeconds = 2
+
+interface ReadMusic {
+  input: Input
+  track: InputAudioTrack
+  start: number
+  duration: number
+}
 
 const mediabunnyEncodeProbe: VideoStudioEncodeProbe = {
   video(codec, size) {
@@ -98,6 +115,45 @@ async function readClip(data: ArrayBuffer, index: number): Promise<ReadClip> {
     input.dispose()
     if (error instanceof VideoStudioError) throw error
     throw new VideoStudioError(`${label}不是能读的视频文件（支持 MP4、MOV、WebM）`)
+  }
+}
+
+async function readMusic(data: ArrayBuffer): Promise<ReadMusic> {
+  const input = new Input({ source: new BufferSource(data), formats: musicFormats })
+  try {
+    if (!await input.canRead()) throw new VideoStudioError(videoStudioMusicUnreadableMessage)
+    const track = await input.getPrimaryAudioTrack()
+    if (!track || !await track.canDecode()) throw new VideoStudioError(videoStudioMusicUnreadableMessage)
+    // 负时间的那几帧同片段一样不放（timeline.ts）。
+    const start = Math.max(0, await track.getFirstTimestamp())
+    const end = await track.computeDuration()
+    if (!Number.isFinite(end) || end <= start) throw new VideoStudioError(videoStudioMusicUnreadableMessage)
+    return { input, track, start, duration: end - start }
+  } catch {
+    input.dispose()
+    throw new VideoStudioError(videoStudioMusicUnreadableMessage)
+  }
+}
+
+function musicSource(music: ReadMusic, signal: AbortSignal | undefined): VideoStudioMusicSource {
+  return {
+    duration: music.duration,
+    async *samples() {
+      const sink = new AudioSampleSink(music.track)
+      for await (const sample of sink.samples(music.start, music.start + music.duration)) {
+        let decoded: VideoStudioDecodedAudio
+        try {
+          throwIfVideoStudioAborted(signal)
+          const data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: 'f32' }) / 4)
+          sample.copyTo(data, { planeIndex: 0, format: 'f32' })
+          decoded = { data, frameCount: sample.numberOfFrames, channelCount: sample.numberOfChannels, sampleRate: sample.sampleRate, startTime: sample.timestamp - music.start }
+        } finally {
+          // 先关掉再交出去：配乐铺满成片以后不会再往下要，挂起着的这一段不能一直占着解码器的内存。
+          sample.close()
+        }
+        yield decoded
+      }
+    },
   }
 }
 
@@ -145,9 +201,10 @@ async function addSegmentAudio(
   segment: VideoStudioSegment,
   plan: VideoStudioRenderPlan,
   assembler: VideoStudioPcmAssembler,
+  gain: number,
   signal: AbortSignal | undefined,
 ): Promise<void> {
-  if (!clip.audio) return
+  if (!clip.audio || gain <= 0) return
   const samplesPerFrame = videoStudioSamplesPerFrame(plan.frameRate)
   const windowStart = segment.firstFrame * samplesPerFrame
   const windowEnd = (segment.firstFrame + segment.frameCount) * samplesPerFrame
@@ -160,6 +217,7 @@ async function addSegmentAudio(
       throwIfVideoStudioAborted(signal)
       const data = new Float32Array(sample.allocationSize({ planeIndex: 0, format: 'f32' }) / 4)
       sample.copyTo(data, { planeIndex: 0, format: 'f32' })
+      if (gain < 1) for (let index = 0; index < data.length; index += 1) data[index] *= gain
       await assembler.add({
         data,
         frameCount: sample.numberOfFrames,
@@ -183,12 +241,18 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
   const report = createProgressReporter(hooks.onProgress)
   throwIfVideoStudioAborted(signal)
   const clips: ReadClip[] = []
+  let music: ReadMusic | null = null
   let output: Output | null = null
+  const clipGain = request.clipGain ?? 1
   try {
     for (const [index, clip] of request.clips.entries()) {
       clips.push(await readClip(clip.data, index))
       throwIfVideoStudioAborted(signal)
       report('reading', clips.length / request.clips.length)
+    }
+    if (request.music) {
+      music = await readMusic(request.music.data)
+      throwIfVideoStudioAborted(signal)
     }
     const plan = buildVideoStudioRenderPlan(clips.map((clip, index) => ({
       start: clip.start,
@@ -199,7 +263,7 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
     })), request.options)
     const encoding = await chooseVideoStudioEncoding(
       { width: plan.width, height: plan.height, frameRate: plan.frameRate, sampleRate: videoStudioAudioSampleRate, numberOfChannels: videoStudioAudioChannels },
-      clips.some((clip) => clip.audio),
+      Boolean(music) || (clipGain > 0 && clips.some((clip) => clip.audio)),
       hooks.probe ?? mediabunnyEncodeProbe,
       request.encoding,
     )
@@ -216,11 +280,30 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
     if (audioSource) output.addAudioTrack(audioSource)
     await output.start()
 
+    const totalAudioFrames = plan.frameCount * videoStudioSamplesPerFrame(plan.frameRate)
+    const mixer: VideoStudioMusicMixer | null = music && request.music
+      ? createVideoStudioMusicMixer(musicSource(music, signal), {
+        sampleRate: videoStudioAudioSampleRate,
+        chunkFrames: videoStudioAudioSampleRate,
+        totalFrames: totalAudioFrames,
+        gain: request.music.gain,
+        fadeFrames: musicFadeSeconds * videoStudioAudioSampleRate,
+      })
+      : null
     const assembler = audioSource
       ? createVideoStudioPcmAssembler({
         sampleRate: videoStudioAudioSampleRate,
         chunkFrames: videoStudioAudioSampleRate,
         async emit(chunk: VideoStudioPcmChunk) {
+          if (mixer) {
+            try {
+              await mixer.mixInto(chunk)
+            } catch (error) {
+              // 歌开头读得出、解到中间坏了：报那一句「这首歌读不出来」，别笼统地说拼片出错。
+              if (isVideoStudioAbort(error)) throw error
+              throw new VideoStudioError(videoStudioMusicUnreadableMessage)
+            }
+          }
           const sample = new AudioSample({
             data: chunk.data,
             format: 'f32',
@@ -245,9 +328,9 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
         report('rendering', framesDone / plan.frameCount)
       }, signal)
       // 一段画面接着这一段的声音，两条轨在复用器里始终只差十几秒，不会一条跑到另一条前面太远。
-      if (assembler) await addSegmentAudio(clip, segment, plan, assembler, signal)
+      if (assembler) await addSegmentAudio(clip, segment, plan, assembler, clipGain, signal)
     }
-    if (assembler) await assembler.finish(plan.frameCount * videoStudioSamplesPerFrame(plan.frameRate))
+    if (assembler) await assembler.finish(totalAudioFrames)
 
     report('finishing', 0)
     throwIfVideoStudioAborted(signal)
@@ -262,5 +345,6 @@ export async function composeVideoStudio(request: VideoStudioComposeRequest, hoo
     throw error
   } finally {
     for (const clip of clips) clip.input.dispose()
+    music?.input.dispose()
   }
 }

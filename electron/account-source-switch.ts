@@ -89,6 +89,19 @@ export function judgeSwitchCheck(check: Pick<ConnectionCheckResult, 'ok' | 'laye
   return rollbackLayers.has(check.layer) ? 'rollback' : 'unverified'
 }
 
+/**
+ * 「改用当前账号」时拿哪个当原来的型号（0.2.24 深查「反复切换」N5）。配置本来就接着当前账号这个站（来源是
+ * 手填的、别的账号的）就用它现在的型号；不是（多半切回过官方）才去取切回官方前记下的那个。都没有 = undefined，
+ * 照旧挑默认。这只是「原来的型号」：账号不再列它时，签发那边照旧按系列和默认挑（resolveDefaultCliModel）。
+ */
+export function accountSourcePreferredModel(
+  current: { matchesRelay: boolean; model: string } | undefined,
+  rememberedRelayModel: () => string | null | undefined,
+): string | undefined {
+  const model = current?.matchesRelay ? current.model.trim() : ''
+  return model || rememberedRelayModel()?.trim() || undefined
+}
+
 export function shouldRollBackAfterCheck(check: Pick<ConnectionCheckResult, 'ok' | 'layer' | 'status'>): boolean {
   return judgeSwitchCheck(check) === 'rollback'
 }

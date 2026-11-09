@@ -12,13 +12,17 @@ import {
   createVideoStudioProject,
   defaultVideoStudioSettings,
   moveVideoStudioShot,
+  removeVideoStudioMusic,
   removeVideoStudioShot,
   removeVideoStudioShotImage,
   restoreVideoStudioProject,
   serializeVideoStudioProject,
+  setVideoStudioClipSound,
+  setVideoStudioMusic,
   settleVideoStudioModels,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  videoStudioComposeSound,
   videoStudioPlainText,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
@@ -279,5 +283,55 @@ describe('video studio project', () => {
       shots: [{ id: 'x', prompt: '一', caption: '', image: { assetId: '../../secret', url: 'https://evil.example/a.png' } }, { id: 'y', prompt: '二', caption: '', image: 'p'.repeat(43) }],
     })
     expect(tampered?.shots.map((shot) => shot.image)).toEqual([undefined, undefined])
+  })
+
+  it('starts a song with the clip sound turned down, keeps that choice on a new song and lets go of the film it no longer matches', () => {
+    const film = { ...planned(), exported: clip('f') }
+    expect(videoStudioComposeSound(film)).toEqual({})
+    const song = { assetId: 'm'.repeat(43), name: '晴天', durationSeconds: 269 }
+    const withSong = setVideoStudioMusic(film, song)
+    expect(withSong.music).toEqual({ ...song, clipSound: 'quiet' })
+    expect(withSong.exported).toBeUndefined()
+    expect(videoStudioComposeSound(withSong)).toEqual({ music: { assetId: 'm'.repeat(43), gain: 0.7 }, clipGain: 0.3 })
+
+    const off = setVideoStudioClipSound(withSong, 'off')
+    expect(videoStudioComposeSound(off)).toEqual({ music: { assetId: 'm'.repeat(43), gain: 0.9 }, clipGain: 0 })
+    expect(videoStudioComposeSound(setVideoStudioClipSound(off, 'normal'))).toEqual({ music: { assetId: 'm'.repeat(43), gain: 0.3 }, clipGain: 1 })
+    expect(setVideoStudioMusic(off, { assetId: 'n'.repeat(43), name: '七里香' }).music).toEqual({ assetId: 'n'.repeat(43), name: '七里香', clipSound: 'off' })
+
+    // Nothing to change leaves the film in place.
+    const stored = { ...off, exported: clip('f') }
+    expect(setVideoStudioClipSound(stored, 'off')).toBe(stored)
+    expect(setVideoStudioClipSound(film, 'off')).toBe(film)
+    expect(removeVideoStudioMusic(film)).toBe(film)
+    expect(removeVideoStudioMusic(stored)).toEqual({ ...stored, music: undefined, exported: undefined })
+  })
+
+  it('changes the compose key with the song and how loud the clips play under it', () => {
+    const project = planned()
+    const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('abc'[index]), status: 'done' })) }
+    const withSong = setVideoStudioMusic(done, { assetId: 'm'.repeat(43), name: '晴天' })
+    const key = videoStudioComposeKey(withSong)
+    expect(videoStudioComposeKey(done)).not.toBe(key)
+    expect(videoStudioComposeKey({ ...withSong, music: { ...withSong.music!, name: '改了名' } })).toBe(key)
+    expect(videoStudioComposeKey(setVideoStudioClipSound(withSong, 'off'))).not.toBe(key)
+    expect(videoStudioComposeKey(setVideoStudioMusic(withSong, { assetId: 'n'.repeat(43), name: '晴天' }))).not.toBe(key)
+  })
+
+  it('stores the chosen song by id and reads back only a song it can trust', () => {
+    const withSong = setVideoStudioClipSound(setVideoStudioMusic(planned(), { assetId: 'm'.repeat(43), name: '晴天', durationSeconds: 269 }), 'normal')
+    const stored = JSON.parse(JSON.stringify(serializeVideoStudioProject(withSong)))
+    expect(stored.music).toEqual({ assetId: 'm'.repeat(43), name: '晴天', durationSeconds: 269, clipSound: 'normal' })
+    expect(restoreVideoStudioProject(stored)?.music).toEqual(withSong.music)
+    expect(restoreVideoStudioProject(serializeVideoStudioProject(planned()))?.music).toBeUndefined()
+
+    function restoredMusic(music: unknown) {
+      return restoreVideoStudioProject({ version: 1, settings: defaultVideoStudioSettings(), title: '', shots: [], music })?.music
+    }
+    expect(restoredMusic({ assetId: '../../secret', name: '晴天', clipSound: 'quiet' })).toBeUndefined()
+    expect(restoredMusic({ assetId: 'm'.repeat(43), name: '\u0007 ', clipSound: 'quiet' })).toBeUndefined()
+    expect(restoredMusic('m'.repeat(43))).toBeUndefined()
+    expect(restoredMusic({ assetId: 'm'.repeat(43), name: `晴\n天${'长'.repeat(200)}`, durationSeconds: -3, clipSound: 'loud' }))
+      .toEqual({ assetId: 'm'.repeat(43), name: `晴 天${'长'.repeat(77)}`, clipSound: 'quiet' })
   })
 })

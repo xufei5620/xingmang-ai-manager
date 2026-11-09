@@ -18,6 +18,7 @@ import { createAccountWorkGate, type QueuedAccountWork } from './account-work-ga
 import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { DEFAULT_CODEX_MODEL } from './cli-model-defaults'
 import { createManagedKeyReplacementStore, managedKeyReplacementUnreadableRevokeMessage, type ManagedKeyReplacementStore } from './managed-key-replacement-store'
 import { externalUrlBlockedErrorName, isExternalUrlBlockedError } from './external-url-blocked'
 import { XINGMANG_AI_SKILL_KEY_NAME, XINGMANG_IMAGE_MCP_NO_NODE_WARNING, resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
@@ -25,6 +26,7 @@ import { noteRequestDiagnostics } from './request-diagnostics'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiStoredAudioAsset } from './ai-audio-asset-store'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -66,6 +68,7 @@ import { registerIpcHandlers } from './ipc'
 import { accelerationStateLogKey } from './ipc/handler-log'
 import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseNodeRuntimeInstallRequest, parseUpdateDownloadOptions } from './ipc/parsers/system'
 import { parseRunningToolsProviders } from './ipc/parsers/tools'
+import { videoStudioMusicName } from './ipc/handlers/ai-video'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 
 const stubStoredConfig: AppSettings = {
@@ -1173,6 +1176,27 @@ describe('registerIpcHandlers', () => {
     dispose()
   })
 
+  it('hands the chat page answer to a quit that asked for one, and only from the app itself', () => {
+    const chatHistoryFlush = { acknowledge: vi.fn() }
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { chatHistoryFlush })
+    const flushed = electronMocks.handlers.get('chat-history:flushed')!
+
+    expect(() => flushed(trustedEvent('https://attacker.example/', 9), 'request-1')).toThrow('已拒绝来自非应用页面的操作请求')
+    expect(() => flushed(trustedEvent(), 7)).toThrow()
+    expect(() => flushed(trustedEvent(), 'x'.repeat(161))).toThrow()
+    expect(chatHistoryFlush.acknowledge).not.toHaveBeenCalled()
+
+    expect(flushed(trustedEvent(), 'request-1')).toBeUndefined()
+    expect(chatHistoryFlush.acknowledge).toHaveBeenCalledWith('request-1')
+    dispose()
+  })
+
+  it('accepts the chat page answer without anything waiting for it', () => {
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+    expect(electronMocks.handlers.get('chat-history:flushed')!(trustedEvent(), 'request-1')).toBeUndefined()
+    dispose()
+  })
+
   describe('video channels', () => {
     const clipId = 'C'.repeat(43)
     const imageId = 'I'.repeat(43)
@@ -1219,9 +1243,14 @@ describe('registerIpcHandlers', () => {
       await expect(generate(trustedEvent(undefined, 17), { ...input, projectId: 'p' })).rejects.toThrow('视频请求包含未知字段')
       expect(videoService.generate).not.toHaveBeenCalled()
 
-      const event = trustedEvent(undefined, 17)
+      // The page wrote this shot's request id to localStorage just before calling; it reaches disk before the paid
+      // request leaves, so a crash or power cut right after submitting cannot lose the order that was paid for.
+      const flushStorageData = vi.fn()
+      const event = { ...trustedEvent(undefined, 17), sender: { ...trustedEvent(undefined, 17).sender, session: { flushStorageData } } }
       await expect(generate(event, input)).resolves.toEqual(clip)
       expect(videoService.generate).toHaveBeenCalledWith(17, { ...input, expectedUserId: 7 }, expect.any(Object))
+      expect(flushStorageData).toHaveBeenCalledTimes(1)
+      expect(flushStorageData.mock.invocationCallOrder[0]).toBeLessThan(videoService.generate.mock.invocationCallOrder[0])
       expect(event.sender.send.mock.calls).toEqual([
         ['video:progress', { requestId: 'video-1', stage: 'processing' }],
         ['video:progress', { requestId: 'video-1', stage: 'processing', value: 42, delayed: true }],
@@ -1367,6 +1396,65 @@ describe('registerIpcHandlers', () => {
       expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
       dispose()
+    })
+
+    it('stores a song picked in the system dialog for the signed-in account and hands back only its id, name and length', async () => {
+      const songId = 'S'.repeat(43)
+      const songPath = '/home/someone/Music/夏天的风\u0007 (live).mp3'
+      const song: AiStoredAudioAsset = { assetId: songId, localUrl: `xingmang-asset://audio/${songId}`, mimeType: 'audio/mpeg', fileName: 'xingmang-song.mp3', durationSeconds: 183.4 }
+      const audioAssets = {
+        storeLocalFile: vi.fn(async (_userId: number, _sourcePath: string) => song),
+        readOwned: vi.fn(async (_userId: number, _assetId: string) => ({ asset: song, bytes: Buffer.from('ID3-bytes') })),
+      }
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { audioAssets })
+      const pick = electronMocks.handlers.get('video-studio:pick-music')!
+      const read = electronMocks.handlers.get('video-studio:read-music')!
+
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      await expect(pick(trustedEvent())).resolves.toBeNull()
+      expect(audioAssets.storeLocalFile).not.toHaveBeenCalled()
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+        title: '从电脑里选一首歌当背景音乐',
+        properties: ['openFile'],
+        filters: [{ name: '音乐', extensions: ['mp3', 'm4a', 'wav', 'ogg'] }],
+      }))
+
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
+      await expect(pick(trustedEvent())).resolves.toEqual({ assetId: songId, name: '夏天的风 (live)', durationSeconds: 183.4 })
+      expect(audioAssets.storeLocalFile).toHaveBeenCalledWith(7, songPath)
+
+      // Whatever the store says about a file it will not take, the page shows the one sentence it can act on;
+      // only a full or locked disk keeps its own words.
+      audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('不支持的音频格式'))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
+      await expect(pick(trustedEvent())).rejects.toThrow('这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）')
+      audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服'))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
+      await expect(pick(trustedEvent())).rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+
+      await expect(read(trustedEvent(), '../../secret')).rejects.toThrow('音频编号格式错误')
+      expect(audioAssets.readOwned).not.toHaveBeenCalled()
+      await expect(read(trustedEvent(), songId)).resolves.toEqual(Buffer.from('ID3-bytes'))
+      expect(audioAssets.readOwned).toHaveBeenCalledWith(7, songId)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('Music')
+      dispose()
+
+      const signedOut = { storeLocalFile: vi.fn(async (_userId: number, _sourcePath: string) => song), readOwned: vi.fn(async (_userId: number, _assetId: string) => ({ asset: song, bytes: Buffer.alloc(0) })) }
+      const second = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(null), undefined, undefined, {}, { audioAssets: signedOut })
+      await expect(electronMocks.handlers.get('video-studio:pick-music')!(trustedEvent())).rejects.toThrow('请先登录星芒账号')
+      await expect(electronMocks.handlers.get('video-studio:read-music')!(trustedEvent(), songId)).rejects.toThrow('请先登录星芒账号')
+      expect(signedOut.storeLocalFile).not.toHaveBeenCalled()
+      expect(signedOut.readOwned).not.toHaveBeenCalled()
+      second.dispose()
+    })
+
+    it('names a picked song after its file, without the extension, control characters or runaway length', () => {
+      expect(videoStudioMusicName(path.join(os.tmpdir(), 'Music', '晴天.MP3'))).toBe('晴天')
+      expect(videoStudioMusicName('/music/a.b.c.ogg')).toBe('a.b.c')
+      expect(videoStudioMusicName('/music/ \t tab\nsong .wav')).toBe('tab song')
+      expect(videoStudioMusicName('/music/.m4a')).toBe('.m4a')
+      expect(videoStudioMusicName('/music/\u0007.mp3')).toBe('.mp3')
+      expect(videoStudioMusicName(`/music/${'歌'.repeat(200)}.mp3`)).toBe('歌'.repeat(80))
     })
 
     it('caps paid clip submissions per window the way the canvas does, without holding up another window', async () => {
@@ -6904,6 +6992,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         }
       })
 
+      // 0.2.24 深查「反复切换」N5：以前这里一个型号都不带，切回过官方再改用当前账号就回到默认型号。
+      it('carries the model the customer chose into the account source switch', async () => {
+        for (const [current, remembered, expected] of [
+          [{ matchesRelay: false, model: 'gpt-5.5' }, 'gpt-5.4-mini', 'gpt-5.4-mini'],
+          [{ matchesRelay: true, model: 'gpt-5.4-mini' }, 'gpt-5.6-sol', 'gpt-5.4-mini'],
+          // Nothing to go by: the default, as before.
+          [{ matchesRelay: false, model: '' }, null, DEFAULT_CODEX_MODEL],
+        ] as const) {
+          electronMocks.handlers.clear()
+          const { service } = setup(accountKey({}), undefined, true, sourceSwitchOptions())
+          vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.4-mini', 'gpt-5.6-sol', DEFAULT_CODEX_MODEL])
+          vi.mocked(service.getConfig).mockReturnValue({ workspace: 'C:\\workspace', providers: { codex: current } } as never)
+          const relayModelBeforeOfficial = vi.fn(() => remembered)
+          service.relayModelBeforeOfficial = relayModelBeforeOfficial
+
+          await expect(switchCodexToAccount()).resolves.toMatchObject({ target: 'account' })
+
+          expect(service.saveConfig).toHaveBeenCalledWith(
+            expect.objectContaining({ provider: 'codex', model: expected }), false, expect.any(Function),
+            { source: 'account', automatic: false },
+          )
+          // A config already on the account site speaks for itself.
+          expect(relayModelBeforeOfficial).toHaveBeenCalledTimes(current.matchesRelay ? 0 : 1)
+        }
+      })
+
       it('does not lift a used-up key cap through the account source switch', async () => {
         const { accountService, service } = setup(accountKey({ remainQuota: 0, status: 4 }), undefined, true, sourceSwitchOptions())
         await electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 7)
@@ -8873,7 +8987,9 @@ describe('IPC channel log and account policies', () => {
       'external-clients:switch-source',
       'tools:check-models',
       // 出视频、分镜和作品库：凭据和作品都按当前账号找。
+      'video-studio:pick-music',
       'video-studio:plan',
+      'video-studio:read-music',
       'video-studio:store-export',
       'video:cancel',
       'video:generate',
@@ -8920,6 +9036,7 @@ describe('IPC channel log and account policies', () => {
         'account:reveal-key',
         'account:set-remembered-login',
         'account:sync-managed-cli-keys',
+        'chat-history:flushed',
         'chat-history:read',
         'chat-history:write',
         'chat:asset-menu',
@@ -8948,6 +9065,7 @@ describe('IPC channel log and account policies', () => {
         'system:scan',
         'update:get-state',
         'update:startup',
+        'video-studio:read-music',
         'video:cancel',
         'video:read-clip',
         'window:report-activity',

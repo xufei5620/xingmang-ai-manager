@@ -34,7 +34,7 @@
 # 产物进这次运行的 Actions artifact（linux-release-<架构>-<版本>），供发布者装机验收。
 # **传不传到更新目录和 GitHub Release，看仓库变量 XINGMANG_PUBLISH_LINUX**：不是
 # true（包括没建这个变量）时，publish 作业不下载 Linux 的包，客户看不到任何 Linux
-# 的东西，Linux 两个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
+# 的东西，Linux 几个作业红了也不挡 Windows / macOS。Linux 第一次对外发要产品所有者
 # 点头、先在真机上过一遍，这个变量由他自己在仓库设置里打开（docs/LINUX.md）。Linux
 # 出包不签名，出包作业不读任何 secret、不挂 environment，所以不会多出批准；两份 Linux
 # 清单和 Windows 那份一样，在 publish 作业里上传之前加发布者签名。
@@ -597,11 +597,21 @@ jobs:
   # package-for-testing 的 Linux 那半一样。跑的是 Windows 那条 release:build:unsigned
   # 里同样会跑的套件；Electron 开发目录冒烟与 ASAR 篡改校验为什么不在 Linux 上跑，见
   # scripts/run-linux-release-package.cjs。
+  #
+  # 这些套件原来全在这一个作业里串行跑，11-02 Linux 补发那次（运行 41408530433）用了
+  # 42.2 分钟，上限 45：typecheck 1.2、npm test 14.5、test:v2:browser 24.0、test:ui 1.8。
+  # 开着 Linux 时它一超时，linux-build 跳过，选「全部平台」的这一版 Windows 和 Mac 也
+  # 一起发不出去。所以 test:v2:browser 照 quality.yml 的 linux-test 那样拆开：夹具那半
+  # 两片放进 linux-renderer-v2-browser，和这个作业同时跑；这里只留它的 e2e 那半。一项
+  # 没少、没有哪项跑两遍，scripts/publish-workflow-config.test.cjs 钉住两边合起来正好是
+  # 整条 test:v2:browser。拆完这里约 22 分钟，加上 linux-build 的 3 分多钟，仍比
+  # windows-build 先完（0.2.23 那次 45.5 分钟），不拖慢发版。上限 60 留出 apt 镜像慢时
+  # 那一步最多吃掉的 13 分钟和测试往后的增长，只有真卡住时才用得上。
   linux-checks:
     needs: release-tag
     if: ${{ inputs.platforms == 'all' || inputs.platforms == 'linux' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -648,12 +658,60 @@ jobs:
       # 浏览器那半，不再整条跑 test:v2、test:canvas 把同一批文件再跑一遍。
       - run: npm test
 
-      - run: npm run test:v2:browser
+      # test:v2:browser 的 e2e 那半；夹具那半在 linux-renderer-v2-browser 的两片里。
+      - run: npm run test:v2:browser:e2e
 
       - run: npm run test:ui
 
+  # test:v2:browser 的夹具那半，和 linux-checks 同时跑（缘由见 linux-checks 上面）。
+  # 切法和 quality.yml 的 linux-renderer-v2-browser 一样，用的是同两条脚本：PR 上每天
+  # 都在跑这个切法，两片各约 10 分钟。和 linux-checks 一样不读 secret、不挂 environment。
+  # 不装 Electron：夹具套件只起 Chromium，ci-ensure-electron-binary.test.cjs 管着。
+  linux-renderer-v2-browser:
+    needs: release-tag
+    if: ${{ inputs.platforms == 'all' || inputs.platforms == 'linux' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: 1
+            script: test:v2:browser:fixture:linux:1
+          - shard: 2
+            script: test:v2:browser:fixture:linux:2
+    name: linux-renderer-v2-browser (${{ matrix.shard }})
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - run: npx --no-install playwright install chromium
+
+      - name: Install Chromium's system libraries
+        # 和 linux-checks 同一个脚本、同一个上限。
+        timeout-minutes: 13
+        run: |
+          printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
+            | sudo tee /etc/apt/apt.conf.d/99ci-network-timeouts > /dev/null
+          bash scripts/ci-install-chromium-deps.sh
+
+      # 这条工作流的 run 里不许出现 ${{ }}（P-26），脚本名绑进 env: 再读。
+      - name: Run fixture shard ${{ matrix.shard }}
+        env:
+          FIXTURE_SCRIPT: ${{ matrix.script }}
+        run: npm run "$FIXTURE_SCRIPT"
+
   linux-build:
-    needs: linux-checks
+    # 两个测试作业都要成功：任何一片失败或超时，linux-build 就跳过，publish 照样挡住。
+    needs: [linux-checks, linux-renderer-v2-browser]
     strategy:
       fail-fast: false
       matrix:
@@ -769,7 +827,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [release-tag, windows-build, macos-build, linux-checks, linux-build]
+    needs: [release-tag, windows-build, macos-build, linux-checks, linux-renderer-v2-browser, linux-build]
     # 只发一个平台时另一个作业是 skipped，而被跳过的 needs 默认会把依赖它的作业也
     # 跳过。这里显式写出「没取消、tag 已经占好、这次选了的平台都出了包、至少有一个出了包」。
     # tag 没占好时出包作业本来就全被跳过，这里再写一遍，是不让收尾那一步在没有 tag
@@ -780,10 +838,10 @@ jobs:
     # Mac（反过来也一样），那个平台的客户收不到更新（#1090 第 1 项）。哪个选项选了哪个平台，
     # 和各出包作业自己的 if 一致，由 scripts/publish-workflow-config.test.cjs 对着它们核。
     #
-    # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 两个作业
+    # Linux 只在仓库变量 XINGMANG_PUBLISH_LINUX 为 true 时算数：关着时 Linux 几个作业
     # 红了也不挡 Windows / macOS，它的包也不会被下载；只选了 linux 又关着，这个作业
     # 整个跳过，连批准都不会要。开着且这次选了 Linux 时，同样要求 linux-build 成功：
-    # linux-checks 失败或超时时 linux-build 是 skipped，也得挡住。
+    # linux-checks 或 linux-renderer-v2-browser 失败、超时时 linux-build 是 skipped，也得挡住。
     # GitHub 比较字符串不分大小写，TRUE、True 也算打开。
     if: >-
       ${{ !cancelled()

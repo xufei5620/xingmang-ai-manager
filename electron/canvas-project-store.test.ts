@@ -127,6 +127,58 @@ describe('CanvasProjectStore', () => {
     await expect(store.duplicate(36, created.project.id, '副本', target)).rejects.toThrow('工作文件夹不存在')
   })
 
+  it('binds a project whose folder was moved to the folder the user picks, with its assets', async () => {
+    const { workspace, store } = createFixture('relink')
+    const created = await store.create(36, '搬走的项目', workspace)
+    await store.save(36, created.project.id, workflow('搬走的项目'))
+    const moved = `${workspace}-moved`
+    roots.push(moved)
+    fs.renameSync(workspace, moved)
+    const relinked = await store.relinkWorkspace(36, created.project.id, moved)
+    expect(relinked).toMatchObject({ id: created.project.id, workspaceStatus: 'ready', workspaceName: path.basename(moved), assetCount: 1 })
+    await expect(store.getWorkspaceDirectory(36, created.project.id)).resolves.toBe(path.resolve(moved))
+    await expect(store.open(36, created.project.id)).resolves.toMatchObject({ project: { workspaceStatus: 'ready' } })
+  })
+
+  it('refuses to relink a project whose folder is still there, archived or legacy projects, and another account', async () => {
+    const { workspace, store } = createFixture('relink-ready')
+    const created = await store.create(36, '好好的项目', workspace)
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-relink-elsewhere-'))
+    roots.push(elsewhere)
+    await expect(store.relinkWorkspace(36, created.project.id, elsewhere)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(store.relinkWorkspace(37, created.project.id, elsewhere)).rejects.toThrow()
+    fs.rmSync(workspace, { recursive: true, force: true })
+    await store.setArchived(36, created.project.id, true)
+    await expect(store.relinkWorkspace(36, created.project.id, elsewhere)).rejects.toThrow('请先恢复已归档项目')
+    await expect(store.getWorkspaceDirectory(36, created.project.id)).resolves.toBe(path.resolve(workspace))
+  })
+
+  it('refuses a folder bound to another project and a folder without the assets a project uses', async () => {
+    const { workspace, store } = createFixture('relink-checks')
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-relink-other-'))
+    const empty = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-relink-empty-'))
+    roots.push(other, empty)
+    const created = await store.create(36, '有素材的项目', workspace)
+    await store.save(36, created.project.id, workflow('有素材的项目'))
+    await store.create(36, '另一个项目', other)
+    fs.rmSync(workspace, { recursive: true, force: true })
+    await expect(store.relinkWorkspace(36, created.project.id, other)).rejects.toThrow('该工作文件夹已绑定项目「另一个项目」')
+    await expect(store.relinkWorkspace(36, created.project.id, empty)).rejects.toThrow('所选文件夹里没有这个项目的素材')
+    expect(fs.readdirSync(empty)).toEqual([])
+    await expect(store.relinkWorkspace(36, created.project.id, path.join(empty, 'nowhere'))).rejects.toThrow('工作文件夹不存在')
+    await expect(store.list(36)).resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: created.project.id, workspaceStatus: 'missing' })]))
+  })
+
+  it('relinks a project without assets to any folder of its own', async () => {
+    const { workspace, store } = createFixture('relink-blank')
+    const created = await store.create(36, '空项目', workspace)
+    fs.rmSync(workspace, { recursive: true, force: true })
+    const fresh = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-workspace-relink-fresh-'))
+    roots.push(fresh)
+    await expect(store.relinkWorkspace(36, created.project.id, fresh)).resolves.toMatchObject({ workspaceStatus: 'ready' })
+    expect(fs.existsSync(path.join(fresh, 'assets'))).toBe(true)
+  })
+
   it('duplicates project content and local assets into a new empty work folder', async () => {
     const { workspace, store } = createFixture('duplicate')
     const created = await store.create(36, '源项目', workspace)

@@ -8,10 +8,16 @@ import { updateDiskCleanupStepsFor } from '../../registry/tutorials'
 import { Button, Progress } from '../../ui'
 import { requiredUpdateFollowUp, requiredUpdateGate, type RequiredUpdateAction } from './required-update'
 
+/** postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装（已知31）。 */
+export interface RequiredUpdateInstallOutcome {
+  postponed?: true
+}
+
 export interface RequiredUpdateActions {
   check: () => Promise<unknown>
   download: (options?: UpdateDownloadOptions) => Promise<unknown>
-  install: () => Promise<unknown> | unknown
+  /** 装之前主进程要先看有没有工具在装（askIfInstalling），有就先问退出时那一句，不能直接重启把它打断。 */
+  install: () => Promise<RequiredUpdateInstallOutcome | void> | void
   openDownloadPage: () => void
   contactSupport: () => void
 }
@@ -53,6 +59,14 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
     void run(followUp)
   })
 
+  // 这层提示收起了，先前那一下「立即更新」就作废：之后再盖回来，等他自己再点，不替他接着装（RC-01）。
+  const shown = gate !== null
+  useEffect(() => {
+    if (shown) return
+    setRequested(false)
+    followed.current = ''
+  }, [shown])
+
   const short = Boolean(gate?.diskShortfall)
   useEffect(() => {
     if (!short) setStillShort(false)
@@ -73,7 +87,9 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
         if (retryingShortfall && !options?.ignoreDiskSpace) setStillShort(true)
       } else {
         setInstalling(true)
-        await actions.install()
+        const outcome = await actions.install()
+        // 客户选了先让工具装完：按钮回到「立即更新」，装完他自己再点。
+        if (outcome && outcome.postponed) setInstalling(false)
       }
     } catch {
       // 失败会体现在更新快照里（阶段与错误），这层提示照着快照换成「重试」。
@@ -137,8 +153,28 @@ function GateDialog({ children }: { children: ReactNode }) {
   useLayoutEffect(() => {
     const dialog = ref.current
     if (!dialog) return
+    // Chromium lets a page veto only a couple of Esc close requests in a row; the third cancel event
+    // is no longer cancelable and the <dialog> closes, leaving the outdated version usable until the
+    // app restarts (0.2.24 KB-1). Cancelling the keydown itself keeps the close request from ever being
+    // made. It listens on the document because a click on "立即更新" disables that button and focus can
+    // leave the gate. Esc aimed at a dialog raised above the gate (the support dialog) is left to it:
+    // by the time it bubbles here that dialog has either handled it or let a search field clear itself.
+    const holdEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing) return
+      const target = event.target
+      if (target instanceof Element && !dialog.contains(target) && target.closest('dialog[open]')) return
+      event.preventDefault()
+    }
+    // Should the browser still close it some other way, the gate goes straight back up.
+    const reopen = () => { if (dialog.isConnected && !dialog.open) dialog.showModal() }
+    document.addEventListener('keydown', holdEscape)
+    dialog.addEventListener('close', reopen)
     if (!dialog.open) dialog.showModal()
-    return () => { if (dialog.open) dialog.close() }
+    return () => {
+      document.removeEventListener('keydown', holdEscape)
+      dialog.removeEventListener('close', reopen)
+      if (dialog.open) dialog.close()
+    }
   }, [])
   return <dialog ref={ref} className="xm-modal xm-dialog xm-dialog-480" data-testid="required-update-gate" tabIndex={-1} aria-modal="true" aria-labelledby="required-update-title"
     onCancel={(event) => event.preventDefault()}>

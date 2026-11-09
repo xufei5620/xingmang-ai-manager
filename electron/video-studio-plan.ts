@@ -37,6 +37,8 @@ export interface VideoStudioPlan {
 }
 
 export const videoStudioPlanUnreadableMessage = '这次 AI 没按格式写出分镜，把想法写具体一点或换个文字模型再试'
+// 配乐那首歌选的时候（主进程存进作品库）和拼的时候（页面解码）读不出来，说同一句（yoyo 2026-11-09 批的字）。
+export const videoStudioMusicUnreadableMessage = '这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）'
 
 const aspectDescriptions: Readonly<Record<VideoStudioPlanAspect, string>> = {
   '16:9': '横屏 16:9',

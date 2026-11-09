@@ -1,17 +1,19 @@
 // 主窗口业务通道的处理器：视频剪辑页出视频片段、写分镜、存成片。
 // 片段和成片都放进全局作品库，和对话里出的图片同一处。界面只拿编号、缩略图、宽高和时长；
 // 文件路径不出主进程，打开、另存都由这边按编号找文件。
-import type { WebContents } from 'electron'
+import path from 'node:path'
+import { BrowserWindow, dialog, type OpenDialogOptions, type WebContents } from 'electron'
 import { assetThumbnailUrl } from '../../asset-thumbnail'
 import { BoundedOperationQueue } from '../../bounded-operation-queue'
 import { CanvasGenerationAdmission } from '../../canvas-generation-admission'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from '../../ai-operation-progress'
 import type { AiStoredVideoAsset } from '../../ai-video-asset-store'
-import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent } from '../../ipc-contract'
+import { ipcEventChannels, type AiVideoClip, type AiVideoProgressEvent, type VideoStudioMusic } from '../../ipc-contract'
 import { videoStudioOffMessage } from '../../remote-features'
-import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson } from '../../video-studio-plan'
+import { buildVideoStudioPlanMessages, parseVideoStudioPlanJson, videoStudioMusicUnreadableMessage } from '../../video-studio-plan'
 import { requiredString } from '../parsers/common'
 import {
+  parseAiAudioAssetId,
   parseAiVideoAssetId,
   parseAiVideoGenerateInput,
   parseVideoStudioExportBytes,
@@ -25,6 +27,21 @@ const planTemperature = 0.7
 // 一队、一次只搬一段：页面出错或被投毒时连发，也撑不爆主进程内存。排队的再多就直接拒，正常用碰不到。
 const maximumQueuedClipTransfers = 12
 
+// 写进作品库失败（磁盘满、没权限）时音频库那句原话照说；别的（格式不认、太大、读的时候文件变了）对客户来说
+// 都是「这首歌用不了」，换成页面上同一句。
+const musicStorageFailure = '作品没能存进保存位置'
+
+/** 页面上显示的歌名：文件名去掉扩展名，控制字符和连着的空白并成一个空格，太长截断。 */
+export function videoStudioMusicName(filePath: string): string {
+  const base = cleanMusicName(path.basename(filePath))
+  const stem = base.includes('.') ? cleanMusicName(base.slice(0, base.lastIndexOf('.'))) : base
+  return stem || base
+}
+
+function cleanMusicName(text: string): string {
+  return text.replace(/[\x00-\x1F\x7F\s]+/g, ' ').trim().slice(0, 80).trim()
+}
+
 export function toAiVideoClip(asset: Pick<AiStoredVideoAsset, 'assetId' | 'width' | 'height' | 'durationSeconds'>): AiVideoClip {
   return {
     assetId: asset.assetId,
@@ -32,6 +49,19 @@ export function toAiVideoClip(asset: Pick<AiStoredVideoAsset, 'assetId' | 'width
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
     ...(asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
+  }
+}
+
+/**
+ * 视频剪辑页先把这一镜的请求号写进 localStorage，再发 video:generate。Chromium 写 localStorage 会攒几秒才落盘，
+ * 这几秒里强退、断电或蓝屏，重开后这一镜就找不回已经付了钱的那一单，显示「还没生成」（0.2.24 深查 KR-4）。
+ * 交给服务端之前先让这个窗口的网页存储落盘。只是尽力：拿不到会话（窗口刚关）也照旧提交，和以前一样。
+ */
+export function flushPageStorage(sender: WebContents): void {
+  try {
+    sender.session.flushStorageData()
+  } catch {
+    // 落不了盘不拦这一单：页面的请求号已经写进去了，只是少了「立刻落盘」这一层保险。
   }
 }
 
@@ -98,6 +128,10 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     if (!options.videoAssets) throw new Error('视频作品库未就绪')
     return options.videoAssets
   }
+  const audioAssets = () => {
+    if (!options.audioAssets) throw new Error('音频作品库未就绪')
+    return options.audioAssets
+  }
 
   registerTrustedHandler('video-studio:plan', async (event, input: unknown) => {
     const chatService = options.chatService
@@ -144,6 +178,7 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     // 只拦新交出去的；接回上次没等到的（video:resume）照旧，那一段已经扣过钱。
     await options.remoteFeatures?.assertOn('video-studio', videoStudioOffMessage)
     observeSender(event.sender)
+    flushPageStorage(event.sender)
     const asset = await generation.run(event.sender.id, () => videoService.generate(
       event.sender.id,
       { ...parsed, expectedUserId },
@@ -190,6 +225,38 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     // 存进拼它的那个账号：排队时换了号，也不能存进新号的作品库。
     const userId = currentUserId()
     return transferClip(event.sender, async () => toAiVideoClip(await store.storeComposed(userId, parsed)))
+  })
+
+  // 配乐：歌的路径来自系统对话框，不来自渲染层（I5）；存进作品库时照音频库那套检查（单链接普通文件、大小上限、
+  // 按内容认格式）。存进打开对话框时的那个账号：中途换了号，页面整页重挂，这一回不会被用上。
+  registerTrustedHandler('video-studio:pick-music', async (event): Promise<VideoStudioMusic | null> => {
+    const store = audioAssets()
+    const userId = currentUserId()
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '从电脑里选一首歌当背景音乐',
+      properties: ['openFile'],
+      filters: [{ name: '音乐', extensions: ['mp3', 'm4a', 'wav', 'ogg'] }],
+    }
+    const result = parentWindow ? await dialog.showOpenDialog(parentWindow, dialogOptions) : await dialog.showOpenDialog(dialogOptions)
+    const filePath = result.canceled ? undefined : result.filePaths[0]
+    if (!filePath) return null
+    let asset
+    try {
+      asset = await store.storeLocalFile(userId, filePath)
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith(musicStorageFailure)) throw error
+      throw new Error(videoStudioMusicUnreadableMessage)
+    }
+    return { assetId: asset.assetId, name: videoStudioMusicName(filePath), ...(asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}) }
+  })
+
+  registerTrustedHandler('video-studio:read-music', async (event, assetId: unknown) => {
+    const id = parseAiAudioAssetId(assetId)
+    const store = audioAssets()
+    currentUserId()
+    // 跟读片段同一队：歌也可能上百兆，排到了再认一次账号。
+    return transferClip(event.sender, async () => (await store.readOwned(currentUserId(), id)).bytes)
   })
 
   // 交给系统按 .mp4 的默认程序打开（Windows 上经资源管理器转交，不从本进程直接起，system-shell.ts）。

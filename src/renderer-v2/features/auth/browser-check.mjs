@@ -328,6 +328,27 @@ test('recovery remembers nothing and hands over to the login form when it cannot
   } finally { await page.close() }
 })
 
+test('Esc pressed while a login is pending keeps the dialog, so a failed login still shows its error', async () => {
+  const page = await open('pending=login&fail=1')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    assert.equal(await page.getByTestId('login-account').isDisabled(), true)
+    const dialog = page.getByTestId('login-dialog')
+    // Everything in the dialog is disabled while it waits, so focus has dropped out onto the page.
+    assert.equal(await dialog.evaluate((element) => element.contains(document.activeElement)), false)
+    for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape')
+    assert.equal(await dialog.evaluate((element) => element.open), true)
+    await page.evaluate(() => window.authHarness.release('login'))
+    await page.getByTestId('auth-error').waitFor()
+    assert.equal(await page.getByTestId('auth-error').isVisible(), true)
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-password')
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login'])
+  } finally { await page.close() }
+})
+
 test('login stays in the dialog with the password kept when the main process is no longer signed in at the end', async () => {
   const page = await open('sessionLost=1')
   try {

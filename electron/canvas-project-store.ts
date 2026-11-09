@@ -428,6 +428,38 @@ export class CanvasProjectStore {
     })
   }
 
+  /**
+   * Binds a project whose folder went missing to the folder the user says it
+   * is in now. Only a missing folder can be replaced, so this never moves a
+   * working project away from its assets. The new folder goes through the
+   * same checks as create(), and a project that uses assets needs a folder
+   * that has an assets folder: picking the parent by mistake is refused
+   * instead of leaving every image missing.
+   */
+  async relinkWorkspace(userId: number, projectId: string, workspaceInput: string): Promise<CanvasStoredProjectSummary> {
+    return this.enqueue(userId, async () => {
+      const current = await this.readProject(userId, projectId)
+      if (current.archivedAt) throw new Error('请先恢复已归档项目')
+      if (!current.workspaceDirectory) throw new Error('旧项目没有独立工作文件夹')
+      if (workspaceStatus(current.workspaceDirectory) !== 'missing') throw new Error('项目的工作文件夹还在，不用重新选择')
+      const workspaceDirectory = normalizedWorkspaceDirectory(workspaceInput, true)
+      for (const project of await this.list(userId)) {
+        if (project.id === projectId) continue
+        const bound = await this.getWorkspaceDirectory(userId, project.id)
+        if (bound && sameLocalPathIdentity(bound, workspaceDirectory)) {
+          throw new Error(`该工作文件夹已绑定项目「${project.name}」，请选这个项目自己的文件夹`)
+        }
+      }
+      if (workflowAssetProjection(current.workflow).assetIds.size > 0 && !fs.existsSync(path.join(workspaceDirectory, 'assets'))) {
+        throw new Error('所选文件夹里没有这个项目的素材，请选原来的项目文件夹（里面有 assets 文件夹）')
+      }
+      ensureSafeDataDirectory(path.join(workspaceDirectory, 'assets'), '画布项目素材')
+      const relinked = { ...current, updatedAt: new Date().toISOString(), workspaceDirectory }
+      await this.write(userId, relinked)
+      return this.summary(relinked)
+    })
+  }
+
   async setArchived(userId: number, projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary> {
     return this.enqueue(userId, async () => {
       const current = await this.readProject(userId, projectId)

@@ -180,10 +180,11 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 ### OpenCode 桌面端（Mac）
 
-星芒在 Mac 上一键装 OpenCode 是问 GitHub 上 `anomalyco/opencode` 最新一版的 `latest.json`，再下 `opencode-desktop-mac-<arm64|x64>.app.tar.gz`（`electron/macos-desktop-app-installer.ts`），国内时好时坏。`sync-opencode-cos`（`scripts/sync-opencode-cos.cjs`）把这两个包放进桶里：
+星芒在 Mac 上一键装 OpenCode 是问 GitHub 上 `anomalyco/opencode` 最新一版的 `latest-mac.yml`（electron-updater 的版本信息，OpenCode 自己升级也问它），再下同一版的 `opencode-desktop-mac-<arm64|x64>.app.tar.gz`（`electron/macos-desktop-app-installer.ts`），国内时好时坏。`sync-opencode-cos`（`scripts/sync-opencode-cos.cjs`）把这两个包放进桶里：
 
-- 每次问同一份 `latest.json`（客户端问的就是它），版本和桶里的一样、对象还在就什么都不做。跳转只跟到 `github.com` 这个仓库的发布路径和 GitHub 的两个附件域名。
-- 版本变了才下两种芯片的包（不跟跳转，10 MB～640 MB），在 Mac 机器上解开：必须正好是 `OpenCode.app`，bundle id `ai.opencode.desktop`、版本和 `latest.json` 一致、主程序芯片对得上，`codesign` 核 Team `5NZ4Q7NXJ4` 的 Developer ID 签名，Gatekeeper 放行，核不过不传。包里的东西不运行。
+- 每次问同一份 `latest-mac.yml`（客户端问的就是它），只读顶格那一行 `version`，并要求它列着两种芯片的 `opencode-desktop-mac-<arm64|x64>.zip`（证明这一版发了 Mac 桌面端）；版本和桶里的一样、对象还在就什么都不做。跳转只跟到 `github.com` 这个仓库的发布路径和 GitHub 的两个附件域名。
+- 以前问的是 `latest.json`：那份只给旧版 Tauri 自动更新用，OpenCode 1.19.5（2026-10-28）起不再放，同步从那天起每次都卡在 `source-feed`（#1519）。桶里那时写的清单 `source.feedUrl` 还是旧地址，照样认。
+- 版本变了才下两种芯片的包（不跟跳转，10 MB～640 MB），在 Mac 机器上解开：必须正好是 `OpenCode.app`，bundle id `ai.opencode.desktop`、版本和 `latest-mac.yml` 一致、主程序芯片对得上，`codesign` 核 Team `5NZ4Q7NXJ4` 的 Developer ID 签名，Gatekeeper 放行，核不过不传。包里的东西不运行。
 - 传到 `xingmang/offline/opencode/<macos-arm64|macos-x64>/sha256-<SHA-256>/opencode-desktop-mac-<arm64|x64>.app.tar.gz`（`application/gzip`，不可覆盖），完整回读核过，最后才改 `latest.json`。清单只写当前一版，旧版文件不删；一个一百五十 MB 左右。
 
 打开 **Actions → sync-opencode-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/opencode/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。

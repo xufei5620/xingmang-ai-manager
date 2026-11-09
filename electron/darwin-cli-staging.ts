@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { runCommand, trustedCommandEnvironment } from './command-runner'
 
 export interface DarwinCliFileIdentity {
   dev: bigint
@@ -16,7 +17,11 @@ export interface StageVerifiedDarwinCliOptions {
   sourcePath: string
   sourceIdentity: DarwinCliFileIdentity
   verify: (executablePath: string) => Promise<void>
-  /** Retained acquisitions remain leased until explicit release or process exit. */
+  /**
+   * Retained acquisitions stay leased until explicit release and stay on disk after this
+   * process exits: Terminal may still be running them. A later start removes them once no
+   * process runs them any more (cleanupStaleDarwinCliDirectories).
+   */
   retention?: 'ephemeral' | 'retained'
   baseDirectory?: string
 }
@@ -44,12 +49,23 @@ function drainStagedDarwinCliRecords(): StagedDarwinCliRecord[] {
   return records
 }
 
-function disposeStagedDarwinCliRecordsAtExit(): void {
+/**
+ * Runs from process.once('exit') and removes only the one-shot copies.
+ *
+ * A retained copy is the one handed to Terminal, and the tool keeps running it after this
+ * process is gone. Deleting it here pulled the program file out from under a live session:
+ * the running process survives, but anything in it that starts its own executable path again
+ * no longer finds it. Those directories are left for
+ * cleanupStaleDarwinCliDirectories, which a later start runs and which keeps every directory
+ * a process still executes from.
+ */
+export function disposeDarwinCliStagingAtExit(): void {
   for (const record of drainStagedDarwinCliRecords()) {
+    if (record.cacheKey) continue
     try {
       fs.rmSync(record.directory, { recursive: true, force: true })
     } catch {
-      // Process exit cleanup is best effort; the OS also reclaims its temp tree.
+      // Process exit cleanup is best effort; the next start sweeps what is left.
     }
   }
 }
@@ -85,7 +101,7 @@ function retainUntilExit(record: StagedDarwinCliRecord): void {
   stagedRecords.set(record.executablePath, record)
   if (cleanupRegistered) return
   cleanupRegistered = true
-  process.once('exit', disposeStagedDarwinCliRecordsAtExit)
+  process.once('exit', disposeDarwinCliStagingAtExit)
 }
 
 function processIsAlive(pid: number): boolean {
@@ -97,9 +113,74 @@ function processIsAlive(pid: number): boolean {
   }
 }
 
+const lsofExecutable = '/usr/sbin/lsof'
+const lsofTimeoutMs = 10_000
+const lsofMaximumOutputBytes = 1024 * 1024
+
+/**
+ * `-F n` prints one `n<path>` line per open file that matched, and a running executable
+ * counts as open (its `txt` mapping). Matching is by device and inode, so a tool that renamed
+ * its own process title is still found, which a `ps` argument match would miss.
+ */
+export function buildOpenDarwinFilesProbeArgv(files: readonly string[]): string[] {
+  return ['-w', '-F', 'n', '--', ...files]
+}
+
+export function parseOpenDarwinFilesProbeOutput(output: string): string[] {
+  const names: string[] = []
+  for (const line of output.split('\n')) {
+    if (line.startsWith('n') && line.length > 1) names.push(line.slice(1))
+  }
+  return names
+}
+
+/**
+ * Answers which of these files some process has open, or null when lsof could not tell.
+ * lsof exits 1 both when a named file is simply not open and when it failed, so exit 1 is
+ * only trusted with nothing on stderr; `-w` keeps warnings about other users' processes off it.
+ */
+export async function listOpenDarwinFiles(files: readonly string[]): Promise<string[] | null> {
+  if (!files.length) return []
+  try {
+    const result = await runCommand({
+      executable: lsofExecutable,
+      argv: buildOpenDarwinFilesProbeArgv(files),
+    }, {
+      env: trustedCommandEnvironment(process.env, undefined, 'darwin'),
+      timeoutMs: lsofTimeoutMs,
+      maxOutputBytes: lsofMaximumOutputBytes,
+      acceptedExitCodes: [0, 1],
+    })
+    if (result.exitCode !== 0 && result.stderr.trim()) return null
+    return parseOpenDarwinFilesProbeOutput(result.stdout)
+  } catch {
+    return null
+  }
+}
+
+interface StaleDarwinCliDirectory {
+  name: string
+  directory: string
+  files: string[]
+}
+
+function namesDirectory(openPath: string, directoryName: string): boolean {
+  return openPath.split(path.sep).includes(directoryName)
+}
+
+/**
+ * Removes directories a previous process staged, but only those nothing runs any more.
+ *
+ * The creator being dead is not enough: its retained copies were handed to Terminal and may
+ * still be running there (disposeDarwinCliStagingAtExit leaves them for this reason). Open
+ * files are matched back by the directory's own name, which carries the creator pid and a
+ * random suffix, because lsof may report the /private/var spelling of a /var/folders path.
+ * When the probe cannot tell, every directory that holds a file stays for a later start.
+ */
 export async function cleanupStaleDarwinCliDirectories(
   baseDirectory = os.tmpdir(),
   isAlive: (pid: number) => boolean = processIsAlive,
+  listOpenFiles: (files: readonly string[]) => Promise<readonly string[] | null> = listOpenDarwinFiles,
 ): Promise<void> {
   let entries: fs.Dirent[]
   try {
@@ -108,19 +189,37 @@ export async function cleanupStaleDarwinCliDirectories(
     return
   }
   const currentUid = process.getuid?.()
-  await Promise.all(entries.map(async (entry) => {
+  const candidates = (await Promise.all(entries.map(async (entry): Promise<StaleDarwinCliDirectory | null> => {
     const match = /^xingmang-darwin-cli-(\d+)-/.exec(entry.name)
-    if (!match || !entry.isDirectory()) return
+    if (!match || !entry.isDirectory()) return null
     const pid = Number(match[1])
-    if (!Number.isSafeInteger(pid) || pid <= 0 || isAlive(pid)) return
+    if (!Number.isSafeInteger(pid) || pid <= 0 || isAlive(pid)) return null
     const directory = path.join(baseDirectory, entry.name)
     try {
       const stats = await fs.promises.lstat(directory)
-      if (!stats.isDirectory() || stats.isSymbolicLink()) return
-      if (currentUid !== undefined && stats.uid !== currentUid) return
-      await fs.promises.rm(directory, { recursive: true, force: true })
+      if (!stats.isDirectory() || stats.isSymbolicLink()) return null
+      if (currentUid !== undefined && stats.uid !== currentUid) return null
+      const files = (await fs.promises.readdir(directory, { withFileTypes: true }))
+        .filter((child) => child.isFile())
+        .map((child) => path.join(directory, child.name))
+      return { name: entry.name, directory, files }
     } catch {
       // A concurrently removed or inaccessible stale directory is harmless.
+      return null
+    }
+  }))).filter((candidate): candidate is StaleDarwinCliDirectory => candidate !== null)
+  if (!candidates.length) return
+  const files = candidates.flatMap((candidate) => candidate.files)
+  const open = files.length ? await listOpenFiles(files) : []
+  await Promise.all(candidates.map(async (candidate) => {
+    if (candidate.files.length) {
+      if (open === null) return
+      if (open.some((openPath) => namesDirectory(openPath, candidate.name))) return
+    }
+    try {
+      await fs.promises.rm(candidate.directory, { recursive: true, force: true })
+    } catch {
+      // A concurrently removed stale directory is harmless.
     }
   }))
 }
@@ -231,7 +330,7 @@ async function copyOpenedFile(
 
 /**
  * Copies a verified executable through a bound descriptor and reverifies the private copy.
- * Retained copies use process-lifetime ownership because Terminal execution may lag after open.
+ * Retained copies outlive this process because Terminal keeps running them after open.
  */
 export async function stageVerifiedDarwinCli(
   options: StageVerifiedDarwinCliOptions,
@@ -242,7 +341,9 @@ export async function stageVerifiedDarwinCli(
   }
   const retention = options.retention ?? 'retained'
   const baseDirectory = options.baseDirectory ?? os.tmpdir()
-  await cleanupStaleOnce(baseDirectory)
+  // Housekeeping only: it never touches this process's directories, so the copy below does
+  // not wait for it (and for lsof).
+  void cleanupStaleOnce(baseDirectory).catch(() => undefined)
   const retainedKey = retention === 'retained' ? cacheKey(options) : null
   if (retainedKey) {
     const cached = retainedSelections.get(retainedKey)

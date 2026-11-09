@@ -199,6 +199,10 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
         const { message, detail } = buildUpdateDownloadMeasureLog(measure)
         runtimeLog.log('info', 'updater', 'download.measured', message, detail)
       },
+      downloadRetryScheduled: (retry) => {
+        const minutes = Math.round(retry.delayMs / 60_000)
+        runtimeLog.log('info', 'updater', 'download.retry.scheduled', `${retry.version} 没下成，${minutes} 分钟后自己再试一次（第 ${retry.attempt} 次）`, { ...retry })
+      },
       downloadedSuperseded: (from, to) => {
         runtimeLog.log('info', 'updater', 'download.superseded', `下好的 ${from ?? '旧版本'} 已经不是最新的，换下 ${to}`, { from, to })
       },
