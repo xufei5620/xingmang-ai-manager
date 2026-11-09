@@ -1,4 +1,4 @@
-import { classifyNetworkFailure, type NetworkFailureReason } from '../../../../electron/network-failure'
+import { classifyNetworkFailure, isProxyAuthFailure, proxyAuthRequiredMessage, type NetworkFailureReason } from '../../../../electron/network-failure'
 
 /**
  * 软件开着的时候网断了，以前每个页面各说各的：余额写「更新失败」，充值、安装、聊天
@@ -20,7 +20,18 @@ export const stillOfflineText = '还是连不上网。网络恢复后这条提�
  * 的网，他会去折腾路由器而不是等一等。代理挂掉、门户认证没做完、域名解析不了，
  * 正是 navigator.onLine 看不出来、又确实什么都连不上的那几种。
  */
-const localNetworkFailures: ReadonlySet<NetworkFailureReason> = new Set(['offline', 'dns', 'proxy', 'intercepted'])
+type LocalNetworkFailureReason = Extract<NetworkFailureReason, 'offline' | 'dns' | 'proxy' | 'intercepted'>
+const localNetworkFailures: ReadonlySet<NetworkFailureReason> = new Set<LocalNetworkFailureReason>(['offline', 'dns', 'proxy', 'intercepted'])
+
+function isLocalNetworkFailureReason(reason: NetworkFailureReason | null): reason is LocalNetworkFailureReason {
+  return reason !== null && localNetworkFailures.has(reason)
+}
+
+/**
+ * 本机网络那几种，proxy 里再分出 proxyAuth：代理开着、要账号密码。出路跟代理连不上不一样，
+ * 不是去开代理软件，是找管理员或换网络（D32）。
+ */
+export type LocalNetworkFailure = LocalNetworkFailureReason | 'proxyAuth'
 
 /** 连着几次请求都是本机网络的问题才算断网：一次偶发失败不值得在顶上挂一条横幅。 */
 export const offlineFailureThreshold = 2
@@ -30,10 +41,11 @@ export function isLocalNetworkFailure(cause: unknown): boolean {
   return localNetworkFailureReason(cause) !== null
 }
 
-/** 同上，但把是哪一种也交出来：代理挂了、要网页认证和真断网，出路完全不同。 */
-export function localNetworkFailureReason(cause: unknown): NetworkFailureReason | null {
+/** 同上，但把是哪一种也交出来：代理挂了、代理要密码、要网页认证和真断网，出路完全不同。 */
+export function localNetworkFailureReason(cause: unknown): LocalNetworkFailure | null {
   const reason = classifyNetworkFailure(cause)
-  return reason !== null && localNetworkFailures.has(reason) ? reason : null
+  if (!isLocalNetworkFailureReason(reason)) return null
+  return reason === 'proxy' && isProxyAuthFailure(cause) ? 'proxyAuth' : reason
 }
 
 /**
@@ -41,11 +53,13 @@ export function localNetworkFailureReason(cause: unknown): NetworkFailureReason 
  * 打开、要么把系统代理关掉；门户认证则是在浏览器里登一下就好。都写成「连不上网」，
  * 用户只会去折腾路由器。
  */
-export type OfflineCause = 'offline' | 'proxy' | 'portal'
+export type OfflineCause = 'offline' | 'proxy' | 'proxyAuth' | 'portal'
 
 export const offlineBannerTexts: Readonly<Record<OfflineCause, string>> = {
   offline: offlineBannerText,
   proxy: '电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理软件，或者把系统代理关掉。',
+  // 代理开着、是它要账号密码：叫人去开代理软件说错了。句子跟主进程报错那句是同一份。
+  proxyAuth: proxyAuthRequiredMessage,
   portal: '这个网络要先登录认证（校园网、酒店、公共 Wi-Fi 常见）。点「打开认证页」登录后，这里会自动恢复。',
 }
 
@@ -56,6 +70,7 @@ export const proxyBypassedBannerText = '电脑里设置的代理连不上，星�
 export function offlineCause({ browserOnline, networkFailureReason }: Pick<OnlineSignals, 'browserOnline' | 'networkFailureReason'>): OfflineCause {
   if (!browserOnline) return 'offline'
   if (networkFailureReason === 'proxy') return 'proxy'
+  if (networkFailureReason === 'proxyAuth') return 'proxyAuth'
   if (networkFailureReason === 'intercepted') return 'portal'
   return 'offline'
 }
@@ -69,7 +84,7 @@ export interface OnlineSignals {
   /** 最近连着几次请求都是本机网络的问题；成功一次就归零。 */
   networkFailures: number
   /** 最近那次本机网络失败的原因；没有就是 null 或缺省。 */
-  networkFailureReason?: NetworkFailureReason | null
+  networkFailureReason?: LocalNetworkFailure | null
 }
 
 export function isOffline({ browserOnline, networkFailures }: OnlineSignals): boolean {

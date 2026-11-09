@@ -4,7 +4,7 @@ import { sanitizeUpstreamDetail } from './command-runner'
 import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
 import { accountKeyNameMaxBytes, buildAccountKeyName, utf8Length } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
-import { classifyNetworkFailure, isServiceUnavailableResponse, networkFailureMessages, type NetworkFailureReason } from './network-failure'
+import { classifyNetworkFailure, isProxyAuthFailure, isServiceUnavailableResponse, networkFailureMessages, proxyAuthRequiredMessage, proxyAuthRequiredStatus, type NetworkFailureReason } from './network-failure'
 import type { RelayBackendCapabilities, RelayBackendClient, RelayNotice, RelayNoticeBulletin, RelayNoticeBulletinType, RelayNoticeReadMode } from './relay-backend'
 import { relaySites } from './relay-sites'
 import { carryRequestDiagnostics, noteRequestDiagnostics, requestDiagnosticsOf, responseDiagnostics, type RequestDiagnostics } from './request-diagnostics'
@@ -1099,11 +1099,12 @@ export class NewApiTwoFactorExpiredError extends Error {
 
 /**
  * 受限网络（校园网常见）下的失败不再统一冒一句「请求失败」：reason 是排查用的
- * 分类，message 已经是能直接上屏的中文，detail 只是给日志留一句现场。
+ * 分类，message 已经是能直接上屏的中文，detail 只是给日志留一句现场。summary 缺省
+ * 照 reason 那句；同一类里要换说法的（代理要账号密码）由调用方给。
  */
 export class NewApiNetworkError extends Error {
-  constructor(readonly reason: NetworkFailureReason, detail?: string) {
-    super(detail ? `${networkFailureMessages[reason]}（${detail}）` : networkFailureMessages[reason])
+  constructor(readonly reason: NetworkFailureReason, detail?: string, summary: string = networkFailureMessages[reason]) {
+    super(detail ? `${summary}（${detail}）` : summary)
     this.name = 'NewApiNetworkError'
   }
 }
@@ -1346,11 +1347,21 @@ async function performRequestOnce(
     }
     // 认不出来的失败按原样抛：上游自己写的中文错误比一句猜出来的「网络问题」有用。
     const reason = classifyNetworkFailure(error)
-    if (reason) throw carryRequestDiagnostics(error, new NewApiNetworkError(reason, `${label}请求失败`))
+    if (reason) throw carryRequestDiagnostics(error, new NewApiNetworkError(reason, `${label}请求失败`, proxyAuthSummary(reason, error, diagnostics)))
     throw error
   } finally {
     clearTimeout(timeout)
   }
+}
+
+/**
+ * 代理要账号密码时换的那句（D32）。走 https 时代理回的 407 先当回应交出来，读正文才报
+ * ERR_TUNNEL_CONNECTION_FAILED，错误本身跟「代理回绝了这个地址」分不开，所以也看这次回应的状态码。
+ * 归类不动，还是 proxy：改不改直连、重不重发照旧。
+ */
+function proxyAuthSummary(reason: NetworkFailureReason, error: unknown, diagnostics: RequestDiagnostics | null): string | undefined {
+  if (reason !== 'proxy') return undefined
+  return diagnostics?.status === proxyAuthRequiredStatus || isProxyAuthFailure(error) ? proxyAuthRequiredMessage : undefined
 }
 
 /**
