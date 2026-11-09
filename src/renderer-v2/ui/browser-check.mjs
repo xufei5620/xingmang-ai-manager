@@ -155,6 +155,54 @@ test('Dialog traps focus, protects dirty backdrop/escape, preserves draft and re
     assert.equal(await focused(trigger), true);
   } finally { await page.close(); }
 });
+// 0.2.24 NT-0: a page the user leaves stays mounted under a hidden (business pages: also inert) wrapper.
+// A modal <dialog> left open under it drew nothing yet blocked every click in the window.
+test('Dialog stops blocking the window while its page is hidden and comes back with the draft and focus', async () => {
+  const page = await gallery();
+  const conceal = (hidden, inert) => page.evaluate(([hide, block]) => { const host = document.querySelector('main'); host.hidden = hide; host.inert = block; }, [hidden, inert]);
+  const isModal = () => page.evaluate(() => Boolean(document.querySelector('[data-testid="gallery-dialog"]')?.matches(':modal')));
+  try {
+    await page.evaluate(() => {
+      const other = document.createElement('button'); other.textContent = '另一个页面'; other.dataset.testid = 'gallery-other-page';
+      other.addEventListener('click', () => { other.dataset.clicks = String(Number(other.dataset.clicks ?? 0) + 1); });
+      document.body.append(other);
+    });
+    const other = page.getByTestId('gallery-other-page');
+    const trigger = page.getByRole('button', { name: '打开配置', exact: true });
+    await trigger.click();
+    const dialog = page.getByRole('dialog', { name: '工具配置' });
+    await page.getByLabel('配置草稿').fill('未保存内容');
+    assert.equal(await isModal(), true);
+    await conceal(true, true);
+    await page.waitForFunction(() => !document.querySelector('[data-testid="gallery-dialog"]').matches(':modal'));
+    await other.click();
+    assert.equal(await other.getAttribute('data-clicks'), '1');
+    await conceal(false, false);
+    await page.waitForFunction(() => document.querySelector('[data-testid="gallery-dialog"]').matches(':modal'));
+    assert.equal(await page.getByLabel('配置草稿').inputValue(), '未保存内容');
+    assert.equal(await focused(page.getByLabel('配置草稿')), true);
+    // It is still React's dialog: closing it goes through the dirty bar and hands focus back to the trigger.
+    await page.keyboard.press('Escape');
+    await dialog.locator('.xm-leave-bar').getByRole('button', { name: '不保存' }).click();
+    await dialog.waitFor({ state: 'detached' });
+    assert.equal(await focused(trigger), true);
+
+    // A dialog its page opens while the page is out of sight waits for the page instead of blocking another.
+    await conceal(true, false);
+    await page.getByRole('button', { name: '打开配置', exact: true, includeHidden: true }).evaluate(button => button.click());
+    await page.getByTestId('gallery-dialog').waitFor({ state: 'attached' });
+    assert.equal(await isModal(), false);
+    await other.click();
+    assert.equal(await other.getAttribute('data-clicks'), '2');
+    await conceal(false, false);
+    await page.waitForFunction(() => document.querySelector('[data-testid="gallery-dialog"]').matches(':modal'));
+    assert.equal(await focused(page.getByLabel('配置草稿')), true);
+    // Closing it returns focus to where the user was when it actually appeared.
+    await page.keyboard.press('Escape');
+    await dialog.waitFor({ state: 'detached' });
+    assert.equal(await focused(other), true);
+  } finally { await page.close(); }
+});
 test('A busy Dialog keeps Esc away once focus has dropped out of it, and stays React\'s', async () => {
   const page = await gallery();
   try {
