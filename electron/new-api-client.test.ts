@@ -7,6 +7,7 @@ import {
   findCliKeyIdByName,
   findNewestUsableCliKeyByGroup,
   isChatKeyName,
+  knownCliKeyForRecord,
   loginIssuanceLimitMessage,
   loginRateLimitedMessage,
   loginSessionLimitMessage,
@@ -3671,6 +3672,106 @@ describe('provisionCliKey reuse stays on its own side', () => {
 
     await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
       .resolves.toEqual({ id: 3, name: 'tester-codex-pro', key: 'sk-tool-capped' })
+  })
+})
+
+// 0.2.24 深查 R1：取明文跟登录共用按 IP 的严格限流，画图技能每次开机都取一次。本机加密缓存里已经知道
+// 明文的那把，服务端这次挑出来复用的又正好是它、掩码也对得上，就直接用缓存的，不再取。
+describe('provisionCliKey with plaintexts this machine already holds', () => {
+  const usable = { group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+  const secret = 'sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefWXYZ'
+  const mask = 'AbCd**********WXYZ'
+
+  function listing(items: unknown[]): Response {
+    return jsonResponse({ success: true, message: '', data: { total: items.length, items } })
+  }
+
+  it('checks a cached plaintext against the mask of the very record it was picked for', () => {
+    const match = { id: 6, name: 'tester-codex-pro' }
+    const records = [{ ...usable, ...match, key: mask }]
+    expect(knownCliKeyForRecord(records, match, [{ id: 6, key: secret }])).toBe(secret)
+    // 列表里带不带 sk- 前缀都认。
+    expect(knownCliKeyForRecord([{ ...records[0], key: `sk-${mask}` }], match, [{ id: 6, key: secret }])).toBe(secret)
+    expect(knownCliKeyForRecord(records, match, [{ id: 7, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord(records, match, [{ id: 6, key: 'sk-AbCd-0000-0000-0000-0000-XYZW' }])).toBeNull()
+    expect(knownCliKeyForRecord(records, match, [{ id: 6, key: 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefWXYZ' }])).toBeNull()
+    expect(knownCliKeyForRecord([{ ...records[0], key: '' }], match, [{ id: 6, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord([{ ...records[0], key: 'AbCd****WXYZ' }], match, [{ id: 6, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord([{ ...records[0], id: 9 }], match, [{ id: 6, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord(records, match, undefined)).toBeNull()
+  })
+
+  it('hands back the cached plaintext of the key it picks without revealing it again', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([
+        { ...usable, id: 6, name: 'tester-codex-pro', key: mask },
+        { ...usable, id: 9, name: 'tester-codex-pro-对话', key: 'Zzzz**********zzzz' },
+      ]))
+
+    await expect(client.provisionCliKey({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: 'codex-pro',
+      knownKeys: [{ id: 3, key: 'sk-other-tool-secret-123456' }, { id: 6, key: secret }],
+    })).resolves.toEqual({ id: 6, name: 'tester-codex-pro', key: secret })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls.some(([url]) => /\/api\/token\/\d+\/key$/.test(String(url)))).toBe(false)
+  })
+
+  it('reveals again when the key it picks is not the cached one or does not match its mask', async () => {
+    for (const knownKeys of [
+      // 网页上停用、删掉或换了新的：服务端挑的是另一把。
+      [{ id: 5, key: secret }],
+      // 编号碰巧一样，明文却不是这把（另一个站的、缓存坏了）。
+      [{ id: 6, key: 'sk-QqQqEfGhIjKlMnOpQrStUvWxYz0123456789abcdefQqQq' }],
+    ]) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(usableGroupsResponse())
+        .mockResolvedValueOnce(listing([{ ...usable, id: 6, name: 'tester-codex-pro', key: mask }]))
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-revealed-again' } }))
+
+      await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro', knownKeys }))
+        .resolves.toEqual({ id: 6, name: 'tester-codex-pro', key: 'sk-revealed-again' })
+      expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/token/6/key`)
+    }
+  })
+
+  it('still stops at a used-up cap and still creates a fresh key when asked, whatever it knows', async () => {
+    const capped = vi.fn<NewApiFetch>()
+    const cappedClient = await authenticatedClient(capped)
+    capped
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([
+        { ...usable, id: 4, name: 'tester-codex-pro', unlimited_quota: false, remain_quota: 0, key: 'Cccc**********cccc' },
+        { ...usable, id: 3, name: 'tester-codex-pro', key: mask },
+      ]))
+    await expect(cappedClient.provisionCliKey({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: 'codex-pro',
+      knownKeys: [{ id: 3, key: secret }],
+    })).rejects.toThrow('这个工具的额度用完了')
+
+    const fresh = vi.fn<NewApiFetch>()
+    const freshClient = await authenticatedClient(fresh)
+    fresh
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([{ ...usable, id: 6, name: 'tester-codex-pro', key: mask }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([
+        { ...usable, id: 6, name: 'tester-codex-pro', key: mask },
+        { ...usable, id: 8, name: 'tester-codex-pro', key: 'Ffff**********ffff' },
+      ]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-fresh-secret' } }))
+    await expect(freshClient.provisionCliKey({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: 'codex-pro',
+      fresh: true,
+      knownKeys: [{ id: 6, key: secret }],
+    })).resolves.toEqual({ id: 8, name: 'tester-codex-pro', key: 'sk-fresh-secret' })
   })
 })
 

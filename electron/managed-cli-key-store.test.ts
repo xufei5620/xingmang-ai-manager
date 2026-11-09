@@ -10,6 +10,8 @@ import {
   isPersistedManagedCliKeys,
   isReplacedManagedKey,
   managedKeyDigest,
+  readManagedSkillKeys,
+  type ManagedSkillKeys,
   type PersistedManagedCliKeys,
   type StoredManagedCliKey,
 } from './managed-cli-key-store'
@@ -567,5 +569,142 @@ describe('the cached group check (#1157 item 8)', () => {
     await expect(new ManagedCliKeyStore(filePath, fakeSafeStorage()).readGroupCheck(42)).resolves.toBeUndefined()
     await expect(new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false })).readGroupCheck(42))
       .resolves.toBeUndefined()
+  })
+})
+
+// 0.2.24 深查 R1：画图技能以前每次开机都取一次明文，跟登录共用按 IP 的限流。它用的两把记在同一份加密缓存里。
+describe('the keys the image skill last wrote', () => {
+  const skillKeys: ManagedSkillKeys = {
+    codex: { id: 7, group: managedCliKeyProfiles.codex.group, name: 'tester-codex', key: 'sk-skill-codex-secret-123456' },
+    image: { id: 42, group: '图片模型', name: 'tester-图片模型', key: 'sk-skill-image-secret-123456' },
+  }
+
+  function countingSafeStorage() {
+    const storage = fakeSafeStorage()
+    let writes = 0
+    return {
+      storage: { ...storage, encryptString: (plainText: string) => { writes += 1; return storage.encryptString(plainText) } },
+      writes: () => writes,
+    }
+  }
+
+  it('remembers them across a restart without bumping the key revision, and keeps them through tool key saves', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    const store = new ManagedCliKeyStore(filePath, storage)
+    await store.save(42, providerIds.map((provider) => managedKey(provider)))
+    await store.read(42)
+    const revision = store.captureRevision()
+
+    await store.saveSkillKeys(42, skillKeys)
+
+    expect(store.captureRevision()).toBe(revision)
+    await expect(new ManagedCliKeyStore(filePath, storage).readSkillKeys(42)).resolves.toEqual(skillKeys)
+    // 同步那一轮正要存的工具 Key 不能被当成「缓存被别的操作改过」。
+    await expect(store.save(42, [{ ...managedKey('codex'), id: 500, key: 'sk-codex-replacement-secret-123456' }], revision)).resolves.toBe(true)
+    await expect(store.readSkillKeys(42)).resolves.toEqual(skillKeys)
+    await store.remove(42, 500)
+    await expect(store.readSkillKeys(42)).resolves.toEqual(skillKeys)
+    await expect(store.readSkillKeys(7)).resolves.toBeUndefined()
+  })
+
+  it('takes the one it is not given away and does not rewrite the cache when nothing changed', async () => {
+    const { storage, writes } = countingSafeStorage()
+    const store = new ManagedCliKeyStore(temporaryFilePath(), storage)
+    await store.save(42, [managedKey('codex')])
+    await store.saveSkillKeys(42, skillKeys)
+    const afterFirst = writes()
+
+    await store.saveSkillKeys(42, { ...skillKeys })
+    expect(writes()).toBe(afterFirst)
+
+    await store.saveSkillKeys(42, { codex: skillKeys.codex })
+    expect(writes()).toBe(afterFirst + 1)
+    await expect(store.readSkillKeys(42)).resolves.toEqual({ codex: skillKeys.codex })
+    await store.saveSkillKeys(42, {})
+    await expect(store.readSkillKeys(42)).resolves.toBeUndefined()
+  })
+
+  it('records nothing for an account without cached tool keys', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    await store.saveSkillKeys(42, skillKeys)
+    await expect(store.readSkillKeys(42)).resolves.toBeUndefined()
+  })
+
+  it('forgets a revoked one, bumping the revision only when a tool held it too', async () => {
+    const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
+    const codex = { ...managedKey('codex'), id: 7, key: skillKeys.codex!.key }
+    await store.save(42, [codex, managedKey('claude')])
+    await store.saveSkillKeys(42, skillKeys)
+    await store.read(42)
+    const revision = store.captureRevision()
+
+    await store.remove(42, 42)
+    expect(store.captureRevision()).toBe(revision)
+    await expect(store.readSkillKeys(42)).resolves.toEqual({ codex: skillKeys.codex })
+    await expect(store.read(42)).resolves.toEqual([codex, managedKey('claude')])
+
+    await store.remove(42, 7)
+    expect(store.captureRevision()).toBe(revision + 1)
+    await expect(store.readSkillKeys(42)).resolves.toBeUndefined()
+    await expect(store.read(42)).resolves.toEqual([managedKey('claude')])
+  })
+
+  it('reads entries it cannot make sense of as never remembered, keeping every tool key', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage()
+    for (const value of [
+      'yesterday',
+      { codex: { ...skillKeys.codex, id: 0 } },
+      { codex: { ...skillKeys.codex, key: 'not-a-key' } },
+      { image: { ...skillKeys.image, group: ' 图片模型' } },
+      { image: { ...skillKeys.image, name: '' } },
+    ]) {
+      const record = persistedRecord()
+      ;(record.accounts[0] as unknown as Record<string, unknown>).skillKeys = value
+      writeRecord(filePath, record, storage)
+      const store = new ManagedCliKeyStore(filePath, storage)
+      await expect(store.read(42)).resolves.toEqual(providerIds.map((provider) => managedKey(provider)))
+      await expect(store.readSkillKeys(42)).resolves.toBeUndefined()
+    }
+    expect(readManagedSkillKeys({ codex: skillKeys.codex, image: 'broken' })).toEqual({ codex: skillKeys.codex })
+  })
+
+  it('answers nothing remembered when the cache cannot be read', async () => {
+    const filePath = temporaryFilePath()
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, 'not ciphertext')
+    await expect(new ManagedCliKeyStore(filePath, fakeSafeStorage()).readSkillKeys(42)).resolves.toBeUndefined()
+    await expect(new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage({ isEncryptionAvailable: () => false })).readSkillKeys(42))
+      .resolves.toBeUndefined()
+  })
+
+  it('still fits sixteen full accounts under the size the cache reads back', () => {
+    const secret = (seed: string) => `sk-${seed.padEnd(48, 'x')}`
+    const group = '超长的分组名字用来压一压大小上限试试看'
+    const record: PersistedManagedCliKeys = {
+      version: 2,
+      siteId: 'solov',
+      revision: 1,
+      accounts: Array.from({ length: 16 }, (_, index) => ({
+        userId: index + 1,
+        updatedAt: '2026-11-09T00:00:00.000Z',
+        keys: providerIds.map((provider, slot) => ({
+          id: 100_000 + index * 10 + slot,
+          provider,
+          group,
+          name: `用户名用户名用户名-${group}`.slice(0, 50),
+          key: secret(`${index}${provider}`),
+        })),
+        replacedKeys: Object.fromEntries(providerIds.map((provider) => [provider, [0, 1, 2].map((n) => managedKeyDigest(`${index}${provider}${n}`))])),
+        groupCheck: { at: Date.parse('2026-11-09T00:00:00.000Z'), succeeded: true, hints: managedKeyDigest('hints') },
+        skillKeys: {
+          codex: { id: 200_000 + index, group, name: `用户名用户名用户名-${group}`.slice(0, 50), key: secret(`${index}skill-codex`) },
+          image: { id: 300_000 + index, group, name: `用户名用户名用户名-${group}`.slice(0, 50), key: secret(`${index}skill-image`) },
+        },
+      })),
+    }
+    expect(isPersistedManagedCliKeys(record, 'solov')).toBe(true)
+    expect(Buffer.byteLength(encodePersistedManagedCliKeys(record, fakeSafeStorage()))).toBeLessThan(64 * 1024)
   })
 })
