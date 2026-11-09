@@ -857,9 +857,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
         if (usesRemoteGeneration(node.kind)) await updateStage(nodeId, 'submitting', attemptId)
         // Persisting running awaits disk, and running/submitting both await
-        // event projection. A stop pressed during that window has already fired its abort event,
-        // which executors only subscribe to later, so re-check before any
-        // paid request can be dispatched.
+        // event projection. A stop pressed during that window has already
+        // fired its abort event, which executors only subscribe to later, so
+        // re-check before any paid request can be dispatched.
         if (options.signal.aborted) throw options.signal.reason ?? new Error('运行已取消')
         let releaseStageReporting!: () => void
         const stageReportingReady = new Promise<void>((resolve) => { releaseStageReporting = resolve })
