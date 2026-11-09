@@ -232,6 +232,17 @@ describe('Node.js installer routing and process plans', () => {
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
   })
 
+  it('counts only awake time toward the installer runs, not toward the short signature check', () => {
+    // 睡眠深查 G1：装的时候合盖超过 15 分钟，醒来不该按满时限当场掐掉。
+    const plan = buildNodeRuntimeInstallPlan('C:\\Temp\\node.msi', systemPowerShell, true, testMachinePaths, 'b'.repeat(64))
+    expect(plan.msi.timeoutExcludesSleep).toBe(true)
+    expect(plan.signature.timeoutExcludesSleep).toBeUndefined()
+    const winget = buildNodeRuntimeWingetPlan(
+      'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+    )
+    expect(winget.timeoutExcludesSleep).toBe(true)
+  })
+
   it('binds UAC MSI execution to a digest and rechecks the signature in the broker', () => {
     const hash = 'a'.repeat(64)
     const plan = buildNodeRuntimeInstallPlan(
@@ -886,7 +897,7 @@ describe('Node.js package download deadline', () => {
     }
 
     it('finishes a slow but steady download that takes longer than ten minutes', async () => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-slow-'))
       const target = path.join(directory, 'node.msi')
       const bytes = Buffer.alloc(2 * 1024 * 1024, 5)
@@ -911,7 +922,7 @@ describe('Node.js package download deadline', () => {
     })
 
     it('gives up at the ceiling and removes the partial package', async () => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-ceiling-'))
       const target = path.join(directory, 'node.msi')
       // At one chunk every 40 seconds this would need well over the ceiling to finish.
