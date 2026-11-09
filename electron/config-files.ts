@@ -2191,6 +2191,15 @@ export interface WorkspaceTrustWriteResult extends NativeConfigSaveResult {
   changed: boolean
 }
 
+export interface ManagedWorkspaceTrustOptions {
+  /**
+   * 文件夹里已经带着 Claude Code 自己的项目设置（workspace-guard.ts 的 claudeProjectSettingsFiles）时为 true：
+   * 不写这个文件夹的信任，让 Claude Code 自己问；首启向导照旧跳过，那一页只问主题和安全须知，
+   * 跟这个文件夹里带了什么无关（D4）。缺省 = 旧行为。
+   */
+  leaveFolderTrustToCli?: boolean
+}
+
 function matchingWorkspaceKey(entries: Record<string, unknown>, workspace: string): string | null {
   const wanted = normalizeWorkspacePathKey(workspace)
   const key = Object.keys(entries).find((candidate) => normalizeWorkspacePathKey(candidate) === wanted)
@@ -2215,6 +2224,7 @@ function requireWorkspaceTrustJson(content: string | null, label: string): Recor
 export function trustClaudeWorkspaceInRootConfigText(
   content: string | null,
   workspace: string,
+  options: ManagedWorkspaceTrustOptions = {},
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
   if (!trimmedWorkspace) throw new Error('Claude Code 工作目录不能为空')
@@ -2225,16 +2235,20 @@ export function trustClaudeWorkspaceInRootConfigText(
   if (parsed.projects !== undefined && !isJsonRecord(parsed.projects)) {
     throw new Error(`${label} 的项目记录已损坏，未执行修改`)
   }
-  const projects = ensureRecord(parsed, 'projects')
-  const key = matchingWorkspaceKey(projects, trimmedWorkspace) ?? trimmedWorkspace
-  if (projects[key] !== undefined && !isJsonRecord(projects[key])) {
-    throw new Error(`${label} 的项目记录已损坏，未执行修改`)
-  }
-  const entry = ensureRecord(projects, key)
   let changed = false
-  if (typeof entry.hasTrustDialogAccepted !== 'boolean') {
-    entry.hasTrustDialogAccepted = true
-    changed = true
+  // 信任留给 CLI 自己问时连项目条目都不建：一个空条目对 Claude Code 来说跟没有一样，
+  // 只会让这份文件多一处本软件动过的地方。
+  if (!options.leaveFolderTrustToCli) {
+    const projects = ensureRecord(parsed, 'projects')
+    const key = matchingWorkspaceKey(projects, trimmedWorkspace) ?? trimmedWorkspace
+    if (projects[key] !== undefined && !isJsonRecord(projects[key])) {
+      throw new Error(`${label} 的项目记录已损坏，未执行修改`)
+    }
+    const entry = ensureRecord(projects, key)
+    if (typeof entry.hasTrustDialogAccepted !== 'boolean') {
+      entry.hasTrustDialogAccepted = true
+      changed = true
+    }
   }
   // 首启向导问的是主题与安全须知，登录方式本软件已经配好。对付费客户来说
   // 它只是打开工具后的一段英文问答，跳过它不改变任何已有选择。
@@ -2248,6 +2262,7 @@ export function trustClaudeWorkspaceInRootConfigText(
 export function trustClaudeWorkspace(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   workspace: string,
+  options: ManagedWorkspaceTrustOptions = {},
 ): WorkspaceTrustWriteResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   // ~/.claude.json 与 ~/.claude/ 是并列的两项，所以这条事务的根是主目录本身。
@@ -2259,7 +2274,7 @@ export function trustClaudeWorkspace(
     '现有 Claude Code ~/.claude.json',
     MAX_CLAUDE_ROOT_CONFIG_BYTES,
   )
-  const next = trustClaudeWorkspaceInRootConfigText(current, workspace)
+  const next = trustClaudeWorkspaceInRootConfigText(current, workspace, options)
   if (!next.changed) return { backups: [], files: [], changed: false }
   assertNoReparseComponents(path.dirname(root), '用户主目录')
   ensureSafeDataDirectory(root, '用户主目录')
@@ -2415,16 +2430,18 @@ export function syncXingmangImageMcpConfigs(
 /**
  * 本软件「打开」某个目录时替用户写下的信任。Codex 的信任连带 approval_policy
  * 与 sandbox_mode 两项默认值，是配置对话框里一个单独的按钮（trustCodexWorkspace），
- * 不在这条路径上；Grok 没有目录信任这一说。
+ * 不在这条路径上；Grok 没有目录信任这一说。leaveFolderTrustToCli 只管 Claude Code：
+ * Gemini CLI 已下线，那一支照旧。
  */
 export function trustManagedWorkspace(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   workspace: string,
+  options: ManagedWorkspaceTrustOptions = {},
 ): WorkspaceTrustWriteResult {
   switch (provider) {
     case 'claude':
-      return trustClaudeWorkspace(rootsInput, workspace)
+      return trustClaudeWorkspace(rootsInput, workspace, options)
     case 'gemini':
       return trustGeminiWorkspace(rootsInput, workspace)
     case 'codex':
