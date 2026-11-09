@@ -55,8 +55,8 @@ function nextAssetId(): string {
   assetCounter += 1
   return String(assetCounter).padStart(43, 'v')
 }
-function clipFor(assetId: string): AiVideoClip {
-  return { assetId, thumbnailUrl: `xingmang-asset://thumb/v2/video/${assetId}`, width: 320, height: 240, durationSeconds: 1 }
+function clipFor(assetId: string, seconds = 1): AiVideoClip {
+  return { assetId, thumbnailUrl: `xingmang-asset://thumb/v2/video/${assetId}`, width: 320, height: 240, durationSeconds: seconds }
 }
 const bridge: VideoStudioBridge = {
   listAiChatGroups: async () => { record('groups'); return groups },
@@ -138,14 +138,14 @@ async function finishResume(requestId: string, color: string) {
   return assetId
 }
 
-async function finishClip(requestId: string, color: string, sound = false) {
+async function finishClip(requestId: string, color: string, sound = false, seconds = 1) {
   const clip = clips.get(requestId)
   if (!clip) throw new Error(`no clip request ${requestId}`)
-  const data = await window.videoStudioHarness!.makeClip({ width: 320, height: 240, frameRate: 24, seconds: 1, color, ...(sound ? { tone: { frequency: 440, channels: 2 } } : {}) })
+  const data = await window.videoStudioHarness!.makeClip({ width: 320, height: 240, frameRate: 24, seconds, color, ...(sound ? { tone: { frequency: 440, channels: 2 } } : {}) })
   const assetId = nextAssetId()
   library.set(assetId, data)
   clips.delete(requestId)
-  clip.resolve(clipFor(assetId))
+  clip.resolve(clipFor(assetId, seconds))
   return assetId
 }
 
@@ -161,7 +161,7 @@ declare global {
       releaseModels(): void
       finishPlan(plan: VideoStudioPlan): void
       failPlan(message: string): void
-      finishClip(requestId: string, color: string, sound?: boolean): Promise<string>
+      finishClip(requestId: string, color: string, sound?: boolean, seconds?: number): Promise<string>
       failClip(requestId: string, message: string): void
       unsent(requestId: string): void
       progress(event: AiVideoProgressEvent): void

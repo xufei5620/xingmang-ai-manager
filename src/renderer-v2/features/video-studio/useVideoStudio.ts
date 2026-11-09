@@ -34,11 +34,13 @@ import {
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
+  setVideoStudioShotTrim,
   settleVideoStudioModels,
   startVideoStudioShotDrawing,
   updateVideoStudioShot,
   videoStudioComposeCaptions,
   videoStudioComposeKey,
+  withoutVideoStudioTrim,
   videoStudioComposeSound,
   videoStudioPlainText,
   videoStudioReadyToCompose,
@@ -48,6 +50,7 @@ import {
   type VideoStudioProject,
   type VideoStudioSettings,
   type VideoStudioShot,
+  type VideoStudioTrimSide,
 } from './project'
 
 export type VideoStudioBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'planVideoStudio' | 'generateAiVideo' | 'resumeAiVideo' | 'cancelAiVideo' | 'onAiVideoProgress' | 'readAiVideoClip' | 'storeVideoStudioExport' | 'openAiVideo' | 'saveAiVideo' | 'openDiagnosticFolder' | 'pickAiChatImages' | 'pickVideoStudioMusic' | 'readVideoStudioMusic' | 'generateAiImage' | 'cancelAiChat'>
@@ -296,7 +299,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
       if (!clip && onMissing) { next = onMissing; return }
       commit((current) => {
         const updated = updateVideoStudioShot(current, shotId, (item) => item.requestId !== requestId ? item
-          : clip ? { ...shotWithoutRun(item), clip, status: 'done' } : settleShot(item))
+          : clip ? { ...withoutVideoStudioTrim(shotWithoutRun(item)), clip, status: 'done' } : settleShot(item))
         return clip ? { ...updated, exported: undefined } : updated
       })
     } catch (reason) {
@@ -435,7 +438,11 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
         totalBytes = addVideoStudioClipBytes(totalBytes, bytes.byteLength)
         // 交给后台线程时字节是转移过去的，要一份自己独占的 ArrayBuffer。
         const data = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
-        clips.push({ data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer, ...(captions[index] ? { caption: captions[index] } : {}) })
+        clips.push({
+          data: data instanceof ArrayBuffer ? data : new Uint8Array(bytes).buffer,
+          ...(captions[index] ? { caption: captions[index] } : {}),
+          ...(shot.trimStart ? { trimStart: shot.trimStart } : {}), ...(shot.trimEnd ? { trimEnd: shot.trimEnd } : {}),
+        })
       }
       const sound = videoStudioComposeSound(current)
       let music: VideoStudioComposeRequest['music']
@@ -576,6 +583,7 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
     selectVideoModel: (model: string, group: string) => changeSettings({ videoModel: model, videoGroup: group, secondsPerShot: clampVideoStudioSeconds(projectRef.current.settings.secondsPerShot, model) }),
     selectTextModel: (model: string, group: string) => changeSettings({ textModel: model, textGroup: group }),
     selectImageModel: (model: string, group: string) => changeSettings({ imageModel: model, imageGroup: group }),
+    setShotTrim: (id: string, side: VideoStudioTrimSide, seconds: number) => commit((current) => setVideoStudioShotTrim(current, id, side, seconds)),
     drawShotImage,
     stopDrawing,
     editShot: (id: string, patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>) => commit((current) => ({ ...updateVideoStudioShot(current, id, (shot) => ({ ...shot, ...patch })), ...(patch.caption === undefined ? {} : { exported: undefined }) })),

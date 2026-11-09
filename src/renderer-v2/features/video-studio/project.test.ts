@@ -22,6 +22,7 @@ import {
   serializeVideoStudioProject,
   setVideoStudioClipSound,
   setVideoStudioMusic,
+  setVideoStudioShotTrim,
   settleVideoStudioModels,
   startVideoStudioShotDrawing,
   videoStudioComposeCaptions,
@@ -33,7 +34,10 @@ import {
   videoStudioSecondsChoices,
   videoStudioShotImage,
   videoStudioShotProblem,
+  videoStudioTotalSeconds,
+  videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
+  withoutVideoStudioTrim,
   type VideoStudioProject,
 } from './project'
 
@@ -238,6 +242,63 @@ describe('video studio project', () => {
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, captions: false } })).not.toBe(key)
     expect(videoStudioComposeKey({ ...done, settings: { ...done.settings, fit: 'contain' } })).not.toBe(key)
     expect(videoStudioComposeKey(applyVideoStudioPlan(done, { title: '新的', shots: [{ prompt: '新镜头' }] }, ids()))).not.toBe(key)
+    expect(videoStudioComposeKey(setVideoStudioShotTrim(done, 'shot-1', 'start', 1))).not.toBe(key)
+    expect(videoStudioComposeKey(setVideoStudioShotTrim(done, 'shot-1', 'end', 0.5))).not.toBe(key)
+  })
+
+  it('trims a clip by a few fixed steps, keeps at least a second of it and lets go of the film it no longer matches', () => {
+    const project = planned()
+    const done: VideoStudioProject = {
+      ...project,
+      shots: [{ ...project.shots[0], clip: clip('a'), status: 'done' }, { ...project.shots[1], clip: { ...clip('b'), durationSeconds: 2.5 }, status: 'done' }, project.shots[2]],
+      exported: clip('f'),
+    }
+    expect(videoStudioTrimOptions(done.shots[0], 'start', 6)).toEqual([0, 0.5, 1, 1.5, 2, 3])
+    const trimmed = setVideoStudioShotTrim(done, 'shot-1', 'start', 1)
+    expect(trimmed.shots[0]).toMatchObject({ trimStart: 1 })
+    expect(trimmed.shots[0]).not.toHaveProperty('trimEnd')
+    expect(trimmed.exported).toBeUndefined()
+    // Back to zero drops the field instead of storing a zero.
+    expect(setVideoStudioShotTrim(trimmed, 'shot-1', 'start', 0).shots[0]).not.toHaveProperty('trimStart')
+    // The same value, a value off the list, a shot without a clip or one being regenerated change nothing.
+    expect(setVideoStudioShotTrim(trimmed, 'shot-1', 'start', 1)).toBe(trimmed)
+    expect(setVideoStudioShotTrim(trimmed, 'shot-1', 'start', 0.7)).toBe(trimmed)
+    expect(setVideoStudioShotTrim(trimmed, 'shot-3', 'start', 1)).toBe(trimmed)
+    const busy = { ...trimmed, shots: trimmed.shots.map((shot, index) => index === 0 ? { ...shot, status: 'generating' as const, requestId: 'r' } : shot) }
+    expect(setVideoStudioShotTrim(busy, 'shot-1', 'end', 1)).toBe(busy)
+
+    // A 2.5 second clip keeps at least a second: with half a second off the end, at most a second comes off the start.
+    const short = setVideoStudioShotTrim(done, 'shot-2', 'end', 0.5)
+    expect(videoStudioTrimOptions(short.shots[1], 'start', 6)).toEqual([0, 0.5, 1])
+    expect(setVideoStudioShotTrim(short, 'shot-2', 'start', 1.5)).toBe(short)
+    // Without a known length the shot length stands in.
+    expect(videoStudioTrimOptions({ clip: { ...clip('c'), durationSeconds: undefined } }, 'end', 3)).toEqual([0, 0.5, 1, 1.5, 2])
+    // The value already chosen always stays on the list, so the menu never shows a blank.
+    expect(videoStudioTrimOptions({ clip: { ...clip('c'), durationSeconds: 1 }, trimEnd: 2 }, 'end', 6)).toEqual([0, 2])
+
+    expect(videoStudioTotalSeconds(done)).toBe(18)
+    expect(videoStudioTotalSeconds(setVideoStudioShotTrim(short, 'shot-1', 'start', 1))).toBe(17)
+    expect(withoutVideoStudioTrim({ id: 'x', trimStart: 1, trimEnd: 0.5 })).toEqual({ id: 'x' })
+  })
+
+  it('stores how much of each clip is trimmed and reads back only trims it can trust', () => {
+    const project = planned()
+    const done: VideoStudioProject = { ...project, shots: [{ ...project.shots[0], clip: clip('a'), status: 'done' }, ...project.shots.slice(1)] }
+    const trimmed = setVideoStudioShotTrim(setVideoStudioShotTrim(done, 'shot-1', 'start', 1), 'shot-1', 'end', 0.5)
+    const stored = serializeVideoStudioProject(trimmed)
+    expect(restoreVideoStudioProject(JSON.parse(JSON.stringify(stored)))!.shots[0]).toMatchObject({ trimStart: 1, trimEnd: 0.5 })
+    const raw = JSON.parse(JSON.stringify(stored))
+    raw.shots[0].trimStart = 0.7
+    raw.shots[0].trimEnd = '1'
+    raw.shots[1].trimStart = 1
+    const restored = restoreVideoStudioProject(raw)!
+    expect(restored.shots[0]).not.toHaveProperty('trimStart')
+    expect(restored.shots[0]).not.toHaveProperty('trimEnd')
+    // A trim without a clip, or trims that leave less than a second, are dropped as a whole.
+    expect(restored.shots[1]).not.toHaveProperty('trimStart')
+    raw.shots[0].trimStart = 3
+    raw.shots[0].trimEnd = 3
+    expect(restoreVideoStudioProject(raw)!.shots[0]).not.toHaveProperty('trimStart')
   })
 
   it('stores the storyboard, clip ids and the requests still out, but not their progress', () => {

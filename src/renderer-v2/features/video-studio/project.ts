@@ -40,6 +40,9 @@ export interface VideoStudioShot {
   image?: VideoStudioShotImage
   /** 生成好的片段；重新生成成功前一直留着上一段。 */
   clip?: AiVideoClip
+  /** 拼片时这一段开头、结尾各剪掉几秒（videoStudioTrimChoices 里的一档，0 不存）。跟着片段走，换了新片段就清掉。 */
+  trimStart?: number
+  trimEnd?: number
   /**
    * 正在生成、或者没等到结果就失败了的那一次请求。会存下来：关掉软件再打开，拿它回主进程把那一段接回来，
    * 钱已经扣了的片段不会只留在作品库里、镜头上却显示「还没生成」。
@@ -249,6 +252,53 @@ export function isVideoStudioShotBusy(shot: VideoStudioShot): boolean {
   return shot.status === 'queued' || shot.status === 'generating'
 }
 
+/**
+ * 每段开头、结尾能剪掉的几档秒数（0 是不剪）。AI 片段常见开头一秒发呆、结尾一秒走样，这几档够用；
+ * 页面里放不了视频（主窗口不开 media-src），拖动条找不准位置，按档选反而好用。
+ */
+export const videoStudioTrimChoices: readonly number[] = [0, 0.5, 1, 1.5, 2, 3]
+export type VideoStudioTrimSide = 'start' | 'end'
+// 剪完至少留这么长，不然这一段在成片里一闪就过去了。
+const minimumTrimmedSeconds = 1
+
+function isVideoStudioTrim(value: unknown): value is number {
+  return typeof value === 'number' && videoStudioTrimChoices.includes(value)
+}
+
+/** 这一镜这一头能选哪几档：剪完至少留 1 秒（片段时长读不到就按「每段时长」算）；现在选着的那档总在里面。 */
+export function videoStudioTrimOptions(shot: Pick<VideoStudioShot, 'clip' | 'trimStart' | 'trimEnd'>, side: VideoStudioTrimSide, secondsPerShot: number): number[] {
+  const current = (side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0
+  const other = (side === 'start' ? shot.trimEnd : shot.trimStart) ?? 0
+  const duration = shot.clip?.durationSeconds ?? secondsPerShot
+  return videoStudioTrimChoices.filter((choice) => choice === current || duration - other - choice >= minimumTrimmedSeconds)
+}
+
+/**
+ * 改这一段剪掉多少。只有生成好、没在重新生成的片段能剪；不在可选那几档里的不收。
+ * 剪的长短一变，上一次的成片就跟现在对不上了，不再挂在这里（文件还在作品库里）。
+ */
+export function setVideoStudioShotTrim(project: VideoStudioProject, id: string, side: VideoStudioTrimSide, seconds: number): VideoStudioProject {
+  const shot = project.shots.find((item) => item.id === id)
+  if (!shot?.clip || isVideoStudioShotBusy(shot) || !videoStudioTrimOptions(shot, side, project.settings.secondsPerShot).includes(seconds)) return project
+  if (((side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0) === seconds) return project
+  const start = side === 'start' ? seconds : shot.trimStart ?? 0
+  const end = side === 'end' ? seconds : shot.trimEnd ?? 0
+  const updated = updateVideoStudioShot(project, id, ({ trimStart: _start, trimEnd: _end, ...rest }) => ({ ...rest, ...(start ? { trimStart: start } : {}), ...(end ? { trimEnd: end } : {}) }))
+  return { ...updated, exported: undefined }
+}
+
+/** 换上新片段时用：上一段剪掉多少对新片段没有意义。 */
+export function withoutVideoStudioTrim<T extends Pick<VideoStudioShot, 'trimStart' | 'trimEnd'>>(shot: T): Omit<T, 'trimStart' | 'trimEnd'> {
+  const { trimStart: _start, trimEnd: _end, ...rest } = shot
+  return rest
+}
+
+/** 分镜卡上「共约 T 秒」：每段按「每段时长」算，减掉剪掉的。 */
+export function videoStudioTotalSeconds(project: VideoStudioProject): number {
+  const { secondsPerShot } = project.settings
+  return Math.round(project.shots.reduce((total, shot) => total + secondsPerShot - (shot.trimStart ?? 0) - (shot.trimEnd ?? 0), 0))
+}
+
 /** 这一镜正在让 AI 画图。画着的时候不出这一镜的视频、不换它的图，不然画好的图和片段对不上。 */
 export function isVideoStudioShotDrawing(shot: VideoStudioShot): boolean {
   return Boolean(shot.drawing)
@@ -410,7 +460,7 @@ export function videoStudioComposeSound(project: VideoStudioProject): { music?: 
 export function videoStudioComposeKey(project: VideoStudioProject): string {
   const { aspect, resolution, fit } = project.settings
   const sound = project.music ? [project.music.assetId, project.music.clipSound] : []
-  return JSON.stringify([aspect, resolution, fit, project.shots.map((shot) => shot.clip?.assetId ?? ''), videoStudioComposeCaptions(project), sound])
+  return JSON.stringify([aspect, resolution, fit, project.shots.map((shot) => [shot.clip?.assetId ?? '', shot.trimStart ?? 0, shot.trimEnd ?? 0]), videoStudioComposeCaptions(project), sound])
 }
 
 /**
@@ -487,6 +537,7 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
     title: project.title,
     shots: project.shots.map((shot) => ({
       id: shot.id, prompt: shot.prompt, caption: shot.caption, ...(shot.image ? { image: { assetId: shot.image.assetId } } : {}), ...(shot.clip ? { clip: shot.clip } : {}),
+      ...(shot.clip && shot.trimStart ? { trimStart: shot.trimStart } : {}), ...(shot.clip && shot.trimEnd ? { trimEnd: shot.trimEnd } : {}),
       // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
       ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
     })),
@@ -530,12 +581,18 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
     const image = isRecord(entry.image) ? videoStudioShotImage(entry.image.assetId) : null
     const requestId = typeof entry.requestId === 'string' && requestIdPattern.test(entry.requestId) ? entry.requestId : undefined
     const unconfirmed = Boolean(requestId) && entry.unconfirmed === true
+    // 剪掉多少只跟着片段读；两头加起来剪得超过可选范围的整个不认，免得拼的时候才报「剪掉首尾后没法用」。
+    const trimStart = clip && isVideoStudioTrim(entry.trimStart) ? entry.trimStart : 0
+    const trimEnd = clip && isVideoStudioTrim(entry.trimEnd) ? entry.trimEnd : 0
+    const trimmed = videoStudioTrimOptions({ clip, trimEnd }, 'start', settings.secondsPerShot).includes(trimStart)
     shots.push({
       id,
       prompt: readText(entry.prompt, videoStudioPlanLimits.maximumPromptLength),
       caption: readText(entry.caption, videoStudioPlanLimits.maximumCaptionLength),
       ...(image ? { image } : {}),
       ...(clip ? { clip } : {}),
+      ...(trimmed && trimStart ? { trimStart } : {}),
+      ...(trimmed && trimEnd ? { trimEnd } : {}),
       ...(requestId ? { requestId } : {}),
       ...(unconfirmed ? { unconfirmed, error: aiVideoUnconfirmedSubmissionMessage } : {}),
       status: unconfirmed ? 'failed' : requestId ? 'generating' : clip ? 'done' : 'idle',
