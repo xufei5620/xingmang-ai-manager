@@ -175,6 +175,62 @@ describe('createCanvasRunService', () => {
     }
   })
 
+  // R-1: with several videos running, each progress report used to rewrite
+  // the whole run file on the main process.
+  it('keeps progress reports off the disk until the next durable step while readers see them at once', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-service-'))
+    try {
+      const store = new CanvasRunStore({
+        rootDirectory: root,
+        assets: {
+          readOwned: async (_userId, assetId) => ({ asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' } }),
+        },
+        deferredWriteDelayMs: 60_000,
+      })
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const assetId = 'p'.repeat(43)
+      const service = createCanvasRunService({
+        store,
+        randomUUID: () => 'run-progress',
+        executors: {
+          text: async ({ node }) => ({ outputText: node.data.prompt }),
+          image: async ({ reportStage }) => {
+            await reportStage?.('processing', { value: 30, mode: 'determinate', health: 'normal' })
+            await gate
+            return { assets: [{ kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' }] }
+          },
+          video: async () => ({ assets: [] }),
+        },
+      })
+      const graph: CanvasRunGraph = {
+        nodes: [{ id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: '一只猫', model: 'gpt-image-2', group: '生图分组' } }],
+        edges: [],
+      }
+      const handle = await service.start({
+        userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
+      })
+      function runOnDisk(): CanvasRunRecord | undefined {
+        const state = JSON.parse(fs.readFileSync(path.join(root, 'user-7', 'canvas-runtime.json'), 'utf8')) as { runs: CanvasRunRecord[] }
+        return state.runs.find((run) => run.runId === 'run-progress')
+      }
+      function progressEvents(run: CanvasRunRecord | null | undefined) {
+        return (run?.events ?? []).filter((event) => event.type === 'node-stage' && event.progress === 30)
+      }
+
+      await vi.waitFor(async () => expect(progressEvents(await service.getRun(7, 'run-progress'))).toHaveLength(1))
+      expect(runOnDisk()?.nodes[0].state).toBe('running')
+      expect(progressEvents(runOnDisk())).toHaveLength(0)
+
+      release()
+      await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
+      expect(runOnDisk()?.status).toBe('succeeded')
+      expect(progressEvents(runOnDisk())).toHaveLength(1)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects stale graph revisions before creating paid work', async () => {
     const graph = workflow()
     const text = vi.fn(async () => ({ outputText: 'hello' }))

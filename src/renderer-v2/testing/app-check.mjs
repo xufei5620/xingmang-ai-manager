@@ -7803,6 +7803,30 @@ test('a failed runtime stage says the tool never started and does not run the CL
   } finally { await page.close() }
 })
 
+// 并发竞态 BF3：新电脑上挨个点两个工具的「安装」，Node.js 还在装时第二个以前立刻变红，说「Node.js 运行环境没装上」。
+// 现在第二个跟着等同一次 Node.js 装完（主进程同一个键复用同一次），再接着装自己。
+test('a second install while Node.js is still being prepared waits for it instead of failing (BF3)', async () => {
+  const page = await open('nodeVersionUnknown=1&codexMissing=1')
+  try {
+    await page.getByTestId('tool-row-codex').getByText('未安装').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.evaluate(() => window.v2Test.holdNextNodeInstall())
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installNodeRuntime'))
+    await page.getByTestId('tool-grok-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('正在准备 Node.js 运行环境（1/2）').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'installNodeRuntime').length === 2)
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await page.evaluate(() => window.v2Test.releaseNodeInstall())
+    await page.getByTestId('tool-row-codex').getByText('未安装').waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor({ state: 'detached' })
+    assert.deepEqual((await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installCli').map((entry) => entry.args[0]))).sort(), ['codex', 'grok'])
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // MSI 回 3010：Windows 要重启才算把 Node.js 装完，这时不接着装工具（会失败），
 // 而是停下来弹「现在重启」（第七批 5 的那个框）。
 test('a runtime stage that needs a Windows restart stops before the CLI install and asks to restart', async () => {
