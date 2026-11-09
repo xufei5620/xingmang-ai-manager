@@ -183,7 +183,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
           <small>{[exported.durationSeconds ? `${formatSeconds(exported.durationSeconds)}` : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存进 AI 作品文件夹'}</small>
           <div className="video-studio-result-actions">
             <Button size="sm" icon={Play} onClick={() => void studio.openClip(exported.assetId)} testId="video-result-open">用播放器打开</Button>
-            <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId)} testId="video-result-save">另存为</Button>
+            <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId, project.title)} testId="video-result-save">另存为</Button>
             <Button size="sm" icon={FolderOpen} onClick={() => void studio.openFolder()} testId="video-result-folder">打开文件夹</Button>
           </div>
         </div>

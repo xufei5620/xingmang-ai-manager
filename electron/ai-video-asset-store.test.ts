@@ -175,6 +175,18 @@ describe('AiVideoAssetStore', () => {
     expect(fs.readFileSync(target)).toEqual(mp4())
     expect(fs.readdirSync(saveRoot)).toEqual(['saved.mp4'])
   })
+
+  it('offers the suggested file name in the save dialog, and the stored name without one', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-save-'))
+    roots.push(outputRoot)
+    const selectSavePath = vi.fn(async () => null)
+    const store = new AiVideoAssetStore({ outputRoot, nativeOperations: { selectSavePath, revealInFolder: vi.fn(), showContextMenu: vi.fn() } })
+    const asset = await store.storeComposed(7, mp4())
+    await expect(store.saveAs(7, asset.assetId, undefined, '回家的猫.mp4')).resolves.toBe(false)
+    expect(selectSavePath).toHaveBeenLastCalledWith('回家的猫.mp4')
+    await expect(store.saveAs(7, asset.assetId)).resolves.toBe(false)
+    expect(selectSavePath).toHaveBeenLastCalledWith(asset.fileName)
+  })
 })
 
 describe('AiVideoAssetStore lookup by identifier', () => {

@@ -16,6 +16,7 @@ import {
   parseAiAudioAssetId,
   parseAiVideoAssetId,
   parseAiVideoGenerateInput,
+  parseVideoSaveName,
   parseVideoStudioExportBytes,
   parseVideoStudioPlanInput,
 } from '../parsers/ai-video'
@@ -266,11 +267,13 @@ export function registerAiVideoHandlers(ctx: IpcHandlerContext): void {
     await externalShell.openPath(filePath)
   })
 
-  registerTrustedHandler('video:save-as', async (_event, assetId: unknown) => {
+  registerTrustedHandler('video:save-as', async (_event, assetId: unknown, suggestedName: unknown) => {
     const userId = currentUserId()
-    const saved = await videoAssets().saveAs(userId, parseAiVideoAssetId(assetId), () => {
+    const id = parseAiVideoAssetId(assetId)
+    const fileName = parseVideoSaveName(suggestedName)
+    const saved = await videoAssets().saveAs(userId, id, () => {
       if (currentUserId() !== userId) throw new Error('账号已切换，请重新另存')
-    })
+    }, fileName)
     return { saved }
   })
 }

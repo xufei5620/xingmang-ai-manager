@@ -352,6 +352,10 @@ test('writes a storyboard, generates every shot and joins them into one film', a
   await page.getByTestId('video-result-folder').click()
   await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'folder'))
   assert.deepEqual(await studioCalls(page, 'folder'), ['ai-output'])
+  // 另存为：对话框里默认用片名当文件名（主进程再洗一遍）。
+  await page.getByTestId('video-result-save').click()
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'save'))
+  assert.deepEqual(await studioCalls(page, 'save'), [{ assetId: opened, suggestedName: '回家的猫' }])
   assert.equal(await page.getByTestId('video-error').count(), 0)
 
   // 重开页面：分镜、片段和成片都还在，没有再发任何付费请求。

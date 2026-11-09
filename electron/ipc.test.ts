@@ -1393,7 +1393,11 @@ describe('registerIpcHandlers', () => {
       expect(electronMocks.openPath).toHaveBeenCalledWith(filePath)
 
       await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId)).resolves.toEqual({ saved: true })
-      expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
+      expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function), undefined)
+      // The film title only becomes the dialog's default file name, washed clean of anything that reads as a path.
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId, '..\\回家的猫/第 1 集')).resolves.toEqual({ saved: true })
+      expect(videoAssets.saveAs).toHaveBeenLastCalledWith(7, clipId, expect.any(Function), '回家的猫 第 1 集.mp4')
+      await expect(electronMocks.handlers.get('video:save-as')!(trustedEvent(), clipId, { path: 'C:\\Windows' })).rejects.toThrow('另存的文件名格式错误')
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
       dispose()
     })
