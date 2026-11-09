@@ -1,6 +1,6 @@
 import { assetThumbnailUrl } from '../../../../electron/asset-thumbnail'
 import { aiVideoUnconfirmedSubmissionMessage } from '../../../../electron/ai-video-submission'
-import type { AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioPlan } from '../../../../electron/ipc-contract'
+import type { AiChatGroupSummary, AiVideoClip, AiVideoGenerateInput, AiVideoProgressEvent, VideoStudioMusic, VideoStudioPlan } from '../../../../electron/ipc-contract'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { buildChatCatalog, pickChatGroup, resolveDefaultChatModel, type ChatCatalogEntry, type ChatGroupPreparation, type ChatSite } from '../chat/state'
 import { inspectModel } from '../chat/api'
@@ -18,6 +18,17 @@ export type VideoStudioShotStatus = 'idle' | 'queued' | 'generating' | 'done' | 
 export interface VideoStudioShotImage {
   assetId: string
   url: string
+}
+
+/** 有配乐时片段原声怎么放：照常、调小、关掉。 */
+export type VideoStudioClipSound = 'normal' | 'quiet' | 'off'
+
+/**
+ * 背景音乐：客户从电脑里选的一首歌（video-studio:pick-music，存进作品库的音频那一格）。只存编号、
+ * 文件名和时长，歌本身在作品库里，拼片时按编号读回来。
+ */
+export interface VideoStudioMusicChoice extends VideoStudioMusic {
+  clipSound: VideoStudioClipSound
 }
 
 export interface VideoStudioShot {
@@ -67,6 +78,8 @@ export interface VideoStudioProject {
   settings: VideoStudioSettings
   title: string
   shots: VideoStudioShot[]
+  /** 背景音乐；没有就只用片段原声。 */
+  music?: VideoStudioMusicChoice
   /** 上一次拼好、存进作品库的成片。 */
   exported?: AiVideoClip
 }
@@ -84,6 +97,15 @@ const grokDimensions: Readonly<Record<VideoStudioAspect, { width: number, height
 
 export const videoStudioAspectNames: Readonly<Record<VideoStudioAspect, string>> = { '16:9': '横屏 16:9', '9:16': '竖屏 9:16', '1:1': '方形 1:1' }
 export const videoStudioFitNames: Readonly<Record<VideoStudioFit, string>> = { cover: '裁边铺满', contain: '补黑边' }
+export const videoStudioClipSounds = ['normal', 'quiet', 'off'] as const satisfies readonly VideoStudioClipSound[]
+export const videoStudioClipSoundNames: Readonly<Record<VideoStudioClipSound, string>> = { normal: '照常', quiet: '调小', off: '关掉' }
+// 两路声音各放多大。照常：人声、现场声在前，歌垫在底下；调小：歌在前，原声留一点；关掉：只剩歌，
+// 留一点余量不顶满（两路相加超过满格的会被截掉，听着发闷）。
+const clipSoundGains: Readonly<Record<VideoStudioClipSound, { clip: number, music: number }>> = {
+  normal: { clip: 1, music: 0.3 },
+  quiet: { clip: 0.3, music: 0.7 },
+  off: { clip: 0, music: 0.9 },
+}
 
 export function createVideoStudioId(): string {
   return crypto.randomUUID()
@@ -299,10 +321,34 @@ export function videoStudioComposeCaptions(project: VideoStudioProject): string[
   return project.shots.map((shot) => project.settings.captions ? normalizeVideoStudioCaption(shot.caption) : '')
 }
 
-/** 一次拼片用到的全部东西：哪几段、什么顺序、烧什么字、什么画面。拼完时和工程对不上，说明中途改过，成片不能挂到改过的分镜上。 */
+/** 拼片时两路声音的音量：没配乐就是片段原声照常，什么都不用传。 */
+export function videoStudioComposeSound(project: VideoStudioProject): { music?: { assetId: string, gain: number }, clipGain?: number } {
+  if (!project.music) return {}
+  const gains = clipSoundGains[project.music.clipSound]
+  return { music: { assetId: project.music.assetId, gain: gains.music }, clipGain: gains.clip }
+}
+
+/** 一次拼片用到的全部东西：哪几段、什么顺序、烧什么字、什么画面、配什么歌。拼完时和工程对不上，说明中途改过，成片不能挂到改过的分镜上。 */
 export function videoStudioComposeKey(project: VideoStudioProject): string {
   const { aspect, resolution, fit } = project.settings
-  return JSON.stringify([aspect, resolution, fit, project.shots.map((shot) => shot.clip?.assetId ?? ''), videoStudioComposeCaptions(project)])
+  const sound = project.music ? [project.music.assetId, project.music.clipSound] : []
+  return JSON.stringify([aspect, resolution, fit, project.shots.map((shot) => shot.clip?.assetId ?? ''), videoStudioComposeCaptions(project), sound])
+}
+
+/**
+ * 选好一首歌：换一首时原声那一项照旧，头一回选默认「调小」（加了配乐多半是想听歌）。
+ * 配乐一变，上一次的成片就跟现在对不上了，不再挂在这里。
+ */
+export function setVideoStudioMusic(project: VideoStudioProject, music: VideoStudioMusic): VideoStudioProject {
+  return { ...project, music: { ...music, clipSound: project.music?.clipSound ?? 'quiet' }, exported: undefined }
+}
+
+export function removeVideoStudioMusic(project: VideoStudioProject): VideoStudioProject {
+  return project.music ? { ...project, music: undefined, exported: undefined } : project
+}
+
+export function setVideoStudioClipSound(project: VideoStudioProject, clipSound: VideoStudioClipSound): VideoStudioProject {
+  return project.music && project.music.clipSound !== clipSound ? { ...project, music: { ...project.music, clipSound }, exported: undefined } : project
 }
 
 // —— 存到这台电脑上 ——
@@ -330,6 +376,20 @@ function readPositive(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
 }
 
+function isVideoStudioClipSound(value: unknown): value is VideoStudioClipSound {
+  return (videoStudioClipSounds as readonly unknown[]).includes(value)
+}
+
+// 歌名是主进程按文件名给的（electron/ipc/handlers/ai-video.ts 的 videoStudioMusicName），存着的照那个规矩再收一遍。
+function readMusic(value: unknown): VideoStudioMusicChoice | undefined {
+  if (!isRecord(value) || typeof value.assetId !== 'string' || !assetIdPattern.test(value.assetId)) return undefined
+  const name = typeof value.name === 'string' ? value.name.replace(/[\x00-\x1F\x7F\s]+/g, ' ').trim().slice(0, 80).trim() : ''
+  if (!name) return undefined
+  const durationSeconds = readPositive(value.durationSeconds)
+  const clipSound = isVideoStudioClipSound(value.clipSound) ? value.clipSound : 'quiet'
+  return { assetId: value.assetId, name, ...(durationSeconds ? { durationSeconds } : {}), clipSound }
+}
+
 function readClip(value: unknown): AiVideoClip | undefined {
   if (!isRecord(value) || typeof value.assetId !== 'string' || !assetIdPattern.test(value.assetId)) return undefined
   // 缩略图地址只收主进程给的那种（electron/asset-thumbnail.ts），而且要是同一段视频的。存着的地址带着当时的版本号，
@@ -352,6 +412,7 @@ export function serializeVideoStudioProject(project: VideoStudioProject): unknow
       // 沿用请求号重新出着的那一单不记 unconfirmed：重开以后照样去接，主进程那边记着上一次结果不明，接回时会照实回答。
       ...(shot.requestId ? { requestId: shot.requestId, ...(shot.unconfirmed && shot.status !== 'generating' ? { unconfirmed: true } : {}) } : {}),
     })),
+    ...(project.music ? { music: project.music } : {}),
     ...(project.exported ? { exported: project.exported } : {}),
   }
 }
@@ -400,8 +461,9 @@ export function restoreVideoStudioProject(value: unknown, createId: () => string
       status: unconfirmed ? 'failed' : requestId ? 'generating' : clip ? 'done' : 'idle',
     })
   }
+  const music = readMusic(value.music)
   const exported = readClip(value.exported)
-  return { version: 1, settings, title: readText(value.title, videoStudioPlanLimits.maximumTitleLength), shots, ...(exported ? { exported } : {}) }
+  return { version: 1, settings, title: readText(value.title, videoStudioPlanLimits.maximumTitleLength), shots, ...(music ? { music } : {}), ...(exported ? { exported } : {}) }
 }
 
 export function videoStudioStorageKey(scope: string): string {

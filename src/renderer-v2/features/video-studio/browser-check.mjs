@@ -125,6 +125,41 @@ test('drops the hidden lead-in of a clip whose first frames are stamped before z
   await page.close()
 })
 
+test('lays a song under the film, starts it over when it runs out and fades it out at the end', async () => {
+  const { page, errors } = await open()
+  const summary = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const options = { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30 }
+    const silent = () => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color: '#0000ff' })
+    const toned = () => harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 2, color: '#ff0000', tone: { frequency: 440, channels: 2 } })
+    // 两段没声音的片段（共 4 秒）、一首 1.5 秒的歌：歌放两遍多，最后 2 秒淡出。
+    const withMusic = await harness.compose({ clips: [{ data: await silent() }, { data: await silent() }], options, music: { data: await harness.makeSong(1.5), gain: 0.8 }, clipGain: 0.3 }, { worker: true })
+    // 不要原声、也没配乐：成片不带声音。
+    const muted = await harness.compose({ clips: [{ data: await toned() }], options, clipGain: 0 })
+    // 原声调小：还在，只是轻了。
+    const quiet = await harness.compose({ clips: [{ data: await toned() }], options, clipGain: 0.3 })
+    const loud = await harness.compose({ clips: [{ data: await toned() }], options })
+    const unreadable = await harness.failure(async () => harness.compose({ clips: [{ data: await silent() }], options, music: { data: new TextEncoder().encode('not a song').buffer, gain: 0.8 } }))
+    return {
+      withMusic: { audioCodec: withMusic.audioCodec, inspected: await harness.inspect(withMusic.data, { loudness: [{ from: 0.2, to: 1.2 }, { from: 1.6, to: 1.9 }, { from: 3.85, to: 3.98 }] }) },
+      muted: { audioCodec: muted.audioCodec },
+      quiet: (await harness.inspect(quiet.data, { loudness: [{ from: 0.5, to: 1 }] })).loudness[0],
+      loud: (await harness.inspect(loud.data, { loudness: [{ from: 0.5, to: 1 }] })).loudness[0],
+      unreadable,
+    }
+  })
+  assert.deepEqual(errors, [])
+  assert.ok(['aac', 'opus'].includes(summary.withMusic.audioCodec), 'a film of silent clips gets a sound track once it has a song')
+  const [first, again, last] = summary.withMusic.inspected.loudness
+  assert.ok(first > 0.15, `the song plays from the start (${first})`)
+  assert.ok(again > 0.15, `the song starts over after 1.5 seconds (${again})`)
+  assert.ok(last < first / 5, `the song has all but faded out by the very end (${first} → ${last})`)
+  assert.equal(summary.muted.audioCodec, null, 'with the clip sound off and no song there is nothing to hear')
+  assert.ok(summary.quiet > 0.05 && summary.quiet < summary.loud * 0.5, `turning the clip sound down keeps it, quieter (${summary.quiet} vs ${summary.loud})`)
+  assert.equal(summary.unreadable.message, '这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）')
+  await page.close()
+})
+
 test('runs the same job in a background worker and follows a codec preference', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
@@ -741,6 +776,62 @@ test('starts shots from pictures picked on the computer and keeps them after reo
   await page.reload()
   await page.getByTestId('video-shot-image-preview-0').waitFor()
   assert.equal(await page.getByTestId('video-shot-image-1').textContent(), '用一张图开头')
+  assert.deepEqual(errors, [])
+  await page.close()
+})
+
+// 「加配乐」：歌由主进程的系统对话框选、存进作品库（这里是假的桥），拼片时按编号读回来混进去；重开页面还在。
+test('lays a picked song under the joined film, with the clip sound turned down by default, and keeps it after reopening', async () => {
+  const { page, errors } = await openStudio()
+  await writeStoryboard(page, '海边散步', { title: '海边', shots: [{ prompt: '海浪' }, { prompt: '沙滩' }] })
+  await page.getByTestId('video-generate-all').click()
+  await page.getByTestId('video-confirm').getByRole('button', { name: '开始生成' }).click()
+  await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 2)
+  const requests = await studioCalls(page, 'generate')
+  for (const input of requests) await page.evaluate((requestId) => window.videoStudioPage.finishClip(requestId, '#0000ff'), input.requestId)
+  for (const index of [0, 1]) await page.getByTestId(`video-shot-${index}`).getByText('已生成').waitFor()
+
+  const add = page.getByTestId('video-music-add')
+  assert.equal(await add.getAttribute('title'), '从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG')
+  assert.equal(await add.textContent(), '加配乐')
+  // 在对话框里点了取消：什么都不变。
+  await add.click()
+  await page.waitForFunction(() => window.videoStudioPage.calls.some((call) => call.method === 'pick-music'))
+  assert.equal(await page.getByTestId('video-music-name').count(), 0)
+  // 主进程认不出这个文件：页面上照那一句说。
+  await page.evaluate(() => window.videoStudioPage.pickSong('unreadable'))
+  await add.click()
+  await page.getByTestId('video-error').getByText('这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）').waitFor()
+
+  await page.evaluate(() => window.videoStudioPage.pickSong({ name: '海风', seconds: 0.8, frequency: 660 }))
+  await add.click()
+  await page.getByTestId('video-music-name').getByText('海风').waitFor()
+  assert.equal(await page.getByTestId('video-music-change').textContent(), '换一首')
+  assert.equal(await page.getByTestId('video-music-remove').textContent(), '不用配乐')
+  assert.equal(await page.getByTestId('video-clip-sound').inputValue(), 'quiet')
+  assert.deepEqual(await page.getByTestId('video-clip-sound').locator('option').allTextContents(), ['照常', '调小', '关掉'])
+
+  await page.getByTestId('video-compose').click()
+  await page.getByTestId('video-result').waitFor({ timeout: fixtureReadyTimeoutMs })
+  const [songId] = await studioCalls(page, 'read-music')
+  assert.match(songId, /^v+\d+$/)
+  const inspected = await page.evaluate(() => window.videoStudioHarness.inspect(window.videoStudioPage.exported(), { loudness: [{ from: 0.1, to: 0.7 }, { from: 0.9, to: 1.4 }] }))
+  assert.ok(['aac', 'opus'].includes(inspected.audioCodec), 'clips without sound get a sound track from the song')
+  const [first, again] = inspected.loudness
+  assert.ok(first > 0.1, `the song plays under the film (${first})`)
+  assert.ok(again > 0.1, `the song starts over once it runs out (${again})`)
+  assert.equal(await page.getByTestId('video-error').count(), 0)
+
+  // 换个原声音量，上一次的成片就跟现在对不上了，不再挂着。
+  await page.getByTestId('video-clip-sound').selectOption('off')
+  await page.waitForFunction(() => !document.querySelector('[data-testid="video-result"]'))
+
+  // 重开页面：歌和原声那一项都还在；不用配乐就回到「加配乐」。
+  await page.reload()
+  await page.getByTestId('video-music-name').getByText('海风').waitFor()
+  assert.equal(await page.getByTestId('video-clip-sound').inputValue(), 'off')
+  await page.getByTestId('video-music-remove').click()
+  await page.getByTestId('video-music-add').waitFor()
   assert.deepEqual(errors, [])
   await page.close()
 })

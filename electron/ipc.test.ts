@@ -25,6 +25,7 @@ import { noteRequestDiagnostics } from './request-diagnostics'
 import { PaymentCheckoutRejected } from './payment-window'
 import { assetThumbnailUrl } from './asset-thumbnail'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiStoredAudioAsset } from './ai-audio-asset-store'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -66,6 +67,7 @@ import { registerIpcHandlers } from './ipc'
 import { accelerationStateLogKey } from './ipc/handler-log'
 import { parseAppUninstallRequest, parseDiagnosticsRunOptions, parseExternalClientScanOptions, parseNodeRuntimeInstallRequest, parseUpdateDownloadOptions } from './ipc/parsers/system'
 import { parseRunningToolsProviders } from './ipc/parsers/tools'
+import { videoStudioMusicName } from './ipc/handlers/ai-video'
 import { createRemoteFeatureGate } from './remote-feature-gate'
 
 const stubStoredConfig: AppSettings = {
@@ -1367,6 +1369,65 @@ describe('registerIpcHandlers', () => {
       expect(videoAssets.saveAs).toHaveBeenCalledWith(7, clipId, expect.any(Function))
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('XingmangAI')
       dispose()
+    })
+
+    it('stores a song picked in the system dialog for the signed-in account and hands back only its id, name and length', async () => {
+      const songId = 'S'.repeat(43)
+      const songPath = '/home/someone/Music/夏天的风\u0007 (live).mp3'
+      const song: AiStoredAudioAsset = { assetId: songId, localUrl: `xingmang-asset://audio/${songId}`, mimeType: 'audio/mpeg', fileName: 'xingmang-song.mp3', durationSeconds: 183.4 }
+      const audioAssets = {
+        storeLocalFile: vi.fn(async (_userId: number, _sourcePath: string) => song),
+        readOwned: vi.fn(async (_userId: number, _assetId: string) => ({ asset: song, bytes: Buffer.from('ID3-bytes') })),
+      }
+      const { runtimeLog, dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(), undefined, undefined, {}, { audioAssets })
+      const pick = electronMocks.handlers.get('video-studio:pick-music')!
+      const read = electronMocks.handlers.get('video-studio:read-music')!
+
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: true, filePaths: [] })
+      await expect(pick(trustedEvent())).resolves.toBeNull()
+      expect(audioAssets.storeLocalFile).not.toHaveBeenCalled()
+      expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+        title: '从电脑里选一首歌当背景音乐',
+        properties: ['openFile'],
+        filters: [{ name: '音乐', extensions: ['mp3', 'm4a', 'wav', 'ogg'] }],
+      }))
+
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
+      await expect(pick(trustedEvent())).resolves.toEqual({ assetId: songId, name: '夏天的风 (live)', durationSeconds: 183.4 })
+      expect(audioAssets.storeLocalFile).toHaveBeenCalledWith(7, songPath)
+
+      // Whatever the store says about a file it will not take, the page shows the one sentence it can act on;
+      // only a full or locked disk keeps its own words.
+      audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('不支持的音频格式'))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
+      await expect(pick(trustedEvent())).rejects.toThrow('这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）')
+      audioAssets.storeLocalFile.mockRejectedValueOnce(new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服'))
+      electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [songPath] })
+      await expect(pick(trustedEvent())).rejects.toThrow('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+
+      await expect(read(trustedEvent(), '../../secret')).rejects.toThrow('音频编号格式错误')
+      expect(audioAssets.readOwned).not.toHaveBeenCalled()
+      await expect(read(trustedEvent(), songId)).resolves.toEqual(Buffer.from('ID3-bytes'))
+      expect(audioAssets.readOwned).toHaveBeenCalledWith(7, songId)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('Music')
+      dispose()
+
+      const signedOut = { storeLocalFile: vi.fn(async (_userId: number, _sourcePath: string) => song), readOwned: vi.fn(async (_userId: number, _assetId: string) => ({ asset: song, bytes: Buffer.alloc(0) })) }
+      const second = register(serviceStub(), 'C:\\app-data\\logs', undefined, signedIn(null), undefined, undefined, {}, { audioAssets: signedOut })
+      await expect(electronMocks.handlers.get('video-studio:pick-music')!(trustedEvent())).rejects.toThrow('请先登录星芒账号')
+      await expect(electronMocks.handlers.get('video-studio:read-music')!(trustedEvent(), songId)).rejects.toThrow('请先登录星芒账号')
+      expect(signedOut.storeLocalFile).not.toHaveBeenCalled()
+      expect(signedOut.readOwned).not.toHaveBeenCalled()
+      second.dispose()
+    })
+
+    it('names a picked song after its file, without the extension, control characters or runaway length', () => {
+      expect(videoStudioMusicName(path.join(os.tmpdir(), 'Music', '晴天.MP3'))).toBe('晴天')
+      expect(videoStudioMusicName('/music/a.b.c.ogg')).toBe('a.b.c')
+      expect(videoStudioMusicName('/music/ \t tab\nsong .wav')).toBe('tab song')
+      expect(videoStudioMusicName('/music/.m4a')).toBe('.m4a')
+      expect(videoStudioMusicName('/music/\u0007.mp3')).toBe('.mp3')
+      expect(videoStudioMusicName(`/music/${'歌'.repeat(200)}.mp3`)).toBe('歌'.repeat(80))
     })
 
     it('caps paid clip submissions per window the way the canvas does, without holding up another window', async () => {
@@ -8873,7 +8934,9 @@ describe('IPC channel log and account policies', () => {
       'external-clients:switch-source',
       'tools:check-models',
       // 出视频、分镜和作品库：凭据和作品都按当前账号找。
+      'video-studio:pick-music',
       'video-studio:plan',
+      'video-studio:read-music',
       'video-studio:store-export',
       'video:cancel',
       'video:generate',
@@ -8948,6 +9011,7 @@ describe('IPC channel log and account policies', () => {
         'system:scan',
         'update:get-state',
         'update:startup',
+        'video-studio:read-music',
         'video:cancel',
         'video:read-clip',
         'window:report-activity',

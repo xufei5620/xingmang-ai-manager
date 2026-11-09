@@ -287,6 +287,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // 回的是整段视频的字节，拼一次片要读好几段。
   'video:read-clip': { label: '视频片段读取', log: 'quiet-success', account: 'scoped' },
   'video-studio:store-export': { label: '视频剪辑成片保存', log: 'normal', account: 'scoped' },
+  'video-studio:pick-music': { label: '视频剪辑选配乐', log: 'normal', account: 'scoped' },
+  // 回的是整首歌的字节，同 video:read-clip。
+  'video-studio:read-music': { label: '视频剪辑配乐读取', log: 'quiet-success', account: 'scoped' },
   'video:open': { label: '视频用播放器打开', log: 'normal', account: 'scoped' },
   'video:save-as': { label: '视频另存', log: 'normal', account: 'scoped' },
   // Chat history carries whole conversations and autosaves after every edit:
