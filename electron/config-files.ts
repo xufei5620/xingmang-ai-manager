@@ -1028,15 +1028,19 @@ export function applyCodexRelayMachineDefaults(
 // 线路2 开着 Responses WebSocket，而中转的 WebSocket 只认 response.create 和 response.cancel，
 // 别的事件一律回 400（new-api relay/responses_websocket.go）。Codex 0.163 起会在一段回复还没
 // 说完时发 response.interrupt：主代理正说着、子代理做完了（defer_mailbox_preemption 关着时）；
-// 客户在回复途中又发一条（instant_interrupt，默认开）；0.167 起点「停止」也能发
-// （interrupt_on_cancel，默认关）。中转回 400 以后，子代理那条让这一轮直接失败，客户看到英文的
-// unsupported websocket event "response.interrupt"；插话那条 Codex 自己重连、把整段对话重传一遍，
-// 不报错，可正在出的那段白丢了。
+// 客户在回复途中又发一条（instant_interrupt，默认开）。中转回 400 以后，子代理那条让这一轮直接失败，
+// 客户看到英文的 unsupported websocket event "response.interrupt"；插话那条 Codex 自己重连、把整段
+// 对话重传一遍，不报错，可正在出的那段白丢了。
 //
-// 2026-11-06 用 0.164.0、0.166.0、0.167.0 连本地假接口实测：三项这样写以后一次打断都不发，插话等
+// 2026-11-06 用 0.164.0、0.166.0、0.167.0 连本地假接口实测：两项这样写以后一次打断都不发，插话等
 // 这一步说完再处理，子代理的结果在主代理下一次请求里带上（主代理恰好已经收尾的，到下一轮才用上）；
-// 点「停止」照样马上停，Codex 停的时候是直接断开连接，不靠这条事件。不认这几个键的版本（0.158
-// 及更早；interrupt_on_cancel 到 0.167 才有）只在日志里记一行 unknown feature key（0.155.0 实测照常启动）。
+// 点「停止」照样马上停，Codex 停的时候是直接断开连接，不靠这条事件。
+//
+// 0.167 起还有第三处：点「停止」时发（interrupt_on_cancel）。它默认关，所以不写。写成 false 的话，
+// 0.164～0.166 不认识这个键，每次打开都在第一屏右下角挂一个英文「⚠ 1 warning」（2026-11-09 用
+// 0.164.0 在真终端里核过，按 F2 看到的是 features.interrupt_on_cancel is ignored），推荐版正是 0.164.0。
+// 哪天上游把它改成默认开，每周 CLI 巡检对新版本时再补。另外两项 0.164.0 认识，不挂警告；
+// 0.158 及更早不认它们，照常启动（0.155.0 实测）。
 //
 // defer_mailbox_preemption 在 Codex 里算「开发中」的开关，打开后每开一个对话都弹一行英文的
 // Under-development features enabled（features/src/lib.rs 的 unstable_features_warning_event），
@@ -1046,7 +1050,6 @@ export function applyCodexRelayMachineDefaults(
 function keepCodexRelayResponsesUninterrupted(parsed: Record<string, unknown>, features: Record<string, unknown>): void {
   if (features.instant_interrupt === undefined) features.instant_interrupt = false
   if (features.defer_mailbox_preemption === undefined) features.defer_mailbox_preemption = true
-  if (features.interrupt_on_cancel === undefined) features.interrupt_on_cancel = false
   if (features.defer_mailbox_preemption === true && parsed.suppress_unstable_features_warning === undefined) {
     parsed.suppress_unstable_features_warning = true
   }
@@ -1210,7 +1213,6 @@ function buildCodexRelayConfigTemplate(
     'daemon_auto_start = false',
     'instant_interrupt = false',
     'defer_mailbox_preemption = true',
-    'interrupt_on_cancel = false',
     '',
     ...windowsTable,
     '[analytics]',

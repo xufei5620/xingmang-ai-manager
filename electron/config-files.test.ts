@@ -102,7 +102,7 @@ const testModels: Record<ProviderId, string> = {
   grok: 'grok-4.5',
 }
 // Codex must not send response.interrupt over the relay's WebSocket (see keepCodexRelayResponsesUninterrupted).
-const uninterruptedFeatures = { instant_interrupt: false, defer_mailbox_preemption: true, interrupt_on_cancel: false }
+const uninterruptedFeatures = { instant_interrupt: false, defer_mailbox_preemption: true }
 
 function temporaryHome(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-test-'))
@@ -1488,8 +1488,10 @@ describe('native CLI configuration files', () => {
       goals: true,
       instant_interrupt: false,
       defer_mailbox_preemption: true,
-      interrupt_on_cancel: false,
     })
+    // interrupt_on_cancel (0.167+) is off by default. Spelling it out as false made the
+    // recommended 0.164.0 show an English "1 warning" on its first screen for an unknown key.
+    expect(asRecord(parsed.features)).not.toHaveProperty('interrupt_on_cancel')
     // defer_mailbox_preemption is an under-development flag: without this Codex prints an
     // English "Under-development features enabled" line at the start of every conversation.
     expect(parsed.suppress_unstable_features_warning).toBe(true)
@@ -1586,6 +1588,18 @@ describe('native CLI configuration files', () => {
     expect(written.disable_response_storage).toBeUndefined()
     expect(written.network_access).toBeUndefined()
     expect(written.windows_wsl_setup_acknowledged).toBeUndefined()
+  })
+
+  // 0.164.0 把不认识的键挂在第一屏右下角（「⚠ 1 warning」），不只是记日志（2026-11-09 真终端核过）。
+  it('writes no Codex feature the recommended version does not recognize yet', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    const written = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(written.features)).not.toHaveProperty('interrupt_on_cancel')
   })
 
   it('clears the Codex settings it used to write once they stop being recognized', () => {
