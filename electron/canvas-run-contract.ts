@@ -70,7 +70,26 @@ export interface CanvasRunGraphNode {
     videoResolution?: '480p' | '720p'
     videoAspectRatio?: '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
     promptOptimization?: boolean
+    /**
+     * Image kinds only, 2-4. The desktop sends this many independent requests
+     * that each ask for one image (upstream n stays 1); absent means one.
+     */
+    imageCandidateCount?: CanvasRunImageCandidateCount
   }
+}
+
+export type CanvasRunImageCandidateCount = 1 | 2 | 3 | 4
+
+/**
+ * One request of a multi-image node. Every request of the same run shares the
+ * batchId and the node's fingerprint; index counts from 1. The kernel shows the
+ * candidates of the latest batch together (xingmang-canvas
+ * runtime/image-candidate-batch.ts).
+ */
+export interface CanvasRunImageBatch {
+  batchId: string
+  index: CanvasRunImageCandidateCount
+  count: CanvasRunImageCandidateCount
 }
 
 export interface CanvasRunGraphEdge {
@@ -139,6 +158,7 @@ export interface CanvasRunAttempt {
   costQuota?: number
   group?: string
   model?: string
+  imageBatch?: CanvasRunImageBatch
 }
 
 export interface CanvasRunNodeRecord {

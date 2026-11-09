@@ -448,8 +448,41 @@ describe('createCanvasRunService', () => {
     })
     await expect(service.start({
       userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
-    })).rejects.toThrow('最多允许 2 个远程生成节点')
+    })).rejects.toThrow('这次运行最多要生成 3 次，一次运行最多 2 次（一次出几张的按张数算），请分几次运行')
     expect(image).not.toHaveBeenCalled()
+  })
+
+  it('counts every image of a multi-image node toward the per-run limit', async () => {
+    function single(count?: 2 | 3 | 4): CanvasRunGraph {
+      return {
+        nodes: [{
+          id: 'image', kind: 'image-generate', definitionVersion: 1,
+          data: { prompt: '一只猫', model: 'gpt-image-2', group: '生图分组', ...(count ? { imageCandidateCount: count } : {}) },
+        }],
+        edges: [],
+      }
+    }
+    let made = 0
+    const image = vi.fn(async () => {
+      const assetId = `image${++made}`.padEnd(43, 'x')
+      return { assets: [{ kind: 'image' as const, assetId, localUrl: `xingmang-asset://image/${assetId}` }] }
+    })
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      maxRemoteGenerationsPerRun: 3,
+      executors: { text: async () => ({ outputText: '' }), image, video: async () => ({ assets: [] }) },
+    })
+    const four = single(4)
+    await expect(service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(four), graph: four, scope: { kind: 'all' } }))
+      .rejects.toThrow('这次运行最多要生成 4 次，一次运行最多 3 次')
+    expect(image).not.toHaveBeenCalled()
+    const three = single(3)
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(three), graph: three, scope: { kind: 'all' } })
+    await handle.promise
+    expect(image).toHaveBeenCalledTimes(3)
+    // The count is part of the workflow revision: changing it is a new graph.
+    expect(computeCanvasGraphRevision(four)).not.toBe(computeCanvasGraphRevision(three))
+    expect(computeCanvasGraphRevision(single())).not.toBe(computeCanvasGraphRevision(three))
   })
 
   it('refuses a run that reaches a setting the desktop cannot honour before any paid work', async () => {
@@ -462,7 +495,7 @@ describe('createCanvasRunService', () => {
             nodes: [
               { id: 'prompt', kind: 'prompt', definitionVersion: 1, data: { prompt: '一只猫', model: '', imageCandidateCount: undefined } },
               { id: 'image', kind: 'image-generate', definitionVersion: 1, disabled, data: {
-                prompt: '', model: 'gpt-image-2', group: '生图分组', imageCandidateCount: 4,
+                prompt: '', model: 'gpt-image-2', group: '生图分组', imageReferenceOrder: { version: 1, slots: [] },
               } },
               { id: 'compare', kind: 'image-compare', definitionVersion: 1, disabled, data: { prompt: '', model: '' } },
               { id: 'other', kind: 'text', definitionVersion: 1, data: { prompt: '独立分支', model: '' } },
@@ -484,7 +517,7 @@ describe('createCanvasRunService', () => {
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'all' } }))
         .rejects.toThrow('桌面版暂不支持，本次没有提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'image' } }))
-        .rejects.toThrow('「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「参考图角色」桌面版暂不支持，本次没有提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['compare'] } }))
         .rejects.toThrow('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
       expect(text).not.toHaveBeenCalled()
