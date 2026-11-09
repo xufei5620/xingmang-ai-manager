@@ -398,6 +398,143 @@ describe('CanvasRunStore', () => {
     await expect(store.resolveCache(7, 'c'.repeat(64))).resolves.toMatchObject({ outputText })
   })
 
+  // R-1: a video reports progress every few seconds; reading, scanning and
+  // rewriting the whole file (up to 8 MB) for each report stalled the main
+  // process and with it the main window.
+  describe('progress saves', () => {
+    function runtimeFile(root: string): string {
+      return path.join(root, 'user-7', 'canvas-runtime.json')
+    }
+
+    function runOnDisk(root: string, runId: string): CanvasRunRecord | undefined {
+      const state = JSON.parse(fs.readFileSync(runtimeFile(root), 'utf8')) as { runs: CanvasRunRecord[] }
+      return state.runs.find((run) => run.runId === runId)
+    }
+
+    function fileIdentity(root: string): string {
+      const stats = fs.statSync(runtimeFile(root), { bigint: true })
+      return `${stats.ino}:${stats.mtimeNs}`
+    }
+
+    function progressed(runId: string, progress: number): CanvasRunRecord {
+      const run = record(runId, 'running')
+      run.nodes[0].latestStage = 'processing'
+      run.nodes[0].latestProgress = progress
+      run.events = [{
+        version: 1, type: 'node-stage', runId, graphRevision: 'revision', sequence: 1,
+        at: '2026-08-13T00:00:00.500Z', nodeId: 'node', stage: 'processing', progress,
+      }]
+      return run
+    }
+
+    function openStore(root: string, deferredWriteDelayMs = 60_000) {
+      return new CanvasRunStore({
+        rootDirectory: root,
+        assets: { readOwned: async () => { throw new Error('missing') } },
+        deferredWriteDelayMs,
+      })
+    }
+
+    function tempRoot(): string {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-runs-'))
+      roots.push(root)
+      return root
+    }
+
+    it('shows a deferred progress save to readers at once and writes it within the delay', async () => {
+      const root = tempRoot()
+      const store = openStore(root, 20)
+      await store.saveRun(7, record('video', 'running'))
+      await store.saveRun(7, progressed('video', 40), { deferWrite: true })
+
+      await expect(store.getRun(7, 'video')).resolves.toMatchObject({ nodes: [{ latestProgress: 40 }] })
+      expect(runOnDisk(root, 'video')?.nodes[0].latestProgress).toBeUndefined()
+      await vi.waitFor(() => expect(runOnDisk(root, 'video')?.nodes[0].latestProgress).toBe(40))
+    })
+
+    it('carries deferred progress along with the next ordinary save instead of writing it twice', async () => {
+      const root = tempRoot()
+      const store = openStore(root)
+      await store.saveRun(7, record('video', 'running'))
+      await store.saveRun(7, progressed('video', 55), { deferWrite: true })
+      await store.saveRun(7, record('other'))
+
+      expect(runOnDisk(root, 'video')?.nodes[0].latestProgress).toBe(55)
+      expect(runOnDisk(root, 'other')).toBeDefined()
+      const written = fileIdentity(root)
+      await store.flushDeferredWrites()
+      expect(fileIdentity(root)).toBe(written)
+    })
+
+    it('reads the file once instead of on every save', async () => {
+      const root = tempRoot()
+      await openStore(root).saveRun(7, record('earlier'))
+      const store = openStore(root)
+      const open = vi.spyOn(fs.promises, 'open')
+      try {
+        for (let progress = 10; progress <= 50; progress += 10) {
+          await store.saveRun(7, progressed('video', progress), { deferWrite: true })
+        }
+        await store.saveRun(7, record('video'))
+        const reads = open.mock.calls.filter(([target, flags]) => target === runtimeFile(root) && flags === 'r')
+        expect(reads).toHaveLength(1)
+      } finally {
+        open.mockRestore()
+      }
+      expect((await openStore(root).listRuns(7)).map((run) => run.runId)).toEqual(['video', 'earlier'])
+    })
+
+    it('lets a file changed behind its back win over progress it has not written yet', async () => {
+      const root = tempRoot()
+      const first = openStore(root)
+      const second = openStore(root)
+      await first.saveRun(7, record('video', 'running'))
+      await first.saveRun(7, progressed('video', 70), { deferWrite: true })
+      await second.saveRun(7, record('elsewhere'))
+
+      const runs = await first.listRuns(7)
+      expect(runs.map((run) => run.runId)).toEqual(['elsewhere', 'video'])
+      expect(runs[1].nodes[0].latestProgress).toBeUndefined()
+      const written = fileIdentity(root)
+      await first.flushDeferredWrites()
+      expect(fileIdentity(root)).toBe(written)
+    })
+
+    it('forgets a save that failed instead of keeping it in memory', async () => {
+      const root = tempRoot()
+      const store = openStore(root)
+      await store.saveRun(7, record('kept'))
+      const leaked = record('leaked')
+      leaked.graphRevision = 'Bearer token-value'
+      await expect(store.saveRun(7, leaked)).rejects.toThrow(/密钥|地址|路径/)
+      await expect(store.saveRun(7, leaked, { deferWrite: true })).rejects.toThrow(/密钥|地址|路径/)
+      expect((await store.listRuns(7)).map((run) => run.runId)).toEqual(['kept'])
+    })
+
+    it('lets go of the remembered state after a minute without use', async () => {
+      const root = tempRoot()
+      await openStore(root).saveRun(7, record('earlier'))
+      const store = openStore(root)
+      const open = vi.spyOn(fs.promises, 'open')
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+      try {
+        const reads = () => open.mock.calls.filter(([target, flags]) => target === runtimeFile(root) && flags === 'r').length
+        await store.listRuns(7)
+        await store.listRuns(7)
+        expect(reads()).toBe(1)
+        await vi.advanceTimersByTimeAsync(59_000)
+        await store.listRuns(7)
+        expect(reads()).toBe(1)
+        await vi.advanceTimersByTimeAsync(61_000)
+        await expect(store.listRuns(7)).resolves.toHaveLength(1)
+        expect(reads()).toBe(2)
+      } finally {
+        vi.useRealTimers()
+        open.mockRestore()
+      }
+    })
+  })
+
   it('reads back a run file whose cache holds a kernel-only node kind', async () => {
     // A later release runs these kinds; rolled back to this one, the file must
     // still load instead of being backed up as corrupt with all its history.

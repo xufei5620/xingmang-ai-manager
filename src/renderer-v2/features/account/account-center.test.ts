@@ -10,6 +10,7 @@ import {
   keyMetaParts,
   keyToolChoice,
   keyToolInstalled,
+  limitKeyNameEdit,
   localSpendDays,
   passwordRules,
   runwayDaysText,
@@ -140,6 +141,36 @@ describe('account center password change', () => {
 })
 
 describe('account center keys', () => {
+  it('lets a key name through untouched while it fits the 50-byte server cap', () => {
+    expect(limitKeyNameEdit('', 'x'.repeat(50))).toBeNull()
+    expect(limitKeyNameEdit('', '星'.repeat(16))).toBeNull()
+    expect(limitKeyNameEdit('星'.repeat(16), `${'星'.repeat(16)}ab`)).toBeNull()
+  })
+
+  it('cuts a pasted Chinese name at 16 characters, the most 50 bytes can hold', () => {
+    expect(limitKeyNameEdit('', '星'.repeat(17))).toEqual({ value: '星'.repeat(16), caret: 16 })
+    expect(limitKeyNameEdit('', 'x'.repeat(60))).toEqual({ value: 'x'.repeat(50), caret: 50 })
+  })
+
+  it('drops only what was just typed and keeps the existing name and caret', () => {
+    const full = `${'星'.repeat(16)}ab`
+    // A character typed in the middle of a full name is refused, not the name's last character.
+    expect(limitKeyNameEdit(full, `星芒${full.slice(1)}`)).toEqual({ value: full, caret: 1 })
+    expect(limitKeyNameEdit(full, `${full}c`)).toEqual({ value: full, caret: full.length })
+    // Pasting over a selection keeps the part of the paste that fits.
+    expect(limitKeyNameEdit(`ab${'星'.repeat(15)}`, `ab${'芒'.repeat(20)}`)).toEqual({ value: `ab${'芒'.repeat(16)}`, caret: 18 })
+  })
+
+  it('never splits an emoji and counts it as four bytes', () => {
+    const name = 'x'.repeat(47)
+    expect(limitKeyNameEdit(name, `${name}😀`)).toEqual({ value: name, caret: 47 })
+    expect(limitKeyNameEdit('x'.repeat(46), `${'x'.repeat(46)}😀😀`)).toEqual({ value: `${'x'.repeat(46)}😀`, caret: 48 })
+  })
+
+  it('trims an already over-long name from the end once it is edited', () => {
+    expect(limitKeyNameEdit('星'.repeat(20), `${'星'.repeat(20)}a`)).toEqual({ value: '星'.repeat(16), caret: 16 })
+  })
+
   it('turns the expiry choice into the server timestamp', () => {
     const at = now.getTime()
     expect(keyExpiredTime('never', { custom: '', current: 123, now: at })).toBe(-1)
