@@ -32,7 +32,7 @@ import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
-import { recoverOffscreenWindow } from './window-recovery'
+import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createAccelerationHost, createAccelerationRouting, createAccelerationServices } from './bootstrap/acceleration'
 import { createAccountClientFactory, createAccountStorage } from './bootstrap/accounts'
@@ -348,7 +348,12 @@ function setWindowTheme(contents: WebContents, theme: AppTheme): void {
 function recoverWindowPlacement(window: BrowserWindow, runtimeLog: RuntimeLogStore): void {
   try {
     const moved = recoverOffscreenWindow(window, screen)
-    if (moved) runtimeLog.log('info', 'window', 'window.recovered-offscreen', '窗口不在任何一块屏幕上，已挪回主屏', { bounds: moved })
+    if (moved) {
+      runtimeLog.log('info', 'window', 'window.recovered-offscreen', '窗口不在任何一块屏幕上，已挪回主屏', { bounds: moved })
+      return
+    }
+    const fitted = fitOversizedWindow(window, screen)
+    if (fitted) runtimeLog.log('info', 'window', 'window.fitted-to-display', '窗口比所在屏幕的可用区域大，已收进这块屏', { bounds: fitted })
   } catch (error) {
     runtimeLog.exception('window', 'window.recover.failed', error)
   }
@@ -2551,7 +2556,8 @@ if (!hasSingleInstanceLock) {
         if (!mainWindowShown && !mainWindow.isVisible()) app.hide()
       })
     }
-    // 拔掉外接显示器时正开着的窗口也挪回来；缩在托盘里的等下次显示时再挪。
+    // 拔掉外接显示器、改了系统缩放时正开着的窗口（主窗口、画布、付款窗口）也挪回来、
+    // 比屏幕大的收进屏幕；缩在托盘里的等下次显示时再看。
     // 稍等一下再看：Windows 自己也会挪一部分窗口，别跟系统抢。
     let displayChangeTimer: ReturnType<typeof setTimeout> | undefined
     const onDisplaysChanged = () => {
