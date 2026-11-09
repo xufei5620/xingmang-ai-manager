@@ -185,7 +185,7 @@ describe.each(['dark', 'light'])('default theme tokens (%s)', (theme) => {
 
   // The opaque grounds every page, card, sidebar and dialog starts from, plus
   // the translucent card and section layers drawn on the page.
-  const bases = ['--win', '--rail', '--bg', '--panel-solid', '--pop'].map((name) => [name, solid(name)] as const)
+  const bases = ['--win', '--rail', '--bg', '--panel-solid', '--pop'].map((name): [string, Rgb] => [name, solid(name)])
   const grounds: Array<[string, Rgb]> = [...bases]
   for (const [layer, base] of [['--panel', '--bg'], ['--panel-2', '--bg'], ['--panel-2', '--panel-solid']]) {
     for (const color of composite(layer, solid(base))) grounds.push([`${layer} over ${base}`, color])
