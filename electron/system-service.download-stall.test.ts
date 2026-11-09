@@ -271,6 +271,47 @@ describe('createNpmDownloadStallWatch', () => {
     watch.stop()
   })
 
+  // 睡眠深查 G1：Mac、Windows 上睡着那段单调时钟也走，合盖 3 分钟以上一醒就判卡住，这时网还没连上、
+  // npm 的连接也随睡眠断了。合盖用加在单调时钟上的一段跳变来演，醒来第一拍才看得见它。
+  it('does not take a sleep for a stall, and gives the download its whole window again on wake', async () => {
+    useWatchClock()
+    let slept = 0
+    const watch = createNpmDownloadStallWatch(async () => 4_096, { now: () => performance.now() + slept })
+    await vi.advanceTimersByTimeAsync(npmDownloadStallTimeoutMs - npmDownloadProgressCheckMs)
+
+    slept += 10 * 60_000
+    await vi.advanceTimersByTimeAsync(npmDownloadProgressCheckMs)
+    expect(watch.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(npmDownloadStallTimeoutMs - 1)
+    expect(watch.signal.aborted).toBe(false)
+    await vi.advanceTimersByTimeAsync(1)
+    expect(watch.stalled).toBe(true)
+  })
+
+  it('recognises a sleep that happened while a measurement was still running', async () => {
+    useWatchClock()
+    let slept = 0
+    const pending = deferred<number>()
+    let calls = 0
+    const watch = createNpmDownloadStallWatch(async () => {
+      calls += 1
+      return calls === 12 ? pending.promise : 4_096
+    }, { now: () => performance.now() + slept })
+    // The twelfth walk starts at 2:45 and is still running when the lid closes. On wake it
+    // finishes before the next tick, with the same size as before.
+    await vi.advanceTimersByTimeAsync(11 * npmDownloadProgressCheckMs)
+    expect(calls).toBe(12)
+    slept += 10 * 60_000
+    pending.resolve(4_096)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(watch.signal.aborted).toBe(false)
+
+    await vi.advanceTimersByTimeAsync(npmDownloadStallTimeoutMs - npmDownloadProgressCheckMs)
+    expect(watch.signal.aborted).toBe(false)
+    watch.stop()
+  })
+
   it('stays quiet once stopped', async () => {
     useWatchClock()
     const measure = vi.fn(async () => 1)
@@ -295,6 +336,7 @@ interface CommandOptionsLike {
   cwd?: string
   signal?: AbortSignal
   timeoutMs?: number
+  timeoutExcludesSleep?: boolean
 }
 
 interface DownloadAttempt {
@@ -683,6 +725,17 @@ describe('a CLI download that stops moving', () => {
       .filter(([spec]) => spec.argv.includes('--package-lock-only'))
       .map(([, options]) => options?.timeoutMs)
     expect(resolutions).toEqual([npmResolutionTimeoutMs, npmResolutionTimeoutMs, npmResolutionTimeoutMs])
+  })
+
+  // 睡眠深查 G1：下到 25 分钟合盖 10 分钟，醒来不该按满 30 分钟当场掐掉。三步都是 npm 自己的时限，
+  // 交给命令运行器只算醒着的时间。
+  it.runIf(process.platform !== 'win32')('counts only awake time toward every npm step\'s own limit', async () => {
+    const fixture = createDownloadFixture('succeed')
+
+    await fixture.service.installCli('claude', fixture.target).catch((failure: unknown) => failure)
+    const npmCalls = fixture.runCommand.mock.calls
+    expect(npmCalls.length).toBeGreaterThanOrEqual(7)
+    for (const [, options] of npmCalls) expect(options?.timeoutExcludesSleep).toBe(true)
   })
 })
 

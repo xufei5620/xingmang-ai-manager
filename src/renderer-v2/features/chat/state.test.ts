@@ -243,6 +243,14 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(video)).toBe(video)
     expect(chatErrorMessage('生图请求超时')).toBe('请求未完成，请检查网络后重试')
   })
+  it('shows the network reason the main process gave when an image request never left', () => {
+    for (const reason of ['offline', 'dns', 'proxy', 'refused', 'intercepted'] as const) {
+      const message = networkFailureMessages[reason]
+      expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${message}`))).toBe(message)
+      // The page runs the shown text through here once more when it marks the reply as failed.
+      expect(chatErrorMessage(message)).toBe(message)
+    }
+  })
   it('keeps the network reason when preparing the group fails offline', () => {
     expect(chatErrorMessage(networkFailureMessages.offline, 'network-error')).toBe(networkFailureMessages.offline)
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
@@ -298,7 +306,7 @@ describe('v2 chat request transitions', () => {
   })
   it('says what to type when a whole number is expected, and gives the range only when the number is whole', () => {
     const { errors } = parseParameters({ ...createParameterDraft({}), maxTokens: '1.5', seed: 'abc' })
-    expect(errors).toEqual({ maxTokens: '最大输出 Token 要填整数，比如 4096', seed: '随机种子要填整数' })
+    expect(errors).toEqual({ maxTokens: '要填整数，比如 4096（不填就是不限）', seed: '随机种子要填整数' })
     expect(parseParameters({ ...createParameterDraft({}), maxTokens: '0', seed: '3000000000' }).errors).toEqual({ maxTokens: '请输入 1 至 131072 之间的整数', seed: '请输入 -2147483648 至 2147483647 之间的整数' })
     expect(parseParameters({ ...createParameterDraft({}), temperature: '2.1' }).errors).toEqual({ temperature: '请输入 0 至 2 之间的数值' })
   })
