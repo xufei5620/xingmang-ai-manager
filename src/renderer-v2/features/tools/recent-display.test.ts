@@ -1,31 +1,40 @@
 import { describe, expect, it } from 'vitest'
 import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSubtitle, recentToolName } from './recent-display'
 
-function seconds(year: number, month: number, day: number, hour = 0, minute = 0): number {
-  return new Date(year, month - 1, day, hour, minute).getTime() / 1000
+// 主进程给的记录时间是毫秒，这里照样写毫秒。
+function at(year: number, month: number, day: number, hour = 0, minute = 0): number {
+  return new Date(year, month - 1, day, hour, minute).getTime()
 }
 
 describe('recent-display', () => {
   const now = new Date(2026, 8, 25, 10, 30).getTime()
 
   it('says 刚刚 for the last minute', () => {
-    expect(formatRecentTime(now / 1000 - 20, now)).toBe('刚刚')
+    expect(formatRecentTime(now - 20_000, now)).toBe('刚刚')
   })
 
   it('names today and yesterday by calendar day, not by 24 hours', () => {
-    expect(formatRecentTime(seconds(2026, 9, 25, 0, 5), now)).toBe('今天 00:05')
-    expect(formatRecentTime(seconds(2026, 9, 24, 23, 50), now)).toBe('昨天 23:50')
-    expect(formatRecentTime(seconds(2026, 9, 24, 14, 5), now)).toBe('昨天 14:05')
+    expect(formatRecentTime(at(2026, 9, 25, 0, 5), now)).toBe('今天 00:05')
+    expect(formatRecentTime(at(2026, 9, 24, 23, 50), now)).toBe('昨天 23:50')
+    expect(formatRecentTime(at(2026, 9, 24, 14, 5), now)).toBe('昨天 14:05')
   })
 
   it('shows the date for older entries and adds the year for past years', () => {
-    expect(formatRecentTime(seconds(2026, 9, 21, 14, 5), now)).toBe('9月21日')
-    expect(formatRecentTime(seconds(2026, 1, 1, 8), now)).toBe('1月1日')
-    expect(formatRecentTime(seconds(2025, 12, 3, 9), now)).toBe('2025年12月3日')
+    expect(formatRecentTime(at(2026, 9, 21, 14, 5), now)).toBe('9月21日')
+    expect(formatRecentTime(at(2026, 1, 1, 8), now)).toBe('1月1日')
+    expect(formatRecentTime(at(2025, 12, 3, 9), now)).toBe('2025年12月3日')
   })
 
   it('treats a slightly future timestamp on the same day as today', () => {
-    expect(formatRecentTime(seconds(2026, 9, 25, 10, 45), now)).toBe('今天 10:45')
+    expect(formatRecentTime(at(2026, 9, 25, 10, 45), now)).toBe('今天 10:45')
+  })
+
+  it('reads the main-process timestamp as milliseconds, so last week is not shown as today', () => {
+    // 这是首页「上次」永远写「今天」那次的回归：按秒再乘 1000 会落到几万年后，日历差算出来 ≤ 0。
+    const lastWeek = at(2026, 9, 18, 16, 40)
+    expect(lastWeek).toBeGreaterThan(1e12)
+    expect(formatRecentTime(lastWeek, now)).toBe('9月18日')
+    expect(formatRecentTime(now - 3 * 60 * 60 * 1000, now)).toBe('今天 07:30')
   })
 
   it('keeps the old wording when the time is missing', () => {
