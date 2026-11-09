@@ -4,7 +4,7 @@ const path = require('node:path')
 const os = require('node:os')
 const { createHash } = require('node:crypto')
 const test = require('node:test')
-const { BUILDER_VERSION, GET_VERSION, ORIGINAL_SOURCE_SHA256, buildPatchedSource, recoverOriginalSource, applyBuilderFetchCompatibility } = require('./patch-builder-fetch-compat.cjs')
+const { BUILDER_VERSION, DOWNLOAD_RETRY, GET_VERSION, ORIGINAL_SOURCE_SHA256, buildPatchedSource, recoverOriginalSource, applyBuilderFetchCompatibility } = require('./patch-builder-fetch-compat.cjs')
 
 const project = path.join(__dirname, '..')
 const installedTarget = path.join(project, 'node_modules', 'app-builder-lib', 'out', 'util', 'electronGet.js')
@@ -49,6 +49,55 @@ test('backports fetch compatibility without changing source, checksum, cache or 
   assert.match(patched, /构建下载必须验证 TLS 证书/)
   assert.equal(recoverOriginalSource(patched, helperReference), original)
   assert.throws(() => buildPatchedSource(original + '\n// unknown upstream change\n', helperReference), /SHA-256/)
+})
+
+const upstreamRetry = '                retries: 3,\n                interval: 2000,\n                backoff: 2000,\n'
+
+// builder-util-runtime's retry() waits `interval + backoff * attempt` before
+// each of its `retries` further attempts.
+function totalRetryWaitMs({ retries, interval, backoff }) {
+  return Array.from({ length: retries }, (_, attempt) => interval + backoff * attempt).reduce((sum, wait) => sum + wait, 0)
+}
+
+test('downloads keep retrying for minutes instead of the twelve seconds electron-builder ships with', async () => {
+  // CI-1: on 2026-11-09 the macOS and Linux packaging jobs each went red
+  // twice on a GitHub 504 for an Electron zip or the fpm archive. Those
+  // outages outlast twelve seconds; the binary install before the tests
+  // already waits 10 + 30 + 60 + 120 seconds for the same downloads.
+  assert.equal(totalRetryWaitMs({ retries: 3, interval: 2000, backoff: 2000 }), 12000)
+  assert.ok(totalRetryWaitMs(DOWNLOAD_RETRY) >= 4 * 60 * 1000)
+  // Each attempt can run for up to ten minutes (buildAttemptConfig), so the
+  // waits stay small next to the 12 to 15 minute packaging step bounds.
+  assert.ok(totalRetryWaitMs(DOWNLOAD_RETRY) <= 5 * 60 * 1000)
+
+  const original = await originalSource()
+  assert.equal(original.split(upstreamRetry).length - 1, 1)
+  const patched = buildPatchedSource(original, helperReference)
+  assert.ok(patched.includes(`                retries: ${DOWNLOAD_RETRY.retries},\n                interval: ${DOWNLOAD_RETRY.interval},\n                backoff: ${DOWNLOAD_RETRY.backoff},\n                shouldRetry: (e) => {`))
+  assert.ok(!patched.includes(upstreamRetry))
+})
+
+test('an install patched before the retry window was widened is moved to the current plan in place', async (t) => {
+  const f = await fixture(t)
+  const patched = buildPatchedSource(f.original, helperReference)
+  const current = `                retries: ${DOWNLOAD_RETRY.retries},\n                interval: ${DOWNLOAD_RETRY.interval},\n                backoff: ${DOWNLOAD_RETRY.backoff},\n`
+  const previous = patched.replace(current, upstreamRetry)
+  assert.notEqual(previous, patched)
+  assert.equal(recoverOriginalSource(previous, helperReference), f.original)
+
+  await fs.writeFile(f.target, previous)
+  assert.deepEqual(await applyBuilderFetchCompatibility({ projectRoot: f.directory }), { skipped: false, changed: true, version: BUILDER_VERSION })
+  assert.equal(await fs.readFile(f.target, 'utf8'), patched)
+  assert.deepEqual(await fs.readdir(path.dirname(f.target)), ['electronGet.js'])
+
+  // Recognising the older plan is not a way past the source check: any other
+  // edit on top of either plan is still refused and left untouched.
+  for (const altered of [previous + '\n// altered\n', patched.replace('interval: 10000', 'interval: 1')]) {
+    assert.throws(() => recoverOriginalSource(altered, helperReference), /不是本项目已核实的版本/)
+    await fs.writeFile(f.target, altered)
+    await assert.rejects(applyBuilderFetchCompatibility({ projectRoot: f.directory }))
+    assert.equal(await fs.readFile(f.target, 'utf8'), altered)
+  }
 })
 
 test('the installed retry callback stops caller cancellation before its builder HttpError branch', async () => {
