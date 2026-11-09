@@ -108,6 +108,11 @@ button:disabled {
 .canvas-project-actions button { display: grid; width: 25px; height: 25px; place-items: center; padding: 0; color: var(--text-secondary); background: var(--surface-floating-strong); border: 1px solid var(--border-subtle); border-radius: var(--radius-chip); }
 .canvas-project-actions button:hover:not(:disabled) { color: var(--text-primary); background: var(--surface-hover); border-color: var(--border-strong); }
 .canvas-project-actions button:disabled { cursor: default; opacity: 0.34; }
+.canvas-project-relink { display: flex; min-width: 0; flex-wrap: wrap; align-items: center; gap: var(--space-6) var(--space-8); padding: 0 var(--space-10) var(--space-10); }
+.canvas-project-relink button { min-height: 28px; padding: 0 var(--space-10); color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid color-mix(in srgb, var(--danger) 42%, var(--border-subtle)); border-radius: var(--radius-control); font-size: var(--text-xs); }
+.canvas-project-relink button:hover:not(:disabled) { background: var(--surface-hover); border-color: var(--danger); }
+.canvas-project-relink button:disabled { cursor: default; opacity: 0.46; }
+.canvas-project-relink small { min-width: 0; color: var(--danger); font-size: var(--text-xs); overflow-wrap: anywhere; }
 .canvas-project-empty { display: grid; min-height: 220px; grid-column: 1 / -1; place-items: center; align-content: center; gap: var(--space-6); color: var(--text-muted); text-align: center; }
 .canvas-project-empty strong { color: var(--text-secondary); }
 .canvas-project-error { grid-column: 1 / -1; margin: 0; padding: var(--space-10) var(--space-12); color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, var(--surface-2)); border: 1px solid color-mix(in srgb, var(--danger) 34%, var(--border-subtle)); border-radius: var(--radius-control); font-size: var(--text-sm); }
@@ -130,6 +135,8 @@ button:disabled {
 .canvas-project-dialog > footer button.is-primary { color: var(--text-on-accent); background: var(--accent); border-color: var(--accent); }
 .canvas-project-dialog > footer button.is-warning { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, var(--surface-2)); border-color: color-mix(in srgb, var(--warning) 35%, var(--border-subtle)); }
 .canvas-project-dialog > footer button:disabled { cursor: default; opacity: 0.46; }
+.canvas-project-dialog > footer button.canvas-project-create-elsewhere { margin-right: auto; padding: 0 var(--space-2); color: var(--accent); background: transparent; border-color: transparent; font-size: var(--text-xs); }
+.canvas-project-dialog > footer button.canvas-project-create-elsewhere:hover:not(:disabled) { text-decoration: underline; }
 .canvas-project-create-recovery { min-width: 0; overflow-wrap: anywhere; font-size: var(--text-xs); line-height: 1.6; }
 .canvas-project-create-recovery button { max-width: 100%; min-height: 32px; padding: var(--space-6) var(--space-8); white-space: normal; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
 .canvas-project-create-recovery button:disabled { cursor: default; opacity: 0.46; }
@@ -412,11 +419,17 @@ button:disabled {
 }
 
 .canvas-flow {
+  /* Room the status bar leaves for the navigation tools (bottom right). */
+  --canvas-navigation-reserve: 280px;
+  /* How much of the canvas's right edge an inspector floating over it covers
+     (the 761-1180px viewport query sets it); the corner tools stay clear. */
+  --canvas-floating-panel: 0px;
   position: relative;
   flex: 1;
   min-width: 280px;
   min-height: 0;
   background: var(--canvas-bg);
+  container: canvas-flow / inline-size;
 }
 
 .canvas-workspace {
@@ -462,7 +475,7 @@ button:disabled {
   position: absolute;
   z-index: 5;
   bottom: 12px;
-  left: 50%;
+  left: calc((100% - var(--canvas-floating-panel)) / 2);
   display: flex;
   min-height: 28px;
   align-items: center;
@@ -474,10 +487,21 @@ button:disabled {
   border-radius: var(--radius-control);
   box-shadow: var(--shadow-menu);
   font-size: var(--text-xs);
+  max-width: calc(100% - var(--canvas-floating-panel) - 2 * var(--canvas-navigation-reserve));
   transform: translateX(-50%);
 }
 .canvas-statusbar span + span::before { margin-right: var(--space-8); color: var(--border-strong); content: '·'; }
+/* An open inspector or library narrows the canvas without narrowing the
+   window, so the viewport queries below never see it. Counts and the save
+   state keep their line; only the generation summary gives up width. */
+.canvas-statusbar > span { flex: none; white-space: nowrap; }
+.canvas-statusbar > .canvas-status-media { flex: 0 1 auto; min-width: 0; }
 .canvas-status-media { max-width: min(32vw, 360px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Too narrow to centre the bar clear of both corners: start it after the
+   zoom controls and stop it before the navigation tools. */
+@container canvas-flow (max-width: 1000px) {
+  .canvas-statusbar { left: 120px; max-width: calc(100% - 120px - var(--canvas-floating-panel) - var(--canvas-navigation-reserve)); transform: none; }
+}
 .canvas-autosave.is-failed { color: var(--danger); }
 .canvas-autosave.is-saving { color: var(--warning); }
 
@@ -490,7 +514,7 @@ button:disabled {
 .canvas-navigation-tools {
   position: absolute;
   z-index: 7;
-  right: 12px;
+  right: calc(12px + var(--canvas-floating-panel));
   bottom: 12px;
   display: flex;
   gap: var(--space-2);
@@ -927,8 +951,9 @@ button:disabled {
 .run-scope-control label { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-8); color: var(--text-muted); font-size: var(--text-xs); }
 .run-scope-control select { min-width: 0; height: 30px; padding: 0 var(--space-6); color: var(--text-secondary); background: var(--surface-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); font-size: var(--text-xs); }
 .run-history-tools { display: flex; justify-content: flex-end; padding-top: var(--space-8); }
-.run-history-tools button { display: inline-flex; min-height: 28px; align-items: center; gap: var(--space-4); padding: 0 var(--space-8); color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); font-size: var(--text-xs); }
-.run-history-tools button:hover, .canvas-project-error button:hover { color: var(--text-primary); background: var(--surface-hover); }
+.run-history-tools button,
+.run-error-action button { display: inline-flex; min-height: 28px; align-items: center; gap: var(--space-4); padding: 0 var(--space-8); color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); font-size: var(--text-xs); }
+.run-history-tools button:hover, .run-error-action button:hover, .canvas-project-error button:hover { color: var(--text-primary); background: var(--surface-hover); }
 .run-history-tools button:disabled, .canvas-project-error button:disabled { cursor: default; opacity: 0.46; }
 .run-inspector-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .run-history-select { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: var(--space-8); padding: var(--space-10); color: var(--text-muted); border-bottom: 1px solid var(--border-subtle); font-size: var(--text-xs); }
@@ -949,6 +974,9 @@ button:disabled {
 .asset-lineage-link { max-width: 118px; padding: 0; overflow: hidden; color: var(--accent); background: transparent; border: 0; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .asset-lineage-link:hover { text-decoration: underline; }
 .run-error-action { display: block; margin: -4px 0 var(--space-8); color: var(--text-muted); font-size: var(--text-xs); line-height: 1.4; }
+/* The retry commands under a failed node share the hint's class; as a row they
+   wrap on a narrow inspector instead of running past its edge. */
+div.run-error-action { display: flex; flex-wrap: wrap; gap: var(--space-6); margin: 0 0 var(--space-8); }
 .run-summary,
 .run-node-record,
 .run-history-row { padding: var(--space-10) var(--space-12); border-bottom: 1px solid var(--border-subtle); }
@@ -1289,7 +1317,7 @@ button:disabled {
 .react-flow__minimap {
   width: 180px;
   height: 120px;
-  right: 12px !important;
+  right: calc(12px + var(--canvas-floating-panel)) !important;
   bottom: 54px !important;
 }
 
@@ -1697,6 +1725,9 @@ button:disabled {
 }
 .wf-media-bound .wf-drop-target.is-pending {
   display: grid;
+  /* A content-sized track lets the placeholder's percentage max-width shrink
+     its own column: the failed state's longer hint broke every two characters. */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   color: var(--text-muted);
   background: var(--surface-3);
@@ -2502,6 +2533,21 @@ button:disabled {
   }
 }
 
+/* The floating inspector used to cover the navigation tools and the minimap
+   at 1280-wide windows. Keep them, and the status bar, in the part of the
+   canvas still visible. The phone layout below is left as it was. */
+@media (min-width: 761px) and (max-width: 1180px) {
+  .canvas-workspace:has(.canvas-inspector) .canvas-flow { --canvas-floating-panel: max(220px, min(292px, calc(100vw - 190px))); }
+  .canvas-workspace:has(.canvas-inspector) .canvas-statusbar { left: 120px; max-width: calc(100% - 120px - var(--canvas-floating-panel) - var(--canvas-navigation-reserve)); transform: none; }
+  /* Too little visible canvas for the zoom controls, the status bar and the
+     navigation tools in one row: the navigation tools and the minimap step up. */
+  @container canvas-flow (max-width: 1000px) {
+    .canvas-workspace:has(.canvas-inspector) .canvas-statusbar { max-width: calc(100% - 120px - var(--canvas-floating-panel) - 12px); }
+    .canvas-workspace:has(.canvas-inspector) .canvas-navigation-tools { bottom: 54px; }
+    .canvas-workspace:has(.canvas-inspector) .react-flow__minimap { bottom: 96px !important; }
+  }
+}
+
 @media (min-width: 2200px) {
   .canvas-toolbar { max-height: 64px; padding-inline: max(18px, calc((100vw - 2600px) / 2)); }
   .node-library { width: 288px; flex-basis: 288px; }
@@ -2525,7 +2571,7 @@ button:disabled {
   .canvas-config-command > span { display: none; }
   .canvas-toolbar .canvas-config-command { min-width: 30px; width: 30px; padding: 0; }
   .canvas-run-split .canvas-run-main { min-width: 98px; }
-  .canvas-statusbar { left: 58px; transform: none; }
+  .canvas-statusbar { left: 58px; max-width: none; transform: none; }
   .canvas-statusbar span:nth-child(n+2) { display: none; }
   .canvas-inspector {
     width: min(280px, calc(100vw - 48px));
@@ -2625,5 +2671,9 @@ button:disabled {
 .wf-search-result { max-height: 190px; overflow: auto; padding: var(--space-8) var(--space-10); border: 1px solid var(--border-subtle); border-radius: 7px; background: var(--text-search-result-surface); }
 .wf-search-result .canvas-text-markdown { font-size: var(--text-sm); }
 .wf-search-result a { color: var(--text-search-result-link); text-decoration: underline; }
+.wf-search-result .canvas-text-link { color: var(--text-search-result-link); }
+.wf-search-result .canvas-text-link-host { color: var(--text-secondary); }
+.wf-search-result .canvas-text-link-note { color: var(--success); }
+.wf-search-result .canvas-text-link-note[role=alert] { color: var(--danger); }
 .wf-frame-settings { display: grid; gap: var(--space-8); padding: var(--space-8) var(--space-10); }
 .wf-frame-settings .wf-run-node { display: flex; align-items: center; justify-content: center; gap: var(--space-6); width: 100%; }

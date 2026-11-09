@@ -1,4 +1,5 @@
 import type { CanvasAppearance, CanvasHostBridge } from '../host'
+import { canvasHostKind, type CanvasHostKind } from '../host-kind'
 
 export type CanvasTheme = 'light' | 'dark'
 
@@ -29,6 +30,12 @@ export function initialCanvasAppearance(search = ''): CanvasAppearance {
   const skin = params.get('skin')
   const uiSkin = skin === 'dawn' || skin === 'obsidian' || skin === 'mist' || skin === 'aurora' ? skin : undefined
   return { theme: initialCanvasTheme(search), ...(uiSkin ? { uiSkin } : {}), reducedMotion: params.get('reducedMotion') === '1' }
+}
+
+// 标出画布跑在哪个宿主上，样式按它分：网页那两套默认配色（brand-appearance.css）不给桌面用，
+// 桌面画布跟主窗口一个颜色（桌面 #1103）。
+export function applyCanvasHost(host: CanvasHostKind = canvasHostKind, target: Pick<CanvasThemeDocument, 'documentElement'> = document): void {
+  target.documentElement.dataset.host = host
 }
 
 export function applyCanvasAppearance(appearance: CanvasAppearance, target: CanvasThemeDocument = document): void {

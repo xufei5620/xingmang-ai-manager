@@ -36,6 +36,10 @@
 .canvas-text-markdown>:first-child { margin-top:0; }
 .canvas-text-markdown h1 { font-size:1.8em; }.canvas-text-markdown h2 { font-size:1.45em; }.canvas-text-markdown h3 { font-size:1.2em; }
 .canvas-text-markdown a { color:#aab4ff; text-decoration:underline; text-underline-offset:3px; }
+.canvas-text-link { display:inline; padding:0; border:0; background:none; color:#aab4ff; font:inherit; line-height:inherit; text-align:inherit; text-decoration:underline; text-underline-offset:3px; cursor:copy; overflow-wrap:anywhere; }
+.canvas-text-link:hover { color:#c9cfff; }.canvas-text-link:focus-visible { outline:2px solid #aab4ff; outline-offset:2px; border-radius:2px; }
+.canvas-text-link-host { color:#8391aa; }
+.canvas-text-link-note { margin-left:6px; color:#8fd6b0; font-size:.85em; }.canvas-text-link-note[role=alert] { color:#f0a1a5; user-select:text; overflow-wrap:anywhere; }
 .canvas-text-markdown code { padding:2px 5px; border:1px solid #303c51; border-radius:4px; color:#d7def7; background:#1a2434; font:12px/1.7 "SFMono-Regular",Consolas,monospace; white-space:pre-wrap; }
 .canvas-text-markdown pre { margin:0 0 1em; padding:14px 16px; border:1px solid #303c51; border-radius:10px; background:#090f1a; overflow:auto; white-space:pre-wrap; }
 .canvas-text-markdown pre code { padding:0; border:0; background:none; }

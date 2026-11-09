@@ -262,19 +262,17 @@ async function probeSandboxedRendererStatus(): Promise<string | null> {
   }
 }
 
+// The canvas's own background before it paints: the main window's light
+// background, and the obsidian one the canvas falls back to in dark.
 export const canvasWindowBackgroundColor = '#0b0c10'
-export const canvasWindowLightBackgroundColor = '#faf7ee'
+export const canvasWindowLightBackgroundColor = '#fbfaf6'
 
 export function canvasWindowBackgroundForTheme(theme: AppTheme): string {
   return theme === 'light' ? canvasWindowLightBackgroundColor : canvasWindowBackgroundColor
 }
 
 export function canvasWindowBackgroundForAppearance(appearance: CanvasAppearance): string {
-  const colors = {
-    light: { dawn: '#faf7ee', obsidian: '#f7f3e9', mist: '#f0f6f5', aurora: '#f3f1fb' },
-    dark: { dawn: '#0c172b', obsidian: '#0b0c10', mist: '#0c1a1e', aurora: '#120f22' },
-  }
-  return colors[appearance.theme][appearance.uiSkin ?? (appearance.theme === 'light' ? 'dawn' : 'obsidian')]
+  return canvasWindowBackgroundForTheme(appearance.theme)
 }
 
 /**
@@ -315,9 +313,10 @@ export function createCanvasWindowController(
   let pendingOpen: Promise<void> | null = null
   const storedSettings = options.systemService.readStoredConfig()
   let currentTheme: AppTheme = storedSettings.theme
+  // 画布跟主窗口一个颜色（#1103）：不再把存着的皮肤（老版本默认雾青 mist）交给画布，画布按深浅色自己选，
+  // 浅色是主窗口那套、深色是黑金 obsidian（内核在桌面上不套网页的默认配色）。
   let currentAppearance: CanvasAppearance = {
     theme: currentTheme,
-    ...(storedSettings.uiSkin ? { uiSkin: storedSettings.uiSkin } : {}),
     reducedMotion: storedSettings.reducedMotion === true,
   }
   let currentAccountUserId: number | null | undefined
@@ -1223,7 +1222,6 @@ export function createCanvasWindowController(
     const canvasUrl = new URL(canvasPackagedBaseUrl)
     canvasUrl.searchParams.set('theme', currentTheme)
     if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
-    if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
     if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
     return canvasUrl.href
   }
@@ -1443,7 +1441,7 @@ export function createCanvasWindowController(
     },
     setAppearance(appearance) {
       currentTheme = appearance.theme
-      currentAppearance = { theme: appearance.theme, ...(appearance.uiSkin ? { uiSkin: appearance.uiSkin } : {}), reducedMotion: appearance.reducedMotion === true }
+      currentAppearance = { theme: appearance.theme, reducedMotion: appearance.reducedMotion === true }
       if (!canvasWindow || canvasWindow.isDestroyed()) return
       canvasWindow.setBackgroundColor(canvasWindowBackgroundForAppearance(currentAppearance))
       canvasWindow.webContents.send(canvasHostAppearanceChangedChannel, currentAppearance)

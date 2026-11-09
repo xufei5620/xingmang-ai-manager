@@ -724,6 +724,17 @@ export interface CanvasHostBridge {
   listProjects(): Promise<CanvasStoredProjectSummary[]>
   listProjectPage?(query: CanvasProjectQuery): Promise<CanvasProjectPage>
   createProject(name: string, initialWorkflowContent?: string, options?: { sourceProjectId: string }): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> } | null>
+  /**
+   * A blank project in the host's own folder for canvas projects, without
+   * asking where. The project center then offers "create elsewhere", which is
+   * createProject. Null when the host made nothing.
+   */
+  createProjectInDefaultFolder?(name: string): Promise<{ project: CanvasStoredProjectSummary; content: string } | null>
+  /**
+   * Asks the user where the folder of a project marked missing is now, and
+   * binds the project to it. Null when the user cancels.
+   */
+  relinkProjectFolder?(projectId: string): Promise<CanvasStoredProjectSummary | null>
   createTemplateProject?(input: { operationId: string; content: string }): Promise<{ project: CanvasStoredProjectSummary; content: string }>
   inspectProjectCreation?(input: { operationId: string; creationDigest: string }): Promise<CanvasProjectCreationReceipt>
   openProject(projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> }>

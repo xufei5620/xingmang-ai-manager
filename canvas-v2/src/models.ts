@@ -45,20 +45,38 @@ export const imageResolutionOptions: readonly { value: ImageResolution; label: s
   { value: '4K', label: '4K' },
 ]
 
+const gptImage2Preset: ImageModelPreset = {
+  id: 'gpt-image-2',
+  label: 'GPT Image 2',
+  sizes: [
+    '1024x1024', '1536x1152', '1152x1536', '1280x720', '720x1280',
+    '1536x1024', '1024x1536', '1280x1024', '1024x1280', '1792x768',
+  ],
+  supportsSize: true,
+  supportsQuality: true,
+  resolutions: supportedImageRequestResolutions('gpt-image-2'),
+  resolutionNote: gptImage2ResolutionNote,
+  supportsEdits: true,
+}
+
+// gpt-image-2.5 两个型号 xm 站的图片分组开着。尺寸、画质、改图的规矩跟 gpt-image-2 一样（桌面主进程同样按它处理），
+// 但这个内核自己的请求构造器还没接它们的 2K/4K，所以跟别的没接的型号一样只开 1K；桌面按它声明的清晰度来。
+function gptImage25Preset(id: string, label: string): ImageModelPreset {
+  return {
+    ...gptImage2Preset,
+    id,
+    label,
+    resolutions: supportedImageRequestResolutions(id),
+    resolutionNote: unknownModelResolutionNote,
+  }
+}
+
+// 次序就是下拉的次序，排第一的是分组里有它时的默认型号。跟桌面对话页、星芒AI生图（#999）一样：
+// 有 2.5 Flare 默认用它，没有照旧 GPT Image 2；2.5 Sunburst 慢、偏精修，不当默认。
 export const imageModelPresets: readonly ImageModelPreset[] = [
-  {
-    id: 'gpt-image-2',
-    label: 'GPT Image 2(推荐)',
-    sizes: [
-      '1024x1024', '1536x1152', '1152x1536', '1280x720', '720x1280',
-      '1536x1024', '1024x1536', '1280x1024', '1024x1280', '1792x768',
-    ],
-    supportsSize: true,
-    supportsQuality: true,
-    resolutions: supportedImageRequestResolutions('gpt-image-2'),
-    resolutionNote: gptImage2ResolutionNote,
-    supportsEdits: true,
-  },
+  gptImage25Preset('gpt-image-2.5-flare', 'GPT Image 2.5 Flare(推荐)'),
+  gptImage2Preset,
+  gptImage25Preset('gpt-image-2.5-sunburst', 'GPT Image 2.5 Sunburst'),
   {
     id: 'gemini-3.1-flash-image',
     label: 'Gemini 3.1 Flash Image',
@@ -125,7 +143,9 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
   },
 ]
 
-export const defaultImageModel: string = imageModelPresets[0].id
+// 还不知道账号有哪些型号时（没连上、型号表还没读到）先按 GPT Image 2 摆：历史账号的图片分组未必有 2.5。
+// 读到型号表以后按上面预设的次序挑（library/media-groups.ts 的 withResolvedMediaModels），有 2.5 Flare 就是它。
+export const defaultImageModel: string = gptImage2Preset.id
 export const defaultImageSize = '1024x1024'
 export const defaultImageQuality = 'low'
 export const defaultImageResolution: ImageResolution = '1K'
@@ -162,11 +182,11 @@ export function knownNonTextModel(model: string): boolean {
 function requestBuilderImageModelPreset(id: string): ImageModelPreset {
   const known = imageModelPresets.find((preset) => preset.id === id)
   if (known) return known
-  if (supportedImageRequestResolutions(id).includes('2K')) return { ...imageModelPresets[0], id, label: id }
+  if (supportedImageRequestResolutions(id).includes('2K')) return { ...gptImage2Preset, id, label: id }
   return {
     id,
     label: id,
-    sizes: imageModelPresets[0].sizes,
+    sizes: gptImage2Preset.sizes,
     supportsSize: true,
     supportsQuality: true,
     resolutions: supportedImageRequestResolutions(id),

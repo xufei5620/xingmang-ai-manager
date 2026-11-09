@@ -152,7 +152,7 @@ describe('actual App Agent execution callbacks', () => {
   it('requires a renewed review after a graph edit instead of submitting the old preflight', async () => {
     const f = fixture(); f.open(); f.patchImage({ data: { ...f.document.getGraphSnapshot().nodes[1].data, prompt: 'A changed product image' } })
     await f.call<Promise<void>>('confirmCanvasRun')
-    expect(f.state.banner).toContain('再次确认'); expect(f.state.pending?.graph).toEqual(f.graph()); expect(f.host.startRun).not.toHaveBeenCalled(); expect(f.queueProjectSave).not.toHaveBeenCalled()
+    expect(f.state.banner).toContain('请看一下新的运行范围再确认'); expect(f.state.pending?.graph).toEqual(f.graph()); expect(f.host.startRun).not.toHaveBeenCalled(); expect(f.queueProjectSave).not.toHaveBeenCalled()
   })
   it.each(['permission', 'epoch', 'graph'] as const)('rechecks %s after the real save barrier before start', async (kind) => {
     const f = fixture(), wait = deferred<void>(); f.queueProjectSave.mockReturnValue(wait.promise); f.open()

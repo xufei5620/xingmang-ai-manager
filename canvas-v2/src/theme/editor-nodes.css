@@ -145,6 +145,9 @@
 .wf-editor-node .wf-media-candidates { position: absolute; z-index: 8; right: 8px; bottom: 8px; left: 8px; width: auto; padding: 4px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--surface-floating); box-shadow: var(--shadow-menu); }
 .wf-editor-node.has-image-candidates .wf-media-state-badges { bottom: 64px; }
 .wf-editor-node.has-image-candidates .wf-media-failure { bottom: 64px; max-height: calc(100% - 72px); }
+/* The failure card owns the bottom edge, so the elapsed time moves under the
+   type chip instead of hiding behind it. */
+.wf-editor-node:has(.wf-media-failure) .wf-media-readouts { top: 40px; bottom: auto; }
 .wf-composer.wf-editor-composer {
   width: min(540px, calc(100% - 24px));
   min-width: 0;

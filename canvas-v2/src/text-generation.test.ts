@@ -80,6 +80,6 @@ describe('independent text generation', () => {
     const graph: CanvasRunGraph = { nodes: [{ id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: 'edited prompt', model: 'gpt-image-1', group: 'source', adoptedAssetId: 'old-asset' } }], edges: [] }
     const result = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, cachedNodeIds: ['image'], imageGroup: 'source', imageModels: ['gpt-image-1'], videoModels: [] })
     expect(result).toMatchObject({ paidRequestCount: 1, imageRequestCount: 1, cacheHitCount: 0 })
-    expect(result.items[0]).toMatchObject({ action: 'execute', reason: '将核对服务端缓存；未命中时提交付费生成请求' })
+    expect(result.items[0]).toMatchObject({ action: 'execute', reason: '输入跟上次一样就用上次的结果，不一样才重新生成（会扣费）' })
   })
 })

@@ -1,3 +1,4 @@
+import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import { resolveStoryboardImageRequest } from '../storyboard/storyboard-task'
 import { resolveExteriorImageRequest } from '../exterior/exterior-task'
 import { resolveInteriorImageRequest } from '../interior/interior-task'
@@ -143,8 +144,8 @@ export function sameCanvasRunGraphSnapshot(left: CanvasRunGraph, right: CanvasRu
 
 function scopeLabel(scope: CanvasRunScope): string {
   if (scope.kind === 'all') return '全部节点'
-  if (scope.kind === 'dirty') return `变更链路（${scope.nodeIds.length} 个入口）`
-  if (scope.kind === 'selection') return `选中链路（${scope.nodeIds.length} 个入口）`
+  if (scope.kind === 'dirty') return `改过的 ${scope.nodeIds.length} 个节点，连同要用到的上游节点`
+  if (scope.kind === 'selection') return `选中的 ${scope.nodeIds.length} 个节点，连同要用到的上游节点`
   if (scope.kind === 'from-node') return '从选中节点向后运行'
   return '运行到选中节点'
 }
@@ -207,8 +208,8 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     // the current input chain. Always disclose the paid-request upper bound.
     let action: CanvasPreflightAction = !paid && !isImageTransformNodeKind(node.kind) && cached.has(node.id) ? 'cached' : 'execute'
     let reason: string | undefined = paid ? input.scope.kind === 'to-node' && input.scope.nodeId === node.id
-      ? '将重新生成，不复用此节点结果；提交付费生成请求'
-      : '将核对服务端缓存；未命中时提交付费生成请求' : undefined
+      ? '这个节点重新生成，会扣费'
+      : '输入跟上次一样就用上次的结果，不一样才重新生成（会扣费）' : undefined
     let reasonCode: CanvasRunPreflightItem['reasonCode']
     if (node.disabled) {
       action = 'skip'
@@ -359,7 +360,8 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     if (!selected.has(node.id)) continue
     const item = planNode(node.id)
     items.push(item)
-    if (item.action === 'blocked') warnings.push(`${node.id}：${item.reason}`)
+    // 横幅里写节点种类（「图像节点」），不写内部编号；认不出种类才退回编号。
+    if (item.action === 'blocked') warnings.push(`${builtinNodeRegistry.resolve(node.kind)?.title ?? node.id}：${item.reason}`)
   }
   const requestCount = items.reduce((total, item) => total + item.requestCount, 0)
   const cacheHitCount = items.filter((item) => item.action === 'cached').length
@@ -373,10 +375,10 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
   if (webSearchRequestCount > 0) {
     const scope = input.scope
     const repeatsTargetSearch = scope.kind === 'to-node' && items.some((item) => item.nodeId === scope.nodeId && item.action === 'execute' && item.webSearch)
-    warnings.push(`其中 ${webSearchRequestCount} 个联网文字请求，每个最多调用 1 次搜索工具；可能另计搜索费用，实际价格由来源决定。${repeatsTargetSearch ? '选中目标将重新搜索，不复用此节点的旧结果；上游节点仍核对缓存，命中时' : '将核对服务端缓存，命中时'}复用原搜索结果与时间，不会重新联网`)
+    warnings.push(`其中 ${webSearchRequestCount} 个文字节点要联网搜索，每个最多搜一次，可能另算搜索费用，价格以来源为准。${repeatsTargetSearch ? '选中的节点会重新搜索；前面的节点输入没变就用上次的搜索结果' : '输入跟上次一样的直接用上次的搜索结果'}，不会重新联网`)
   }
-  if (paidRequestCount > 0) warnings.push(`本次最多提交 ${paidRequestCount} 个付费生成请求；不确定的上游提交不会自动重试`)
-  if (cacheHitCount > 0) warnings.push(`已有 ${cacheHitCount} 个节点可复用缓存结果`)
+  if (paidRequestCount > 0) warnings.push(`这次最多扣费生成 ${paidRequestCount} 次；发出去没收到结果的不会自动重发`)
+  if (cacheHitCount > 0) warnings.push(`${cacheHitCount} 个节点用上次的结果`)
   return {
     scope: structuredClone(input.scope),
     selectedNodeIds: input.graph.nodes.filter((node) => selected.has(node.id)).map((node) => node.id),

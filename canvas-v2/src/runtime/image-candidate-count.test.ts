@@ -37,7 +37,7 @@ describe('independent image request count', () => {
     const preflight = buildCanvasRunPreflight({ graph, scope: { kind: 'all' }, imageModels: ['gpt-image-1'], videoModels: [], cachedNodeIds: ['image'] })
     expect(preflight).toMatchObject({ canStart: true, requestCount: count, paidRequestCount: count, imageRequestCount: count })
     expect(preflight.items[0].requestCount).toBe(count)
-    expect(preflight.warnings.join(' ')).toContain(`最多提交 ${count} 个付费生成请求`)
+    expect(preflight.warnings.join(' ')).toContain(`这次最多扣费生成 ${count} 次`)
   })
 
   it('keeps legacy omitted counts omitted while disclosing one possible request', () => {

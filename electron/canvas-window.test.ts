@@ -1966,13 +1966,30 @@ describe('canvas close confirmation', () => {
     controller.dispose()
   })
 
-  it('sends only display preferences through initial URL and appearance events', async () => {
-    const controller = createCanvasWindowController(controllerOptions())
+  it('sends only display preferences through initial URL and appearance events, never the stored skin', async () => {
+    // The canvas follows the main window (#1103): an old stored skin such as mist no longer reaches it.
+    const systemService = {
+      readStoredConfig: vi.fn(() => ({ theme: 'dark', uiSkin: 'mist' })),
+      revealApiKey: vi.fn(() => ''),
+    } as unknown as SystemService
+    const controller = createCanvasWindowController(controllerOptions({ systemService }))
     controller.setAppearance({ theme: 'light', uiSkin: 'mist', reducedMotion: true })
     await controller.open()
-    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=light&skin=mist&reducedMotion=1')
-    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: '#f0f6f5' })])
-    controller.setAppearance({ theme: 'dark' })
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=light&reducedMotion=1')
+    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: canvasWindowLightBackgroundColor })])
+    controller.setAppearance({ theme: 'dark', uiSkin: 'aurora' })
+    expect(electronMocks.latestBrowserWindow!.setBackgroundColor).toHaveBeenLastCalledWith(canvasWindowBackgroundColor)
     expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.appearanceChanged, { theme: 'dark', reducedMotion: false })
+  })
+
+  it('opens with the stored dark theme without the stored skin', async () => {
+    const systemService = {
+      readStoredConfig: vi.fn(() => ({ theme: 'dark', uiSkin: 'mist' })),
+      revealApiKey: vi.fn(() => ''),
+    } as unknown as SystemService
+    const controller = createCanvasWindowController(controllerOptions({ systemService }))
+    await controller.open()
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=dark')
+    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: canvasWindowBackgroundColor })])
   })
 })

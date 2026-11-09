@@ -182,7 +182,7 @@ import { CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstream
 import { canvasNodeLodForZoom, type CanvasNodeLod } from './nodes/node-lod'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetSummary, CanvasGeneratedAsset, CanvasGeneratedVideoAsset, CanvasGroupSummary, CanvasProjectPage, CanvasPromptPreset, CanvasRunCandidate, CanvasRunGraph, CanvasRunRecord, CanvasRunScope, CanvasStoredProjectSummary, CanvasWorkshopItem } from './host'
 import { emptyCanvasAssetPage } from './host'
-import { defaultCanvasProjectQuery, loadCanvasProjectPage, type CanvasProjectListQuery } from './project-pagination'
+import { canvasDefaultProjectFolderLabel, defaultCanvasProjectQuery, loadCanvasProjectPage, type CanvasProjectListQuery } from './project-pagination'
 import { AssetTray } from './components/AssetTray'
 import './components/workshop-media-asset-picker.css'
 import type { OfficialAssetAccess } from './components/official-asset-browser-model'
@@ -227,6 +227,7 @@ import { buildAgentExecutionResumePreflight } from './runtime/agent-execution-pr
 import { canvasRunInputForHost, withoutHostDisabledDefaults } from './runtime/host-run-compatibility'
 import { promptPresetInputForHost, promptPresetUpdateForHost } from './library/host-prompt-presets'
 import { createProjectCopyForHost } from './persistence/host-project-copy'
+import { createBlankProjectForHost } from './persistence/host-project-create'
 import { canvasCapabilities, canvasNodeKindAvailable } from './host-capabilities'
 import { canvasHostEntryPoints, withoutUnavailableNodeEntries } from './host-entry-points'
 import { workflowExportedNotice, workflowSavedNotice } from './editor/workflow-file-notices'
@@ -2213,7 +2214,7 @@ function CanvasWorkspace({
     await controller.finishConfirmed()
   }, [])
 
-  const createStoredProject = useCallback(async (name: string) => {
+  const createStoredProject = useCallback(async (name: string, elsewhere = false) => {
     if (storageMode === 'cloud') {
       const controller = blankCreationRef.current
       if (!draftActionsEnabledRef.current || !blankCreationReady || !controller || controller.state().busy) return false
@@ -2231,7 +2232,7 @@ function CanvasWorkspace({
     setProjectLoading(true)
     setProjectError(null)
     try {
-      const created = await hostBridge().createProject(name)
+      const created = await createBlankProjectForHost(hostBridge(), name, elsewhere ? 'elsewhere' : 'default')
       if (!created) return false
       setProjects((current) => [created.project, ...current.filter((project) => project.id !== created.project.id)])
       // Creation has already committed even if the following read fails.
@@ -2416,6 +2417,18 @@ function CanvasWorkspace({
       throw error instanceof Error ? error : new Error(message)
     }
     finally { if (projectRequestRevisionRef.current === revision) setProjectLoading(false) }
+  }, [projectPaginationEnabled, refreshProjects])
+
+  // 不设 projectLoading：宿主这时正开着选文件夹的框，分页的列表在加载时是空的，客户会看着项目全没了。
+  // 卡片自己显示「处理中…」，失败写在那张卡下面。
+  const relinkStoredProjectFolder = useCallback(async (projectId: string) => {
+    const bridge = hostBridge()
+    if (!bridge.relinkProjectFolder) return false
+    const relinked = await bridge.relinkProjectFolder(projectId)
+    if (!relinked) return false
+    if (projectPaginationEnabled) await refreshProjects()
+    else setProjects((current) => current.map((project) => project.id === relinked.id ? relinked : project))
+    return true
   }, [projectPaginationEnabled, refreshProjects])
 
   const setStoredProjectArchived = useCallback(async (projectId: string, archived: boolean) => {
@@ -6428,11 +6441,11 @@ function CanvasWorkspace({
     description: string
     disabled: boolean
   }> = [
-    { kind: 'all', label: '运行全部', description: '执行当前工作流中的全部可运行节点', disabled: nodes.length === 0 },
-    { kind: 'dirty', label: `仅运行变更 (${dirtyNodeIds.size})`, description: '重新执行输入或结果发生变化的链路', disabled: dirtyNodeIds.size === 0 },
-    { kind: 'selection', label: `运行选中链路 (${selectedRunnableCount})`, description: '执行选中节点及其上游依赖', disabled: selectedRunnableCount === 0 },
-    { kind: 'to-node', label: '运行到选中节点', description: '需要且只能选择一个可运行节点', disabled: selectedRunnableCount !== 1 },
-    { kind: 'from-node', label: '从选中节点向后运行', description: '执行下游链路并补齐必要依赖', disabled: selectedRunnableCount !== 1 },
+    { kind: 'all', label: '运行全部', description: '运行画布上所有能运行的节点', disabled: nodes.length === 0 },
+    { kind: 'dirty', label: `只运行改过的 (${dirtyNodeIds.size})`, description: '运行改过的节点，连同要用到的上游节点', disabled: dirtyNodeIds.size === 0 },
+    { kind: 'selection', label: `运行选中的节点 (${selectedRunnableCount})`, description: '运行选中的节点，连同要用到的上游节点', disabled: selectedRunnableCount === 0 },
+    { kind: 'to-node', label: '运行到选中节点', description: '先选中一个能运行的节点', disabled: selectedRunnableCount !== 1 },
+    { kind: 'from-node', label: '从选中节点向后运行', description: '运行选中节点和后面连着的节点，缺的上游一起运行', disabled: selectedRunnableCount !== 1 },
   ]
   const activeRunOption = runScopeOptions.find((option) => option.kind === runScopeKind) ?? runScopeOptions[0]
 
@@ -6450,7 +6463,7 @@ function CanvasWorkspace({
       return { kind: 'selection', nodeIds }
     }
     const nodeIds = selectedNodeIds.filter((id) => runnableIds.has(id))
-    if (nodeIds.length !== 1) throw new Error('该运行范围需要且只能选择一个可运行节点')
+    if (nodeIds.length !== 1) throw new Error('这种运行方式要先选中一个能运行的节点')
     return { kind: runScopeKind === 'from-node' ? 'from-node' : 'to-node', nodeId: nodeIds[0] }
   }, [runScopeKind, nodes, dirtyNodeIds, selectedNodeIds])
 
@@ -6495,14 +6508,14 @@ function CanvasWorkspace({
         setRunPreflight(currentPreflight)
         setPendingCanvasRun(currentPreflight.canStart ? { ...pending, graph: currentGraph } : null)
         setBanner(currentPreflight.canStart
-          ? '工作流在确认期间发生变化，请核对新的运行范围后再次确认'
-          : '工作流在确认期间发生变化，请先修复新的阻塞项')
+          ? '确认的时候画布改过了，请看一下新的运行范围再确认'
+          : '确认的时候画布改过了，有节点还不能运行，请先改好')
         return
       }
       if (!currentPreflight.canStart) {
         setRunPreflight(currentPreflight)
         setPendingCanvasRun(null)
-        setBanner('当前运行范围出现新的阻塞项，请先修复后重新运行')
+        setBanner('有节点变得不能运行了，请先改好再运行')
         return
       }
       if (pending.outputPlacement) {
@@ -7322,7 +7335,7 @@ function CanvasWorkspace({
         cachedNodeIds: cachedNodeIdsForPreflight(current.nodes, scope), imageGroup: configuration.image, videoGroup: configuration.video,
         videoProtocol: configuration.videoProtocol, textGroup: configuration.text, imageModels: mediaModelsRef.current.image,
         videoModels: mediaModelsRef.current.video, textModels: mediaModelsRef.current.text, nodeBlockReasons: dramaPreflightBlockReasons(current.nodes, current.edges) })
-      if (rejectPendingMedia(preflight) || rejectUnavailableGroups(preflight) || !preflight.canStart) throw new Error(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '运行预检未通过，自动执行已暂停，请先处理阻塞项')
+      if (rejectPendingMedia(preflight) || rejectUnavailableGroups(preflight) || !preflight.canStart) throw new Error(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '运行前检查没通过，自动运行停了，请先改好还不能运行的节点')
       await saveAgentWorkflow(captureAgentWorkflow())
       authorization.assert()
       const after = getGraphSnapshot()
@@ -8809,6 +8822,9 @@ function CanvasWorkspace({
         error={projectError}
         onRefresh={() => void refreshProjects()}
         onCreate={createStoredProject}
+        defaultFolder={hostEntryPoints.projectDefaultFolder ? canvasDefaultProjectFolderLabel(navigator.userAgent) : undefined}
+        onCreateElsewhere={hostEntryPoints.projectDefaultFolder ? (name) => createStoredProject(name, true) : undefined}
+        onRelinkFolder={hostEntryPoints.projectFolderRelink ? relinkStoredProjectFolder : undefined}
         blankCreation={storageMode === 'cloud' ? blankCreation : undefined}
         blankCreationReady={blankCreationReady && draftActionsEnabled}
         blankDraftName={storageMode === 'cloud' ? blankProjectName : undefined}
@@ -9451,6 +9467,7 @@ function CanvasWorkspace({
               onPreviewAsset={(asset) => setPreviewAsset({ ...asset })}
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onLocateNode={locateNode}
+              nodeTitles={Object.fromEntries(nodes.map((node) => [node.id, typeof node.data.settings?.title === 'string' ? node.data.settings.title : builtinNodeRegistry.resolve(node.type ?? 'unknown')?.title ?? '']))}
               onRetryNode={(nodeId, scope) => { requestNodeScopeRun(nodeId, scope) }}
               onClose={closeInspector}
             />

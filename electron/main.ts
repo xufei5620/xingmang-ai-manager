@@ -2448,7 +2448,7 @@ if (!hasSingleInstanceLock) {
       setWindowTheme: (contents, theme) => {
         setWindowTheme(contents, theme)
         const appearance = systemService.readStoredConfig()
-        canvasController.setAppearance({ theme, uiSkin: appearance.uiSkin, reducedMotion: appearance.reducedMotion })
+        canvasController.setAppearance({ theme, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
       xingmangAiSkill: {

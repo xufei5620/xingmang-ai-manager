@@ -18,6 +18,11 @@ interface ProjectCenterProps {
   error: string | null
   onRefresh?(): void
   onCreate(name: string): Promise<boolean>
+  /** Where onCreate puts projects without asking. With it, the dialog also offers onCreateElsewhere. */
+  defaultFolder?: string
+  onCreateElsewhere?(name: string): Promise<boolean>
+  /** Asks where a missing project's folder is now. Resolves false when the user cancels. */
+  onRelinkFolder?(projectId: string): Promise<boolean>
   blankCreation?: BlankProjectCreationState
   blankCreationReady?: boolean
   blankDraftName?: string
@@ -52,13 +57,16 @@ function ProjectPreview({ project }: { project: CanvasStoredProjectSummary }) {
   return <span className="canvas-project-preview-empty"><Music2 size={24} /><small>音频项目</small></span>
 }
 
-export function ProjectCenter({ projects, page, query, storageMode = 'local', onQueryChange, onQueryPending, loading, error, onRefresh, onCreate, blankCreation, blankCreationReady = true, blankDraftName, blankDraftError, onBlankDraftNameChange, onContinueBlankCreate, onFinishBlankCreate, onOpen, onRename, onDuplicate, onSetArchived, onDraftChange }: ProjectCenterProps) {
+export function ProjectCenter({ projects, page, query, storageMode = 'local', onQueryChange, onQueryPending, loading, error, onRefresh, onCreate, defaultFolder, onCreateElsewhere, onRelinkFolder, blankCreation, blankCreationReady = true, blankDraftName, blankDraftError, onBlankDraftNameChange, onContinueBlankCreate, onFinishBlankCreate, onOpen, onRename, onDuplicate, onSetArchived, onDraftChange }: ProjectCenterProps) {
   const [view, setView] = useState<'recent' | 'archived'>('recent')
   const paged = Boolean(query && onQueryChange)
   const [search, setSearch] = useState(query?.q ?? '')
   const searchPendingRef = useRef(false)
   const [restoringId, setRestoringId] = useState<string | null>(null)
-  const copy = canvasProjectStorageCopy(storageMode)
+  const [relinkingId, setRelinkingId] = useState<string | null>(null)
+  const [relinkError, setRelinkError] = useState<{ projectId: string; message: string } | null>(null)
+  const createElsewhere = storageMode === 'local' && defaultFolder ? onCreateElsewhere : undefined
+  const copy = canvasProjectStorageCopy(storageMode, createElsewhere ? defaultFolder : undefined)
   const [creating, setCreating] = useState(false)
   const [localCreateName, setLocalCreateName] = useState('')
   const createName = blankDraftName ?? localCreateName
@@ -75,7 +83,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
   const archivedProjects = useMemo(() => projects.filter((project) => project.archivedAt).sort((left, right) => Date.parse(right.archivedAt!) - Date.parse(left.archivedAt!)), [projects])
   const currentView = paged ? query!.view === 'archived' ? 'archived' : 'recent' : view
   const visibleProjects = paged ? loading || error ? [] : projects : view === 'recent' ? activeProjects : archivedProjects
-  const actionBusy = createSaving || actionSaving || restoringId !== null || Boolean(blankCreation?.busy)
+  const actionBusy = createSaving || actionSaving || restoringId !== null || relinkingId !== null || Boolean(blankCreation?.busy)
 
   useEffect(() => {
     if (!searchPendingRef.current) setSearch(query?.q ?? '')
@@ -113,7 +121,16 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
     setCreateError(null)
   }
 
-  const submitCreate = async (event: FormEvent) => {
+  const relinkFolder = async (projectId: string) => {
+    if (!onRelinkFolder || loading || actionBusy) return
+    setRelinkingId(projectId)
+    setRelinkError(null)
+    try { await onRelinkFolder(projectId) }
+    catch (failure) { setRelinkError({ projectId, message: failure instanceof Error ? failure.message : String(failure) }) }
+    finally { setRelinkingId(null) }
+  }
+
+  const submitCreate = async (event: FormEvent, elsewhere = false) => {
     event.preventDefault()
     if (actionBusy || !blankCreationReady) return
     const nextName = createName.trim()
@@ -124,7 +141,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
     setCreateSaving(true)
     setCreateError(null)
     try {
-      const created = await onCreate(nextName)
+      const created = elsewhere && createElsewhere ? await createElsewhere(nextName) : await onCreate(nextName)
       if (created) {
         setCreating(false)
         if (!blankCreation) setCreateName('')
@@ -205,7 +222,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
           <div className="canvas-project-empty">
             {currentView === 'recent' ? <FolderOpen size={30} /> : <Archive size={30} />}
             <strong>{paged && query?.q ? '没有匹配的项目' : currentView === 'recent' ? '还没有画布项目' : '没有已归档项目'}</strong>
-            <span>{paged && query?.q ? '请调整搜索词或切换项目视图。' : currentView === 'recent' ? storageMode === 'cloud' ? '点击右上角「新建项目」，输入名称后创建云端项目。' : '点击右上角「新建项目」，输入名称后再选择工作文件夹。' : copy.archiveHint}</span>
+            <span>{paged && query?.q ? '请调整搜索词或切换项目视图。' : currentView === 'recent' ? copy.emptyHint : copy.archiveHint}</span>
           </div>
         )}
         {visibleProjects.map((project) => {
@@ -233,6 +250,12 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
                   ? <button type="button" title="恢复项目" aria-label={`恢复项目：${project.name}`} disabled={loading || actionBusy} onClick={() => { void restoreProject(project.id) }}><ArchiveRestore size={14} /></button>
                   : <button type="button" title="归档项目" aria-label={`归档项目：${project.name}`} disabled={loading} onClick={() => beginAction(project, 'archive')}><Archive size={14} /></button>}
               </span>
+              {onRelinkFolder && storageMode === 'local' && !project.archivedAt && project.workspaceStatus === 'missing' && <span className="canvas-project-relink">
+                <button type="button" aria-label={`重新选择文件夹：${project.name}`} disabled={loading || actionBusy} onClick={() => { void relinkFolder(project.id) }}>
+                  {relinkingId === project.id ? '处理中…' : '重新选择文件夹'}
+                </button>
+                {relinkError?.projectId === project.id && <small role="alert">{relinkError.message}</small>}
+              </span>}
             </article>
           )
         })}
@@ -267,6 +290,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
             {blankDraftError && <p className="canvas-project-dialog-error" role="alert">{blankDraftError}</p>}
             {createError && <p className="canvas-project-dialog-error" role="alert">{createError}</p>}
             <footer>
+              {createElsewhere && copy.createElsewhere && !blankCreation?.pending && <button type="button" className="canvas-project-create-elsewhere" disabled={actionBusy || !blankCreationReady || !createName.trim() || Boolean(blankDraftError)} onClick={(event) => void submitCreate(event, true)}>{copy.createElsewhere}</button>}
               <button type="button" disabled={actionBusy} onClick={() => setCreating(false)}>取消</button>
               <button type="submit" className="is-primary" disabled={actionBusy || !blankCreationReady || (!blankCreation?.pending && (!createName.trim() || Boolean(blankDraftError))) || Boolean(blankCreation?.confirmedProject?.archivedAt)}>
                 {actionBusy ? '处理中…' : blankCreation?.pending ? blankCreation.phase === 'confirmed' ? '打开原项目' : '核对原项目' : copy.create}

@@ -54,7 +54,8 @@ describe('selection toolbar responsive operation entry', () => {
   it('constrains the short toolbar to the canvas and allows wrapping instead of clipping actions', () => {
     const css = readFileSync(new URL('./selection-toolbar.css', import.meta.url), 'utf8')
     const rule = css.match(/\.canvas-selection-toolbar \{([^}]+)\}/)?.[1] ?? ''
-    expect(rule).toContain('max-width: calc(100% - 16px)')
+    // Constrained to the canvas still visible beside a floating inspector (0px when none floats).
+    expect(rule).toContain('max-width: calc(100% - var(--canvas-floating-panel, 0px) - 16px)')
     expect(rule).toContain('flex-wrap: wrap')
     expect(rule).not.toMatch(/overflow|width: 602/)
     expect(css).toContain('position: fixed')

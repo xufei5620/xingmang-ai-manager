@@ -53,7 +53,7 @@ describe('actual App run confirmation against the host profile', () => {
     expect(startRun).not.toHaveBeenCalled()
     expect(save).not.toHaveBeenCalled()
     expect(preflights.at(-1)?.items.find((item) => item.nodeId === 'text')).toMatchObject({ action: 'blocked', reasonCode: 'unsupported-host', reason: '「文字生成」节点当前客户端暂不支持' })
-    expect(banners.at(-1)).toBe('当前运行范围出现新的阻塞项，请先修复后重新运行')
+    expect(banners.at(-1)).toBe('有节点变得不能运行了，请先改好再运行')
   })
 
   it('submits only what a host without capabilities() parses for a project it can run', async () => {
