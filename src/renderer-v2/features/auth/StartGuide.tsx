@@ -196,7 +196,6 @@ function guideDetail(error: unknown, shown: string): string | undefined {
  */
 export function guideInstallFailure(error: unknown, name: string, canReplaceNode = false, copyable = false): GuideFailure {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  if (/运行环境正在准备/.test(message)) return { message: '运行环境还在准备，等它装完再点「再试一次」。' }
   const key = classifyOperationError(message)
   // 这一类重试只会撞同一个错，出路是换 Node.js（第十九批 1）；换完引导接着装。
   if (key === 'toolCertOutdatedNode' && canReplaceNode) {

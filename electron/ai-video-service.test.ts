@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { awakeVideoPollSpan, createAiVideoService, delayVideoPoll, isAllowedVideoDownloadAddress } from './ai-video-service'
 import { aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
+import { networkFailureMessages } from './network-failure'
 import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type FinishedAiVideoAsset, type FinishedAiVideoTask, type StoredAiVideoTask } from './ai-video-task-store'
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
@@ -611,6 +612,55 @@ describe('createAiVideoService', () => {
     } finally {
       fs.rmSync(root, { recursive: true, force: true })
     }
+  })
+
+  // 深查 W-1：两条线路都没走通、这一单根本没出这台电脑时，以前也说「结果不明确」，还留下那条记录，
+  // 这一镜一直挂着「结果不明」、重开以后还这么说。
+  // Electron's net.fetch rejects with a bare Error carrying only the net:: text (no code, no cause).
+  it.each([
+    ['the name does not resolve', 'net::ERR_NAME_NOT_RESOLVED', networkFailureMessages.dns],
+    ['the computer is offline', 'net::ERR_INTERNET_DISCONNECTED', networkFailureMessages.offline],
+    ['a company proxy refuses the tunnel', 'net::ERR_TUNNEL_CONNECTION_FAILED', networkFailureMessages.proxy],
+  ])('names the network cause and forgets the request when %s before the POST left', async (label, failure, expected) => {
+    const fetchImpl = vi.fn(async () => { throw new Error(failure) }) as unknown as typeof fetch
+    const settled = vi.fn()
+    const { service, tasks } = setup(fetchImpl, { onRequestStarted: () => settled })
+    const requestId = `unsent-${label}`.replace(/\s+/g, '-')
+    const result = service.generate(41, { requestId, group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5' })
+    await expect(result).rejects.toThrow(expected)
+    await expect(result).rejects.not.toThrow(aiVideoUnconfirmedSubmissionMessage)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+    expect(tasks.markUnconfirmed).toHaveBeenCalledWith(7, requestId)
+    expect(tasks.clearUnconfirmed).toHaveBeenCalledWith(7, requestId)
+    await expect(service.resumeRequest(41, 7, requestId)).resolves.toBeNull()
+    // Nothing reached the server, so there is no usage to refresh.
+    expect(settled).not.toHaveBeenCalled()
+  })
+
+  it('keeps an earlier unclear attempt on record when its resubmission never leaves', async () => {
+    const fetchImpl = vi.fn(async () => { throw new TypeError('socket reset') }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    const input = { requestId: 'shot-unclear-then-offline', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5' }
+    await expect(service.generate(41, input)).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+
+    vi.mocked(fetchImpl).mockImplementationOnce(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') })
+    await expect(service.generate(41, input)).rejects.toThrow(networkFailureMessages.dns)
+    expect(tasks.clearUnconfirmed).not.toHaveBeenCalled()
+    await expect(service.resumeRequest(41, 7, input.requestId)).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+  })
+
+  it.each([
+    ['the connection is reset after it was made', 'net::ERR_CONNECTION_RESET'],
+    ['the TLS handshake is cut mid-way', 'net::ERR_SSL_PROTOCOL_ERROR'],
+    ['the request times out', 'net::ERR_TIMED_OUT'],
+  ])('still reports an unclear submission when %s, because the POST may have been charged', async (label, failure) => {
+    const fetchImpl = vi.fn(async () => { throw new Error(failure) }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    const requestId = `maybe-sent-${label}`.replace(/\s+/g, '-')
+    await expect(service.generate(41, { requestId, group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5' }))
+      .rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
+    expect(tasks.clearUnconfirmed).not.toHaveBeenCalled()
+    await expect(service.resumeRequest(41, 7, requestId)).rejects.toThrow(aiVideoUnconfirmedSubmissionMessage)
   })
 
   it('writes the unclear-request record to disk before the paid POST leaves', async () => {

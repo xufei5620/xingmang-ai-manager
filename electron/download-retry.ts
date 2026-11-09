@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import { createAwakeDeadline } from './awake-deadline'
 
 /**
  * 大安装包（Codex 桌面端、Node.js、Git、Python）下到一半网络断了，以前直接换下一条
@@ -86,36 +87,29 @@ export interface DownloadDeadline {
  * resumes keep failing is still handed back by downloadWithResume after its own few
  * retries, and the caller moves on to the next source as before. Both end the download
  * with `timeoutMessage`, which each caller sets to the words its old fixed limit used,
- * so what the customer is told does not change.
+ * so what the customer is told does not change. Both count only the time this computer was
+ * awake (awake-deadline.ts): closing the lid mid-download used to expire them the moment it
+ * reopened, while the network was still coming back, and the next source started from zero.
  */
 export function createDownloadDeadline(
   timeoutMessage: string,
   expire: (reason: Error) => void,
+  now?: () => number,
 ): DownloadDeadline {
-  let stopped = false
   let transferred = 0
-  let stall = setTimeout(timeOut, downloadStallTimeoutMs)
-  const ceiling = setTimeout(timeOut, downloadCeilingMs)
-
-  function stop(): void {
-    stopped = true
-    clearTimeout(stall)
-    clearTimeout(ceiling)
-  }
-
-  function timeOut(): void {
-    stop()
-    expire(new Error(timeoutMessage))
-  }
-
+  const deadline = createAwakeDeadline(
+    { stallMs: downloadStallTimeoutMs, ceilingMs: downloadCeilingMs, now },
+    () => expire(new Error(timeoutMessage)),
+  )
   return {
     progressed(next) {
-      if (stopped || next <= transferred) return
+      if (next <= transferred) return
       transferred = next
-      clearTimeout(stall)
-      stall = setTimeout(timeOut, downloadStallTimeoutMs)
+      deadline.progressed()
     },
-    stop,
+    stop() {
+      deadline.stop()
+    },
   }
 }
 
