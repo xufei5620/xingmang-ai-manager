@@ -72,6 +72,7 @@
 ### 画布窗口与宿主桥
 - `canvas-window.ts` — **画布窗口的总控**：独立 `BrowserWindow`，加固与主窗口同级（`sandbox` / `contextIsolation` / `webviewTag:false` / `navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`（I12）；用自己的 `registerCanvasHandler` + `assertTrustedCanvasSender` 注册全部 `canvas-host:*` 通道，只放行画布窗口自身（I4 的登记例外）；文件读写只走原生对话框，项目工作文件夹也由主进程弹框选；Linux 上打开前先确认渲染进程沙箱真的生效（`linux-renderer-sandbox.ts`），崩溃后自动恢复
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
+- `canvas-project-file-launch.ts` — 双击画布项目文件（`.xingcanvas`，D92）时系统交来的路径：认启动参数、`second-instance` 的 argv（Linux 的 `file:` 网址）和 Mac 的 `open-file`，只收绝对路径、只留最近一个、十分钟作废；重开软件时从参数里去掉它；打不开时的报错框字。路径由系统直接给主进程，不经渲染层，不是 I15 的路径例外；真正打开在 `canvas-window.ts` 的 `openProjectFile`（照拖放那套严查后导入成新项目），由 `main.ts` 接线
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
 - `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）；生视频的 `parseVideoGenerateInput` 同理，另给主窗口的 `video:generate`（视频剪辑页）用，只是不收参考视频、参考音频
