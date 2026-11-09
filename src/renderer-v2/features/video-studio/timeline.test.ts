@@ -54,6 +54,20 @@ describe('video studio timeline', () => {
     expect(times[17]).toBeCloseTo(1.25 + 17 / 24, 10)
   })
 
+  it('starts a clip whose first frames sit before zero at zero, like a player does', () => {
+    const plan = buildVideoStudioRenderPlan([
+      { start: -0.25, end: 1 },
+      { start: -0.5, end: 2, trimStart: 0.5 },
+      { start: 0.5, end: 2 },
+    ], options)
+    expect(plan.segments.map(({ sourceStart, frameCount }) => ({ sourceStart, frameCount }))).toEqual([
+      { sourceStart: 0, frameCount: 30 },
+      { sourceStart: 0.5, frameCount: 45 },
+      { sourceStart: 0.5, frameCount: 45 },
+    ])
+    expect(() => buildVideoStudioRenderPlan([{ start: -1, end: 0 }], options)).toThrow('第 1 段片段的时长读不出来')
+  })
+
   it('normalizes captions without touching their words', () => {
     expect(normalizeVideoStudioCaption(undefined)).toBe('')
     expect(normalizeVideoStudioCaption('  \n \r\n ')).toBe('')

@@ -23,7 +23,10 @@ export const minVideoStudioSegmentSeconds = 0.2
 export const maxVideoStudioCaptionLength = 200
 
 export interface VideoStudioClipSpec {
-  /** 片段第一帧的时间（秒）。大多数文件是 0，带编辑表的文件可能不是。 */
+  /**
+   * 片段第一帧的时间（秒）。大多数文件是 0，带编辑表的文件可能不是；可能是负数，负的那几帧播放器不放，
+   * 拼的时候也从 0 算起（buildVideoStudioRenderPlan）。
+   */
   start: number
   /** 片段最后一帧结束的时间（秒），跟 start 同一个时钟。 */
   end: number
@@ -112,11 +115,18 @@ export function buildVideoStudioRenderPlan(clips: readonly VideoStudioClipSpec[]
     const label = `第 ${clipIndex + 1} 段`
     const trimStart = clip.trimStart ?? 0
     const trimEnd = clip.trimEnd ?? 0
-    if (![clip.start, clip.end, trimStart, trimEnd].every(Number.isFinite) || clip.end <= clip.start) {
+    // Frames stamped before zero are a lead-in the file hides on purpose (an
+    // edit list, or an encoder priming its first GOP), and players never show
+    // them. Cutting from the first frame instead put that hidden picture at the
+    // head of the film and pushed the clip's sound back by the same amount, so
+    // the cut starts at zero; the sound follows through segment.sourceStart
+    // (compose.ts). A positive start is a real offset and is kept.
+    const origin = Math.max(0, clip.start)
+    if (![clip.start, clip.end, trimStart, trimEnd].every(Number.isFinite) || clip.end <= origin) {
       throw new VideoStudioError(`${label}片段的时长读不出来`)
     }
     if (trimStart < 0 || trimEnd < 0) throw new VideoStudioError(`${label}的剪切时间不能是负数`)
-    const sourceStart = clip.start + trimStart
+    const sourceStart = origin + trimStart
     const length = clip.end - trimEnd - sourceStart
     if (length < minVideoStudioSegmentSeconds) {
       throw new VideoStudioError(`${label}剪掉首尾后不到 ${minVideoStudioSegmentSeconds} 秒，没法用`)

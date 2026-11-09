@@ -102,6 +102,29 @@ test('letterboxes instead of cropping when asked to contain, and honours trims',
   await page.close()
 })
 
+test('drops the hidden lead-in of a clip whose first frames are stamped before zero', async () => {
+  const { page, errors } = await open()
+  const summary = await page.evaluate(async () => {
+    const harness = window.videoStudioHarness
+    const data = await harness.makeClip({ width: 320, height: 240, frameRate: 30, seconds: 1, color: '#0000ff', tone: { frequency: 440, channels: 2 }, lead: { seconds: 0.25, color: '#ff0000' } })
+    const source = await harness.inspect(data.slice(0), { colors: [{ time: 0.1, x: 160, y: 120 }] })
+    const result = await harness.compose({ clips: [{ data }], options: { aspect: '16:9', resolution: 480, fit: 'cover', frameRate: 30 } })
+    return {
+      source,
+      duration: result.duration,
+      inspected: await harness.inspect(result.data, { colors: [{ time: 0.1, x: 427, y: 240 }], loudness: [{ from: 0.02, to: 0.2 }] }),
+    }
+  })
+  assert.deepEqual(errors, [])
+  // 原片在播放器里 0.1 秒就是蓝的：红的那几帧藏在 0 之前。
+  closeColor(summary.source.colors[0], [0, 0, 255], 'source at 0.1s')
+  assert.equal(summary.duration, 1)
+  assert.equal(summary.inspected.packetCount, 30)
+  closeColor(summary.inspected.colors[0], [0, 0, 255], 'film at 0.1s')
+  assert.ok(summary.inspected.loudness[0] > 0.1, `the sound starts with the picture (${summary.inspected.loudness[0]})`)
+  await page.close()
+})
+
 test('runs the same job in a background worker and follows a codec preference', async () => {
   const { page, errors } = await open()
   const summary = await page.evaluate(async () => {
