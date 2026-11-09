@@ -37,6 +37,7 @@ import {
   permissionsShowInFull,
   readFileChange,
   readRequestedPermissions,
+  sentWhileOpen,
   validateRemoteWorkspace,
 } from './codex-remote-service'
 import type { RemoteFileChangeLine } from './codex-remote-text'
@@ -367,6 +368,14 @@ describe('codex-remote-service helpers', () => {
     // 老版本 Codex 不带编号：只能按对话认。
     expect(belongsToOtherTurn('tu-2', ['tu-1'], undefined)).toBe(false)
     expect(belongsToOtherTurn('tu-2', ['tu-1'], '')).toBe(false)
+  })
+
+  it('tells an old message sent while the remote was on from one sent before it was switched on', () => {
+    const started = 1_000_000_000
+    expect(sentWhileOpen(started + 5_000, started)).toBe(true)
+    // The same one-minute grace as the stale check itself.
+    expect(sentWhileOpen(started - 60_000, started)).toBe(true)
+    expect(sentWhileOpen(started - 60_001, started)).toBe(false)
   })
 
   it('pads pairing codes to six digits', () => {
@@ -827,36 +836,36 @@ describe('codex-remote-service clock running fast', () => {
     channel.handlers?.onInbound(text(alice, '跑一下测试', { sentAt: Date.now(), clockAheadMs: 0 }))
     await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
     expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
-    // Something sent before the clock was set right is still too old to run; the phone only hears it was not run.
+    // Something sent before the clock was set right is still too old to run.
     channel.handlers?.onInbound(text(alice, '调钟以前发的', { sentAt: Date.now() - 2 * 60_000, clockAheadMs: 0 }))
-    await vi.waitFor(() => expect(channel.texts()).toHaveLength(3))
-    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。', staleNotice(2)])
-    expect(s.codex[0].requests('turn/start')).toHaveLength(1)
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts()).toEqual([clockAheadText, '收到，Codex 开始处理。'])
   })
 
-  it('does not blame the clock for really old messages or unknown clocks, and stays silent for strangers', async () => {
+  it('stays silent for really old messages, unknown clocks and strangers', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
-    // Someone else, even when the clock is to blame.
-    channel.handlers?.onInbound(text(mallory, '你好', { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 }))
     // Old by the platform's clock too: sent twenty minutes ago on a clock five minutes fast.
     channel.handlers?.onInbound(text(alice, '昨天的话', { sentAt: Date.now() - 20 * 60_000, clockAheadMs: 5 * 60_000 }))
     // The channel could not tell how far off this computer is.
     channel.handlers?.onInbound(text(alice, '不知道钟准不准', { sentAt: Date.now() - 15 * 60_000 }))
-    await vi.waitFor(() => expect(channel.sent.length).toBeGreaterThan(0))
+    // Someone else, even when the clock is to blame.
+    channel.handlers?.onInbound(text(mallory, '你好', { sentAt: Date.now() - 15 * 60_000, clockAheadMs: 15 * 60_000 }))
     await new Promise((resolve) => setTimeout(resolve, 20))
-    // The bound person hears once that the batch was not run (D66), not that the clock is off.
-    expect(channel.texts()).toEqual([staleNotice(20)])
-    expect(channel.sent[0].peer).toEqual(alice)
+    expect(channel.sent).toHaveLength(0)
     expect(s.codex).toHaveLength(0)
     expect(s.logs).not.toContain('remote.clock-ahead')
   })
 
-  // D66 / YKS-9：合盖、断网时发的话回来已经太旧，照旧不执行，但要跟绑定的人说一声。
+  // D66 / YKS-9：遥控开着、合盖或断网时发的话回来已经太旧，照旧不执行，但要跟绑定的人说一声。
   it('tells the bound person once per batch that old messages were not run, and again for a later batch', async () => {
     let now = Date.now()
     const s = await setup({ now: () => now })
     const channel = await enabledAndPaired(s)
+    // Sent before the remote was switched on: it may have run last time, so nothing is said about it.
+    channel.handlers?.onInbound(text(alice, '上次开着时的话', { sentAt: now - 5 * 60_000 }))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.sent).toHaveLength(0)
     now += 60 * 60_000
     const first = text(alice, '帮我跑测试', { sentAt: now - 35 * 60_000, replyContext: 'ctx-old-1' })
     channel.handlers?.onInbound(first)

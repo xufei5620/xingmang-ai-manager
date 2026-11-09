@@ -197,6 +197,14 @@ export function isStaleInbound(sentAt: number, channelStartedAt: number, now: nu
 }
 
 /**
+ * 这条旧消息是不是遥控开着的时候发的，只是电脑合盖、断网没及时收到（D66 / YKS-9）。遥控打开以前的不算：
+ * 微信每次打开都从头拉，可能把上次开着时已经执行过的话再送一遍，跟它说「没有执行」就说错了。
+ */
+export function sentWhileOpen(sentAt: number, channelStartedAt: number): boolean {
+  return sentAt >= channelStartedAt - staleBeforeStartMs
+}
+
+/**
  * 这条被当成旧消息，是不是只因为电脑上的时间快了（#1407 P3-5）：换成平台的钟再看一遍就不旧了。
  * 只用来决定给手机回不回一句提醒，消息照样不执行，时间校验本身不放宽。
  */
@@ -1298,7 +1306,7 @@ export class CodexRemoteService {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'stale' })
       if (message.kind !== 'approval') {
         if (isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) await this.warnClockAhead(runtime, message)
-        else await this.noticeStale(runtime, message, now - message.sentAt)
+        else if (sentWhileOpen(message.sentAt, runtime.startedAt)) await this.noticeStale(runtime, message, now - message.sentAt)
       }
       return
     }
@@ -1396,7 +1404,7 @@ export class CodexRemoteService {
   }
 
   /**
-   * 电脑合盖、断网、星芒没开时发的消息，回来时已经太旧（D66 / YKS-9）：照旧不执行，只给绑定的人回一句，
+   * 遥控开着、电脑合盖或断网时发的消息，回来时已经超过 10 分钟（D66 / YKS-9）：照旧不执行，只给绑定的人回一句，
    * 免得手机上白等。电脑回来时攒着的几条是一下子送来的，一批只回一句（1 分钟内回过就不再回），说的是
    * 这一批里第一条的分钟数；陌生人照旧不回，免得拿消息探出这里有个遥控。
    */
