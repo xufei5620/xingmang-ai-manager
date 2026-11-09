@@ -33,6 +33,8 @@ export const errors = {
   noTray: { title: '关闭窗口会直接退出', body: '', actions: ['安装扩展'] },
   toolNotEnabled: { title: '这个账号还没开通这个工具', body: '原来的设置没有动。找客服开通后再试一次。', actions: ['找客服'] },
   codexDesktopTooOld: { title: '这台电脑装不了 Codex 桌面端', body: '可以先用 Codex CLI；把 Windows 更新到最新后，再回星芒装桌面端。', actions: ['查看日志', '找客服'] },
+  // 主进程 codex-desktop-install-failure.ts 的 firewallOff 那一句（Windows 防火墙服务停着，0x800706D9）。yoyo 2026-11-08 批的字（「防火墙改」）。
+  codexDesktopFirewallOff: { title: '要先打开 Windows 防火墙服务', body: '打开它才装得上 Codex 桌面端，常见是被系统优化软件关掉的。点「找客服」，把下面这句话发给客服，客服会教你打开。', actions: ['查看日志', '找客服'] },
   codexDesktopInstallNoStore: { title: '没能装好 Codex 桌面端', body: '这台电脑没有微软商店，星芒已经试过 OpenAI 官网的离线安装包和国内线路。先点「重试」；还不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '查看日志', '找客服'] },
   codexDesktopInstallFailed: { title: '没能装好 Codex 桌面端', body: '先点「重试」；还不行就点「去微软商店装」，在商店里点「获取」装好，再回星芒点「重新检测」。', actions: ['重试', '去微软商店装', '查看日志', '找客服'] },
   claudeDesktopInstallFailed: { title: '没能装好 Claude Desktop', body: '先点「重试」；还不行就点「去官网下载」，装好后回星芒点「重新检测」。', actions: ['重试', '去官网下载', '查看日志', '找客服'] },
