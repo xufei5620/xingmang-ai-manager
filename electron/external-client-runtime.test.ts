@@ -758,6 +758,35 @@ describe('external desktop client lifecycle', () => {
     await otherInstall
   })
 
+  it('lets Claude Desktop have its Claude Code program placed before Explorer opens it, and opens it whatever happens', async () => {
+    const order: string[] = []
+    const prepareClaudeDesktopLaunch = vi.fn(async (_client: { path: string; running: boolean; isRunning?: () => Promise<boolean | null> }) => {
+      order.push('prepare')
+      throw new Error('npm mirror unreachable')
+    })
+    const onLaunchTiming = vi.fn()
+    const f = fixture({ prepareClaudeDesktopLaunch, onLaunchTiming })
+    f.launchProcess.mockImplementation(async () => { order.push('launch') })
+    f.setInventory([appx({ running: false })])
+    await f.runtime.launch('claudeDesktop')
+    expect(order).toEqual(['prepare', 'launch'])
+    expect(prepareClaudeDesktopLaunch).toHaveBeenCalledWith(expect.objectContaining({ path: appx().path, running: false }))
+    expect(onLaunchTiming).toHaveBeenCalledWith(expect.objectContaining({ tool: 'claudeDesktop', prepareMs: expect.any(Number) }))
+    // 下完、放进去之前再问一次开着没有：只看那一个进程名的路径。
+    f.execute.mockImplementation(async (spec) => commandResult(spec, JSON.stringify([appx().path])))
+    await expect(prepareClaudeDesktopLaunch.mock.calls[0][0].isRunning?.()).resolves.toBe(true)
+  })
+
+  it('never prepares anything for the other desktop clients', async () => {
+    const prepareClaudeDesktopLaunch = vi.fn(async () => undefined)
+    const f = fixture({ prepareClaudeDesktopLaunch })
+    f.setInventory([candidate('workbuddy'), candidate('opencode')])
+    await f.runtime.launch('workbuddy')
+    await f.runtime.launch('opencode')
+    expect(prepareClaudeDesktopLaunch).not.toHaveBeenCalled()
+    expect(f.launchProcess).toHaveBeenCalledTimes(2)
+  })
+
   it('waits for the same client\'s own install before launching it', async () => {
     const queue = new InstallationQueue()
     const gate = deferred()

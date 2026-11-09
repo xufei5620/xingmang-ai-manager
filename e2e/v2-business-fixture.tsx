@@ -679,6 +679,7 @@ const apiMethods = {
   onNodeRuntimeInstallProgress: () => () => undefined,
   onPythonRuntimeInstallProgress: () => () => undefined,
   onCodexDesktopLaunchProgress: () => () => undefined,
+  onExternalClientLaunchProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {

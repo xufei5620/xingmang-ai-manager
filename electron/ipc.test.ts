@@ -3585,7 +3585,7 @@ describe('registerIpcHandlers', () => {
       await electronMocks.handlers.get('external-clients:install')!(event, tool)
       await electronMocks.handlers.get('external-clients:launch')!(event, tool)
       expect(service.installExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
-      expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool)
+      expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
       // 拒绝取消时那句原因要原样交给界面，按钮才不会像是坏了。
       expect(electronMocks.handlers.get('external-clients:cancel-install')!(event, tool)).toEqual({
         cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。',
@@ -3971,7 +3971,7 @@ describe('registerIpcHandlers', () => {
     remoteFeatures.update([])
     await electronMocks.handlers.get('cli:install')!(event, 'codex')
     expect(vi.mocked(service.installCli).mock.calls.map(([provider]) => provider)).toEqual(['claude', 'codex'])
-    expect(service.launchExternalClient).toHaveBeenCalledWith('opencode')
+    expect(service.launchExternalClient).toHaveBeenCalledWith('opencode', event.sender)
   })
 
   it('records failed maintenance calls without logging their arguments', async () => {

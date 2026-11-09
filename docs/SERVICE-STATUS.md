@@ -430,6 +430,7 @@ alipay@0.2.23|0.2.24@windows wxpay
 | `tray-release` | 缩到托盘久了关界面省内存 | 缩到托盘不再关界面，客户看不出来 |
 | `acceleration` | 网络加速 | 不能新连（加速页、托盘、打开 Codex / Claude 桌面端时替他连的那次，最后那个照常打开、只是不连）；已经连着的照常用、照常能断 |
 | `codex-desktop-chinese` | Codex 桌面端中文 | 打开 Codex 桌面端时不打中文补丁（Windows 上经调试端口打的那个），按英文界面打开，打开后提醒一句 |
+| `claude-desktop-code-seed` | 替 Claude Desktop 放程序 | Windows 上打开 Claude Desktop 前不再从 npm 镜像替它放 Claude Code 程序，直接打开，让它自己去官网下；客户看不到任何话。只有 0.2.24 及以后认 |
 | `install:工具` | 某个工具的安装和更新 | 点安装、更新、「换成星芒装的」被拦下，弹「这个功能暂时停用了」 |
 | `launch:工具` | 从星芒打开某个工具 | 点打开被拦下，弹同一个框 |
 

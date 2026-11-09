@@ -35,10 +35,10 @@ import type {
   ExternalToolId,
 } from './external-tool-config'
 export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
-import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
 import type { ExternalClientCheckResult } from './external-client-connection'
 export type { ExternalClientCheckResult } from './external-client-connection'
-export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
+export type { DesktopAppUpdateRequest, ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientScanOptions, ExternalClientSourceSwitchResult, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress, ExternalClientLaunchProgress } from './external-client-contract'
 import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
@@ -1422,6 +1422,8 @@ export interface CodexRemoteFeishuCredentialRequest {
 
 export interface XingmangEventContract {
   onExternalClientInstallProgress: IpcEventDefinition<'external-clients:install-progress', ExternalClientInstallProgress>
+  /** 点「打开」以后替它准备的进度（Windows 上替 Claude Desktop 放 Claude Code 程序），只发给点了「打开」的那个窗口。 */
+  onExternalClientLaunchProgress: IpcEventDefinition<'external-clients:launch-progress', ExternalClientLaunchProgress>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   /** 本机账号存储被重建。载荷为空：备份文件名与账号内容都不跨 IPC。 */
@@ -1714,6 +1716,7 @@ export const ipcInvokeChannels = {
 
 export const ipcEventChannels = {
   onExternalClientInstallProgress: 'external-clients:install-progress',
+  onExternalClientLaunchProgress: 'external-clients:launch-progress',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onAccountVaultRecovered: 'account:vault-recovered',

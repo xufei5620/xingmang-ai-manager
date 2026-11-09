@@ -36,7 +36,7 @@ export function registerExternalClientHandlers(ctx: IpcHandlerContext): void {
   })
   registerTrustedHandler('external-clients:launch', (_event, tool: unknown) => {
     if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
-    return runWhenOn(options.remoteFeatures, `launch:${tool}`, toolLaunchOffMessage(externalClientNames[tool]), () => service.launchExternalClient(tool))
+    return runWhenOn(options.remoteFeatures, `launch:${tool}`, toolLaunchOffMessage(externalClientNames[tool]), () => service.launchExternalClient(tool, _event.sender))
   })
   // 只有 Claude Desktop 有两种登录可选：WorkBuddy、OpenCode 没有官方账号这一说。
   registerTrustedHandler('external-clients:switch-source', (_event, tool: unknown, target: unknown) => {

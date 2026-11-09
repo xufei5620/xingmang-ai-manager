@@ -128,6 +128,18 @@ export interface ExternalClientInstallProgress {
   percent: number | null
 }
 
+/**
+ * 点「打开」以后、真正打开之前替它准备的那一段（现在只有 Windows 上的 Claude Desktop：先从国内
+ * npm 镜像替它放好 Claude Code 程序，见 claude-desktop-code-seed.ts）。只带阶段和百分比，
+ * 工具行上那句话由界面拼（字是 yoyo 11-04 回「放程序字改」批的）。
+ */
+export interface ExternalClientLaunchProgress {
+  tool: ExternalToolId
+  phase: 'downloading' | 'placing'
+  /** 下载到百分之几；服务器没说包多大、或者已经在解包时为 null。 */
+  percent: number | null
+}
+
 export type ExternalClientCredential =
   | { kind: 'configured'; provider: ProviderId }
   | { kind: 'account'; keyId: number }
