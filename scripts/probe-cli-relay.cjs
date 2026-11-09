@@ -22,6 +22,20 @@ const { execFile } = require('node:child_process')
 
 const root = path.resolve(__dirname, '..')
 const KEY_VARIABLE = 'XINGMANG_CLI_PATROL_KEY'
+/**
+ * new-api 的一把令牌只属于一个分组,而每个 CLI 的托管 Key 绑在各自的分组上
+ * (catalog.ts 的 managedCliKeyProfiles)。所以一把共用的巡检 Key 只能覆盖其中
+ * 一个工具:2026-11-09 配上的那把在 GPT 分组,Claude 被答成「分组 GPT 下模型
+ * claude-opus-5-5 无可用渠道」。某个工具单独配了这里的 secret 就用它,没配就退回
+ * 共用的那把。
+ */
+const PROVIDER_KEY_VARIABLES = { claude: 'XINGMANG_CLI_PATROL_KEY_CLAUDE' }
+/**
+ * 不探测的站点和原因。历史账号站 api.solov.cc 是 sub2api,它的 Key 和星芒账号
+ * (xm.solov.cc,new-api)不通用,巡检 Key 打过去只会是 401(2026-11-09 实测);
+ * yoyo 同日定「历史站不测」。summary 里照样列出它,写明没测,不算通过。
+ */
+const UNPROBED_SITES = { 'solov-api': '历史账号站，巡检密钥是星芒账号的、在那边不认，2026-11-09 定不测' }
 const PROBE_PROMPT = '回答一个字:好'
 const MAX_CAPTURED_BYTES = 16 * 1024
 const PROBE_TIMEOUT_MS = 120_000
@@ -54,6 +68,13 @@ function loadTypeScriptModule(entry) {
   }
 }
 
+/** 这个工具用哪一把探测 Key:单独配了就用单独的,否则用共用的。 */
+function resolveProbeKey(provider, environment) {
+  const dedicated = PROVIDER_KEY_VARIABLES[provider]
+  if (dedicated && environment[dedicated]) return { variable: dedicated, secret: environment[dedicated] }
+  return { variable: KEY_VARIABLE, secret: environment[KEY_VARIABLE] || '' }
+}
+
 /** 密钥永远不许进日志或 job summary。 */
 function redact(text, secret) {
   const bounded = String(text).slice(0, MAX_CAPTURED_BYTES)
@@ -71,25 +92,68 @@ function redact(text, secret) {
  * 版本的问题,报告要说清需要的是一把什么样的 Key。关键词与
  * connection-check.ts 的 groupHints 同源。
  */
-function classifyProbe({ code, output }) {
-  if (code === 0) return { verdict: 'ok', detail: '请求成功返回' }
-  const text = String(output)
+function classifyProbe({ code, output, timedOut }, keyVariable = KEY_VARIABLE) {
+  if (code === 0 && !timedOut) return { verdict: 'ok', detail: '请求成功返回' }
+  const evidence = claudeStreamEvidence(output)
+  // Claude Code 的 stream-json 里除了出错的那一行,还有一大段带数字的初始化信息
+  // (工具清单、token 计数),拿整段去匹配「401」「5xx」会认错;只看它报出的错误。
+  const text = evidence === null ? String(output) : evidence
+  const suffix = evidence ? `(最后一次:${evidence})` : ''
   if (/无可用渠道|无可用的渠道|当前分组|no available channel/i.test(text)) {
-    return { verdict: 'group', detail: `探测 Key 的分组里没有这个工具的渠道,换一把覆盖该分组的 ${KEY_VARIABLE}` }
+    return { verdict: 'group', detail: `探测 Key 的分组里没有这个工具的渠道,换一把覆盖该分组的 ${keyVariable}${suffix}` }
   }
   if (/\b400\b|invalid_request_error|Input tag|must be non-empty/i.test(text)) {
-    return { verdict: 'rejected', detail: '端点拒绝了 CLI 发出的请求(400 类)' }
+    return { verdict: 'rejected', detail: `端点拒绝了 CLI 发出的请求(400 类)${suffix}` }
   }
-  if (/\b401\b|\b403\b|authentication_error|permission_error|invalid api key|无效的令牌/i.test(text)) {
-    return { verdict: 'credential', detail: `探测凭据被拒(401/403),请检查仓库 secret ${KEY_VARIABLE}` }
+  if (/\b401\b|\b403\b|authentication_error|authentication_failed|permission_error|invalid api key|无效的令牌/i.test(text)) {
+    return { verdict: 'credential', detail: `探测凭据被拒(401/403),请检查仓库 secret ${keyVariable}${suffix}` }
   }
   if (/\b429\b|rate_limit|quota|额度|余额/i.test(text)) {
-    return { verdict: 'quota', detail: '探测账号额度或速率受限,这次判定不了版本' }
+    return { verdict: 'quota', detail: `探测账号额度或速率受限,这次判定不了版本${suffix}` }
   }
   if (/\b5\d\d\b|ECONNRESET|ETIMEDOUT|ENOTFOUND|socket hang up/i.test(text)) {
-    return { verdict: 'unreachable', detail: '中转不可达或返回 5xx,这次判定不了版本' }
+    return { verdict: 'unreachable', detail: `中转不可达或返回 5xx,这次判定不了版本${suffix}` }
   }
-  return { verdict: 'unknown', detail: `CLI 以退出码 ${code} 结束,原因未归类` }
+  if (timedOut) {
+    return { verdict: 'timeout', detail: `${PROBE_TIMEOUT_MS / 1000} 秒内没答完,被强制结束,这次判定不了版本${suffix}` }
+  }
+  return { verdict: 'unknown', detail: `CLI 以退出码 ${code} 结束,原因未归类${suffix}` }
+}
+
+/**
+ * Claude Code 跑在 `--output-format stream-json --verbose` 下时,每次重试都会打一行
+ * `{"type":"system","subtype":"api_retry","error_status":401,...}`,结束时打一行带
+ * `api_error_status` 的 result。纯 `-p` 在重试期间什么都不输出,被超时杀掉时作业
+ * 只剩一个退出码 143,看不出中转回的是什么(2026-11-09 第一次真跑就是这样)。
+ * 不是 stream-json 的输出返回 null,调用方照旧拿整段文本去判。
+ */
+function claudeStreamEvidence(output) {
+  const events = []
+  for (const line of String(output).split('\n')) {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith('{')) continue
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed.type === 'string') events.push(parsed)
+    } catch {
+      // A line cut off by the timeout or the capture bound is just skipped.
+    }
+  }
+  if (events.length === 0) return null
+  const result = events.filter((event) => event.type === 'result').pop()
+  if (result && (result.is_error || result.api_error_status)) {
+    return [result.api_error_status ? `HTTP ${result.api_error_status}` : '', typeof result.result === 'string' ? result.result.slice(0, 300) : '']
+      .filter(Boolean).join(' ')
+  }
+  const retries = events.filter((event) => event.type === 'system' && event.subtype === 'api_retry')
+  const last = retries.pop()
+  if (last) return `HTTP ${last.error_status} ${last.error || ''}`.trim() + `,已重试 ${retries.length + 1} 次`
+  return ''
+}
+
+/** 写进 job summary 的输出:stream-json 的初始化那一行只是工具清单,去掉免得挤掉真正的错误。 */
+function displayOutput(output) {
+  return String(output).split('\n').filter((line) => !/^\{"type":"system","subtype":"init"/.test(line.trim())).join('\n')
 }
 
 /** 只有 rejected 才让作业变红 —— 那是名单要挡的那一类。其余是探测自身的问题,也要红,但文案不同。 */
@@ -101,7 +165,7 @@ function summarize(results) {
 
 function runCommand(file, argv, options) {
   return new Promise((resolve) => {
-    execFile(file, argv, {
+    const child = execFile(file, argv, {
       cwd: options.cwd,
       env: options.env,
       timeout: options.timeoutMs,
@@ -112,9 +176,16 @@ function runCommand(file, argv, options) {
     }, (error, stdout, stderr) => {
       resolve({
         code: error && typeof error.code === 'number' ? error.code : error ? 1 : 0,
+        // execFile's own timeout kills with SIGTERM and reports `killed`; the
+        // child's exit code is then null, which used to read as a bare 1 / 143.
+        timedOut: Boolean(error && (error.killed || error.signal)),
         output: `${stdout || ''}${stderr || ''}`,
       })
     })
+    // Nobody will ever type into these children. Left open, Codex 0.167.0
+    // `exec` sits on "Reading additional input from stdin..." until the probe
+    // timeout, and Claude Code waits 3s before giving up on stdin.
+    if (child.stdin) child.stdin.end()
   })
 }
 
@@ -159,9 +230,15 @@ const probeRunners = {
       ANTHROPIC_BASE_URL: baseUrl,
       ANTHROPIC_AUTH_TOKEN: secret,
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+      // 默认要重试 10 次、退避到 40 秒一次,超过探测的 120 秒;而且重试那几行只有
+      // 状态码,中转回的原话(比如「当前分组下无可用渠道」)只在最后那行 result
+      // 里。只重试两次,作业才拿得到原话、归得了类。不碰请求体。
+      CLAUDE_CODE_MAX_RETRIES: '2',
       CI: '1',
     }),
-    argv: (model) => ['-p', PROBE_PROMPT, '--model', model],
+    // stream-json + --verbose 让每次重试的 HTTP 状态都打出来(见 claudeStreamEvidence);
+    // 请求体与纯 -p 一样,改的只是本地输出格式。
+    argv: (model) => ['-p', PROBE_PROMPT, '--output-format', 'stream-json', '--verbose', '--model', model],
   },
   codex: {
     baseUrlFor: (site) => site.providerBaseUrls.codex,
@@ -196,7 +273,8 @@ async function resolveGlobalCli(command) {
   throw new Error(`装完之后找不到 ${command} 可执行文件`)
 }
 
-async function probeSite(provider, executable, site, version, secret, model) {
+async function probeSite(provider, executable, site, version, key, model) {
+  const { secret, variable } = key
   const runner = probeRunners[provider]
   const baseUrl = runner.baseUrlFor(site)
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cli-home-'))
@@ -207,8 +285,8 @@ async function probeSite(provider, executable, site, version, secret, model) {
       env: runner.environment(baseUrl, secret, home),
       timeoutMs: PROBE_TIMEOUT_MS,
     })
-    const classified = classifyProbe(result)
-    return { provider, siteId: site.id, baseUrl, version, output: redact(result.output, secret), ...classified }
+    const classified = classifyProbe(result, variable)
+    return { provider, siteId: site.id, baseUrl, version, output: redact(displayOutput(result.output), secret), ...classified }
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
@@ -220,6 +298,11 @@ function renderSummary(lines) {
   console.log(text)
 }
 
+/** 要探测的站点:去掉 UNPROBED_SITES 里的。 */
+function probedSites(sites) {
+  return sites.filter((site) => !Object.prototype.hasOwnProperty.call(UNPROBED_SITES, site.id))
+}
+
 /** 名单里填了推荐版本的那几个工具,按 PROBED_PROVIDERS 的顺序。 */
 function pinnedProviders(list) {
   return PROBED_PROVIDERS.filter((provider) => list[provider] && list[provider].recommended)
@@ -228,6 +311,10 @@ function pinnedProviders(list) {
 async function main() {
   const { cliVerifiedVersions } = loadTypeScriptModule('electron/cli-verified-versions.ts')
   const { relaySites } = loadTypeScriptModule('electron/relay-sites.ts')
+  const sites = probedSites(relaySites)
+  const unprobedLines = relaySites
+    .filter((site) => !sites.includes(site))
+    .map((site) => `- \`${site.id}\`：**未在中转实测**（${UNPROBED_SITES[site.id]}）`)
   const { defaultCliModels } = loadTypeScriptModule('electron/cli-model-defaults.ts')
   const { cliCatalog } = loadTypeScriptModule('electron/catalog.ts')
   const providers = pinnedProviders(cliVerifiedVersions)
@@ -250,9 +337,10 @@ async function main() {
       `**未在中转实测** —— 仓库 secret \`${KEY_VARIABLE}\` 不存在。`,
       '',
       `本次只验证了「上游 changelog 里没有与网关/第三方 base URL 相关的回归」，${pinnedList} **没有**在任何中转站点上跑过真实请求。`,
-      `补上这个 secret（一把额度很小的测试 Key）之后，这个作业会对 ${relaySites.map((site) => `\`${site.id}\``).join('、')} 各跑一次真实请求。`,
+      `补上这个 secret（一把额度很小的测试 Key）之后，这个作业会对 ${sites.map((site) => `\`${site.id}\``).join('、')} 各跑一次真实请求。`,
+      ...(unprobedLines.length ? ['', '不探测的站点：', ...unprobedLines] : []),
       '',
-      '这把 Key 要能覆盖上面每个工具各自的分组（`catalog.ts` 的 `managedCliKeyProfiles`）；只覆盖其中一个分组时，别的工具会报「分组里没有可用渠道」而不是版本问题。',
+      `new-api 一把令牌只属于一个分组（\`catalog.ts\` 的 \`managedCliKeyProfiles\`）：这把放 GPT 分组的，Claude 另配 \`${PROVIDER_KEY_VARIABLES.claude}\`（Claude 分组）。分组不对时会报「分组里没有可用渠道」，那不是版本问题。`,
       ...(skipped.length ? ['', `名单里还没填推荐版本、因此没有探测的：${skipped.map((provider) => cliCatalog[provider].name).join('、')}。`] : []),
     ])
     return
@@ -271,8 +359,8 @@ async function main() {
       return
     }
     const executable = await resolveGlobalCli(cliCatalog[provider].command)
-    for (const site of relaySites) {
-      results.push(await probeSite(provider, executable, site, recommended.version, secret, defaultCliModels[provider]))
+    for (const site of sites) {
+      results.push(await probeSite(provider, executable, site, recommended.version, resolveProbeKey(provider, process.env), defaultCliModels[provider]))
     }
   }
 
@@ -280,7 +368,7 @@ async function main() {
   const lines = [
     '## 中转实测',
     '',
-    `**${headline}**`,
+    `**${ok && unprobedLines.length ? `${headline}（下面列出的站点没测）` : headline}**`,
     '',
     `探测对象：${pinnedList}。`,
     ...(skipped.length ? [`名单里还没填推荐版本、因此没有探测的：${skipped.map((provider) => cliCatalog[provider].name).join('、')}。`] : []),
@@ -288,6 +376,7 @@ async function main() {
     '| 工具 | 版本 | 站点 | 结论 | 说明 |',
     '| --- | --- | --- | --- | --- |',
     ...results.map((result) => `| ${cliCatalog[result.provider].name} | \`${result.version}\` | \`${result.siteId}\` | ${result.verdict === 'ok' ? '通过' : '未通过'} | ${result.detail} |`),
+    ...(unprobedLines.length ? ['', '不探测的站点：', ...unprobedLines] : []),
     '',
     '跑通的站点 id 请写进名单里对应那条 `recommended` 的 `verifiedSites`，当前分别是：',
     ...providers.map((provider) => `- ${cliCatalog[provider].name}：\`[${cliVerifiedVersions[provider].recommended.verifiedSites.join(', ')}]\``),
@@ -306,4 +395,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { classifyProbe, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }
+module.exports = { probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, probeSite, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders, PROBED_PROVIDERS, KEY_VARIABLE }

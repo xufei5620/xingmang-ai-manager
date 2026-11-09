@@ -1025,8 +1025,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.cliVersions == 'true'
     runs-on: ubuntu-latest
-    # One install plus one real request per pinned CLI per relay site. Two
-    # probed CLIs and two sites is four requests, each bounded at two minutes.
+    # One install plus one real request per pinned CLI per probed relay site.
+    # Two CLIs against solov is two requests (the history-account site is not
+    # probed, see UNPROBED_SITES), each bounded at two minutes.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1040,6 +1041,8 @@ jobs:
       - name: Probe every pinned CLI version against every relay site
         env:
           XINGMANG_CLI_PATROL_KEY: ${{ secrets.XINGMANG_CLI_PATROL_KEY }}
+          # new-api 的令牌一把只属于一个分组；Claude 单独一把，没配就退回上面那把。
+          XINGMANG_CLI_PATROL_KEY_CLAUDE: ${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}
         run: node scripts/probe-cli-relay.cjs
 
   audit:

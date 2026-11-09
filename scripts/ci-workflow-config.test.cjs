@@ -1540,8 +1540,10 @@ test('the relay probe runs exactly when the verified-version list moves', () => 
   assert.ok(probeStep, 'the probe job must still run the probe script')
   // The key reaches the CLI through the environment only. An argv-borne
   // credential is world-readable on the runner and lands in the process list.
-  assert.deepEqual(Object.keys(probeStep.env), ['XINGMANG_CLI_PATROL_KEY'])
+  // A new-api token belongs to exactly one group, so Claude gets a key of its own.
+  assert.deepEqual(Object.keys(probeStep.env), ['XINGMANG_CLI_PATROL_KEY', 'XINGMANG_CLI_PATROL_KEY_CLAUDE'])
   assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY, '${{ secrets.XINGMANG_CLI_PATROL_KEY }}')
+  assert.equal(probeStep.env.XINGMANG_CLI_PATROL_KEY_CLAUDE, '${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}')
   assert.equal(probeStep.run.includes('secrets.'), false, 'the key must never be interpolated into a command line')
   assert.equal(runSteps('cli-relay-probe').some((command) => command.startsWith('npm ci')), true)
 })

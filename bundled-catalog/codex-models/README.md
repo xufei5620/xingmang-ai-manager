@@ -5,9 +5,9 @@
 | 项 | 值 |
 | --- | --- |
 | 仓库 | <https://github.com/openai/codex> |
-| tag | `rust-v0.164.0`（提交 `6aaac694803004a63c6f393d153c96d22521a6b9`） |
+| tag | `rust-v0.167.0`（提交 `086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`） |
 | 路径 | `codex-rs/models-manager/models.json` |
-| sha256 | `943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b` |
+| sha256 | `1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10` |
 | 许可 | Apache-2.0，`LICENSE` 与 `NOTICE` 原样拷自同一 tag 的仓库根目录 |
 
 ## 为什么不能改
