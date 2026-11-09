@@ -2323,7 +2323,7 @@ test('feedback opens on the message form and copies what the customer wrote toge
       '最近一次失败：安装 Codex CLI · 网络超时',
     ].join('\n') + '\n\n固定的脱敏报告内容'])
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 关掉「附带诊断报告」只复制客户写的那几行。
+    // 关掉「附带反馈报告」只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
     await page.getByTestId('feedback-send').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
@@ -2532,7 +2532,7 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
     const privacy = page.getByTestId('feedback-privacy')
-    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
     assert.ok((await privacy.boundingBox()).height <= 50)
     // 报告里已经有检查结果时不提醒先去检查。
     assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)

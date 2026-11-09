@@ -25,7 +25,7 @@ export const otherRuntimeLogArea = '其他'
 export const installRuntimeLogArea = '安装与更新'
 
 const runtimeLogAreaOrder = [
-  '账号', '充值', installRuntimeLogArea, '外接工具', '插件', '技能', '工具设置', '加速', 'AI 对话', '画布',
+  '账号', '充值', installRuntimeLogArea, '桌面客户端', '外接工具', '插件', '技能', '工具设置', '加速', 'AI 对话', '画布',
   '记录', '备份', '检查', '更新', '设置', '反馈', '界面', '软件', '安全', otherRuntimeLogArea,
 ]
 
@@ -63,7 +63,7 @@ const channelAreas: Record<string, string> = {
   setup: installRuntimeLogArea,
   config: '工具设置',
   workspace: '工具设置',
-  'external-clients': '外接工具',
+  'external-clients': '桌面客户端',
   mcp: '外接工具',
   extensions: '插件',
   marketplaces: '插件',

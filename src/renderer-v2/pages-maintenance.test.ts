@@ -130,7 +130,7 @@ describe('feedback and support page', () => {
     expect(markup).toContain('运行日志')
     expect(markup).toContain('描述一下发生了什么')
     expect(markup).toContain('比如：点「打开」后终端闪一下就关了')
-    expect(markup).toContain('微信号或邮箱，方便我们回复你')
+    expect(markup).toContain('微信号或邮箱（会一起复制，发给客服时方便他回你）')
     expect(markup).toContain('已自动隐去密钥和个人路径')
     expect(markup).toContain('复制给客服')
     expect(markup).toContain('data-testid="feedback-support-card"')
