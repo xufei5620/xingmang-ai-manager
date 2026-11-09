@@ -409,7 +409,7 @@ test('electron-builder production config requires signing and stays hardened', (
   assert.equal(result.status, 0, result.stderr)
   const config = JSON.parse(result.stdout)
   assert.equal(config.package.name, 'xingmang-ai-manager')
-  assert.equal(config.package.author, '神风')
+  assert.equal(config.package.author, '绍兴星芒文化传媒有限责任公司')
   assert.equal(config.package.description, '星芒AI管理工具')
   assert.equal(config.appId, 'com.xingmang.ai.manager')
   assert.equal(config.productName, '星芒AI管理工具')
