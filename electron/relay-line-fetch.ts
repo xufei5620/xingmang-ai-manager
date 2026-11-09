@@ -257,6 +257,20 @@ function provablyUnsent(error: unknown, reason: NetworkFailureReason): boolean {
   return code !== null && unsentFailureCodes.has(code)
 }
 
+// 代理软件没开：连代理都没连上，请求肯定没出这台电脑。换线路没用，所以不在上面那张表里（文件头），只在下面算。
+const proxyDownCode = 'ERR_PROXY_CONNECTION_FAILED'
+
+/**
+ * 这次请求肯定没送到服务器时给出原因，别的（超时、送出去以后才断的、握手做到一半被掐断的）返回 null。
+ * 出图、出视频的请求两条线路都没走通时按它分：没送到的照网络原因说，客户放心再点一次；送没送到说不清的
+ * 才说「提交结果不明确」（深查 W-1）。判断跟上面会改动数据的请求换线路重发是同一个，只多认代理软件没开那一种。
+ */
+export function unsentRequestFailure(error: unknown): NetworkFailureReason | null {
+  if (networkFailureCode(error) === proxyDownCode) return 'proxy'
+  const reason = relayLineFailureReason(error)
+  return reason && provablyUnsent(error, reason) ? reason : null
+}
+
 /**
  * The caller checks that the answer came from the URL it asked for (a redirect must never move an
  * authenticated request to another host). Only the origin was swapped here, so a response that was

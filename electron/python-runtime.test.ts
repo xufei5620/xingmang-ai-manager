@@ -139,6 +139,14 @@ describe('Python 3.12 trusted install plans', () => {
     expect(decodedScript).toContain('Microsoft.PowerShell.Security.psd1')
   })
 
+  it('counts only awake time toward the installer runs, not toward the short signature check', () => {
+    // 睡眠深查 G1：装的时候合盖超过 15 分钟，醒来不该按满时限当场掐掉。
+    expect(buildPythonRuntimeWingetPlan('C:/winget.exe').timeoutExcludesSleep).toBe(true)
+    const official = buildPythonRuntimeInstallPlan('C:\\Temp\\python-3.12.9-amd64.exe')
+    expect(official.installer.timeoutExcludesSleep).toBe(true)
+    expect(official.signature.timeoutExcludesSleep).toBeUndefined()
+  })
+
   it('rejects redirected downloads and non-PSF signatures', () => {
     const expected = 'https://www.python.org/ftp/python/3.12.9/python-3.12.9-amd64.exe'
     expect(() => validatePythonResponseUrl(
@@ -467,7 +475,7 @@ describe.runIf(process.platform === 'win32')('Python download deadline', () => {
   }
 
   it('finishes a slow but steady python.org download that takes longer than ten minutes', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
     const server = createSlowPackageServer()
     const startedAt = Date.now()
 
@@ -480,7 +488,7 @@ describe.runIf(process.platform === 'win32')('Python download deadline', () => {
   })
 
   it('still gives up at the ceiling, in the words customers already see', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
     const server = createSlowPackageServer()
     const startedAt = Date.now()
 
