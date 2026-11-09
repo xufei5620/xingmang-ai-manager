@@ -44,7 +44,8 @@ interface EnvironmentOverrideVariable {
   /**
    * true = 设了（且不指向当前账号）就一定让这个 CLI 绕开本程序写入的配置，请求
    * 发去别处或带着别的 Key——检查结论升为「待处理」，开机提示也会数它。
-   * false = 盖不过写入的配置，或只影响模型之类不决定能不能连上的东西，仍是「需留意」。
+   * false = 盖不过写入的配置，或只影响模型之类不决定能不能连上的东西，检查页算「正常」
+   * （以前是「需留意」，挂在「需要处理」里却没有要客户做的事；yoyo 11-06「体检改」）。
    */
   breaksAccount: boolean
 }
@@ -85,6 +86,8 @@ interface EnvironmentOverrideMatch {
  * - Codex：自定义 model provider 不认 OPENAI_BASE_URL / OPENAI_API_KEY（设了照旧打
  *   config.toml 里的地址、带 auth.json 的 Key）。CODEX_HOME 本程序自己也认
  *   （codex-home.ts），配置就写在它指的地方，所以也不算。
+ *   2026-11-06 用 Codex 0.164.0、0.166.0、0.167.0 和 Claude Code 2.1.310 按同样的办法重测过：Codex 照旧不认这两个，
+ *   Claude 照旧以 settings.json 的 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 为准。
  * - Gemini：~/.gemini/.env 不覆盖已有的进程环境，GOOGLE_GEMINI_BASE_URL 与
  *   GEMINI_API_KEY 都是进程环境说了算。GOOGLE_GEMINI_API_KEY 实测不生效；
  *   GEMINI_MODEL、GOOGLE_GENAI_API_VERSION 只换模型和路径版本，不换账号。
@@ -343,26 +346,32 @@ function environmentOverrideOutcome(
   matches: readonly EnvironmentOverrideMatch[],
   droppedByLauncher: (match: EnvironmentOverrideMatch) => boolean = () => false,
 ): CheckOutcome {
-  const details: Record<string, boolean | number | string | null> = { count: matches.length }
-  matches.forEach((match, index) => {
-    // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
-    // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
+  // 只有变量名进报告。ANTHROPIC_AUTH_TOKEN 的值本身就是一把 Key，而诊断导出是
+  // 要发到客服群里的（I3、I13）——所以这里永远不读也不写它的值。
+  const labels = matches.map((match) => {
     const note = !match.overriding
       ? '，已指向当前账号'
       : match.shellFile ? `，在 ${match.shellFile}` : match.breaking ? '，会绕开当前账号' : ''
-    details[`variable${index + 1}`] = `${match.name}（${cliCatalog[match.provider].name}${note}）`
+    return `${match.name}（${cliCatalog[match.provider].name}${note}）`
   })
-  const overriding = matches.filter((match) => match.overriding)
-  if (!overriding.length) {
+  const breaking = matches.filter((match) => match.breaking)
+  if (!breaking.length) {
+    // 都盖不过星芒替当前账号写的配置（见 breaksAccount），客户什么都不用做，所以是「正常」。名字只进导出报告
+    // （reportOnlyVariables 在 diagnostic-details.ts 里没有中文名，检查页不上屏）：这一行不用他去找、去删，
+    // 一串英文名只会让人以为出了事（yoyo 11-06「体检改」）。
+    if (!matches.length) return { state: 'pass', summary: '没有另外设过工具地址或密钥', details: { count: 0 } }
     return {
       state: 'pass',
-      summary: matches.length
-        ? '电脑里另外设的工具地址也指向当前账号，不影响使用'
-        : '没有另外设过工具地址或密钥',
-      details,
+      summary: matches.some((match) => match.overriding)
+        ? '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用'
+        : '电脑里另外设的工具地址也指向当前账号，不影响使用',
+      details: { reportOnlyVariables: labels.join('、') },
     }
   }
-  const breaking = overriding.filter((match) => match.breaking)
+  const details: Record<string, boolean | number | string | null> = { count: matches.length }
+  labels.forEach((label, index) => {
+    details[`variable${index + 1}`] = label
+  })
   const reachingTools = breaking.filter((match) => !droppedByLauncher(match))
   if (reachingTools.length) {
     return {
@@ -373,21 +382,11 @@ function environmentOverrideOutcome(
       details,
     }
   }
-  if (breaking.length) {
-    return {
-      // Mac 上从星芒打开工具时启动脚本已经去掉了这几个（已知45），只有客户自己开终端直接用工具时才绕开
-      // 当前账号，所以是「需留意」，开机提示不数它。
-      state: 'warn',
-      summary: `终端设置里另外设了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自己开终端直接用 ${toolsOf(breaking)} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉`,
-      details,
-    }
-  }
   return {
-    // 用「需留意」不是「待处理」：剩下这些实测盖不过写入的配置，或只换模型、不换
-    // 账号（见 breaksAccount）。仍提一句，是因为用户换个方式跑（项目里的配置、别的
-    // 启动器）时它们可能生效；文案因此用「可能」。
+    // Mac 上从星芒打开工具时启动脚本已经去掉了这几个（已知45），只有客户自己开终端直接用工具时才绕开
+    // 当前账号，所以是「需留意」，开机提示不数它。
     state: 'warn',
-    summary: `电脑里另外设了 ${namesOf(overriding)}，可能会盖过当前账号的设置`,
+    summary: `终端设置里另外设了 ${namesOf(breaking)}：从星芒打开的工具不受影响，自己开终端直接用 ${toolsOf(breaking)} 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉`,
     details,
   }
 }
