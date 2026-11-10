@@ -1553,7 +1553,8 @@ describe('macOS external desktop lifecycle', () => {
   it('refuses root launch and reports invalid signatures as failed detection', async () => {
     const root = macFixture({ getuid: () => 0 })
     expect((await root.runtime.scan())[0].launchSupported).toBe(false)
-    await expect(root.runtime.launch('workbuddy')).rejects.toThrow('普通用户')
+    // Same words as the refusal at the entry point (D18); the old line still said 工具箱.
+    await expect(root.runtime.launch('workbuddy')).rejects.toThrow('星芒AI管理工具不能用管理员身份打开。用管理员身份打开，装好的工具和设置会归管理员所有，之后平时的账号反而用不了。请关掉这个提示，从应用菜单里直接打开。这次什么都没有改动。')
     const invalid = macFixture()
     invalid.execute.mockImplementation(async (spec) => {
       if (spec.executable === '/usr/bin/plutil') return commandResult(spec, '{"CFBundleIdentifier":"com.tencent.workbuddy.mac"}')

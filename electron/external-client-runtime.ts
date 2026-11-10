@@ -22,6 +22,7 @@ import {
   type InstallCancellationHandle, type InstallCancellationOutcome,
 } from './install-cancellation'
 import { InstallationQueue } from './installation-queue'
+import { linuxLaunchRefusalNotice } from './linux-launch-guard'
 import { darwinDeepVerificationTimeoutMs, darwinDeveloperIdVerificationArgv, darwinGatekeeperAssessmentTimeoutMs } from './macos-code-signing'
 import { installMacosDesktopApp, macosDesktopAppInstallable } from './macos-desktop-app-installer'
 import {
@@ -1160,7 +1161,8 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         // for an elevated spawn; Explorer delegates to the interactive shell.
         await launchProcess({ executable, argv: [client.applicationId ? `shell:AppsFolder\\${client.applicationId}` : client.path], cwd: machinePaths.systemRoot, env: environment(), windowsHide: true })
       } else if (platform === 'darwin') {
-        if (runningAsRoot()) throw new Error('请以普通用户身份重新打开工具箱后启动桌面客户端')
+        // platform/entry.ts 已经在最早的入口拦下 Mac 上的管理员身份（D18），这里只是兜底，说同一句话。
+        if (runningAsRoot()) throw new Error(linuxLaunchRefusalNotice('root').message)
         await execute({ executable: '/usr/bin/open', argv: ['-a', client.path] }, { env: environment(), trustedOnly: false, timeoutMs: 15_000, maxOutputBytes: maximumProbeBytes })
       } else throw new Error('当前系统不支持启动此桌面客户端')
       try { options.onLaunchTiming?.({ tool, queueWaitMs: startedAt - requestedAt, inventoryMs: inspectedAt - startedAt, launchMs: now() - inspectedAt, ...inspection.timings }) }

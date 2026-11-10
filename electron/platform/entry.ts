@@ -1,6 +1,7 @@
 import { accelerationEntryMode } from '../acceleration-worker-entry'
 import { formatRelaunchedWithout, launchArgumentRelaunchEnvironmentKey, takeLaunchArgumentRelaunch } from '../launch-argument-relaunch'
 import { linuxLaunchRefusal, linuxLaunchRefusalNotice, type LinuxLaunchRefusal } from '../linux-launch-guard'
+import { macosLaunchRefusal } from '../macos-launch-guard'
 import { resolvePackagedLaunchArguments, type PackagedLaunchArguments } from '../security'
 import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
 
@@ -10,8 +11,9 @@ import { uninstallCleanupEntryMode } from '../uninstall-cleanup-entry'
  * a fresh private directory first, because under `sudo -E` HOME still names the
  * customer's home and the profile, the GPU shader cache and the font cache would
  * otherwise leave root-owned files in it, the very damage the refusal exists to prevent.
+ * macOS refuses root the same way and with the same words (macos-launch-guard.ts, D18).
  */
-function refuseLinuxLaunch(refusal: LinuxLaunchRefusal): void {
+function refuseLaunch(refusal: LinuxLaunchRefusal): void {
   const { app, dialog } = require('electron') as typeof import('electron')
   const fs = require('node:fs') as typeof import('node:fs')
   const os = require('node:os') as typeof import('node:os')
@@ -71,11 +73,11 @@ const launchArguments: PackagedLaunchArguments = (require('electron') as typeof 
   : { action: 'start' }
 // Checked before every remaining mode: no helper started by a normal launch is ever root,
 // and nothing this process could go on to do is something root should do here.
-const launchRefusal = linuxLaunchRefusal({
+const launchRefusal: LinuxLaunchRefusal | null = linuxLaunchRefusal({
   platform: process.platform,
   effectiveUid: process.geteuid?.(),
   env: process.env,
-})
+}) ?? macosLaunchRefusal({ platform: process.platform, effectiveUid: process.geteuid?.() })
 // This branch must run before importing desktop modules: helpers do not own
 // windows, renderer IPC, the single-instance lock, or the normal quit handlers.
 const cleanupMode = uninstallCleanupEntryMode(process.argv, process.platform)
@@ -87,7 +89,7 @@ if (launchArguments.action === 'exit' || (launchArguments.action === 'relaunch' 
 } else if (launchArguments.action === 'relaunch') {
   relaunchWithKnownArguments(launchArguments)
 } else if (launchRefusal) {
-  refuseLinuxLaunch(launchRefusal)
+  refuseLaunch(launchRefusal)
 } else if (cleanupMode === 'cleanup') {
   // The uninstaller waits on this process and deletes the files right after,
   // so it never takes the single-instance lock or opens the desktop.
