@@ -81,6 +81,11 @@ const taskSelfPath = '/api/task/self'
 const tokenCollectionPath = '/api/token/'
 const userGroupsPath = '/api/user/self/groups'
 const userModelsPath = '/api/user/models'
+const pricingPath = '/api/pricing'
+// The price list carries every model the account may use with its pricing
+// fields and descriptions; a few hundred models stay far below this.
+const maximumPricingResponseBytes = 4 * 1024 * 1024
+const maximumPricingModels = 2_000
 const topupInfoPath = '/api/user/topup/info'
 const topupAmountPath = '/api/user/amount'
 const topupPaymentPath = '/api/user/pay'
@@ -955,6 +960,9 @@ export interface NewApiClientService extends RelayBackendClient {
   // the models one group enables, read with the login session rather than a
   // key. chat-credential-coordinator.ts lists the chat menu with it.
   listGroupModels(group: string): Promise<string[]>
+  // GET /api/pricing with the login session: per-model prices and this
+  // account's group ratios. canvas-price-snapshot.ts prices 「预计约 $x」 with it.
+  getModelPricing(): Promise<NewApiModelPricing>
   revealKey(id: number): Promise<string>
   // DELETE /api/token/:id. Destructive and immediate: any CLI config or
   // canvas session currently holding this key's plaintext stops working the
@@ -2375,6 +2383,51 @@ export function parseGroupModels(payload: unknown): string[] {
     const model = entry.trim()
     return model && model.length <= 200 ? [model] : []
   }))]
+}
+
+export interface NewApiModelPrice {
+  model: string
+  /** 1: one price per call (modelPrice, US dollars at group ratio 1); 0: priced by tokens. */
+  quotaType: number
+  modelPrice: number
+  /** Billed by an expression or a billing plugin, so modelPrice is not what a call costs. */
+  expressionPriced: boolean
+}
+
+export interface NewApiModelPricing {
+  models: NewApiModelPrice[]
+  /** The ratio this account pays in each usable group, group-to-group ratios applied. */
+  groupRatios: Record<string, number>
+}
+
+// GET /api/pricing (controller/pricing.go GetPricing): `data` is []model.Pricing
+// filtered to the account's usable groups, and `group_ratio` sits next to it at
+// the top level with the account's group-to-group ratios already applied when
+// the request is authenticated. An entry this does not understand is skipped,
+// not fatal: the canvas then shows 价格未知 for that model.
+export function parseModelPricing(data: unknown, payload: unknown): NewApiModelPricing {
+  if (!Array.isArray(data)) throw new Error('价目响应格式异常')
+  const models: NewApiModelPrice[] = []
+  const seen = new Set<string>()
+  for (const entry of data.slice(0, maximumPricingModels)) {
+    if (!isRecord(entry) || typeof entry.model_name !== 'string') continue
+    const model = entry.model_name.trim()
+    if (!model || model.length > 200 || /[\x00-\x1F\x7F]/.test(model) || seen.has(model)) continue
+    if (typeof entry.quota_type !== 'number' || !Number.isFinite(entry.quota_type)) continue
+    if (typeof entry.model_price !== 'number' || !Number.isFinite(entry.model_price)) continue
+    seen.add(model)
+    const expressionPriced = (typeof entry.billing_expr === 'string' && entry.billing_expr.trim() !== '')
+      || (typeof entry.billing_mode === 'string' && entry.billing_mode.trim() !== '')
+      || (Array.isArray(entry.billing_plugin_variants) && entry.billing_plugin_variants.length > 0)
+    models.push({ model, quotaType: entry.quota_type, modelPrice: entry.model_price, expressionPriced })
+  }
+  const groupRatios: Record<string, number> = {}
+  const rawRatios = isRecord(payload) && isRecord(payload.group_ratio) ? payload.group_ratio : {}
+  for (const [group, ratio] of Object.entries(rawRatios).slice(0, maximumPricingModels)) {
+    if (!group.trim() || group.length > 128 || /[\x00-\x1F\x7F]/.test(group)) continue
+    if (typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0) groupRatios[group] = ratio
+  }
+  return { models, groupRatios }
 }
 
 export function parseUsableGroups(payload: unknown): NewApiUsableGroup[] {
@@ -3897,6 +3950,19 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return parseGroupModels(unwrapEnvelope(raw, '分组模型查询', [current.accessToken]))
   })
 
+  // Signed in, so the answer carries this account's usable groups and its own
+  // group ratios rather than the anonymous defaults. Read-only and cached by
+  // the caller (canvas-price-snapshot.ts).
+  const getModelPricing = (): Promise<NewApiModelPricing> => withReadSession(async (current) => {
+    const raw = await performRequest(
+      ctx,
+      pricingPath,
+      { method: 'GET', headers: authHeaders(current), maxResponseBytes: maximumPricingResponseBytes },
+      '价目读取',
+    )
+    return parseModelPricing(unwrapEnvelope(raw, '价目读取', [current.accessToken]), raw.payload)
+  })
+
   const revealKey = (id: number): Promise<string> => withSession(async (current) => {
     if (!Number.isInteger(id) || id <= 0) throw new Error('密钥 ID 格式错误')
     const raw = await performRequest(
@@ -4373,6 +4439,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     listKeys,
     listUsableGroups,
     listGroupModels,
+    getModelPricing,
     revealKey,
     revokeKey,
     createKey,

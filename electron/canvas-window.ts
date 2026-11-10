@@ -31,7 +31,7 @@ import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
-import { canvasHostChannels, type CanvasAccountSummary, type CanvasAppearance, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
+import { canvasHostChannels, type CanvasAccountSummary, type CanvasAppearance, type CanvasPriceSnapshot, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
   linuxRendererSandboxRefusalMessage,
@@ -135,6 +135,7 @@ export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.
 export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
 export const canvasHostDeleteProjectChannel = canvasHostChannels.deleteProject
 export const canvasHostGetAccountSummaryChannel = canvasHostChannels.getAccountSummary
+export const canvasHostGetPriceSnapshotChannel = canvasHostChannels.getPriceSnapshot
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
@@ -232,6 +233,11 @@ export interface CanvasWindowControllerOptions {
    * Left out, the canvas is told nobody is signed in and shows no chip.
    */
   readAccountSummary?: () => Promise<CanvasAccountSummary | null>
+  /**
+   * The run preflight's price list (createCanvasPriceSnapshotReader in
+   * production). Left out, the canvas is told there is none and says 价格未知.
+   */
+  readPriceSnapshot?: () => Promise<CanvasPriceSnapshot | null>
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
   /** How long quitting waits for the canvas page to answer at all before treating it as hung. Defaults to 4 seconds. */
@@ -811,6 +817,12 @@ export function createCanvasWindowController(
   // createCanvasAccountSummaryReader 管，画布点得再勤也最多 15 秒读一次。
   registerCanvasHandler(canvasHostGetAccountSummaryChannel, async (): Promise<CanvasAccountSummary | null> => {
     return options.readAccountSummary ? options.readAccountSummary() : null
+  })
+
+  // 运行前检查的「预计约 $x」（第 2b 条第 2 步）：同样不收参数。价目由 createCanvasPriceSnapshotReader 读、缓存
+  // 十分钟，读失败一分钟内不再读；扣费照旧由主进程和站点算，不看画布算出来的数。
+  registerCanvasHandler(canvasHostGetPriceSnapshotChannel, async (): Promise<CanvasPriceSnapshot | null> => {
+    return options.readPriceSnapshot ? options.readPriceSnapshot() : null
   })
 
   // 删除项目（画布完善第 14 条）：只删已归档的，主进程弹系统确认框，客户点了「删除」才删；画布只给项目标识，

@@ -92,6 +92,7 @@ import { gitWindowsDownloadUrl } from './git-runtime'
 import { applicationSecurityResponseHeaders } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasAccountSummaryReader } from './canvas-account-summary'
+import { createCanvasPriceSnapshotReader } from './canvas-price-snapshot'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
@@ -2110,6 +2111,14 @@ if (!hasSingleInstanceLock) {
       },
       spentAt: () => canvasRunEndedAt,
     })
+    // 运行前检查的「预计约 $x」：星芒账号读这个账号的 /api/pricing，历史账号没有价目，回 null。
+    const readCanvasPriceSnapshot = createCanvasPriceSnapshotReader({
+      current: () => {
+        const key = canvasAccountKey()
+        return key ? { key, siteId: accounts.getSiteId() } : null
+      },
+      readPricing: async () => accountService.getModelPricing ? accountService.getModelPricing() : null,
+    })
     const canvasController = createCanvasWindowController({
       accountWork,
       canvasDistRoot: canvasDistRoot(),
@@ -2133,6 +2142,7 @@ if (!hasSingleInstanceLock) {
       defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
       trashProjectFolder: (directory) => shell.trashItem(directory),
       readAccountSummary: readCanvasAccountSummary,
+      readPriceSnapshot: readCanvasPriceSnapshot,
     })
     // Session restoration may have completed before the controller was
     // constructed. Seed its ownership record so the first real account
