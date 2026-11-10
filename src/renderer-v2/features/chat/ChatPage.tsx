@@ -11,7 +11,7 @@ import { failureWithDetail } from '../../business-common'
 import { exportFailureSentence } from '../../operation-error'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, isGeneratingImage, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { buildChatCatalog, chatErrorAction, chatExampleDraft, chatExamples, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, isGeneratingImage, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ParametersDialog } from './ParametersDialog'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
@@ -21,7 +21,6 @@ import './chat.css'
 
 const remarkPlugins = [remarkGfm]
 // 点了只填进输入框，不直接发：发一句就要花钱，得让人看一眼再发。
-const chatExamples = ['用大白话解释什么是 API 密钥', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
 const qualityNames: Record<ChatSettings['quality'], string> = { low: '低', medium: '中', high: '高', auto: '自动' }
 
 export interface ChatPageProps {
@@ -198,7 +197,8 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
       if (warning && ticket()) toast.show(warning, 'warn')
     } finally { if (ticket()) setReloading(false) }
   }
-  const fillExample = (text: string) => {
+  const fillExample = (example: string) => {
+    const text = chatExampleDraft(example)
     chat.setDraft(text)
     const input = surface.current?.querySelector<HTMLTextAreaElement>('#chatIn')
     input?.focus()

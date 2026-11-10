@@ -2978,7 +2978,7 @@ describe('createKey', () => {
       unlimitedQuota: true,
       expiredTime: -1,
     }))
-      .rejects.toThrow('密钥名称不能超过 50 个字符')
+      .rejects.toThrow('密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -2987,8 +2987,8 @@ describe('createKey', () => {
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockClear()
     const input = { group: 'default', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }
-    await expect(client.createKey({ ...input, name: '星'.repeat(17) })).rejects.toThrow('密钥名称不能超过 50 个字符')
-    await expect(client.updateKey({ ...input, id: 7, name: '星'.repeat(17) })).rejects.toThrow('密钥名称不能超过 50 个字符')
+    await expect(client.createKey({ ...input, name: '星'.repeat(17) })).rejects.toThrow('密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。')
+    await expect(client.updateKey({ ...input, id: 7, name: '星'.repeat(17) })).rejects.toThrow('密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 

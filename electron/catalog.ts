@@ -123,6 +123,10 @@ export function resolveManagedCliKeyProfiles(siteId?: string): Record<ProviderId
 // 客户在密钥页手填的名字也按字节拦（ZW-1），不按字数。
 export const accountKeyNameMaxBytes = 50
 
+// 名字超长时报给客户的那句（yoyo 11-10「名称超长改」）。站点数的是字节，只说「50 个字符」会让人以为能打 50 个中文字，
+// 所以中文、英文各能打几个都说出来。主进程的入参检查和 new-api 客户端共用这一句。
+export const accountKeyNameTooLongMessage = '密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。'
+
 export function utf8Length(text: string): number {
   let bytes = 0
   for (const char of text) {

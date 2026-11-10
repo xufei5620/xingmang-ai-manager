@@ -1,5 +1,5 @@
 // 账号密钥的查询、新建、修改、删除，以及把密钥写进工具配置的入参。
-import { accountKeyNameMaxBytes, activeProviderIds, isActiveProviderId, isProviderId, isRetiredProviderId, utf8Length } from '../../catalog'
+import { accountKeyNameMaxBytes, accountKeyNameTooLongMessage, activeProviderIds, isActiveProviderId, isProviderId, isRetiredProviderId, utf8Length } from '../../catalog'
 import { isRecord } from '../../input-guards'
 import type {
   AccountKeyCliConfigurationInput,
@@ -95,8 +95,12 @@ export function parseManagedCliConfigurationInput(value: unknown): AccountManage
 // 所以 new-api 这边再按字节数一遍;历史账号的 100 照旧。expiredTime -1 = 永不过期哨兵。
 export function parseAccountKeyCreateInput(value: unknown, sub2Api = false): AccountKeyCreateInput {
   if (!isRecord(value)) throw new Error('密钥信息格式错误')
+  // 名字超长单独说清楚，放在通用检查前面：通用检查按字数数，英文超 50 个会先被它报成「格式错误」，客户看不出错在哪。
+  // 这里只换说法，能存的名字跟以前一样：超长的照样拒，没超长的接着走下面那道检查（不是字符串、空的、带 NUL 照旧报「格式错误」）。
+  if (!sub2Api && typeof value.name === 'string' && utf8Length(value.name.trim()) > accountKeyNameMaxBytes) {
+    throw new Error(accountKeyNameTooLongMessage)
+  }
   const name = requiredString(value.name, '密钥名称', sub2Api ? 100 : accountKeyNameMaxBytes)
-  if (!sub2Api && utf8Length(name) > accountKeyNameMaxBytes) throw new Error('密钥名称格式错误')
   if (typeof value.unlimitedQuota !== 'boolean') throw new Error('额度类型格式错误')
   if (
     typeof value.remainQuota !== 'number'
