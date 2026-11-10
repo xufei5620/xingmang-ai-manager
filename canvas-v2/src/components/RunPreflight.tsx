@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { CanvasRunPreflight, CanvasRunPreflightItem } from '../runtime/run-preflight'
+import { canvasRunQuoteText, type CanvasRunQuoteView } from '../runtime/run-quote'
 import type { CanvasGroupSummary } from '../host'
 import { canvasGroupDisplayName } from '../library/group-catalog'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
@@ -10,6 +11,8 @@ interface RunPreflightProps {
   groups?: readonly CanvasGroupSummary[]
   agentRequestLabel?: string
   originalRunId?: string
+  /** 「预计约 $x」; left out where the host offers no price list. */
+  quote?: CanvasRunQuoteView | null
   onCancel(): void
   onConfigure(): void
   onLocateNode(nodeId: string): void
@@ -20,7 +23,7 @@ function needsGenerationConfiguration(item: CanvasRunPreflightItem): boolean {
   return item.action === 'blocked' && (item.reasonCode === 'missing-group' || item.reasonCode === 'unavailable-model')
 }
 
-export function RunPreflight({ preflight, groups = [], agentRequestLabel, originalRunId, onCancel, onConfigure, onLocateNode, onConfirm }: RunPreflightProps) {
+export function RunPreflight({ preflight, groups = [], agentRequestLabel, originalRunId, quote, onCancel, onConfigure, onLocateNode, onConfirm }: RunPreflightProps) {
   const dialogRef = useRef<HTMLElement>(null)
   const hasGenerationConfigurationBlocker = preflight.items.some(needsGenerationConfiguration)
   useEffect(() => {
@@ -87,7 +90,7 @@ export function RunPreflight({ preflight, groups = [], agentRequestLabel, origin
             </li>
           ))}
         </ul>
-        {preflight.paidRequestCount > 0 && <p className="run-preflight-warning">这次最多扣费生成 {preflight.paidRequestCount} 次。{preflight.scope.kind === 'to-node' ? '选中的节点会重新生成，前面的节点输入没变就用上次的结果。' : '输入跟上次一样的直接用上次的结果，不扣费。'}中途点停止只是不再等，已经发出去的生成可能还在跑、照样扣费，结果没出来先别急着重新运行。</p>}
+        {preflight.paidRequestCount > 0 && <p className="run-preflight-warning">这次最多扣费生成 {preflight.paidRequestCount} 次{quote && <>，<span className="run-preflight-quote" title="按你账号的价目和分组倍率算的最多花费，实际扣多少以站点为准" aria-live="polite">{canvasRunQuoteText(quote)}</span></>}。{preflight.scope.kind === 'to-node' ? '选中的节点会重新生成，前面的节点输入没变就用上次的结果。' : '输入跟上次一样的直接用上次的结果，不扣费。'}中途点停止只是不再等，已经发出去的生成可能还在跑、照样扣费，结果没出来先别急着重新运行。</p>}
         {preflight.webSearchRequestCount > 0 && <p className="run-preflight-warning" role="note">其中 {preflight.webSearchRequestCount} 个文字节点要联网搜索，每个最多搜一次，费用以来源为准。{preflight.scope.kind === 'to-node' ? '选中的节点会重新搜索，前面的节点输入没变就用上次的搜索结果。' : '输入没变的会用上次的搜索结果；要最新信息，就在那个节点上选「运行此节点」。'}</p>}
         <footer>
           <button type="button" onClick={onCancel}>取消</button>

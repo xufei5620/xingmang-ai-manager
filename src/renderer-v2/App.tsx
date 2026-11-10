@@ -53,6 +53,7 @@ import { FailureBoundary } from './features/app/FailureBoundary'
 import { PageLoading } from './features/app/PageLoading'
 import { OperationErrorDialog, type OperationFailure } from './features/app/OperationErrorDialog'
 import { NodeReplaceDialog } from './features/tools/NodeReplaceDialog'
+import { UpdateInstallConfirm } from './features/settings/UpdateInstallDialog'
 import { canReplaceNode } from './features/tools/node-replace'
 import { StartupNotices } from './features/app/StartupNotices'
 import { updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './features/app/update-retry'
@@ -372,8 +373,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => {
     if (workspaceVisible && page === 'home' && tourReplayPending(scope)) setTourOpen(true)
   }, [workspaceVisible, page, scope])
-  const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, offerInstall, offerDownload, openInstallConfirm, downloadUpdate, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
-    native, update, setUpdate, settings, page, settingsGroup, perform, navigate,
+  const { showUpdate, dismissUpdate, updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText, offerInstall, offerDownload, openInstallConfirm, installConfirmOpen, closeInstallConfirm, downloadUpdate, maintenance, launchInstall, maintenanceDismissed, dismissMaintenance } = useUpdateBubble({
+    native, update, setUpdate, settings, page, settingsGroup, perform,
   })
   // 状态文件里的已知问题提示（service-status.ts 的 knownIssues）：跟维护提示挤同一个角落，按这一页挑一条。
   const knownIssue = useKnownIssue(update, { page, accountTab: page === 'account' ? shownAccountTab : undefined })
@@ -661,6 +662,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="primary" testId="model-swap-confirm" onClick={() => modelSwap.answer('swap')}>{modelSwapConfirmLabel(modelSwap.offer)}</Button>
     </>}><p data-testid="model-swap-question">{modelSwapQuestion(modelSwap.offer)}</p></Dialog>}
     {runtimeRestart && <RuntimeRestartDialog onClose={() => setRuntimeRestart(false)} restart={toolsApi.restartWindows} />}
+    {/* 气泡、状态栏、侧栏的「重启并安装」在原地弹确认框，不先跳到版本更新页（11-10）。 */}
+    {installConfirmOpen && <UpdateInstallConfirm api={native} update={update} open onClose={closeInstallConfirm} />}
     {/* 点「取消」或关掉框都是不换：install 收到 false，什么都不动。 */}
     {managedSwitch && <Confirm {...managedSwitchConfirmation(managedSwitch.version)} testId="managed-switch-confirm" onOk={() => managedSwitch.answer(true)} onClose={() => managedSwitch.answer(false)} />}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} cancelLabel={confirmation.cancelLabel} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => runConfirmed(confirmation)} />}

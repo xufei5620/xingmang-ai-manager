@@ -8,6 +8,7 @@ import type { DramaShotAlert } from '../library/drama-graph'
 import type { CanvasNodeSourceCatalog } from '../library/node-model-availability'
 import { inspectSelectedNodeRun } from './node-run-actions'
 import type { CanvasCapabilityProfile } from '../host-capabilities'
+import { canvasRunChargeHint, canvasRunChargeText, type CanvasRunChargeTotal } from '../runtime/run-charge'
 
 export type { CanvasInspectorNode } from './canvas-inspector-model'
 export type CanvasInspectorTab = 'node' | 'assets' | 'runs'
@@ -17,6 +18,8 @@ interface CanvasInspectorProps {
   canRun?: boolean
   tab: CanvasInspectorTab
   nodes: readonly CanvasInspectorNode[]
+  /** 宿主跑完对出来的实扣，按节点；没有的节点照旧显示 quota 或「—」。 */
+  nodeCharges?: ReadonlyMap<string, CanvasRunChargeTotal>
   imageModels: readonly string[]
   videoModels: readonly string[]
   textModels?: readonly string[]
@@ -83,7 +86,14 @@ function NodePreview({ node, onPreview }: { node: CanvasInspectorNode; onPreview
 
 type SingleNodeInspectorProps = Pick<CanvasInspectorProps,
   'readOnly' | 'canRun' | 'imageModels' | 'videoModels' | 'textModels' | 'sourceCatalog' | 'onLocate' | 'onRun'
-  | 'onToggleLocked' | 'onToggleDisabled' | 'onPreview' | 'capabilities'> & { node: CanvasInspectorNode }
+  | 'onToggleLocked' | 'onToggleDisabled' | 'onPreview' | 'capabilities' | 'nodeCharges'> & { node: CanvasInspectorNode }
+
+function NodeCost({ node, charge }: { node: CanvasInspectorNode; charge?: CanvasRunChargeTotal }) {
+  if (!charge) return <div><dt>消耗</dt><dd>{node.costQuota === undefined ? '—' : `${node.costQuota} quota`}</dd></div>
+  const text = canvasRunChargeText(charge)
+  // 「$0.06，另有 1 次待核对」在半栏里会被省略号吃掉要紧的那半句，占满一行。
+  return <div className={charge.unmatchedAttempts > 0 && text.includes('，') ? 'is-wide' : undefined}><dt>消耗</dt><dd className="canvas-inspector-charge" title={canvasRunChargeHint(charge)}>{text}</dd></div>
+}
 
 function SingleNodeInspector(props: SingleNodeInspectorProps) {
   const { node } = props
@@ -120,7 +130,7 @@ function SingleNodeInspector(props: SingleNodeInspectorProps) {
           <div><dt>候选</dt><dd>{node.candidateCount}</dd></div>
           <div><dt>尝试</dt><dd>{node.attemptCount ?? '—'}</dd></div>
           <div><dt>耗时</dt><dd>{node.latestAttemptDurationMs === undefined ? '—' : `${(node.latestAttemptDurationMs / 1000).toFixed(1)} 秒`}</dd></div>
-          <div><dt>消耗</dt><dd>{node.costQuota === undefined ? '—' : `${node.costQuota} quota`}</dd></div>
+          <NodeCost node={node} charge={props.nodeCharges?.get(node.id)} />
         </dl>
         {node.dirty && <p className="canvas-inspector-warning">输入已变化，当前结果待更新。</p>}
         {node.errorMessage && <p className="canvas-inspector-error" role="alert">{node.errorMessage}</p>}

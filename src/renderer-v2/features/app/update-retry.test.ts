@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { UpdateSnapshot } from '../../../../electron/ipc-contract'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateFailureBubbleQuiet, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './update-retry'
+import { redownloadUpdate, retryFailedUpdateStep, updateFailureBubbleQuiet, updateFailureTone, updateNeedsManualReinstall, updateOffersDownloadPage } from './update-retry'
 
 function snapshot(patch: Partial<UpdateSnapshot> = {}): UpdateSnapshot {
   return {
@@ -115,28 +115,5 @@ describe('updateOffersDownloadPage', () => {
     expect(updateOffersDownloadPage(snapshot({ phase: 'error', failedStep: 'check', error: { code: 'ENOTFOUND', message: '连不上' } }))).toBe(false)
     expect(updateOffersDownloadPage(snapshot())).toBe(false)
     expect(updateOffersDownloadPage(null)).toBe(false)
-  })
-})
-
-describe('update install confirm request', () => {
-  it('reaches a page that is already mounted and is taken only once', () => {
-    const seen = vi.fn(() => takeUpdateInstallConfirm())
-    const stop = subscribeUpdateInstallConfirm(seen)
-    expect(seen).not.toHaveBeenCalled()
-    requestUpdateInstallConfirm()
-    expect(seen).toHaveReturnedWith(true)
-    expect(takeUpdateInstallConfirm()).toBe(false)
-    stop()
-  })
-
-  it('waits for a page that mounts after the request', () => {
-    requestUpdateInstallConfirm()
-    const seen = vi.fn(() => takeUpdateInstallConfirm())
-    const stop = subscribeUpdateInstallConfirm(seen)
-    expect(seen).toHaveReturnedWith(true)
-    stop()
-    requestUpdateInstallConfirm()
-    expect(seen).toHaveBeenCalledOnce()
-    expect(takeUpdateInstallConfirm()).toBe(true)
   })
 })

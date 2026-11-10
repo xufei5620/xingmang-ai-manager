@@ -10,6 +10,17 @@ function response(body: unknown, status = 200): Response {
   })
 }
 
+// Only the signature and IHDR, which is all inspectAiImage reads for a size.
+function pngHeader(width: number, height: number): Buffer {
+  const bytes = Buffer.alloc(33)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+  bytes.writeUInt32BE(13, 8)
+  bytes.write('IHDR', 12, 'ascii')
+  bytes.writeUInt32BE(width, 16)
+  bytes.writeUInt32BE(height, 20)
+  return bytes
+}
+
 function setup(
   fetchImpl: typeof fetch,
   queueOptions: { maxActive?: number; maxQueued?: number; timeoutMs?: number; backend?: 'new-api' | 'sub2api' } = {},
@@ -368,6 +379,46 @@ describe('AI image service', () => {
     expect(form.getAll('image').map((value) => (value as File).name)).toEqual(['source-a.png', 'source-b.jpg'])
     expect(assets.readOwned).toHaveBeenNthCalledWith(1, 7, ids[0])
     expect(assets.readOwned).toHaveBeenNthCalledWith(2, 7, ids[1])
+  })
+
+  it('sends a masked edit as one image plus a mask file once the source size matches', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const id = 'a'.repeat(43)
+    vi.mocked(assets.readOwned).mockResolvedValue({
+      asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'source.png' },
+      bytes: pngHeader(64, 48),
+    })
+    const maskBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+    const png = vi.fn(async () => maskBytes)
+    await service.edit(4, {
+      requestId: 'mask-1', group: '生图分组', model: 'gpt-image-2', prompt: '换成红色',
+      sourceAssetIds: [id], expectedUserId: 7, mask: { width: 64, height: 48, png },
+    })
+    const form = vi.mocked(fetchImpl).mock.calls[0][1]?.body as FormData
+    expect(form.getAll('image')).toHaveLength(1)
+    const mask = form.get('mask') as File
+    expect(mask.name).toBe('mask.png')
+    expect(mask.type).toBe('image/png')
+    expect(new Uint8Array(await mask.arrayBuffer())).toEqual(maskBytes)
+    expect(png).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a masked edit whose source is another size, or has more than one source, before dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const id = 'a'.repeat(43)
+    // The record says 64 x 48; the bytes going out are 65 x 48, and those are what the relay compares.
+    vi.mocked(assets.readOwned).mockResolvedValue({
+      asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'source.png', width: 64, height: 48 },
+      bytes: pngHeader(65, 48),
+    })
+    const png = vi.fn(async () => new Uint8Array(8))
+    const input = { requestId: 'mask-2', group: '生图分组', model: 'gpt-image-2', prompt: '换成红色', expectedUserId: 7, mask: { width: 64, height: 48, png } }
+    await expect(service.edit(4, { ...input, sourceAssetIds: [id] })).rejects.toThrow('原图像素尺寸与蒙版不一致')
+    await expect(service.edit(4, { ...input, requestId: 'mask-3', sourceAssetIds: [id, 'b'.repeat(43)] })).rejects.toThrow('局部修改只能用一张原图')
+    expect(png).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('rejects image edits across accounts and invalid asset lists before network dispatch', async () => {
