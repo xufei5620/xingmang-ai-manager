@@ -1,0 +1,28 @@
+# 临时：核 PowerShell 受限语言模式下星芒检测脚本怎么失败、改法管不管用，核完就删
+name: tmp-clm-probe
+
+on:
+  push:
+    branches:
+      - claude/project-thread-wf9xq2
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Full language
+        shell: cmd
+        run: node tmp-clm-probe\probe.cjs full
+      - name: Turn on the system lockdown debug policy
+        shell: powershell
+        run: "[Environment]::SetEnvironmentVariable('__PSLockdownPolicy', '4', 'Machine')"
+      - name: System lockdown
+        shell: cmd
+        run: node tmp-clm-probe\probe.cjs lockdown
