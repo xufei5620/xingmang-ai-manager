@@ -1,4 +1,5 @@
-import { requestRemoteJson, RemoteHttpError } from './codex-remote-http'
+import { randomUUID } from 'node:crypto'
+import { requestRemoteJson, RemoteHttpError, type RemoteJsonResponse } from './codex-remote-http'
 import {
   decodeFeishuFrame,
   encodeFeishuFrame,
@@ -58,6 +59,13 @@ const endpointCodes = {
 
 // 开放平台接口里 tenant_access_token 失效的几种 code，碰到就换一个再发一次。
 const tokenInvalidCodes = new Set([99991661, 99991663, 99991668])
+
+// 发消息碰到这几个 code 是飞书那边一时忙不过来，等一会儿带同一个 uuid 再发（YKS-4）。照飞书文档：
+// 99991400 通用限流、230020 发消息限流（都说降低频率后重试）、1500 内部错误（稍后重试）、
+// 230049 消息正在发送中（上一次带同一个 uuid 的还没发完）。别的 code 是参数、权限、对方不收这类，重发也没用。
+const sendRetryCodes = new Set([99991400, 230020, 1500, 230049])
+/** 发消息遇到一时的失败，第 N 次重发前等多久；两次都不行就照原样报错。 */
+const sendRetryDelaysMs = [1_000, 4_000] as const
 
 const needsLoginMessage = 'App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。'
 
@@ -335,6 +343,27 @@ export function buildFeishuMessageBody(peer: RemotePeer, message: RemoteOutbound
   return { receive_id: peer.userId, msg_type: 'text', content: JSON.stringify({ text: message.text }) }
 }
 
+export type FeishuSendOutcome = 'sent' | 'token-invalid' | 'retry' | 'failed'
+
+/** 发消息接口回来以后怎么办：发出去了、换个令牌再发、等一会儿再发，还是直接报错。 */
+export function classifyFeishuSendResponse(status: number, code: number | null): FeishuSendOutcome {
+  if (code === 0) return 'sent'
+  if (code !== null && tokenInvalidCodes.has(code)) return 'token-invalid'
+  if (code !== null && sendRetryCodes.has(code)) return 'retry'
+  // 网关、负载均衡回的 5xx 和 429 多半不是 JSON，没有 code 也按一时的失败算。
+  if (status === 429 || status >= 500) return 'retry'
+  return 'failed'
+}
+
+/**
+ * 请求根本没拿到回应（断网、超时）时返回原因，可以带同一个 uuid 再发；别的失败返回 null。
+ * 地址不在允许范围、被重定向这类照旧直接报错，重发也是同样的结果。
+ */
+export function transientFeishuRequestFailure(error: unknown): 'network' | 'timeout' | null {
+  if (!(error instanceof RemoteHttpError)) return null
+  return error.reason === 'network' || error.reason === 'timeout' ? error.reason : null
+}
+
 interface FragmentEntry {
   parts: Array<Uint8Array | undefined>
   bytes: number
@@ -405,6 +434,8 @@ export interface FeishuSocket {
 export interface FeishuChannelOptions {
   createSocket?(url: string): FeishuSocket
   random?(): number
+  /** 发消息重发前的等待；测试里换成立即返回的。 */
+  sleep?(milliseconds: number): Promise<void>
 }
 
 const socketOpen = 1
@@ -413,6 +444,13 @@ const textEncoder = new TextEncoder()
 
 function defaultCreateSocket(url: string): FeishuSocket {
   return new WebSocket(url)
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => {
+    // 退出时不为了一次重发拖着进程；道别那句另有自己的时限。
+    setTimeout(resolve, milliseconds).unref?.()
+  })
 }
 
 function toBytes(data: unknown): Uint8Array | null {
@@ -490,31 +528,61 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
 
   async send(peer: RemotePeer, message: RemoteOutbound): Promise<void> {
     if (!this.credential) throw new Error('飞书渠道没有在运行')
-    const body = buildFeishuMessageBody(peer, message)
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const token = await this.tenantToken()
-      const response = await requestRemoteJson({
-        fetch: this.deps.fetch,
-        url: `${feishuOpenOrigin}/open-apis/im/v1/messages?receive_id_type=open_id`,
-        allowedOrigins,
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body,
-        timeoutMs: requestTimeoutMs,
-        maxResponseBytes,
-        label,
-      })
+    // 一条消息不管重发几次都带同一个 uuid：第一次其实已经发到了、只是回应在路上断了时，飞书一小时内
+    // 只认一次，手机上不会出现两条一样的（尤其是审批卡，两张卡同一个编号会让人以为要点两次）。
+    const body = { ...buildFeishuMessageBody(peer, message), uuid: randomUUID() }
+    let tokenRefreshed = false
+    let retries = 0
+    for (;;) {
+      let response: RemoteJsonResponse
+      try {
+        const token = await this.tenantToken()
+        response = await requestRemoteJson({
+          fetch: this.deps.fetch,
+          url: `${feishuOpenOrigin}/open-apis/im/v1/messages?receive_id_type=open_id`,
+          allowedOrigins,
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token}` },
+          body,
+          timeoutMs: requestTimeoutMs,
+          maxResponseBytes,
+          label,
+        })
+      } catch (error) {
+        const reason = transientFeishuRequestFailure(error)
+        if (!reason) throw error
+        if (retries >= sendRetryDelaysMs.length) {
+          this.deps.log('warn', 'feishu.send-failed', { reason })
+          throw error
+        }
+        this.deps.log('warn', 'feishu.send-retry', { reason, retry: retries + 1 })
+        await this.sleep(sendRetryDelaysMs[retries])
+        retries += 1
+        continue
+      }
       this.noteServerTime(response.serverTime)
       const payload = isRecord(response.payload) ? response.payload : {}
       const code = numberField(payload.code)
-      if (code === 0) return
-      if (code !== null && tokenInvalidCodes.has(code) && attempt === 0) {
+      const outcome = classifyFeishuSendResponse(response.status, code)
+      if (outcome === 'sent') return
+      if (outcome === 'token-invalid' && !tokenRefreshed) {
+        tokenRefreshed = true
         this.token = null
+        continue
+      }
+      if (outcome === 'retry' && retries < sendRetryDelaysMs.length) {
+        this.deps.log('warn', 'feishu.send-retry', { status: response.status, code, retry: retries + 1 })
+        await this.sleep(sendRetryDelaysMs[retries])
+        retries += 1
         continue
       }
       this.deps.log('warn', 'feishu.send-failed', { status: response.status, code })
       throw new Error(`飞书没有发出这条消息（错误码 ${code ?? response.status}）`)
     }
+  }
+
+  private sleep(milliseconds: number): Promise<void> {
+    return (this.options.sleep ?? defaultSleep)(milliseconds)
   }
 
   private noteServerTime(serverTime: number | undefined): void {
