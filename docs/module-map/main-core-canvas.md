@@ -79,6 +79,7 @@
 - `canvas-account-summary.ts` — 画布顶上余额条的回答（`canvas-host:get-account-summary`，不收参数）：只给账号类型、打码的账号名（邮箱只留第一个字）、余额、读到的时间，不给邮箱、用户编号、密钥；用托盘和余额提醒同一份余额，过了 15 秒才替画布读一次站点，读的时候一次只读一次，读回来换了账号就不要（I15，画布完善第 2b 条）
 - `canvas-price-snapshot.ts` — 画布运行前检查「预计约 $x」用的价目（`canvas-host:get-price-snapshot`，不收参数）：星芒账号读这个账号的 `/api/pricing`，只留按次计价、桌面认得的型号的单价（视频标「估算」）和这个账号各分组的倍率；按 token 计价、按表达式或插件计价的型号不给，画布写「价格未知」。历史账号没有价目，回 `null`。十分钟内只读一次，读失败一分钟内不再读，换了账号读回来的不要；扣费照旧由主进程和站点算，不看画布算出来的数（I15，画布完善第 2b 条）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度；主窗口的 `video:generate` 也套同一份（`ipc/handlers/ai-video.ts`）
+- `canvas-byte-upload.ts` — 画布在页面里画好的图片（蒙版编辑器的黑白蒙版，画布完善第 7 条第一步）走 `canvas-host:import-asset-bytes` 交回主进程：只收一个 `Uint8Array`（不收不回路径），20 MB、长宽 8192 以内，按文件头认 PNG / JPEG / WebP；按画布窗口限流（同时 2 张、每分钟 20 张合计 100 MB）。
 
 ### 运行引擎（都在主进程）
 - `canvas-run-contract.ts` — 画布运行的数据契约：节点种类（含漫剧节点）、运行范围、尝试与候选产物、事件时间线、运行记录
