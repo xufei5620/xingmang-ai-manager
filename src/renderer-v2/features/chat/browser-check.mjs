@@ -1037,11 +1037,13 @@ test('an empty chat says where conversations go, and its examples only fill the 
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
     await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
-    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['用大白话解释什么是 API 密钥', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
-    await page.getByTestId('chat-example-2').click()
+    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
+    await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
-    assert.equal(await input.inputValue(), '帮我写一个批量重命名文件的脚本')
+    // 半句话的示例填进去时不带省略号，光标在末尾，接着打就是客户自己的话。
+    assert.equal(await input.inputValue(), '帮我写一条朋友圈文案，卖的是')
     assert.equal(await input.evaluate((element) => element === document.activeElement), true)
+    await page.waitForFunction(() => { const element = document.querySelector('#chatIn'); return element instanceof HTMLTextAreaElement && element.selectionStart === element.value.length && element.selectionEnd === element.value.length })
     assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
     // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
     assert.equal(await empty.getByRole('button').count(), 0)
