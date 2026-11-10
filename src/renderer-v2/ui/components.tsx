@@ -5,6 +5,6 @@ export * from './floating';
 export * from './feedback';
 export * from './brand';
 export * from './guidance';
-export { UiCopyProvider, BalanceTierProvider, useReducedMotion } from './shared';
+export { UiCopyProvider, BalanceTierProvider, useReducedMotion, focusable } from './shared';
 export type { BaseProps, Icon, Size, Tone } from './shared';
 export { actionIcons as iconRegistry } from '../registry/icons';

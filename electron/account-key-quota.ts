@@ -60,6 +60,12 @@ export function isKeyQuotaExhaustedMessage(message: string): boolean {
 export const managedKeyQuotaExhaustedMessage = '这个工具的额度用完了，软件不会自动放开。到「个人中心 › 密钥管理」的「每个工具的额度上限」里调高后再试。'
 
 /**
+ * 工具那把 Key 在网页上停用了或到期了（0.2.24 深查 D3）：跟上限用完一样是有人特意让它停，
+ * 签一把不限额、永不过期的新 Key 等于没停，所以也在这里止步。Key 被删掉、分组改名的照旧换新。
+ */
+export const managedKeyStoppedMessage = '这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」里重新启用或延长到期时间后再试。'
+
+/**
  * AI 工作台聊天自己那把 Key 的上限用完了：同样停下，不去换一把不限额的。用的是
  * relay-quota-failure 里那句现成的话，聊天页认得它，会在旁边给「去调额度」。
  */

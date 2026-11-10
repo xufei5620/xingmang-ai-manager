@@ -25,6 +25,9 @@ export const errors = {
   elevationDeclined: { title: '没拿到管理员授权', body: '这次没装，电脑上什么都没改。先照下面这句话做，再点「重试」；还不行点「找客服」。', actions: ['重试', '找客服'] },
   permission: { title: '写不进安装目录', body: '这个文件夹不让星芒写东西，常见是杀毒软件拦了。点「复制路径」看是哪个文件夹，把它加进杀毒软件的信任名单后再点「重试」；还不行点「找客服」。', actions: ['重试', '复制路径', '找客服'] },
   configPermission: { title: '写不进配置文件', body: '常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口，再点「重试」；还不行点「找客服」。', actions: ['重试', '查看日志', '找客服'] },
+  // 主进程查得出是哪一种没权限时（electron/config-write-blocker.ts）各换一句，按钮照上一条不加。yoyo 2026-11-10 批的字（决定单 D15）。
+  configAdminOwned: { title: '写不进配置文件', body: '这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。', actions: ['重试', '查看日志', '找客服'] },
+  configReadOnly: { title: '写不进配置文件', body: '这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。', actions: ['重试', '查看日志', '找客服'] },
   updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },
   paymentClosed: { title: '支付窗口已手动关闭', body: '订单没有取消。', actions: ['看订单'] },
   paymentTimeout: { title: '订单已超时', body: '查询订单状态后可重新支付。', actions: ['重新支付'] },

@@ -35,7 +35,7 @@ import {
   type VideoStudioShot,
   type VideoStudioTrimSide,
 } from './project'
-import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, videoStudioAspects, videoStudioFits, videoStudioResolutions, videoStudioTransitions } from './timeline'
+import { formatVideoStudioDuration, isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, videoStudioAspects, videoStudioFits, videoStudioResolutions, videoStudioTransitions } from './timeline'
 import { useVideoStudio, type VideoStudioBridge, type VideoStudioController, type VideoStudioOptions } from './useVideoStudio'
 import './video-studio.css'
 
@@ -202,7 +202,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         </button>
         <div className="video-studio-result-copy">
           <strong>{project.title || '成片'}</strong>
-          <small>{[exported.durationSeconds ? `${formatSeconds(exported.durationSeconds)}` : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存进 AI 作品文件夹'}</small>
+          <small>{[exported.durationSeconds ? formatVideoStudioDuration(exported.durationSeconds) : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存进 AI 作品文件夹'}</small>
           <div className="video-studio-result-actions">
             <Button size="sm" icon={Play} onClick={() => void studio.openClip(exported.assetId)} testId="video-result-open">用播放器打开</Button>
             <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId, project.title)} testId="video-result-save">另存为</Button>
@@ -240,18 +240,13 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
 /** 确认框里那句「可能多扣一次」。indexes 是这几段在分镜里的位置（从 0 数），total 是这次要生成几段。 */
 function unconfirmedWarning(indexes: readonly number[], total: number): string {
   const subject = total === 1 ? '这一段' : indexes.length === total ? '这几段' : `其中第 ${indexes.map((index) => index + 1).join('、')} 段`
-  return `${subject}上次提交时没收到服务端答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
+  return `${subject}上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
 }
 
 function secondsOptions(model: string, current: number) {
   const choices = videoStudioSecondsChoices(model)
   const all = choices.includes(current) ? choices : [...choices, current].sort((a, b) => a - b)
   return all.map((seconds) => ({ value: String(seconds), label: `${seconds} 秒` }))
-}
-
-function formatSeconds(seconds: number): string {
-  const whole = Math.round(seconds)
-  return whole >= 60 ? `${Math.floor(whole / 60)} 分 ${whole % 60} 秒` : `${whole} 秒`
 }
 
 const modelPickerNames: Record<'text' | 'video' | 'image', { title: string, menu: string, empty: string }> = {

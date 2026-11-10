@@ -6,8 +6,8 @@ import {
   type AccountRealmId, type RealmSavedAccount,
 } from './realm-account'
 import {
-  createRealmAccountVault, createSessionRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, realmVaultKeyStoreRefusedMessage,
-  type RealmVaultStorage,
+  createRealmAccountVault, createSessionRealmAccountVault, migrateLegacySavedAccount, realmStorageScope, realmVaultDiskFullMessage,
+  realmVaultKeyStoreRefusedMessage, RealmVaultStorageError, type RealmVaultStorage,
 } from './realm-account-vault'
 
 function account(realmId: AccountRealmId = 'xm-account', userId = '7'): RealmSavedAccount {
@@ -100,6 +100,33 @@ describe('realm account contracts and encrypted vault', () => {
     assert.equal((await example.vault.active())?.realmId, 'xm-account')
     await example.vault.activate(account('api-account'))
     assert.equal((await example.vault.active())?.realmId, 'api-account')
+  })
+  it('says the disk is full when a write fails for lack of space, without carrying the native error', async () => {
+    for (const code of ['ENOSPC', 'EDQUOT']) {
+      const full = storageFixture()
+      full.storage.writeAtomic = async () => { throw Object.assign(new Error(`${code}: no space left on device, open 'C:\\Users\\private\\realm.dat'`), { code }) }
+      await assert.rejects(full.vault.activate(account()), (error: unknown) => {
+        assert.ok(error instanceof RealmVaultStorageError)
+        assert.equal(error.code, 'STORAGE')
+        assert.equal(error.stage, 'write')
+        assert.equal(error.diskFull, true)
+        assert.equal(error.message, realmVaultDiskFullMessage)
+        assert.equal(error.cause, undefined)
+        return true
+      })
+      assert.equal(full.content(), null)
+    }
+    // 别的写失败（被占用、没权限、不认识的错）照旧是那句存储不可用，不说成盘满。
+    for (const code of ['EPERM', 'EBUSY', undefined]) {
+      const blocked = storageFixture()
+      blocked.storage.writeAtomic = async () => { throw Object.assign(new Error('private file detail'), code ? { code } : {}) }
+      await assert.rejects(blocked.vault.activate(account()), (error: unknown) => {
+        assert.ok(error instanceof RealmVaultStorageError)
+        assert.equal(error.diskFull, false)
+        assert.equal(error.message, '账号安全存储不可用，原记录未修改')
+        return true
+      })
+    }
   })
   it('does not fall back to plaintext when encryption is unavailable', async () => {
     const example = storageFixture(); example.setAvailable(false)
