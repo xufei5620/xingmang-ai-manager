@@ -86,6 +86,31 @@ describe('AiVideoAssetStore', () => {
     ])
   })
 
+  it('reads only the asked-for range of an owned video, under the same checks as a whole read', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-range-'))
+    roots.push(outputRoot)
+    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
+    const asset = await store.storeMp4(7, mp4(), { taskId: 'video_range' })
+    const whole = mp4()
+    const sizes: number[] = []
+    await expect(store.readOwnedRange(7, asset.assetId, (total) => { sizes.push(total); return { start: 4, end: 11 } })).resolves.toEqual({
+      asset: { mimeType: 'video/mp4' }, totalBytes: whole.length, bytes: whole.subarray(4, 12),
+    })
+    expect(sizes).toEqual([whole.length])
+    // Selecting nothing (HEAD, an unsatisfiable range) reads nothing past the signature.
+    await expect(store.readOwnedRange(7, asset.assetId, () => null)).resolves.toEqual({ asset: { mimeType: 'video/mp4' }, totalBytes: whole.length, bytes: Buffer.alloc(0) })
+    await expect(store.readOwnedRange(8, asset.assetId, () => null)).rejects.toThrow('不存在或无权访问')
+    await expect(store.readOwnedRange(7, asset.assetId, (total) => ({ start: 0, end: total }))).rejects.toThrow('读取范围无效')
+
+    // A second hard link, or bytes that are not an MP4 any more, are refused exactly like a whole read.
+    const filePath = await store.resolveOwnedFilePath(7, asset.assetId)
+    fs.linkSync(filePath, `${filePath}.link`)
+    await expect(store.readOwnedRange(7, asset.assetId, () => null)).rejects.toThrow('无效或超过安全上限')
+    fs.rmSync(`${filePath}.link`)
+    fs.writeFileSync(filePath, Buffer.from('<html>not a video</html>'))
+    await expect(store.readOwnedRange(7, asset.assetId, () => ({ start: 0, end: 3 }))).rejects.toThrow('MP4')
+  })
+
   it('stores a film composed on this computer like a generated clip, without a task id', async () => {
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-composed-'))
     roots.push(outputRoot)

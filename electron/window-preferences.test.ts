@@ -7,6 +7,7 @@ import {
   resolveFittedWindowBounds,
   resolveRecoveredWindowBounds,
   resolveWindowPlacement,
+  shouldFollowSystemTextSize,
   type AppWindowState,
   type WindowDisplay,
 } from './window-preferences'
@@ -320,6 +321,33 @@ describe('automatic DIP zoom', () => {
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('uses a readable fallback while content width is invalid: %s', (width) => {
     expect(calculateUiZoom(width, '90')).toBe(1)
+  })
+})
+
+describe('following the Windows text size (D81)', () => {
+  it('turns on large text when the system text size was raised and nobody chose a text size yet', () => {
+    expect(shouldFollowSystemTextSize({}, 150)).toBe(true)
+    expect(shouldFollowSystemTextSize({}, 105)).toBe(true)
+    expect(shouldFollowSystemTextSize({ largeText: false, uiScale: 'auto' }, 225)).toBe(true)
+  })
+
+  it('does nothing when the system text size is unchanged or unreadable', () => {
+    expect(shouldFollowSystemTextSize({}, 100)).toBe(false)
+    expect(shouldFollowSystemTextSize({}, null)).toBe(false)
+  })
+
+  it('leaves a user who already chose large text or a pinned zoom alone', () => {
+    expect(shouldFollowSystemTextSize({ largeText: true }, 150)).toBe(false)
+    expect(shouldFollowSystemTextSize({ uiScale: '90' }, 150)).toBe(false)
+    expect(shouldFollowSystemTextSize({ uiScale: '100' }, 150)).toBe(false)
+    expect(shouldFollowSystemTextSize({ uiScale: '110' }, 150)).toBe(false)
+  })
+
+  // Once it was turned on for them, or they switched it off themselves, the
+  // record stays and a later launch must not switch it back on.
+  it('never turns large text on again once a text size was chosen', () => {
+    expect(shouldFollowSystemTextSize({ textSizeChosen: true }, 150)).toBe(false)
+    expect(shouldFollowSystemTextSize({ textSizeChosen: true, largeText: false }, 225)).toBe(false)
   })
 })
 

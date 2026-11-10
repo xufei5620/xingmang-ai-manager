@@ -2445,6 +2445,24 @@ describe('registerIpcHandlers', () => {
       expect(service.launchProvider).toHaveBeenCalledWith('claude', '/Users/alex/demo', 'new')
     })
 
+    // D17：光盘、写保护的 U 盘不是受控文件夹访问，那一问的原因对不上；不拦，打开后首页说一句。
+    it('opens a folder on a read-only disk without asking and tells the home page it cannot be written to', async () => {
+      const probe = vi.fn(async () => { throw Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' }) })
+      const { service, runtimeLog } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
+        workspaceWriteCheck: { platform: 'win32', probe },
+      })
+      vi.mocked(service.launchProvider).mockResolvedValueOnce({ configOverrideNotice: '这个项目文件夹里有自己的设置。' })
+
+      await expect(electronMocks.handlers.get('cli:launch')!(trustedEvent(), 'claude', 'E:\\disc\\demo'))
+        .resolves.toEqual({ configOverrideNotice: '这个项目文件夹里有自己的设置。', workspaceReadOnly: true })
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'E:\\disc\\demo', 'new')
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({
+        result: 'read-only',
+      }))
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('disc')
+    })
+
     it('still launches when the probe fails for a reason other than permissions', async () => {
       const probe = vi.fn(async () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) })
       const { service } = register(undefined, undefined, undefined, undefined, undefined, undefined, {}, {
