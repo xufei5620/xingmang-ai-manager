@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { sanitizeUpstreamDetail } from './command-runner'
-import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { managedKeyQuotaExhaustedMessage, managedKeyStoppedMessage } from './account-key-quota'
 import { accountKeyNameMaxBytes, buildAccountKeyName, utf8Length } from './catalog'
 import { resolveChineseServerMessage } from './new-api-messages'
 import { classifyNetworkFailure, isProxyAuthFailure, isServiceUnavailableResponse, networkFailureMessages, proxyAuthRequiredMessage, proxyAuthRequiredStatus, type NetworkFailureReason } from './network-failure'
@@ -2725,6 +2725,36 @@ export function hasExhaustedCappedCliKey(payload: unknown, names: readonly strin
   return false
 }
 
+// A key this app issued for a tool that the user disabled or let expire on
+// the web (0.2.24 深查 D3). Like a used-up cap it is a deliberate stop: a
+// fresh unlimited, never-expiring key under the same name would silently undo
+// it, and so would falling back to an older usable sibling, so provisioning
+// stops instead. newerThanId: a usable key newer than the stopped one (the
+// user re-enabled it, or one was issued in its place before this check
+// existed) is reused as before. A key deleted on the web is gone from the
+// listing, and one left behind by a group rename sits in the old group, so
+// both still get a fresh key (#1074). The server only flips an expired key to
+// status 3 once it next sees it in use (model/token.go ValidateUserToken), so
+// the expiry is read too, on the same boundary findNewestUsableCliKeyByGroup
+// skips it at. Records without a readable id are counted, as above.
+export function hasStoppedCliKey(
+  payload: unknown,
+  names: readonly string[],
+  group: string,
+  newerThanId = 0,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): boolean {
+  for (const entry of collectionEntries(payload)) {
+    if (!isRecord(entry) || !names.includes(asString(entry.name, '')) || asString(entry.group, '') !== group) continue
+    const id = entry.id
+    if (typeof id === 'number' && Number.isInteger(id) && id > 0 && id <= newerThanId) continue
+    const status = asFiniteNumber(entry.status, 0)
+    const expiredTime = asFiniteNumber(entry.expired_time, -1)
+    if (status === 2 || status === 3 || (status === 1 && expiredTime !== -1 && expiredTime <= nowSeconds)) return true
+  }
+  return false
+}
+
 export function parseCliKeySecret(payload: unknown): string | null {
   const data = isRecord(payload) ? payload : null
   const candidate = data && typeof data.key === 'string'
@@ -4155,6 +4185,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         if (input.unlimitedQuota !== false
           && hasExhaustedCappedCliKey(records, names, group, existing?.name === requested ? existing.id : 0)) {
           throw new Error(managedKeyQuotaExhaustedMessage)
+        }
+        // 网页上停用了、到期了的那把（D3）同样不拿新 Key 顶上。fresh 是撤销一把在用的 Key 以后照抄原限制换新，
+        // 那把是用户自己撤的；对话那把归 chat-credential-coordinator.ts 管。
+        if (!chat && !input.fresh && hasStoppedCliKey(records, names, group, existing?.id ?? 0)) {
+          throw new Error(managedKeyStoppedMessage)
         }
         if (existing) {
           const known = knownCliKeyForRecord(records, existing, input.knownKeys)
