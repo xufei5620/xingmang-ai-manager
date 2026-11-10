@@ -84,10 +84,13 @@ export function shortcutRows(os: WindowOs): Array<{ keys: string; label: string 
   const mod = os === 'mac' ? '⌘' : 'Ctrl'
   return [
     { keys: `${mod} K`, label: '搜索或跳转' },
+    { keys: '/', label: '在有搜索框的页面里直接搜索' },
     { keys: `${mod} ,`, label: '打开设置' },
     { keys: launchShortcutMeta(os), label: '打开工具' },
     { keys: `${mod} + / ${mod} -`, label: '放大 / 缩小界面' },
     { keys: `${mod} 0`, label: '恢复自动缩放' },
+    // 全屏在主进程 electron/platform/renderer-v2.ts 里接：Mac 是 ⌃⌘F，别的是 F11。
+    { keys: os === 'mac' ? '⌃ ⌘ F' : 'F11', label: '全屏' },
     { keys: 'Esc', label: '关闭弹窗或菜单' },
   ]
 }
@@ -463,10 +466,10 @@ export function SettingsPage({
     />
   )
   // 要先读一次系统状态的那几项：读的那一下照常画开关、灰着点不了，不写字；没读到写
-  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「此版本暂不支持」。
+  // 「暂未读到」，页顶红条给「重新读取」；只有这台电脑真的没有这一项，才写「这台电脑上用不了」。
   const systemPending = (label: string) =>
     !systemApi ? (
-      <Pill tone="neutral">此版本暂不支持</Pill>
+      <Pill tone="neutral">这台电脑上用不了</Pill>
     ) : systemError ? (
       <Pill tone="neutral">暂未读到</Pill>
     ) : (
@@ -651,13 +654,13 @@ export function SettingsPage({
               aria-label="用显卡加速显示"
               testId="settings-hardware-acceleration"
             />,
-            { badge: '重启后生效' },
+            { badge: '重开后生效' },
           )}
           {displayRelaunch && (
             <Notice
               tone="neutral"
               title="显示方式已改好"
-              body="重启软件后生效。"
+              body="重开星芒后生效。"
               testId="settings-display-relaunch"
               actions={
                 <>
@@ -716,7 +719,7 @@ export function SettingsPage({
             }
           />
         ) : systemState ? (
-          <Pill tone="neutral">此版本暂不支持</Pill>
+          <Pill tone="neutral">这台电脑上用不了</Pill>
         ) : (
           systemPending('开机自动启动')
         ),
@@ -764,7 +767,7 @@ export function SettingsPage({
       ),
       workspace: row(
         'workspace',
-        '工具会读写里面的文件，请选你信任的文件夹',
+        '打开工具时进入这个文件夹；工具会读写里面的文件，请选你信任的文件夹',
         <div className="v2-business-control">
           <span className="v2-business-path">{settings.workspace}</span>
           <Button
@@ -821,7 +824,7 @@ export function SettingsPage({
       ),
       'tool-route-restart-hints': row(
         'tool-route-restart-hints',
-        '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后只在首页标「需重开生效」。',
+        '连接线路因为连不上换了以后，开着的工具要重开才会走新线路。关掉以后不再弹提示，只在首页工具卡上标「需重开生效」。',
         <Switch
           checked={settings.toolRouteRestartHints !== false}
           aria-label="换线路后提醒我重开工具"
@@ -864,7 +867,7 @@ export function SettingsPage({
             查看
           </Button>
         ) : (
-          <Pill tone="neutral">此版本暂不支持</Pill>
+          <Pill tone="neutral">这台电脑上用不了</Pill>
         ),
       ),
       'network-check': row(
@@ -1006,7 +1009,7 @@ export function SettingsPage({
         'crash-reporting',
         '出错时把错误信息、版本和系统信息发到海外的错误收集服务；不含账号、密钥、文件路径和对话内容',
         <Switch
-          aria-label="崩溃自动上报"
+          aria-label="自动发送错误报告"
           checked={settings.crashReporting !== false}
           onChange={(enabled) => void update({ crashReporting: enabled })}
         />,
@@ -1060,7 +1063,7 @@ export function SettingsPage({
             icon={FileText}
             onClick={() => navigate?.('feedback', 'log')}
           >
-            去反馈
+            查看运行日志
           </Button>
         </>,
       ),
@@ -1277,6 +1280,8 @@ export function SettingsPage({
         revealPath={operation.revealPath || undefined}
         onReveal={(path) => api.revealExportedFile(path)}
         retry={readFailed ? { label: '重新读取', onClick: reread } : undefined}
+        // 红条上是「导出聊天记录和设置」没存进去时，按换个位置再存说，不说安装目录（D16）。
+        target={!resource.error && !saveError && !systemError && operation.failed === 'transfer-export' ? 'export' : undefined}
       />
       <div className="v2-business-settings-grid">
         <div className="v2-settings-side">

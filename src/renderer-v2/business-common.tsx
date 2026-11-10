@@ -477,7 +477,7 @@ export function ResultNotice({
   onSupport?: () => void
   /** 读取失败时红条右边那颗重试按钮（比如设置页的「重新读取」）；缺省 = 没有。 */
   retry?: { label: string; onClick: () => void }
-  /** 这次失败写的是工具的配置文件时为 'config'（已知29）；缺省 = 只按原话认。 */
+  /** 这次失败写的是工具的配置文件时为 'config'（已知29），是导出时为 'export'（D16）；缺省 = 只按原话认。 */
   target?: OperationTarget
 }) {
   const hint = error ? presentOperationFailure({ message: error, detail, target }) : null

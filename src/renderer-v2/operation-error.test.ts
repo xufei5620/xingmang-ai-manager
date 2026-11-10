@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
+import { classifyOperationError, exportFailureSentence, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
@@ -11,7 +11,7 @@ import {
   macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
   macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage, macosLegacyChatgptMessage,
 } from '../../electron/macos-desktop-install-failure'
-import { operationFailureFrom } from './business-common'
+import { failureWithDetail, operationFailureFrom } from './business-common'
 import { accelerationOffMessage, toolInstallOffMessage, toolLaunchOffMessage, videoStudioOffMessage } from '../../electron/remote-features'
 
 /**
@@ -75,6 +75,9 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
+  // 同一句 EPERM / ENOSPC，导出存的是客户在保存框里选的位置时（D16）。
+  exportPermission: { sample: "EPERM: operation not permitted, open '本机路径'", target: 'export' },
+  exportDiskFull: { sample: 'ENOSPC: no space left on device, write', target: 'export' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   // 主进程（system-scan-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
@@ -354,6 +357,39 @@ describe('renderer-v2 operation error classification', () => {
     expect(operationLogSection({ message: raw, tool: 'claude' })).toBe('log')
   })
 
+  it('tells an export that could not be saved to pick another folder, never the install directory', () => {
+    // D16：导出到开了「受控文件夹访问」的桌面、写保护的 U 盘时，以前标题是「写不进安装目录」；
+    // 盘满时正文讲安装用的临时文件夹。导出存的是客户自己选的位置。
+    const denied = "EPERM: operation not permitted, open '本机路径'"
+    const permission = presentOperationError(denied, 'export')
+    expect(permission?.key).toBe('exportPermission')
+    // 红条上标题和正文用「，」连起来，就是 yoyo 批的那一句。
+    expect(`${permission?.title}，${permission?.body}`).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+    const full = presentOperationError('ENOSPC: no space left on device, write', 'export')
+    expect(full?.key).toBe('exportDiskFull')
+    expect(`${full?.title}，${full?.body}`).toBe('这块盘满了，清出一些空间，或者换一块盘再导出。')
+    // 导出失败上屏的是兜底句、原话在 detail 里（useOperation → ResultNotice），照样认得出。
+    expect(presentOperationFailure({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。', detail: 'EACCES: permission denied', target: 'export' })?.key).toBe('exportPermission')
+    // 不说是导出时照旧（装工具、更新工具）。
+    expect(presentOperationError(denied)?.title).toBe('写不进安装目录')
+    expect(presentOperationError('ENOSPC: no space left on device, write')?.title).toBe('磁盘空间不够')
+    // 文件被占用、搬过的文件夹不归这两句。
+    expect(classifyOperationError('EBUSY: resource busy or locked', 'export')).toBe('toolRunning')
+    expect(classifyOperationError('聊天对话导出文件不能经过符号链接或目录联接', 'export')).toBe('folderRelocated')
+  })
+
+  it('gives the chat page the same two export sentences and nothing for other failures', () => {
+    // 聊天页红条只有一行字，拿整句；认不出的交回 null，那边留「这段对话没有导出成功，可以重试」。
+    expect(exportFailureSentence({ message: '操作没有成功', detail: "EPERM: operation not permitted, open '本机路径'" })).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+    expect(exportFailureSentence({ message: '操作没有成功', detail: 'ENOSPC: no space left on device, write' })).toBe('这块盘满了，清出一些空间，或者换一块盘再导出。')
+    expect(exportFailureSentence({ message: '聊天对话导出文件写入被系统占用，请稍后重试' })).toBeNull()
+    expect(exportFailureSentence({ message: '操作没有成功', detail: 'EBUSY: resource busy or locked' })).toBeNull()
+    expect(exportFailureSentence({ message: '' })).toBeNull()
+    // 经 IPC 过来的原话（带通道名、本机路径）走 failureWithDetail 以后照样认得出。
+    const viaIpc = new Error("Error invoking remote method 'chat-history:export-text': Error: EPERM: operation not permitted, open 'C:\\Users\\小王\\Desktop\\.周报.txt.3f401a29-0000-4000-8000-000000000000.tmp'")
+    expect(exportFailureSentence(failureWithDetail(viaIpc))).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+  })
+
   it('says which of the two known config write refusals it is instead of blaming security software (D15)', () => {
     // 权限和写失败.md PW-3、PW-4：设置文件夹归管理员、文件被设成只读，重试多少次都一样，以前也叫人关窗口重试。
     const adminOwned = `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
@@ -469,7 +505,7 @@ describe('renderer-v2 operation error classification', () => {
     }
   })
 
-  it('gives every failed Windows Claude Desktop install a retry, the download page, the log and support', () => {
+  it('gives every failed Windows Claude Desktop install a retry, the offline packages first, the Claude site second, the log and support', () => {
     // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
     for (const reason of Object.keys(claudeDesktopInstallFailureReasons) as ClaudeDesktopInstallFailureReason[]) {
       for (const wingetTried of [true, false]) {
@@ -478,10 +514,13 @@ describe('renderer-v2 operation error classification', () => {
         expect([message, hint?.key]).toEqual([message, 'claudeDesktopInstallFailed'])
         expect(hint?.actions).toEqual([
           { id: 'retry', label: '重试' },
-          { id: 'claudeDesktopDownload', label: '去官网下载' },
+          { id: 'claudeDesktopOfflinePackages', label: '下载离线安装包' },
+          { id: 'claudeDesktopDownload', label: '去 Claude 官网' },
           { id: 'log', label: '查看日志' },
           { id: 'support', label: '找客服' },
         ])
+        // 正文点名的那颗按钮得真的在（D64 以前点名的是「去官网下载」）。
+        expect(hint?.body).toBe('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
         // 原话（签名、HTTP 状态码）只记在运行日志里。
         expect(operationLogSection({ message, tool: 'claudeDesktop' })).toBe('log')
       }

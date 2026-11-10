@@ -145,7 +145,7 @@ export interface ToolRouteRestartHint {
 }
 
 export const toolRouteRestartHintTitle = '刚才那条连接线路连不上，已经换到另一条。'
-export const codexPayloadRestartHintTitle = 'Codex 里这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2，请重开 Codex 后继续。'
+export const codexPayloadRestartHintTitle = 'Codex 里这个对话超过了线路1 的 100MB 上限，已为你切到线路2，请重开 Codex 后继续。'
 
 /**
  * Codex 有个对话太大、发不出去，又没换成线路（codex-payload-limit.ts），要客户新开对话：locked = 设置里选了只用

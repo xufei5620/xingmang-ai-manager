@@ -47,7 +47,7 @@ describe('tool key limit rows', () => {
   it('describes a limited tool, an unlimited one and a tool without a key yet', () => {
     expect(toolKeyLimitDescription(claude)).toBe('已用 $4.00 · 上限剩余 $12.00')
     expect(toolKeyLimitDescription(codex)).toBe('已用 $3.00 · 不限额度')
-    expect(toolKeyLimitDescription(grok)).toContain('在首页配置一次')
+    expect(toolKeyLimitDescription(grok)).toBe('还没有这把密钥，在首页配一次这个工具就会自动准备好。')
   })
 
   it('prefills the field with the current limit and leaves it blank when there is none', () => {

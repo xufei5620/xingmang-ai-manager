@@ -9,7 +9,7 @@ export function formatAccountReadError(cause: unknown, resource: 'balance' | 'se
   const message = stripIpcErrorPrefix(raw).trim()
   // An obsolete read can reject before the session-change event reaches the
   // renderer. It carries no current-account result and needs no user action.
-  if (message === '账号上下文已变化，请重试') return null
+  if (message === '账号刚切换过，请再试一次') return null
   const subject = resource === 'balance' ? '余额' : '账号信息'
   const reason = networkFailureReasonForMessage(message)
   // 服务在维护时不是网络问题，也不是登录失效：下面两条按字面猜，会把它说成其中之一。

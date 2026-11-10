@@ -62,6 +62,7 @@
 - `workspace-guard.ts` — 判「打开」选的目录是不是主目录、盘根、桌面、下载、文档、系统目录或四家存 Key 的目录：选中它们等于给整台电脑写信任名单和 AGENTS.md，系统目录与存 Key 目录每次都拦。只看路径形状、不读磁盘，判不准按普通目录放行
 - `workspace-config-overrides.ts` — 只看不改：找出项目文件夹里、公司下发的、会盖过当前账号地址或密钥的那几份配置（Claude 项目 env 与管理策略、Codex 强制登录方式、Gemini 换登录方式与文件夹信任），交给打开流程提醒、检查页列项；有界读、不跟链接（I8），结果只有路径和键名，值不出模块（I13）
 - `tool-path-probe.ts` — 「工具同路径」探测：照命令行工具自己（跑在 Node 里，不是 Chromium）连星芒的样子查一条线路通不通，逐地址握手再问 `/api/status`，只靠系统根证书才过的标成「安全软件接管」；总时限、正文上限、不跟重定向、只去本站线路的 origin（I10）。线路选择（`tool-route-*`）用它
+- `workspace-access.ts` — 点「打开」前查一次工作目录：不在或不是文件夹报调用方那句「工作目录不存在」，Mac 上被系统拒绝（EPERM / EACCES，「文件和文件夹」没给星芒授权）改报让客户把星芒和终端两项都打开的那句（D29）
 - `cli-exit-hint.ts` — 终端里 AI 工具退出后、进不去项目文件夹时打给用户看的那几行中文，Windows、macOS、Linux 共用一份
 - `terminal-launcher-files.ts` — 「打开」CLI 用的一次性启动脚本的文件部分，macOS（`macos-platform.ts`）与 Linux（`linux-terminal.ts`）共用：脚本里可能带 Key，只写进本进程 mkdtemp 的私有目录、原子写，用完按身份（连大小、链接数、时间戳一起）核对再删，绝不误删同一路径上别人放的东西
 
@@ -154,6 +155,7 @@
 - `macos-shell-profile.ts` — 让客户自己开的终端也能直接敲 claude / codex / grok：往 `~/.zprofile`（或 bash 登录文件、fish 的 conf.d）末尾追加标记段，只追加不前置，客户自己装的照旧优先；客户删了那几行，开机不再补
 - `shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
+- `macos-launch-guard.ts` — 拒绝以 root 运行（D18；Mac 上本软件从不提权，没有「管理员模式」可退），字和 Linux 那句一样；零 import，`platform/entry.ts` 里跟 `linux-launch-guard.ts` 一起最先判。打开桌面客户端那处的 root 检查只剩兜底
 - `macos-install-location.ts` — 认出是不是直接从磁盘映像或系统的随机隔离副本（App Translocation）里运行：那样加速内核一推出就被杀，提示搬进「应用程序」；纯路径判断，不用挂盘就能单测
 - `macos-uninstall.ts` — 设置里「卸载星芒」的 Mac 版：先收回工具配置里指向 .app 的钩子与状态行，删开机项、托管工具和更新缓存，再把自己移进废纸篓并退出；安装队列有活时不卸（I11），Key 和工具设置照 Windows 的口径保留
 

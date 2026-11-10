@@ -149,6 +149,33 @@ export function validatePaymentQrCode(input: PaymentQrCodeInput): PaymentQrCodeI
   return Object.freeze({ ...input, code: parsed.href, currency: input.currency.toUpperCase() })
 }
 
+function padClock(value: number): string { return String(value).padStart(2, '0') }
+
+/**
+ * 扫码付款页上的金额：人民币写「12.00 元」，别的币种照旧写代码（D51）。
+ */
+export function formatPaymentQrAmount(amount: number, currency: string): string {
+  return `${amount.toFixed(2)} ${currency === 'CNY' ? '元' : currency}`
+}
+
+/**
+ * 扫码付款页上的到期时间，按本机时间写（D51）：当天写「今天 14:35」，别的日子写「11月10日 00:20」，
+ * 跨年带上年份。跟渲染层 calendar-time.ts 的 formatClockTime 是同一套写法，主进程碰不到那个文件，
+ * 这里另写一份。不能照抄那边「不早于今天都算今天」：那边写的是过去的时间，这里是将来的，
+ * 23:50 下单、0:20 到期会被写成「今天 00:20」。秒数舍掉不进位，宁可说早一点也不说晚。
+ * 读不出时间返回 null，那一行就不写。
+ */
+export function formatPaymentQrDeadline(expiresAt: string, now: number): string | null {
+  const date = new Date(expiresAt)
+  if (!Number.isFinite(date.getTime())) return null
+  const today = new Date(now)
+  const clock = `${padClock(date.getHours())}:${padClock(date.getMinutes())}`
+  const sameYear = date.getFullYear() === today.getFullYear()
+  if (sameYear && date.getMonth() === today.getMonth() && date.getDate() === today.getDate()) return `今天 ${clock}`
+  if (sameYear) return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+}
+
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/gu, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 }
@@ -683,9 +710,10 @@ export function createPaymentWindowController(
         errorCorrectionLevel: 'M', margin: 2, width: 360,
       })
       if (requestGeneration !== openRequestGeneration) return
+      const deadline = validated.expiresAt ? formatPaymentQrDeadline(validated.expiresAt, Date.now()) : null
       // Static, script-free document. The QR payload is encoded into the
       // image only; the window never navigates to weixin:// or any QR URL.
-      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(validated.amount.toFixed(2))} ${escapeHtml(validated.currency)}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${validated.expiresAt ? `<p>有效期至：${escapeHtml(validated.expiresAt)}</p>` : ''}</main></body></html>`
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(formatPaymentQrAmount(validated.amount, validated.currency))}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${deadline ? `<p>请在${escapeHtml(deadline)} 前完成付款</p>` : ''}</main></body></html>`
       const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
       await openTarget(dataUrl, new Set([accountOrigin]), parent, undefined, validated.tradeNo, validated.expiresAt)
     },

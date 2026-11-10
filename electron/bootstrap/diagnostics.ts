@@ -15,7 +15,7 @@ import type { DiagnosticFixKind } from '../diagnostic-fixes'
 import type { DiagnosticsDependencies, DiagnosticsRelayRoute, DiagnosticsReport, DiagnosticsRunOptions } from '../diagnostics'
 import { createDiagnosticsExport, redactDiagnosticText } from '../diagnostics-redaction'
 import type { ExternalToolId } from '../external-tool-config'
-import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute, resolveFeedbackToolRoute } from '../feedback-environment'
+import { buildFeedbackEnvironmentLines, buildFeedbackRuntimeLines, pickFeedbackRuntimeSnapshot, resolveFeedbackRelayRoute, resolveFeedbackToolRoute, type FeedbackPrivacySwitches } from '../feedback-environment'
 import { buildFeedbackSelfCheckLines, hasFeedbackSelfCheck, type FeedbackConnectionRecord } from '../feedback-self-check'
 import type { RootedMainServiceOptions } from '../main-service-options'
 import { managedCliRoot } from '../managed-cli-paths'
@@ -51,6 +51,8 @@ export interface DiagnosticsWiringOptions {
 export interface FeedbackDescriberOptions {
   /** 最近一次扫描留下的快照（主窗口每次扫描完交回来），还没扫描过是 null。 */
   latestTraySystem: () => SystemSnapshot | null
+  /** 错误报告、匿名使用统计这会儿发不发：跟两个上报器每次发之前问的是同一个函数。 */
+  readPrivacySwitches: () => FeedbackPrivacySwitches
 }
 
 export function createDiagnostics(options: DiagnosticsWiringOptions) {
@@ -241,7 +243,7 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
     },
   }
   // 原来在启动回调后段才挂上（要读的扫描快照在那里才声明），由 main.ts 照旧在那个位置调用。
-  function attachFeedbackDescribers({ latestTraySystem }: FeedbackDescriberOptions): void {
+  function attachFeedbackDescribers({ latestTraySystem, readPrivacySwitches }: FeedbackDescriberOptions): void {
     // 客服收到反馈报告的第一句总是「你的工具是什么版本、怎么装的、配置指向哪」。
     // 这几行就答这三件事：只读上一次扫描留下的快照（latestTraySystem），不为了
     // 生成一份报告再发一轮探测；配置按用户当前所在的站点对账（同上面的
@@ -283,6 +285,7 @@ export function createDiagnostics(options: DiagnosticsWiringOptions) {
         relayRoute: resolveFeedbackRelayRoute(relayRouting, systemService.readStoredConfig().relaySiteId),
         toolRoute: resolveFeedbackToolRoute(toolRouting, systemService.readStoredConfig().relaySiteId),
         toolRouteCertificate: toolRouting.resolve(systemService.readStoredConfig().relaySiteId).id === 'solov' ? toolRouteController.certificateFailure() : null,
+        privacy: readPrivacySwitches(),
         appDirectory: path.dirname(app.getPath('exe')),
         dataDirectory: managerDataDirectory,
         managedDirectory,
