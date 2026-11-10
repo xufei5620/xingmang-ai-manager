@@ -368,6 +368,11 @@
 .v2-remote-note { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: var(--line-body); }
 .v2-remote-guide > summary { cursor: pointer; color: var(--text-2); font-size: var(--font-small); font-weight: 600; }
 .v2-remote-guide ol { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.7; }
+.v2-remote-guide-row { padding: 0 16px 10px; }
+.v2-remote-next { margin: 0 16px 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
+.v2-remote-next-title { margin: 0; color: var(--text); font-size: var(--font-small); font-weight: 600; line-height: var(--line-body); }
+.v2-remote-next ol { margin: 6px 0 0; padding-left: 20px; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.7; }
+.v2-remote-next-note { margin: 6px 0 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
 .v2-remote-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .v2-remote-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .v2-remote-code { color: var(--text); font-size: var(--font-h1); font-weight: 600; letter-spacing: 0.18em; }
