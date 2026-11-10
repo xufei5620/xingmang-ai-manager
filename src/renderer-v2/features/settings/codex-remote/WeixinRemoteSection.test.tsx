@@ -50,9 +50,16 @@ describe('weixin login view helpers', () => {
   })
 
   it('says what to do next in each phase', () => {
-    expect(weixinLoginHeadline('scanned')).toBe('已扫码，请在手机上点确认')
-    expect(weixinLoginHeadline('verify-code-wrong')).toBe('数字不对，请对照手机上的数字重新输入')
-    expect(weixinLoginHeadline('failed')).toBeNull()
+    expect(weixinLoginHeadline('scanned', false)).toBe('已扫码，请在手机上点确认')
+    expect(weixinLoginHeadline('verify-code-wrong', false)).toBe('数字不对，请对照手机上的数字重新输入')
+    expect(weixinLoginHeadline('failed', false)).toBeNull()
+  })
+
+  it('points a first login at the switch before pairing, and tells a rescan that kept its person not to pair again', () => {
+    expect(weixinLoginHeadline('confirmed', false)).toBe('微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。')
+    expect(weixinLoginHeadline('confirmed', true)).toBe('微信登录好了，绑定的人没变，不用重新配对。')
+    // 还在扫码时绑没绑人都一样。
+    expect(weixinLoginHeadline('scanned', true)).toBe('已扫码，请在手机上点确认')
   })
 })
 
@@ -84,7 +91,7 @@ describe('WeixinRemoteSection', () => {
 
 describe('WeixinLoginDialogBody', () => {
   it('shows the QR image drawn by the main process while waiting', () => {
-    const markup = renderToStaticMarkup(<WeixinLoginDialogBody view={{ loginId: 'a', phase: 'waiting-scan', qrImage: 'data:image/png;base64,AAA', retryAfterMs: 0 }} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)
+    const markup = renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer={false} view={{ loginId: 'a', phase: 'waiting-scan', qrImage: 'data:image/png;base64,AAA', retryAfterMs: 0 }} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)
     expect(markup).toContain('src="data:image/png;base64,AAA"')
     expect(markup).toContain('alt="微信登录二维码"')
     expect(markup).toContain('二维码 5 分钟内有效')
@@ -92,15 +99,21 @@ describe('WeixinLoginDialogBody', () => {
   })
 
   it('asks for the digits shown on the phone without the QR code', () => {
-    const markup = renderToStaticMarkup(<WeixinLoginDialogBody view={{ loginId: 'a', phase: 'need-verify-code', qrImage: 'data:image/png;base64,AAA', retryAfterMs: 0 }} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)
+    const markup = renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer={false} view={{ loginId: 'a', phase: 'need-verify-code', qrImage: 'data:image/png;base64,AAA', retryAfterMs: 0 }} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)
     expect(markup).toContain('手机微信上显示了一串数字，请输在下面')
     expect(markup).toContain('data-testid="settings-remote-weixin-code"')
     expect(markup).toContain('inputMode="numeric"')
     expect(markup).not.toContain('data:image/png')
   })
 
+  it('uses the card snapshot to word the login that just finished', () => {
+    const view = { loginId: 'a', phase: 'confirmed' as const, retryAfterMs: 0 }
+    expect(renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer={false} view={view} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)).toContain('<p>微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。</p>')
+    expect(renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer view={view} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)).toContain('<p>微信登录好了，绑定的人没变，不用重新配对。</p>')
+  })
+
   it('shows the main-process failure message as an alert', () => {
-    const markup = renderToStaticMarkup(<WeixinLoginDialogBody view={{ loginId: 'a', phase: 'failed', message: '二维码过期太多次，请重新开始', retryAfterMs: 0 }} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)
+    const markup = renderToStaticMarkup(<WeixinLoginDialogBody hasBoundPeer={false} view={{ loginId: 'a', phase: 'failed', message: '二维码过期太多次，请重新开始', retryAfterMs: 0 }} code="" onCodeChange={noop} onSubmitCode={noop} busy={false} />)
     expect(markup).toMatch(/role="alert"[^>]*>二维码过期太多次，请重新开始/)
   })
 })

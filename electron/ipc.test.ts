@@ -250,6 +250,7 @@ function updaterStub(): UpdaterService {
     download: vi.fn(async () => state),
     install: vi.fn(() => ({ accepted: true as const })),
     setServiceStatus: vi.fn(),
+    restoreServiceSwitches: vi.fn(),
     setLaunchInstallNotice: vi.fn(),
     setInstallNeedsAdminPassword: vi.fn(),
     setIdleInstall: vi.fn(),
@@ -1548,7 +1549,7 @@ describe('registerIpcHandlers', () => {
     try {
       const service = serviceStub()
       vi.mocked(service.readStoredConfig).mockReturnValue({ ...stubStoredConfig, workspace: 'D:\\secret-project', officialProviders: ['codex'], theme: 'dark' })
-      const { runtimeLog, dispose } = register(service, 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { desktopDirectory: () => directory })
+      const { runtimeLog, dispose } = register(service, 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { downloadsDirectory: () => directory })
       const exportData = electronMocks.handlers.get('data-transfer:export')!
       await expect(exportData(trustedEvent(), { conversations: 'nope' })).rejects.toThrow('导出的聊天对话格式无效')
       expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
@@ -1601,7 +1602,7 @@ describe('registerIpcHandlers', () => {
   it('saves one conversation as text where the user picks', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-transfer-ipc-'))
     try {
-      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { desktopDirectory: () => directory })
+      const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { downloadsDirectory: () => directory })
       const exportText = electronMocks.handlers.get('chat-history:export-text')!
       const outputPath = path.join(directory, 'chat.txt')
       electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
@@ -1610,6 +1611,19 @@ describe('registerIpcHandlers', () => {
       expect(fs.readFileSync(outputPath, 'utf8')).toBe('我：你好')
       dispose()
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+  })
+
+  it('suggests the Downloads folder, not the desktop, for both chat exports', async () => {
+    // D16：Windows「受控文件夹访问」默认保护桌面、不保护「下载」。系统给不出「下载」时退到主目录下的 Downloads。
+    const { dispose } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, {
+      downloadsDirectory: () => { throw new Error('no downloads folder') },
+    })
+    electronMocks.showSaveDialog.mockResolvedValue({ canceled: true })
+    await expect(electronMocks.handlers.get('chat-history:export-text')!(trustedEvent(), { title: '周报', text: '我：你好' })).resolves.toBeNull()
+    await expect(electronMocks.handlers.get('data-transfer:export')!(trustedEvent(), { conversations: [] })).resolves.toBeNull()
+    const downloads = path.join(os.homedir(), 'Downloads')
+    expect(electronMocks.showSaveDialog.mock.calls.map(([options]) => path.dirname(options.defaultPath))).toEqual([downloads, downloads])
+    dispose()
   })
 
   it('cancels both text and image requests before logging out', async () => {
@@ -1983,6 +1997,8 @@ describe('registerIpcHandlers', () => {
     expect(extensionService.setRepositoryContext).toHaveBeenCalledWith('D:\\project')
     expect(providerExtensionService.setRepositoryRoot).toHaveBeenCalledWith('D:\\project')
     expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+      // Windows 把这句放在选文件夹窗口顶上，不出现「CLI」「工作目录」这类词（D48）。
+      title: '选一个项目文件夹',
       properties: ['openDirectory', 'createDirectory'],
     }))
     expect(electronMocks.handlers.get('repository:get-context')!(trustedEvent())).toEqual({
@@ -8850,7 +8866,7 @@ describe('exports:reveal-file', () => {
 
 describe('text export save dialogs', () => {
   it('names the file type in Chinese for every report saved as text', async () => {
-    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { desktopDirectory: () => os.tmpdir() })
+    register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { downloadsDirectory: () => os.tmpdir() })
     electronMocks.showSaveDialog.mockResolvedValue({ canceled: true })
 
     await expect(electronMocks.handlers.get('diagnostics:export')!(trustedEvent())).resolves.toBeNull()
@@ -9006,7 +9022,7 @@ describe('IPC channel log and account policies', () => {
     await expect(invoke('account:change-password', { originalPassword: 'current-password-1', newPassword: 'new-password-2' }))
       .resolves.toEqual({ changed: true })
     await expect(invoke('account:revoke-login-session', sid)).resolves.toEqual({ revokedSid: sid, current: false })
-    await expect(invoke('account:revoke-other-login-sessions')).rejects.toThrow('账号上下文已变化，请重试')
+    await expect(invoke('account:revoke-other-login-sessions')).rejects.toThrow('账号刚切换过，请再试一次')
   })
 
   // 以前 account:、chat:、config:、models: 开头的通道默认都等账号，只有本身就在管登录的这些除外。改成每条通道

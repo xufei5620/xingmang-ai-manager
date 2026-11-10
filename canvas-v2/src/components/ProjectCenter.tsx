@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { Archive, ArchiveRestore, Cloud, Copy, FolderOpen, HardDrive, Music2, Pencil, Plus, TriangleAlert, X } from 'lucide-react'
+import { Archive, ArchiveRestore, Cloud, Copy, FolderOpen, HardDrive, Music2, Pencil, Plus, Trash2, TriangleAlert, X } from 'lucide-react'
 import type { CanvasProjectPage, CanvasStoredProjectSummary } from '../host'
 import { canvasProjectPageRange, canvasProjectStorageCopy, type CanvasProjectListQuery } from '../project-pagination'
 import { SafeImage, ViewportVideo } from './MediaPreview'
@@ -23,6 +23,8 @@ interface ProjectCenterProps {
   onCreateElsewhere?(name: string): Promise<boolean>
   /** Asks where a missing project's folder is now. Resolves false when the user cancels. */
   onRelinkFolder?(projectId: string): Promise<boolean>
+  /** Deletes an archived project; the host shows its own confirmation. False when the user cancelled there. */
+  onDeleteProject?(projectId: string): Promise<boolean>
   blankCreation?: BlankProjectCreationState
   blankCreationReady?: boolean
   blankDraftName?: string
@@ -36,6 +38,9 @@ interface ProjectCenterProps {
   onSetArchived(projectId: string, archived: boolean): Promise<boolean>
   onDraftChange?(dirty: boolean): void
 }
+
+// 只在宿主能删已归档项目时接在归档说明后面：那样的宿主（桌面）也只数没归档的项目。
+const archivedProjectDeleteHint = '已归档的不占项目名额，不要了可以在「已归档」里删掉。'
 
 function recentTimestamp(project: CanvasStoredProjectSummary): number {
   const value = Date.parse(project.lastOpenedAt || project.updatedAt)
@@ -57,7 +62,7 @@ function ProjectPreview({ project }: { project: CanvasStoredProjectSummary }) {
   return <span className="canvas-project-preview-empty"><Music2 size={24} /><small>音频项目</small></span>
 }
 
-export function ProjectCenter({ projects, page, query, storageMode = 'local', onQueryChange, onQueryPending, loading, error, onRefresh, onCreate, defaultFolder, onCreateElsewhere, onRelinkFolder, blankCreation, blankCreationReady = true, blankDraftName, blankDraftError, onBlankDraftNameChange, onContinueBlankCreate, onFinishBlankCreate, onOpen, onRename, onDuplicate, onSetArchived, onDraftChange }: ProjectCenterProps) {
+export function ProjectCenter({ projects, page, query, storageMode = 'local', onQueryChange, onQueryPending, loading, error, onRefresh, onCreate, defaultFolder, onCreateElsewhere, onRelinkFolder, onDeleteProject, blankCreation, blankCreationReady = true, blankDraftName, blankDraftError, onBlankDraftNameChange, onContinueBlankCreate, onFinishBlankCreate, onOpen, onRename, onDuplicate, onSetArchived, onDraftChange }: ProjectCenterProps) {
   const [view, setView] = useState<'recent' | 'archived'>('recent')
   const paged = Boolean(query && onQueryChange)
   const [search, setSearch] = useState(query?.q ?? '')
@@ -65,8 +70,12 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
   const [restoringId, setRestoringId] = useState<string | null>(null)
   const [relinkingId, setRelinkingId] = useState<string | null>(null)
   const [relinkError, setRelinkError] = useState<{ projectId: string; message: string } | null>(null)
+  const [deletingId, setDeletingId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<{ projectId: string; message: string } | null>(null)
+  const deleteProject = storageMode === 'local' ? onDeleteProject : undefined
   const createElsewhere = storageMode === 'local' && defaultFolder ? onCreateElsewhere : undefined
-  const copy = canvasProjectStorageCopy(storageMode, createElsewhere ? defaultFolder : undefined)
+  const storageCopy = canvasProjectStorageCopy(storageMode, createElsewhere ? defaultFolder : undefined)
+  const copy = deleteProject ? { ...storageCopy, archiveHint: `${storageCopy.archiveHint}${archivedProjectDeleteHint}` } : storageCopy
   const [creating, setCreating] = useState(false)
   const [localCreateName, setLocalCreateName] = useState('')
   const createName = blankDraftName ?? localCreateName
@@ -83,7 +92,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
   const archivedProjects = useMemo(() => projects.filter((project) => project.archivedAt).sort((left, right) => Date.parse(right.archivedAt!) - Date.parse(left.archivedAt!)), [projects])
   const currentView = paged ? query!.view === 'archived' ? 'archived' : 'recent' : view
   const visibleProjects = paged ? loading || error ? [] : projects : view === 'recent' ? activeProjects : archivedProjects
-  const actionBusy = createSaving || actionSaving || restoringId !== null || relinkingId !== null || Boolean(blankCreation?.busy)
+  const actionBusy = createSaving || actionSaving || restoringId !== null || relinkingId !== null || deletingId !== null || Boolean(blankCreation?.busy)
 
   useEffect(() => {
     if (!searchPendingRef.current) setSearch(query?.q ?? '')
@@ -128,6 +137,15 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
     try { await onRelinkFolder(projectId) }
     catch (failure) { setRelinkError({ projectId, message: failure instanceof Error ? failure.message : String(failure) }) }
     finally { setRelinkingId(null) }
+  }
+
+  const removeProject = async (projectId: string) => {
+    if (!deleteProject || loading || actionBusy) return
+    setDeletingId(projectId)
+    setDeleteError(null)
+    try { await deleteProject(projectId) }
+    catch (failure) { setDeleteError({ projectId, message: failure instanceof Error ? failure.message : String(failure) }) }
+    finally { setDeletingId(null) }
   }
 
   const submitCreate = async (event: FormEvent, elsewhere = false) => {
@@ -249,6 +267,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
                 {project.archivedAt
                   ? <button type="button" title="恢复项目" aria-label={`恢复项目：${project.name}`} disabled={loading || actionBusy} onClick={() => { void restoreProject(project.id) }}><ArchiveRestore size={14} /></button>
                   : <button type="button" title="归档项目" aria-label={`归档项目：${project.name}`} disabled={loading} onClick={() => beginAction(project, 'archive')}><Archive size={14} /></button>}
+                {deleteProject && project.archivedAt && <button type="button" className="is-danger" title={deletingId === project.id ? '处理中…' : '删除项目'} aria-label={`删除项目：${project.name}`} disabled={loading || actionBusy} onClick={() => { void removeProject(project.id) }}><Trash2 size={14} /></button>}
               </span>
               {onRelinkFolder && storageMode === 'local' && !project.archivedAt && project.workspaceStatus === 'missing' && <span className="canvas-project-relink">
                 <button type="button" aria-label={`重新选择文件夹：${project.name}`} disabled={loading || actionBusy} onClick={() => { void relinkFolder(project.id) }}>
@@ -256,6 +275,7 @@ export function ProjectCenter({ projects, page, query, storageMode = 'local', on
                 </button>
                 {relinkError?.projectId === project.id && <small role="alert">{relinkError.message}</small>}
               </span>}
+              {deleteError?.projectId === project.id && <span className="canvas-project-relink"><small role="alert">{deleteError.message}</small></span>}
             </article>
           )
         })}

@@ -68,7 +68,9 @@ async function main() {
       const contentBounds = browserWindow.getContentBounds()
       const maximized = browserWindow.isMaximized()
       const workArea = screen.getDisplayMatching(bounds).workAreaSize
-      const expectedMaximized = workArea.width < 1280 || workArea.height < 720
+      // Mirrors resolveWindowPlacement's first-run rule (D80): narrower than
+      // 1440 maximizes, otherwise 80% of the work area but at least 1152 wide.
+      const expectedMaximized = workArea.width < 1440 || workArea.height < 720
       return {
         bounds,
         contentBounds,
@@ -78,7 +80,7 @@ async function main() {
         // The content area is the visible workspace in that state.
         measured: expectedMaximized ? contentBounds : bounds,
         expected: {
-          width: expectedMaximized ? workArea.width : Math.max(960, Math.min(1440, Math.round(workArea.width * 0.8))),
+          width: expectedMaximized ? workArea.width : Math.max(1152, Math.min(1440, Math.round(workArea.width * 0.8))),
           height: expectedMaximized ? workArea.height : Math.max(560, Math.min(900, Math.round(workArea.height * 0.85))),
         },
       }

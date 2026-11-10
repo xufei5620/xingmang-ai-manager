@@ -51,7 +51,7 @@ export function registerAccountBillingHandlers(ctx: IpcHandlerContext): void {
       assertPaymentMethodShown(parsed.paymentMethod, hidden)
       return accountService.createTopupPayment(parsed)
     }).then(async (checkout) => {
-      if (accountService.getSessionRevision?.() !== revision) throw new Error('账号上下文已变化，请重试')
+      if (accountService.getSessionRevision?.() !== revision) throw new Error('账号刚切换过，请再试一次')
       // Validate the service result before handing it to the window and before
       // exposing the order number. This keeps the IPC result a strict,
       // renderer-safe DTO even if a backend adapter returns malformed data.

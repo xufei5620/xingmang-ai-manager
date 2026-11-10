@@ -12,3 +12,5 @@
 原生应用图标：Windows 安装包和主窗口使用 `favicon.ico`（16–256px）。`app-icon.png`（1024px）与 `app-icon.icns`（16–1024px，含 Retina）由 `symbol-dark.svg` 母版加深蓝底、圆角和安全留白生成，供画布、支付窗口、通知及 macOS Dock/安装包使用；不再引用根目录旧紫白图标。重新生成：`node scripts/generate-app-icons.mjs`，需要项目已有的 Playwright Chromium。
 
 托盘图标：Windows 用 `tray.ico`（由 `micro32-standard.svg` 画，深蓝外圈）和 `tray-dark.ico`（由 `micro32-dark.svg` 画，浅蓝外圈，任务栏是深色时换上），每份含 16/20/24/32/40/48/64px 七张，Windows 按当前缩放挑正好那张，不再拿 32px 去缩。重新生成：`node scripts/generate-tray-icons.mjs`，同样需要 Playwright Chromium。macOS 用 `trayTemplate-16/32.png`，Linux 用 `tray-16/32.png`。
+
+Windows 安装、卸载向导左图：`build/installerSidebar.bmp`（164×314、24 位 BMP）把 `symbol-dark.svg` 和 `wordmark-dark.svg` 原样画在应用图标同一块深蓝（#0B1F3B）上，比例照闪屏。重新生成：`node scripts/generate-installer-sidebar.mjs`，同样需要 Playwright Chromium。

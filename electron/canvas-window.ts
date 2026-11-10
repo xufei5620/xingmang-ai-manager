@@ -31,7 +31,7 @@ import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
-import { canvasHostChannels, type CanvasAppearance, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
+import { canvasHostChannels, type CanvasAccountSummary, type CanvasAppearance, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
   linuxRendererSandboxRefusalMessage,
@@ -133,6 +133,7 @@ export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProject
 export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.createProjectInDefaultFolder
 export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
 export const canvasHostDeleteProjectChannel = canvasHostChannels.deleteProject
+export const canvasHostGetAccountSummaryChannel = canvasHostChannels.getAccountSummary
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
@@ -226,6 +227,11 @@ export interface CanvasWindowControllerOptions {
   defaultProjectsDirectory?: () => string
   /** Moves a deleted project's own folder to the system trash (shell.trashItem in production). */
   trashProjectFolder?: (directory: string) => Promise<void>
+  /**
+   * The balance chip's answer (createCanvasAccountSummaryReader in production).
+   * Left out, the canvas is told nobody is signed in and shows no chip.
+   */
+  readAccountSummary?: () => Promise<CanvasAccountSummary | null>
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
   /** How long quitting waits for the canvas page to answer at all before treating it as hung. Defaults to 4 seconds. */
@@ -791,6 +797,12 @@ export function createCanvasWindowController(
     assertCanvasUserUnchanged(userId)
     options.projectAssets?.forgetProject(userId, projectId)
     return relinked
+  })
+
+  // 余额条（画布完善第 2b 条）：不收画布任何参数，画布只能问「现在是什么」。读不读站点、多久读一次由
+  // createCanvasAccountSummaryReader 管，画布点得再勤也最多 15 秒读一次。
+  registerCanvasHandler(canvasHostGetAccountSummaryChannel, async (): Promise<CanvasAccountSummary | null> => {
+    return options.readAccountSummary ? options.readAccountSummary() : null
   })
 
   // 删除项目（画布完善第 14 条）：只删已归档的，主进程弹系统确认框，客户点了「删除」才删；画布只给项目标识，

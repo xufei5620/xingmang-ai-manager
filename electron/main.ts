@@ -47,7 +47,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -91,6 +91,7 @@ import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
 import { applicationSecurityResponseHeaders } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
+import { createCanvasAccountSummaryReader } from './canvas-account-summary'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
@@ -194,6 +195,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import type { CodexRemoteReleaseAction } from './codex-remote-service'
@@ -216,6 +218,8 @@ const nonSiteExternalUrlAllowlist = [
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
   codexDesktopStoreUrl,
+  // Claude Desktop 装不上时错误框里的「下载离线安装包」：教程站「备用安装包」那一节（D64）。
+  claudeDesktopOfflinePackagesUrl,
   // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
   appReleaseDownloadUrl,
 ] as const
@@ -714,6 +718,22 @@ function appValue<T>(read: () => T, fallback: T): T {
   }
 }
 
+// 反馈报告「错误报告：开/关」那一行问的也是这个函数（D61），跟真发不发说同一句话。
+function crashReportingEnabled(): boolean {
+  return shouldReportCrashes({
+    packaged: appValue(() => app.isPackaged, false),
+    // Re-read per report so switching the preference off stops the very next
+    // send, with no refresh plumbing between the settings handler and here.
+    // The fallback is the opt-out, not the default: if the preference cannot
+    // be read at all, staying silent is the answer the user cannot object to.
+    crashReporting: appValue(
+      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
+      false,
+    ),
+    env: process.env,
+  })
+}
+
 /**
  * Composed at module scope, not inside whenReady: a crash during startup is
  * exactly the class of bug a user cannot report themselves, so the reporter
@@ -736,18 +756,7 @@ const crashReporter = createCrashReporter({
     osRelease: os.release(),
     arch: process.arch,
   },
-  isEnabled: () => shouldReportCrashes({
-    packaged: appValue(() => app.isPackaged, false),
-    // Re-read per report so switching the preference off stops the very next
-    // send, with no refresh plumbing between the settings handler and here.
-    // The fallback is the opt-out, not the default: if the preference cannot
-    // be read at all, staying silent is the answer the user cannot object to.
-    crashReporting: appValue(
-      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
-      false,
-    ),
-    env: process.env,
-  }),
+  isEnabled: crashReportingEnabled,
   // net.fetch follows the session's proxy settings, which is what a user
   // behind a corporate proxy needs -- but it only exists once the app is
   // ready, and a startup crash happens before that.
@@ -1570,6 +1579,10 @@ if (!hasSingleInstanceLock) {
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
+    // 什么时候读到的，画布余额条拿它写「几分钟前读的」，也拿它决定要不要再读一次（canvas-account-summary.ts）。
+    let latestTrayBalanceAt: number | null = null
+    // 画布最近一次运行结束的时间：这之前读到的余额不算新，画布余额条要再读一次（canvas-account-summary.ts）。
+    let canvasRunEndedAt: number | null = null
     let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
     // 主窗口这一页的界面报告过手上有没有事，也就是准备好了，主进程发过去的它接得住。换页、重新加载、界面进程没了都放下，
@@ -1595,7 +1608,27 @@ if (!hasSingleInstanceLock) {
       if (mainRendererRelease) mainRendererRelease.deliver(event, send)
       else send()
     }
-    diagnostics.attachFeedbackDescribers({ latestTraySystem: () => latestTraySystem })
+    // 匿名使用统计的开关是设置「隐私数据」里的「匿名使用统计」，存在系统界面设置那份文件里；读不出来按关算，
+    // 同崩溃上报。放在这里是因为反馈报告「匿名使用统计：开/关」那一行（D61）也问它，报告接上时它得已经在。
+    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
+    const usageStatsEnabled = (): boolean => {
+      let preference: boolean | undefined
+      try {
+        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
+      } catch {
+        return false
+      }
+      return shouldSendUsageStats({
+        packaged: app.isPackaged,
+        localBuild: applicationPackage.xingmangLocalBuild === true,
+        env: process.env,
+        preference,
+      })
+    }
+    diagnostics.attachFeedbackDescribers({
+      latestTraySystem: () => latestTraySystem,
+      readPrivacySwitches: () => ({ crashReporting: crashReportingEnabled(), anonymousUsage: usageStatsEnabled() }),
+    })
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications !== false,
       focusMainWindow: () => {
@@ -1695,7 +1728,7 @@ if (!hasSingleInstanceLock) {
       // 后台装的没人在看，不预告也不等。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
         if (!background) {
-          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true)
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true, isRollbackInstall(updaterService.getState(), version))
           desktopNotifications.announce(notice)
           // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
           updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
@@ -1856,6 +1889,8 @@ if (!hasSingleInstanceLock) {
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
+        latestTrayBalanceAt = null
+        canvasRunEndedAt = null
         latestTraySubscription = null
         trayAcceleration?.reset()
         accelerationExpiry?.reset()
@@ -1904,6 +1939,7 @@ if (!hasSingleInstanceLock) {
     // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
       latestTrayBalance = balance
+      latestTrayBalanceAt = Date.now()
       applicationTray?.updateSnapshot()
       const state = accountService.getSessionState()
       if (!state.authenticated || !state.account) return
@@ -1940,23 +1976,7 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? externalClientOwner(accounts.getSiteId(), state.account.userId) : null
     }
     // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
-    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
-    // 存在系统界面设置那份文件里；读不出来按关算，同崩溃上报。
-    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
-    const usageStatsEnabled = (): boolean => {
-      let preference: boolean | undefined
-      try {
-        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
-      } catch {
-        return false
-      }
-      return shouldSendUsageStats({
-        packaged: app.isPackaged,
-        localBuild: applicationPackage.xingmangLocalBuild === true,
-        env: process.env,
-        preference,
-      })
-    }
+    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关 usageStatsEnabled 在上面接反馈报告那里。
     const usageStats = createUsageStatsReporter({
       filePath: path.join(managerDataDirectory, 'usage-stats.json'),
       isEnabled: usageStatsEnabled,
@@ -2064,9 +2084,33 @@ if (!hasSingleInstanceLock) {
     // Run subscriptions outlive a selected realm, so keep them attached to
     // every store, including stores created lazily after the initial render.
     canvasRuns.subscribe = subscribeCanvasRuns
+    subscribeCanvasRuns(({ event }) => { if (event.type === 'run-terminal') canvasRunEndedAt = Date.now() })
     protocol.handle('xingmang-asset', async (request) => {
       try { return await accountWork.run(() => currentBusiness().assetProtocol(request)) }
       catch { return new Response(null, { status: 401, headers: { 'Cache-Control': 'no-store' } }) }
+    })
+    // 画布余额条（画布完善第 2b 条）：用托盘、余额提醒同一份余额，太旧了才替画布读一次，读回来时换了账号就不要。
+    const canvasAccountKey = () => {
+      const state = accountService.getSessionState()
+      return state.authenticated && state.account ? `${accounts.getSiteId()}:${state.account.userId}` : null
+    }
+    const readCanvasAccountSummary = createCanvasAccountSummaryReader({
+      current: () => {
+        const state = accountService.getSessionState()
+        const key = canvasAccountKey()
+        return key && state.account ? { key, siteId: accounts.getSiteId(), username: state.account.username } : null
+      },
+      latest: () => ({
+        balance: latestTrayBalance,
+        readAt: latestTrayBalanceAt,
+        subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
+      }),
+      readBalance: async () => {
+        const before = canvasAccountKey()
+        const balance = await accountService.getBalance()
+        if (before !== null && canvasAccountKey() === before) observeAccountBalance(balance)
+      },
+      spentAt: () => canvasRunEndedAt,
     })
     const canvasController = createCanvasWindowController({
       accountWork,
@@ -2090,6 +2134,7 @@ if (!hasSingleInstanceLock) {
       // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
       defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
       trashProjectFolder: (directory) => shell.trashItem(directory),
+      readAccountSummary: readCanvasAccountSummary,
     })
     // Session restoration may have completed before the controller was
     // constructed. Seed its ownership record so the first real account
@@ -2359,7 +2404,7 @@ if (!hasSingleInstanceLock) {
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
-      desktopDirectory: () => app.getPath('desktop'),
+      downloadsDirectory: () => app.getPath('downloads'),
       accountService,
       paymentWindow,
       accountSessionReady,
@@ -2688,6 +2733,18 @@ if (!hasSingleInstanceLock) {
       })
       return result.response === 1
     }
+    // 退出时聊天还在回复（D39）。true = 点了「仍然退出」。
+    const confirmChatReplyQuit = async (prompt: ChatReplyQuitPrompt): Promise<boolean> => {
+      // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+      if (!mainWindow.isVisible()) showMainWindow()
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: '关闭星芒AI管理工具', message: prompt.message,
+        buttons: prompt.buttons,
+        // 回车、Esc 都落在「等它说完」上：手滑不会把已经扣了费的回复停在半截。
+        defaultId: 0, cancelId: 0, noLink: true,
+      })
+      return result.response === 1
+    }
     // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句；
     // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等它做完」这次就不装，新版本留着，
     // 以后再点或下次退出时照常装（已知31）。
@@ -2857,15 +2914,20 @@ if (!hasSingleInstanceLock) {
       // 画布开着时退出先让它存一次，在生成的由画布自己的关窗确认框问一句（#1368 第 9 条）。没开着时立刻放行。
       closeCanvas: () => canvasController.requestCloseForQuit(),
       confirmQuit: async () => {
-        // 没有安装在跑、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟
-        // 测试的预算就那几秒。两件事按轻重排队，一次退出最多只问一句。
+        // 没有安装在跑、聊天没在回复、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟
+        // 测试的预算就那几秒。先问会被打断的（工具在装、聊天在回复，D39），再问更新。
         if (mainWindow.isDestroyed()) return 'quit'
-        const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
-        if (task) {
-          runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
-          // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
-          return await confirmInterruptingInstall(task) ? 'quit' : 'cancel'
-        }
+        const interruption = await confirmQuitInterruptions({
+          installTask: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()),
+          confirmInstall: confirmInterruptingInstall,
+          // 跟重启装更新那一问看的是同一份（界面报上来的 rendererWork）；不看 rendererBusy，开着的对话框不算在回复。
+          chatReply: () => buildChatReplyQuitPrompt(mainRendererRelease?.rendererWork ?? []),
+          // 头一问问着的时候主窗口没了，照常退出。
+          confirmChatReply: async (prompt) => mainWindow.isDestroyed() || await confirmChatReplyQuit(prompt),
+          log: (event, message) => runtimeLog.log('info', 'window', event, message),
+        })
+        // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
+        if (interruption !== 'none') return interruption
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
         // 账号不是管理员时退出不装也不问（decideQuitInstall），下面的撤回名单也就不用等。账号是不是
@@ -2895,7 +2957,7 @@ if (!hasSingleInstanceLock) {
         }
         if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true))
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true, update.rollback))
           // 给系统一点时间把通知摆出来，再让安装器接手退出。
           await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           if (lifecycle.isSystemShuttingDown) {
@@ -2914,7 +2976,7 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
-        const prompt = quitInstallPrompt(update.version, installMethod, process.platform)
+        const prompt = quitInstallPrompt(update.version, installMethod, process.platform, update.rollback)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具',
           message: prompt.message,

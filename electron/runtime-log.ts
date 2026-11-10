@@ -103,6 +103,21 @@ export function buildFeedbackAccountLine(state: ReturnType<RuntimeAccountDescrib
   return typeof id === 'number' && Number.isSafeInteger(id) && id > 0 ? `账号 ID: ${id}` : null
 }
 
+/**
+ * 报告开头「生成时间（本机）」那一行的时间（D61）：客户说「下午三点出的错」，客服不用再自己减
+ * 8 小时。下面每一行日志的时间照旧是 UTC，好跟 Sentry 和服务端日志对。偏移量可以单独传，测试
+ * 才不跟着跑测试那台机器的时区走。
+ */
+export function formatFeedbackLocalTime(at: Date, offsetMinutes = -at.getTimezoneOffset()): string {
+  const offset = Math.round(offsetMinutes)
+  const wall = new Date(at.getTime() + offset * 60_000)
+  const pad = (value: number) => String(value).padStart(2, '0')
+  const date = `${wall.getUTCFullYear()}-${pad(wall.getUTCMonth() + 1)}-${pad(wall.getUTCDate())}`
+  const time = `${pad(wall.getUTCHours())}:${pad(wall.getUTCMinutes())}:${pad(wall.getUTCSeconds())}`
+  const absolute = Math.abs(offset)
+  return `${date} ${time} ${offset < 0 ? '-' : '+'}${pad(Math.floor(absolute / 60))}:${pad(absolute % 60)}`
+}
+
 const ENVIRONMENT_TIMEOUT_MS = 2_000
 const ENVIRONMENT_UNREADABLE = '未能读取'
 // A field named exactly `key` (Gemini's `?key=` parameter parsed into an object,
@@ -716,9 +731,12 @@ export class RuntimeLogStore {
     const home = os.homedir()
     const scrubHome = (value: string) => redactHomeDirectory(value, home)
     const accountLine = this.readAccountLine()
+    const localGeneratedAt = formatFeedbackLocalTime(new Date(snapshot.generatedAt))
     const headLines = (attached: number, sizeTrimmed: boolean) => [
       `${this.appName} 反馈与诊断`,
       `生成时间: ${snapshot.generatedAt}`,
+      // 字照 D61 逐字，冒号用的是单子上的中文冒号。
+      `生成时间（本机）：${localGeneratedAt}`,
       `应用版本: ${this.appVersion}`,
       ...(accountLine ? [accountLine] : []),
       `运行模式: ${this.packaged ? 'packaged' : 'development'}`,

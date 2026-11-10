@@ -57,7 +57,7 @@ export function createActiveIdentityReader(
   function read(): ActiveIdentity | null {
     const before = revision()
     const state = source.getSessionState()
-    if (revision() !== before) throw new Error('账号上下文已变化，请重试')
+    if (revision() !== before) throw new Error('账号刚切换过，请再试一次')
     if (!state.authenticated) return null
     const userId = state.account?.userId
     // This wave only consumes new-api's numeric ID contract. A sub2api
@@ -88,7 +88,7 @@ export function createActiveIdentityReader(
     const current = read()
     if (!current || current.userId !== captured.userId
       || current.sessionRevision !== captured.sessionRevision) {
-      throw new Error('账号上下文已变化，请重试')
+      throw new Error('账号刚切换过，请再试一次')
     }
   }
 
