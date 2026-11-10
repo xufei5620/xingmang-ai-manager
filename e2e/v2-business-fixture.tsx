@@ -644,6 +644,10 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
         ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
         : []),
+      // claudeMcp=名字：只有 Claude Code「我的（全局）」里有的连接，用来看「也装到别的工具」。
+      ...(query.has('claudeMcp') && provider === 'claude' && page === 'mcp'
+        ? [{ ...scopedExtension('plugin', query.get('claudeMcp') ?? '', query.get('claudeMcp') ?? '', 'local'), kind: 'mcp' as const, scope: 'user' as const }]
+        : []),
       ...(empty
       ? []
       : [
@@ -1215,6 +1219,11 @@ const apiMethods = {
   addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
     record('add-mcp', input)
     return []
+  },
+  // 「也装到别的工具」：只收名字，连接本身由主进程读。copyMcpFail=工具：装进那个工具时失败。
+  copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
+    record('copy-mcp', input)
+    if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),
