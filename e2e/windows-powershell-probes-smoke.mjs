@@ -153,22 +153,31 @@ const checks = [
   // __PSLockdownPolicy=4 both gave the same package conclusion, and the start
   // menu segment, which the lockdown lets through, fails here instead. The
   // failing Get-AppxPackage sends the Chinese message through the \uXXXX
-  // escaping, which has to come back ASCII-only and read as the same text.
+  // escaping, which has to come back ASCII-only and read as the same text; the
+  // stand-in for an installed Codex is built from Select-Object alone, which
+  // ConstrainedLanguage allows, so the version still reaches the parser.
   ['Codex merged and package probes still answer in ConstrainedLanguage', async () => {
     const wrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
     const failingAppx = "function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }\n"
+    const installedAppx = String.raw`function Get-AppxPackage { 'x' | Select-Object @{n='Name';e={'OpenAI.Codex'}}, @{n='Version';e={'26.1103.4239.0'}}, @{n='PackageFullName';e={'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}}, @{n='PackageFamilyName';e={'OpenAI.Codex_2p2nqsd0c76g0'}}, @{n='InstallLocation';e={'C:\Program Files\WindowsApps\OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}} }
+`
     const runConstrained = (script) => runPowerShell(['-Command', wrapper], { ...trustedCommandEnvironment(), XINGMANG_CONSTRAINED_SCRIPT: script })
-    for (const [label, script, combined, failing] of [
-      ['merged', buildCodexDesktopCombinedProbeScript(), true, false],
-      ['package', buildCodexDesktopPackageProbeScript(), false, false],
-      ['merged with a failing Appx query', failingAppx + buildCodexDesktopCombinedProbeScript(), true, true],
+    for (const [label, script, combined, expect] of [
+      ['merged', buildCodexDesktopCombinedProbeScript(), true, 'conclusion'],
+      ['package', buildCodexDesktopPackageProbeScript(), false, 'conclusion'],
+      ['merged with a failing Appx query', failingAppx + buildCodexDesktopCombinedProbeScript(), true, 'error'],
+      ['merged with Codex installed', installedAppx + buildCodexDesktopCombinedProbeScript(), true, 'installed'],
+      ['package with Codex installed', installedAppx + buildCodexDesktopPackageProbeScript(), false, 'installed'],
     ]) {
       const output = await runConstrained(script)
       assert.match(output.trim(), /^[\x00-\x7F]+$/, `${label}: ${output}`)
       const probe = combined ? parseCodexDesktopCombinedProbeJson(output).packageProbe : parseCodexDesktopPackageProbeJson(output)
-      if (failing) {
+      if (expect === 'error') {
         assert.equal(probe.confirmedAbsent, false, label)
         assert.match(String(probe.error), /^读不到这台电脑上 Codex 桌面端的安装信息/, label)
+      } else if (expect === 'installed') {
+        assert.equal(probe.value?.version, '26.1103.4239.0', `${label}: ${output}`)
+        assert.equal(probe.value?.packageFamilyName, 'OpenAI.Codex_2p2nqsd0c76g0', label)
       } else {
         assert.ok(probe.value !== null || probe.confirmedAbsent === true || probe.error !== null, `${label}: ${output}`)
       }
