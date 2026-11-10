@@ -105,6 +105,7 @@ import type {
   UpdateState,
   VersionUpdateStatus,
 } from './system-service'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
@@ -1571,7 +1572,7 @@ export function desktopMirrorUpdateAvailable(
   return comparison === null ? null : comparison < 0
 }
 
-const codexDesktopProbeScriptHeader = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
+const codexDesktopProbeScriptHeader = powerShellUtf8OutputStatement
 
 function codexDesktopStartAppsQuery(): string {
   return "@(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)"
@@ -1888,7 +1889,7 @@ export function buildCodexDesktopPackageProbeScript(): string {
     buildPowerShellModuleImportStatement(codexDesktopPackageProbeModules),
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
-    '$packageProbe | ConvertTo-Json -Compress',
+    ...buildPowerShellJsonOutputStatements('$packageProbe | ConvertTo-Json -Compress'),
   ].join('; ')
 }
 
@@ -1935,7 +1936,7 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '} catch { $packageError = $_.Exception.Message }',
-    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6',
+    ...buildPowerShellJsonOutputStatements('[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6'),
   ].join('\n')
 }
 
