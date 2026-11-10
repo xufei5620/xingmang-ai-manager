@@ -43,6 +43,7 @@ const {
 const { parseLatestMetadata } = require('./update-release-utils.cjs')
 const { verifyManifestText, signManifestText } = require('./update-manifest-signature.cjs')
 const { parseArguments } = require('./upgrade-smoke.cjs')
+const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
 
 const PUBLISHER_KEY = 'MCowBQYDK2VwAyEAoPgUK8oEbKhzPMGpEAOmkOBaIjgSGazK/p0np8+nI5s='
 const DIGEST = Object.fromEntries(['setup', 'arm', 'intel', 'dmg', 'arm-new', 'intel-new'].map((name) => [name, sha512Base64(Buffer.from(name))]))
@@ -63,7 +64,7 @@ async function packedApp(t, { keyModule = `const keys = ['${PUBLISHER_KEY}']\n` 
   fs.writeFileSync(path.join(source, 'dist-electron', 'notes.js'), `// mentions ${PUBLISHER_KEY} in passing\n`)
   fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({ name: 'xingmang-ai-manager', version: '0.2.19' }))
   const archive = path.join(root, 'app.asar')
-  await asar.createPackage(source, archive)
+  await createSettledPackage(source, archive)
   return archive
 }
 
