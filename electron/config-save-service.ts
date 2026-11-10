@@ -47,6 +47,8 @@ import {
   codexModelCatalogTargetUsable,
   codexOfficialAliasPending,
   fillRelayTemplateDefaults,
+  applyClaudeWriteBoundary,
+  type ClaudeWriteBoundaryOutcome,
   inspectCodexModelCatalogOnDisk,
   inspectManagedCliHookParts,
   inspectManagedCliHookTargets,
@@ -88,6 +90,7 @@ import {
 } from './removed-cli-hooks'
 import { emptyRunningToolsReport, type RunningToolsReport } from './running-tools'
 import type { AppConfigSummary, CodexReadinessStatus, ConfigSavePayload, ToolStatus } from './system-service'
+import type { ClaudeWriteBoundaryResult } from './ipc-contract'
 import { modelAccessCacheKey, sameNativeConfigSnapshot, type ServiceContext } from './system-service-context'
 import type { ToolConfigOwnership, ToolTemplateFillResult } from './tool-config-ownership'
 import type { CliInstallation } from './tool-installation'
@@ -885,7 +888,34 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       claudeFallbackModel: provider === 'claude' && seeded.includes('claude:fallbackModel'),
       responseLanguage: (provider === 'codex' && seeded.includes('codex:response-language'))
         || (provider === 'grok' && seeded.includes('grok:response-language')),
+      claudeWritesInsideProject: provider === 'claude' && store.read().claudeWritesInsideProject === true,
     }
+  }
+
+  /**
+   * 设置里「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）：先对齐 Claude Code 现在的配置，再记下开关。
+   * 只有接着当前账号、配置归当前账号（星芒写的）时才当场改，改之前 backup 做一份整套备份；官方账号、自己填的密钥、
+   * 换了账号、还没配过的只记开关（later），以后接当前账号写配置时 merge / reset 按开关补或撤（seededFor 里这一项）。
+   * 改配置失败就抛，开关不记，跟客户看到的一致。
+   */
+  async function setClaudeWriteBoundary(enabled: boolean, backup?: () => void): Promise<ClaudeWriteBoundaryResult> {
+    // 记开关也在写锁里：不然中间插进来的一次保存配置会按旧开关把刚写的那一项又撤掉（或补回去）。
+    const applied = await serializeConfigWrite(async (): Promise<ClaudeWriteBoundaryOutcome | 'later'> => {
+      const outcome = alignClaudeWriteBoundaryNow(enabled, backup)
+      await store.update({ version: 2, claudeWritesInsideProject: enabled })
+      return outcome
+    })
+    runtimeLog?.log('info', 'config', 'claude.write-boundary', enabled ? '已打开「只让 Claude Code 改项目文件夹里的文件」' : '已关掉「只让 Claude Code 改项目文件夹里的文件」', { enabled, applied })
+    return { enabled, applied }
+  }
+
+  function alignClaudeWriteBoundaryNow(enabled: boolean, backup?: () => void): ClaudeWriteBoundaryOutcome | 'later' {
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    if (!owner || store.read().officialProviders?.includes('claude')) return 'later'
+    const config = inspectNativeProviderConfig('claude')
+    if (!config.hasApiKey || !config.matchesRelay || configOwnership.read('claude', config, owner) !== 'account') return 'later'
+    backup?.()
+    return applyClaudeWriteBoundary(providerRoots, enabled).outcome
   }
 
   // 记不下只少记一笔：客户删掉以后下次可能又补回去，不算这次保存失败。
@@ -1457,5 +1487,5 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
-  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
+  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, setClaudeWriteBoundary, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
 }
