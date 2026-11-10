@@ -26,6 +26,7 @@ export const powerShellCmdletModules: Readonly<Record<string, string | null>> = 
   'Get-ChildItem': 'Microsoft.PowerShell.Management',
   'Get-Item': 'Microsoft.PowerShell.Management',
   'Get-ItemProperty': 'Microsoft.PowerShell.Management',
+  'Get-ItemPropertyValue': 'Microsoft.PowerShell.Management',
   'Get-Process': 'Microsoft.PowerShell.Management',
   'Join-Path': 'Microsoft.PowerShell.Management',
   'New-Item': 'Microsoft.PowerShell.Management',
