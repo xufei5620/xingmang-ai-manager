@@ -428,7 +428,7 @@ async function installVerifiedClaudeDesktopPackage(
     onElevationRequired: () => reportProgress(options, {
       phase: 'installing',
       percent: null,
-      message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
+      message: '接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。',
     }),
   })
 }

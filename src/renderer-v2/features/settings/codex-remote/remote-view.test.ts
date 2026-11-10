@@ -3,6 +3,7 @@ import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../.
 import {
   boundPeerText,
   newerRemoteSnapshot,
+  pairingAttemptText,
   remoteCardMeta,
   remoteChannelStateLabel,
   remoteChannelStateTone,
@@ -63,5 +64,14 @@ describe('codex remote view', () => {
     const boundAt = new Date(2026, 9, 25, 14, 5).getTime()
     expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对')
     expect(boundPeerText({ userIdTail: 'a1b2', boundAt })).toBe('尾号 a1b2 的账号，10 月 25 日 14:05 配对')
+  })
+
+  it('says how many wrong pairing codes came in, and that the code was voided once they ran out', () => {
+    expect(pairingAttemptText(channel())).toBeNull()
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1 } }))).toBeNull()
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, failures: 1 } }))).toBe('配对码错了 1 次')
+    expect(pairingAttemptText(channel({ pairingLocked: true }))).toBe('这个码已经作废，请重新开始配对。')
+    // A new code replaces the voided one.
+    expect(pairingAttemptText(channel({ pairing: { code: '000043', expiresAt: 1 }, pairingLocked: true }))).toBeNull()
   })
 })

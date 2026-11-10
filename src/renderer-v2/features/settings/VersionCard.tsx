@@ -261,7 +261,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
                     setConfirm(false)
                     return result
                   },
-                  // 还有工具在装、客户在问的那一句里点了「继续安装」：这次不装，回到原来的样子（已知31）。
+                  // 还有工具在装、或者聊天视频剪辑画布还在做，客户在问的那一句里点了「继续安装」「等它做完」：这次不装，回到原来的样子（已知31、D10）。
                   (result) => (result.postponed ? null : '安装请求已提交'),
                 )
               }
@@ -273,7 +273,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
       >
         {systemInstaller
           ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
-          : <p>请先保存当前工作。安装完成后重新打开工具箱。</p>}
+          : <p>请先保存当前工作。星芒会先关掉，装好自动重新打开。</p>}
         <p data-testid="updates-install-note">{updateInstallNote}</p>
         {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
         {isWindows && !processElevated && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
