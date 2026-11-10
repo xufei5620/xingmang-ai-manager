@@ -261,6 +261,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-login-session': { log: 'normal', account: 'scoped-may-end-session' },
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
+  'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13

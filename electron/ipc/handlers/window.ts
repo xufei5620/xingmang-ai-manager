@@ -58,4 +58,5 @@ export function registerWindowHandlers(ctx: IpcHandlerContext): void {
     return await options.openNetworkSettings?.(kind) ?? false
   })
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
+  registerTrustedHandler('canvas:open-asset-library', () => options.openCanvasAssetLibrary())
 }

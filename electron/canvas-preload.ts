@@ -56,6 +56,7 @@ const channels = {
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
   appearanceChanged: 'canvas-host:appearance-changed',
+  showAccountAssets: 'canvas-host:show-account-assets',
   closeRequested: 'canvas-host:close-requested',
   closeCancelled: 'canvas-host:close-cancelled',
   finishClose: 'canvas-host:finish-close',
@@ -305,6 +306,13 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channels.runEvent, wrapped)
     return () => ipcRenderer.removeListener(channels.runEvent, wrapped)
+  },
+  // Carries nothing: the main window asked for the account library while the
+  // canvas was already open, and the page decides whether it can show it.
+  onShowAccountAssets: (listener: () => void) => {
+    const wrapped = () => listener()
+    ipcRenderer.on(channels.showAccountAssets, wrapped)
+    return () => ipcRenderer.removeListener(channels.showAccountAssets, wrapped)
   },
   onThemeChange: (listener: (theme: 'light' | 'dark') => void) => {
     const wrapped = (_event: unknown, payload: unknown) => {

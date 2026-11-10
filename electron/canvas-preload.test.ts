@@ -7,7 +7,7 @@ import { desktopCanvasCapabilities } from './canvas-contract'
 
 type CanvasBridge = Record<string, (...args: unknown[]) => Promise<unknown>>
 
-function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>, getPathForFile: (file: unknown) => string = () => '', globals: Record<string, unknown> = {}) {
+function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>, getPathForFile: (file: unknown) => string = () => '', globals: Record<string, unknown> = {}, events = { on: vi.fn(), removeListener: vi.fn() }) {
   const sourceText = fs.readFileSync(path.join(__dirname, 'canvas-preload.ts'), 'utf8')
   const compiled = ts.transpileModule(sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   let bridge: CanvasBridge | undefined
@@ -17,7 +17,7 @@ function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>, getP
     require: (name: string) => {
       if (name !== 'electron') throw new Error('Sandbox cannot load runtime modules')
       return {
-        ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
+        ipcRenderer: { invoke, ...events },
         contextBridge: { exposeInMainWorld: (_name: string, api: CanvasBridge) => { bridge = api } },
         webUtils: { getPathForFile },
       }
@@ -121,6 +121,21 @@ describe('canvas sandbox preload', () => {
       ['canvas-host:create-project', '副本', 42, undefined],
       ['canvas-host:create-project', '副本', undefined, { sourceProjectId: 'source' }],
     ])
+  })
+
+  it('tells the page to show the home page library with nothing from the main process attached', () => {
+    const events = { on: vi.fn(), removeListener: vi.fn() }
+    const bridge = loadCanvasBridge(vi.fn(), () => '', {}, events) as unknown as { onShowAccountAssets(listener: (...args: unknown[]) => void): () => void }
+    const listener = vi.fn()
+
+    const unsubscribe = bridge.onShowAccountAssets(listener)
+    const [channel, wrapped] = events.on.mock.calls[0] as [string, (...args: unknown[]) => void]
+    expect(channel).toBe('canvas-host:show-account-assets')
+    wrapped({ sender: 'ipc event' }, { injected: true })
+    expect(listener).toHaveBeenCalledWith()
+
+    unsubscribe()
+    expect(events.removeListener).toHaveBeenCalledWith('canvas-host:show-account-assets', wrapped)
   })
 
   it('reads one asset by its id alone and leaves the kernel signal behind', async () => {

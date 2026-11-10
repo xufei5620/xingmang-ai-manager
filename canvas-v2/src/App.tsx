@@ -276,6 +276,8 @@ import { RunInspector } from './components/RunInspector'
 import { RunResultCollectionDialog } from './components/RunResultCollectionDialog'
 import type { CanvasRunSummaryQuery } from './lib/run-summary-contract'
 import { ProjectCenter } from './components/ProjectCenter'
+import { AccountAssetLibrary } from './components/AccountAssetLibrary'
+import { accountAssetLibraryInProjectNotice, accountAssetLibraryRequested, withoutAccountAssetLibraryRoute } from './components/account-asset-library-model'
 import { createBlankProjectCreation, readSavedBlankProjectDraft, writeSavedBlankProjectDraft, type BlankProjectCreationState } from './lib/blank-project-creation-model'
 import { CanvasCloseDialog } from './components/CanvasCloseDialog'
 import { createCanvasCloseGuard, type CanvasCloseChoice, type CanvasClosePhase } from './persistence/canvas-close'
@@ -1167,6 +1169,16 @@ function CanvasWorkspace({
   const [projectLoading, setProjectLoading] = useState(Boolean(window.xingmangCanvasHost))
   const [projectError, setProjectError] = useState<string | null>(null)
   const initialRouteConsumedRef = useRef(false)
+  // ?view=assets（桌面主窗口「看全部作品」）：项目中心直接打开只读的素材库。
+  const [accountAssetsOpen, setAccountAssetsOpen] = useState(false)
+  const listAccountAssets = useCallback((query: CanvasAssetQuery) => hostBridge().listAssets(query), [])
+  const saveAccountAsset = useCallback((assetId: string) => hostBridge().saveAsset(assetId), [])
+  const closeAccountAssets = useCallback(() => {
+    setAccountAssetsOpen(false)
+    const next = withoutAccountAssetLibraryRoute(window.location.href)
+    if (next) window.history.replaceState(window.history.state, '', next)
+  }, [])
+  useEffect(() => { if (activeProject) setAccountAssetsOpen(false) }, [activeProject])
   const templateProjectSubmissionRef = useRef(createTemplateProjectSubmission())
   const templateCreatedProjectRef = useRef<{ projectId: string; templateId: string } | null>(null)
   const [savedTemplateRecovery, setSavedTemplateRecovery] = useState<SavedTemplateProjectSubmission | null>(null)
@@ -1251,6 +1263,12 @@ function CanvasWorkspace({
   const [saveConflict, setSaveConflict] = useState<string | null>(null)
   const [draftActionBusy, setDraftActionBusy] = useState(false)
   const [banner, setBanner] = useState<string | null>(accountChangeNotice ?? null)
+  // 画布已经开着时，宿主再要看素材库（桌面主窗口「看全部作品」）不重新加载页面，改发这个通知。素材库只在
+  // 项目中心：打开着项目或正在打开时不弹，只提示先回项目中心，项目自己的素材在右侧「素材」页。
+  useEffect(() => window.xingmangCanvasHost?.onShowAccountAssets?.(() => {
+    if (!activeProjectIdRef.current && !projectTransitionRef.current) setAccountAssetsOpen(true)
+    else setBanner(accountAssetLibraryInProjectNotice)
+  }), [])
   useEffect(() => {
     if (banner !== '产物已保存') return
     const timer = window.setTimeout(() => setBanner((current) => current === banner ? null : current), 4000)
@@ -2340,8 +2358,9 @@ function CanvasWorkspace({
     const interiorTask = interiorTaskFromRoute(route.get('interiorTask'))
     const exteriorTask = exteriorTaskFromRoute(route.get('exteriorTask'))
     const storyboardTask = storyboardTaskFromRoute(route.get('storyboardTask'))
+    const accountAssets = accountAssetLibraryRequested(window.location.search)
     const template = templateId ? builtinCanvasTemplates.find((entry) => entry.id === templateId) : null
-    if (!projectId && !template && !workshopId && !promptPresetId && !builtinPromptId && !commerceKind && !interiorTask && !exteriorTask && !storyboardTask && !route.get('templateOperation')) return
+    if (!projectId && !template && !workshopId && !promptPresetId && !builtinPromptId && !commerceKind && !interiorTask && !exteriorTask && !storyboardTask && !accountAssets && !route.get('templateOperation')) return
     function openExteriorRoute(task: ExteriorTask) {
       setExteriorSession({ scope: currentWorkshopSetupScope(), task, references: exteriorTaskRoles(task).map((role) => ({ role, binding: { kind: 'missing' } })), imageSource: exteriorTaskSourceSignature(groupsRef.current, mediaGroupsRef.current.image), textSource: exteriorTaskSourceSignature(groupsRef.current, mediaGroupsRef.current.text) })
     }
@@ -2394,6 +2413,7 @@ function CanvasWorkspace({
       if (interiorTask) { setInteriorSession({ scope: currentWorkshopSetupScope(), task: interiorTask, source: { binding: { kind: 'missing' } }, group: mediaGroupsRef.current.image, models: [...mediaModelsRef.current.image] }); return }
       if (exteriorTask) { openExteriorRoute(exteriorTask); return }
       if (storyboardTask) { openStoryboardRoute(storyboardTask); return }
+      if (accountAssets && !template) { setAccountAssetsOpen(true); return }
       if (!template) return
       setProjectError(null)
       setTemplateCatalog({ initialTemplateId: template.id })
@@ -8843,6 +8863,12 @@ function CanvasWorkspace({
       if (!route.searchParams.has('templateOperation')) { route.searchParams.delete('storyboardTask'); window.history.replaceState(window.history.state, '', `${route.pathname}${route.search}${route.hash}`) }
     }}
   /> : null
+  const accountAssetLibraryDialog = accountAssetsOpen && !activeProject ? <AccountAssetLibrary
+    key={`${draftOwnerId ?? ''}:${creationOwnerId ?? ''}`}
+    onListAssets={listAccountAssets}
+    onSave={saveAccountAsset}
+    onClose={closeAccountAssets}
+  /> : null
   const templateRecoveryDialog = savedTemplateRecovery ? <TemplateProjectRecovery
     submission={savedTemplateRecovery}
     error={templateRecoveryError}
@@ -8854,7 +8880,7 @@ function CanvasWorkspace({
 
   if (window.xingmangCanvasHost && !activeProject) {
     return (
-      <>{closeDialog}{templateDialog}{commerceDialog}{interiorDialog}{exteriorDialog}{storyboardDialog}{workshopDialog}{templateRecoveryDialog}{projectImportRecoveryDialog}
+      <>{closeDialog}{templateDialog}{commerceDialog}{interiorDialog}{exteriorDialog}{storyboardDialog}{workshopDialog}{templateRecoveryDialog}{projectImportRecoveryDialog}{accountAssetLibraryDialog}
       {WorkshopCreationRecoveryNotice && <WorkshopCreationRecoveryNotice key={`creation:${layerEditorScope}`} scopeKey={layerEditorScope} active={() => agentMountedRef.current && draftActionsEnabledRef.current && currentWorkshopSetupScope() === layerEditorScope} onSaved={(item) => setBanner(item.deletedAt ? `已核对原保存：「${item.name}」目前在回收站，请到我的工坊恢复。` : `已核对原保存：「${item.name}」当前为 v${item.version}，不会另建一份。`)} />}
       <ProjectCenter
         projects={projects}
