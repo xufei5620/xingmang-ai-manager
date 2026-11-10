@@ -7,11 +7,12 @@ import { desktopCanvasCapabilities } from './canvas-contract'
 
 type CanvasBridge = Record<string, (...args: unknown[]) => Promise<unknown>>
 
-function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>, getPathForFile: (file: unknown) => string = () => '') {
+function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>, getPathForFile: (file: unknown) => string = () => '', globals: Record<string, unknown> = {}) {
   const sourceText = fs.readFileSync(path.join(__dirname, 'canvas-preload.ts'), 'utf8')
   const compiled = ts.transpileModule(sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   let bridge: CanvasBridge | undefined
   vm.runInNewContext(compiled, {
+    ...globals,
     exports: {},
     require: (name: string) => {
       if (name !== 'electron') throw new Error('Sandbox cannot load runtime modules')
@@ -146,5 +147,50 @@ describe('canvas sandbox preload', () => {
     expect(video.arrayBuffer).not.toHaveBeenCalled()
     expect(huge.arrayBuffer).not.toHaveBeenCalled()
     expect(invoke).not.toHaveBeenCalled()
+  })
+
+  it('reads a video for the frame picker by its asset address only, within the decoder limit', async () => {
+    const assetId = 'V'.repeat(43)
+    const fetch = vi.fn(async (_url: string, _init: unknown) => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'application/octet-stream' } }))
+    const invoke = vi.fn(async () => null)
+    const bridge = loadCanvasBridge(invoke, () => '', { fetch, Blob })
+
+    const video = await bridge.readVideoForFramePreview(assetId) as Blob
+    expect(fetch).toHaveBeenCalledWith(`xingmang-asset://video/${assetId}`, { cache: 'no-store', redirect: 'error' })
+    expect(video.type).toBe('video/mp4')
+    expect(video.size).toBe(3)
+    expect(invoke).not.toHaveBeenCalled()
+
+    for (const wrong of ['../etc/passwd', 'C:\\clip.mp4', `${assetId}/x`, 42]) {
+      expect((await rejection(bridge.readVideoForFramePreview(wrong))).message).toBe('视频素材标识格式错误')
+    }
+    expect(fetch).toHaveBeenCalledTimes(1)
+
+    fetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频读不出来，请确认素材还在')
+    fetch.mockResolvedValueOnce(new Response('x', { headers: { 'content-length': String(32 * 1024 * 1024 + 1) } }))
+    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频超过 32 MB，画布抽不了这一帧')
+    fetch.mockResolvedValueOnce(new Response(new Uint8Array(32 * 1024 * 1024 + 1)))
+    expect((await rejection(bridge.readVideoForFramePreview(assetId))).message).toBe('视频超过 32 MB，画布抽不了这一帧')
+  })
+
+  it('hands a decoded frame back as bytes with the ids, and a failure with nothing else', async () => {
+    const invoke = vi.fn(async (..._args: unknown[]) => undefined)
+    const bridge = loadCanvasBridge(invoke, () => '', { Blob })
+    const ids = { runId: 'run-1', operationId: 'attempt-1', kind: 'frame' }
+
+    await bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' }), decodedTimestampSeconds: 2.5, name: 'frame.png' })
+    expect(invoke.mock.calls[0][0]).toBe('canvas-host:complete-run-preparation')
+    const sent = invoke.mock.calls[0][1] as Record<string, unknown>
+    expect(Object.keys(sent).sort()).toEqual(['decodedTimestampSeconds', 'kind', 'operationId', 'outcome', 'png', 'runId'])
+    expect([...(sent.png as Uint8Array)]).toEqual([0x89, 0x50])
+
+    await bridge.completeRunPreparation({ ...ids, outcome: 'failed', message: '页面里的字', png: new Blob([new Uint8Array([1])]) })
+    expect(invoke.mock.calls[1]).toEqual(['canvas-host:complete-run-preparation', { ...ids, outcome: 'failed' }])
+
+    expect((await rejection(bridge.completeRunPreparation(null))).message).toBe('画布运行准备回执格式错误')
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: 'C:\\frame.png' }))).message).toBe('视频帧图片内容格式错误')
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: new Blob([new Uint8Array(20 * 1024 * 1024 + 1)]) }))).message).toBe('视频帧图片超过 20 MB，没有保存')
+    expect(invoke).toHaveBeenCalledTimes(2)
   })
 })

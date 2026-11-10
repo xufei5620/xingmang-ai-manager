@@ -8,6 +8,7 @@ import {
   type CanvasRunCacheEntry,
   type CanvasRunCandidate,
   type CanvasRunEvent,
+  type CanvasFramePreparation,
   type CanvasRunGraph,
   type CanvasRunGraphNode,
   type CanvasRunImageBatch,
@@ -125,6 +126,12 @@ export interface CanvasNodeExecutionContext {
     stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>,
     progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
   ): Promise<void>
+  /**
+   * Tells the page a frame is (waiting true) or no longer is (false) waiting
+   * for it to decode (画布完善第 7 条第二步). Each change goes out as a
+   * run-waiting event with every frame the run still waits on.
+   */
+  reportFramePreparation?(preparation: CanvasFramePreparation, waiting: boolean): Promise<void>
 }
 
 export type CanvasNodeExecutor = (
@@ -136,6 +143,19 @@ export type CanvasNodeExecutors = Record<'text' | 'image' | 'video', CanvasNodeE
 
 function isCanvasRunKernelOnlyNodeKind(kind: CanvasRunNodeKind): boolean {
   return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
+}
+
+/**
+ * A frame-extract node has its own executor or none: falling back to the
+ * video executor would turn a local frame into a paid video request.
+ */
+function executorFor(executors: CanvasNodeExecutors, kind: CanvasRunNodeKind): CanvasNodeExecutor {
+  if (kind === 'frame-extract') {
+    const executor = executors['frame-extract']
+    if (!executor) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    return executor
+  }
+  return executors[kind] ?? executors[fallbackExecutorKind(kind)]
 }
 
 function fallbackExecutorKind(kind: CanvasRunNodeKind): 'text' | 'image' | 'video' {
@@ -696,6 +716,24 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     return true
   }
 
+  // Frames the page still has to decode. Every change is sent whole, the way
+  // the web host's run-waiting events are, so a reloaded page reads the
+  // current list from the record and an empty list clears the banner.
+  const framePreparations = new Map<string, CanvasFramePreparation>()
+  async function reportFramePreparation(nodeId: string, preparation: CanvasFramePreparation, waiting: boolean): Promise<void> {
+    if (preparation.nodeId !== nodeId) throw new Error('视频帧不属于这个节点')
+    if (waiting) {
+      if (isTerminalState(nodeRecords.get(nodeId)!.state)) return
+      framePreparations.set(preparation.operationId, structuredClone(preparation))
+    } else if (!framePreparations.delete(preparation.operationId)) {
+      return
+    }
+    const pending = [...framePreparations.values()].map((entry) => structuredClone(entry))
+    if (pending.length) record.framePreparations = pending
+    else delete record.framePreparations
+    await emit({ type: 'run-waiting', waitingForVideo: false, framePreparations: pending })
+  }
+
   for (const nodeId of admitted) await emit({ type: 'node-state', nodeId, state: 'queued' })
 
   let cancellationProjection = Promise.resolve()
@@ -910,7 +948,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         // Same window as the one-image path: a stop pressed while the stage
         // was being persisted must not let this request go out.
         if (options.signal.aborted) throw options.signal.reason ?? new Error('运行已取消')
-        const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
+        const executor = executorFor(options.executors, node.kind)
         let releaseStageReporting!: () => void
         const stageReportingReady = new Promise<void>((resolve) => { releaseStageReporting = resolve })
         const executorPromise = executor({
@@ -1150,7 +1188,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       const billing = usesRemoteGeneration(node.kind) ? createCanvasRelayBillingRecorder() : undefined
       await updateNode(nodeId, 'running', { attemptId, fingerprint })
       try {
-        const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
+        const executor = executorFor(options.executors, node.kind)
         if (usesRemoteGeneration(node.kind)) await updateStage(nodeId, 'submitting', attemptId)
         // Persisting running awaits disk, and running/submitting both await
         // event projection. A stop pressed during that window has already
@@ -1173,6 +1211,10 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           reportStage: async (stage, progress) => {
             await stageReportingReady
             await updateStage(nodeId, stage, attemptId, progress)
+          },
+          reportFramePreparation: async (preparation, waiting) => {
+            await stageReportingReady
+            await reportFramePreparation(nodeId, preparation, waiting)
           },
         })
         // raceWithAbort below observes the outcome, but only after the
@@ -1295,6 +1337,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     const relayBilling = recorder.snapshot()
     if (relayBilling) attempt.relayBilling = relayBilling
   }
+  // Every frame executor clears its own entry; a finished run waits on nothing.
+  framePreparations.clear()
+  delete record.framePreparations
   const completedAt = now()
   record.status = runStatus(outcome)
   record.completedAt = completedAt.toISOString()

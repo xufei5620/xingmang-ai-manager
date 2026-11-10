@@ -112,6 +112,8 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       // they were; a masked edit never reuses a plain edit's image, or the
       // other way round, and a new stroke is a new request.
       imageEditMask: input.node.data.imageEditMask,
+      // Only frame-extract nodes carry it: another second is another frame.
+      frameTimestampSeconds: input.node.data.frameTimestampSeconds,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -161,6 +163,7 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         promptOptimization: node.data.promptOptimization,
         imageCandidateCount: node.data.imageCandidateCount,
         imageEditMask: node.data.imageEditMask,
+        frameTimestampSeconds: node.data.frameTimestampSeconds,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges

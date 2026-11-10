@@ -120,6 +120,16 @@ function safeAsset(value: unknown): value is CanvasRunAsset {
   return true
 }
 
+// The page decodes what is listed here, so a damaged file must not name an
+// arbitrary asset or a second it never asked for.
+function safeFramePreparations(value: unknown): boolean {
+  return Array.isArray(value) && value.length <= 256 && value.every((entry) => isRecord(entry)
+    && safeIdentifier(entry.operationId) && safeIdentifier(entry.nodeId) && safeIdentifier(entry.attemptId)
+    && typeof entry.sourceAssetId === 'string' && ASSET_ID_PATTERN.test(entry.sourceAssetId)
+    && typeof entry.timestampSeconds === 'number' && Number.isFinite(entry.timestampSeconds)
+    && entry.timestampSeconds >= 0 && entry.timestampSeconds <= 86_400)
+}
+
 function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord {
   if (!isRecord(value) || value.version !== canvasRunContractVersion || value.userId !== userId) return false
   if (!safeIdentifier(value.runId) || !safeIdentifier(value.graphRevision)) return false
@@ -138,6 +148,7 @@ function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord
   if (value.events.some((event) => !isRecord(event)
     || (event.type === 'node-stage' && (!CANVAS_RUN_NODE_STAGES.has(event.stage as string)
       || !safeProgress(event, 'progress', 'progressMode', 'health'))))) return false
+  if (value.framePreparations !== undefined && !safeFramePreparations(value.framePreparations)) return false
   return value.status === 'running'
     || value.status === 'succeeded'
     || value.status === 'partial'
@@ -327,6 +338,8 @@ export class CanvasRunStore {
       for (const run of state.runs) {
         if (run.status !== 'running') continue
         run.status = 'interrupted'
+        // Nothing waits on these frames any more; the page must not decode them.
+        delete run.framePreparations
         run.completedAt = recoveredAt.toISOString()
         run.durationMs = Math.max(0, recoveredAt.getTime() - Date.parse(run.startedAt))
         for (const node of run.nodes) {

@@ -3,6 +3,7 @@ import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-proto
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
 import { assertCanvasImageEditMaskInput, buildCanvasImageMaskPng } from './canvas-image-mask'
 import { assertCanvasTextImageInput } from './canvas-text-image-input'
+import type { CanvasFrameExtraction } from './canvas-run-preparations'
 import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
@@ -156,6 +157,8 @@ export function createCanvasNodeExecutors(options: {
   imageGroup?: string
   videoGroup?: string
   textGroup?: string
+  /** Frame-extract nodes run only with it (画布完善第 7 条第二步); without it they stay refused. */
+  frames?: CanvasFrameExtraction
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
   const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
@@ -345,6 +348,32 @@ export function createCanvasNodeExecutors(options: {
   const unsupported: CanvasNodeExecutors['image-edit'] = async () => {
     throw new Error('该节点能力尚未接入，当前不会提交付费请求')
   }
+  // 画布完善第 7 条第二步：主进程不解视频，只核对视频是这个账号的、页面解得动，再请页面抽出那一帧交回来。
+  // 不发任何付费请求；等的这段时间节点显示「处理中」，画布顶上写「正在准备视频帧图片」。
+  const frameExtract: CanvasNodeExecutors['image-edit'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportFramePreparation }) => {
+    const frames = options.frames
+    if (!frames || !reportFramePreparation) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    const video = inputs.video
+    if (!video) throw new Error('请先给视频抽帧节点连接一段视频')
+    await frames.assertDecodableVideo(userId, video.assetId)
+    throwIfCancelled(signal)
+    // The web host names the operation after the attempt too; the kernel checks they match.
+    const preparation = {
+      operationId: attemptId,
+      nodeId: node.id,
+      attemptId,
+      sourceAssetId: video.assetId,
+      timestampSeconds: node.data.frameTimestampSeconds ?? 0,
+    }
+    const frame = frames.waitForFrame({ runId, userId, ...(projectId ? { projectId } : {}), preparation, signal })
+    void frame.catch(() => undefined)
+    try {
+      await reportFramePreparation(preparation, true)
+      return { assets: [await frame] }
+    } finally {
+      await reportFramePreparation(preparation, false)
+    }
+  }
   const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal, billing }) => {
     const script = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim()
     if (!script) throw new Error('请先连接或粘贴剧本文本')
@@ -428,7 +457,7 @@ export function createCanvasNodeExecutors(options: {
   return {
     text, prompt: text, image: imageOrEdit, 'image-generate': imageOrEdit,
     video, 'video-generate': video, 'image-edit': imageEdit,
-    'frame-extract': unsupported, 'video-input': videoInput,
+    'frame-extract': options.frames ? frameExtract : unsupported, 'video-input': videoInput,
     'image-input': imageInput, 'audio-input': audioInput, router: passThrough, gallery: passThrough, output: passThrough,
     group: passThrough, note: text,
     'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,

@@ -29,6 +29,7 @@ export const canvasHostChannels = {
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
   importAssetBytes: 'canvas-host:import-asset-bytes',
+  completeRunPreparation: 'canvas-host:complete-run-preparation',
   listPromptPresets: 'canvas-host:list-prompt-presets',
   createPromptPreset: 'canvas-host:create-prompt-preset',
   updatePromptPreset: 'canvas-host:update-prompt-preset',

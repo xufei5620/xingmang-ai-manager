@@ -28,6 +28,7 @@ import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from '../c
 import { CanvasProjectStore } from '../canvas-project-store'
 import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
 import { createCanvasRunChargeChecker } from '../canvas-run-charges'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction } from '../canvas-run-preparations'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
 import { readCanvasTextImages } from '../canvas-text-image-input'
@@ -567,13 +568,24 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         publish,
       })
       : undefined
+    // 画布完善第 7 条第二步：抽帧节点等页面交回的那一帧。每个账号域一份，换域时跟着运行一起停。
+    const canvasRunPreparations = new CanvasRunPreparationBroker()
     const canvasRuns = createCanvasRunService({
       store: canvasRunStore,
       ...(canvasRunCharges ? { charges: canvasRunCharges } : {}),
+      preparations: canvasRunPreparations,
       executors: createCanvasNodeExecutors({
         imageService: canvasImageService,
         videoService,
         assets: canvasProjectAssets,
+        frames: createCanvasFrameExtraction({
+          broker: canvasRunPreparations,
+          assets: canvasProjectAssets,
+          onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '视频帧已保存，但来源信息保存失败', {
+            assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        }),
         completeText: {
           completeOnce: (input) => {
             const images = input.images

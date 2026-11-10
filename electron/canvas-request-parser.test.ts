@@ -525,6 +525,31 @@ describe('canvas request parser', () => {
     }
   })
 
+  it('hands a frame-extract node its time only while frame extraction is switched on', () => {
+    // Switched off (the desktop default until the kernel processes frames), the
+    // node is refused even without a time, so it never reaches the paid video executor.
+    for (const extra of [{}, { frameTimestampSeconds: 1.5 }]) {
+      const off = parseCanvasStartRunInput(kernelNode('frame-extract', extra), { frameExtract: false }).graph.nodes[0]
+      expect(off.desktopUnsupported).toBe(`「视频抽帧」${kernelRefusal}`)
+      expect(off.data).toEqual({ prompt: 'p', model: 'm' })
+    }
+    expect(parseCanvasStartRunInput(kernelNode('frame-extract', {})).graph.nodes[0].desktopUnsupported).toBe(`「视频抽帧」${kernelRefusal}`)
+
+    const on = { frameExtract: true }
+    for (const [extra, seconds] of [[{ frameTimestampSeconds: 1.5 }, 1.5], [{}, 0], [{ frameTimestampSeconds: -0 }, 0], [{ frameTimestampSeconds: 86_400 }, 86_400]] as const) {
+      const node = parseCanvasStartRunInput(kernelNode('frame-extract', extra), on).graph.nodes[0]
+      expect(node.desktopUnsupported).toBeUndefined()
+      expect(node.data).toEqual({ prompt: 'p', model: 'm', frameTimestampSeconds: seconds })
+      expect(Object.is(node.data.frameTimestampSeconds, -0)).toBe(false)
+    }
+    // Only the frame node reads a time; anywhere else it is still a setting the desktop cannot honour.
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', { frameTimestampSeconds: 1.5 }), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「视频抽帧」${kernelRefusal}`)
+    for (const bad of [-1, Number.NaN, 86_401, '1']) {
+      expect(() => parseCanvasStartRunInput(kernelNode('frame-extract', { frameTimestampSeconds: bad }), on)).toThrow('画布抽帧时间格式错误')
+    }
+  })
+
   it('hands an image-edit node its mask and refuses one anywhere else', () => {
     const sourceAssetId = 'a'.repeat(43)
     const mask = { version: 1, sourceAssetId, width: 64, height: 48, strokes: [{ tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }, { tool: 'erase', size: 0.05, points: [{ x: 0.5, y: 0.5 }, { x: 0.6, y: 0.5 }] }] }

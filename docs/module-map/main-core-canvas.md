@@ -88,6 +88,7 @@
 - `canvas-run-service.ts` — 运行的启动、取消与发布：同账号同窗口同项目的运行串行、节点加锁，限制并行运行数与单次运行的远程生成上限（防一次点击扣出大额费用），把事件推给画布窗口；推送失败不影响已落盘的运行，也不会重放付费节点
 - `canvas-run-store.ts` — 按账号存运行记录、节点结果缓存与产物来源清单，有保留上限；解析好的状态留在内存里，进度只改内存、最迟 2 秒合并写盘（R-1），文件被别人改过就以文件为准；账号初始化时对账素材（`reconcileAssets`）；`resolveAssetOrigin` 在运行记录里找交出过某张图的那次尝试，给引擎核对「画布上那张图」能不能复用，只在核对通过后才读图
 - `canvas-node-executors.ts` — 把运行引擎的 text / image / video 节点接到主进程的文本补全、图片服务、视频服务上；漫剧解析节点用 `drama-parse-prompt.ts` 发提示、`drama-parse.ts` 校验结果
+- `canvas-run-preparations.ts` — 视频抽帧节点的「页面抽、主进程核对」（画布完善第 7 条第二步）：主进程不解视频，执行器先核对视频是这个账号的、不超过 32 MB（只读文件头），再发 `run-waiting`（带 `framePreparations`）请画布抽那一帧；`CanvasRunPreparationBroker` 只收自己发出去、还在等的那次运行那个编号，同一个账号、一次，PNG 按文件头认、20 MB、边长 4096、1677 万像素以内（跟网页版同一套数）才存进当前项目素材库、来源记「导入」；两分钟没交回来、点停止、页面说抽不出来都让节点失败。画布经 `canvas-host:complete-run-preparation` 交回（只交编号和 PNG 字节，失败不带字），`canvas-run-service.ts` 的 `completePreparation` 另核对是这个窗口这个账号起的运行。开关 `features.frameExtract` 关着时解析器照旧拒抽帧节点，引擎也不会把它交给生视频执行器
 - `canvas-fingerprint.ts` — 节点指纹与图修订号：规范化 JSON 后算 sha256，指纹包含模型能力与上游交出的文字/产物，决定能不能命中缓存
 - `canvas-image-mask.ts` — 蒙版局部修改（画布完善第 5 条）：按内核同一套上限解析改图节点的蒙版笔画，发之前核对型号、唯一原图和尺寸，按内核同一套几何画成像素，做成透明处重画的 RGBA PNG 随 `/v1/images/edits` 发出（`canvas-image-mask.test.ts` 拿同步进来的内核对拍像素）
 - `canvas-text-image-input.ts` — 文字生成节点连的图片（画布完善第 6 条）：只认内核确认过能看图的型号，按内核同一套上限（4 张、单张 4 MB、合计 8 MB、像素和边长）在发请求前从当前账号的项目素材库读图、转成 data URI；`canvas-text-image-input.test.ts` 拿内核 `runtime/text-image-input.ts` 对拍。

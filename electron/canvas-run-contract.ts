@@ -81,6 +81,12 @@ export interface CanvasRunGraphNode {
      * edit, exactly as before.
      */
     imageEditMask?: CanvasImageEditMask
+    /**
+     * frame-extract only, seconds into the source video (画布完善第 7 条第二步).
+     * Kept only while the desktop runs frame-extract nodes; absent on every
+     * other node, so their fingerprints stay as they were.
+     */
+    frameTimestampSeconds?: number
   }
 }
 
@@ -265,7 +271,28 @@ export interface CanvasRunTerminalEvent extends CanvasRunEventBase {
   outcome: CanvasRunOutcome
 }
 
-export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunTerminalEvent
+/**
+ * A frame the page must decode for a frame-extract node (画布完善第 7 条第二步).
+ * The kernel extracts it with its own browser decoder and hands the PNG back
+ * through canvas-host:complete-run-preparation; only operations listed here
+ * are accepted, once each. Same shape as the web host's run-waiting payload.
+ */
+export interface CanvasFramePreparation {
+  operationId: string
+  nodeId: string
+  attemptId: string
+  sourceAssetId: string
+  timestampSeconds: number
+}
+
+/** Sent whenever the set of frames the run is waiting on changes; an empty list means none. */
+export interface CanvasRunWaitingEvent extends CanvasRunEventBase {
+  type: 'run-waiting'
+  waitingForVideo: false
+  framePreparations: CanvasFramePreparation[]
+}
+
+export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunWaitingEvent | CanvasRunTerminalEvent
 
 /**
  * Published (not kept in `events`) once a finished run's charges are checked.
@@ -302,6 +329,8 @@ export interface CanvasRunRecord {
   outcome?: CanvasRunOutcome
   nodes: CanvasRunNodeRecord[]
   events: CanvasRunEvent[]
+  /** Frames the page still has to hand back; left out when none. */
+  framePreparations?: CanvasFramePreparation[]
   charge?: CanvasRunCharge
 }
 

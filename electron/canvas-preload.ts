@@ -28,6 +28,7 @@ const channels = {
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
   importAssetBytes: 'canvas-host:import-asset-bytes',
+  completeRunPreparation: 'canvas-host:complete-run-preparation',
   listPromptPresets: 'canvas-host:list-prompt-presets',
   createPromptPreset: 'canvas-host:create-prompt-preset',
   updatePromptPreset: 'canvas-host:update-prompt-preset',
@@ -220,6 +221,35 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('无法读取拖入的本地文件')
     if (file.size > 20 * 1024 * 1024) throw new Error('画布图片超过 20 MB，没有保存')
     return invoke(channels.importAssetBytes, new Uint8Array(await file.arrayBuffer()))
+  },
+  // 画布完善第 7 条第二步：抽帧节点要的那段视频。画布本来就能按这个地址读自己账号的视频（预览、播放），
+  // 这里不开新通道，只是替内核读出来、限 32 MB（内核解码器的上限）。不接 AbortSignal：它过不了隔离边界。
+  readVideoForFramePreview: async (assetId: string) => {
+    if (typeof assetId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(assetId)) throw new Error('视频素材标识格式错误')
+    const response = await fetch(`xingmang-asset://video/${assetId}`, { cache: 'no-store', redirect: 'error' })
+    if (!response.ok) throw new Error('视频读不出来，请确认素材还在')
+    const declared = Number(response.headers.get('content-length'))
+    if (Number.isFinite(declared) && declared > 32 * 1024 * 1024) throw new Error('视频超过 32 MB，画布抽不了这一帧')
+    const blob = await response.blob()
+    if (blob.size > 32 * 1024 * 1024) throw new Error('视频超过 32 MB，画布抽不了这一帧')
+    return blob.type === 'video/mp4' ? blob : new Blob([blob], { type: 'video/mp4' })
+  },
+  // The frame the kernel decoded for a frame-extract node. Only the PNG bytes
+  // and the ids the main process handed out cross; a failure carries no text.
+  completeRunPreparation: async (input: unknown) => {
+    if (!input || typeof input !== 'object') throw new Error('画布运行准备回执格式错误')
+    const { runId, operationId, kind, outcome, png, decodedTimestampSeconds } = input as Record<string, unknown>
+    if (outcome === 'failed') return invoke(channels.completeRunPreparation, { runId, operationId, kind, outcome })
+    if (!(png instanceof Blob)) throw new Error('视频帧图片内容格式错误')
+    if (png.size > 20 * 1024 * 1024) throw new Error('视频帧图片超过 20 MB，没有保存')
+    return invoke(channels.completeRunPreparation, {
+      runId,
+      operationId,
+      kind,
+      outcome,
+      png: new Uint8Array(await png.arrayBuffer()),
+      ...(decodedTimestampSeconds !== undefined ? { decodedTimestampSeconds } : {}),
+    })
   },
   listPromptPresets: () => invoke(channels.listPromptPresets),
   createPromptPreset: (input: unknown) => invoke(channels.createPromptPreset, input),

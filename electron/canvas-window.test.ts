@@ -128,6 +128,7 @@ import {
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
   canvasHostImportAssetBytesChannel,
+  canvasHostCompleteRunPreparationChannel,
   canvasHostInspectAssetReferencesChannel,
   canvasHostStartRunChannel,
   canvasHostCancelRunChannel,
@@ -356,6 +357,7 @@ describe('createCanvasWindowController', () => {
       canvasHostPickAssetChannel,
       canvasHostImportAssetFileChannel,
       canvasHostImportAssetBytesChannel,
+      canvasHostCompleteRunPreparationChannel,
       canvasHostInspectAssetReferencesChannel,
       canvasHostStartRunChannel,
       canvasHostCancelRunChannel,
@@ -1382,6 +1384,26 @@ describe('createCanvasWindowController', () => {
     for (let index = 0; index < 18; index += 1) await importBytes(trustedEvent(), new Uint8Array(projectPng))
     await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片太频繁')
     expect(aiAssets.storeLocalBytes).toHaveBeenCalledTimes(18)
+  })
+
+  it('hands a decoded frame to the run service for this window and account only, after parsing it', async () => {
+    const completePreparation = vi.fn(async () => undefined)
+    const canvasRuns = { ...controllerOptions().canvasRuns, completePreparation }
+    const controller = createCanvasWindowController(controllerOptions({ canvasRuns: canvasRuns as never }))
+    await controller.open()
+    const complete = electronMocks.handlers.get(canvasHostCompleteRunPreparationChannel)!
+
+    await expect(complete(trustedEvent(), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'completed', png: new Uint8Array(projectPng), decodedTimestampSeconds: 1.5 })).resolves.toBeUndefined()
+    const [userId, ownerId, completion] = completePreparation.mock.calls[0] as unknown as [number, number, { png: Buffer; decodedTimestampSeconds: number }]
+    expect(userId).toBe(7)
+    expect(ownerId).toBe(electronMocks.latestWebContents!.id)
+    expect(Buffer.isBuffer(completion.png) && completion.png.equals(projectPng)).toBe(true)
+    expect(completion.decodedTimestampSeconds).toBe(1.5)
+
+    await expect(complete(trustedEvent(), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'completed', png: '/tmp/frame.png' })).rejects.toThrow('视频帧图片内容格式错误')
+    await expect(complete(trustedEvent(), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'failed', message: '<b>page text</b>' })).rejects.toThrow('画布运行准备回执格式错误')
+    expect(() => complete(trustedEvent('https://evil.example/'), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'failed' })).toThrow('已拒绝来自非画布页面的操作请求')
+    expect(completePreparation).toHaveBeenCalledTimes(1)
   })
 
   it('offers MP4 in the native media picker', async () => {
