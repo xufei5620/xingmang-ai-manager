@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -544,5 +544,19 @@ describe('v2 chat attached images', () => {
   it('keeps a Chinese reason whole instead of cutting it at the first Chinese character', () => {
     expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-images': Error: AI 图片资产不能经过符号链接或目录联接"))).toBe('AI 图片资产不能经过符号链接或目录联接')
     expect(attachmentErrorMessage(new Error("Error invoking remote method 'chat:paste-image': Error: 请先登录星芒账号"))).toBe('请先登录，再加图片')
+  })
+})
+
+describe('v2 chat empty-page examples', () => {
+  it('offers everyday writing and translation next to the coding examples', () => {
+    expect(chatExamples).toEqual(['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
+    expect(new Set(chatExamples).size).toBe(chatExamples.length)
+  })
+
+  it('fills a half-sentence example without its trailing ellipsis so typing just continues', () => {
+    expect(chatExampleDraft('帮我写一条朋友圈文案，卖的是……')).toBe('帮我写一条朋友圈文案，卖的是')
+    expect(chatExampleDraft('这个 Excel 公式怎么写：我想……')).toBe('这个 Excel 公式怎么写：我想')
+    expect(chatExampleDraft('这段报错是什么意思')).toBe('这段报错是什么意思')
+    expect(chatExampleDraft('……中间的省略号……不动……')).toBe('……中间的省略号……不动')
   })
 })
