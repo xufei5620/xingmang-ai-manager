@@ -107,9 +107,25 @@ function updateItem(
 export type TrayNavigationTarget = 'topup' | 'updates' | 'settings'
 type TrayAction = () => unknown | Promise<unknown>
 
+/**
+ * Windows 托盘图标（深查 TR-8、D94）。Windows 按「系统小图标」的边长向图标要一张图（125% 要
+ * 20px、150% 要 24px），只给 PNG 时拿 32px 那张去缩，发虚；给多尺寸 ICO 它就挑正好那张。
+ * 任务栏是深色时换浅色外圈那份，不然深蓝外圈融进任务栏，只剩一颗星。
+ */
+export interface WindowsTrayIcons {
+  /** 标准版（深蓝外圈）：浅色任务栏，以及读不到深浅时用。 */
+  standard: string
+  /** 浅色外圈版：任务栏是深色时用。 */
+  darkTaskbar: string
+  /** 任务栏现在是不是深色；null 是读不到，图标不换。要异步读，不挡主线程。 */
+  readDarkTaskbar(): Promise<boolean | null>
+}
+
 export interface ApplicationTrayOptions {
   iconPath: string
   icon2xPath?: string
+  /** 只在 Windows 上用；缺省或 ICO 读不出来时，Windows 也用上面那两张 PNG。 */
+  windowsIcons?: WindowsTrayIcons
   templateIconPath?: string
   templateIcon2xPath?: string
   platform?: NodeJS.Platform
@@ -135,6 +151,7 @@ export interface ApplicationTrayHandle {
   isDestroyed(): boolean
   setToolTip(label: string): void
   setContextMenu(menu: Menu): void
+  setImage(image: NativeImage): void
   /** Windows only in Electron; optional so test doubles can leave it out. */
   displayBalloon?(options: { title: string; content: string; iconType?: 'info'; noSound?: boolean; respectQuietTime?: boolean }): void
   on(event: 'click' | 'double-click' | 'right-click', listener: () => void): unknown
@@ -257,6 +274,11 @@ export interface ApplicationTrayController {
    * 菜单栏图标一直看得见，用不着。弹没弹出来都不影响托盘本身，所以失败只返回 false。
    */
   showBalloon(title: string, content: string): boolean
+  /**
+   * 任务栏可能换了深浅（Windows）：读一次，变了就换图。同一时刻只读一份，读着的时候又叫的，
+   * 等这份读完再补读一次。不是 Windows、或没用上 ICO 时什么都不做。
+   */
+  refreshWindowsIcon(): void
   dispose(): void
 }
 
@@ -270,6 +292,11 @@ export function createApplicationTray(
   let disposed = false
   let available = false
   let snapshot: ApplicationTraySnapshot = { installedTools: [] }
+  const windowsIcons = platform === 'win32' ? options.windowsIcons : undefined
+  // 托盘现在挂着哪一份 ICO；null 是没用上 ICO（不是 Windows，或读不出来退回了 PNG），不跟着任务栏换。
+  let windowsIcon: 'standard' | 'darkTaskbar' | null = null
+  let windowsIconRead: Promise<void> | null = null
+  let windowsIconReadAgain = false
 
   const report = (error: unknown) => {
     try { options.onError(error) } catch { /* Tray callbacks cannot report through a rejected event handler. */ }
@@ -315,12 +342,51 @@ export function createApplicationTray(
       tray.setContextMenu(runtime.buildMenu(buildApplicationTrayMenu(snapshot, options, run, appName)))
     } catch (error) { unavailable(error) }
   }
-
-  try {
+  const showWindowsIcon = (variant: 'standard' | 'darkTaskbar') => {
+    if (!windowsIcons || windowsIcon === null || windowsIcon === variant || !checkAvailable() || !tray) return
+    const image = runtime.createImage(windowsIcons[variant], undefined, false)
+    // 换不了就留着现在这张，托盘照样能用。
+    if (image.isEmpty()) throw new Error('托盘图标无法读取')
+    tray.setImage(image)
+    windowsIcon = variant
+  }
+  const refreshWindowsIcon = () => {
+    if (disposed || !windowsIcons || windowsIcon === null) return
+    if (windowsIconRead) {
+      windowsIconReadAgain = true
+      return
+    }
+    windowsIconRead = (async () => {
+      try {
+        const dark = await windowsIcons.readDarkTaskbar()
+        if (dark !== null && !disposed) showWindowsIcon(dark ? 'darkTaskbar' : 'standard')
+      } catch (error) { report(error) } finally {
+        windowsIconRead = null
+        if (windowsIconReadAgain) {
+          windowsIconReadAgain = false
+          refreshWindowsIcon()
+        }
+      }
+    })()
+  }
+  const createIcon = (): NativeImage => {
+    if (windowsIcons) {
+      const image = runtime.createImage(windowsIcons.standard, undefined, false)
+      if (!image.isEmpty()) {
+        windowsIcon = 'standard'
+        return image
+      }
+      // 包里缺了 ICO 也别丢掉托盘：退回 PNG，只是不跟着任务栏换。
+      report(new Error('托盘多尺寸图标无法读取，改用 PNG'))
+    }
     const useTemplate = platform === 'darwin'
     const iconPath = useTemplate ? options.templateIconPath ?? options.iconPath : options.iconPath
     const icon2xPath = useTemplate ? options.templateIcon2xPath ?? options.icon2xPath : options.icon2xPath
-    const image = runtime.createImage(iconPath, icon2xPath, useTemplate)
+    return runtime.createImage(iconPath, icon2xPath, useTemplate)
+  }
+
+  try {
+    const image = createIcon()
     if (image.isEmpty()) throw new Error('托盘图标无法读取')
     tray = runtime.createTray(image)
     if (tray.isDestroyed()) throw new Error('系统未能创建托盘入口')
@@ -335,6 +401,8 @@ export function createApplicationTray(
     tray.on('click', () => { if (platform === 'darwin') menuOpened(); else run(options.onOpen) })
     tray.on('right-click', () => menuOpened())
     updateSnapshot()
+    // 先挂标准版让托盘马上出来，读到任务栏是深色再换；Windows 10 默认就是深色任务栏。
+    refreshWindowsIcon()
   } catch (error) { unavailable(error) }
 
   return {
@@ -351,6 +419,7 @@ export function createApplicationTray(
         return false
       }
     },
+    refreshWindowsIcon,
     dispose() {
       if (disposed) return
       disposed = true

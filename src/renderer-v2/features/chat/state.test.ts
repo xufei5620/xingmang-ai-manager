@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -333,6 +333,20 @@ describe('v2 chat request transitions', () => {
     expect(inspectModel('gpt-image-1.5')).toMatchObject({ available: false, hidden: true })
     expect(inspectModel('gpt-image-2')).toMatchObject({ kind: 'image', resolutions: ['1K', '2K', '4K'] })
     expect(() => validateImageRequest({ model: 'gpt-image-2', prompt: 'a scene', size: '1011x1000' })).toThrow()
+  })
+})
+
+describe('v2 chat image in flight', () => {
+  it('counts only an unfinished image reply as drawing, so an account switch asks before throwing it away (D44)', () => {
+    const image = readyConversation()
+    image.settings = { ...image.settings, mode: 'image', model: 'gpt-image-2' }
+    const pending = planTurn(image, { prompt: 'an orange cat', requestId: 'request-image', assistantId: 'assistant-image', userMessageId: 'user-image' }).conversation
+    expect(isGeneratingImage(pending)).toBe(true)
+    const streamingText = turn().conversation
+    expect(isGeneratingImage({ ...streamingText, messages: streamingText.messages.map((message) => message.role === 'assistant' ? { ...message, status: 'streaming' } : message) })).toBe(false)
+    for (const status of ['complete', 'canceled', 'error'] as const)
+      expect(isGeneratingImage({ ...pending, messages: pending.messages.map((message) => message.role === 'assistant' ? { ...message, status } : message) })).toBe(false)
+    expect(isGeneratingImage(createConversation(undefined, 'empty'))).toBe(false)
   })
 })
 

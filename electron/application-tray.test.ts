@@ -11,6 +11,7 @@ import {
   type ApplicationTrayOptions,
   type ApplicationTrayRuntime,
   type ApplicationTraySnapshot,
+  type WindowsTrayIcons,
 } from './application-tray'
 
 vi.mock('electron', () => ({ Menu: {}, Tray: vi.fn(), nativeImage: {} }))
@@ -22,6 +23,7 @@ function fixture(overrides: Partial<ApplicationTrayOptions> = {}, runtimeOverrid
     isDestroyed: vi.fn(() => destroyed),
     setToolTip: vi.fn(),
     setContextMenu: vi.fn(),
+    setImage: vi.fn(),
     displayBalloon: vi.fn(),
     destroy: vi.fn(() => { destroyed = true }),
   })
@@ -318,6 +320,108 @@ describe('native tray lifecycle', () => {
     click(menu, '打开星芒AI管理工具')
     controller.updateSnapshot()
     expect(options.onOpen).not.toHaveBeenCalled()
+  })
+})
+
+describe('windows tray icon follows the taskbar', () => {
+  function image(path: string, empty = false) {
+    return { path, isEmpty: () => empty } as unknown as NativeImage
+  }
+
+  function icons(readDarkTaskbar: WindowsTrayIcons['readDarkTaskbar']): WindowsTrayIcons {
+    return { standard: '/assets/tray.ico', darkTaskbar: '/assets/tray-dark.ico', readDarkTaskbar }
+  }
+
+  function deferred() {
+    let resolve: (dark: boolean | null) => void = () => undefined
+    const promise = new Promise<boolean | null>((done) => { resolve = done })
+    return { promise, resolve }
+  }
+
+  it('starts from the multi-size ICO on Windows so the system picks the exact size for the current scaling', () => {
+    const { runtime, controller } = fixture({ windowsIcons: icons(() => new Promise(() => undefined)) })
+    expect(runtime.createImage).toHaveBeenCalledExactlyOnceWith('/assets/tray.ico', undefined, false)
+    expect(controller.available).toBe(true)
+  })
+
+  it('switches to the light-ring icon on a dark taskbar and back when the taskbar turns light', async () => {
+    let dark: boolean | null = true
+    const read = vi.fn(async () => dark)
+    const createImage = vi.fn((path: string) => image(path))
+    const { handle, controller } = fixture({ windowsIcons: icons(read) }, { createImage })
+    await vi.waitFor(() => expect(handle.setImage).toHaveBeenCalledOnce())
+    expect(handle.setImage).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/assets/tray-dark.ico' }))
+    dark = false
+    controller.refreshWindowsIcon()
+    await vi.waitFor(() => expect(handle.setImage).toHaveBeenCalledTimes(2))
+    expect(handle.setImage).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/assets/tray.ico' }))
+    // 深浅没变、或读不到时不动图标。
+    controller.refreshWindowsIcon()
+    dark = null
+    controller.refreshWindowsIcon()
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(4))
+    await Promise.resolve()
+    expect(handle.setImage).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads one at a time and folds calls made during a read into a single follow-up read', async () => {
+    const reads = [deferred(), deferred()]
+    const read = vi.fn(() => reads[read.mock.calls.length - 1].promise)
+    const { handle, controller } = fixture({ windowsIcons: icons(read) })
+    controller.refreshWindowsIcon()
+    controller.refreshWindowsIcon()
+    controller.refreshWindowsIcon()
+    expect(read).toHaveBeenCalledOnce()
+    reads[0].resolve(false)
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2))
+    reads[1].resolve(true)
+    await vi.waitFor(() => expect(handle.setImage).toHaveBeenCalledOnce())
+    expect(read).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps the current icon when the light-ring ICO cannot be read or the read fails', async () => {
+    const failure = new Error('read failed')
+    const read = vi.fn().mockResolvedValueOnce(true).mockRejectedValueOnce(failure)
+    const createImage = vi.fn((path: string) => image(path, path.endsWith('tray-dark.ico')))
+    const { handle, controller, options } = fixture({ windowsIcons: icons(read) }, { createImage })
+    await vi.waitFor(() => expect(options.onError).toHaveBeenCalledOnce())
+    controller.refreshWindowsIcon()
+    await vi.waitFor(() => expect(options.onError).toHaveBeenLastCalledWith(failure))
+    expect(handle.setImage).not.toHaveBeenCalled()
+    expect(controller.available).toBe(true)
+    expect(options.onOpen).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the PNG pair when the ICO is missing and then stops following the taskbar', () => {
+    const read = vi.fn(async () => true)
+    const createImage = vi.fn((path: string) => image(path, path.endsWith('.ico')))
+    const { runtime, controller, options } = fixture({ windowsIcons: icons(read) }, { createImage })
+    expect(runtime.createImage).toHaveBeenLastCalledWith('/assets/tray-16.png', '/assets/tray-32.png', false)
+    expect(controller.available).toBe(true)
+    expect(options.onError).toHaveBeenCalledOnce()
+    controller.refreshWindowsIcon()
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('leaves macOS and Linux on their own icons', () => {
+    const read = vi.fn(async () => true)
+    const mac = fixture({ platform: 'darwin', windowsIcons: icons(read) })
+    expect(mac.runtime.createImage).toHaveBeenCalledExactlyOnceWith('/assets/trayTemplate-16.png', '/assets/trayTemplate-32.png', true)
+    const linux = fixture({ platform: 'linux', windowsIcons: icons(read) })
+    expect(linux.runtime.createImage).toHaveBeenCalledExactlyOnceWith('/assets/tray-16.png', '/assets/tray-32.png', false)
+    mac.controller.refreshWindowsIcon()
+    linux.controller.refreshWindowsIcon()
+    expect(read).not.toHaveBeenCalled()
+  })
+
+  it('does not touch the tray once it is disposed during a read', async () => {
+    const pending = deferred()
+    const { handle, controller } = fixture({ windowsIcons: icons(() => pending.promise) })
+    controller.dispose()
+    pending.resolve(true)
+    await pending.promise
+    await Promise.resolve()
+    expect(handle.setImage).not.toHaveBeenCalled()
   })
 })
 

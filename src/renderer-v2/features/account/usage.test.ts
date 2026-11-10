@@ -8,6 +8,7 @@ import {
   modelShareTitle,
   quickFilterQuery,
   sub2ApiFilterId,
+  usageCalendarNote,
   usageChartScale,
   usageEmptyText,
   usageFailedFree,
@@ -147,5 +148,18 @@ describe('usage', () => {
     expect(sub2ApiFilterId('4')).toBe(4)
     expect(() => sub2ApiFilterId('0')).toThrow('密钥编号和分组编号要填正整数。')
     expect(() => sub2ApiFilterId('1.5')).toThrow('密钥编号和分组编号要填正整数。')
+  })
+
+  it('leaves the time zone out of the calendar note on a Beijing clock and says it follows this computer otherwise', () => {
+    const instant = new Date(Date.UTC(2026, 10, 9, 16, 30))
+    const plain = '按整日统计，包含结束日期全天，默认最近 7 天。'
+    expect(usageCalendarNote('Asia/Shanghai', instant)).toBe(plain)
+    // 跟北京同一个钟的时区也不提。
+    expect(usageCalendarNote('Asia/Hong_Kong', instant)).toBe(plain)
+    expect(usageCalendarNote('Asia/Tokyo', instant)).toBe(`${plain}按这台电脑的时间算。`)
+    expect(usageCalendarNote('America/Los_Angeles', instant)).toBe(`${plain}按这台电脑的时间算。`)
+    expect(usageCalendarNote('UTC', instant)).toBe(`${plain}按这台电脑的时间算。`)
+    expect(usageCalendarNote('Not/A_Zone', instant)).toBe(`${plain}按这台电脑的时间算。`)
+    for (const note of [usageCalendarNote('Asia/Tokyo', instant), usageCalendarNote('Asia/Shanghai', instant)]) expect(note).not.toMatch(/[A-Za-z]/)
   })
 })
