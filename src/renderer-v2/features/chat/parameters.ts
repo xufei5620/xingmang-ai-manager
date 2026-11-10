@@ -8,7 +8,7 @@ export interface NumberField extends ParameterField { placeholder: string; inval
 
 const temperature: SliderField = { key: 'temperature', label: '随机度', min: 0, max: 2, step: .1, integer: false, fallback: 1, hint: '越高越有创意，越低越稳定' }
 const topP: SliderField = { key: 'topP', label: '采样范围', min: 0, max: 1, step: .05, integer: false, fallback: 1, hint: '一般不用改' }
-const maxTokens: NumberField = { key: 'maxTokens', label: '最大输出 Token', min: 1, max: 131072, step: 1, integer: true, placeholder: '不限', invalid: '最大输出 Token 要填整数，比如 4096' }
+const maxTokens: NumberField = { key: 'maxTokens', label: '一次最多回多长', min: 1, max: 131072, step: 1, integer: true, placeholder: '不限', invalid: '要填整数，比如 4096（不填就是不限）' }
 const frequencyPenalty: SliderField = { key: 'frequencyPenalty', label: '频率惩罚', min: -2, max: 2, step: .1, integer: false, fallback: 0, hint: '调高可以减少重复用词' }
 const presencePenalty: SliderField = { key: 'presencePenalty', label: '存在惩罚', min: -2, max: 2, step: .1, integer: false, fallback: 0, hint: '调高会更愿意换话题' }
 const seed: NumberField = { key: 'seed', label: '随机种子', min: -2147483648, max: 2147483647, step: 1, integer: true, placeholder: '不填则每次随机', invalid: '随机种子要填整数' }

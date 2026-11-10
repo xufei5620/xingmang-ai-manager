@@ -12,6 +12,7 @@ import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas
 import {
   canvasRunKernelOnlyNodeLabels,
   type CanvasRunGraph,
+  type CanvasRunImageCandidateCount,
   type CanvasRunKernelOnlyNodeKind,
   type CanvasRunNodeKind,
   type CanvasRunScope,
@@ -310,6 +311,10 @@ function optionalCandidateCount(value: unknown, label: string): number | undefin
   return value as number
 }
 
+function runsImageCandidates(kind: CanvasRunNodeKind): boolean {
+  return kind === 'image' || kind === 'image-generate' || kind === 'image-edit'
+}
+
 function optionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') throw new Error(`${label}格式错误`)
@@ -332,8 +337,10 @@ function referenceSlotCount(value: unknown, label: string, maximum: number, budg
  */
 function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }): string | undefined {
   const reasons: string[] = []
+  // Image kinds run 2-4 independent requests (canvas-run-engine.ts); the
+  // kernel never sends a count for any other kind.
   const imageCandidates = optionalCandidateCount(data.imageCandidateCount, '画布图片生成数量')
-  if (imageCandidates !== undefined && imageCandidates > 1) reasons.push('一次出多张图')
+  if (imageCandidates !== undefined && imageCandidates > 1 && !runsImageCandidates(kind)) reasons.push('一次出多张图')
   const videoCandidates = optionalCandidateCount(data.videoCandidateCount, '画布视频生成数量')
   if (videoCandidates !== undefined && videoCandidates > 1) reasons.push('一次出多个视频')
   if (optionalBoolean(data.textWebSearch, '画布联网搜索开关') === true) reasons.push('联网搜索')
@@ -627,6 +634,10 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     if (videoAspectRatio && !['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'].includes(videoAspectRatio)) throw new Error('画布 MiniMax 视频比例不受支持')
     const promptOptimization = entry.data.promptOptimization
     if (promptOptimization !== undefined && typeof promptOptimization !== 'boolean') throw new Error('画布 MiniMax 提示词优化开关格式错误')
+    // Already range-checked by kernelFieldsUnsupported above.
+    const imageCandidateCount = runsImageCandidates(kind) && typeof entry.data.imageCandidateCount === 'number' && entry.data.imageCandidateCount > 1
+      ? entry.data.imageCandidateCount as CanvasRunImageCandidateCount
+      : undefined
     return {
       id: requiredCanvasString(entry.id, '画布节点标识', 256),
       kind,
@@ -646,6 +657,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
         ...(videoResolution ? { videoResolution: videoResolution as CanvasRunGraph['nodes'][number]['data']['videoResolution'] } : {}),
         ...(videoAspectRatio ? { videoAspectRatio: videoAspectRatio as CanvasRunGraph['nodes'][number]['data']['videoAspectRatio'] } : {}),
         ...(typeof promptOptimization === 'boolean' ? { promptOptimization } : {}),
+        ...(imageCandidateCount ? { imageCandidateCount } : {}),
       },
     }
   })
