@@ -3754,6 +3754,65 @@ test('saved-account switching leaves tools without an account key untouched', as
   } finally { await page.close() }
 })
 
+// 对话页发一张图，出图那一下压着不回（?chatImage），再去个人中心切换账号（D44）。
+async function startHeldChatImage(page) {
+  await page.getByTestId('tool-row-claude').waitFor()
+  await page.getByTestId('nav-chat').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+  await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
+  await page.getByTestId('chat-composer-input').fill('一只橘猫')
+  await page.getByTestId('chat-send').click()
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'generateAiImage'))
+}
+const chatImageSwitchWarning = '对话还在出图，换账号会停掉这张图，可能已经扣费。'
+async function switchCalls(page) { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchSavedAccount').length) }
+
+test('switching accounts while the chat page draws an image asks first; waiting keeps the account and a finished image no longer asks (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    const row = switcher.getByTestId('saved-account-row-saved-18')
+    await row.getByRole('button', { name: '切换', exact: true }).click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.waitFor()
+    assert.equal(await ask.getAttribute('data-testid'), 'saved-account-switch-image-busy')
+    assert.equal((await ask.locator('.xm-dialog-body').innerText()).trim(), chatImageSwitchWarning)
+    assert.deepEqual(await ask.locator('footer').getByRole('button').allTextContents(), ['等它出完', '仍然切换'])
+    // 默认停在不切的那个按钮上：手快按回车不会把图停掉。
+    assert.equal(await ask.getByRole('button', { name: '等它出完', exact: true }).evaluate((button) => button === document.activeElement), true)
+    await page.screenshot({ path: path.join(artifacts, 'account-switch-chat-image-busy.png') })
+    await ask.getByRole('button', { name: '等它出完', exact: true }).click()
+    await ask.waitFor({ state: 'hidden' })
+    assert.equal(await switchCalls(page), 0)
+    assert.equal(await switcher.isVisible(), true)
+    // 图出完了再点「切换」，直接切，不再问。
+    await page.evaluate(() => window.v2Test.releaseChatImage())
+    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat] .chat-generating') === null)
+    await row.getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    assert.equal(await switchCalls(page), 1)
+    assert.equal(await ask.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('choosing to switch anyway while the chat page draws an image switches the account (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('saved-account-row-saved-18').getByRole('button', { name: '切换', exact: true }).click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.getByRole('button', { name: '仍然切换', exact: true }).click()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    await ask.waitFor({ state: 'detached' })
+    assert.equal(await switchCalls(page), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('read-only account matches switch only explicitly selected CLI providers one at a time', async () => {
   const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
   try {
