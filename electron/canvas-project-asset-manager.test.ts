@@ -286,6 +286,13 @@ describe('CanvasProjectAssetManager', () => {
     await expect(restarted.readOwned(7, firstImage.assetId, 'image')).resolves.toMatchObject({ asset: { assetId: firstImage.assetId } })
     await expect(restarted.readOwned(7, firstAudio.assetId, 'audio')).resolves.toMatchObject({ asset: { assetId: firstAudio.assetId } })
     await expect(restarted.readOwned(7, secondVideo.assetId, 'video')).resolves.toMatchObject({ asset: { assetId: secondVideo.assetId } })
+    // The asset protocol's ranged read finds the same project video, for a fresh manager too, and only that account's.
+    const ranged = new CanvasProjectAssetManager({ projects, global: context(globalOutput, 2), create: context })
+    await expect(ranged.readOwnedVideoRange(7, secondVideo.assetId, () => ({ start: 4, end: 7 }))).resolves.toEqual({
+      asset: { mimeType: 'video/mp4' }, totalBytes: mp4().length, bytes: mp4().subarray(4, 8),
+    })
+    await expect(ranged.readOwnedVideoRange(7, secondVideo.assetId, () => null)).resolves.toMatchObject({ bytes: Buffer.alloc(0) })
+    await expect(ranged.readOwnedVideoRange(8, secondVideo.assetId, () => null)).rejects.toThrow('不存在或无权访问')
 
     const chatImage = await globalContext.images.storeBase64(7, png)
     expect(fs.existsSync(path.join(globalOutput, 'user-7', '2026-08-14', chatImage.fileName))).toBe(true)

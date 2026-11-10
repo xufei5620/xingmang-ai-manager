@@ -306,7 +306,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     confirmationLock.current = true; setConfirmBusy(true)
     void pending.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ ...operationFailureFrom(cause), retry: () => runConfirmed(pending), ...(pending.tool ? { tool: pending.tool } : {}) })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
   }
-  const { inviteCode } = useDeepLinks({ native, mounted, boot, authenticated: session.authenticated, auth, configTool, confirmation, switcher, restartDialog, navigate, setAuth, setOperationError, setPaymentReturn })
+  const { inviteCode } = useDeepLinks({ native, mounted, boot, authenticated: session.authenticated, auth, configTool, confirmation, switcher, restartDialog, navigate, toast, setAuth, setOperationError, setPaymentReturn })
   useAppEntryPoints({ native, navigate, session, os, settings, snapshot: toolbox.snapshot, changeUiScale, requestLaunchInLastWorkspace, setAnnouncementOpen })
   // 界面挂好了的标记，e2e/macos-visual-qa.mjs 等到它才开始量。
   useEffect(() => {

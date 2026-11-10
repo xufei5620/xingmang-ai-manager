@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
 import { createActiveIdentityReader } from './active-identity'
-import { createAiAssetProtocolHandler, type AiAssetProtocolOptions } from './ai-asset-protocol'
+import { createAiAssetProtocolHandler, maximumVideoRangeBytes, type AiAssetProtocolOptions } from './ai-asset-protocol'
 import { assetThumbnailUrl, assetThumbnailVersion } from './asset-thumbnail'
 
 const assetId = 'a'.repeat(43)
@@ -27,13 +27,24 @@ function fixture() {
   })
   const media = { bytes: Buffer.from('0123456789'), asset: { mimeType: 'image/png' } }
   const thumbnail = { bytes: Buffer.from('thumbnail'), mimeType: 'image/png' }
+  // What a ranged video read pulled off disk: the store only reads the range the handler selected.
+  const videoReads: number[] = []
   const options: AiAssetProtocolOptions = {
     identities,
-    assets: { async readOwned(owner, id, kind) { calls.push({ kind, userId: owner, assetId: id }); return media } },
+    assets: {
+      async readOwned(owner, id, kind) { calls.push({ kind, userId: owner, assetId: id }); return media },
+      async readOwnedVideoRange(owner, id, select) {
+        calls.push({ kind: 'video', userId: owner, assetId: id })
+        const range = select(media.bytes.byteLength)
+        const bytes = range ? media.bytes.subarray(range.start, range.end + 1) : Buffer.alloc(0)
+        videoReads.push(bytes.byteLength)
+        return { bytes, totalBytes: media.bytes.byteLength, asset: { mimeType: 'video/mp4' } }
+      },
+    },
     thumbnails: { async resolve(owner, id, kind) { calls.push({ kind: `thumb:${kind}`, userId: owner, assetId: id }); return thumbnail } },
   }
   return {
-    options, media, thumbnail, calls, handler: createAiAssetProtocolHandler(options),
+    options, media, thumbnail, calls, videoReads, handler: createAiAssetProtocolHandler(options),
     changeUser(id: number | null) { userId = id; revision += 1 },
     beginAttempt() { revision += 1 },
     refresh() { /* Token refresh preserves the source's ownership revision. */ },
@@ -118,6 +129,75 @@ describe('account-owned asset protocol', () => {
       assert.equal(response.headers.get('content-length'), String(body.length))
       assert.equal(response.headers.get('cache-control'), 'no-store')
       assert.equal(await response.text(), body)
+    })
+  }
+
+  const videoUrl = `xingmang-asset://video/${assetId}`
+  for (const [range, body, contentRange] of [
+    ['bytes=2-5', '2345', 'bytes 2-5/10'],
+    ['bytes=-3', '789', 'bytes 7-9/10'],
+    ['bytes=8-', '89', 'bytes 8-9/10'],
+  ]) {
+    it(`reads only the requested part of a video: ${range}`, async () => {
+      const example = fixture()
+      const response = await example.handler(new Request(videoUrl, { headers: { Range: range } }))
+      assert.equal(response.status, 206)
+      assert.equal(response.headers.get('content-range'), contentRange)
+      assert.equal(response.headers.get('content-type'), 'video/mp4')
+      assert.equal(await response.text(), body)
+      assert.deepEqual(example.videoReads, [body.length])
+    })
+  }
+
+  it('answers a seek through a long video with one bounded chunk, not the rest of the file', async () => {
+    const example = fixture()
+    const total = maximumVideoRangeBytes + 1_000_000
+    example.media.bytes = Buffer.alloc(total, 7)
+    const response = await example.handler(new Request(videoUrl, { headers: { Range: 'bytes=100-' } }))
+    assert.equal(response.status, 206)
+    assert.equal(response.headers.get('content-range'), `bytes 100-${100 + maximumVideoRangeBytes - 1}/${total}`)
+    assert.equal(response.headers.get('content-length'), String(maximumVideoRangeBytes))
+    assert.equal((await response.arrayBuffer()).byteLength, maximumVideoRangeBytes)
+    assert.deepEqual(example.videoReads, [maximumVideoRangeBytes])
+    // A range that already fits is served as asked.
+    const tail = await example.handler(new Request(videoUrl, { headers: { Range: `bytes=${total - 5}-` } }))
+    assert.equal(tail.headers.get('content-range'), `bytes ${total - 5}-${total - 1}/${total}`)
+  })
+
+  it('serves a whole video without a Range header and reads nothing for HEAD', async () => {
+    const example = fixture()
+    const whole = await example.handler(new Request(videoUrl))
+    assert.equal(whole.status, 200)
+    assert.equal(whole.headers.get('content-range'), null)
+    assert.equal(await whole.text(), '0123456789')
+    const head = await example.handler(new Request(videoUrl, { method: 'HEAD', headers: { Range: 'bytes=1-3' } }))
+    assert.equal(head.status, 200)
+    assert.equal(head.headers.get('content-length'), '10')
+    assert.equal(await head.text(), '')
+    assert.deepEqual(example.videoReads, [10, 0])
+  })
+
+  it('rejects a video range the file cannot satisfy without reading video bytes', async () => {
+    const example = fixture()
+    const response = await example.handler(new Request(videoUrl, { headers: { Range: 'bytes=100-' } }))
+    assert.equal(response.headers.get('content-range'), 'bytes */10')
+    await assertEmpty(response, 416)
+    assert.deepEqual(example.videoReads, [0])
+  })
+
+  for (const transition of ['different-user', 'logout', 'abort'] as const) {
+    it(`does not publish a stale video range after ${transition}`, async () => {
+      const example = fixture()
+      const gate = deferred<void>()
+      const read = example.options.assets.readOwnedVideoRange
+      example.options.assets.readOwnedVideoRange = async (...args) => { await gate.promise; return read(...args) }
+      const controller = new AbortController()
+      const response = example.handler(new Request(videoUrl, { headers: { Range: 'bytes=0-3' }, signal: controller.signal }))
+      if (transition === 'different-user') example.changeUser(8)
+      if (transition === 'logout') example.changeUser(null)
+      if (transition === 'abort') controller.abort()
+      gate.resolve()
+      await assertEmpty(await response, 404)
     })
   }
 
