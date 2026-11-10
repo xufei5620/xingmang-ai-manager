@@ -1,6 +1,7 @@
 import { cliCatalog, isProviderId } from './catalog'
 import { externalClientNames, isExternalToolId } from './external-client-contract'
 import type { InstallationQueueSnapshot } from './installation-queue'
+import type { RendererRestartWork } from './ipc-contract'
 import { updateInstallLaunchTimeoutCode, type UpdateSnapshot } from './updater'
 
 export interface InterruptibleInstallTask {
@@ -54,6 +55,78 @@ export function resolveInterruptibleInstallTask(
     if (!first) first = { key, description, count }
   }
   return first ? { ...first, count } : null
+}
+
+/**
+ * 重启装更新会停下、重开以后又不会自己接着做的事（D10）。聊天、视频剪辑的拼片在界面里跑，由界面报上来；
+ * 画布出图在主进程里，宿主自己看。交给服务端在生成的视频不算：重开以后会接着取回来。
+ */
+export type UnfinishedRestartWork = RendererRestartWork | 'canvas'
+
+// 顺序和单子上那句一样；只列真在跑的那几样。
+const unfinishedRestartWorkPhrases: ReadonlyArray<readonly [UnfinishedRestartWork, string]> = [
+  ['chat', '对话还在回复或出图'],
+  ['video-compose', '视频剪辑还在拼接'],
+  ['canvas', '画布还在生成'],
+]
+
+export interface UnfinishedRestartWorkPrompt {
+  /** 这次点到名的那几样，只用于日志与测试。 */
+  kinds: UnfinishedRestartWork[]
+  message: string
+  detail: string
+  /** 0 = 等它做完（这次不装，新版本留着），1 = 仍然重启。 */
+  buttons: [string, string]
+}
+
+/** 重启装更新前那一问（D10）。一样都没在跑时返回 null，不问。 */
+export function buildUnfinishedRestartWorkPrompt(running: Iterable<UnfinishedRestartWork>): UnfinishedRestartWorkPrompt | null {
+  const present = new Set(running)
+  const listed = unfinishedRestartWorkPhrases.filter(([kind]) => present.has(kind))
+  if (listed.length === 0) return null
+  const phrases = listed.map(([, phrase]) => phrase)
+  const last = phrases[phrases.length - 1]
+  const sentence = phrases.length === 1 ? last : `${phrases.slice(0, -1).join('，')}，或者${last}`
+  return {
+    kinds: listed.map(([kind]) => kind),
+    message: '还有任务没做完',
+    detail: `${sentence}。现在重启会把它们停下，出到一半的图可能已经扣费。`,
+    buttons: ['等它做完', '仍然重启'],
+  }
+}
+
+export interface UpdateRestartConfirmation {
+  installTask(): InterruptibleInstallTask | null
+  /** 「还在安装」那一问；true = 仍然退出。 */
+  confirmInstall(task: InterruptibleInstallTask): Promise<boolean>
+  unfinishedWork(): UnfinishedRestartWorkPrompt | null
+  /** 「还有任务没做完」那一问；true = 仍然重启。 */
+  confirmWork(prompt: UnfinishedRestartWorkPrompt): Promise<boolean>
+  log(event: string, message: string): void
+}
+
+/**
+ * 更新页「重启并安装」、托盘「重启并安装」、跳框里的「现在安装」都先过这里：true = 照常装。
+ * 先问工具在装，再问聊天、视频剪辑、画布在做的事。两问说的是不同的东西会被停下，所以都问；
+ * 哪一问点了「继续安装」「等它做完」，这次就不装，新版本留着（已知31、D10）。
+ */
+export async function confirmUpdateRestart(steps: UpdateRestartConfirmation): Promise<boolean> {
+  const task = steps.installTask()
+  if (task) {
+    steps.log('install.install-in-progress', `重启安装更新前确认：${task.key}`)
+    if (!await steps.confirmInstall(task)) {
+      steps.log('install.postponed', '还有工具在装，这次不装新版本，新版本留着')
+      return false
+    }
+  }
+  const work = steps.unfinishedWork()
+  if (!work) return true
+  steps.log('install.work-in-progress', `重启安装更新前确认：${work.kinds.join(',')}`)
+  if (!await steps.confirmWork(work)) {
+    steps.log('install.postponed', '还有任务没做完，这次不装新版本，新版本留着')
+    return false
+  }
+  return true
 }
 
 export interface InstallableUpdateOnQuit {

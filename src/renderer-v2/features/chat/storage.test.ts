@@ -11,19 +11,27 @@ function memoryStorage() {
   return { getItem: (key: string) => data.get(key) ?? null, setItem: vi.fn((key: string, value: string) => { data.set(key, value) }), removeItem: vi.fn((key: string) => { data.delete(key) }), keys: () => [...data.keys()] }
 }
 // Same contract as electron/ai-chat-history-store.ts: rewrite the listed
-// conversations, then the index, then drop files the index no longer names.
+// conversations, then the index, then drop files the index no longer names,
+// except the ones listed in setAside, which move into the backup folder.
 function memoryFiles() {
   const stores = new Map<string, AiChatHistorySnapshot>()
+  const aside = new Map<string, AiChatHistorySnapshot['conversations']>()
   const api = {
     readHistory: vi.fn(async (owner: string): Promise<AiChatHistorySnapshot> => structuredClone(stores.get(owner) ?? { index: null, conversations: [] })),
     writeHistory: vi.fn(async (input: AiChatHistoryWrite) => {
       const files = new Map((stores.get(input.scope)?.conversations ?? []).map((file) => [file.key, file.content]))
       for (const file of input.put) files.set(file.key, file.content)
+      for (const key of input.setAside ?? []) {
+        expect(input.keys).not.toContain(key)
+        const content = files.get(key)
+        if (content !== undefined) aside.set(input.scope, [...aside.get(input.scope) ?? [], { key, content }])
+      }
       stores.set(input.scope, { index: input.index, conversations: input.keys.map((key) => ({ key, content: files.get(key)! })) })
     }),
+    logHistoryProblem: vi.fn((_detail: string) => undefined),
   }
   function raw(owner = scope) { const snapshot = stores.get(owner); return snapshot ? [snapshot.index, ...snapshot.conversations.map((file) => file.content)].join('\n') : null }
-  return { api, stores, raw }
+  return { api, stores, aside, raw }
 }
 async function saveAndReopen(state: ChatWorkspace, files = memoryFiles(), storage = memoryStorage()) {
   await createHistoryWriter(files.api, null).save(state)
@@ -76,7 +84,10 @@ describe('lossless chat history files', () => {
     expect(files.raw()).not.toContain('xingmang-asset://')
     const broken = workspace()
     Object.assign(broken.conversations[0], { draftImages: 'not a list' })
-    expect(() => parseHistorySnapshot(snapshotOf(broken), scope)).toThrow(ChatStorageError)
+    // Only that conversation is refused (and kept aside); the record as a whole still reads.
+    const { state: rest, unreadable } = parseHistorySnapshot(snapshotOf(broken), scope)
+    expect(rest.conversations).toEqual([])
+    expect(unreadable).toEqual([{ key: 'k0', reason: '聊天图片列表无效，原始记录已保留', kept: true }])
   })
 
   it('remembers that the long-conversation warning was dismissed', async () => {
@@ -195,24 +206,124 @@ describe('lossless chat history files', () => {
     expect((await loadChatHistory(files.api, memoryStorage(), scope)).state.conversations[0].draft).toBe('new unsaved content')
   })
 
-  it.each(['conversations', 'duplicate-message', 'duplicate-conversation', 'invalid-message', 'invalid-asset', 'missing-file', 'wrong-owner', 'broken-index'] as const)('refuses a lossy read of %s while retaining its original files', async (kind) => {
-    const state = workspace(scope, kind === 'conversations' ? 51 : 1)
-    if (kind === 'duplicate-message') state.conversations[0].messages.push(message())
+  // 索引本身坏了（读不出、归属不对、条目重复、超过上限）：整份不读、这一回不写，原文件不动。
+  it.each(['conversations', 'duplicate-conversation', 'wrong-owner', 'broken-index', 'newer-index', 'broken-draft'] as const)('refuses a lossy read when the index has %s while retaining its original files', async (kind) => {
+    const state = workspace(scope, kind === 'conversations' ? 51 : 2)
     if (kind === 'duplicate-conversation') state.conversations.push(structuredClone(state.conversations[0]))
-    if (kind === 'invalid-message') state.conversations[0].messages.push({ role: 'unrecognized' } as unknown as ChatMessage)
-    if (kind === 'invalid-asset') state.conversations[0].messages[0].assets = [{ assetId: 'invalid' } as never]
+    if (kind === 'broken-draft') state.draftConversation.messages.push({ role: 'unrecognized' } as unknown as ChatMessage)
     const snapshot = snapshotOf(state, kind === 'wrong-owner' ? 'xm-account:8' : scope)
-    if (kind === 'missing-file') snapshot.conversations = []
     if (kind === 'broken-index') snapshot.index = '{truncated'
+    if (kind === 'newer-index') snapshot.index = snapshot.index!.replace('"version":3', '"version":4')
     const files = memoryFiles()
     files.stores.set(scope, snapshot)
     const before = files.raw()
     const restored = await loadChatHistory(files.api, memoryStorage(), scope)
-    expect(restored.warning).toContain('原始记录已保留')
+    // 原因只进日志，上屏一律是同一句；超过上限那句照说（W24）。
+    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 50 个，这台电脑存不下，原来的记录没动' : '以前的聊天记录暂时读不出来，原文件没动')
+    expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringMatching(/^聊天记录读不出来，这一回不保存：.+/))
     expect(restored.exists).toBe(true)
     expect(restored.saved).toBeNull()
+    expect(restored.unreadable).toBeUndefined()
     expect(files.raw()).toBe(before)
     expect(() => parseHistorySnapshot(snapshot, scope)).toThrow(ChatStorageError)
+  })
+
+  // 0.2.24 深查聊天页 C2：以前一段对话坏了、少了，整份记录读不出来，以后聊的也全都不存。
+  it.each(['truncated-file', 'duplicate-message', 'invalid-message', 'invalid-asset', 'wrong-file-owner', 'newer-file', 'mismatched-id'] as const)('skips only the conversation whose file has %s, keeps it aside and saves the rest', async (kind) => {
+    const state = workspace(scope, 3)
+    state.activeId = state.conversations[1].id
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save(state)
+    const stored = files.stores.get(scope)!
+    const broken = stored.conversations.find((file) => file.key === 'conversation-1')!
+    const original = JSON.parse(broken.content)
+    if (kind === 'truncated-file') broken.content = broken.content.slice(0, broken.content.length / 2)
+    if (kind === 'duplicate-message') original.conversation.messages.push(original.conversation.messages[0])
+    if (kind === 'invalid-message') original.conversation.messages.push({ role: 'unrecognized' })
+    if (kind === 'invalid-asset') original.conversation.messages[0].assets = [{ assetId: 'invalid' }]
+    if (kind === 'wrong-file-owner') original.owner = 'xm-account:8'
+    if (kind === 'newer-file') original.version = 4
+    if (kind === 'mismatched-id') original.conversation.id = 'someone-else'
+    if (kind !== 'truncated-file') broken.content = JSON.stringify(original)
+    const brokenContent = broken.content
+    const loaded = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(loaded.warning).toBeUndefined()
+    expect(loaded.unreadable).toBe(1)
+    expect(loaded.state.conversations.map((conversation) => conversation.id)).toEqual(['conversation-0', 'conversation-2'])
+    expect(loaded.state.activeId).toBeNull()
+    expect(loaded.saved?.setAside).toEqual(['conversation-1'])
+    expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringContaining('c-conversation-1.json 读不出来，下次保存时挪进备份文件夹：'))
+    // Nothing is written by reading; the broken file is still where it was.
+    expect(files.stores.get(scope)?.conversations.find((file) => file.key === 'conversation-1')?.content).toBe(brokenContent)
+
+    // The next save moves the broken file into the backup folder byte for byte instead of deleting it.
+    const writer = createHistoryWriter(files.api, loaded.saved)
+    await writer.save({ ...loaded.state, conversations: [{ ...loaded.state.conversations[0], draft: 'still saving' }, loaded.state.conversations[1]] })
+    const first = files.api.writeHistory.mock.calls.at(-1)![0]
+    expect(first.setAside).toEqual(['conversation-1'])
+    expect(first.keys).toEqual(['conversation-0', 'conversation-2'])
+    expect(files.aside.get(scope)).toEqual([{ key: 'conversation-1', content: brokenContent }])
+    await writer.save({ ...loaded.state, conversations: [{ ...loaded.state.conversations[0], draft: 'and again' }, loaded.state.conversations[1]] })
+    expect(files.api.writeHistory.mock.calls.at(-1)![0].setAside).toBeUndefined()
+
+    const reopened = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(reopened.warning).toBeUndefined()
+    expect(reopened.unreadable).toBeUndefined()
+    expect(reopened.state.conversations.map((conversation) => conversation.draft)).toEqual(['and again', ''])
+  })
+
+  it('drops a conversation whose file is gone from the index without counting it as kept aside', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save(workspace(scope, 3))
+    const stored = files.stores.get(scope)!
+    stored.conversations = stored.conversations.filter((file) => file.key !== 'conversation-0')
+    const loaded = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(loaded.warning).toBeUndefined()
+    // 文件已经没了，说「已经单独留着」就不对了；只记日志。
+    expect(loaded.unreadable).toBeUndefined()
+    expect(loaded.saved?.setAside).toBeUndefined()
+    expect(files.api.logHistoryProblem).toHaveBeenCalledWith('聊天对话 c-conversation-0.json 不见了，已从记录里拿掉')
+    expect(loaded.state.conversations.map((conversation) => conversation.id)).toEqual(['conversation-1', 'conversation-2'])
+    // The index still names the missing file, so the very next save rewrites it even with nothing else changed.
+    const plan = planHistoryWrite(loaded.state, loaded.saved)
+    expect(plan?.write).toMatchObject({ keys: ['conversation-1', 'conversation-2'], put: [] })
+  })
+
+  it('never hands a conversation the file name of one still waiting to be moved aside', () => {
+    const state = workspace(scope, 2)
+    const snapshot = snapshotOf(state)
+    snapshot.conversations[1].content = '{truncated'
+    const { state: loaded, saved } = parseHistorySnapshot(snapshot, scope)
+    expect(saved.setAside).toEqual(['k1'])
+    const fresh = { ...createConversation(undefined, 'k1'), messages: [message()] }
+    const plan = planHistoryWrite({ ...loaded, conversations: [fresh, ...loaded.conversations] }, saved)!
+    expect(plan.write.setAside).toEqual(['k1'])
+    expect(plan.write.keys).not.toContain('k1')
+    expect(plan.write.put.map((file) => file.key)).not.toContain('k1')
+  })
+
+  it('keeps reading the rest when every conversation file is broken, and still writes nothing until the page saves', async () => {
+    const state = workspace(scope, 2)
+    const snapshot = snapshotOf(state)
+    snapshot.conversations = snapshot.conversations.map((file) => ({ ...file, content: 'garbage' }))
+    const files = memoryFiles()
+    files.stores.set(scope, snapshot)
+    const loaded = await loadChatHistory(files.api, memoryStorage(), scope)
+    expect(loaded).toMatchObject({ exists: true, unreadable: 2 })
+    expect(loaded.warning).toBeUndefined()
+    expect(loaded.state.conversations).toEqual([])
+    expect(files.api.writeHistory).not.toHaveBeenCalled()
+  })
+
+  it('carries the conversations to move aside into an import, so the import does not delete them', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save(workspace(scope, 2))
+    const stored = files.stores.get(scope)!
+    stored.conversations[0].content = '{truncated'
+    const other = { ...createConversation(undefined, 'from-old-computer'), updatedAt: 3000, messages: [message()] }
+    expect(await importConversationsIntoHistory(files.api, memoryStorage(), scope, [other])).toEqual({ added: 1, skipped: 0 })
+    expect(files.api.writeHistory.mock.calls.at(-1)![0].setAside).toEqual(['conversation-0'])
+    expect(files.aside.get(scope)).toEqual([{ key: 'conversation-0', content: '{truncated' }])
   })
 
   it('reports an unreadable store without falling back to older localStorage history', async () => {
@@ -425,8 +536,11 @@ describe('localStorage history from earlier versions', () => {
   it('keeps an unreadable localStorage record and never offers to remove it', async () => {
     const storage = memoryStorage()
     storage.setItem(historyKey(scope), '{not json')
-    const loaded = await loadChatHistory(memoryFiles().api, storage, scope)
-    expect(loaded.warning).toBeTruthy()
+    const files = memoryFiles()
+    const loaded = await loadChatHistory(files.api, storage, scope)
+    expect(loaded.warning).toBe('以前的聊天记录暂时读不出来，原文件没动')
+    expect(loaded).not.toHaveProperty('problem')
+    expect(files.api.logHistoryProblem).toHaveBeenCalledWith(expect.stringMatching(/^以前存在本机的聊天记录读不出来，这一回不保存：.+/))
     expect(loaded.afterFirstSave).toBeUndefined()
     expect(storage.getItem(historyKey(scope))).toBe('{not json')
   })
@@ -442,7 +556,8 @@ describe('localStorage history from earlier versions', () => {
     storage.setItem(historyKey(scope), raw)
     storage.setItem.mockClear()
     const restored = readWorkspace(storage, scope)
-    expect(restored.warning).toContain('原始记录已保留')
+    expect(restored.warning).toBe(kind === 'conversations' ? '聊天记录超过 50 个，这台电脑存不下，原来的记录没动' : '以前的聊天记录暂时读不出来，原文件没动')
+    expect(restored.problem).toBeTruthy()
     expect(restored.exists).toBe(true)
     expect(storage.getItem(historyKey(scope))).toBe(raw)
     expect(storage.setItem).not.toHaveBeenCalled()
@@ -762,7 +877,7 @@ describe('complete legacy and account-alias migration', () => {
     const restored = await loadChatHistory(files.api, storage, scope)
     expect(restored.warning).toBeUndefined()
     expect(restored.state.conversations).toHaveLength(60)
-    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('上限')
+    await expect(createHistoryWriter(files.api, restored.saved).save(restored.state)).rejects.toThrow('聊天记录超过 50 个，这台电脑存不下，原来的记录没动')
     expect(files.raw()).toBeNull()
     expect(storage.getItem(historyKey('solov:7'))).not.toBeNull()
     expect(storage.getItem(historyKey('sub2api:7'))).not.toBeNull()
@@ -1000,6 +1115,6 @@ describe('reading an unreadable record again', () => {
   it('keeps every conversation past the limit so saving asks to delete some rather than dropping any', () => {
     const merged = mergeSessionIntoHistory(workspace(scope, 50), session(['said-meanwhile'], 'said-meanwhile'))
     expect(merged.conversations).toHaveLength(51)
-    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过本地保存上限（50 个对话）')
+    expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 50 个，这台电脑存不下，原来的记录没动')
   })
 })
