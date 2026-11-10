@@ -14,6 +14,8 @@ import {
   buildPaymentWindowTitle,
   createPaymentWindowController,
   detectPaymentWindowTerminalStatus,
+  formatPaymentQrAmount,
+  formatPaymentQrDeadline,
   isAllowedPaymentNavigationUrl,
   isPaymentWindowReady,
   paymentFollowUpDelayMs,
@@ -281,6 +283,66 @@ describe('payment terminal-state detection', () => {
     expect(isPaymentWindowReady('支付剩余时间 Na:Na')).toBe(false)
     expect(isPaymentWindowReady('支付剩余时间 04:59')).toBe(true)
     expect(isPaymentWindowReady('剩余 4 分 59 秒')).toBe(true)
+  })
+})
+
+// D51：历史账号微信扫码那一页由星芒自己画，到期时间按本机时间写，币种不写代码。
+describe('drawn QR payment page wording', () => {
+  const now = new Date(2026, 10, 9, 14, 5).getTime()
+
+  it('writes the deadline in local time with the same day words as the rest of the app', () => {
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 9, 14, 35).toISOString(), now)).toBe('今天 14:35')
+    // 秒数舍掉：14:35:59 到期也写 14:35，不把时间说晚。
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 9, 14, 35, 59).toISOString(), now)).toBe('今天 14:35')
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 9, 9, 3).toISOString(), now)).toBe('今天 09:03')
+  })
+
+  it('names the date when the deadline falls on another day instead of calling it today', () => {
+    const lateEvening = new Date(2026, 10, 9, 23, 50).getTime()
+    expect(formatPaymentQrDeadline(new Date(2026, 10, 10, 0, 20).toISOString(), lateEvening)).toBe('11月10日 00:20')
+    const newYearsEve = new Date(2026, 11, 31, 23, 50).getTime()
+    expect(formatPaymentQrDeadline(new Date(2027, 0, 1, 0, 20).toISOString(), newYearsEve)).toBe('2027年1月1日 00:20')
+  })
+
+  it('leaves the deadline out when the time cannot be read', () => {
+    expect(formatPaymentQrDeadline('not a time', now)).toBeNull()
+  })
+
+  it('writes yuan for CNY and keeps any other currency code as it is', () => {
+    expect(formatPaymentQrAmount(12, 'CNY')).toBe('12.00 元')
+    expect(formatPaymentQrAmount(10.2, 'USD')).toBe('10.20 USD')
+  })
+
+  it('draws the amount in yuan and the local deadline instead of the raw UTC timestamp', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(now)
+    const harness = createHarness()
+    const expiresAt = new Date(2026, 10, 9, 14, 35).toISOString()
+    await harness.controller.openQrCode({ ...qrPayment(), amount: 12, expiresAt })
+    const loaded = harness.window.loadURL.mock.calls[0]![0]
+    const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
+    expect(html).toContain('<p>金额：<strong>12.00 元</strong></p>')
+    expect(html).toContain('<p>订单号：sub2-qr-1</p>')
+    expect(html).toContain('<p>请在今天 14:35 前完成付款</p>')
+    expect(html).not.toContain('有效期至')
+    expect(html).not.toContain('CNY')
+    expect(html).not.toContain(expiresAt)
+    harness.controller.destroy()
+  })
+
+  it('draws no deadline line when the order carries no expiry', async () => {
+    const harness = createHarness()
+    await harness.controller.openQrCode(qrPayment())
+    const loaded = harness.window.loadURL.mock.calls[0]![0]
+    const html = decodeURIComponent(loaded.slice(loaded.indexOf(',') + 1))
+    expect(html).toContain('<p>金额：<strong>1.00 元</strong></p>')
+    expect(html).not.toContain('前完成付款')
+    harness.controller.destroy()
+  })
+
+  it('does not mistake a midnight deadline line for a finished countdown', () => {
+    const page = ['安全支付 - 星芒AI', '扫码支付', '金额：12.00 元', '订单号：sub2-qr-1', '请在今天 00:00 前完成付款'].join('\n')
+    expect(detectPaymentWindowTerminalStatus(page)).toBeNull()
   })
 })
 

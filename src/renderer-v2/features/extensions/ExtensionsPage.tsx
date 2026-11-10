@@ -7,6 +7,7 @@ import {
   FileText,
   FolderOpen,
   Globe,
+  Headset,
   MoreHorizontal,
   Package,
   Plug,
@@ -103,6 +104,7 @@ import {
   runExtensionAction,
   submitMcpInstall,
   unresolvedInstallPlaceholders,
+  type McpRuntimeNotice,
   type RowAction,
 } from './extensions-common'
 import { isProvider } from '../tools/provider-options'
@@ -330,6 +332,8 @@ export function ExtensionsPage({
   // 「自定义连接」给哪几个工具加；打开时只勾当前这个。
   const [formTools, setFormTools] = useState<Provider[]>([])
   const [deletion, setDeletion] = useState<ExtensionItem | null>(null)
+  // 待确认移除的自己加的市场（名字）。地址、分支、子目录都是客户自己填的，手一滑删了没有撤销，所以先问一句（D67）。
+  const [marketRemoval, setMarketRemoval] = useState<string | null>(null)
   // 「添加插件」表单点了「添加」、等用户在确认框里点「信任并安装」（只有 Grok 有这一步）。
   const [trusting, setTrusting] = useState(false)
   const [selected, setSelected] = useState<ExtensionItem | null>(null)
@@ -390,6 +394,32 @@ export function ExtensionsPage({
       },
       'Python 已经装好了，可以继续添加这条连接',
     )
+  // 缺 Python 能代装就给「自动安装 Python」；缺 uv 给「找客服」（D20），两样都缺时两颗都在。
+  function runtimeNoticeActions(notice: McpRuntimeNotice) {
+    const help = notice.support ? onOpenHelp : undefined
+    if (!notice.installPython && !help) return undefined
+    return (
+      <>
+        {notice.installPython && (
+          <Button
+            size="sm"
+            icon={Download}
+            loading={operation.busy === 'python'}
+            disabled={Boolean(operation.busy)}
+            onClick={installPython}
+            testId="mcp-install-python"
+          >
+            自动安装 Python
+          </Button>
+        )}
+        {help && (
+          <Button size="sm" icon={Headset} onClick={help} testId="mcp-runtime-support">
+            找客服
+          </Button>
+        )}
+      </>
+    )
+  }
   const job = toolJobs?.[provider]
   const installingTool = installJobRunning(job)
   const installMissingTool = () =>
@@ -1305,14 +1335,11 @@ export function ExtensionsPage({
                           label: '移除市场',
                           icon: Trash2,
                           danger: true,
-                          onSelect: () =>
-                            void operation.execute(
-                              'market-delete',
-                              async () => {
-                                await api.removeMarketplace(market.name)
-                                await reloadList()
-                              },
-                            ),
+                          // 框里摆着 ResultNotice：先清掉别的操作留下的红条，别让它跟着进这个框。
+                          onSelect: () => {
+                            operation.clear()
+                            setMarketRemoval(market.name)
+                          },
                         },
                       ]}
                     />
@@ -1398,18 +1425,7 @@ export function ExtensionsPage({
             title={addFormRuntimeNotice.title}
             body={addFormRuntimeNotice.body}
             testId="mcp-runtime-notice"
-            actions={addFormRuntimeNotice.installPython ? (
-              <Button
-                size="sm"
-                icon={Download}
-                loading={operation.busy === 'python'}
-                disabled={Boolean(operation.busy)}
-                onClick={installPython}
-                testId="mcp-install-python"
-              >
-                自动安装 Python
-              </Button>
-            ) : undefined}
+            actions={runtimeNoticeActions(addFormRuntimeNotice)}
           />
         )}
         {kind === 'mcp' && form === 'add' && !curatedForm && (
@@ -1627,18 +1643,7 @@ export function ExtensionsPage({
             title={curatedRuntimeNotice.title}
             body={curatedRuntimeNotice.body}
             testId="curated-runtime-notice"
-            actions={curatedRuntimeNotice.installPython ? (
-              <Button
-                size="sm"
-                icon={Download}
-                loading={operation.busy === 'python'}
-                disabled={Boolean(operation.busy)}
-                onClick={installPython}
-                testId="mcp-install-python"
-              >
-                自动安装 Python
-              </Button>
-            ) : undefined}
+            actions={runtimeNoticeActions(curatedRuntimeNotice)}
           />
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
@@ -1726,7 +1731,9 @@ export function ExtensionsPage({
         <p>
           {kind === 'plugin'
             ? '插件里带的技能、命令和外接工具会一起移除。'
-            : '其他工具里的不受影响。以后可以在官方目录或精选里重新添加。'}
+            : kind === 'skill'
+              ? '其他工具里的不受影响。以后要用，再「从文件夹导入」一次。'
+              : '其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。'}
         </p>
         {operation.busy && operation.busy !== 'delete' && (
           <p role="status" data-testid={`${page}-delete-busy`}>
@@ -1734,6 +1741,44 @@ export function ExtensionsPage({
               ? '上一个操作还没完成，完成后才能卸载。'
               : '上一个操作还没完成，完成后才能移除。'}
           </p>
+        )}
+        <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
+      </Dialog>
+      <Dialog
+        open={marketRemoval !== null}
+        title={`移除市场「${marketRemoval ?? ''}」？`}
+        onClose={() => setMarketRemoval(null)}
+        testId="plugins-market-delete-dialog"
+        footer={
+          <>
+            <Button onClick={() => setMarketRemoval(null)}>取消</Button>
+            {/* 跟上面删除确认框一个样子：只有移除自己在跑才转圈，别的操作没完时按钮灰着、正文下面说一句为什么。 */}
+            <Button
+              variant="danger"
+              icon={Trash2}
+              loading={operation.busy === 'market-delete'}
+              disabled={Boolean(operation.busy) && operation.busy !== 'market-delete'}
+              onClick={() => {
+                if (marketRemoval !== null)
+                  void operation.execute(
+                    'market-delete',
+                    async () => {
+                      await api.removeMarketplace(marketRemoval)
+                      setMarketRemoval(null)
+                      await reloadList()
+                    },
+                  )
+              }}
+              testId="plugins-market-delete-confirm"
+            >
+              移除
+            </Button>
+          </>
+        }
+      >
+        <p>移除后，这个市场就不在列表里了，要用时得重新添加。</p>
+        {operation.busy && operation.busy !== 'market-delete' && (
+          <p role="status" data-testid="plugins-market-delete-busy">上一个操作还没完成，完成后才能移除。</p>
         )}
         <ResultNotice error={operation.error} detail={operation.detail} target={extensionFailureTarget(operation.failed)} />
       </Dialog>

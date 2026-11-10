@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Plus, Trash2, X } from 'lucide-react'
+import type { SavedAccount } from '../../electron/ipc-contract'
 import { Button, Dialog, Input, ListRow, Notice, Pill } from './ui'
 import {
   ListState,
@@ -27,6 +28,7 @@ import { accountSources, isEmail } from './features/auth/state'
 import type { LoginTarget } from './features/auth/api'
 import { offersCodexDesktopRestart } from '../../electron/running-tools'
 import { currentWindowOs, type WindowOs } from './features/app/window-os'
+import { chatImageWorkActive } from './chat-image-work'
 
 export function SavedAccounts({
   api,
@@ -76,12 +78,49 @@ export function SavedAccounts({
   // 切过去才发现登录已失效的那一个保存账号（全面检测 Q12）：当前账号没变，
   // 这一行给个「重新登录这个账号」，不然用户只看到一句失败、不知道下一步。
   const [expired, setExpired] = useState<string | null>(null)
+  // 对话页还在出图时点了「切换」的那个账号：先问一句再切（D44）。
+  const [imageBusySwitch, setImageBusySwitch] = useState<SavedAccount | null>(null)
+  const waitForImage = useRef<HTMLButtonElement>(null)
   function isCurrent(account: { userId: number; origin: string }) {
     return Boolean(
       resource.data?.session.authenticated &&
       account.userId === resource.data.session.account?.userId &&
       sameAccountOrigin(account.origin, resource.data.origin),
     )
+  }
+  function switchTo(account: SavedAccount) {
+    void operation.execute(
+      account.id,
+      async () => {
+        setExpired(null)
+        const outcome = await switchAccountWithOptionalSync(
+          api,
+          account,
+          selected,
+          sync.data,
+          resource.data?.origin ?? '',
+        ).catch((error: unknown) => {
+          if (savedAccountExpired(error)) setExpired(account.id)
+          throw error
+        })
+        preserveAccountSwitchResult(outcome)
+        setResult(outcome)
+        setChoices({})
+        await resource.reload()
+        await sync.reload()
+        onAccountChanged?.(outcome)
+      },
+      '',
+    )
+  }
+  // 换账号时主进程会停掉旧账号的出图，对话页那张停了就不收，服务端可能已经扣了钱（D44）。
+  // 只在点下去这一刻看一次；问的时候图出完了也不自己关、不自己切，等用户选。
+  function requestSwitch(account: SavedAccount) {
+    if (chatImageWorkActive()) {
+      setImageBusySwitch(account)
+      return
+    }
+    switchTo(account)
   }
   const desktopClientsHint = accountSwitchDesktopClientsHint(currentWindowOs())
   const alone = variant === 'card' && Boolean(resource.data) && !resource.data?.accounts.some((account) => !isCurrent(account))
@@ -179,31 +218,7 @@ export function SavedAccounts({
                         size="sm"
                         disabled={current || Boolean(operation.busy)}
                         loading={operation.busy === account.id}
-                        onClick={() =>
-                          void operation.execute(
-                            account.id,
-                            async () => {
-                              setExpired(null)
-                              const outcome = await switchAccountWithOptionalSync(
-                                api,
-                                account,
-                                selected,
-                                sync.data,
-                                resource.data?.origin ?? '',
-                              ).catch((error: unknown) => {
-                                if (savedAccountExpired(error)) setExpired(account.id)
-                                throw error
-                              })
-                              preserveAccountSwitchResult(outcome)
-                              setResult(outcome)
-                              setChoices({})
-                              await resource.reload()
-                              await sync.reload()
-                              onAccountChanged?.(outcome)
-                            },
-                            '',
-                          )
-                        }
+                        onClick={() => requestSwitch(account)}
                       >
                         切换
                       </Button>
@@ -303,6 +318,34 @@ export function SavedAccounts({
         <p>只移除本机保存的登录信息。已写入工具的密钥不会改变。</p>
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
+      {/* 单子（D44）只定了这一句和两个按钮，没有标题：标题行藏起来，这一句同时当框的名字。 */}
+      <Dialog
+        open={Boolean(imageBusySwitch)}
+        headless
+        title={chatImageSwitchWarning}
+        onClose={() => setImageBusySwitch(null)}
+        initialFocus={waitForImage}
+        testId="saved-account-switch-image-busy"
+        footer={
+          <>
+            <Button ref={waitForImage} onClick={() => setImageBusySwitch(null)}>
+              等它出完
+            </Button>
+            <Button
+              variant="danger"
+              onClick={() => {
+                const account = imageBusySwitch
+                setImageBusySwitch(null)
+                if (account) switchTo(account)
+              }}
+            >
+              仍然切换
+            </Button>
+          </>
+        }
+      >
+        <p>{chatImageSwitchWarning}</p>
+      </Dialog>
     </div>
   )
 }
@@ -317,6 +360,9 @@ export function accountSwitchDesktopClientsHint(os: WindowOs): string | null {
 }
 
 type SyncProvider = AccountSyncCandidate['provider']
+
+/** 对话页还在出图时点「切换」先问的那一句（D44）。 */
+export const chatImageSwitchWarning = '对话还在出图，换账号会停掉这张图，可能已经扣费。'
 
 /**
  * 切换账号时哪些工具要一起换。没动过的按默认：原本就是账号密钥的勾上，自己填的、

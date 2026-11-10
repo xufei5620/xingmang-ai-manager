@@ -716,7 +716,7 @@ describe('Sub2API RelayBackend adapter', () => {
     const pending = f.client.login(loginInput)
     f.client.logout()
     release(json(auth()))
-    await expect(pending).rejects.toThrow('上下文已变化')
+    await expect(pending).rejects.toThrow('账号刚切换过')
     expect(f.getSavedAccount()).toBeNull()
     expect(f.calls).toHaveLength(1)
   })
@@ -846,7 +846,7 @@ describe('Sub2API RelayBackend adapter', () => {
       release = resolve; started()
     }) : undefined
     const pending = f.client.getProfile()
-    const rejected = expect(pending).rejects.toThrow('上下文已变化')
+    const rejected = expect(pending).rejects.toThrow('账号刚切换过')
     await gate
     f.state.expired = false
     f.state.loginId = newUserId
@@ -867,7 +867,7 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.override = ({ url }) => url.pathname.endsWith('/auth/refresh') ? new Promise<Response>((resolve) => {
       release = resolve; started()
     }) : undefined
-    const pending = expect(f.restore(saved())).rejects.toThrow('上下文已变化')
+    const pending = expect(f.restore(saved())).rejects.toThrow('账号刚切换过')
     await gate
     f.client.logout()
     f.state.expired = false

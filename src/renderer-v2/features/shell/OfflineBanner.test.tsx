@@ -49,6 +49,17 @@ describe('renderer-v2 offline banner', () => {
     expect(markup).not.toContain('打开认证页')
   })
 
+  it('says the proxy wants a password instead of sending the user to reopen it', () => {
+    const markup = withStatus({ offline: true, cause: 'proxyAuth', openNetworkSettings() {} }, createElement(OfflineBanner))
+    expect(markup).toContain('data-cause="proxyAuth"')
+    expect(markup).toContain('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
+    expect(markup).not.toContain('代理软件')
+    // 按钮照旧：没做输入框（D32），能做的还是打开系统代理设置看一眼。
+    expect(markup).toContain('data-testid="offline-banner-proxy-settings"')
+    expect(markup).toContain('data-testid="offline-banner-recheck"')
+    expect(markup).not.toContain('打开认证页')
+  })
+
   it('offers the sign-in page when the network wants a portal login first', () => {
     const markup = withStatus({ offline: true, cause: 'portal', openNetworkSettings() {} }, createElement(OfflineBanner))
     expect(markup).toContain('这个网络要先登录认证（校园网、酒店、公共 Wi-Fi 常见）。')

@@ -64,7 +64,7 @@ const api: AuthApi = {
     if (query.has('changeFail')) throw new Error('修改密码失败：服务暂时不可用')
     if (query.has('changeRefused')) throw new Error("Error invoking remote method 'account:change-password': Error: 请求太频繁，请稍后再试")
     if (accountPassword !== null) accountPassword = input.newPassword
-    if (query.has('changeLost')) { session = null; throw new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试") }
+    if (query.has('changeLost')) { session = null; throw new Error("Error invoking remote method 'account:change-password': Error: 账号刚切换过，请再试一次") }
     return { changed: true }
   },
   getLegal: async (kind) => ({ kind, markdown: '# Test Agreement\n\nLocal fixture content.', fetchedAt: '2026-09-07T00:00:00Z' }),

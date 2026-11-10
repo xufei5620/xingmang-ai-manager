@@ -29,11 +29,13 @@ export interface CanvasHostEntryPoints {
   projectDefaultFolder: boolean
   /** "Choose the folder again" on a project whose folder is missing. */
   projectFolderRelink: boolean
+  /** "Delete" on an archived project; the host confirms with the user itself. */
+  projectDelete: boolean
 }
 
 type EntryPointMethods = Pick<CanvasHostBridge, 'getAssetDetail' | 'downloadAssets' | 'readAssetOrigin' | 'listRunHistory' | 'readRunHistory' | 'renderImageAnnotation' | 'readVideoForFramePreview'
   | 'listProjectHistory' | 'readProjectRevision' | 'restoreProjectRevision' | 'inspectProjectRestore' | 'previewProjectExport' | 'exportProjectPackage' | 'cancelProjectExport'
-  | 'createProjectInDefaultFolder' | 'relinkProjectFolder'>
+  | 'createProjectInDefaultFolder' | 'relinkProjectFolder' | 'deleteProject'>
 
 export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profile: CanvasCapabilityProfile): CanvasHostEntryPoints {
   const assetDetail = typeof bridge.getAssetDetail === 'function'
@@ -51,6 +53,7 @@ export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profil
     projectPackageExport: typeof bridge.previewProjectExport === 'function' && typeof bridge.exportProjectPackage === 'function' && typeof bridge.cancelProjectExport === 'function',
     projectDefaultFolder: typeof bridge.createProjectInDefaultFolder === 'function',
     projectFolderRelink: typeof bridge.relinkProjectFolder === 'function',
+    projectDelete: typeof bridge.deleteProject === 'function',
   }
 }
 

@@ -85,7 +85,7 @@ export function toolUsageRemaining(row: ToolUsageRow): string {
 
 /** 卡片副标题:一句话回答「钱花在哪个工具上了」。 */
 export function toolUsageHeadline(summary: ToolUsageSummary): string {
-  if (!summary.enabledCount) return '当前账号还没有为任何工具签发密钥，在首页配置一次工具就会自动签发。'
+  if (!summary.enabledCount) return '当前账号还没给任何工具配过密钥，在首页配一次工具就会自动准备好。'
   if (summary.used === null) return '当前账号的用量暂未读到。'
   if (!summary.top) return `当前账号的 ${summary.enabledCount} 个工具都还没有产生用量。`
   const share = toolUsageShare(summary.top)

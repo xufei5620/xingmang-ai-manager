@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { createCliInstallService, type CliInstallServiceDependencies } from './cli-install-service'
-import type { RendererMessageTarget, ToolStatus } from './system-service'
+import type { RendererMessageTarget, SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
 
 // #1070 第 2 步把装命令行工具那一整段搬成了 createCliInstallService。装的全过程仍由 system-service 的测试经
@@ -24,7 +24,7 @@ function nativeClaude(): { status: ToolStatus; installation: null } {
   }
 }
 
-function createService(dependencies: Partial<CliInstallServiceDependencies> = {}) {
+function createService(dependencies: Partial<CliInstallServiceDependencies> = {}, options: SystemServiceOptions = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-cli-install-service-'))
   temporaryDirectories.push(root)
   const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
@@ -34,6 +34,7 @@ function createService(dependencies: Partial<CliInstallServiceDependencies> = {}
     managerDataDirectory: root,
     providerRoots: { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') },
     findExecutable: async () => null,
+    ...options,
   })
   const takeBackUnreadableCodexModelCatalog = vi.fn(async () => undefined)
   const service = createCliInstallService(context, {
@@ -45,6 +46,7 @@ function createService(dependencies: Partial<CliInstallServiceDependencies> = {}
       throw new Error('should not install Git on Linux')
     },
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime: async () => undefined,
     ...dependencies,
   })
   return { service, takeBackUnreadableCodexModelCatalog }
@@ -80,6 +82,33 @@ describe('cli install service', () => {
     await expect(service.installCli('claude', target, '2.1.200')).rejects.toThrow('Claude Code 正在安装中')
     release()
     await expect(first).rejects.toThrow('由官方安装器管理')
+  })
+
+  it('refreshes an outdated managed Node.js before looking for npm, and stops there when cancelled meanwhile', async () => {
+    const order: string[] = []
+    const absentTool: ToolStatus = { installed: false, version: null, path: null, installDirectory: null }
+    const findExecutable = vi.fn(async (command: string) => {
+      order.push(`find:${command}`)
+      return null
+    })
+    const handle: { service?: ReturnType<typeof createService>['service'] } = {}
+    const refreshOutdatedManagedNodeRuntime = vi.fn(async (signal?: AbortSignal) => {
+      order.push('refresh')
+      expect(signal?.aborted).toBe(false)
+      // 换 Node.js 的时候客户点了取消：这一步自己不抛，由装工具那边接着说「已取消」。
+      expect(handle.service?.cancelCliInstall('claude')).toMatchObject({ cancelled: true })
+      expect(signal?.aborted).toBe(true)
+    })
+    const { service } = createService({
+      inspectCliTool: async () => ({ status: absentTool, installation: null }),
+      refreshOutdatedManagedNodeRuntime,
+    }, { findExecutable })
+    handle.service = service
+
+    await expect(service.installCli('claude', rendererTarget().target)).rejects.toThrow('安装已取消')
+    expect(refreshOutdatedManagedNodeRuntime).toHaveBeenCalledTimes(1)
+    // 头一个是装工具前那一眼「是不是官方安装器管的」；给这次安装找 npm 排在换 Node.js 之后，取消了就不再找。
+    expect(order).toEqual(['find:npm', 'refresh'])
   })
 
   it('says nothing is being installed when there is nothing to cancel', () => {
