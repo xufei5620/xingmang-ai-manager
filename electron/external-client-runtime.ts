@@ -474,8 +474,10 @@ $timings['appxMs'] = Get-ElapsedMs $clock; $clock = [datetime]::UtcNow
  * decodes it with string methods and bit operators alone, which
  * ConstrainedLanguage allows ([Convert] and [System.Text.Encoding] are refused
  * there), and since every byte is ASCII it needs no UTF-8 decoder;
- * ConvertFrom-Json reads the escapes back. Base64 rather than hex keeps the
- * command line as short as it was.
+ * ConvertFrom-Json reads the escapes back. Base64 rather than hex keeps this
+ * part of the command line about as long as before: an all-ASCII list encodes
+ * to the same length, and each character past ASCII costs six bytes instead of
+ * UTF-8's two to four.
  */
 export function encodeKnownExternalClientSignatures(knownSignatures: readonly KnownExternalClientSignature[]): string {
   const json = JSON.stringify(knownSignatures.map(({ path: file, stamp, status, subject, version }) => ({ path: file, stamp, status, subject, version })))
