@@ -43,6 +43,8 @@ const valueImportable = [
   'electron/cli-model-defaults',
   // 工具配置文件是个链接时那句话的标志，主进程拼、错误框照它认出来配「配置文件是个链接」（#1100 第 2 条）。
   'electron/config-link-refusal',
+  // 写工具配置没权限时主进程查出来的两种情况（设置文件夹归管理员、文件被设成只读），主进程拼、错误框照它认出来配整句（D15）；文件本身什么都不 import。
+  'electron/config-write-blocker',
   // 更新因磁盘空间不够没下时那句话，系统通知与首页气泡、更新页共用一份（第二十二批 2）。
   'electron/disk-space-copy',
   // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。

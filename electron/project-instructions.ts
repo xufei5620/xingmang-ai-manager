@@ -32,6 +32,9 @@ const MAX_TEMPLATE_BYTES = 64 * 1024
 export const PUBLISHED_PROJECT_INSTRUCTIONS_DIGESTS: readonly string[] = [
   // #288（2026-09-22）发出的第一版。
   'ca1295d8cade9f6598e687d6650ccdc1488ff44d50d9e16ec70e84e229f38643',
+  // 0.2.24（2026-11-10）：去掉已下线的 Gemini CLI（D50），加一句让 AI 在 Windows 的
+  // PowerShell 里写成 npm.cmd（D75）。
+  '9f62753f1e66d22e5595cab474dd6d73a1a4d996584329f5b580643844652cec',
 ]
 
 export function projectInstructionsDigest(content: string): string {

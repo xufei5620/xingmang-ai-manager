@@ -1,5 +1,5 @@
 import { parseVideoStudioWorkerReply, type VideoStudioComposeProgress, type VideoStudioComposeRequest, type VideoStudioComposeResult, type VideoStudioWorkerMessage } from './compose-protocol'
-import { VideoStudioError, videoStudioAbortError } from './errors'
+import { VideoStudioError, videoStudioAbortError, videoStudioComposeGlitchMessage } from './errors'
 
 export interface VideoStudioWorkerListener {
   message(data: unknown): void
@@ -62,7 +62,7 @@ export function composeInVideoStudioWorker(request: VideoStudioComposeRequest, o
         if (settled) return
         const reply = parseVideoStudioWorkerReply(data)
         if (!reply) {
-          settle(() => reject(new VideoStudioError('拼片线程回了看不懂的消息，请再试一次')))
+          settle(() => reject(new VideoStudioError(videoStudioComposeGlitchMessage)))
           return
         }
         if (reply.kind === 'progress') {
@@ -76,13 +76,13 @@ export function composeInVideoStudioWorker(request: VideoStudioComposeRequest, o
         settle(() => reject(new VideoStudioError(reply.message)))
       },
       error() {
-        settle(() => reject(new VideoStudioError('拼片线程意外停了，请再试一次')))
+        settle(() => reject(new VideoStudioError(videoStudioComposeGlitchMessage)))
       },
     }
     try {
       worker.start({ kind: 'compose', request }, [...request.clips.map((clip) => clip.data), ...(request.music ? [request.music.data] : [])], listener)
     } catch {
-      settle(() => reject(new VideoStudioError('片段交不给拼片线程，请重新读一遍片段再试')))
+      settle(() => reject(new VideoStudioError(videoStudioComposeGlitchMessage)))
     }
   })
 }
