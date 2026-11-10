@@ -102,7 +102,7 @@ const feedbackTypes = [
 
 /**
  * 「复制给客服」复制出去的那一段（v4 第 10 批按问 5：不往服务器提交，客户自己发给客服）：类型、客户写的、
- * 联系方式、身份行、最近一次出错；勾了「附带诊断报告」再接上整份反馈报告（主进程已经脱敏）。
+ * 联系方式、身份行、最近一次出错；勾了「附带反馈报告」再接上整份反馈报告（主进程已经脱敏）。
  * 客户自己写的那几行再过一遍打码表（I13）：描述里偶尔会贴上 sk-… 或 Bearer …。
  */
 export function buildFeedbackMessage(input: {
@@ -112,7 +112,7 @@ export function buildFeedbackMessage(input: {
   identity?: string
   lastFailure?: string
   report?: string
-  /** 勾了「附带诊断报告」但这次没生成出来：末尾说一句，客服不会当成客户忘了勾。缺省 = 不说。 */
+  /** 勾了「附带反馈报告」但这次没生成出来：末尾说一句，客服不会当成客户忘了勾。缺省 = 不说。 */
   reportMissing?: boolean
 }): string {
   const lines = [`留言反馈 · ${input.type}`, input.description.trim()]
@@ -278,16 +278,16 @@ export function FeedbackPage({
         <Input
           label="联系方式（可选）"
           value={contact}
-          placeholder="微信号或邮箱，方便我们回复你"
+          placeholder="微信号或邮箱（会一起复制，发给客服时方便他回你）"
           onChange={(event) => setContact(event.target.value)}
           testId="feedback-contact"
         />
         <div className="v2-fb-attach">
           <div className="v2-fb-attach-text">
-            <strong id="feedback-attach-label">附带诊断报告</strong>
-            <p>已自动隐去密钥和个人路径<button type="button" className="v2-fb-link" onClick={preview} data-testid="feedback-attach-preview">预览报告</button></p>
+            <strong id="feedback-attach-label">附带反馈报告</strong>
+            <p>已自动隐去密钥和个人路径<button type="button" className="v2-fb-link" onClick={preview} data-testid="feedback-attach-preview">预览反馈报告</button></p>
           </div>
-          <Switch checked={attachReport} onChange={setAttachReport} aria-label="附带诊断报告" testId="feedback-attach" />
+          <Switch checked={attachReport} onChange={setAttachReport} aria-label="附带反馈报告" testId="feedback-attach" />
         </div>
         <div className="v2-fb-submit">
           <Button
@@ -596,7 +596,7 @@ export function FeedbackPage({
       >
         <p className="v2-fb-privacy" data-testid="feedback-privacy">
           <ShieldCheck size={16} aria-hidden="true" />
-          <span>密钥、密码和用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。</span>
+          <span>密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。</span>
         </p>
         {report?.selfChecked === false && navigate && (
           <Notice
