@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { configWriteBlockerMessage } from '../../../../electron/config-write-blocker'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
 
@@ -418,6 +419,16 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
     // 装东西的几步照旧是安装目录。
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('写不进安装目录')
+  })
+
+  it('tells a switch refused by a root-owned settings folder or a read-only file what it really is (D15)', () => {
+    // 主进程查出是哪一种时（config-files-context.ts 的 explainConfigWriteFailure）那半句，经 account-source-switch 包一层。
+    const adminOwned = guideStepFailure(new Error(`Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    expect(adminOwned.message).toBe('改用当前账号没有成功：写不进配置文件。这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
+    expect(adminOwned.reason).toBe('写不进配置文件')
+    const readOnly = guideStepFailure(new Error(`Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    expect(readOnly.message).toBe('改用当前账号没有成功：写不进配置文件。这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。')
+    expect(readOnly.reason).toBe('写不进配置文件')
   })
 
   it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {

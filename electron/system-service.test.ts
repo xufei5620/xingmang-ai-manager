@@ -4776,6 +4776,43 @@ describe('npm install progress reporting', () => {
     expect(inspectWindowsProcessor).toHaveBeenCalledTimes(1)
   })
 
+  it.runIf(process.platform === 'win32')('tells the Node.js installer only when the app itself already runs elevated', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-elevated-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    function serviceFor(windowsProcessElevated?: boolean) {
+      return createSystemService(
+        new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+        {
+          platform: 'win32',
+          windowsExecutionMode: 'same-user',
+          ...(windowsProcessElevated === undefined ? {} : { windowsProcessElevated }),
+          findExecutable: async () => null,
+          inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+          inspectWindowsProcessor: async () => 'x64' as const,
+          installNodeRuntime,
+        },
+      )
+    }
+
+    await serviceFor(true).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ processElevated: true }))
+    await serviceFor(false).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+    await serviceFor().installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+  })
+
   it.runIf(process.platform === 'win32')('keeps an outdated Node.js on its own build when replacing it on an ARM laptop', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-old-node-runtime-'))
     temporaryDirectories.push(directory)
