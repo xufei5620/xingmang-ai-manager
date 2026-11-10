@@ -124,6 +124,7 @@ import {
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
+import { assertWorkspaceDirectory } from './workspace-access'
 
 const execFileAsync = promisify(execFile)
 
@@ -4118,11 +4119,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
       const workspace = store.read().workspace
-      try {
-        if (!fs.statSync(workspace).isDirectory()) throw new Error('not a directory')
-      } catch {
-        throw new Error('工作目录不存在，请重新选择')
-      }
+      assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
       // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
       const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
       const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]
