@@ -20,6 +20,7 @@ import {
   type WindowsMachinePaths,
 } from './windows-machine-paths'
 import { authenticodeSignatureModules, buildPowerShellModuleImportStatement, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import {
   encodeWindowsPowerShellCommand,
   inspectWindowsElevationCapability,
@@ -193,16 +194,19 @@ export const windowsRestartStatusModules = ['Microsoft.PowerShell.Utility', 'Mic
 export const appInstallerQueryModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
 export const nodeRuntimeWindowsProbeTimeoutMs = 10_000
 
+// Written for ConstrainedLanguage too, where an application-control policy runs
+// every -Command (see powershell-constrained-language.ts): a plain array and a
+// hashtable instead of List[string] and [pscustomobject], both refused there.
 export const windowsRestartStatusScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   buildPowerShellModuleImportStatement(windowsRestartStatusModules),
   "$ErrorActionPreference = 'Stop'",
-  '$reasons = [System.Collections.Generic.List[string]]::new()',
+  '$reasons = @()',
   "$componentServicing = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending'",
   "$windowsUpdate = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired'",
-  "if (Test-Path -LiteralPath $componentServicing) { [void]$reasons.Add('Windows 组件更新待重启') }",
-  "if (Test-Path -LiteralPath $windowsUpdate) { [void]$reasons.Add('Windows Update 待重启') }",
-  '[pscustomobject]@{ required = ($reasons.Count -gt 0); reasons = @($reasons) } | ConvertTo-Json -Compress',
+  "if (Test-Path -LiteralPath $componentServicing) { $reasons += 'Windows 组件更新待重启' }",
+  "if (Test-Path -LiteralPath $windowsUpdate) { $reasons += 'Windows Update 待重启' }",
+  ...buildPowerShellJsonOutputStatements('@{ required = ($reasons.Count -gt 0); reasons = @($reasons) } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadSource> = {
@@ -219,23 +223,23 @@ const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadS
 }
 
 export const nodeInstallerSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_MSI_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 export const installedNodeSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_EXE_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 function encodedPowerShellCommand(script: string): string {
@@ -245,7 +249,7 @@ function encodedPowerShellCommand(script: string): string {
 export const appInstallerQueryScript = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   buildPowerShellModuleImportStatement(appInstallerQueryModules),
   `$packages = @(Get-AppxPackage -Name '${appInstallerPackageName}' -ErrorAction Stop | Sort-Object Version -Descending)`,
   'if ($packages.Count -eq 0) {',
@@ -257,11 +261,13 @@ export const appInstallerQueryScript = [
   '}',
   'if ($packages.Count -gt 0) {',
   '  $package = $packages[0]',
-  '  [pscustomobject]@{',
-  '    name = [string]$package.Name',
-  '    packageFamilyName = [string]$package.PackageFamilyName',
-  '    installLocation = [string]$package.InstallLocation',
-  '  } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements([
+    '@{',
+    '    name = [string]$package.Name',
+    '    packageFamilyName = [string]$package.PackageFamilyName',
+    '    installLocation = [string]$package.InstallLocation',
+    '  } | ConvertTo-Json -Compress',
+  ].join('\n')).map((statement) => `  ${statement}`),
   '}',
 ].join('\n')
 

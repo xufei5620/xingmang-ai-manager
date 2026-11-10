@@ -20,6 +20,7 @@ import { createDownloadDeadline, downloadWithResume } from './download-retry'
 import { sameLocalPathIdentity } from './path-identity'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import { compareVersionsBy, parsePythonReleaseVersion } from './versions'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
@@ -112,25 +113,35 @@ function encodedPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
+// Both checks are written for ConstrainedLanguage too, where an
+// application-control policy runs every -Command and [PSCustomObject] and
+// static .NET calls are refused (see powershell-constrained-language.ts).
 export const pythonInstallerSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress'),
 ].join('; ')
 
+/**
+ * Get-Item's VersionInfo is PowerShell's own wrapper around the same
+ * FileVersionInfo.GetVersionInfo call, and unlike calling it directly it is
+ * allowed in ConstrainedLanguage.
+ */
+export const installedPythonInspectionModules = [...authenticodeSignatureModules, 'Microsoft.PowerShell.Management'] as const
+
 export const installedPythonInspectionScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   '$ErrorActionPreference = "Stop"',
   "$ProgressPreference = 'SilentlyContinue'",
-  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
+  buildPowerShellPinnedModuleImportStatement(installedPythonInspectionModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:XINGMANG_PYTHON_FILE_PATH).ProductVersion',
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject; version = [string]$version } | ConvertTo-Json -Compress',
+  '$version = (Get-Item -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -Force).VersionInfo.ProductVersion',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject; version = [string]$version } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 function report(options: InstallPythonRuntimeOptions, progress: PythonRuntimeInstallProgress): void {

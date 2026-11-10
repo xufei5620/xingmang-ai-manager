@@ -631,6 +631,74 @@ for (const [name, limit, run] of trustedProbes) {
   }])
 }
 
+const { buildUpdateSignatureScript } = compiled('update-signature')
+const { buildWindowsCliProcessProbeScript, parseWindowsCliProcessProbeOutput } = compiled('cli-process-probe')
+const { buildWindowsExecutableProductVersionScript } = compiled('system-scan-service')
+
+// Where an application-control policy is enforced, the update, install and
+// signature scripts were refused as a whole too (on this runner under
+// __PSLockdownPolicy=4, 2026-11-10): such a machine could not install any
+// update, Node.js, Python or a native CLI, and the running CLI probe answered
+// "nothing running". Each one runs here in a session switched to
+// ConstrainedLanguage, the same stand-in the Codex check above uses, which gave
+// the same answers as the real lockdown for all of them. They read a signed
+// copy of node.exe under a Chinese folder name, so the \uXXXX escaping is
+// exercised on a real path and has to come back as the same path.
+checks.push(['update, install and signature scripts still answer in ConstrainedLanguage', async () => {
+  const wrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
+  const signedDir = path.join(scratch, '中文目录')
+  const signed = path.join(signedDir, 'node.exe')
+  fs.mkdirSync(signedDir, { recursive: true })
+  fs.copyFileSync(process.execPath, signed)
+  const modulesRoot = path.join(path.dirname(powershell), 'Modules')
+  async function runConstrained(label, script, extra = {}) {
+    const output = (await runPowerShell(['-Command', wrapper], trustedEnv({ ...extra, XINGMANG_CONSTRAINED_SCRIPT: script }))).trim()
+    assert.match(output, /^[\x00-\x7F]*$/, `${label}: ${output}`)
+    return output
+  }
+  async function signatureFields(label, script, extra) {
+    const parsed = JSON.parse(await runConstrained(label, script, extra))
+    assert.equal(parsed.status ?? parsed.Status, 'Valid', label)
+    return parsed
+  }
+
+  const update = await signatureFields('update installer', buildUpdateSignatureScript(), {
+    XINGMANG_UPDATE_SIGNATURE_TARGET: signed,
+    XINGMANG_UPDATE_SECURITY_MODULE: path.join(modulesRoot, 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Security.psd1'),
+    XINGMANG_UPDATE_UTILITY_MODULE: path.join(modulesRoot, 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Utility.psd1'),
+  })
+  // parseSignatureResult compares this path with the installer it was asked about.
+  assert.equal(update.Path, signed)
+  assert.ok(update.Subject)
+  assert.ok((await signatureFields('native CLI', nativeCliSignatureScript, { XINGMANG_NATIVE_CLI: signed })).Subject)
+  await signatureFields('Node.js installer', nodeInstallerSignatureScript, { XINGMANG_NODE_MSI_PATH: signed })
+  await signatureFields('installed Node.js', installedNodeSignatureScript, { XINGMANG_NODE_EXE_PATH: signed })
+  await signatureFields('Python installer', pythonInstallerSignatureScript, { XINGMANG_PYTHON_FILE_PATH: signed })
+  const python = await signatureFields('installed Python', installedPythonInspectionScript, { XINGMANG_PYTHON_FILE_PATH: signed })
+  assert.equal(python.version, process.versions.node)
+  assert.equal(await runConstrained('product version', buildWindowsExecutableProductVersionScript(), { XINGMANG_VERSION_TARGET: signed }), process.versions.node)
+
+  // Both registry keys answered as present, so both Chinese reasons go through the escaping.
+  const restart = JSON.parse(await runConstrained('pending restart', `function Test-Path { param([string]$LiteralPath) return $true }\n${windowsRestartStatusScript}`))
+  assert.deepEqual(restart, { required: true, reasons: ['Windows 组件更新待重启', 'Windows Update 待重启'] })
+  const appInstaller = await runConstrained('App Installer package', appInstallerQueryScript)
+  if (appInstaller) assert.ok(JSON.parse(appInstaller).packageFamilyName)
+
+  const sleeper = spawn(signed, ['-e', 'setTimeout(() => {}, 120000)'], { stdio: 'ignore', windowsHide: true })
+  try {
+    const matches = parseWindowsCliProcessProbeOutput(await runConstrained('running CLI process', buildWindowsCliProcessProbeScript(), { XINGMANG_CLI_PROCESS_ROOT: signedDir }))
+    assert.ok(matches.some((match) => match.processId === sleeper.pid && match.executablePath === signed), JSON.stringify(matches))
+  } finally {
+    // The copy stays locked until it has exited, and the scratch folder is removed at the end.
+    if (sleeper.exitCode === null && sleeper.signalCode === null) {
+      await new Promise((resolve) => {
+        sleeper.once('exit', resolve)
+        sleeper.kill()
+      })
+    }
+  }
+}])
+
 // The managed-root hardening, run for real once, under ProgramData where the
 // real root lives. A fresh folder there inherits ProgramData's Users
 // create/write ACE, so this reproduces the standard-user write window; the unit
