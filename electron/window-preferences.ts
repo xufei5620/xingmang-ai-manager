@@ -47,6 +47,14 @@ export const UI_MIN_ZOOM = 0.85
 export const UI_AUTO_MAX_ZOOM = 1.25
 export const UI_MAX_ZOOM = 1.375
 
+// 第一次打开（没记过窗口位置）的两条下限（D80，2026-11-10）。以前初始宽 = 工作区宽 × 0.8、
+// 工作区不到 1280×720 才最大化：1366×768、1280×800 这类最常见的便宜笔记本开出来只有 1093、1024 宽，
+// 缩放落到下限 0.9，逻辑宽不到 1280，侧栏收成只有图标的窄条，右边还空着一大块。
+// 1152 × 0.9 正好是 1280 逻辑宽，侧栏能展开；工作区宽不到 1440 时 × 0.8 够不着 1152，
+// 干脆最大化，还原时也至少有 1152 宽。记过窗口位置的人走上面那条分支，一个数都不变。
+const FIRST_RUN_MIN_WIDTH = 1152
+const FIRST_RUN_MAXIMIZE_BELOW_WIDTH = 1440
+
 const MAX_WINDOW_DIMENSION = 32_768
 const MAX_WINDOW_COORDINATE = 1_000_000
 
@@ -107,7 +115,7 @@ export function resolveWindowPlacement(
   // large user layout when it still fits the selected display.
   const width = state
     ? clamp(state.bounds.width, minimumSize.width, area.width)
-    : clamp(Math.round(area.width * 0.8), minimumSize.width, Math.min(1440, area.width))
+    : clamp(Math.round(area.width * 0.8), Math.min(FIRST_RUN_MIN_WIDTH, area.width), Math.min(1440, area.width))
   const height = state
     ? clamp(state.bounds.height, minimumSize.height, area.height)
     : clamp(Math.round(area.height * 0.85), minimumSize.height, Math.min(900, area.height))
@@ -123,7 +131,7 @@ export function resolveWindowPlacement(
       height,
     },
     minimumSize,
-    maximized: state?.maximized ?? (area.width < 1280 || area.height < 720),
+    maximized: state?.maximized ?? (area.width < FIRST_RUN_MAXIMIZE_BELOW_WIDTH || area.height < 720),
     restored: state !== undefined,
   }
 }

@@ -27,8 +27,8 @@
 .xm-btn-primary:hover:not(:disabled), .xm-btn-accent:hover:not(:disabled) { filter: brightness(1.08); }
 .xm-btn-primary:active:not(:disabled), .xm-btn-accent:active:not(:disabled) { filter: brightness(.94); box-shadow: var(--control-primary-active-shadow); }
 .xm-btn-primary .xm-kbd, .xm-btn-accent .xm-kbd { color: var(--pri-tx); opacity: .8; background: var(--control-primary-kbd-bg); border-color: var(--control-primary-kbd-line); }
-.xm-btn-secondary { background: var(--btn-2-bg); color: var(--text); border-color: var(--line-2); box-shadow: var(--control-secondary-shadow); }
-.xm-btn-secondary:hover:not(:disabled) { background: var(--btn-2-hover); border-color: var(--line-3); }
+.xm-btn-secondary { background: var(--btn-2-bg); color: var(--text); border-color: var(--btn-2-line); box-shadow: var(--control-secondary-shadow); }
+.xm-btn-secondary:hover:not(:disabled) { background: var(--btn-2-hover); border-color: var(--btn-2-line-hover); }
 .xm-btn-secondary:active:not(:disabled) { filter: brightness(.96); }
 .xm-btn-ghost { background: transparent; color: var(--text-2); }
 .xm-btn-ghost:hover:not(:disabled) { background: var(--panel-2); color: var(--text); }
@@ -187,7 +187,7 @@
 [data-theme="light"] .xm-field select { color-scheme: light; }
 .xm-field select option { color: var(--text); background-color: var(--pop); }
 .xm-field select option:disabled { color: var(--text-3); }
-.xm-field input:not([type="checkbox"]):hover:not(:focus), .xm-field textarea:hover:not(:focus), .xm-field select:hover:not(:focus) { border-color: var(--line-3); }
+.xm-field input:not([type="checkbox"]):hover:not(:focus), .xm-field textarea:hover:not(:focus), .xm-field select:hover:not(:focus) { border-color: var(--input-line-hover); }
 .xm-field input:not([type="checkbox"]):focus, .xm-field textarea:focus, .xm-field select:focus { outline: 0; border-color: var(--focus); box-shadow: inset 0 0 0 .5px var(--focus); }
 .xm-field input:not([type="checkbox"]):focus-visible, .xm-field textarea:focus-visible, .xm-field select:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .xm-field input::placeholder, .xm-field textarea::placeholder { color: var(--text-3); }
