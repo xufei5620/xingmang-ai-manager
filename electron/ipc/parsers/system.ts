@@ -2,7 +2,7 @@
 import type { DiagnosticsRunOptions } from '../../diagnostics'
 import type { ExternalClientScanOptions } from '../../external-client-contract'
 import { isRecord } from '../../input-guards'
-import type { AppUninstallRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, UpdateInstallOptions } from '../../ipc-contract'
+import type { AppUninstallRequest, NodeRuntimeInstallRequest, RendererActivity, RendererLogLevel, RendererRestartWork, UpdateInstallOptions } from '../../ipc-contract'
 import type { SystemScanOptions } from '../../system-service'
 import type { UpdateDownloadOptions } from '../../updater'
 import { optionalBoolean, optionalString, requiredString } from './common'
@@ -15,9 +15,19 @@ export function parseAppUninstallRequest(value: unknown): AppUninstallRequest {
   }
 }
 
+const rendererRestartWorkKinds: Record<RendererRestartWork, true> = { chat: true, 'video-compose': true }
+
+function isRendererRestartWork(value: unknown): value is RendererRestartWork {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(rendererRestartWorkKinds, value)
+}
+
 export function parseRendererActivity(value: unknown): RendererActivity {
-  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'busy') || typeof value.busy !== 'boolean') throw new Error('界面忙闲报告格式错误')
-  return { busy: value.busy }
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== 'busy' && key !== 'work') || typeof value.busy !== 'boolean') throw new Error('界面忙闲报告格式错误')
+  if (value.work === undefined) return { busy: value.busy }
+  const kinds: unknown = value.work
+  if (!Array.isArray(kinds) || kinds.length > Object.keys(rendererRestartWorkKinds).length || !kinds.every(isRendererRestartWork)) throw new Error('界面忙闲报告格式错误')
+  const work = [...new Set(kinds)]
+  return work.length > 0 ? { busy: value.busy, work } : { busy: value.busy }
 }
 
 export function parseDiagnosticsRunOptions(value: unknown): DiagnosticsRunOptions {
