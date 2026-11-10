@@ -116,7 +116,7 @@ test('registration status read retries once, names proxy software, and explains 
   const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
   try {
     await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
-    await page.getByTestId('register-status-error').filter({ hasText: '开着别的加速器、翻墙或代理软件的话先关掉' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '开着加速器或代理软件的话先关掉' }).waitFor()
     assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
     assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
     await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
@@ -538,8 +538,8 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
-// 已知29：写不进配置文件时不再叫人去查安装目录，按钮照旧。
-test('a switch that cannot write the config file says what to close and keeps the same buttons', async () => {
+// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「找客服」。
+test('a switch that cannot write the config file says what to close and offers support', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
   try {
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
@@ -551,8 +551,8 @@ test('a switch that cannot write the config file says what to close and keeps th
     assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
     assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
     assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
-    assert.equal((await page.getByTestId('guide-exit-log').textContent())?.trim(), '查看日志')
-    assert.equal(await page.getByTestId('guide-exit-support').count(), 0)
+    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '找客服')
+    assert.equal(await page.getByTestId('guide-exit-log').count(), 0)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
     assert.equal(failure.reason, '写不进配置文件')
     assert.match(failure.detail, /EPERM/)
@@ -1049,7 +1049,7 @@ test('a network failure on login names proxy software and offers retry and suppo
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。开着加速器或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。' }).waitFor()
     assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
     await page.getByTestId('auth-exit-help').click()
     assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
@@ -1079,7 +1079,7 @@ test('a refused Mac keychain explains the prompt and offers to reopen the app', 
     await windows.getByTestId('login-password').fill('fixture-password')
     await windows.getByTestId('auth-agree').check()
     await windows.getByTestId('login-submit').click()
-    await windows.getByTestId('auth-error').filter({ hasText: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。' }).waitFor()
+    await windows.getByTestId('auth-error').filter({ hasText: '这台电脑上存的登录信息暂时读不出来，原来的没动。请完全退出星芒再打开；还不行点「找客服」。' }).waitFor()
     assert.equal(await windows.getByTestId('auth-exit-relaunch').count(), 0)
     await windows.getByTestId('auth-exit-help').waitFor()
   } finally { await windows.close() }
@@ -1471,7 +1471,7 @@ test('a pending explicit login locks its source and 2FA retains its source witho
     assert.equal(await page.getByTestId('login-cancel').isDisabled(), true)
     await page.keyboard.press('Enter')
     await page.evaluate(() => window.authHarness.release('login'))
-    await page.getByTestId('auth-error').filter({ hasText: '两步验证' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '双重验证' }).waitFor()
     assert.equal(await page.getByTestId('login-password').inputValue(), 'test-password')
     assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
     await page.getByTestId('auth-open-website').click()
