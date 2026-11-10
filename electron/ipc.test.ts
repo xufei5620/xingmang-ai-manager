@@ -1997,6 +1997,8 @@ describe('registerIpcHandlers', () => {
     expect(extensionService.setRepositoryContext).toHaveBeenCalledWith('D:\\project')
     expect(providerExtensionService.setRepositoryRoot).toHaveBeenCalledWith('D:\\project')
     expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+      // Windows 把这句放在选文件夹窗口顶上，不出现「CLI」「工作目录」这类词（D48）。
+      title: '选一个项目文件夹',
       properties: ['openDirectory', 'createDirectory'],
     }))
     expect(electronMocks.handlers.get('repository:get-context')!(trustedEvent())).toEqual({
