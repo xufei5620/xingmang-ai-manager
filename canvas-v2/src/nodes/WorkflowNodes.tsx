@@ -761,7 +761,7 @@ function GenerationInfoPanel({
         />
       </div>
       {!commerceDerivedSize && selectedModel && fields.includes('imageResolution') && imageResolution.message && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />{imageResolution.message}</p>}
-      {fields.includes('imageCandidateCount') && imageCountChoices.length > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
+      {fields.includes('imageCandidateCount') && imageCountChoices.length > 1 && (data.imageCandidateCount ?? 1) > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
       {isVideo && <VideoParameterFields imageCount={references.filter((item) => item.kind === 'image').length} videoProtocol={videoProtocol} model={selectedModel} data={data} disabled={running || locked || !canRun} compact onChange={(patch) => handlers.onVideoParametersChange?.(id, patch)} onReset={() => handlers.onVideoParametersReset?.(id)} onCandidateCountChange={(count) => handlers.onVideoCandidateCountChange?.(id, count)} candidateCountMaximum={view.capabilities?.videoCandidates.maximum} generateAudioShown={hostFeatureControlShown(view.capabilities, 'generateAudio', data.settings?.generateAudio !== undefined)} />}
       <div className="wf-composer-footer">
         <div className="wf-composer-toolbar">
@@ -1396,7 +1396,7 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
                 </label>
               )}
             </div>
-            {imageCountChoices.length > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
+            {imageCountChoices.length > 1 && (data.imageCandidateCount ?? 1) > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
             {!commerceDerivedSize && selectedModel && resolution.message && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />{resolution.message}</p>}
           </>
         )

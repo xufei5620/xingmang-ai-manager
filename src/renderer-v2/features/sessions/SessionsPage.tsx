@@ -138,6 +138,8 @@ export function SessionsPage({
   )
   const counts = sessionToolCounts(latestResource.error ? undefined : latestResource.data?.stats.byProvider)
   const operation = useOperation()
+  // 导出存不进去时按「换个位置再存」说，不说安装目录（D16）。
+  const exportTarget = operation.failed === 'export' ? 'export' : undefined
   const [selected, setSelected] = useState<Session | null>(null)
   const [showAllMessages, setShowAllMessages] = useState(false)
   // 只有摘要的记录原文已经不在这台电脑上，不去读；详情里照样看工具、文件夹和模型。
@@ -427,6 +429,7 @@ export function SessionsPage({
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
+        target={exportTarget}
       />
       <Card padding="none">
         <ListState
@@ -607,6 +610,7 @@ export function SessionsPage({
             <ResultNotice
               {...operation}
               onReveal={(path) => api.revealExportedFile(path)}
+              target={exportTarget}
             />
             <dl className="v2-session-detail-kv">
               <div>

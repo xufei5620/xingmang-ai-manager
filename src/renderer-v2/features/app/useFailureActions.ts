@@ -1,6 +1,6 @@
 import { useCallback, type Dispatch, type SetStateAction } from 'react'
 import type { ProviderId } from '../../../../electron/ipc-contract'
-import { claudeDesktopDownloadPageUrl } from '../../../../electron/claude-desktop-install-failure'
+import { claudeDesktopDownloadPageUrl, claudeDesktopOfflinePackagesUrl } from '../../../../electron/claude-desktop-install-failure'
 import { codexDesktopStoreUrl } from '../../../../electron/codex-desktop-install-failure'
 import { operationLogSection, rewriteKeyAction, type OperationActionId } from '../../operation-error'
 import type { ToolInstallOutcome } from '../../pages-maintenance'
@@ -62,7 +62,8 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(failure?.retry)
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
-    // Windows 上 Claude Desktop 一键安装没装上时的出口；下载页在主进程外链白名单里（全等匹配）。
+    // Windows 上 Claude Desktop 一键安装没装上时的两个出口（D64）；两个页面都在主进程外链白名单里（全等匹配）。
+    else if (action === 'claudeDesktopOfflinePackages') void perform('打开下载页', () => app.openExternal(claudeDesktopOfflinePackagesUrl))
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
   }, [app, navigate, openCodexDesktopStore, operationError, perform, requestCodexDesktopReset, rewriteAccountKeys, setAuth, setHelp, setNodeReplace, setOperationError])
@@ -81,6 +82,7 @@ export function useFailureActions({ app, toolsApi, toast, perform, navigate, ope
     else if (action === 'resetCodexDesktop') requestCodexDesktopReset(retry)
     else if (action === 'useCodexCli') switchToCodexCli()
     else if (action === 'installGuide') navigate('tutorial', macDesktopTutorialTopic)
+    else if (action === 'claudeDesktopOfflinePackages') void perform('打开下载页', () => app.openExternal(claudeDesktopOfflinePackagesUrl))
     else if (action === 'claudeDesktopDownload') void perform('打开下载页', () => app.openExternal(claudeDesktopDownloadPageUrl))
     else setHelp(true)
   }, [app, navigate, openCodexDesktopStore, perform, requestCodexDesktopReset, rewriteAccountKeys, setAuth, setHelp, setNodeReplace])

@@ -173,7 +173,7 @@ export function canvasInspectorParameterRows(node: Pick<CanvasInspectorNode, 'ki
     if (preset.supportsQuality) {
       rows.push({ label: '画质', value: optionLabel(imageQualityOptions, node.quality || defaultImageQuality) })
     }
-    rows.push({ label: '生成数量', value: `×${node.imageCandidateCount ?? 1} · 按次计费` })
+    rows.push({ label: '生成数量', value: (node.imageCandidateCount ?? 1) > 1 ? `${node.imageCandidateCount} 张，每张单独扣费` : '1 张' })
     if (commerce) rows.push({ label: '专用任务', value: commerceTaskLabels[commerce.kind] })
     if (derived) rows.push({ label: '请求尺寸', value: `原图宽高 × ${commerce.upscale}；在节点配置中核对派生尺寸` })
     rows.push({ label: '清晰度', value: derived ? '由原图与倍率决定' : !node.model ? '由实际模型能力确定' : resolution.providerSized && resolution.value === '1K' ? '由服务决定' : node.imageResolution ?? defaultImageResolution })

@@ -6,7 +6,7 @@ import { RunInspector } from './RunInspector'
 
 function markup(uncertain: boolean): string {
   const at = '2026-10-14T00:00:00.000Z'
-  const record: CanvasRunRecord = { version: 1, userId: 1, ownerId: 1, runId: 'run', graphRevision: 'graph', scope: { kind: 'all' }, status: 'partial', createdAt: at, startedAt: at, mayStillComplete: uncertain, nodes: [{ nodeId: 'image', kind: 'image-generate', state: 'failed', errorMessage: '本组已完成 1/2 次请求', attempts: [{ attemptId: 'attempt-one', fingerprint: 'hash', imageBatch: { batchId: 'batch', index: 1, count: 2 }, state: 'succeeded', startedAt: at, completedAt: at, durationMs: 10, cached: false, candidates: [] }] }], events: [] }
+  const record: CanvasRunRecord = { version: 1, userId: 1, ownerId: 1, runId: 'run', graphRevision: 'graph', scope: { kind: 'all' }, status: 'partial', createdAt: at, startedAt: at, mayStillComplete: uncertain, nodes: [{ nodeId: 'image', kind: 'image-generate', state: 'failed', errorMessage: '这次要出 2 张，出来 1 张', attempts: [{ attemptId: 'attempt-one', fingerprint: 'hash', imageBatch: { batchId: 'batch', index: 1, count: 2 }, state: 'succeeded', startedAt: at, completedAt: at, durationMs: 10, cached: false, candidates: [] }] }], events: [] }
   const noop = () => undefined
   return renderToStaticMarkup(createElement(RunInspector, { open: true, records: [record], selectedRunId: 'run', resultAssets: {}, selectedScope: 'all', dirtyCount: 0, selectionCount: 1, loading: false, onScopeChange: noop, onRefresh: noop, onSelectRun: noop, onUseCandidate: noop, onPreviewAsset: noop, onAssetMenu: noop, onLocateNode: noop, onRetryNode: noop, onClose: noop }))
 }
@@ -14,16 +14,17 @@ function markup(uncertain: boolean): string {
 describe('image batch retry explanation', () => {
   it('labels a new batch as a fully paid regeneration rather than retrying missing results', () => {
     const html = markup(false)
-    expect(html).toContain('重新生成整组（2 次）')
-    expect(html).toContain('不会只补缺失图片')
+    expect(html).toContain('重新生成这 2 张')
+    expect(html).toContain('每张再扣一次费，不会只补没出来的')
+    expect(html).toContain('这一组出了 1/2 张')
     expect(html).not.toContain('从此向后重试')
   })
 
   it('keeps the uncertain upstream warning and withholds retry while the request may complete', () => {
     const html = markup(true)
-    expect(html).toContain('先核对上游是否已完成或扣费')
-    expect(html).toContain('已有图片保留')
-    expect(html).not.toContain('重新生成整组（2 次）')
+    expect(html).toContain('可能已经扣了费，先去用量里看一眼再决定')
+    expect(html).toContain('出来的图都留着')
+    expect(html).not.toContain('重新生成这 2 张')
   })
 })
 
@@ -46,7 +47,7 @@ describe('video batch task accounting', () => {
     expect(html).toContain('已保存视频保留')
     expect(html).toContain('核对或保存原任务不会重新提交')
     expect(html).toContain('6.0 秒')
-    expect(html).not.toContain('已有图片保留'); expect(html).not.toContain('从此向后重试')
+    expect(html).not.toContain('出来的图都留着'); expect(html).not.toContain('从此向后重试')
   })
   it('keeps original task recovery guidance and withholds fresh submission for uncertain video tasks', () => {
     const html = videoMarkup(true)
