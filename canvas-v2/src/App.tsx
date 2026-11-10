@@ -68,6 +68,7 @@ import { parseNodeImageEditMask, resolveImageMaskSource, type ImageMaskSource } 
 import { parseImageEditMask, imageEditMaskModelSupported, type ImageEditMask } from './image-tools/image-edit-mask'
 import { assertMaskAssetPng, assertMaskAssetSource, buildLinkedMaskAssetNode, buildMaskAssetNode, parseMaskAssetUpload, replaceMaskAssetNode, type ImageMaskAssetPng, type MaskAssetSaveMode } from './image-tools/mask-asset-export'
 import { parseImageCandidateCount } from './runtime/image-candidate-count'
+import { createHostRunPreparations, type HostRunPreparations } from './runtime/host-run-preparations'
 import { parseVideoCandidateCount, type VideoCandidateCount } from './runtime/video-candidate-count'
 import { imageTransformRecipeForNode, isImageTransformNodeKind } from './image-tools/recipe'
 import { parseImageCollageInputOrder } from './image-tools/collage-input-order'
@@ -1580,6 +1581,16 @@ function CanvasWorkspace({
   const activeRunsRef = useRef(new Map<string, { graphRevision: string; projectId?: string; scope?: CanvasRunScope }>())
   const runWaitingBannerRef = useRef<{ runId: string; graphRevision: string; message: string } | null>(null)
   const runInputGraphsRef = useRef(new Map<string, CanvasRunGraph>())
+  // 宿主运行准备：桌面宿主请内核替它抽视频帧（runtime/host-run-preparations.ts）；网页宿主自己抽，这里是 null。
+  const runPreparationsRef = useRef<HostRunPreparations | null>(null)
+  useEffect(() => {
+    const preparations = createHostRunPreparations(window.xingmangCanvasHost)
+    runPreparationsRef.current = preparations
+    return () => {
+      preparations?.stopAll()
+      if (runPreparationsRef.current === preparations) runPreparationsRef.current = null
+    }
+  }, [])
 
   const rememberActiveRun = useCallback((entry: { runId: string; graphRevision: string; projectId?: string; scope?: CanvasRunScope; graph?: CanvasRunGraph }) => {
     activeRunsRef.current.set(entry.runId, { graphRevision: entry.graphRevision, projectId: entry.projectId, scope: entry.scope })
@@ -2083,6 +2094,7 @@ function CanvasWorkspace({
       pendingRunProjectionIdsRef.current.clear()
       runInputGraphsRef.current.clear()
       activeRunsRef.current.clear()
+      runPreparationsRef.current?.stopAll()
       runWaitingBannerRef.current = null
       setRunning(false)
       setRunRecoveryRevision((current) => current + 1)
@@ -3424,6 +3436,8 @@ function CanvasWorkspace({
           recoveredRunning = true
         }
         if (record.status !== 'running' && activeRunsRef.current.has(record.runId)) forgetActiveRun(record.runId)
+        // A frame asked for before this page knew the run (or before a reload) is read back here.
+        if (record.status === 'running' && record.projectId === projectId && record.framePreparations?.length) runPreparationsRef.current?.resume(record.runId, record.framePreparations)
       }
       // A durable terminal snapshot can win the race against the event stream.
       // Once its active entry is removed, the later terminal event is ignored;
@@ -3594,6 +3608,7 @@ function CanvasWorkspace({
     const matchingIds = submitted && !awaitingVideoCatalog ? matchingCanvasRunNodeIds(submitted, toCanvasRunGraph(graph.nodes, graph.edges, confirmedRunGroups(), nodeSourceCatalogRef.current)) : new Set<string>()
     setRunRecords((current) => mergeCanvasRunEvent(current, event))
     if (event.type === 'run-waiting') {
+      runPreparationsRef.current?.update(event.runId, event.framePreparations)
       if (event.framePreparations.length || event.imagePreparations?.length || event.waitingForVideo) {
         const message = event.imagePreparations?.length ? '正在处理图像并保存素材，完成后会继续原工作流' : event.framePreparations.length ? '正在准备视频帧图片，完成后会继续原工作流' : '视频任务已提交，正在查询原任务进度'
         runWaitingBannerRef.current = { runId: event.runId, graphRevision: event.graphRevision, message }
@@ -3633,6 +3648,7 @@ function CanvasWorkspace({
     }
     if (event.type === 'run-terminal') {
       forgetActiveRun(event.runId)
+      runPreparationsRef.current?.finish(event.runId)
       const waitingNotice = runWaitingBannerRef.current
       const remaining = activeRunsRef.current.size
       const message = remaining > 0
@@ -7931,6 +7947,7 @@ function CanvasWorkspace({
       pendingRunProjectionIdsRef.current.clear()
       runInputGraphsRef.current.clear()
       activeRunsRef.current.clear()
+      runPreparationsRef.current?.stopAll()
       runWaitingBannerRef.current = null
       setRunning(false)
       projectEpochRef.current += 1

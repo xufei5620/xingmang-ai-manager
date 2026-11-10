@@ -432,6 +432,15 @@ export interface CanvasFramePreparation {
   timestampSeconds: number
 }
 
+/**
+ * A frame the kernel decoded for a host that asked it to (`completeRunPreparation`):
+ * the ids the host handed out and the PNG, or a bare failure. No path, name,
+ * type or message: the host names the reason on the node itself.
+ */
+export type CanvasRunPreparationCompletion =
+  | { runId: string; operationId: string; kind: 'frame'; outcome: 'completed'; png: Blob; decodedTimestampSeconds?: number }
+  | { runId: string; operationId: string; kind: 'frame'; outcome: 'failed' }
+
 export interface CanvasRunRecord {
   /** Set by the server from the owner/project-bound Agent turn record. */
   purpose?: 'agent-plan' | 'agent-execution'
@@ -671,6 +680,12 @@ export interface CanvasHostBridge {
   exportLayerPsd?(input: { recipe: ImageLayerRecipe; sourceAssetIds: string[]; name: string }, signal?: AbortSignal): Promise<{ fileName: string; byteSize: number; layerCount: number; groupCount?: number }>
   /** Renders a flattened annotation over one owned, unchanged base image; does not save it. */
   readVideoForFramePreview?(assetId: string, signal?: AbortSignal): Promise<Blob>
+  /**
+   * Takes back a frame listed in a run-waiting event's framePreparations
+   * (desktop): with it the kernel decodes the frame with browser-frame.ts and
+   * hands it here. A host without it decodes frames itself (web).
+   */
+  completeRunPreparation?(input: CanvasRunPreparationCompletion): Promise<void>
   renderImageAnnotation?(input: { sourceAssetId: string; recipe: ImageLayerRecipe }, signal?: AbortSignal): Promise<{ blob: Blob; width: number; height: number }>
   importLayerPsd?(document: BrowserImportedLayerPsd, signal: AbortSignal, onProgress?: (completed: number, total: number) => void): Promise<CanvasImageAssetSummary[]>
   importColorLutFile?(file: File, signal?: AbortSignal): Promise<AssetColorLutSource>

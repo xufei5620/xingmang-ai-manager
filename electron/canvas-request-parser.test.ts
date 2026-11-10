@@ -475,7 +475,7 @@ describe('canvas request parser', () => {
       ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ kind: 'image', sourceNodeId: 'a' }] } }, '视频参考顺序'],
       ['image-edit', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图角色'],
       ['image-generate', { imageOutputIndex: 0 }, '图片处理'],
-      ['frame-extract', { frameTimestampSeconds: 1.5 }, '视频抽帧'],
+      ['image-generate', { frameTimestampSeconds: 1.5 }, '视频抽帧'],
       ['image-generate', { commerceTask: { version: 1 } }, '电商创作'],
       ['image-generate', { interiorTask: { version: 1 } }, '室内创作'],
       ['image-generate', { exteriorTask: { version: 1 } }, '室外创作'],
@@ -526,14 +526,18 @@ describe('canvas request parser', () => {
   })
 
   it('hands a frame-extract node its time only while frame extraction is switched on', () => {
-    // Switched off (the desktop default until the kernel processes frames), the
-    // node is refused even without a time, so it never reaches the paid video executor.
+    // Switched off, the node is refused even without a time, so it never
+    // reaches the paid video executor.
     for (const extra of [{}, { frameTimestampSeconds: 1.5 }]) {
       const off = parseCanvasStartRunInput(kernelNode('frame-extract', extra), { frameExtract: false }).graph.nodes[0]
       expect(off.desktopUnsupported).toBe(`「视频抽帧」${kernelRefusal}`)
       expect(off.data).toEqual({ prompt: 'p', model: 'm' })
     }
-    expect(parseCanvasStartRunInput(kernelNode('frame-extract', {})).graph.nodes[0].desktopUnsupported).toBe(`「视频抽帧」${kernelRefusal}`)
+    // 画布完善第 7 条第二步: the canvas window parses with the desktop's own
+    // switch, which is on now that the kernel decodes the frame.
+    expect(parseCanvasStartRunInput(kernelNode('frame-extract', { frameTimestampSeconds: 1.5 })).graph.nodes[0])
+      .toMatchObject({ data: { prompt: 'p', model: 'm', frameTimestampSeconds: 1.5 } })
+    expect(parseCanvasStartRunInput(kernelNode('frame-extract', {})).graph.nodes[0].desktopUnsupported).toBeUndefined()
 
     const on = { frameExtract: true }
     for (const [extra, seconds] of [[{ frameTimestampSeconds: 1.5 }, 1.5], [{}, 0], [{ frameTimestampSeconds: -0 }, 0], [{ frameTimestampSeconds: 86_400 }, 86_400]] as const) {

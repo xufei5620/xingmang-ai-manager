@@ -72,7 +72,7 @@ const capabilities = deepFreeze({
     'text', 'prompt', 'note', 'image', 'image-generate', 'image-edit', 'video', 'video-generate',
     'image-input', 'video-input', 'audio-input', 'router', 'gallery', 'output', 'group',
     'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
-    'text-generate',
+    'text-generate', 'frame-extract',
   ],
   features: {
     quote: true,
@@ -81,7 +81,7 @@ const capabilities = deepFreeze({
     textGenerate: true,
     textWebSearch: false,
     imageTools: false,
-    frameExtract: false,
+    frameExtract: true,
     scenarioTemplates: false,
     routerStrategy: false,
     generateAudio: false,
