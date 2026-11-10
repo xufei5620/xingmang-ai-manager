@@ -2,6 +2,7 @@ import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desk
 import { isCodexDesktopFirewallOffInstallFailure, isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
+import { configWriteBlockerIn } from '../../electron/config-write-blocker'
 import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
@@ -154,6 +155,11 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 工具的配置文件本身是链接（dotfiles 工具做的符号链接、硬链接，#1100 第2条）。主进程那句已经写明是哪个文件、
   // 该换成什么，这里只给标题和按钮。排在 folderRelocated 之前：那条说的是被搬走的文件夹，客户去「检查」页找不到这个文件。
   { key: 'configLink', match: (message) => configLinkRefusalIn(message) !== null },
+  // 写工具配置没权限、主进程已经查出是哪一种的（config-write-blocker.ts，D15）：设置文件夹归管理员（Mac、Linux）、
+  // 文件被设成只读（Windows）。原话里还带着错误码 EACCES、EPERM，排在 permission 前面，不然又被说成安全软件拦了、
+  // 文件被占着，叫人关窗口重试。主进程只在写配置时这么说，所以不看调用方说没说写的是配置。
+  { key: 'configAdminOwned', match: (message) => configWriteBlockerIn(message) === 'adminOwned' },
+  { key: 'configReadOnly', match: (message) => configWriteBlockerIn(message) === 'readOnly' },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
