@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { describe, it } from 'vitest'
 import { createSub2ApiAccountClient, createSub2ApiSessionExecutor, provisionSub2ApiManagedCliKeys, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
-import { networkFailureMessages } from './network-failure'
+import { networkFailureMessages, proxyAuthRequiredMessage } from './network-failure'
 
 const secret = 'private-access-token'
 const user = { id: 7, username: 'api-user', email: 'user@example.test', balance: 12.5, status: 'active' }
@@ -302,6 +302,12 @@ describe('sub2api user-account adapter', () => {
     const example = fixture([new Error('net::ERR_NAME_NOT_RESOLVED')])
     await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) =>
       hasCode('NETWORK')(error) && (error as Error).message === networkFailureMessages.dns)
+  })
+  // 代理要账号密码（D32）：叫人去开代理软件说错了，换成单子上那句。
+  it('says the proxy wants a user name and password when Chromium could not answer its challenge', async () => {
+    const example = fixture([new Error('net::ERR_PROXY_AUTH_UNSUPPORTED')])
+    await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) =>
+      hasCode('NETWORK')(error) && (error as Error).message === proxyAuthRequiredMessage)
   })
   it('keeps the generic message for a server failure that is neither the network nor an outage', async () => {
     const example = fixture([Response.json({ code: 404, message: 'not found' }, { status: 404 })])

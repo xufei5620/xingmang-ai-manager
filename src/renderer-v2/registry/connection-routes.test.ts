@@ -15,8 +15,8 @@ describe('controlled connection route settings', () => {
 
   it('words the two settings exactly as approved', () => {
     expect(connectionRouteSettings.map((route) => [route.label, route.description])).toEqual([
-      ['星芒账号线路', '自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。'],
-      ['历史账号线路', '自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。'],
+      ['星芒账号线路', '自动会先走线路2，连不上时改走线路1。重开星芒后生效，不会切换账号。'],
+      ['历史账号线路', '自动会先走线路1，线路1连不上时改走线路2。重开星芒后生效，不会切换账号。'],
     ]);
   });
 
