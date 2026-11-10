@@ -1,5 +1,8 @@
 import { redactSecretPatterns } from './redaction-patterns'
 import { redactHomeDirectory } from './startup-log'
+import { isRecord } from './input-guards'
+import { isServiceUnavailableResponse } from './network-failure'
+import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
 import type { RemoteApprovalKind, RemoteApprovalRequest } from './codex-remote-channel'
 
 // 手机遥控发到聊天里的字、从聊天里认的指令，飞书、微信共用。字都在这一张表里，改字只改这里。
@@ -24,10 +27,93 @@ export const remoteMessages = {
   permissionsRefused: 'Codex 想多要一些权限，但要的范围手机上显示不全，已经替你拒绝了。确实需要的话，请在电脑上直接用 Codex 做这件事。',
   staleApprovalCard: '这张卡片已经失效了（处理过、超时了，或者电脑上的星芒重开过），刚才点的没有生效。有要你同意的事会另发新卡片。',
   clockAhead: '电脑上的时间和手机差得太多，这条消息没有执行。请把电脑时间调准后再发。',
+  // 以下四句是 0.2.24 深查 D66（手机遥控.md YKS-3、16、18、19），yoyo 11-10「决定单照推荐」。
+  codexStarting: '电脑正在准备 Codex，稍等一下；想取消就发「停止」。',
+  threadReset: '这是新对话，前面的记不得了。',
+  unbound: '电脑上已经把你解绑了，之后发的消息不会再执行。',
+  idleClosingSoon: '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。',
 } as const
+
+/** 遥控开着时发的、到电脑时已超过 10 分钟的消息照旧不执行，只给绑定的人回这一句（D66 / YKS-9）。 */
+export function staleMessageNotice(minutes: number): string {
+  return `这条是 ${minutes} 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。`
+}
 
 export function turnFailedMessage(reason: string): string {
   return reason ? `这一轮没做完：${reason}` : '这一轮没做完。'
+}
+
+/**
+ * 这一轮没做完的原因里，客户自己能处理的那几种（D66 / YKS-8）。以前把 Codex 和中转的原话（英文、JSON）
+ * 原样发到手机，余额不够也看不出来；认得出的换成下面的大白话，原话只进日志。认不出的照旧发原话，
+ * 硬说成「连不上」会让人在跟网络无关的故障上一直等。
+ */
+export type RemoteTurnFailure = 'balance' | 'keyLimit' | 'login' | 'context' | 'connection'
+
+export const remoteTurnFailureMessages: Readonly<Record<RemoteTurnFailure, string>> = {
+  balance: '余额不够了，充值后再发一次。',
+  // 单子上的四句里没有这一种（密钥自己设的上限用完了，充值也没用），用软件里已有的那句。
+  keyLimit: turnFailedMessage(relayQuotaFailureMessages.keyLimit),
+  login: '电脑上的登录失效了，请在电脑上的星芒里重新登录。',
+  context: '这段对话太长了，发「新对话」重新开始。',
+  connection: '电脑这会儿连不上星芒的线路，过一会儿再发。',
+}
+
+interface CodexErrorInfoSummary {
+  kind: string
+  httpStatusCode: number | null
+}
+
+/**
+ * Codex's `codexErrorInfo` (checked against rust-v0.167.0,
+ * app-server-protocol v2 `CodexErrorInfo`): unit variants arrive as a bare
+ * camelCase string ("contextWindowExceeded"), the HTTP ones as a one-key
+ * object ({ httpConnectionFailed: { httpStatusCode: 403 } }). Anything else
+ * is unknown and yields null.
+ */
+function readCodexErrorInfo(value: unknown): CodexErrorInfoSummary | null {
+  if (typeof value === 'string' && value) return { kind: value, httpStatusCode: null }
+  if (!isRecord(value)) return null
+  const entries = Object.entries(value)
+  if (entries.length !== 1) return null
+  const [kind, detail] = entries[0]
+  const status = isRecord(detail) ? detail.httpStatusCode : null
+  return { kind, httpStatusCode: typeof status === 'number' && Number.isInteger(status) ? status : null }
+}
+
+/**
+ * A relay answer Codex did not expect becomes `unexpected status 403 Forbidden: <body>`
+ * (UnexpectedResponseError's Display); the body is where new-api and Sub2API
+ * say whose money ran out, so the classifier reads the status from there when
+ * codexErrorInfo carries none.
+ */
+function statusInMessage(message: string): number | null {
+  const match = /unexpected status (\d{3})(?!\d)/.exec(message)
+  return match ? Number(match[1]) : null
+}
+
+// Codex's transport-level failures. With no HTTP status the request never got
+// an answer; with one, only a gateway-class answer counts as "cannot reach".
+const connectionErrorKinds: ReadonlySet<string> = new Set([
+  'httpConnectionFailed',
+  'responseStreamConnectionFailed',
+  'responseStreamDisconnected',
+  'responseTooManyFailedAttempts',
+])
+
+export function classifyRemoteTurnFailure(message: string, codexErrorInfo: unknown): RemoteTurnFailure | null {
+  const info = readCodexErrorInfo(codexErrorInfo)
+  const status = info?.httpStatusCode ?? statusInMessage(message)
+  // 余额、密钥那几句以服务端写死的原话为准（relay-quota-failure.ts），排在笼统的「连不上」前面。
+  const quota = status === null ? null : classifyRelayQuotaFailure(status, message)
+  if (quota === 'balance' || quota === 'keyLimit') return quota
+  if (quota === 'keyInvalid' || info?.kind === 'unauthorized') return 'login'
+  if (info?.kind === 'contextWindowExceeded') return 'context'
+  if (info?.kind === 'serverOverloaded') return 'connection'
+  if (info && connectionErrorKinds.has(info.kind)) {
+    if (info.httpStatusCode === null || isServiceUnavailableResponse({ status: info.httpStatusCode, json: false })) return 'connection'
+  }
+  return null
 }
 
 export function approvalAcceptedMessage(id: string): string {
@@ -83,6 +169,30 @@ export function formatApprovalText(request: RemoteApprovalRequest): string {
   if (request.reason) lines.push(`原因：${request.reason}`)
   lines.push(`回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`)
   return lines.join('\n')
+}
+
+/** 改文件审批卡上一行说的那个文件，路径已经换成手机上显示的样子。 */
+export interface RemoteFileChangeLine {
+  /** Codex 的 PatchChangeKind；老版本 Codex 不给时是 null，只列路径。 */
+  kind: 'add' | 'delete' | 'update' | null
+  path: string
+  /** 改完挪到的位置（Update 带 move_path 时）。 */
+  movePath?: string
+  /** 加了、删了多少行；Codex 没给改动内容时不填，这一行就不带行数。 */
+  added?: number
+  removed?: number
+}
+
+/**
+ * 改文件卡片上的一行（D66 / YKS-10）：前面写新建、删除、改、挪到，后面带「+12 -3 行」。
+ * 删文件和改一行以前在手机上长得一样，客户没法判断该不该同意。
+ */
+export function formatFileChangeLine(change: RemoteFileChangeLine): string {
+  let line = change.path
+  if (change.kind === 'add') line = `新建 ${change.path}`
+  else if (change.kind === 'delete') line = `删除 ${change.path}`
+  else if (change.kind === 'update') line = change.movePath ? `${change.path} 挪到 ${change.movePath}` : `改 ${change.path}`
+  return change.added === undefined || change.removed === undefined ? line : `${line} +${change.added} -${change.removed} 行`
 }
 
 export type RemoteCommand =

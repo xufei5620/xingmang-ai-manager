@@ -23,6 +23,7 @@ import {
 import type { AccountGroupHints } from './managed-cli-groups'
 import { ManagedCliKeyStore, managedKeyDigest, type StoredManagedCliKey } from './managed-cli-key-store'
 import type { SafeStorageLike } from './account-session-store'
+import { managedKeyStoppedMessage } from './account-key-quota'
 import { NewApiNetworkError } from './new-api-client'
 import { RealmAccountError } from './realm-account'
 import type { RelayBackendClient } from './relay-backend'
@@ -979,6 +980,33 @@ describe('relay-site-specific managed CLI key groups', () => {
     // The other three tools were never cached, so the sync signs those; the
     // capped one is the only key that must not be re-signed.
     expect(provisionCliKey).not.toHaveBeenCalledWith(expect.objectContaining({ name: profilesBySite.solov.claude.keyName }))
+    expect(saveConfig).not.toHaveBeenCalled()
+  })
+
+  // 0.2.24 深查 D3：网页上停用了、到期了的那把，账号后端那边不再签新的（new-api-client.ts 的
+  // hasStoppedCliKey）；这里钉住那句话原样交给界面，也不拿别的 Key 写进工具。
+  it('hands the customer the stop sentence when the tool key was disabled or expired on the web', async () => {
+    const stopped = { ...siteManagedKey('solov', 'codex'), key: 'sk-solov-codex-disabled-1234567' }
+    const store = recordingKeyStore([stopped])
+    const provisionCliKey = vi.fn(async () => { throw new Error(managedKeyStoppedMessage) })
+    const accountService = siteAwareAccountService(provisionCliKey, () => 'solov')
+    const fetchAvailableModels = vi.fn(async () => {
+      throw new Error('模型查询失败，服务返回 401：无效的令牌')
+    })
+    const saveConfig = vi.fn()
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      ['codex'],
+      {},
+      false,
+      store,
+    )
+
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'codex', message: managedKeyStoppedMessage }])
+    expect(fetchAvailableModels).toHaveBeenCalledTimes(1)
     expect(saveConfig).not.toHaveBeenCalled()
   })
 

@@ -37,7 +37,15 @@ export const UI_DESIGN_WIDTH_DIP = 1280
 // lower, but never below 0.85.
 export const UI_AUTO_MIN_ZOOM = 0.9
 export const UI_MIN_ZOOM = 0.85
-export const UI_MAX_ZOOM = 1.25
+// Two ceilings for the same reason in the other direction (D79, 2026-11-10).
+// The automatic factor still stops at 1.25, so a user on "自动" sees exactly
+// what they saw before. The final clamp used to be 1.25 as well, which
+// swallowed the 110% multiplier on any window wider than about 1455 DIP: a
+// maximized 1080p desktop already sits at 1.25, so 110% changed nothing.
+// The final ceiling is the automatic one times the 110% multiplier, so that
+// step is always 10% larger than automatic at every width.
+export const UI_AUTO_MAX_ZOOM = 1.25
+export const UI_MAX_ZOOM = 1.375
 
 const MAX_WINDOW_DIMENSION = 32_768
 const MAX_WINDOW_COORDINATE = 1_000_000
@@ -257,7 +265,7 @@ export function resolveFittedWindowBounds(
  */
 export function calculateUiZoom(contentWidthDip: number, scale: AppUiScale = 'auto'): number {
   if (!Number.isFinite(contentWidthDip) || contentWidthDip <= 0) return 1
-  const automatic = clamp(contentWidthDip / UI_DESIGN_WIDTH_DIP, UI_AUTO_MIN_ZOOM, UI_MAX_ZOOM)
+  const automatic = clamp(contentWidthDip / UI_DESIGN_WIDTH_DIP, UI_AUTO_MIN_ZOOM, UI_AUTO_MAX_ZOOM)
   const multiplier = scale === '90' ? 0.9 : scale === '110' ? 1.1 : 1
   return Math.round(clamp(automatic * multiplier, UI_MIN_ZOOM, UI_MAX_ZOOM) * 10_000) / 10_000
 }

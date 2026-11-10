@@ -12,6 +12,7 @@ import {
   loginRateLimitedMessage,
   loginSessionLimitMessage,
   hasExhaustedCappedCliKey,
+  hasStoppedCliKey,
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
   NewApiNetworkError,
@@ -57,7 +58,7 @@ import {
 import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
 import { createRelayEndpointRoutingSnapshot } from './relay-sites'
 import { networkFailureMessages } from './network-failure'
-import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
+import { buildManagedCliKeyLimitUpdate, managedKeyStoppedMessage, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
@@ -3450,6 +3451,126 @@ describe('provisionCliKey with a used-up per-key cap', () => {
 
     await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow('这个工具的额度用完了')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+})
+
+// 0.2.24 深查 D3：工具那把 Key 在网页上停用了、到期了，以前会悄悄换一把不限额、永不过期的新 Key，
+// 客户设的到期日和停用等于没设。被删掉、分组改名的照旧换新（#1074）。
+describe('provisionCliKey with a tool key stopped on the web', () => {
+  const name = managedCliKeyProfiles.codex.keyName
+  const names = [name, 'tester-codex-pro']
+  const now = 1_800_000_000
+  const enabled = { id: 7, name: 'tester-codex-pro', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+  const disabled = { ...enabled, status: 2 }
+
+  function listing(items: unknown[]): Response {
+    return jsonResponse({ success: true, message: '', data: { total: items.length, items } })
+  }
+
+  it('recognizes a disabled or expired key under this name and group', () => {
+    expect(hasStoppedCliKey([disabled], names, 'codex-pro', 0, now)).toBe(true)
+    expect(hasStoppedCliKey([{ ...enabled, status: 3 }], names, 'codex-pro', 0, now)).toBe(true)
+    expect(hasStoppedCliKey([{ ...disabled, name }], names, 'codex-pro', 0, now)).toBe(true)
+    // 到期了、服务端还没来得及把状态改成「已过期」的，同样算。
+    expect(hasStoppedCliKey([{ ...enabled, expired_time: now }], names, 'codex-pro', 0, now)).toBe(true)
+    expect(hasStoppedCliKey([{ ...enabled, expired_time: now + 60 }], names, 'codex-pro', 0, now)).toBe(false)
+    expect(hasStoppedCliKey([enabled], names, 'codex-pro', 0, now)).toBe(false)
+    // 额度用完归 hasExhaustedCappedCliKey 管，说的是另一句话。
+    expect(hasStoppedCliKey([{ ...enabled, status: 4, unlimited_quota: false }], names, 'codex-pro', 0, now)).toBe(false)
+    expect(hasStoppedCliKey([disabled], ['someone-else'], 'codex-pro', 0, now)).toBe(false)
+    expect(hasStoppedCliKey([disabled], names, 'vip', 0, now)).toBe(false)
+  })
+
+  it('counts only stopped keys newer than the key that would be reused', () => {
+    expect(hasStoppedCliKey([disabled], names, 'codex-pro', 6, now)).toBe(true)
+    expect(hasStoppedCliKey([disabled], names, 'codex-pro', 7, now)).toBe(false)
+    expect(hasStoppedCliKey([{ ...disabled, id: 'broken' }], names, 'codex-pro', 8, now)).toBe(true)
+  })
+
+  it.each([
+    ['disabled', { status: 2 }],
+    ['marked expired', { status: 3, expired_time: 1_700_000_000 }],
+    ['past its expiry', { expired_time: 1_700_000_000 }],
+  ])('stops with the decided sentence instead of signing a new key when the tool key is %s', async (_label, change) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([{ ...enabled, ...change }]))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
+    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」里重新启用或延长到期时间后再试。')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('does not fall back to an older usable key of the same tool', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([{ ...enabled, id: 5, name }, disabled]))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('reuses a usable key newer than the stopped one', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([disabled, { ...enabled, id: 8 }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-newer-usable-value' } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 8, name: 'tester-codex-pro', key: 'sk-newer-usable-value' })
+    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/token/8/key`)
+  })
+
+  it('still signs a key when the stopped one was left behind in another group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const old = { ...disabled, group: 'vip' }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([old]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([old, { ...enabled, id: 9 }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-moved-group-value' } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 9, name: 'tester-codex-pro', key: 'sk-moved-group-value' })
+  })
+
+  it('leaves the replacement of a key the user revoked alone', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const created = { ...enabled, id: 12, expired_time: 1_900_000_000 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([disabled]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([disabled, created]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-revoked-replacement' } }))
+
+    await expect(client.provisionCliKey({
+      name, group: 'codex-pro', fresh: true, unlimitedQuota: true, remainQuota: 0, expiredTime: 1_900_000_000,
+    })).resolves.toEqual({ id: 12, name: 'tester-codex-pro', key: 'sk-revoked-replacement' })
+  })
+
+  it('leaves AI chat keys to the chat side', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const stoppedChat = { ...disabled, id: 6, name: 'tester-codex-pro-对话' }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([stoppedChat]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([stoppedChat, { ...enabled, id: 10, name: 'tester-codex-pro-对话' }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-value' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group: 'codex-pro', purpose: 'chat' }))
+      .resolves.toEqual({ id: 10, name: 'tester-codex-pro-对话', key: 'sk-chat-value' })
   })
 })
 

@@ -554,14 +554,14 @@ test('keeps a clip whose submission went unanswered flagged after reopening, and
   // 「生成剩下的 2 段」：确认框另外说清可能多扣一次，先勾「我已了解影响」才能点。
   await page.getByTestId('video-generate-all').click()
   const confirm = page.getByTestId('video-confirm')
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText('这几段上次提交时没收到服务端答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。').waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText('这几段上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。').waitFor()
   assert.equal(await confirm.getByRole('button', { name: '开始生成' }).isDisabled(), true)
   await confirm.getByRole('button', { name: '取消' }).click()
   await confirm.waitFor({ state: 'detached' })
 
   // 单独重新生成第一段：确认后沿用原来的请求号重新提交（MiniMax 拿它去重），不去接。
   await page.getByTestId('video-shot-generate-0').click()
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到服务端答复/).waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^这一段上次提交时没收到星芒的答复/).waitFor()
   await confirm.getByRole('checkbox').check()
   await confirm.getByRole('button', { name: '开始生成' }).click()
   await page.waitForFunction(() => window.videoStudioPage.pendingClips().length === 1)
@@ -577,7 +577,7 @@ test('keeps a clip whose submission went unanswered flagged after reopening, and
   await page.getByTestId('video-shot-add').click()
   await page.getByTestId('video-shot-prompt-3').fill('日出')
   await page.getByTestId('video-generate-all').click()
-  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^其中第 3 段上次提交时没收到服务端答复/).waitFor()
+  await confirm.getByTestId('video-confirm-unconfirmed').getByText(/^其中第 3 段上次提交时没收到星芒的答复/).waitFor()
   await confirm.getByRole('button', { name: '取消' }).click()
   // 生成好的那一段重开以后不再提醒。
   await page.reload()
