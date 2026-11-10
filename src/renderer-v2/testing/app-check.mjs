@@ -8405,7 +8405,7 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
     // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
     const notes = article.locator('details.v2-tutorial-extra')
-    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 已在运行？'])
+    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 桌面端还开着？'])
     const explanationHit = explanation.locator('mark.v2-tutorial-hit')
     await expect(explanationHit).toHaveText('重新读取时')
     await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)

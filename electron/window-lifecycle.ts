@@ -114,7 +114,7 @@ export interface WindowLifecycle {
   abortUpdateQuit(): void
   /**
    * 系统要关机 / 重启 / 注销（Mac 的 powerMonitor 'shutdown'：只在系统发出关机通知时才有，
-   * Command + Q 不发）。之后一分钟内开始的退出和 Windows 关机一样不问、不装；系统来让程序
+   * ⌘Q 不发）。之后一分钟内开始的退出和 Windows 关机一样不问、不装；系统来让程序
    * 退出时，开着的询问框、确认框不等回答；退出时正在等安装器的也立刻不等了。拖住退出，
    * 系统会说本程序取消了关机。
    */

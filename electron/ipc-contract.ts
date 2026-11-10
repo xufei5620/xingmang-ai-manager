@@ -654,6 +654,11 @@ export interface AiChatHistoryWrite {
   keys: string[]
   /** 这次真正改过、需要重写的对话，必须是 keys 的子集。 */
   put: AiChatHistoryFile[]
+  /**
+   * 读不出来的对话文件：索引写好之后挪进备份文件夹，不删（0.2.24 深查聊天页 C2）。不能和 keys 重复；
+   * 缺省 = 没有，不在 keys 里的照旧删。
+   */
+  setAside?: string[]
 }
 
 /** 退出前主进程问聊天页要一次存盘（electron/chat-history-flush.ts）；编号每次随机，原样回给 chat-history:flushed。 */
