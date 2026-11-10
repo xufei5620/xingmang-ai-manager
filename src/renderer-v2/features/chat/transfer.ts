@@ -1,6 +1,6 @@
 import type { XingmangApi } from '../../../../electron/ipc-contract'
 import type { Conversation } from './state'
-import { exportableConversations, importConversationsIntoHistory, loadChatHistory, runHistoryImport, settleHistoryWrites, type ChatImportResult, type ChatStorage } from './storage'
+import { chatHistoryLogger, exportableConversations, importConversationsIntoHistory, loadChatHistory, runHistoryImport, settleHistoryWrites, type ChatImportResult, type ChatStorage } from './storage'
 
 /** 设置页「搬到新电脑」里聊天记录那一半，只在登录后才有（聊天记录按账号分开存）。 */
 export interface ChatTransfer {
@@ -8,7 +8,7 @@ export interface ChatTransfer {
   importConversations: (conversations: Conversation[]) => Promise<ChatImportResult>
 }
 
-export type ChatTransferBridge = Pick<XingmangApi, 'readAiChatHistory' | 'writeAiChatHistory'>
+export type ChatTransferBridge = Pick<XingmangApi, 'readAiChatHistory' | 'writeAiChatHistory'> & Partial<Pick<XingmangApi, 'reportRendererError'>>
 
 /**
  * unmountChat must take the chat page down synchronously: while it is mounted
@@ -21,6 +21,7 @@ export function createChatTransfer(bridge: ChatTransferBridge, storage: ChatStor
   const api = {
     readHistory: (owner: string) => bridge.readAiChatHistory(owner),
     writeHistory: bridge.writeAiChatHistory,
+    ...(bridge.reportRendererError ? { logHistoryProblem: chatHistoryLogger({ reportRendererError: bridge.reportRendererError }) } : {}),
   }
   return {
     async exportConversations() {
