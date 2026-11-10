@@ -2,6 +2,7 @@ import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from '.
 import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-protocol'
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
 import { assertCanvasImageEditMaskInput, buildCanvasImageMaskPng } from './canvas-image-mask'
+import { assertCanvasTextImageInput } from './canvas-text-image-input'
 import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
@@ -14,8 +15,15 @@ import { dramaParseSystemPrompt } from './drama-parse-prompt'
 export interface CanvasTextCompletionInput {
   group: string
   model: string
-  system: string
+  /** Left out for a text-generate node: the user's own words are the whole request. */
+  system?: string
   user: string
+  /**
+   * Pictures the model reads with the user message (画布完善第 6 条): canvas
+   * asset ids, read from the account's own store only once the credential
+   * names that account.
+   */
+  images?: { assetIds: readonly string[]; projectId?: string }
   signal: AbortSignal
   /** The attempt's 实扣 bookkeeping; hand it to the request. */
   billing?: AiRelayBillingObserver
@@ -136,6 +144,9 @@ function requestObserver(
 function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw signal.reason ?? new Error('运行已取消')
 }
+
+/** What a canvas project can hold as a node's text result (canvas-project-package.ts). */
+export const maximumCanvasTextOutputLength = 32_000
 
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
@@ -376,6 +387,31 @@ export function createCanvasNodeExecutors(options: {
       throw failure(error)
     }
   }
+  // 画布完善第 6 条：文字生成节点。跟网页版服务端同一个做法（xingmang-canvas
+  // lib/canvas-runs.ts）：上游文字和节点自己的提示词按行拼起来，原样作为一条用户消息
+  // 发出，不加系统提示；连了图片就一起给模型看。结果超过 32000 字不收，跟画布能存的
+  // 文字结果一样长。
+  const textGenerate: CanvasNodeExecutors['text-generate'] = async ({ projectId, node, inputs, signal, billing }) => {
+    const prompt = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n')
+    if (!prompt.trim()) throw new Error('请输入文字提示词或连接上游提示词节点')
+    if (!options.completeText) throw new Error('文字生成服务未就绪')
+    const group = node.data.group || options.textGroup || ''
+    if (!group) throw new Error('请先在「生成配置」中选择文字分组')
+    const model = node.data.model.trim()
+    if (!model) throw new Error('请选择文字模型')
+    const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    assertCanvasTextImageInput(model, images.length)
+    const outputText = await options.completeText.completeOnce({
+      group,
+      model,
+      user: prompt,
+      ...(images.length ? { images: { assetIds: images.map((asset) => asset.assetId), ...(projectId ? { projectId } : {}) } } : {}),
+      signal,
+      ...(billing ? { billing } : {}),
+    })
+    if (outputText.length > maximumCanvasTextOutputLength) throw new Error('文字结果超过 32000 字上限，请调整生成长度后再运行')
+    return { outputText, group, model }
+  }
   const dramaText: CanvasNodeExecutors['drama-bible'] = async ({ node, inputs }) => ({
     outputText: [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim(),
   })
@@ -397,5 +433,6 @@ export function createCanvasNodeExecutors(options: {
     group: passThrough, note: text,
     'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,
     'drama-character': dramaAsset, 'drama-scene': dramaAsset, 'drama-prop': dramaAsset,
+    'text-generate': textGenerate,
   }
 }

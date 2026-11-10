@@ -139,7 +139,7 @@ function isCanvasRunKernelOnlyNodeKind(kind: CanvasRunNodeKind): boolean {
 }
 
 function fallbackExecutorKind(kind: CanvasRunNodeKind): 'text' | 'image' | 'video' {
-  if (kind === 'prompt' || kind === 'note' || kind === 'drama-bible' || kind === 'drama-script' || kind === 'drama-parse' || kind === 'drama-shot') return 'text'
+  if (kind === 'prompt' || kind === 'note' || kind === 'drama-bible' || kind === 'drama-script' || kind === 'drama-parse' || kind === 'drama-shot' || kind === 'text-generate') return 'text'
   if (kind === 'image-generate' || kind === 'image-edit' || kind === 'drama-character' || kind === 'drama-scene' || kind === 'drama-prop') return 'image'
   return 'video'
 }
@@ -370,6 +370,7 @@ function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
     || kind === 'image-edit'
     || kind === 'video-generate'
     || kind === 'drama-parse'
+    || kind === 'text-generate'
 }
 
 /**

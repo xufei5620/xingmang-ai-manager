@@ -30,6 +30,7 @@ import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
 import { createCanvasRunChargeChecker } from '../canvas-run-charges'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
+import { readCanvasTextImages } from '../canvas-text-image-input'
 import { createChatCredentialCoordinator } from '../chat-credential-coordinator'
 import { ChatKeyStore } from '../chat-key-store'
 import { readClipboardPng, writeClipboardPng } from '../clipboard-image'
@@ -574,16 +575,29 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
         videoService,
         assets: canvasProjectAssets,
         completeText: {
-          completeOnce: (input) => chatService.completeOnce({
-            group: input.group,
-            model: input.model,
-            messages: [
-              { role: 'system', content: input.system },
-              { role: 'user', content: input.user },
-            ],
-            signal: input.signal,
-            ...(input.billing ? { billing: input.billing } : {}),
-          }),
+          completeOnce: (input) => {
+            const images = input.images
+            return chatService.completeOnce({
+              group: input.group,
+              model: input.model,
+              messages: [
+                ...(input.system ? [{ role: 'system' as const, content: input.system }] : []),
+                { role: 'user', content: input.user, ...(images ? { images: images.assetIds } : {}) },
+              ],
+              signal: input.signal,
+              ...(input.billing ? { billing: input.billing } : {}),
+              // 画布完善第 6 条：文字节点连的图从画布自己的项目素材库读，按凭据给出的那个账号读。
+              ...(images ? {
+                readImages: (userId: number, signal: AbortSignal) => readCanvasTextImages(
+                  (owner, assetId, projectId) => canvasProjectAssets.readImageOwned(owner, assetId, projectId),
+                  userId,
+                  images.assetIds,
+                  images.projectId,
+                  signal,
+                ),
+              } : {}),
+            })
+          },
         },
       }),
     })

@@ -1301,6 +1301,20 @@ describe('executeCanvasRun relay billing', () => {
     expect(attemptsOf(record, 't')[0].outputText).toBe('free')
   })
 
+  it('bills a text node like any paid request and hands it the pictures wired into it', async () => {
+    const textGenerate = vi.fn(async ({ node: current, inputs, billing }: Parameters<CanvasNodeExecutors['text']>[0]) => {
+      billing?.onRelayDispatch?.(true)
+      billing?.onRelayAnswer?.('req-text')
+      return { outputText: `看到 ${inputs.images?.length ?? 0} 张图：${current.data.prompt}` }
+    })
+    const record = await executeCanvasRun(runOptions(
+      graph([node('i', 'image'), node('t', 'text-generate', '描述'), node('o', 'image')], [edge('i', 't', 'image'), edge('t', 'o')]),
+      { executors: executors({ 'text-generate': textGenerate }) },
+    ))
+    expect(textGenerate).toHaveBeenCalledOnce()
+    expect(attemptsOf(record, 't')[0]).toMatchObject({ state: 'succeeded', outputText: '看到 1 张图：描述', relayBilling: { requestIds: ['req-text'] } })
+  })
+
   it('keeps no billing for a paid attempt that failed before anything left', async () => {
     const image = vi.fn(async () => { throw new Error('请输入图像提示词') })
     const record = await executeCanvasRun(runOptions(graph([node('i', 'image')]), { executors: executors({ image }) }))

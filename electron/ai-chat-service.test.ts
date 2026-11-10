@@ -633,6 +633,50 @@ describe('AI chat streaming service', () => {
     service.dispose()
   })
 
+  it('reads a canvas text node\'s pictures for the credential\'s account and sends them with the prompt', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"一只橘猫"}}]}\n\n'),
+      encoder.encode('data: [DONE]\n\n'),
+    ]))
+    const coordinator = credentialCoordinator()
+    const service = createAiChatService({ credentialCoordinator: coordinator, fetchImpl, emit: vi.fn() })
+    const assetId = 'a'.repeat(43)
+    const readImages = vi.fn(async () => {
+      // Read only once the credential has named the account.
+      expect(coordinator.resolveCredential).toHaveBeenCalled()
+      return new Map([[assetId, 'data:image/png;base64,iVBORw0KGgo=']])
+    })
+    const text = await service.completeOnce({
+      group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述这张图', images: [assetId] }], readImages,
+    })
+    expect(text).toBe('一只橘猫')
+    expect(readImages).toHaveBeenCalledWith(7, expect.any(AbortSignal))
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))
+    expect(body.messages).toEqual([{ role: 'user', content: [
+      { type: 'text', text: '描述这张图' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+    ] }])
+    service.dispose()
+  })
+
+  it('stops a canvas text request unpaid with the reader\'s own words when a picture cannot be read', async () => {
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+    const reports: unknown[] = []
+    await expect(service.completeOnce({
+      group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
+      readImages: async () => { throw new Error('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试') },
+      billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
+    })).rejects.toThrow('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试')
+    // An image id nobody resolved never goes out as a literal id either.
+    await expect(service.completeOnce({
+      group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
+    })).rejects.toThrow()
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(reports).toEqual([])
+    service.dispose()
+  })
+
   it('reports a completeOnce request leaving and the request id it was answered with', async () => {
     const fetchImpl = vi.fn<TestFetch>(async () => {
       const answer = sseResponse([encoder.encode('data: {"choices":[{"delta":{"content":"好"}}]}\n\n'), encoder.encode('data: [DONE]\n\n')])

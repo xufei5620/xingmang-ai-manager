@@ -127,6 +127,12 @@ export interface CompleteAiChatOnceInput {
   signal?: AbortSignal
   /** The canvas run's 实扣 bookkeeping (画布完善第 2b 条第 3 步). */
   billing?: AiRelayBillingObserver
+  /**
+   * Resolves the image ids in `messages` to data URIs (画布完善第 6 条). Called
+   * only once the credential names the account, with that account's user id,
+   * and before anything is sent; a throw stops the request unpaid.
+   */
+  readImages?(userId: number, signal: AbortSignal): Promise<ReadonlyMap<string, string>>
 }
 
 export interface AiChatService {
@@ -1019,6 +1025,20 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
       }
       if (controller.signal.aborted) throw controller.signal.reason
+      // Ids without a reader stay unresolved, and toChatCompletionsWireBody
+      // refuses them rather than send a literal asset id to the relay.
+      let images: ReadonlyMap<string, string> = new Map()
+      if (input.readImages) {
+        try {
+          images = await input.readImages(credential.userId, controller.signal)
+        } catch (error) {
+          if (controller.signal.aborted) throw controller.signal.reason
+          // The reader's own words say which picture and what to do about it.
+          throw new StreamFailure('image-unavailable', error instanceof Error && error.message ? error.message : SAFE_ERROR_MESSAGES['image-unavailable'])
+        }
+      }
+      if (controller.signal.aborted) throw controller.signal.reason
+      const wireBody = JSON.stringify(toChatCompletionsWireBody(body, images))
       armStageTimer('connection-timeout', limits.connectionTimeoutMs)
       reportRelayDispatch(input.billing, true)
       let response: Response
@@ -1030,9 +1050,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
             Authorization: `Bearer ${credential.apiKey}`,
             'Content-Type': 'application/json',
           },
-          // Canvas text nodes never attach images; an id slipping through must
-          // fail here rather than reach the relay as a literal asset id.
-          body: JSON.stringify(toChatCompletionsWireBody(body, new Map())),
+          body: wireBody,
           credentials: 'omit',
           redirect: 'manual',
           signal: controller.signal,
