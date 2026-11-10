@@ -36,7 +36,7 @@ import {
   trustCodexWorkspace,
   trustManagedWorkspace,
 } from './config-files'
-import { toolLaunchFailureMessage } from './failure-wording'
+import { errorCodeOf, toolLaunchFailureMessage } from './failure-wording'
 import { type LinuxTerminalAttempt, LinuxTerminalLaunchError } from './linux-terminal'
 import type { MacosTerminalLaunchPlan } from './macos-platform'
 import { ensureProjectInstructions, readProjectInstructionsTemplate } from './project-instructions'
@@ -60,7 +60,7 @@ import {
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
 } from './workspace-config-overrides'
-import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 
 /**
  * The color layer must sit on top of a caller-selected base. An elevated
@@ -257,6 +257,27 @@ export function writeQueuedWithin<T>(
   })
 }
 
+/**
+ * 文件夹里有没有 Claude Code 只在答了信任之后才照着做的那几份项目设置（claudeProjectSettingsFiles，D4）。
+ * 只认「确实没有」（ENOENT，或 .claude 是个文件时的 ENOTDIR）；看不了的（没权限、读到一半出错）一律按
+ * 带着算：多看一次 CLI 自己的英文提问，比替客户信任一个看不清的文件夹便宜。一个一个看，看到一份就停。
+ */
+export async function workspaceCarriesClaudeProjectSettings(
+  workspace: string,
+  lstat: (file: string) => Promise<unknown> = (file) => fs.promises.lstat(file),
+): Promise<boolean> {
+  for (const segments of claudeProjectSettingsFiles) {
+    try {
+      await lstat(path.join(workspace, ...segments))
+      return true
+    } catch (error) {
+      const code = errorCodeOf(error)
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return true
+    }
+  }
+  return false
+}
+
 /** 打开工具要用、但归别处管的几样，由 createSystemService 传进来。 */
 export interface ProviderLaunchServiceDependencies {
   /** 起 CLI 子进程用的环境（providerCommandEnvironment）。 */
@@ -416,10 +437,19 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     // 目录是用户刚在本软件的对话框里亲自选的，再让他去读一遍 CLI 自己的英文
     // 信任问答没有意义，所以打开之前先把这一项写进 CLI 的配置。写不进去
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
+    // 例外是文件夹里已经带着 Claude Code 自己的项目设置（D4）：那是别人写好、答了信任就会自动
+    // 执行的东西，信任那一问交还给 Claude Code 自己。
     if (!workspaceSensitivity) {
       try {
-        const trust = await writeBeforeLaunch(() => trustManagedWorkspace(provider, providerRoots, workspace))
-        if (trust.changed) {
+        const leaveFolderTrustToCli = provider === 'claude' && await workspaceCarriesClaudeProjectSettings(workspace)
+        if (leaveFolderTrustToCli) {
+          runtimeLog?.log('info', 'config', 'workspace.trust.left-to-cli', `${definition.name} 打开的文件夹自带项目设置，不替客户写入信任`, {
+            provider,
+          })
+        }
+        const trust = await writeBeforeLaunch(() => trustManagedWorkspace(provider, providerRoots, workspace, { leaveFolderTrustToCli }))
+        // 留给 CLI 问的那种只补了首启向导，不能记成「已信任」。
+        if (trust.changed && !leaveFolderTrustToCli) {
           runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
             provider,
           })

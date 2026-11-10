@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { calculatePlatformZoom, UI_AUTO_MIN_ZOOM, UI_DESIGN_WIDTH_DIP, UI_MAX_ZOOM, UI_MIN_ZOOM } from './zoom'
+import { calculatePlatformZoom, UI_AUTO_MAX_ZOOM, UI_AUTO_MIN_ZOOM, UI_DESIGN_WIDTH_DIP, UI_MAX_ZOOM, UI_MIN_ZOOM } from './zoom'
 import {
   calculateUiZoom,
   resolveWindowPlacement,
+  UI_AUTO_MAX_ZOOM as WINDOW_AUTO_MAX_ZOOM,
   UI_AUTO_MIN_ZOOM as WINDOW_AUTO_MIN_ZOOM,
   UI_DESIGN_WIDTH_DIP as WINDOW_DESIGN_WIDTH_DIP,
   UI_MAX_ZOOM as WINDOW_MAX_ZOOM,
@@ -19,6 +20,7 @@ describe('a single window zoom formula', () => {
   it('shares one set of constants between the two entry points', () => {
     expect(UI_AUTO_MIN_ZOOM).toBe(WINDOW_AUTO_MIN_ZOOM)
     expect(UI_MIN_ZOOM).toBe(WINDOW_MIN_ZOOM)
+    expect(UI_AUTO_MAX_ZOOM).toBe(WINDOW_AUTO_MAX_ZOOM)
     expect(UI_MAX_ZOOM).toBe(WINDOW_MAX_ZOOM)
     expect(UI_DESIGN_WIDTH_DIP).toBe(WINDOW_DESIGN_WIDTH_DIP)
   })
@@ -26,8 +28,14 @@ describe('a single window zoom formula', () => {
   it('keeps the UI v4.0 floors: 0.9 for the automatic factor, 0.85 after the user multiplier', () => {
     expect(UI_AUTO_MIN_ZOOM).toBe(0.9)
     expect(UI_MIN_ZOOM).toBe(0.85)
-    expect(UI_MAX_ZOOM).toBe(1.25)
     expect(UI_DESIGN_WIDTH_DIP).toBe(1280)
+  })
+
+  it('keeps the D79 ceilings: 1.25 for the automatic factor, 1.25 x 110% after the user multiplier', () => {
+    expect(UI_AUTO_MAX_ZOOM).toBe(1.25)
+    expect(UI_MAX_ZOOM).toBe(1.375)
+    expect(calculatePlatformZoom(3840)).toBe(UI_AUTO_MAX_ZOOM)
+    expect(calculatePlatformZoom(3840, '110')).toBe(UI_MAX_ZOOM)
   })
 
   it('agrees on every scale across the widths where the two formulas used to differ', () => {
