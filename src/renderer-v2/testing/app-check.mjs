@@ -5589,6 +5589,37 @@ test('oversized announcements stay in a safe failure state and offer the allowli
   } finally { await page.close() }
 })
 
+// 合集读不出来那句说「可以点「重新读取」，或到官网查看」：铃铛小框和公告大框里，两条路都得真有按钮。
+test('an unreadable announcement collection offers both a retry and the allowlisted site', async () => {
+  const page = await open('noticeCollection=1')
+  const unreadable = { id: 'collection-unreadable', text: '<div data-newapi-collection="v1"><p>格式不认识</p></div>' }
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), unreadable)
+    await page.getByTestId('announcement-open').click()
+    const popover = page.getByTestId('announcement-popover')
+    const popoverAlert = popover.getByRole('alert')
+    await popoverAlert.getByText('公告没读出来，可以点「重新读取」，或到官网查看。', { exact: true }).waitFor()
+    await popoverAlert.getByRole('button', { name: '重新读取', exact: true }).waitFor()
+    const openedSites = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    await popoverAlert.getByTestId('announcement-open-site').click()
+    await expect.poll(openedSites).toEqual(['https://xm.solov.cc'])
+    // 小框里点「重新读取」读好了，进大框；大框里再读一次又读不出来，官网按钮也在。
+    await page.evaluate(() => window.v2Test.setNotice(null))
+    await popoverAlert.getByRole('button', { name: '重新读取', exact: true }).click()
+    await popover.getByTestId('announcement-list').getByRole('button', { name: /^图片模型上线/ }).click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), unreadable)
+    await dialog.getByRole('button', { name: '重新读取', exact: true }).click()
+    const dialogAlert = dialog.getByRole('alert')
+    await dialogAlert.getByText('公告没读出来，可以点「重新读取」，或到官网查看。', { exact: true }).waitFor()
+    await dialogAlert.getByTestId('announcement-open-site').click()
+    await expect.poll(openedSites).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Markdown announcements render headings, lists, emphasis and links', async () => {
   const page = await open('noticeMarkdown=1')
   try {
