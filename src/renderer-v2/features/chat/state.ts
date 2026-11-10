@@ -184,6 +184,8 @@ export function saveConversation(state: ChatWorkspace, conversation: Conversatio
   return changeConversation(state, conversation.id, () => conversation)
 }
 export function isGenerating(conversation: Conversation): boolean { return conversation.messages.some((message) => message.status === 'pending' || message.status === 'streaming') }
+// 出图那一条带着发出时的设置；换账号会把它掐掉、钱可能已经扣了，切换前要先问一句（D44）。出字的不算。
+export function isGeneratingImage(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode === 'image') }
 
 // A stream chunk replaces only the conversation it belongs to, so every other
 // conversation keeps its object identity for the whole answer. Caching the

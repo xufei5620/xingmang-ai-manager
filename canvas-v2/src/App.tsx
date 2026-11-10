@@ -2432,6 +2432,19 @@ function CanvasWorkspace({
     return true
   }, [projectPaginationEnabled, refreshProjects])
 
+  // 跟重新选文件夹一样不设 projectLoading：宿主这时开着系统确认框，分页的列表加载时是空的。
+  // 删掉的若正是记着的当前项目也一并清掉；失败由卡片写在那张卡下面。
+  const deleteStoredProject = useCallback(async (projectId: string) => {
+    const bridge = hostBridge()
+    if (!bridge.deleteProject) return false
+    const deleted = await bridge.deleteProject(projectId)
+    if (!deleted) return false
+    setActiveProject((current) => current?.id === projectId ? null : current)
+    if (projectPaginationEnabled) await refreshProjects()
+    else setProjects((current) => current.filter((project) => project.id !== projectId))
+    return true
+  }, [projectPaginationEnabled, refreshProjects])
+
   const setStoredProjectArchived = useCallback(async (projectId: string, archived: boolean) => {
     const revision = ++projectRequestRevisionRef.current
     setProjectLoading(true)
@@ -8826,6 +8839,7 @@ function CanvasWorkspace({
         defaultFolder={hostEntryPoints.projectDefaultFolder ? canvasDefaultProjectFolderLabel(navigator.userAgent) : undefined}
         onCreateElsewhere={hostEntryPoints.projectDefaultFolder ? (name) => createStoredProject(name, true) : undefined}
         onRelinkFolder={hostEntryPoints.projectFolderRelink ? relinkStoredProjectFolder : undefined}
+        onDeleteProject={hostEntryPoints.projectDelete ? deleteStoredProject : undefined}
         blankCreation={storageMode === 'cloud' ? blankCreation : undefined}
         blankCreationReady={blankCreationReady && draftActionsEnabled}
         blankDraftName={storageMode === 'cloud' ? blankProjectName : undefined}

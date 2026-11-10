@@ -111,9 +111,9 @@ export interface IpcRegistrationOptions {
   // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
   // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
   aiOutputDirectory?: () => string
-  // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
-  // 省略 = 主目录下的 Desktop。
-  desktopDirectory?: () => string
+  // 「搬到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
+  // 省略 = 主目录下的 Downloads。
+  downloadsDirectory?: () => string
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore

@@ -6,6 +6,7 @@ import { codexRemoteLaunchQueueKey } from './provider-launch-service'
 import {
   buildUnfinishedRestartWorkPrompt,
   confirmUpdateRestart,
+  isRollbackInstall,
   resolveInstallableUpdateOnQuit,
   resolveInterruptibleInstallTask,
   waitForUpdateInstallFailure,
@@ -209,7 +210,12 @@ describe('confirming a restart to install an update', () => {
 
 describe('update ready to install on quit', () => {
   it('offers the verified package waiting on disk', () => {
-    expect(resolveInstallableUpdateOnQuit(updateSnapshot())).toEqual({ version: '0.2.9' })
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot())).toEqual({ version: '0.2.9', rollback: false })
+  })
+
+  it('says when the package waiting on disk is an older version the publisher rolled back to', () => {
+    const rollback = updateSnapshot({ currentVersion: '0.2.24', availableVersion: '0.2.23', rollback: true })
+    expect(resolveInstallableUpdateOnQuit(rollback)).toEqual({ version: '0.2.23', rollback: true })
   })
 
   it('stays quiet until the download and its verification are finished', () => {
@@ -229,7 +235,23 @@ describe('update ready to install on quit', () => {
   })
 
   it('still offers the install when the snapshot carries no version to name', () => {
-    expect(resolveInstallableUpdateOnQuit(updateSnapshot({ availableVersion: null }))).toEqual({ version: null })
+    expect(resolveInstallableUpdateOnQuit(updateSnapshot({ availableVersion: null }))).toEqual({ version: null, rollback: false })
+  })
+})
+
+describe('rollback install wording', () => {
+  it('treats the install as a rollback only while that very version is still the one waiting on disk', () => {
+    const rollback = updateSnapshot({ currentVersion: '0.2.24', availableVersion: '0.2.23', rollback: true })
+    expect(isRollbackInstall(rollback, '0.2.23')).toBe(true)
+    // 等预告、等人停手的那几秒里换成了别的版本，或者下好的那份没了：按平时的说法。
+    expect(isRollbackInstall(rollback, '0.2.22')).toBe(false)
+    expect(isRollbackInstall({ ...rollback, phase: 'available' }, '0.2.23')).toBe(false)
+    expect(isRollbackInstall(null, '0.2.23')).toBe(false)
+  })
+
+  it('keeps the usual wording for an ordinary upgrade and for old snapshots without the flag', () => {
+    expect(isRollbackInstall(updateSnapshot({ rollback: false }), '0.2.9')).toBe(false)
+    expect(isRollbackInstall(updateSnapshot(), '0.2.9')).toBe(false)
   })
 })
 

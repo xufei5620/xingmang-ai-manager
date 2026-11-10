@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { networkFailureMessages } from '../../../../electron/network-failure'
+import { networkFailureMessages, proxyAuthRequiredMessage } from '../../../../electron/network-failure'
 import { authDiskFullMessage, authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
@@ -127,6 +127,13 @@ describe('v2 auth recovery boundaries', () => {
       const wrapped = `Error invoking remote method 'account:login': Error: ${networkFailureMessages[reason]}（账号登录请求失败）`
       expect(authFailure(new Error(wrapped), '登录')).toEqual({ message: networkFailureMessages[reason], kind: 'network' })
     }
+  })
+  // D32：代理要账号密码时登录框也说单子上那句，不再叫人去检查代理设置。
+  it('says the proxy wants a password when the main process recognized one', () => {
+    const wrapped = `Error invoking remote method 'account:login': NewApiNetworkError: ${proxyAuthRequiredMessage}（账号登录请求失败）`
+    expect(authFailure(new Error(wrapped), '登录')).toEqual({ message: proxyAuthRequiredMessage, kind: 'network' })
+    expect(authFailure(new Error('net::ERR_PROXY_AUTH_UNSUPPORTED'), '登录')).toEqual({ message: proxyAuthRequiredMessage, kind: 'network' })
+    expect(authFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'), '登录')).toEqual({ message: networkFailureMessages.proxy, kind: 'network' })
   })
   // 第二十批 4：没网和连不上要分开说，连不上时提醒最常见的真实原因（加速器 / 翻墙 / 代理），和注册窗读设置同一套说法。
   it('tells a machine without network apart from an unreachable account service', () => {
@@ -385,7 +392,7 @@ describe('recovery password change outcome', () => {
     expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov-api' }, login, 'solov')).toBe(false)
   })
   it('does not take a change that lost its login halfway or got no answer as proof the new password was not set', () => {
-    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试")
+    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号刚切换过，请再试一次")
     const unanswered = new Error(`Error invoking remote method 'account:change-password': Error: ${networkFailureMessages.timeout}（修改密码请求失败）`)
     expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
     expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)
