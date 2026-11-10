@@ -112,6 +112,17 @@ describe('lossless chat history files', () => {
     expect(restored.state.conversations[0].lengthNoticeDismissed).toBe(true)
     expect(restored.state).toEqual(state)
   })
+  it('remembers which conversations are pinned or renamed and ignores anything but true', async () => {
+    const state = workspace()
+    Object.assign(state.conversations[0], { pinned: true, renamed: true, title: '自己起的名字' })
+    const restored = await saveAndReopen(state)
+    expect(restored.state.conversations[0]).toMatchObject({ pinned: true, renamed: true, title: '自己起的名字' })
+    expect(restored.state).toEqual(state)
+    const odd = workspace()
+    Object.assign(odd.conversations[0], { pinned: 'yes', renamed: 1 })
+    const reread = parseHistorySnapshot(snapshotOf(odd), scope).state.conversations[0]
+    expect('pinned' in reread || 'renamed' in reread).toBe(false)
+  })
   it('moves conversations saved under a group name the xm site retired onto its current name', () => {
     const state = workspace()
     const conversation = state.conversations[0]
