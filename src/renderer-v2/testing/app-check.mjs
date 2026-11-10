@@ -7530,6 +7530,18 @@ test('a CLI launch still opens but warns when the project folder overrides the c
   } finally { await page.close() }
 })
 
+// D17：文件夹写不进去时照样打开，首页说一句「只能看不能改」。
+test('a CLI launch still opens a folder it cannot write to and says so on the home page', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchReadOnly=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByText('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第十二批候选 5：默认模型下架时打开前问一句，点了才换，不点照旧打开。
 test('opening a tool whose default model is gone asks first and only swaps the model when told to', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
