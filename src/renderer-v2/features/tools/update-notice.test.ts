@@ -113,7 +113,7 @@ describe('renderer-v2 pending CLI updates', () => {
     // 每张有新版本的卡片都说一句：能在这里更新的给链接，别的软件管着的给说明。
     expect(home.match(/data-testid="tool-[a-zA-Z]+-(?:update|external-managed)"/g)).toHaveLength(3)
     expect(home).toContain('该版本由官方安装器管理，请用它自己的方式更新')
-    expect(home).toContain('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+    expect(home).toContain('这一份不是星芒装的，要更新请用它原来的安装方式')
   })
 
   it('has nothing to announce when the only pending update belongs to an official installer the app cannot replace', () => {

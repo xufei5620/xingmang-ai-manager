@@ -295,6 +295,12 @@ export interface CliLaunchResult {
    */
   configOverrideNotice?: string
   /**
+   * 打开前试写了一次，这个文件夹写不进去（只读盘、没有改的权限）：工具照样打开，首页说一句
+   * 「只能看不能改」（D17）。Windows 上权限类的写不进在打开前已经问过，这里只剩只读盘那种。
+   * 缺省 = 能写或没试写，界面照旧。
+   */
+  workspaceReadOnly?: boolean
+  /**
    * 用户在「这个文件夹不建议打开」那一问里选了不打开（或关掉了对话框），工具
    * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
    */
@@ -723,6 +729,8 @@ export interface SystemServiceOptions {
   launchCliPowerShell?: typeof launchCliPowerShell
   /** Test seam: the real one writes the zsh launcher and has `open -a Terminal` run it (macos-platform.ts). */
   launchMacosTerminal?: typeof launchMacosTerminal
+  /** 测试注入：Mac、Linux 打开前在项目文件夹里试写的那一下（documents-fallback.ts 的 probeDirectoryWritable）。 */
+  probeWorkspaceWritable?: (directory: string) => Promise<void>
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312

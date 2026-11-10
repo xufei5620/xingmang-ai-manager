@@ -16,11 +16,11 @@ describe('renderer-v2 tool conversations dialog', () => {
     expect(render()).toContain('接着 Codex CLI 之前的对话')
   })
 
-  // 记录是打开窗口时现读的，读回来之前先说在读，不先摆一句「还没有对话记录」。
+  // 记录是打开窗口时现读的，读回来之前先说在读，不先摆一句「还没有对话」。
   it('says it is reading until the tool\'s records come back', () => {
     const markup = render()
     expect(markup).toContain('正在读取最近记录')
-    expect(markup).not.toContain('还没有对话记录')
+    expect(markup).not.toContain('还没有对话。')
   })
 
   it('offers all records and a new chat at the bottom', () => {

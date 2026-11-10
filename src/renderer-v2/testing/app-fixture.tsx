@@ -228,7 +228,7 @@ if (query.has('detectionFailed')) {
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
 }
-// 缺 Python（可选环境）：首页那一行写「可选 · 未装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
+// 缺 Python（可选环境）：首页那一行写「可选 · 未安装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
 if (query.has('pythonMissing')) {
   system.runtime.python = { ...status, installed: false, version: null, path: null }
 }
@@ -675,6 +675,8 @@ const methods = {
       launchedWorkspace = config.workspace
       return { rememberedWorkspace: launchedWorkspace }
     }
+    // ?launchReadOnly：打开前试写不进去（只读盘），主进程照样打开，带回 workspaceReadOnly（D17）。
+    if (query.has('launchReadOnly')) return { workspaceReadOnly: true }
     return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
   },
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }),

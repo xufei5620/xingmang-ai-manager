@@ -147,6 +147,7 @@ import {
   canvasHostRelinkProjectFolderChannel,
   canvasHostDeleteProjectChannel,
   canvasHostGetAccountSummaryChannel,
+  canvasHostGetPriceSnapshotChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostAccountChangedChannel,
@@ -374,6 +375,7 @@ describe('createCanvasWindowController', () => {
       canvasHostRelinkProjectFolderChannel,
       canvasHostDeleteProjectChannel,
       canvasHostGetAccountSummaryChannel,
+      canvasHostGetPriceSnapshotChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -827,6 +829,36 @@ describe('createCanvasWindowController', () => {
       expect(() => handler(trustedEvent('xingmang://app/index.html'))).toThrow('已拒绝来自非画布页面的操作请求')
       expect(() => handler(foreignEvent())).toThrow('已拒绝来自非画布页面的操作请求')
       expect(readAccountSummary).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('the run price list', () => {
+    const snapshot = { models: { 'gpt-image-2': { usd: 0.06 } }, groupRatios: { default: 1 }, readAt: '2026-11-10T03:00:00.000Z' }
+
+    it('answers with the reader and takes nothing from the page', async () => {
+      const readPriceSnapshot = vi.fn(async () => snapshot)
+      const controller = createCanvasWindowController(controllerOptions({ readPriceSnapshot }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetPriceSnapshotChannel)!
+      await expect(handler(trustedEvent(), { model: 'gpt-image-2', usd: 0 })).resolves.toEqual(snapshot)
+      expect(readPriceSnapshot).toHaveBeenCalledTimes(1)
+      expect(readPriceSnapshot).toHaveBeenCalledWith()
+    })
+
+    it('tells the canvas there is no price list when the host has no reader', async () => {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      await expect(electronMocks.handlers.get(canvasHostGetPriceSnapshotChannel)!(trustedEvent())).resolves.toBeNull()
+    })
+
+    it('answers only the canvas window', async () => {
+      const readPriceSnapshot = vi.fn(async () => snapshot)
+      const controller = createCanvasWindowController(controllerOptions({ readPriceSnapshot }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetPriceSnapshotChannel)!
+      expect(() => handler(trustedEvent('xingmang://app/index.html'))).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(() => handler(foreignEvent())).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(readPriceSnapshot).not.toHaveBeenCalled()
     })
   })
 

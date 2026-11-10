@@ -49,6 +49,7 @@ export const canvasHostChannels = {
   relinkProjectFolder: 'canvas-host:relink-project-folder',
   deleteProject: 'canvas-host:delete-project',
   getAccountSummary: 'canvas-host:get-account-summary',
+  getPriceSnapshot: 'canvas-host:get-price-snapshot',
   runEvent: 'canvas-host:run-event',
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
@@ -122,7 +123,7 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
     'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
   ],
   features: {
-    quote: false,
+    quote: true,
     accountSummary: true,
     imageEditMask: false,
     textGenerate: false,
@@ -413,6 +414,18 @@ export interface CanvasAccountSummary {
   subscriptionLabel: string | null
   /** When the balance was read (ISO); null while not read. */
   readAt: string | null
+}
+
+/**
+ * What the canvas run preflight prices 「预计约 $x」 with (画布完善第 2b 条第 2 步):
+ * per-call prices by model (US dollars at group ratio 1; approximate for video)
+ * and this account's ratio per group. Public price data and ratios only (I15).
+ */
+export interface CanvasPriceSnapshot {
+  models: Record<string, { usd: number; approximate?: boolean }>
+  groupRatios: Record<string, number>
+  /** When the price list was read (ISO). */
+  readAt: string
 }
 
 export interface CanvasStoredProjectSummary {

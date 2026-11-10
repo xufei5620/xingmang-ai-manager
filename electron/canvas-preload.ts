@@ -48,6 +48,7 @@ const channels = {
   relinkProjectFolder: 'canvas-host:relink-project-folder',
   deleteProject: 'canvas-host:delete-project',
   getAccountSummary: 'canvas-host:get-account-summary',
+  getPriceSnapshot: 'canvas-host:get-price-snapshot',
   runEvent: 'canvas-host:run-event',
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
@@ -70,7 +71,7 @@ const capabilities = deepFreeze({
     'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
   ],
   features: {
-    quote: false,
+    quote: true,
     accountSummary: true,
     imageEditMask: false,
     textGenerate: false,
@@ -242,6 +243,7 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   deleteProject: (projectId: string) => invoke(channels.deleteProject, projectId),
   // Takes nothing from the page, so the page cannot steer what the main process reads.
   getAccountSummary: () => invoke(channels.getAccountSummary),
+  getPriceSnapshot: () => invoke(channels.getPriceSnapshot),
   onAccountChange: (listener: (change: { userId: number | null; previousUserId: number | null; siteId?: 'solov' | 'solov-api' }) => void) => subscribeAccountChange(listener),
   finishClose: (requestId: string, allowed: boolean) => invoke(channels.finishClose, requestId, allowed),
   cancelCloseTasks: (requestId: string) => invoke(channels.cancelCloseTasks, requestId),

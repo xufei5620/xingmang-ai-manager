@@ -685,7 +685,7 @@ test('WorkBuddy loses current-account readiness when switching saved accounts on
     const row = page.getByTestId('tool-row-workbuddy')
     // 连上当前账号的卡片左下角写「当前账号」（v4 没有「N 个已连接」那句了），余额卡上不写连接的事。
     assert.equal(await row.getByTestId('tool-workbuddy-source').innerText(), '当前账号')
-    assert.equal(await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '账号余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
     await page.evaluate(() => window.v2Test.holdNextExternalScan())
     const switcher = await openAccountSwitcher(page)
@@ -2797,7 +2797,7 @@ test('switching the official-installer Claude Code to the app asks first, then u
     const dialog = page.getByTestId('managed-switch-confirm')
     await update.click()
     await dialog.getByText('换成星芒装的 Claude Code？', { exact: true }).waitFor()
-    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账户数据和历史记录会保留，以后在星芒里点一下就能更新。/)
+    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账号数据和历史记录会保留，以后在星芒里点一下就能更新。/)
     // 点「取消」什么都不动。
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -5378,7 +5378,7 @@ test('an app already running with administrator rights does not promise a consen
   for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
     const page = await open(query)
     try {
-      await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
+      await expect(page.getByTestId('home-runtime-row-node')).toContainText('可选 · 未安装')
       const nodeNotice = page.getByTestId('home-runtime-node-elevation')
       await expect(nodeNotice).toContainText('装工具时会自动准备，一般不用单独点。')
       if (elevated) assert.doesNotMatch(await nodeNotice.innerText(), /管理员授权|授权窗口/, query)
@@ -5585,6 +5585,37 @@ test('oversized announcements stay in a safe failure state and offer the allowli
     await siteButton.waitFor()
     await siteButton.click()
     assert.equal((await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'openExternal')?.args[0])), 'https://xm.solov.cc')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 合集读不出来那句说「可以点「重新读取」，或到官网查看」：铃铛小框和公告大框里，两条路都得真有按钮。
+test('an unreadable announcement collection offers both a retry and the allowlisted site', async () => {
+  const page = await open('noticeCollection=1')
+  const unreadable = { id: 'collection-unreadable', text: '<div data-newapi-collection="v1"><p>格式不认识</p></div>' }
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), unreadable)
+    await page.getByTestId('announcement-open').click()
+    const popover = page.getByTestId('announcement-popover')
+    const popoverAlert = popover.getByRole('alert')
+    await popoverAlert.getByText('公告没读出来，可以点「重新读取」，或到官网查看。', { exact: true }).waitFor()
+    await popoverAlert.getByRole('button', { name: '重新读取', exact: true }).waitFor()
+    const openedSites = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    await popoverAlert.getByTestId('announcement-open-site').click()
+    await expect.poll(openedSites).toEqual(['https://xm.solov.cc'])
+    // 小框里点「重新读取」读好了，进大框；大框里再读一次又读不出来，官网按钮也在。
+    await page.evaluate(() => window.v2Test.setNotice(null))
+    await popoverAlert.getByRole('button', { name: '重新读取', exact: true }).click()
+    await popover.getByTestId('announcement-list').getByRole('button', { name: /^图片模型上线/ }).click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), unreadable)
+    await dialog.getByRole('button', { name: '重新读取', exact: true }).click()
+    const dialogAlert = dialog.getByRole('alert')
+    await dialogAlert.getByText('公告没读出来，可以点「重新读取」，或到官网查看。', { exact: true }).waitFor()
+    await dialogAlert.getByTestId('announcement-open-site').click()
+    await expect.poll(openedSites).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc'])
     await clean(page)
   } finally { await page.close() }
 })
@@ -7530,6 +7561,18 @@ test('a CLI launch still opens but warns when the project folder overrides the c
   } finally { await page.close() }
 })
 
+// D17：文件夹写不进去时照样打开，首页说一句「只能看不能改」。
+test('a CLI launch still opens a folder it cannot write to and says so on the home page', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchReadOnly=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByText('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第十二批候选 5：默认模型下架时打开前问一句，点了才换，不点照旧打开。
 test('opening a tool whose default model is gone asks first and only swaps the model when told to', async () => {
   const page = await open('allInstalled=1&recentWorkspaces=1&modelGone=1')
@@ -8088,7 +8131,7 @@ test('installing Node.js from the check page updates the home runtime card', asy
   const page = await open('desktopOnly=1')
   try {
     const node = page.getByTestId('home-runtime-row-node')
-    await expect(node).toContainText('未装')
+    await expect(node).toContainText('可选 · 未安装')
     await stubHealthReport(page, [{ code: 'RUNTIME_NODE', title: 'Node.js', state: 'fail', summary: '还没装 Node.js', details: { installed: false } }])
     await page.getByTestId('nav-health').click()
     const install = page.getByTestId('maintenance-runtime-action-node')
