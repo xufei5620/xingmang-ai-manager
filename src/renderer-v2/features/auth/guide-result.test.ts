@@ -136,4 +136,47 @@ describe('guide setup result empty wallet', () => {
   it('says the empty wallet in the same words as the home page', () => {
     expect(walletEmptyLead).toBe(lowBalanceText(0))
   })
+
+  // D47（新手流程 N6）：顶上说先充值，结果卡不能再两句叫人去打开。
+  it('tells an empty wallet to top up first instead of opening the tool', () => {
+    for (const [route, name] of [['claude', 'Claude Code'], ['codexDesktop', 'Codex 桌面端']] as const) {
+      const result = buildGuideSetupResult({ route, tool: { ...codex, id: route }, signedIn: true, readiness: ready, name, officialName: 'ChatGPT 账号', walletEmpty: true })
+      expect(result.connection.detail).toBe('设置已读到。')
+      expect(result.next).toEqual({ value: '先充值', detail: '充值后回来点「打开」就能用。', tone: 'warn' })
+    }
+    const verified = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号', switched, walletEmpty: true })
+    expect(verified.next.value).toBe('先充值')
+  })
+
+  it('keeps the open-the-tool wording when the wallet is funded or the empty wallet is not what the tool spends', () => {
+    const funded = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号' })
+    expect(funded.connection.detail).toBe('设置已读到，打开工具试一次。')
+    expect(funded.next).toEqual({ value: '打开工具试一次', detail: '打开后随便问它一个问题试试。', tone: 'neutral' })
+    for (const source of ['official', 'manual'] as const) {
+      const other = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude', source }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号', walletEmpty: true })
+      expect(other.next.value).toBe('打开工具试一次')
+    }
+    // 没试通的改用自己带着出口（和最后一步顶上那句一样），不叠「先充值」。
+    const unverified = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号', switched: { ...switched, verified: false }, walletEmpty: true })
+    expect(unverified.next.value).toBe('打开工具试一次')
+    // 聊天没有「打开」，不在这次改的范围里。
+    const chat = buildGuideSetupResult({ route: 'chat', signedIn: true, readiness: ready, name: '聊天', officialName: 'ChatGPT 账号', walletEmpty: true })
+    expect(chat.next.value).toBe('可以开始聊天')
+  })
+})
+
+describe('guide setup result names', () => {
+  // W4 W5：自称一律「星芒」，不说「本软件」。
+  it('calls the app 星芒 rather than 本软件', () => {
+    const chat = buildGuideSetupResult({ route: 'chat', signedIn: true, readiness: ready, name: '聊天', officialName: 'ChatGPT 账号' })
+    expect(chat.install.detail).toBe('聊天就在星芒里，直接提问就行。')
+    const changed = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude', source: 'unknown', keyState: 'changed' }, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号' })
+    expect(changed.connection.detail).toBe('在星芒之外被改过，现在还能用。')
+  })
+
+  // W82：第 3 步那颗按钮改名「去连好」，结果卡里点名它的那句跟着叫这个名字。
+  it('names the configure button by its current label', () => {
+    const result = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude', configured: false }, signedIn: true, readiness: { prepared: true, connected: false }, name: 'Claude Code', officialName: 'Claude 账号' })
+    expect(result.connection.detail).toBe('还没设好，点「去连好」保存一次。')
+  })
 })

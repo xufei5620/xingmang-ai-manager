@@ -8,6 +8,7 @@ import { accelerationTrialSeconds } from '../../../electron/acceleration-contrac
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
+import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
@@ -568,6 +569,8 @@ const methods = {
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
     if (query.has('externalInstallPending')) await new Promise<void>((resolve, reject) => { releaseLaunch = resolve; cancelExternalInstall = reject })
+    // ?externalInstallFailure=claudeDesktop：主进程两路都没装上时写好的那句（claude-desktop-install-failure.ts）。
+    if (query.get('externalInstallFailure') === tool && tool === 'claudeDesktop') throw new Error(buildClaudeDesktopInstallFailureMessage('unreachable', { wingetTried: true }))
     if (query.has('externalInstallFailure')) throw new Error('客户端安装失败，请重试')
     const current = externalStatuses.find((entry) => entry.tool === tool)!
     Object.assign(current, { installed: true, version: '2.0.0' })

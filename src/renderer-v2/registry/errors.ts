@@ -16,6 +16,11 @@ export const errors = {
   officialRegistryUnreachable: { title: '连不上工具的官方下载站', body: '这一步只能从官方下载站拿，换国内下载站也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。', actions: ['重试', '检查网络'] },
   diskFull: { title: '磁盘空间不够', body: '磁盘没有空间了。安装时先下到系统盘的临时文件夹，再装进安装目录，这两处所在的盘都要留出空间，清理后再试。', actions: ['复制路径', '重试', '查看日志'] },
   configDiskFull: { title: '磁盘空间不够', body: '配置文件所在的磁盘（一般是系统盘）没有空间了，原来的设置没有动。清理出一些空间后再点「重试」。', actions: ['重试', '查看日志'] },
+  // 导出检查报告、反馈报告、聊天记录、单段对话时存不进客户在保存框里选的位置（D16，yoyo 2026-11-10 批）。
+  // 那儿不是安装目录，以前借「写不进安装目录」「安装时先下到系统盘的临时文件夹」说，方向全错。
+  // 红条上标题和正文用「，」连成一句，连起来就是批的那句话，拆的时候别改字。
+  exportPermission: { title: '这个位置不让星芒存文件', body: '换个文件夹（比如「下载」）再导出。', actions: ['重试'] },
+  exportDiskFull: { title: '这块盘满了', body: '清出一些空间，或者换一块盘再导出。', actions: ['重试'] },
   certDate: { title: '证书日期对不上', body: '多半是这台电脑的系统时间不准——证书有没有过期是拿本机时钟比出来的。请把系统时间设为自动同步并确认时区，再重试；确认时间没问题，再换个网络。', actions: ['重试', '查看日志'] },
   tlsIntercepted: { title: '连接被网络拦截', body: '连接的路上有设备把证书换成了别的（运营商、公司或学校的网络常见）。稍等一两分钟再试；还不行就换个网络（比如手机热点），公司或学校的网络请找网络管理员。', actions: ['重试', '查看日志'] },
   toolCertOutdatedNode: { title: 'Node.js 太旧，认不了这台电脑的证书', body: toolCertificateMessages.outdatedNode, actions: ['换成新版 Node.js', '重试', '查看日志'] },
@@ -40,7 +45,7 @@ export const errors = {
   codexDesktopFirewallOff: { title: '要先打开 Windows 防火墙服务', body: '打开它才装得上 Codex 桌面端，常见是被系统优化软件关掉的。点「找客服」，把下面这句话发给客服，客服会教你打开。', actions: ['查看日志', '找客服'] },
   codexDesktopInstallNoStore: { title: '没能装好 Codex 桌面端', body: '这台电脑没有微软商店，星芒已经试过 OpenAI 官网的离线安装包和国内线路。先点「重试」；还不行就点「找客服」，把下面这句话发给客服。', actions: ['重试', '查看日志', '找客服'] },
   codexDesktopInstallFailed: { title: '没能装好 Codex 桌面端', body: '先点「重试」；还不行就点「去微软商店装」，在商店里点「获取」装好，再回星芒点「重新检测」。', actions: ['重试', '去微软商店装', '查看日志', '找客服'] },
-  claudeDesktopInstallFailed: { title: '没能装好 Claude Desktop', body: '先点「重试」；还不行就点「去官网下载」，装好后回星芒点「重新检测」。', actions: ['重试', '去官网下载', '查看日志', '找客服'] },
+  claudeDesktopInstallFailed: { title: '没能装好 Claude Desktop', body: '先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。', actions: ['重试', '下载离线安装包', '去 Claude 官网', '查看日志', '找客服'] },
   macDesktopTooOld: { title: '这台 Mac 装不了这个桌面端', body: '把 macOS 更新到下面这句话里说的版本后，再回星芒点「安装」。', actions: ['查看日志', '找客服'] },
   macDesktopInstallFailed: { title: '桌面端没能装好', body: '先照下面这句话做；还不行就点「看安装指南」，照教程从官网下载安装。', actions: ['重试', '看安装指南', '查看日志', '找客服'] },
   codexDesktopKnownIssue: { title: 'Codex 这一版打不开', body: '这是 Codex 这一版自己的问题，不是星芒，等微软商店出新版会自动好。急用先点「改用 Codex 命令行版」。', actions: ['重试', '改用 Codex 命令行版', '找客服'] },

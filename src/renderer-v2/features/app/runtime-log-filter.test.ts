@@ -149,6 +149,8 @@ describe('runtimeLogArea', () => {
     ['ipc', 'acceleration:start', '加速'],
     ['ipc', 'cli:install', '安装与更新'],
     ['ipc', 'mcp:save', '外接工具'],
+    // Claude Desktop、WorkBuddy、OpenCode 的记录以前也归「外接工具」，跟 MCP 混在一起筛不准。
+    ['ipc', 'external-clients:install', '桌面客户端'],
     ['ipc', 'something:new', '其他'],
     ['network', 'acceleration.start.failed', '加速'],
     ['maintenance', 'cli.install.started', '安装与更新'],

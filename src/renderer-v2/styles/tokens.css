@@ -24,6 +24,22 @@
   --nav-update-sh: inset 0 1px 0 rgba(255,255,255,.45), 0 1px 2px rgba(0,0,0,.25);
 }
 
+/* D82（0.2.24）：原型给输入框和次要按钮画的边，对底色只有 1.3 : 1（深色）到
+   1.4 : 1（浅色），视力弱一点的人看不出框在哪；浅色下空着的白输入框放在白卡片上，
+   除了这道边没有别的东西标出它。这两种控件的边在两套默认配色里都加深到对它可能
+   落在的每种底色 3 : 1（WCAG 1.4.11，ui-spec/01-tokens.md 写的就是这个数），悬停
+   再深一档，免得一悬停边反而变淡。只有这几个值和 ui-spec/tokens.css（原型）不同，
+   别的颜色不动；高对比度那两套另有自己的值（下面 .hc），contrast-tokens.test.ts
+   钉住比例。 */
+[data-theme="dark"] {
+  --input-line:rgba(255,255,255,.38); --input-line-hover:rgba(255,255,255,.52);
+  --btn-2-line:rgba(255,255,255,.38); --btn-2-line-hover:rgba(255,255,255,.52);
+}
+[data-theme="light"] {
+  --input-line:rgba(13,31,58,.54); --input-line-hover:rgba(13,31,58,.68);
+  --btn-2-line:rgba(13,31,58,.54); --btn-2-line-hover:rgba(13,31,58,.68);
+}
+
 /* UI v4.0 has no skins: the main window paints only by data-theme and never
    sets data-skin. These rules stay for the canvas window alone, which builds
    against this file (canvas-v2/vite.config.ts) and still marks its document
@@ -124,6 +140,7 @@
   --pri:#FFD27A; --pri-tx:#000000; --pri-sh:none;
   --soft:rgba(255,210,122,.2); --soft-line:#FFD27A; --soft-tx:#FFE0A3;
   --focus:#FFD27A; --sw-on:#FFD27A; --seg-on:#2A2C33; --input:#111216; --input-line:#A8ADB6;
+  --input-line-hover:#D3D6DC; --btn-2-line:#D3D6DC; --btn-2-line-hover:#D3D6DC;
   --pop:#111216; --pop-line:#A8ADB6; --shadow-pop:none; --sh-1:none;
   --toast:#111216; --toast-tx:#FFFFFF; --toast-ok:#5EF0A8; --toast-info:#9FD3FF; --toast-warn:#FFB066;
   --overlay:rgba(0,0,0,.8); --shadow:none; --btn-2-bg:#17181D; --btn-2-hover:#25272E; --bubble-user:rgba(255,210,122,.2);
@@ -144,6 +161,7 @@
   --pri:#0D1F3A; --pri-tx:#FFFFFF; --pri-sh:none;
   --soft:rgba(127,90,28,.14); --soft-line:#7F5A1C; --soft-tx:#4A3209;
   --focus:#1B3560; --sw-on:#0D1F3A; --seg-on:#FFFFFF; --input:#FFFFFF; --input-line:#4B5568;
+  --input-line-hover:#1F2A3E; --btn-2-line:#1F2A3E; --btn-2-line-hover:#1F2A3E;
   --pop:#FFFFFF; --pop-line:#4B5568; --shadow-pop:none; --sh-1:none;
   --toast:#0D1F3A; --toast-tx:#FFFFFF; --toast-ok:#7CF0B5; --toast-info:#BFD6FF; --toast-warn:#FFC58F;
   --overlay:rgba(2,10,24,.6); --shadow:none; --btn-2-bg:#FFFFFF; --btn-2-hover:#ECEAE3; --bubble-user:rgba(127,90,28,.12);

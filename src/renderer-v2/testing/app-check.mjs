@@ -372,6 +372,42 @@ test('external client install failures clear busy state and remain retryable', a
   } finally { await page.close() }
 })
 
+test('a failed Claude Desktop install offers the offline packages first and the Claude site second', async () => {
+  // D64：Claude 官网在国内多半打不开，先给教程站「备用安装包」那一节，官网退到第二个。
+  const page = await open('externalInstallFailure=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    async function failInstall() {
+      await row.getByRole('button', { name: '安装', exact: true }).click()
+      const dialog = page.getByTestId('operation-error')
+      await dialog.getByText('没能装好 Claude Desktop', { exact: true }).waitFor()
+      return dialog
+    }
+    async function openedBy(dialog, label) {
+      const previous = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length)
+      await dialog.getByRole('button', { name: label, exact: true }).click()
+      await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length > count, previous)
+      return await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').at(-1).args[0])
+    }
+    let dialog = await failInstall()
+    // 返回、重试、两个出口、查看日志、复制给客服、找客服一行放不下：折行，不能有哪颗被挤出框外。
+    // 量的是排版宽度，不受弹出动画的缩放影响。
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth, rows: new Set([...element.querySelectorAll('button')].map((button) => button.offsetTop)).size }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    assert.ok(footer.rows > 1, `七颗按钮应该折成两行：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'claude-desktop-install-failed-exits.png') })
+    await expect(dialog.getByTestId('operation-error-body')).toHaveText('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
+    const exits = await dialog.locator('[data-testid^="operation-error-claudeDesktop"]').allTextContents()
+    assert.deepEqual(exits, ['下载离线安装包', '去 Claude 官网'])
+    assert.equal(await dialog.getByRole('button', { name: '去官网下载', exact: true }).count(), 0)
+    assert.equal(await openedBy(dialog, '下载离线安装包'), 'https://docs-new.solov.cc/guide/manager#offline-packages')
+    await expect(dialog).toHaveCount(0)
+    dialog = await failInstall()
+    assert.equal(await openedBy(dialog, '去 Claude 官网'), 'https://claude.com/download')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external clients recognize complete manual configurations without claiming account ownership', async () => {
   const page = await open('externalInstalled=1&externalOther=claudeDesktop&externalLocalReady=claudeDesktop&externalConfigError=workbuddy')
   try {
@@ -1398,6 +1434,33 @@ test('an exported report can be revealed in its folder and says so when it moved
     await reveal.click()
     await health.getByText('导出的文件已经不在原来的位置了，可能被移动或删除。').waitFor()
     await health.getByText('检查报告已导出：C:\\Fixture\\xingmang-diagnostics.txt', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an export the chosen folder will not take says to pick another folder or free up the disk, not the install directory (D16)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    // 开了「受控文件夹访问」的桌面：主进程那句经 IPC 过来，是带着通道名的英文原话。
+    await page.evaluate(() => { window.v2Test.fail = 'exportDiagnostics'; window.v2Test.failMessage = "Error invoking remote method 'diagnostics:export': Error: EPERM: operation not permitted, open 'C:\\Users\\fixture\\Desktop\\.xingmang-diagnostics.txt.tmp'" })
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.waitFor()
+    await health.getByRole('button', { name: '导出检查报告', exact: true }).click()
+    const healthNotice = health.locator('.v2-business-notice.is-error')
+    await healthNotice.waitFor()
+    assert.match(await healthNotice.innerText(), /这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。/)
+    assert.doesNotMatch(await healthNotice.innerText(), /安装目录/)
+
+    // 设置页「导出聊天记录和设置」时盘满了：不再说安装用的临时文件夹。
+    await page.evaluate(() => { window.v2Test.fail = 'exportAppData'; window.v2Test.failMessage = "Error invoking remote method 'data-transfer:export': Error: ENOSPC: no space left on device, write" })
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-export').click()
+    const settingsNotice = settings.locator('.v2-business-notice.is-error')
+    await settingsNotice.waitFor()
+    assert.match(await settingsNotice.innerText(), /这块盘满了，清出一些空间，或者换一块盘再导出。/)
+    assert.doesNotMatch(await settingsNotice.innerText(), /临时文件夹|安装目录/)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
   } finally { await page.close() }
@@ -5517,7 +5580,7 @@ test('oversized announcements stay in a safe failure state and offer the allowli
     await page.getByTestId('page-home').waitFor()
     await page.getByRole('button', { name: /^公告/ }).click()
     await page.getByRole('alert').waitFor()
-    await page.getByText('公告包含过大的内嵌媒体，客户端已按安全上限拦截。').waitFor()
+    await page.getByText('这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。').waitFor()
     const siteButton = page.getByTestId('announcement-open-site')
     await siteButton.waitFor()
     await siteButton.click()
@@ -6204,7 +6267,8 @@ test('NewAPI durable read failures preserve details and can be retried without a
     await dialog.getByTestId('announcement-list').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'syncLocalNoticeReads' })
     await dialog.getByRole('button', { name: '图片模型上线 未读' }).click()
-    await dialog.getByRole('alert').filter({ hasText: '已读状态保存失败' }).waitFor()
+    await dialog.getByRole('alert').filter({ hasText: '没记上已读，下次打开可能还会提醒。' }).waitFor()
+    assert.equal(await dialog.getByText('本地测试操作失败').count(), 0)
     await page.frameLocator('[data-testid="announcement-native-frame"]').getByRole('heading', { name: '图片模型上线亮色详情' }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = '' })
     await dialog.getByRole('button', { name: '重试保存已读' }).click()
@@ -6275,13 +6339,14 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     const dialog = page.getByRole('dialog', { name: '公告', exact: true })
     await page.evaluate(() => { window.v2Test.fail = 'markAccountNoticeRead' })
     await dialog.getByTestId('announcement-item-12').click()
-    await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+    await dialog.getByRole('alert').getByText('没记上已读，下次打开可能还会提醒。').waitFor()
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
     await dialog.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     await dialog.getByTestId('announcement-item-12').click()
-    await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+    await dialog.getByRole('alert').getByText('没记上已读，下次打开可能还会提醒。').waitFor()
+    assert.equal(await dialog.getByText('本地测试操作失败').count(), 0)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await dialog.getByRole('button', { name: '重试保存已读', exact: true }).click()
     await dialog.getByRole('alert').waitFor({ state: 'hidden' })
@@ -6467,7 +6532,8 @@ test('Sub2API announcements keep server-read and empty states and recover from r
         await dialog.waitFor({ state: 'hidden' })
         await page.getByTestId('announcement-open').click()
       }
-      await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+      await dialog.getByRole('alert').getByText('公告暂时没读到，过一会儿点铃铛再看。').waitFor()
+      assert.equal(await page.getByText('本地测试操作失败').count(), 0)
       await page.evaluate(() => { window.v2Test.fail = '' })
       await dialog.getByRole('button', { name: '重新读取' }).click()
       await dialog.getByText(query.includes('noticeEmpty') ? '暂无公告' : '服务通知', { exact: true }).waitFor()
