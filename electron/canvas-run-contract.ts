@@ -159,6 +159,43 @@ export interface CanvasRunAttempt {
   group?: string
   model?: string
   imageBatch?: CanvasRunImageBatch
+  /** What the relay answered this attempt's paid requests with; absent when none left. */
+  relayBilling?: CanvasRunRelayBilling
+  /** Filled in a few seconds after the run, once the account's usage records are checked. */
+  charge?: CanvasRunAttemptCharge
+}
+
+/**
+ * 实扣的底账（画布完善第 2b 条第 3 步）：这次尝试发出去的付费请求，站点回了哪些请求号。
+ * 用量记录按请求号记每一笔扣费，跑完拿它去对。请求号不敏感，客服对账就用它。
+ */
+export interface CanvasRunRelayBilling {
+  /** The relay's request ids, in the order the answers came back. */
+  requestIds: string[]
+  /** A request left and no answer came back (stopped, timed out, connection lost): it may have been charged. */
+  unanswered?: true
+  /** An answer came back without a usable request id. */
+  unidentified?: true
+}
+
+/** What one attempt actually cost, matched against the account's usage records. */
+export interface CanvasRunAttemptCharge {
+  /** settled: every request it sent is accounted for; unmatched: some could not be matched, shown as 待核对. */
+  state: 'settled' | 'unmatched'
+  /** Dollars of the requests that matched; 0 when nothing was charged. */
+  usd: number
+  /** The relay may still adjust it afterwards (video). */
+  approximate?: true
+}
+
+/** The run's 实扣: the sum over its paid attempts. Never an estimate passed off as a charge. */
+export interface CanvasRunCharge {
+  state: 'settled' | 'unmatched'
+  usd: number
+  /** Paid attempts that could not be matched. */
+  unmatchedAttempts: number
+  approximate?: true
+  checkedAt: string
 }
 
 export interface CanvasRunNodeRecord {
@@ -212,6 +249,17 @@ export interface CanvasRunTerminalEvent extends CanvasRunEventBase {
 
 export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunTerminalEvent
 
+/**
+ * Published (not kept in `events`) once a finished run's charges are checked.
+ * The kernel drops events of runs it no longer tracks, so a kernel that does
+ * not know this type ignores it; it reads `charge` from the record instead.
+ */
+export interface CanvasRunChargeEvent extends CanvasRunEventBase {
+  type: 'run-charge'
+  charge: CanvasRunCharge
+  attempts: { nodeId: string; attemptId: string; charge: CanvasRunAttemptCharge }[]
+}
+
 export interface CanvasRunOutcome {
   succeeded: string[]
   failed: string[]
@@ -236,6 +284,7 @@ export interface CanvasRunRecord {
   outcome?: CanvasRunOutcome
   nodes: CanvasRunNodeRecord[]
   events: CanvasRunEvent[]
+  charge?: CanvasRunCharge
 }
 
 export interface CanvasRunCacheEntry {

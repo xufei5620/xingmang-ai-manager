@@ -12,6 +12,9 @@ import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './ch
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { unsentRequestFailure } from './relay-line-fetch'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -122,6 +125,8 @@ export interface CompleteAiChatOnceInput {
   messages: readonly AiChatMessage[]
   parameters?: AiChatParameters
   signal?: AbortSignal
+  /** The canvas run's 实扣 bookkeeping (画布完善第 2b 条第 3 步). */
+  billing?: AiRelayBillingObserver
 }
 
 export interface AiChatService {
@@ -1015,20 +1020,28 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       }
       if (controller.signal.aborted) throw controller.signal.reason
       armStageTimer('connection-timeout', limits.connectionTimeoutMs)
-      const response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: {
-          Accept: 'text/event-stream',
-          Authorization: `Bearer ${credential.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        // Canvas text nodes never attach images; an id slipping through must
-        // fail here rather than reach the relay as a literal asset id.
-        body: JSON.stringify(toChatCompletionsWireBody(body, new Map())),
-        credentials: 'omit',
-        redirect: 'manual',
-        signal: controller.signal,
-      })
+      reportRelayDispatch(input.billing, true)
+      let response: Response
+      try {
+        response = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${credential.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          // Canvas text nodes never attach images; an id slipping through must
+          // fail here rather than reach the relay as a literal asset id.
+          body: JSON.stringify(toChatCompletionsWireBody(body, new Map())),
+          credentials: 'omit',
+          redirect: 'manual',
+          signal: controller.signal,
+        })
+      } catch (error) {
+        if (unsentRequestFailure(error)) reportRelayDispatch(input.billing, false)
+        throw error
+      }
+      reportRelayAnswer(input.billing, response.headers)
       armStageTimer('idle-timeout', limits.idleTimeoutMs)
       if (!responseOriginIsTrusted(response, baseUrl.origin) || REDIRECT_STATUSES.has(response.status)) {
         await response.body?.cancel().catch(() => undefined)

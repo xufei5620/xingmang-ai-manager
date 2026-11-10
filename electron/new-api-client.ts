@@ -574,6 +574,11 @@ export interface NewApiAccountUsageQuery {
    * records 为空、total 为 0，只有 stats 是真的。只有星芒账号认它。
    */
   statsOnly?: boolean
+  /**
+   * 只要明细那一页，不要合计：画布跑完按请求号对实扣（画布完善第 2b 条第 3 步）只看明细，
+   * 合计那一下白白把这段时间的日志再加一遍。返回的页里 stats 全是 0。只有星芒账号认它。
+   */
+  recordsOnly?: boolean
 }
 
 export interface NewApiAccountUsageStreamStatus {
@@ -3827,6 +3832,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       statParams.delete('request_id')
       statParams.delete('upstream_request_id')
       const statQuery = statParams.toString()
+      if (input.recordsOnly) {
+        const listRaw = await performRequest(
+          ctx,
+          listQuery ? `${logSelfPath}?${listQuery}` : logSelfPath,
+          { method: 'GET', headers: authHeaders(current) },
+          '用量明细查询',
+        )
+        return parseAccountUsagePage(unwrapEnvelope(listRaw, '用量明细查询', [current.accessToken]), { quota: 0, rpm: null, tpm: null })
+      }
       if (input.statsOnly) {
         const statRaw = await performRequest(
           ctx,

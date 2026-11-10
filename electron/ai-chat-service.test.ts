@@ -633,6 +633,30 @@ describe('AI chat streaming service', () => {
     service.dispose()
   })
 
+  it('reports a completeOnce request leaving and the request id it was answered with', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => {
+      const answer = sseResponse([encoder.encode('data: {"choices":[{"delta":{"content":"好"}}]}\n\n'), encoder.encode('data: [DONE]\n\n')])
+      answer.headers.set('x-oneapi-request-id', 'req-parse-1')
+      return answer
+    })
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+    const reports: unknown[] = []
+    await service.completeOnce({
+      group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }],
+      billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-parse-1']])
+    const offline = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl: vi.fn<TestFetch>(async () => { throw new Error('net::ERR_INTERNET_DISCONNECTED') }), emit: vi.fn() })
+    reports.length = 0
+    await expect(offline.completeOnce({
+      group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }],
+      billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
+    })).rejects.toThrow()
+    expect(reports).toEqual([['dispatch', true], ['dispatch', false]])
+    service.dispose()
+    offline.dispose()
+  })
+
   it('says what went wrong with the network instead of blaming the key when preparing the group fails offline', async () => {
     const coordinator = credentialCoordinator()
     coordinator.resolveCredential = vi.fn(async () => {

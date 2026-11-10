@@ -2310,6 +2310,22 @@ describe('getUsage', () => {
     expect(Object.fromEntries(statUrl.searchParams)).toEqual({ type: '2', start_timestamp: '1700000000', end_timestamp: '1700086400' })
   })
 
+  it('asks only the records endpoint when the caller wants the records alone', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: {
+      items: [{ id: 3, created_at: 1_700_000_100, type: 2, model_name: 'gpt-image-2', quota: 30_000, request_id: 'req-1' }], total: 1, page: 1, page_size: 100,
+    } }))
+
+    const page = await client.getUsage({ type: 2, startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400, modelName: 'gpt-image-2', page: 1, pageSize: 100, recordsOnly: true })
+
+    expect(page).toMatchObject({ total: 1, records: [{ requestId: 'req-1', quota: 30_000, type: 2 }], stats: { quota: 0, rpm: null, tpm: null } })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const listUrl = new URL(String(fetchImpl.mock.calls[0][0]))
+    expect(listUrl.pathname).toBe('/api/log/self')
+    expect(Object.fromEntries(listUrl.searchParams)).toEqual({ p: '1', page_size: '100', type: '2', start_timestamp: '1700000000', end_timestamp: '1700086400', model_name: 'gpt-image-2' })
+  })
+
   it('rejects Sub2API-only usage filters instead of silently widening a NewAPI query', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
