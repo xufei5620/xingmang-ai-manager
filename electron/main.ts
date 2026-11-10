@@ -59,6 +59,7 @@ import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createWindowsTaskbarThemeReader, WINDOWS_SETTING_CHANGE_MESSAGE } from './windows-taskbar-theme'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
@@ -3145,6 +3146,11 @@ if (!hasSingleInstanceLock) {
     const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
     applicationTray = !trayHostAvailable ? null : createApplicationTray({
       iconPath: path.join(trayAssets, 'tray-16.png'), icon2xPath: path.join(trayAssets, 'tray-32.png'),
+      windowsIcons: {
+        standard: path.join(trayAssets, 'tray.ico'),
+        darkTaskbar: path.join(trayAssets, 'tray-dark.ico'),
+        readDarkTaskbar: createWindowsTaskbarThemeReader(),
+      },
       templateIconPath: path.join(trayAssets, 'trayTemplate-16.png'), templateIcon2xPath: path.join(trayAssets, 'trayTemplate-32.png'),
       getSnapshot: () => {
         const state = accountService.getSessionState()
@@ -3188,6 +3194,19 @@ if (!hasSingleInstanceLock) {
       onError: (cause) => runtimeLog.exception('window', 'tray.failed', cause),
     })
     quitCleanup.add('window-lifecycle-and-tray', () => { lifecycle.dispose(); applicationTray?.dispose() })
+    if (process.platform === 'win32') {
+      // 客户换了任务栏深浅，托盘图标跟着换（D94）。换深浅时 Windows 给所有顶层窗口广播这条消息，
+      // 窗口缩到托盘时也收得到；nativeTheme 的 'updated' 靠不住（windows-taskbar-theme.ts）。
+      // 一次换深浅会连着来好几条，等它停下来再读，也不在窗口消息里起进程。
+      let trayIconRefresh: NodeJS.Timeout | null = null
+      mainWindow.hookWindowMessage(WINDOWS_SETTING_CHANGE_MESSAGE, () => {
+        if (trayIconRefresh) clearTimeout(trayIconRefresh)
+        trayIconRefresh = setTimeout(() => {
+          trayIconRefresh = null
+          applicationTray?.refreshWindowsIcon()
+        }, 300)
+      })
+    }
     // The canvas window is a secondary, opt-in surface -- it must not
     // outlive the main window (which would otherwise leave the app running
     // in the background with no way back to the dashboard on Windows/Linux,
