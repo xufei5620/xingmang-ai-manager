@@ -96,4 +96,14 @@ describe('mergeCanvasRunEvent', () => {
     const wrongRevision = { ...event, graphRevision: 'other-revision' }
     expect(mergeCanvasRunEvent([merged], wrongRevision)[0]).toBe(merged)
   })
+
+  it('ignores an event type it does not know instead of folding it in as the end of the run', () => {
+    const running = record()
+    // The desktop's 实扣 arrives on the same channel; a kernel that read it as a
+    // terminal event would wipe the run's status and outcome.
+    const unknown = { version: 1, type: 'run-charge', runId: 'run-1', graphRevision: 'revision-1', sequence: 2, at: '2026-08-17T01:00:12.000Z' } as unknown as CanvasRunEvent
+    const [after] = mergeCanvasRunEvent([running], unknown)
+    expect(after).toBe(running)
+    expect(after).toMatchObject({ status: 'running', events: [] })
+  })
 })

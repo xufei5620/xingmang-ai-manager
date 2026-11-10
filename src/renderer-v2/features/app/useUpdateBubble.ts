@@ -4,7 +4,7 @@ import { updateBubbleRepeatsUpdatesPage, updateDiskShortfallText, type SettingsG
 import type { PageId } from '../../registry/pages'
 import { useWindowSessionString } from '../../window-session'
 import { maintenanceNoticeKey } from './MaintenanceNotice'
-import { redownloadUpdate, requestUpdateInstallConfirm, retryFailedUpdateStep, updateFailureBubbleQuiet } from './update-retry'
+import { redownloadUpdate, retryFailedUpdateStep, updateFailureBubbleQuiet } from './update-retry'
 import { buildUpdateDismissal, parseUpdateDismissal, updateBubbleRepeatMs, updateDismissalRemainingMs } from './update-dismissal'
 import type { Perform } from './runtime-context'
 
@@ -16,11 +16,10 @@ interface UpdateBubbleOptions {
   page: PageId
   settingsGroup: SettingsGroupId | null
   perform: Perform
-  navigate(page: PageId): void
 }
 
 /** 右下角那个更新气泡（有新版本、下载中、没下完、空间不够）和角落的维护提示：什么时候出、关掉以后什么时候再出。 */
-export function useUpdateBubble({ native, update, setUpdate, settings, page, settingsGroup, perform, navigate }: UpdateBubbleOptions) {
+export function useUpdateBubble({ native, update, setUpdate, settings, page, settingsGroup, perform }: UpdateBubbleOptions) {
   // 关掉的气泡和维护提示记在窗口的 sessionStorage 里：缩到托盘关掉界面再叫出来，不再冒出来。
   // 更新气泡还记着什么时候关的，满一天再出一次（update-dismissal.ts）。
   const [dismissedUpdate, setDismissedUpdate] = useWindowSessionString('xingmang-v2-dismissed-update')
@@ -62,9 +61,11 @@ export function useUpdateBubble({ native, update, setUpdate, settings, page, set
     setUpdateRetrying(true)
     void perform(label, async () => setUpdate(await work())).finally(() => setUpdateRetrying(false))
   }
-  // 侧栏的更新入口、状态栏的版本号、气泡上的「重启并安装」都落到版本更新卡那个确认框：保存工作、
-  // Mac 钥匙串、Windows 授权窗口那几句都在框里，不在这里另开一条直接重启的路。
-  const openInstallConfirm = () => { navigate('updates'); requestUpdateInstallConfirm() }
+  // 侧栏的更新入口、状态栏的版本号、气泡上的「重启并安装」都弹版本更新卡那同一个确认框（UpdateInstallDialog）：
+  // 保存工作、Mac 钥匙串、Windows 授权窗口那几句都在框里，不在这里另开一条直接重启的路。框就在原地弹，
+  // 不再先跳到「设置 › 版本更新」：那一页更新说明长，客户嫌绕（yoyo 2026-11-10）。
+  const [installConfirmOpen, setInstallConfirmOpen] = useState(false)
+  const openInstallConfirm = () => setInstallConfirmOpen(true)
   const retryUpdate = () => retryFailedUpdateStep(update?.failedStep, {
     check: () => runUpdate('重试更新', () => native.checkForUpdates()),
     redownload: () => runUpdate('重试更新', () => redownloadUpdate(native)),
@@ -72,7 +73,7 @@ export function useUpdateBubble({ native, update, setUpdate, settings, page, set
   })
   return {
     showUpdate, dismissUpdate: () => setDismissedUpdate(buildUpdateDismissal(updateKey, Date.now())), updateRetrying, retryUpdate, autoUpdateToggle, autoUpdateOn, updateDiskText,
-    offerInstall, offerDownload, openInstallConfirm, downloadUpdate: () => runUpdate('下载更新', () => native.downloadUpdate()),
+    offerInstall, offerDownload, openInstallConfirm, installConfirmOpen, closeInstallConfirm: () => setInstallConfirmOpen(false), downloadUpdate: () => runUpdate('下载更新', () => native.downloadUpdate()),
     maintenance, launchInstall, maintenanceDismissed: maintenanceKey === dismissedMaintenance, dismissMaintenance: () => setDismissedMaintenance(maintenanceKey),
   }
 }
