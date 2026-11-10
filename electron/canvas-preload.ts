@@ -85,7 +85,7 @@ const capabilities = deepFreeze({
     byteUpload: false,
     promptPresetGroups: false,
   },
-  imageCandidates: { maximum: 1 },
+  imageCandidates: { maximum: 4 },
   videoCandidates: { maximum: 1 },
   promptPresetNameMaxLength: 160,
   imageResolutions: {

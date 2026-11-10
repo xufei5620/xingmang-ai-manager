@@ -935,9 +935,11 @@ function AccountKeys({
       setName(input.value)
       return
     }
+    // 当场把截过的名字写回框里再放光标：React 随后核对时框里已经是这个值，不会再写一遍把光标甩到最后。
+    // 以前等下一帧才挪，那一帧可能落在客户紧接着按 Home、→ 之后，把光标又拽回刚才那里。
+    input.value = limited.value
+    input.setSelectionRange(limited.caret, limited.caret)
     setName(limited.value)
-    // 输入框被改回截过的名字时光标会跳到最后，挪回刚才打字的地方。
-    window.requestAnimationFrame(() => input.setSelectionRange(limited.caret, limited.caret))
   }
   const selectedGroupAvailable = groups.some((entry) => entry.name === group)
   const groupDescription = groups.find((entry) => entry.name === group)?.description?.trim()
