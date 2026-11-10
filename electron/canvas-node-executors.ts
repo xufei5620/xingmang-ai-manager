@@ -1,6 +1,7 @@
 import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from './ai-image-service'
 import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-protocol'
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
+import { assertCanvasImageEditMaskInput, buildCanvasImageMaskPng } from './canvas-image-mask'
 import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
@@ -194,6 +195,11 @@ export function createCanvasNodeExecutors(options: {
     )]
     if (sourceAssetIds.length === 0) throw new Error('请连接至少一张已保存到本地资产库的参考图片')
     if (sourceAssetIds.length > 4) throw new Error('图片编辑最多支持 4 张参考图片')
+    const mask = node.data.imageEditMask
+    // Checked again here, after the kernel's preflight, because the request
+    // goes out whatever the canvas checked: a mask drawn on another image, or
+    // on an image since swapped, fails before anything is paid.
+    if (mask) assertCanvasImageEditMaskInput(mask, node.data.model, inputs.images ?? (inputs.image ? [inputs.image] : []))
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -206,6 +212,7 @@ export function createCanvasNodeExecutors(options: {
         model: node.data.model,
         prompt,
         sourceAssetIds,
+        ...(mask ? { mask: { width: mask.width, height: mask.height, png: (maskSignal: AbortSignal) => buildCanvasImageMaskPng(mask, maskSignal) } } : {}),
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),

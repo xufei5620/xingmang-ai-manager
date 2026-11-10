@@ -5,7 +5,7 @@ import {
   computeCanvasGraphRevision,
   computeCanvasNodeFingerprint,
 } from './canvas-fingerprint'
-import type { CanvasRunGraph, CanvasRunGraphNode } from './canvas-run-contract'
+import type { CanvasImageEditMask, CanvasRunGraph, CanvasRunGraphNode } from './canvas-run-contract'
 
 function imageNode(overrides: Partial<CanvasRunGraphNode['data']> = {}): CanvasRunGraphNode {
   return {
@@ -201,6 +201,23 @@ describe('canvas fingerprints', () => {
     expect(canvasImageCandidateCacheKey(fingerprint, 3)).toBe(keys[1])
     expect(() => canvasImageCandidateCacheKey(fingerprint, 5)).toThrow('画布图片序号格式错误')
     expect(() => canvasImageCandidateCacheKey('not-a-fingerprint', 2)).toThrow('画布节点指纹格式错误')
+  })
+
+  it('keeps every existing edit fingerprint and gives a masked edit its own', () => {
+    const edit = (imageEditMask?: CanvasImageEditMask): CanvasRunGraphNode => ({
+      id: 'edit', kind: 'image-edit', definitionVersion: 1,
+      data: { prompt: '换成红色', model: 'gpt-image-2', group: '生图', size: '1024x1024', quality: 'low', ...(imageEditMask ? { imageEditMask } : {}) },
+    })
+    // Both values computed by main 4049a622, before masks were passed on: a
+    // node without one must keep its cache key and its graph revision.
+    expect(computeCanvasNodeFingerprint({ node: edit(), upstream: [] })).toBe('dc3b82d73d46fd7a054eaf1d929cac13ae42284c186c2a81b3fe0ca8996bf2ab')
+    expect(computeCanvasGraphRevision({ nodes: [edit()], edges: [] })).toBe('5ddbdb7f62d91ee381cc3d9b2234c37619c16bcf15973e4ce73f3b9729791234')
+    const mask: CanvasImageEditMask = { version: 1, sourceAssetId: 'a'.repeat(43), width: 64, height: 48, strokes: [{ tool: 'brush', size: 0.2, points: [{ x: 0.5, y: 0.5 }] }] }
+    const masked = computeCanvasNodeFingerprint({ node: edit(mask), upstream: [] })
+    expect(masked).not.toBe('dc3b82d73d46fd7a054eaf1d929cac13ae42284c186c2a81b3fe0ca8996bf2ab')
+    const moreStroke = { ...mask, strokes: [...mask.strokes, { tool: 'erase' as const, size: 0.1, points: [{ x: 0.5, y: 0.5 }] }] }
+    expect(computeCanvasNodeFingerprint({ node: edit(moreStroke), upstream: [] })).not.toBe(masked)
+    expect(computeCanvasGraphRevision({ nodes: [edit(mask)], edges: [] })).not.toBe('5ddbdb7f62d91ee381cc3d9b2234c37619c16bcf15973e4ce73f3b9729791234')
   })
 
   it('changes the graph revision with the image count but keeps it for one image', () => {

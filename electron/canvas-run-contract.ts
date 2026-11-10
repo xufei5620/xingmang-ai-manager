@@ -75,10 +75,28 @@ export interface CanvasRunGraphNode {
      * that each ask for one image (upstream n stays 1); absent means one.
      */
     imageCandidateCount?: CanvasRunImageCandidateCount
+    /**
+     * image-edit only: repaint just the painted part of the one source image
+     * (画布完善第 5 条). Parsed with the kernel's limits; absent means a plain
+     * edit, exactly as before.
+     */
+    imageEditMask?: CanvasImageEditMask
   }
 }
 
 export type CanvasRunImageCandidateCount = 1 | 2 | 3 | 4
+
+export interface CanvasImageEditMaskPoint { x: number; y: number }
+export interface CanvasImageEditMaskStroke { tool: 'brush' | 'erase'; size: number; points: CanvasImageEditMaskPoint[] }
+/** Strokes in 0-1 coordinates over a width x height image (xingmang-canvas image-tools/image-edit-mask.ts). */
+export interface CanvasImageEditMask {
+  version: 1
+  /** The image the mask was drawn on; a run refuses any other source. */
+  sourceAssetId?: string
+  width: number
+  height: number
+  strokes: CanvasImageEditMaskStroke[]
+}
 
 /**
  * One request of a multi-image node. Every request of the same run shares the
