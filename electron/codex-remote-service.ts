@@ -83,6 +83,8 @@ import { isRecord } from './input-guards'
 // - Text that leaves the machine is redacted (I13) and capped.
 
 const pairingTtlMs = 10 * 60_000
+/** 配对码挂了这么久还没收到私聊，电脑卡片上说可能是哪儿没配好（YF-2）。 */
+const pairingQuietMs = 60_000
 const maxPairingFailures = 20
 const approvalTimeoutMinutes = 10
 const approvalTimeoutMs = approvalTimeoutMinutes * 60_000
@@ -590,9 +592,22 @@ interface ChannelRuntime {
   status: RemoteChannelStatus
   enabled: boolean
   startedAt: number
-  pairing: { code: string; expiresAt: number; failures: number; timer: NodeJS.Timeout } | null
+  pairing: {
+    code: string
+    startedAt: number
+    expiresAt: number
+    failures: number
+    timer: NodeJS.Timeout
+    /** 挂满 pairingQuietMs 时推一份快照，卡片上那句「还没收到消息」才出得来。 */
+    quietTimer: NodeJS.Timeout
+  } | null
   /** 上一个配对码错满次数作废了，电脑卡片上要说一声，直到重新开始配对、取消或关掉渠道（D66 / YKS-21）。 */
   pairingLocked: boolean
+  /**
+   * 这次打开以后平台送来过什么（YF-2）：一条都没有、只有群里的、有过私聊。只记有没有，不记谁发的、发了什么；
+   * 只用来在电脑卡片上说配对码为什么没反应，手机那边照旧不回陌生人。
+   */
+  inboundSeen: RemoteInboundSeen
   peer: RemotePeer | null
   replyContext?: string
   seen: Set<string>
@@ -614,6 +629,8 @@ interface ChannelRuntime {
   retiredTurnIds: string[]
 }
 
+export type RemoteInboundSeen = 'none' | 'group' | 'direct'
+
 interface PendingApproval {
   id: string
   nonce: string
@@ -632,6 +649,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     startedAt: 0,
     pairing: null,
     pairingLocked: false,
+    inboundSeen: 'none',
     peer: null,
     seen: new Set(),
     idleTimer: null,
@@ -644,6 +662,15 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     turn: null,
     retiredTurnIds: [],
   }
+}
+
+/**
+ * 配对码挂满 pairingQuietMs 还没收到过私聊时，快照里带上 quiet（YF-2）：一条都没收到多半是平台后台没配好，
+ * 只收到群里的是发错了地方。收到过私聊（哪怕不是配对码）就不说，错码另有「错了 N 次」。
+ */
+export function pairingQuietField(pairingStartedAt: number, inboundSeen: RemoteInboundSeen, now: number): { quiet?: 'nothing' | 'group-only' } {
+  if (inboundSeen === 'direct' || now - pairingStartedAt < pairingQuietMs) return {}
+  return { quiet: inboundSeen === 'group' ? 'group-only' : 'nothing' }
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -765,6 +792,7 @@ export class CodexRemoteService {
               code: runtime.pairing.code,
               expiresAt: runtime.pairing.expiresAt,
               ...(runtime.pairing.failures > 0 ? { failures: runtime.pairing.failures } : {}),
+              ...pairingQuietField(runtime.pairing.startedAt, runtime.inboundSeen, now),
             }
           : null,
         ...(runtime.pairingLocked ? { pairingLocked: true } : {}),
@@ -862,11 +890,18 @@ export class CodexRemoteService {
       this.emitSoon()
     }, pairingTtlMs)
     timer.unref?.()
+    const quietTimer = setTimeout(() => {
+      if (runtime.pairing?.quietTimer === quietTimer) this.emitSoon()
+    }, pairingQuietMs)
+    quietTimer.unref?.()
+    const now = this.now()
     runtime.pairing = {
       code: generatePairingCode(this.options.randomInt ?? cryptoRandomInt),
-      expiresAt: this.now() + pairingTtlMs,
+      startedAt: now,
+      expiresAt: now + pairingTtlMs,
       failures: 0,
       timer,
+      quietTimer,
     }
     this.options.log('info', 'remote.pairing-started', { channel })
     return this.emit()
@@ -879,7 +914,10 @@ export class CodexRemoteService {
   }
 
   private clearPairing(runtime: ChannelRuntime): void {
-    if (runtime.pairing) clearTimeout(runtime.pairing.timer)
+    if (runtime.pairing) {
+      clearTimeout(runtime.pairing.timer)
+      clearTimeout(runtime.pairing.quietTimer)
+    }
     runtime.pairing = null
   }
 
@@ -1039,6 +1077,7 @@ export class CodexRemoteService {
     runtime.startedAt = this.now()
     runtime.seen.clear()
     runtime.staleNoticeAt = 0
+    runtime.inboundSeen = 'none'
     runtime.status = { state: 'connecting' }
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
@@ -1293,6 +1332,7 @@ export class CodexRemoteService {
 
   private async handleInbound(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {
     if (!runtime.enabled || message.peer.channel !== runtime.id) return
+    this.noteInboundSeen(runtime, message.direct)
     if (!message.direct) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'not-direct' })
       return
@@ -1415,6 +1455,14 @@ export class CodexRemoteService {
     runtime.staleNoticeAt = this.now()
     const minutes = Math.max(1, Math.floor(ageMs / 60_000))
     await this.sendText(runtime, staleMessageNotice(minutes), message.peer, message.replyContext ?? runtime.replyContext)
+  }
+
+  /** 记下这次打开以后收到过哪种消息（YF-2）；配对码正挂着时变了就推一份快照，卡片上那句跟着换或消失。 */
+  private noteInboundSeen(runtime: ChannelRuntime, direct: boolean): void {
+    const next: RemoteInboundSeen = direct ? 'direct' : runtime.inboundSeen === 'none' ? 'group' : runtime.inboundSeen
+    if (next === runtime.inboundSeen) return
+    runtime.inboundSeen = next
+    if (runtime.pairing) this.emitSoon()
   }
 
   private async tryPair(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {

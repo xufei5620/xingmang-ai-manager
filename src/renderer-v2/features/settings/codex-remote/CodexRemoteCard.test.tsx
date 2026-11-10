@@ -106,6 +106,17 @@ describe('codex remote card', () => {
     expect(voided).toContain('开始配对')
   })
 
+  // YF-2：码挂了 1 分钟还没收到私聊，各渠道说各自的那句。
+  it('says on the desktop why a pairing code got no answer, in each channel\'s own words', () => {
+    const connected = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
+    const feishu = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, quiet: 'nothing' } }))
+    expect(feishu).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>机器人还没收到任何消息。多半是飞书后台还差两步：「事件与回调」里选长连接并添加「接收消息」，再到「版本管理与发布」发布一个版本。做完重新私聊机器人发这 6 位数字。</)
+    const weixin = render(snapshot({ workspaceDirectory: '~/projects/demo' }, {}, { ...connected, channel: 'weixin', pairing: { code: '482915', expiresAt: 1, quiet: 'nothing' } }))
+    expect(weixin).toMatch(/data-testid="settings-remote-weixin-pairing-note"[^>]*>还没收到消息。在手机微信里找到 ClawBot 对话，把这 6 位数字发过去。</)
+    const group = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, quiet: 'group-only' } }))
+    expect(group).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>收到的是群里的消息，不算。要点开机器人单独私聊它。</)
+  })
+
   it('says why the channel stopped and does not repeat it once connected', () => {
     const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: 'App ID 或 App Secret 不对' } }))
     expect(stopped).toContain('要重新登录')
