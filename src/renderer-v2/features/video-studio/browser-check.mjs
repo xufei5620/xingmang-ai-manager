@@ -781,7 +781,7 @@ test('opens the AI output folder from a notice that mentions it', async () => {
   assert.equal(await page.getByTestId('video-error').count(), 0)
   await page.evaluate(() => window.videoStudioPage.folderOpens(false))
   await page.getByTestId('video-notice-folder').click()
-  await page.getByTestId('video-error').getByText('这个文件夹现在打不开，重新打开本软件后再试一次。').waitFor()
+  await page.getByTestId('video-error').getByText('这个文件夹现在打不开，重开星芒后再试一次。').waitFor()
   assert.equal(await page.getByTestId('video-notice-folder').count(), 1, 'the notice stays so the folder can be tried again')
   assert.deepEqual(errors, [])
   await page.close()

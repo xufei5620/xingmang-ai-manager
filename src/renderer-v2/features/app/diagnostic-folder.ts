@@ -13,4 +13,4 @@ export function diagnosticFolderTarget(item: { details?: Record<string, DetailVa
 }
 
 /** 主进程说没打开（AI 作品位置还没定下来）时，按失败显示的那句话。 */
-export const diagnosticFolderUnavailableMessage = '这个文件夹现在打不开，重新打开本软件后再试一次。'
+export const diagnosticFolderUnavailableMessage = '这个文件夹现在打不开，重开星芒后再试一次。'
