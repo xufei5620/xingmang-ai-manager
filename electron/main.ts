@@ -62,6 +62,7 @@ import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, tray
 import { createWindowsTaskbarThemeReader, WINDOWS_SETTING_CHANGE_MESSAGE } from './windows-taskbar-theme'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
+import { buildCanvasProjectFileOpenFailurePrompt, createCanvasProjectFileInbox, withoutCanvasProjectFileArguments } from './canvas-project-file-launch'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { buildUnexpectedExitRelaunchArgs, describeUnexpectedExitError, recordUnexpectedExit, takeUnexpectedExitNotice, unexpectedExitRecordPath } from './unexpected-exit'
@@ -844,12 +845,26 @@ if (!hasSingleInstanceLock) {
   let receiveDeepLink = (raw: string) => { deepLinkInbox.accept(raw) }
   for (const argument of process.argv) receiveDeepLink(argument)
   app.on('open-url', (event, url) => { event.preventDefault(); receiveDeepLink(url) })
+  // 双击画布项目文件（D92）：Windows、Linux 的文件路径在启动参数里，Mac 发 open-file（第一次启动时
+  // 在 ready 之前就发，所以这里就得接住）。窗口和画布都还没建好之前先存着，建好以后换成真的打开。
+  const canvasProjectFileInbox = createCanvasProjectFileInbox(process.platform)
+  let receiveCanvasProjectFile = (raw: string): boolean => canvasProjectFileInbox.accept(raw)
+  let openPendingCanvasProjectFile = (): void => {}
+  for (const argument of process.argv.slice(1)) receiveCanvasProjectFile(argument)
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault()
+    receiveCanvasProjectFile(filePath)
+  })
   if (!singleInstanceDisabledForDevelopment) {
     app.on('second-instance', (_event, argv) => {
       for (const argument of argv) receiveDeepLink(argument)
+      let openedCanvasProjectFile = false
+      for (const argument of argv.slice(1)) openedCanvasProjectFile = receiveCanvasProjectFile(argument) || openedCanvasProjectFile
       // 已经开着的时候开机项又拉起一次（比如注销再登录没关进程），那不是用户
       // 要看窗口，别把它顶到最前面。
       if (hasLoginLaunchArgument(argv)) return
+      // 双击的是画布项目：顶到最前面的是画布（没登录才露出主窗口，见 openPendingCanvasProjectFile）。
+      if (openedCanvasProjectFile) return
       if (!focusExistingWindow()) focusWhenWindowIsReady = true
     })
   }
@@ -1858,6 +1873,8 @@ if (!hasSingleInstanceLock) {
             // 视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
             void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
           }
+          // 没登录时双击的画布项目文件，登录好了接着打开。
+          openPendingCanvasProjectFile()
         }
       },
     })
@@ -2769,6 +2786,32 @@ if (!hasSingleInstanceLock) {
       showMainWindow()
       deliverToMainWindow('onExternalDeepLink', undefined)
     }
+    // 没登录先露出主窗口（登录页），文件留着，登录好了由上面账号变化那里再来一次。打不开就弹框说清楚，
+    // 原因进运行日志。
+    openPendingCanvasProjectFile = () => {
+      if (!canvasProjectFileInbox.hasPending()) return
+      const session = accountService.getSessionState()
+      if (!session.authenticated || !session.account) {
+        showMainWindow()
+        return
+      }
+      const filePath = canvasProjectFileInbox.take()
+      if (!filePath) return
+      canvasController.openProjectFile(filePath).then((opened) => {
+        if (!opened) runtimeLog.log('info', 'canvas', 'project-file.kept-open', '画布开着、用户没关，双击的画布项目文件没有导入')
+      }, async (error: unknown) => {
+        runtimeLog.exception('canvas', 'project-file.open.failed', error)
+        const prompt = buildCanvasProjectFileOpenFailurePrompt(error)
+        await dialog.showMessageBox({ type: 'error', ...prompt, noLink: true })
+      }).catch((error: unknown) => runtimeLog.exception('canvas', 'project-file.prompt.failed', error))
+    }
+    receiveCanvasProjectFile = (raw) => {
+      if (!canvasProjectFileInbox.accept(raw)) return false
+      openPendingCanvasProjectFile()
+      return true
+    }
+    // 启动参数里带着的那个（双击文件把星芒拉起来的情况），和窗口建好之前 Mac 发来的 open-file。
+    openPendingCanvasProjectFile()
     let trayHintShown = false
     const lifecycle = createWindowLifecycle({
       readPreference: () => systemService.readStoredConfig().closeBehavior ?? 'ask',
@@ -2928,7 +2971,8 @@ if (!hasSingleInstanceLock) {
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
-        if (relaunchRequested) app.relaunch()
+        // 双击画布项目文件拉起来的那次，参数里带着文件；重启时不带，不然又导入一遍。
+        if (relaunchRequested) app.relaunch({ args: withoutCanvasProjectFileArguments(process.argv.slice(1), process.platform) })
         app.quit()
       },
       onError: (cause) => {
@@ -3060,7 +3104,7 @@ if (!hasSingleInstanceLock) {
       ]).then(() => runtimeLog.idle())
       void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
         try {
-          if (relaunch) app.relaunch({ args: buildUnexpectedExitRelaunchArgs(process.argv.slice(1), windowVisible) })
+          if (relaunch) app.relaunch({ args: buildUnexpectedExitRelaunchArgs(withoutCanvasProjectFileArguments(process.argv.slice(1), process.platform), windowVisible) })
         } finally {
           app.exit(1)
         }
