@@ -127,6 +127,7 @@ import {
   canvasHostListPromptPresetsChannel,
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
+  canvasHostImportAssetBytesChannel,
   canvasHostInspectAssetReferencesChannel,
   canvasHostStartRunChannel,
   canvasHostCancelRunChannel,
@@ -354,6 +355,7 @@ describe('createCanvasWindowController', () => {
       canvasHostListPromptPresetsChannel,
       canvasHostPickAssetChannel,
       canvasHostImportAssetFileChannel,
+      canvasHostImportAssetBytesChannel,
       canvasHostInspectAssetReferencesChannel,
       canvasHostStartRunChannel,
       canvasHostCancelRunChannel,
@@ -1333,6 +1335,53 @@ describe('createCanvasWindowController', () => {
     await expect(electronMocks.handlers.get(canvasHostImportAssetFileChannel)!(trustedEvent(), videoPath))
       .rejects.toThrow('本地媒体文件不安全')
     expect(videoAssets.storeLocalFile).not.toHaveBeenCalled()
+  })
+
+  it('saves a picture the page drew into the open project library from its bytes alone', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '蒙版项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const stored = { assetId: 'M'.repeat(43), localUrl: `xingmang-asset://image/${'M'.repeat(43)}`, mimeType: 'image/png', width: 1, height: 1, fileName: `xingmang-${'M'.repeat(43)}.png` }
+    const folder = { images: { storeLocalBytes: vi.fn(async () => stored) }, media: { setSource: vi.fn(async () => undefined) } }
+    const aiAssets = { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(), storeLocalBytes: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => folder), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      aiAssets: aiAssets as never,
+    }))
+    await controller.open()
+    const importBytes = electronMocks.handlers.get(canvasHostImportAssetBytesChannel)!
+
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('请先选择或新建一个画布项目')
+    expect(folder.images.storeLocalBytes).not.toHaveBeenCalled()
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).resolves.toEqual(stored)
+    expect(folder.images.storeLocalBytes).toHaveBeenCalledTimes(1)
+    const [userId, bytes] = folder.images.storeLocalBytes.mock.calls[0] as unknown as [number, Buffer]
+    expect(userId).toBe(7)
+    expect(Buffer.isBuffer(bytes) && bytes.equals(projectPng)).toBe(true)
+    expect(folder.media.setSource).toHaveBeenCalledWith(7, stored.assetId, 'imported')
+    expect(aiAssets.storeLocalBytes).not.toHaveBeenCalled()
+  })
+
+  it('refuses paths, non-pictures, oversized sides and a canvas that saves too often on the byte channel', async () => {
+    const stored = { assetId: 'N'.repeat(43), localUrl: `xingmang-asset://image/${'N'.repeat(43)}`, mimeType: 'image/png', fileName: `xingmang-${'N'.repeat(43)}.png` }
+    const aiAssets = { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(), storeLocalBytes: vi.fn(async () => stored) }
+    const controller = createCanvasWindowController(controllerOptions({ aiAssets: aiAssets as never }))
+    await controller.open()
+    const importBytes = electronMocks.handlers.get(canvasHostImportAssetBytesChannel)!
+    const huge = Buffer.from(projectPng)
+    huge.writeUInt32BE(9000, 16)
+
+    await expect(importBytes(trustedEvent(), path.join(temporaryDirectory(), 'mask.png'))).rejects.toThrow('画布图片内容格式错误')
+    await expect(importBytes(trustedEvent(), new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'))).rejects.toThrow('仅支持 PNG、JPEG 或 WebP')
+    await expect(importBytes(trustedEvent(), new Uint8Array(huge))).rejects.toThrow('画布图片边长超过 8192')
+    expect(aiAssets.storeLocalBytes).not.toHaveBeenCalled()
+
+    // The two refused pictures above already used two of the twenty saves.
+    for (let index = 0; index < 18; index += 1) await importBytes(trustedEvent(), new Uint8Array(projectPng))
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片太频繁')
+    expect(aiAssets.storeLocalBytes).toHaveBeenCalledTimes(18)
   })
 
   it('offers MP4 in the native media picker', async () => {

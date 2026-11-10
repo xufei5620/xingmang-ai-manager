@@ -72,6 +72,7 @@ import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetContext, CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { CanvasGenerationAdmission } from './canvas-generation-admission'
+import { assertCanvasUploadedImage, CanvasByteUploadAdmission, parseCanvasUploadedImageBytes } from './canvas-byte-upload'
 import {
   buildCanvasProjectPackage,
   createCanvasProjectPreviewId,
@@ -114,6 +115,7 @@ export const canvasHostPurgeAssetChannel = canvasHostChannels.purgeAsset
 export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspectAssetReferences
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
+export const canvasHostImportAssetBytesChannel = canvasHostChannels.importAssetBytes
 export const canvasHostListPromptPresetsChannel = canvasHostChannels.listPromptPresets
 export const canvasHostCreatePromptPresetChannel = canvasHostChannels.createPromptPreset
 export const canvasHostUpdatePromptPresetChannel = canvasHostChannels.updatePromptPreset
@@ -407,6 +409,7 @@ export function createCanvasWindowController(
   const pendingProjects = new Map<number, PendingCanvasProjectImport>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
   const generationAdmission = new CanvasGenerationAdmission()
+  const byteUploadAdmission = new CanvasByteUploadAdmission()
   let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
 
   function assertCanvasAccountId(userId: number | null): number | null {
@@ -1179,6 +1182,31 @@ export function createCanvasWindowController(
     }
   }
 
+  /**
+   * A picture the page drew itself (#1397 step one: the mask editor's PNG).
+   * It lands where a dropped picture would: the open project's library, or
+   * the account library for a project without its own folder. No path goes
+   * in or out. Unlike a dropped file this is not rolled back when the account
+   * changes after the write: the store is content-addressed, so the asset it
+   * returns may be a copy the user already had, and the account gate makes an
+   * account change wait for this handler anyway.
+   */
+  async function importCanvasImageBytes(ownerId: number, userId: number, bytes: Buffer) {
+    assertCanvasUploadedImage(bytes)
+    const context = await activeAssetContext(ownerId, userId)
+    assertCanvasUserUnchanged(userId)
+    const asset = await (context?.images ?? options.aiAssets).storeLocalBytes(userId, bytes)
+    assertCanvasUserUnchanged(userId)
+    await (context?.media ?? options.mediaAssets).setSource(userId, asset.assetId, 'imported').catch((error) => {
+      options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '素材已保存，但来源信息保存失败', {
+        assetId: asset.assetId,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    })
+    assertCanvasUserUnchanged(userId)
+    return asset
+  }
+
   registerCanvasHandler(canvasHostPickAssetChannel, async (event) => {
     const userId = authenticatedCanvasUserId()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
@@ -1204,6 +1232,12 @@ export function createCanvasWindowController(
     const filePath = requiredCanvasString(filePathInput, '本地媒体路径', 32_768)
     if (!path.isAbsolute(filePath)) throw new Error('本地媒体路径无效')
     return importCanvasAsset(event.sender.id, userId, filePath)
+  })
+
+  registerCanvasHandler(canvasHostImportAssetBytesChannel, async (event, bytesInput) => {
+    const userId = authenticatedCanvasUserId()
+    const bytes = parseCanvasUploadedImageBytes(bytesInput)
+    return byteUploadAdmission.run(event.sender.id, bytes.length, () => importCanvasImageBytes(event.sender.id, userId, bytes))
   })
 
   registerCanvasHandler(canvasHostStartRunChannel, async (event, input) => {
@@ -1553,6 +1587,7 @@ export function createCanvasWindowController(
       options.videoService.cancelSender(senderId)
       options.canvasRuns.cancelOwner(senderId)
       generationAdmission.releaseOwner(senderId)
+      byteUploadAdmission.releaseOwner(senderId)
       pendingProjects.delete(senderId)
       activeProjects.delete(senderId)
       crashRecovery.dispose()

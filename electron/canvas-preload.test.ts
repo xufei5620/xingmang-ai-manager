@@ -7,7 +7,7 @@ import { desktopCanvasCapabilities } from './canvas-contract'
 
 type CanvasBridge = Record<string, (...args: unknown[]) => Promise<unknown>>
 
-function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>) {
+function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>, getPathForFile: (file: unknown) => string = () => '') {
   const sourceText = fs.readFileSync(path.join(__dirname, 'canvas-preload.ts'), 'utf8')
   const compiled = ts.transpileModule(sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
   let bridge: CanvasBridge | undefined
@@ -18,7 +18,7 @@ function loadCanvasBridge(invoke: (...args: unknown[]) => Promise<unknown>) {
       return {
         ipcRenderer: { invoke, on: vi.fn(), removeListener: vi.fn() },
         contextBridge: { exposeInMainWorld: (_name: string, api: CanvasBridge) => { bridge = api } },
-        webUtils: { getPathForFile: () => '' },
+        webUtils: { getPathForFile },
       }
     },
   })
@@ -120,5 +120,31 @@ describe('canvas sandbox preload', () => {
       ['canvas-host:create-project', '副本', 42, undefined],
       ['canvas-host:create-project', '副本', undefined, { sourceProjectId: 'source' }],
     ])
+  })
+
+  it('sends a dropped file by its path and a picture the page drew by its bytes alone', async () => {
+    const invoke = vi.fn(async (..._args: unknown[]) => ({ assetId: 'a' }))
+    const dropped = { name: 'cat.png', type: 'image/png', size: 4, arrayBuffer: vi.fn() }
+    const bridge = loadCanvasBridge(invoke, (file) => file === dropped ? 'C:\\Users\\me\\cat.png' : '')
+    await bridge.importAssetFile(dropped)
+    expect(dropped.arrayBuffer).not.toHaveBeenCalled()
+    const mask = { name: '星芒-黑白蒙版-4x4.png', type: 'image/png', size: 4, arrayBuffer: vi.fn(async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]).buffer) }
+    await bridge.importAssetFile(mask, { mediaType: 'image' })
+    expect(invoke.mock.calls[0]).toEqual(['canvas-host:import-asset-file', 'C:\\Users\\me\\cat.png'])
+    expect(invoke.mock.calls[1][0]).toBe('canvas-host:import-asset-bytes')
+    expect(invoke.mock.calls[1]).toHaveLength(2)
+    expect([...(invoke.mock.calls[1][1] as Uint8Array)]).toEqual([0x89, 0x50, 0x4e, 0x47])
+  })
+
+  it('refuses a pathless file that is not a picture, or is too large, before reading it', async () => {
+    const invoke = vi.fn(async () => null)
+    const bridge = loadCanvasBridge(invoke)
+    const video = { name: 'clip.mp4', type: 'video/mp4', size: 4, arrayBuffer: vi.fn() }
+    const huge = { name: 'huge.png', type: 'image/png', size: 20 * 1024 * 1024 + 1, arrayBuffer: vi.fn() }
+    expect((await rejection(bridge.importAssetFile(video))).message).toBe('无法读取拖入的本地文件')
+    expect((await rejection(bridge.importAssetFile(huge))).message).toBe('画布图片超过 20 MB，没有保存')
+    expect(video.arrayBuffer).not.toHaveBeenCalled()
+    expect(huge.arrayBuffer).not.toHaveBeenCalled()
+    expect(invoke).not.toHaveBeenCalled()
   })
 })

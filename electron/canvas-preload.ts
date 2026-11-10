@@ -27,6 +27,7 @@ const channels = {
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
+  importAssetBytes: 'canvas-host:import-asset-bytes',
   listPromptPresets: 'canvas-host:list-prompt-presets',
   createPromptPreset: 'canvas-host:create-prompt-preset',
   updatePromptPreset: 'canvas-host:update-prompt-preset',
@@ -85,7 +86,7 @@ const capabilities = deepFreeze({
     referenceOrder: false,
     cloud: false,
     agentExecution: false,
-    byteUpload: false,
+    byteUpload: true,
     promptPresetGroups: false,
   },
   imageCandidates: { maximum: 4 },
@@ -210,10 +211,15 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   purgeAsset: (assetId: string, currentProjectContent: string) => invoke(channels.purgeAsset, assetId, currentProjectContent),
   inspectAssetReferences: (assetId: string, currentProjectContent: string) => invoke(channels.inspectAssetReferences, assetId, currentProjectContent),
   pickAsset: () => invoke(channels.pickAsset),
-  importAssetFile: (file: File) => {
+  importAssetFile: async (file: File) => {
     const filePath = webUtils.getPathForFile(file)
-    if (!filePath) return Promise.reject(new Error('无法读取拖入的本地文件'))
-    return invoke(channels.importAssetFile, filePath)
+    if (filePath) return invoke(channels.importAssetFile, filePath)
+    // A picture the page drew itself (the mask editor's black-and-white PNG)
+    // has no path. Only its bytes cross, and the main process decides from
+    // the file header what it is; the page's name and type are not sent.
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('无法读取拖入的本地文件')
+    if (file.size > 20 * 1024 * 1024) throw new Error('画布图片超过 20 MB，没有保存')
+    return invoke(channels.importAssetBytes, new Uint8Array(await file.arrayBuffer()))
   },
   listPromptPresets: () => invoke(channels.listPromptPresets),
   createPromptPreset: (input: unknown) => invoke(channels.createPromptPreset, input),
