@@ -1,5 +1,5 @@
 /** Backend-neutral account contracts. No Node imports; credential types stay main-only. */
-import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { networkFailureMessages, resolveNetworkFailureMessage } from './network-failure'
 
 export type AccountRealmId = 'xm-account' | 'api-account'
 export type AccountBackendKind = 'new-api' | 'sub2api'
@@ -80,8 +80,7 @@ export class RealmAccountError extends Error {
 
 function networkFailureMessageFor(cause: unknown): string | null {
   if (cause === undefined) return null
-  const reason = classifyNetworkFailure(cause)
-  return reason ? networkFailureMessages[reason] : null
+  return resolveNetworkFailureMessage(cause)
 }
 
 export function isRealmRecord(value: unknown): value is Record<string, unknown> {
