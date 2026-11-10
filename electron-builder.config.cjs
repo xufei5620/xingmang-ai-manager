@@ -394,6 +394,11 @@ module.exports = {
     // 已有的。**这一行不能删**:少了它兜底脚本不会被编进安装程序,而打包日志
     // 全绿,和现在一模一样。
     include: 'installer.nsh',
+    // 安装完成页、卸载欢迎页和完成页左边那张图（D93）。不写这一行时 electron-builder
+    // 也会去 build/ 找同名文件，但找不到就悄悄换回 NSIS 自带的通用图；写明以后文件
+    // 丢了打包直接报错。卸载向导没单独配，跟着用这一张。重新生成见
+    // scripts/generate-installer-sidebar.mjs。
+    installerSidebar: 'installerSidebar.bmp',
     shortcutName: '星芒AI管理工具',
     uninstallDisplayName: '星芒AI管理工具',
   },

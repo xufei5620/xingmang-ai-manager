@@ -146,6 +146,7 @@ import {
   canvasHostPurgeAssetChannel,
   canvasHostRelinkProjectFolderChannel,
   canvasHostDeleteProjectChannel,
+  canvasHostGetAccountSummaryChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostAccountChangedChannel,
@@ -372,6 +373,7 @@ describe('createCanvasWindowController', () => {
       canvasHostPurgeAssetChannel,
       canvasHostRelinkProjectFolderChannel,
       canvasHostDeleteProjectChannel,
+      canvasHostGetAccountSummaryChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -795,6 +797,37 @@ describe('createCanvasWindowController', () => {
     await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
     await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
     expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  describe('the balance chip', () => {
+    const summary = { siteLabel: '星芒账号', accountLabel: 'yo***3', balanceUsd: 12.4, subscriptionLabel: null, readAt: '2026-11-10T03:00:00.000Z' }
+
+    it('answers with the reader and takes nothing from the page', async () => {
+      const readAccountSummary = vi.fn(async () => summary)
+      const controller = createCanvasWindowController(controllerOptions({ readAccountSummary }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetAccountSummaryChannel)!
+      await expect(handler(trustedEvent(), 'https://attacker.example/', { userId: 1 })).resolves.toEqual(summary)
+      expect(readAccountSummary).toHaveBeenCalledTimes(1)
+      expect(readAccountSummary).toHaveBeenCalledWith()
+    })
+
+    it('tells the canvas nobody is signed in when the host has no reader', async () => {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      await expect(electronMocks.handlers.get(canvasHostGetAccountSummaryChannel)!(trustedEvent())).resolves.toBeNull()
+    })
+
+    it('answers only the canvas window', async () => {
+      const readAccountSummary = vi.fn(async () => summary)
+      const controller = createCanvasWindowController(controllerOptions({ readAccountSummary }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetAccountSummaryChannel)!
+      // The main window has its own balance; this channel is the canvas's only.
+      expect(() => handler(trustedEvent('xingmang://app/index.html'))).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(() => handler(foreignEvent())).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(readAccountSummary).not.toHaveBeenCalled()
+    })
   })
 
   describe('deleting a project', () => {
