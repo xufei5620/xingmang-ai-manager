@@ -70,3 +70,21 @@ describe('importing conversations while the chat page is around', () => {
     expect(ids(await opened)).toEqual(new Set(['from-old-computer']))
   })
 })
+
+// 0.2.24 深查聊天页 C2：一段对话的文件坏了，以前整份读不出来，「搬到新电脑」也一个都导不出去。
+describe('moving to a new computer with one broken conversation file', () => {
+  it('exports the conversations that still read and logs the broken one without showing its reason', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('fine'), conversation('broken')] })
+    const stored = await files.bridge.readAiChatHistory(scope)
+    stored.conversations = stored.conversations.map((file) => file.key === 'broken' ? { ...file, content: '{truncated' } : file)
+    files.bridge.readAiChatHistory.mockResolvedValueOnce(stored)
+    const reportRendererError = vi.fn(async () => undefined)
+    const transfer = createChatTransfer({ ...files.bridge, reportRendererError }, storage, scope, () => undefined)
+    const exported = await transfer.exportConversations()
+    expect(exported).toHaveLength(1)
+    expect(exported[0]).toMatchObject({ id: 'fine' })
+    expect(reportRendererError).toHaveBeenCalledWith({ message: expect.stringContaining('c-broken.json 读不出来'), context: 'chat-history', level: 'warn' })
+  })
+})

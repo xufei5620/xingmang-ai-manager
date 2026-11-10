@@ -162,6 +162,24 @@ describe('renderer release', () => {
     expect(h.controller.rendererBusy).toBe(false)
   })
 
+  it('keeps the work named in the latest report for the update restart question and forgets it with the renderer', () => {
+    const h = fixture()
+    expect(h.controller.rendererWork).toEqual([])
+    h.controller.reportActivity(true, ['chat', 'video-compose'])
+    expect(h.controller.rendererWork).toEqual(['chat', 'video-compose'])
+    // A report that names nothing means nothing is running any more.
+    h.controller.reportActivity(true)
+    expect(h.controller.rendererWork).toEqual([])
+    // Only the stale-report case can reach a release with work still named; it must not outlive the renderer.
+    h.controller.reportActivity(false, ['chat'])
+    h.controller.noteHidden()
+    h.fire()
+    expect(h.controller.state).toBe('released')
+    expect(h.controller.rendererWork).toEqual([])
+    h.controller.reportActivity(true, ['chat'])
+    expect(h.controller.rendererWork).toEqual([])
+  })
+
   it('sends deliveries straight through while the renderer is live', () => {
     const h = fixture()
     const send = vi.fn()
