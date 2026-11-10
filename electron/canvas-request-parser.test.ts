@@ -461,7 +461,7 @@ describe('canvas request parser', () => {
 
   it('marks each kernel setting the desktop cannot honour instead of dropping it', () => {
     const cases: Array<[string, Record<string, unknown>, string]> = [
-      ['image-generate', { imageCandidateCount: 2 }, '一次出多张图'],
+      ['video-generate', { imageCandidateCount: 2 }, '一次出多张图'],
       ['video-generate', { videoCandidateCount: 4 }, '一次出多个视频'],
       ['image-generate', { textWebSearch: true }, '联网搜索'],
       // false asks for a silent video; the desktop sends neither, so only
@@ -491,9 +491,24 @@ describe('canvas request parser', () => {
       expect(node.data).toEqual({ prompt: 'p', model: 'm' })
     }
     // Several reasons are each named once, in a fixed order.
-    expect(parseCanvasStartRunInput(kernelNode('image-generate', {
+    expect(parseCanvasStartRunInput(kernelNode('video-generate', {
       tileInput: { columns: 2 }, imageTransform: { kind: 'crop' }, imageCandidateCount: 3,
     })).graph.nodes[0].desktopUnsupported).toBe(`「一次出多张图、图片处理」${kernelRefusal}`)
+  })
+
+  it('hands an image node its count of independent requests and keeps one as the old request', () => {
+    for (const kind of ['image', 'image-generate', 'image-edit']) {
+      for (const count of [2, 3, 4]) {
+        const parsed = parseCanvasStartRunInput(kernelNode(kind, { imageCandidateCount: count })).graph.nodes[0]
+        expect(parsed.desktopUnsupported).toBeUndefined()
+        expect(parsed.data).toEqual({ prompt: 'p', model: 'm', imageCandidateCount: count })
+      }
+      expect(parseCanvasStartRunInput(kernelNode(kind, { imageCandidateCount: 1 })).graph.nodes[0].data)
+        .toEqual({ prompt: 'p', model: 'm' })
+      for (const bad of [0, 5, 2.5, '2']) {
+        expect(() => parseCanvasStartRunInput(kernelNode(kind, { imageCandidateCount: bad }))).toThrow('画布图片生成数量格式错误')
+      }
+    }
   })
 
   it('marks every kernel-only node kind by its name and still refuses unknown kinds', () => {

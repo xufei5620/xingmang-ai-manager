@@ -182,6 +182,8 @@ export interface CodexRemoteBoundPeerSnapshot {
 export interface CodexRemotePairingSnapshot {
   code: string
   expiresAt: number
+  /** 这个码发来过几次错的（D66 / YKS-21），只在电脑卡片上显示；没错过不填。 */
+  failures?: number
 }
 
 export interface CodexRemoteChannelSnapshot {
@@ -192,6 +194,8 @@ export interface CodexRemoteChannelSnapshot {
   status: RemoteChannelStatus
   boundPeer: CodexRemoteBoundPeerSnapshot | null
   pairing: CodexRemotePairingSnapshot | null
+  /** 上一个配对码错满次数作废了，还没重新开始配对、也没取消（D66 / YKS-21）。没有时不填。 */
+  pairingLocked?: boolean
 }
 
 export type CodexRemoteTaskState = 'idle' | 'starting' | 'running' | 'waiting-approval'

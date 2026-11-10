@@ -517,10 +517,47 @@ function skipClaudeWebFetchPreflight(parsed: Record<string, unknown>): void {
  * Code 再接星芒的老客户走合并写入，以前没补这一项，升上去就会被问。没写才补，写过任何
  * 模式的一律不动（2026-10-06 yoyo 定）。skipDangerousModePermissionPrompt 一并补上，
  * 否则交互会话一打开先弹一屏英文的「绕过权限模式」确认。
+ *
+ * 返回这次真补上的那几项：它们记进旁边的快照，切回官方账号时只撤这几项（见 ClaudeFilledDefault）。
  */
-function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissions: Record<string, unknown>): void {
-  if (permissions.defaultMode === undefined) permissions.defaultMode = 'bypassPermissions'
-  if (parsed.skipDangerousModePermissionPrompt === undefined) parsed.skipDangerousModePermissionPrompt = true
+function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissions: Record<string, unknown>): ClaudeFilledDefault[] {
+  const filled: ClaudeFilledDefault[] = []
+  if (permissions.defaultMode === undefined) {
+    permissions.defaultMode = 'bypassPermissions'
+    filled.push('permissions.defaultMode')
+  }
+  if (parsed.skipDangerousModePermissionPrompt === undefined) {
+    parsed.skipDangerousModePermissionPrompt = true
+    filled.push('skipDangerousModePermissionPrompt')
+  }
+  return filled
+}
+
+/**
+ * 「不逐条确认」那两项。以前切回官方账号时有意留着它们，结果从没设过的客户回到官方以后，官方 Claude Code
+ * 也是不问就执行，跟客户以为的「官方原样」不一样（0.2.24 深查 D5 / 反复切换 N7，2026-11-10 yoyo 定改）。
+ * 现在接当前账号时把星芒补上的那几项记进 xingmang-claude-foreign-settings.json，切回官方只撤记下的、
+ * 而且值还是星芒写的那个的；客户自己设过的、记号出现之前就已经在的，一律不动。
+ */
+export type ClaudeFilledDefault = 'permissions.defaultMode' | 'skipDangerousModePermissionPrompt'
+const claudeFilledDefaults: readonly ClaudeFilledDefault[] = ['permissions.defaultMode', 'skipDangerousModePermissionPrompt']
+
+/** 原文件里还没有、整份重建的模板会补上的那几项（reset 那条路用；merge 那条路看 skipClaudeCommandConfirmation 的返回）。 */
+function claudeConfirmationDefaultsMissing(settings: Record<string, unknown>): ClaudeFilledDefault[] {
+  const permissions = isJsonRecord(settings.permissions) ? settings.permissions : {}
+  return claudeFilledDefaults.filter((key) => key === 'permissions.defaultMode'
+    ? permissions.defaultMode === undefined
+    : settings.skipDangerousModePermissionPrompt === undefined)
+}
+
+/** 这一项现在是不是还是星芒补上的那个值。 */
+function claudeFilledDefaultPresent(settings: Record<string, unknown>, key: ClaudeFilledDefault): boolean {
+  switch (key) {
+    case 'permissions.defaultMode':
+      return isJsonRecord(settings.permissions) && settings.permissions.defaultMode === 'bypassPermissions'
+    case 'skipDangerousModePermissionPrompt':
+      return settings.skipDangerousModePermissionPrompt === true
+  }
 }
 
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
@@ -2191,6 +2228,15 @@ export interface WorkspaceTrustWriteResult extends NativeConfigSaveResult {
   changed: boolean
 }
 
+export interface ManagedWorkspaceTrustOptions {
+  /**
+   * 文件夹里已经带着 Claude Code 自己的项目设置（workspace-guard.ts 的 claudeProjectSettingsFiles）时为 true：
+   * 不写这个文件夹的信任，让 Claude Code 自己问；首启向导照旧跳过，那一页只问主题和安全须知，
+   * 跟这个文件夹里带了什么无关（D4）。缺省 = 旧行为。
+   */
+  leaveFolderTrustToCli?: boolean
+}
+
 function matchingWorkspaceKey(entries: Record<string, unknown>, workspace: string): string | null {
   const wanted = normalizeWorkspacePathKey(workspace)
   const key = Object.keys(entries).find((candidate) => normalizeWorkspacePathKey(candidate) === wanted)
@@ -2215,6 +2261,7 @@ function requireWorkspaceTrustJson(content: string | null, label: string): Recor
 export function trustClaudeWorkspaceInRootConfigText(
   content: string | null,
   workspace: string,
+  options: ManagedWorkspaceTrustOptions = {},
 ): { content: string; changed: boolean } {
   const trimmedWorkspace = workspace.trim()
   if (!trimmedWorkspace) throw new Error('Claude Code 工作目录不能为空')
@@ -2225,16 +2272,20 @@ export function trustClaudeWorkspaceInRootConfigText(
   if (parsed.projects !== undefined && !isJsonRecord(parsed.projects)) {
     throw new Error(`${label} 的项目记录已损坏，未执行修改`)
   }
-  const projects = ensureRecord(parsed, 'projects')
-  const key = matchingWorkspaceKey(projects, trimmedWorkspace) ?? trimmedWorkspace
-  if (projects[key] !== undefined && !isJsonRecord(projects[key])) {
-    throw new Error(`${label} 的项目记录已损坏，未执行修改`)
-  }
-  const entry = ensureRecord(projects, key)
   let changed = false
-  if (typeof entry.hasTrustDialogAccepted !== 'boolean') {
-    entry.hasTrustDialogAccepted = true
-    changed = true
+  // 信任留给 CLI 自己问时连项目条目都不建：一个空条目对 Claude Code 来说跟没有一样，
+  // 只会让这份文件多一处本软件动过的地方。
+  if (!options.leaveFolderTrustToCli) {
+    const projects = ensureRecord(parsed, 'projects')
+    const key = matchingWorkspaceKey(projects, trimmedWorkspace) ?? trimmedWorkspace
+    if (projects[key] !== undefined && !isJsonRecord(projects[key])) {
+      throw new Error(`${label} 的项目记录已损坏，未执行修改`)
+    }
+    const entry = ensureRecord(projects, key)
+    if (typeof entry.hasTrustDialogAccepted !== 'boolean') {
+      entry.hasTrustDialogAccepted = true
+      changed = true
+    }
   }
   // 首启向导问的是主题与安全须知，登录方式本软件已经配好。对付费客户来说
   // 它只是打开工具后的一段英文问答，跳过它不改变任何已有选择。
@@ -2248,6 +2299,7 @@ export function trustClaudeWorkspaceInRootConfigText(
 export function trustClaudeWorkspace(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   workspace: string,
+  options: ManagedWorkspaceTrustOptions = {},
 ): WorkspaceTrustWriteResult {
   const roots = normalizeProviderConfigRoots(rootsInput)
   // ~/.claude.json 与 ~/.claude/ 是并列的两项，所以这条事务的根是主目录本身。
@@ -2259,7 +2311,7 @@ export function trustClaudeWorkspace(
     '现有 Claude Code ~/.claude.json',
     MAX_CLAUDE_ROOT_CONFIG_BYTES,
   )
-  const next = trustClaudeWorkspaceInRootConfigText(current, workspace)
+  const next = trustClaudeWorkspaceInRootConfigText(current, workspace, options)
   if (!next.changed) return { backups: [], files: [], changed: false }
   assertNoReparseComponents(path.dirname(root), '用户主目录')
   ensureSafeDataDirectory(root, '用户主目录')
@@ -2415,16 +2467,18 @@ export function syncXingmangImageMcpConfigs(
 /**
  * 本软件「打开」某个目录时替用户写下的信任。Codex 的信任连带 approval_policy
  * 与 sandbox_mode 两项默认值，是配置对话框里一个单独的按钮（trustCodexWorkspace），
- * 不在这条路径上；Grok 没有目录信任这一说。
+ * 不在这条路径上；Grok 没有目录信任这一说。leaveFolderTrustToCli 只管 Claude Code：
+ * Gemini CLI 已下线，那一支照旧。
  */
 export function trustManagedWorkspace(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   workspace: string,
+  options: ManagedWorkspaceTrustOptions = {},
 ): WorkspaceTrustWriteResult {
   switch (provider) {
     case 'claude':
-      return trustClaudeWorkspace(rootsInput, workspace)
+      return trustClaudeWorkspace(rootsInput, workspace, options)
     case 'gemini':
       return trustGeminiWorkspace(rootsInput, workspace)
     case 'codex':
@@ -2570,7 +2624,10 @@ function createPlans(
       if (cliHook) applyClaudeCliHooks(settings, cliHook)
       // 原文件读不出来时照旧重建（reset 本来就是给配置坏了的人用的），只是没东西可挪。
       const existing = readJson(paths[0]) ?? {}
-      const aside = claudeForeignSettingsAsidePlans(settings, existing, roots, apiKey, claudeOfficialModelToKeep(existing))
+      const aside = claudeForeignSettingsAsidePlans(
+        settings, existing, roots, apiKey, claudeOfficialModelToKeep(existing),
+        claudeConfirmationDefaultsMissing(existing), claudeSettingsLookOfficial(existing),
+      )
       return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
     case 'gemini': {
@@ -2672,17 +2729,19 @@ function createMergePlans(
         ...createCodexRelayAuthPlans(apiKey, roots, 'merge'),
       ]
     case 'claude': {
-      if (!fs.existsSync(paths[0])) return [initial(paths[0])]
+      // 还没有 settings.json 时整份用模板；模板补的「不逐条确认」要记进快照，那份计划一起带上。
+      if (!fs.existsSync(paths[0])) return [...initialPlans.values()]
       const parsed = requireJson(paths[0], '现有 Claude settings.json', 'Claude Code')
       // 下面就要换掉 env 和 model，先看清原来是不是官方账号的样子。
       const officialModel = claudeOfficialModelToKeep(parsed)
+      const wasOfficial = claudeSettingsLookOfficial(parsed)
       const env = ensureRecord(parsed, 'env')
       env.ANTHROPIC_AUTH_TOKEN = apiKey
       env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       disableClaudeSelfUpdate(env)
       const permissions = ensureRecord(parsed, 'permissions')
       denyClaudeRelayTool(permissions)
-      skipClaudeCommandConfirmation(parsed, permissions)
+      const filled = skipClaudeCommandConfirmation(parsed, permissions)
       skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
@@ -2690,7 +2749,7 @@ function createMergePlans(
       if (cliHook) applyClaudeCliHooks(parsed, cliHook)
       if (availableModels) applyClaudeRelayModelPicker(parsed, env, availableModels, model, seeded.claudeFallbackModel === true)
       parsed.model = model
-      const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey, officialModel)
+      const aside = claudeForeignSettingsAsidePlans(parsed, null, roots, apiKey, officialModel, filled, wasOfficial)
       return [...aside, { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
@@ -3232,15 +3291,17 @@ function fillCodexRelayTemplateDefaults(parsed: Record<string, unknown>, siteBas
   }
 }
 
-function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): void {
+/** 返回补上的「不逐条确认」那几项，跟保存配置时一样记进快照。 */
+function fillClaudeRelayTemplateDefaults(parsed: Record<string, unknown>): ClaudeFilledDefault[] {
   const env = fillableRecord(parsed, 'env')
   if (env && env.DISABLE_AUTOUPDATER === undefined) disableClaudeSelfUpdate(env)
   const permissions = fillableRecord(parsed, 'permissions')
   if (permissions && (permissions.deny === undefined || Array.isArray(permissions.deny))) denyClaudeRelayTool(permissions)
-  if (permissions) skipClaudeCommandConfirmation(parsed, permissions)
+  const filled = permissions ? skipClaudeCommandConfirmation(parsed, permissions) : []
   if (parsed.skipWebFetchPreflight === undefined) skipClaudeWebFetchPreflight(parsed)
   ensureClaudeResponseLanguage(parsed)
   extendClaudeSessionRetention(parsed)
+  return filled
 }
 
 function fillGrokRelayTemplateDefaults(parsed: Record<string, unknown>, relayBaseUrl: string, relayModelName: string): void {
@@ -3286,10 +3347,10 @@ function relayTemplateDefaultsPlans(
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
       if (normalizeUrl(nestedString(parsed, ['env', 'ANTHROPIC_BASE_URL'])) !== normalizeUrl(siteBaseUrls.claude)) return []
       const before = structuredClone(parsed)
-      fillClaudeRelayTemplateDefaults(parsed)
+      const filled = fillClaudeRelayTemplateDefaults(parsed)
       dropEmptyCreatedTables(parsed, before)
       if (JSON.stringify(parsed) === JSON.stringify(before)) return []
-      return [{ path: paths[0], content: jsonContent(parsed) }]
+      return [...claudeFilledDefaultsRecordPlans(parsed, roots, filled), { path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
       const { parsed, original } = requireGeminiJson(paths[0], '现有 Gemini settings.json')
@@ -3805,6 +3866,7 @@ function createOfficialAccountPlans(
       removeClaudeCliHooks(parsed)
       delete parsed.skipWebFetchPreflight
       // 星芒的型号拿掉；客户原来在官方那边选的那个，下面跟着快照放回来（claudeOfficialModelKey）。
+      // 「不逐条确认」也在那一步按快照里的记号撤，只撤星芒补的（ClaudeFilledDefault）。
       delete parsed.model
       const restore = claudeForeignSettingsRestorePlans(parsed, roots)
       return [...restore, { path: paths[0], content: jsonContent(parsed) }]
@@ -3923,6 +3985,9 @@ export function switchProviderToOfficialAccount(
 // 接当前账号时把它们挪进旁边的快照文件，切回官方账号时原样放回。和 settings.json
 // 在同一次两阶段提交里写，不会一边有一边没有。ANTHROPIC_DEFAULT_MODEL 不在这张表
 // 里：它是本软件自己的选模型菜单写的（claude-model-picker.ts）。
+//
+// 同一份快照还记着星芒补上的「不逐条确认」那几项（ClaudeFilledDefault 的 filled 一栏），
+// 切回官方账号时照着撤掉，客户自己设过的不在里面。
 // ---------------------------------------------------------------------------
 
 export const claudeForeignSettingsSnapshotName = 'xingmang-claude-foreign-settings.json'
@@ -3960,20 +4025,36 @@ export const claudeForeignModelEnvKeys: readonly string[] = claudeForeignEnvKeys
 interface ClaudeForeignSettings {
   env: Record<string, unknown>
   settings: Record<string, unknown>
+  /**
+   * 星芒替客户补上的「不逐条确认」那几项（ClaudeFilledDefault）。只是记号，不是挪开的值：切回官方账号时
+   * 照它撤掉，不往回放。文件里没有这一栏（0.2.24 之前写的）= 什么都没记，切回官方时一项都不撤。
+   */
+  filled: ClaudeFilledDefault[]
 }
 
 function readClaudeForeignSnapshot(content: string | null): ClaudeForeignSettings {
   const parsed = requireWorkspaceTrustJson(content, '已保存的 Claude 旧设置')
+  const filled: unknown[] = Array.isArray(parsed.filled) ? parsed.filled : []
   return {
     env: isJsonRecord(parsed.env) ? { ...parsed.env } : {},
     settings: isJsonRecord(parsed.settings) ? { ...parsed.settings } : {},
+    filled: claudeFilledDefaults.filter((key) => filled.includes(key)),
   }
 }
 
 function claudeForeignSnapshotContent(snapshot: ClaudeForeignSettings): string {
-  return Object.keys(snapshot.env).length === 0 && Object.keys(snapshot.settings).length === 0
-    ? ''
-    : jsonContent({ version: 1, env: snapshot.env, settings: snapshot.settings })
+  if (Object.keys(snapshot.env).length === 0 && Object.keys(snapshot.settings).length === 0 && snapshot.filled.length === 0) return ''
+  return jsonContent({
+    version: 1,
+    env: snapshot.env,
+    settings: snapshot.settings,
+    ...(snapshot.filled.length > 0 ? { filled: snapshot.filled } : {}),
+  })
+}
+
+/** 没有 ANTHROPIC_AUTH_TOKEN，也没有 ANTHROPIC_BASE_URL：官方账号的样子（口径同 restoredAccountSide）。 */
+function claudeSettingsLookOfficial(settings: Record<string, unknown>): boolean {
+  return !nestedString(settings, ['env', 'ANTHROPIC_AUTH_TOKEN']) && !nestedString(settings, ['env', 'ANTHROPIC_BASE_URL'])
 }
 
 /**
@@ -3982,7 +4063,7 @@ function claudeForeignSnapshotContent(snapshot: ClaudeForeignSettings): string {
  * undefined：那个型号是中转那边的，放回官方账号只会选到官方没有的型号。
  */
 function claudeOfficialModelToKeep(settings: Record<string, unknown>): string | undefined {
-  if (nestedString(settings, ['env', 'ANTHROPIC_AUTH_TOKEN']) || nestedString(settings, ['env', 'ANTHROPIC_BASE_URL'])) return undefined
+  if (!claudeSettingsLookOfficial(settings)) return undefined
   const model = settings[claudeOfficialModelKey]
   return typeof model === 'string' && model.trim() ? model : undefined
 }
@@ -4050,6 +4131,51 @@ export function restoreClaudeForeignSettings(
   return restored
 }
 
+/**
+ * 纯函数：记下这次接当前账号时星芒补上的「不逐条确认」那几项，返回新的快照内容；null = 快照不用动。
+ * settings 是写完之后的样子。
+ *
+ * wasOfficial：写之前是官方账号的样子（claudeSettingsLookOfficial）。这时快照里以前的记号不作数，只认这次
+ * 补上的：备份不带这份快照，切到当前账号失败按备份退回官方以后，记号还在，客户要是又自己开了同一项，
+ * 不能当成星芒补的。不是官方账号的样子（一直接着当前账号）时，以前记下的照旧算，只要那一项还是星芒写的
+ * 那个值；客户改成别的了就归客户。
+ */
+export function recordClaudeFilledDefaults(
+  snapshotContent: string | null,
+  settings: Record<string, unknown>,
+  filled: readonly ClaudeFilledDefault[],
+  wasOfficial: boolean,
+): string | null {
+  const snapshot = readClaudeForeignSnapshot(snapshotContent)
+  const next = claudeFilledDefaults.filter((key) => filled.includes(key)
+    || (!wasOfficial && snapshot.filled.includes(key) && claudeFilledDefaultPresent(settings, key)))
+  if (next.length === snapshot.filled.length && next.every((key) => snapshot.filled.includes(key))) return null
+  return claudeForeignSnapshotContent({ ...snapshot, filled: next })
+}
+
+/**
+ * 纯函数：切回官方账号时撤掉快照里记着是星芒补上的那几项（会改 settings），返回撤掉了哪几项。值已经
+ * 不是星芒写的那个了（客户在这期间自己改过）就不动。permissions 因此变空就连键一起删，免得留一张空表。
+ */
+export function withdrawClaudeFilledDefaults(
+  settings: Record<string, unknown>,
+  snapshotContent: string | null,
+): ClaudeFilledDefault[] {
+  const withdrawn = readClaudeForeignSnapshot(snapshotContent).filled
+    .filter((key) => claudeFilledDefaultPresent(settings, key))
+  for (const key of withdrawn) {
+    if (key === 'skipDangerousModePermissionPrompt') {
+      delete settings.skipDangerousModePermissionPrompt
+      continue
+    }
+    const permissions = settings.permissions
+    if (!isJsonRecord(permissions)) continue
+    delete permissions.defaultMode
+    if (Object.keys(permissions).length === 0) delete settings.permissions
+  }
+  return withdrawn
+}
+
 function claudeForeignSnapshotPath(roots: ProviderConfigRoots): string {
   return path.join(providerConfigRoot('claude', roots), claudeForeignSettingsSnapshotName)
 }
@@ -4060,28 +4186,46 @@ function readClaudeForeignSnapshotText(roots: ProviderConfigRoots): string | nul
   return requireConfigText(snapshotPath, '已保存的 Claude 旧设置')
 }
 
-/** 接当前账号时：把会顶掉当前账号的几项挪走，需要时附上快照文件的写入计划。 */
+/**
+ * 接当前账号时：把会顶掉当前账号的几项挪走、记下星芒补上的「不逐条确认」那几项，需要时附上快照文件的写入计划。
+ * filled / wasOfficial 见 recordClaudeFilledDefaults。
+ */
 function claudeForeignSettingsAsidePlans(
   settings: Record<string, unknown>,
   existing: Record<string, unknown> | null,
   roots: ProviderConfigRoots,
   relayApiKey: string,
   officialModel: string | undefined,
+  filled: readonly ClaudeFilledDefault[],
+  wasOfficial: boolean,
 ): FilePlan[] {
   // reset 从模板重建，原文件里的这几项要从 existing 里取；merge 时两者是同一个对象。
   const source = existing ?? settings
   const current = readClaudeForeignSnapshotText(roots)
-  const snapshot = moveClaudeForeignSettingsAside(source, current, relayApiKey, officialModel)
+  const moved = moveClaudeForeignSettingsAside(source, current, relayApiKey, officialModel)
+  const snapshot = recordClaudeFilledDefaults(moved ?? current, settings, filled, wasOfficial) ?? moved
   // 只删掉了一把与这次相同的 Key、又本来没有快照时，不必为此建一个空文件。
   if (snapshot === null || (snapshot === '' && current === null)) return []
   return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
 }
 
-/** 切回官方账号时：原样放回，并清空快照。没有快照就什么都不做。 */
+/** 开机补设置那一轮补上「不逐条确认」时，同样记进快照。没补就不碰快照。 */
+function claudeFilledDefaultsRecordPlans(
+  settings: Record<string, unknown>,
+  roots: ProviderConfigRoots,
+  filled: readonly ClaudeFilledDefault[],
+): FilePlan[] {
+  if (filled.length === 0) return []
+  const snapshot = recordClaudeFilledDefaults(readClaudeForeignSnapshotText(roots), settings, filled, false)
+  return snapshot === null ? [] : [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
+}
+
+/** 切回官方账号时：原样放回、撤掉星芒补上的那几项，并清空快照。没有快照就什么都不做。 */
 function claudeForeignSettingsRestorePlans(settings: Record<string, unknown>, roots: ProviderConfigRoots): FilePlan[] {
   const content = readClaudeForeignSnapshotText(roots)
   if (content === null) return []
   restoreClaudeForeignSettings(settings, content)
+  withdrawClaudeFilledDefaults(settings, content)
   return content === '' ? [] : [{ path: claudeForeignSnapshotPath(roots), content: '' }]
 }
 

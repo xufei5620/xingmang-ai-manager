@@ -18,7 +18,8 @@ describe('desktop canvas capabilities', () => {
 
   it('switches off every feature the desktop does not have yet', () => {
     expect(Object.values(desktopCanvasCapabilities.features).every((enabled) => enabled === false)).toBe(true)
-    expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(1)
+    // Image nodes send 2-4 independent one-image requests (canvas-run-engine.ts).
+    expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(4)
     expect(desktopCanvasCapabilities.videoCandidates.maximum).toBe(1)
   })
 

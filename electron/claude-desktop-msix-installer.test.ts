@@ -235,7 +235,7 @@ describe('Claude Desktop official MSIX installation', () => {
     f.installPackage.mockImplementation(async (_file, options) => { options.onElevationRequired?.() })
     await installClaudeDesktopFromOfficial(f.options)
     expect(f.progress[0].message).toBe('系统自带的安装组件这次没装上，正在从 Claude 官网下载离线安装包（0%）')
-    expect(f.progress.at(-1)?.message).toBe('此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。')
+    expect(f.progress.at(-1)?.message).toBe('接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。')
   })
 
   it('checks the package from protected staging with path verification when running trusted-only', async () => {

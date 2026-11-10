@@ -9,6 +9,7 @@ import { remoteChannelSections, type RemoteChannelSectionDefinition, type Remote
 import {
   boundPeerText,
   newerRemoteSnapshot,
+  pairingAttemptText,
   remoteCardMeta,
   remoteChannelStateLabel,
   remoteChannelStateTone,
@@ -37,6 +38,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
   const { Section } = definition
   const canEnable = channel.hasCredential && Boolean(snapshot.workspaceDirectory)
   const pairing = channel.pairing
+  const pairingNote = channel.hasCredential ? pairingAttemptText(channel) : null
   let binding = null
   if (channel.hasCredential && pairing) {
     binding = (
@@ -129,6 +131,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
         testId={`settings-remote-${id}-enable`}
       />
       {binding}
+      {pairingNote && <p className="v2-remote-pairing-note" data-testid={`settings-remote-${id}-pairing-note`}>{pairingNote}</p>}
     </section>
   )
 }

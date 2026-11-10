@@ -249,7 +249,10 @@ describe('automatic DIP zoom', () => {
     [1440, '100', 1.125],
     [960, '90', 0.85],
     [1152, '90', 0.85],
-    [1920, '110', 1.25],
+    [1366, '110', 1.1739],
+    [1536, '110', 1.32],
+    [1600, '110', 1.375],
+    [1920, '110', 1.375],
   ] as const)('calculates the whole WebContents width %i DIP with %s preference', (width, preference, expected) => {
     expect(calculateUiZoom(width, preference)).toBe(expected)
   })
@@ -257,6 +260,25 @@ describe('automatic DIP zoom', () => {
   it('keeps 100 percent relative to automatic zoom, without a second DPI multiplier', () => {
     expect(calculateUiZoom(1440, '100')).toBe(calculateUiZoom(1440, 'auto'))
     expect(calculateUiZoom(1440, '100')).not.toBe(1)
+  })
+
+  // D79: the 110% step used to share the 1.25 ceiling with the automatic
+  // factor, so a maximized 1080p desktop (1600 DIP and up) got the same zoom
+  // for 自动, 100% and 110%.
+  it('makes 110 percent larger than automatic and 90 percent smaller at every width', () => {
+    for (let width = 320; width <= 3840; width += 16) {
+      expect(calculateUiZoom(width, '110')).toBeGreaterThan(calculateUiZoom(width, 'auto'))
+      expect(calculateUiZoom(width, '90')).toBeLessThan(calculateUiZoom(width, 'auto'))
+    }
+    expect(calculateUiZoom(1920, '110')).toBeGreaterThan(calculateUiZoom(1920, '100'))
+  })
+
+  it('leaves the automatic zoom where it was before the 110 percent ceiling moved', () => {
+    for (let width = 320; width <= 3840; width += 16) {
+      const before = Math.round(Math.min(1.25, Math.max(0.9, width / 1280)) * 10_000) / 10_000
+      expect(calculateUiZoom(width, 'auto')).toBe(before)
+      expect(calculateUiZoom(width, '100')).toBe(before)
+    }
   })
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('uses a readable fallback while content width is invalid: %s', (width) => {
