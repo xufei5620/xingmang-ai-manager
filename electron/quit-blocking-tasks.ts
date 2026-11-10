@@ -1,6 +1,7 @@
 import { cliCatalog, isProviderId } from './catalog'
 import { externalClientNames, isExternalToolId } from './external-client-contract'
 import type { InstallationQueueSnapshot } from './installation-queue'
+import type { RendererRestartWork } from './ipc-contract'
 import { updateInstallLaunchTimeoutCode, type UpdateSnapshot } from './updater'
 
 export interface InterruptibleInstallTask {
@@ -56,9 +57,137 @@ export function resolveInterruptibleInstallTask(
   return first ? { ...first, count } : null
 }
 
+/**
+ * 重启装更新会停下、重开以后又不会自己接着做的事（D10）。聊天、视频剪辑的拼片在界面里跑，由界面报上来；
+ * 画布出图在主进程里，宿主自己看。交给服务端在生成的视频不算：重开以后会接着取回来。
+ */
+export type UnfinishedRestartWork = RendererRestartWork | 'canvas'
+
+// 顺序和单子上那句一样；只列真在跑的那几样。
+const unfinishedRestartWorkPhrases: ReadonlyArray<readonly [UnfinishedRestartWork, string]> = [
+  ['chat', '对话还在回复或出图'],
+  ['video-compose', '视频剪辑还在拼接'],
+  ['canvas', '画布还在生成'],
+]
+
+export interface UnfinishedRestartWorkPrompt {
+  /** 这次点到名的那几样，只用于日志与测试。 */
+  kinds: UnfinishedRestartWork[]
+  message: string
+  detail: string
+  /** 0 = 等它做完（这次不装，新版本留着），1 = 仍然重启。 */
+  buttons: [string, string]
+}
+
+/** 重启装更新前那一问（D10）。一样都没在跑时返回 null，不问。 */
+export function buildUnfinishedRestartWorkPrompt(running: Iterable<UnfinishedRestartWork>): UnfinishedRestartWorkPrompt | null {
+  const present = new Set(running)
+  const listed = unfinishedRestartWorkPhrases.filter(([kind]) => present.has(kind))
+  if (listed.length === 0) return null
+  const phrases = listed.map(([, phrase]) => phrase)
+  const last = phrases[phrases.length - 1]
+  const sentence = phrases.length === 1 ? last : `${phrases.slice(0, -1).join('，')}，或者${last}`
+  return {
+    kinds: listed.map(([kind]) => kind),
+    message: '还有任务没做完',
+    detail: `${sentence}。现在重启会把它们停下，出到一半的图可能已经扣费。`,
+    buttons: ['等它做完', '仍然重启'],
+  }
+}
+
+export interface UpdateRestartConfirmation {
+  installTask(): InterruptibleInstallTask | null
+  /** 「还在安装」那一问；true = 仍然退出。 */
+  confirmInstall(task: InterruptibleInstallTask): Promise<boolean>
+  unfinishedWork(): UnfinishedRestartWorkPrompt | null
+  /** 「还有任务没做完」那一问；true = 仍然重启。 */
+  confirmWork(prompt: UnfinishedRestartWorkPrompt): Promise<boolean>
+  log(event: string, message: string): void
+}
+
+/**
+ * 更新页「重启并安装」、托盘「重启并安装」、跳框里的「现在安装」都先过这里：true = 照常装。
+ * 先问工具在装，再问聊天、视频剪辑、画布在做的事。两问说的是不同的东西会被停下，所以都问；
+ * 哪一问点了「继续安装」「等它做完」，这次就不装，新版本留着（已知31、D10）。
+ */
+export async function confirmUpdateRestart(steps: UpdateRestartConfirmation): Promise<boolean> {
+  const task = steps.installTask()
+  if (task) {
+    steps.log('install.install-in-progress', `重启安装更新前确认：${task.key}`)
+    if (!await steps.confirmInstall(task)) {
+      steps.log('install.postponed', '还有工具在装，这次不装新版本，新版本留着')
+      return false
+    }
+  }
+  const work = steps.unfinishedWork()
+  if (!work) return true
+  steps.log('install.work-in-progress', `重启安装更新前确认：${work.kinds.join(',')}`)
+  if (!await steps.confirmWork(work)) {
+    steps.log('install.postponed', '还有任务没做完，这次不装新版本，新版本留着')
+    return false
+  }
+  return true
+}
+
+export interface ChatReplyQuitPrompt {
+  message: string
+  /** 0 = 等它说完（这次不退），1 = 仍然退出。 */
+  buttons: [string, string]
+}
+
+/**
+ * 退出时聊天还在回复那一问（D39）。回复在主进程里请求、在界面里一段段收，进程一关就断了，重开以后
+ * 也不会接着说完；已经说出来的那部分出字时隔两秒就存（useChatController.ts），停下的是后面那截。
+ * 判断跟重启装更新用同一份（D10 的 'chat'，界面报上来的「对话还在回复或出图」），不另算忙闲。
+ */
+export function buildChatReplyQuitPrompt(running: Iterable<UnfinishedRestartWork>): ChatReplyQuitPrompt | null {
+  for (const kind of running) {
+    if (kind === 'chat') return { message: '正在回复，退出会停下这条回复。', buttons: ['等它说完', '仍然退出'] }
+  }
+  return null
+}
+
+/** none = 没有要拦的，接着看下好的更新；quit = 问过了、点了「仍然退出」；cancel = 这次不退。 */
+export type QuitInterruptionAnswer = 'none' | 'quit' | 'cancel'
+
+export interface QuitInterruptionConfirmation {
+  installTask(): InterruptibleInstallTask | null
+  /** 「还在安装」那一问；true = 仍然退出。 */
+  confirmInstall(task: InterruptibleInstallTask): Promise<boolean>
+  chatReply(): ChatReplyQuitPrompt | null
+  /** 「正在回复」那一问；true = 仍然退出。 */
+  confirmChatReply(prompt: ChatReplyQuitPrompt): Promise<boolean>
+  log(event: string, message: string): void
+}
+
+/**
+ * 托盘、菜单「退出」和「直接退出」偏好放行前，先问会被打断的事：工具在装（已知31），聊天在回复（D39）。
+ * 两问说的是不同的东西会被停下，跟重启装更新一样都问；哪一问点了「继续安装」「等它说完」这次就不退。
+ * 问过的人不再接着被问要不要顺手装更新（返回 quit），下好的更新留到下次。
+ */
+export async function confirmQuitInterruptions(steps: QuitInterruptionConfirmation): Promise<QuitInterruptionAnswer> {
+  let asked = false
+  const task = steps.installTask()
+  if (task) {
+    steps.log('quit.install-in-progress', `退出前确认：${task.key}`)
+    if (!await steps.confirmInstall(task)) return 'cancel'
+    asked = true
+  }
+  // 安装那一问可能要好几分钟才有人答，回复在不在出字等答完再看。
+  const reply = steps.chatReply()
+  if (reply) {
+    steps.log('quit.chat-replying', '退出前确认：聊天还在回复')
+    if (!await steps.confirmChatReply(reply)) return 'cancel'
+    asked = true
+  }
+  return asked ? 'quit' : 'none'
+}
+
 export interface InstallableUpdateOnQuit {
   /** 已经下载并校验过的版本号；快照里没有时为 null，文案要能少了它也说得通。 */
   version: string | null
+  /** 这一版比本机旧：发布者撤回了本机这一版，装上是退回（updater.ts 的 rollback），说法要换（D11）。 */
+  rollback: boolean
 }
 
 /**
@@ -70,7 +199,16 @@ export interface InstallableUpdateOnQuit {
  */
 export function resolveInstallableUpdateOnQuit(snapshot: UpdateSnapshot): InstallableUpdateOnQuit | null {
   if (snapshot.phase !== 'downloaded' || snapshot.error || snapshot.development) return null
-  return { version: snapshot.availableVersion }
+  return { version: snapshot.availableVersion, rollback: snapshot.rollback === true }
+}
+
+/**
+ * 马上要装的这个版本是不是一次退回。预告和跳框要先等几秒、等人停手，这期间快照可能已经换成
+ * 别的版本：只有快照里下好的还是这一版时才算，对不上时按平时的说法（D11）。
+ */
+export function isRollbackInstall(snapshot: UpdateSnapshot | null, version: string): boolean {
+  const installable = snapshot ? resolveInstallableUpdateOnQuit(snapshot) : null
+  return installable !== null && installable.version === version && installable.rollback
 }
 
 /**

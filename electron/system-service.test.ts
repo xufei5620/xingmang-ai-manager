@@ -4776,6 +4776,43 @@ describe('npm install progress reporting', () => {
     expect(inspectWindowsProcessor).toHaveBeenCalledTimes(1)
   })
 
+  it.runIf(process.platform === 'win32')('tells the Node.js installer only when the app itself already runs elevated', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-elevated-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    function serviceFor(windowsProcessElevated?: boolean) {
+      return createSystemService(
+        new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+        {
+          platform: 'win32',
+          windowsExecutionMode: 'same-user',
+          ...(windowsProcessElevated === undefined ? {} : { windowsProcessElevated }),
+          findExecutable: async () => null,
+          inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+          inspectWindowsProcessor: async () => 'x64' as const,
+          installNodeRuntime,
+        },
+      )
+    }
+
+    await serviceFor(true).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ processElevated: true }))
+    await serviceFor(false).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+    await serviceFor().installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+  })
+
   it.runIf(process.platform === 'win32')('keeps an outdated Node.js on its own build when replacing it on an ARM laptop', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-old-node-runtime-'))
     temporaryDirectories.push(directory)
@@ -5903,6 +5940,22 @@ describe('Darwin Codex Desktop integration', () => {
       isDestroyed: () => false,
       send: vi.fn(),
     })).rejects.toThrow('工作目录不存在，请重新选择')
+    expect(execute).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('tells a Mac user to grant folder access when the stored workspace cannot be looked at (D29)', async () => {
+    const { service, workspace, execute, release } = await createDarwinService()
+    const statSync = fs.statSync
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (target === workspace) throw Object.assign(new Error(`EPERM: operation not permitted, stat '${workspace}'`), { code: 'EPERM' })
+      return statSync(target, options)
+    }) as typeof fs.statSync)
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })
@@ -7133,6 +7186,42 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
   })
 
+  // D4（0.2.24 深查安全.md 新-1）：网上下载的项目自带 hooks 之类，替客户答了信任它们一启动就会跑。
+  it.each([
+    [['.claude', 'settings.json']],
+    [['.claude', 'settings.local.json']],
+    [['.mcp.json']],
+  ])('leaves the Claude trust question to the CLI when the folder already carries %j', async (segments) => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-carried-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'downloaded-repo')
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, ...segments), JSON.stringify({ hooks: {} }))
+    const log = vi.fn()
+
+    await expect(launchService(userHome, 'claude', { log }).launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    expect(claudeConfig).toEqual({ hasCompletedOnboarding: true })
+    const events = log.mock.calls.map((call) => call[2])
+    expect(events).toContain('workspace.trust.left-to-cli')
+    expect(events).not.toContain('workspace.trust.written')
+  })
+
+  it('still trusts a folder whose .claude holds nothing Claude Code runs on trust', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-own-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(path.join(workspace, '.claude', 'commands'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'CLAUDE.md'), '# 我的项目\n')
+
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    const projects = claudeConfig.projects as Record<string, Record<string, unknown>>
+    expect(projects[workspace].hasTrustDialogAccepted).toBe(true)
+  })
+
   // #1085：换账号时还排着队的「打开」直接出队，一行都不跑；轮到它执行时才交给账号工作。
   it('runs a launch inside the queued account work, and not at all once that work was called off', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-account-work-'))
@@ -7143,7 +7232,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号上下文已变化')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()

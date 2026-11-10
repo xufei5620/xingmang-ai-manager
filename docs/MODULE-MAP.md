@@ -17,7 +17,7 @@
 
 ## 总述：先知道这几件事
 
-**进程入口不是 `main.ts`。** `package.json` 的 `main` 指向 `dist-electron/platform/entry.js`，所以入口是 `electron/platform/entry.ts`，它按顺序分流：Linux 上以 root 运行就拒绝（`linux-launch-guard.ts`）→ 卸载清理模式（`uninstall-cleanup-entry.ts`）→ 加速辅助进程模式（`acceleration-worker-entry.ts`）→ 都不是才进 `platform/desktop-entry.ts`，装好 renderer-v2 的平台层后 `require('../main')`。`main.ts` 是装配中心：建窗口、注册协议、把各个服务接起来。
+**进程入口不是 `main.ts`。** `package.json` 的 `main` 指向 `dist-electron/platform/entry.js`，所以入口是 `electron/platform/entry.ts`，它按顺序分流：Linux 和 Mac 上以 root 运行就拒绝（`linux-launch-guard.ts`、`macos-launch-guard.ts`）→ 卸载清理模式（`uninstall-cleanup-entry.ts`）→ 加速辅助进程模式（`acceleration-worker-entry.ts`）→ 都不是才进 `platform/desktop-entry.ts`，装好 renderer-v2 的平台层后 `require('../main')`。`main.ts` 是装配中心：建窗口、注册协议、把各个服务接起来。
 
 **跨进程通道有三套，各自一组「契约 + preload + 注册」**（AGENTS.md T1、I4、I7）：
 
@@ -46,7 +46,7 @@
 **容易混的几对**：
 
 - `installation-queue.ts` 是 I11 要求的安装、卸载、启动队列；`bounded-operation-queue.ts` 是图片生成和扫描探测用的通用并发队列，不能拿来替代前者。
-- 服务端的两份状态文件：更新目录（R2）上的 `service-status.json`（`service-status.ts` 读）和站点上的 `/xm-route-status.json`（`route-status-file.ts` 读）。本地的四份：`relay-route-lines.json`（应用线路）、`tool-route-state.json`（工具线路）、`release-guard.json`（撤回名单与放量）、`cli-model-hints.json`（型号表）。
+- 服务端的两份状态文件：更新目录（R2）上的 `service-status.json`（`service-status.ts` 读）和站点上的 `/xm-route-status.json`（`route-status-file.ts` 读）。本地的五份：`relay-route-lines.json`（应用线路）、`tool-route-state.json`（工具线路）、`release-guard.json`（撤回名单与放量）、`cli-model-hints.json`（型号表）、`service-switches.json`（远程关功能、已知问题提示、充值方式开关）。
 - `platform-capabilities.ts` 是判断「当前平台支持什么」的单一入口，渲染层的平台能力来自 `ipc.ts` 的 `platform:get-capabilities`。
 
 ## 自查：有没有模块没进地图

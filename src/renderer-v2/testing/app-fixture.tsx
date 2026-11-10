@@ -8,6 +8,7 @@ import { accelerationTrialSeconds } from '../../../electron/acceleration-contrac
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import { ExternalUrlBlockedError } from '../../../electron/external-url-blocked'
+import { buildClaudeDesktopInstallFailureMessage } from '../../../electron/claude-desktop-install-failure'
 import { accountScope } from '../account-context'
 import { createConversation, createWorkspace } from '../features/chat/state'
 import { exportableConversations } from '../features/chat/storage'
@@ -262,7 +263,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; signOutAccountPageSessionReads(): void; accountPageSessionSignedOutServed(): number; dropSessionSilently(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void; holdNextImport(): void; releaseImport(): void; holdNextChatHistoryRead(): void; releaseChatHistoryRead(): void; chatHistory(): { ids: string[]; index: string } } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; failMessage: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; holdAccountKeys(): void; releaseAccountKeys(): void; holdNextScan(): void; releaseScan(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; holdConfiguredModels(provider: ProviderId): void; releaseConfiguredModels(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: Awaited<ReturnType<XingmangApi['getAccountNotice']>>): void; timelineFixture(): ReturnType<typeof timelineFixture>; holdNextConfigSave(): void; releaseConfigSave(error?: string): void; holdNextResponses(): void; releaseResponses(): void; holdNextAccountSession(): void; releaseAccountSession(): void; signOutAccountPageSessionReads(): void; accountPageSessionSignedOutServed(): number; dropSessionSilently(): void; holdNextUninstall(): void; releaseUninstall(): void; holdNextInstall(): void; releaseInstall(error?: string): void; holdNextNodeInstall(): void; releaseNodeInstall(): void; addRecentSession(id: string, provider: ProviderId, cwd: string, updatedAt: number): void; setRelayRoute(line: RelayRouteLine): void; setToolsRunning(running: boolean): void; holdNextImport(): void; releaseImport(): void; holdNextChatHistoryRead(): void; releaseChatHistoryRead(): void; chatHistory(): { ids: string[]; index: string }; releaseChatImage(): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -303,14 +304,20 @@ let releaseUninstall: () => void = () => undefined
 let leftoverCleanups = 0
 let nextInstallHeld = false
 let releaseInstall: (error?: string) => void = () => undefined
+// 同主进程：Node.js 按 runtime:node 一个键排队，没装完时再要一次拿到的是同一次（installation-queue.ts）。
+let nodeInstallInFlight: ReturnType<XingmangApi['installNodeRuntime']> | null = null
+let nextNodeInstallHeld = false
+let releaseNodeInstall: () => void = () => undefined
 // ?chatImport：聊天记录存在内存里（读写同主进程那份的规矩），「搬到新电脑」导入的文件里有一个旧电脑上的对话（R28-2）。
 let nextImportHeld = false
 let releaseImport: () => void = () => undefined
 let nextChatHistoryReadHeld = false
 let releaseChatHistoryRead: () => void = () => undefined
+// ?chatImage：对话页能选出图的模型，出的图压着不回，releaseChatImage 才交出来（D44 换账号先问一句）。
+let releaseChatImage: () => void = () => undefined
 const chatHistoryFiles = new Map<string, AiChatHistorySnapshot>()
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount', 'switchAccountSource', 'saveSettings'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', failMessage: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, holdAccountKeys() { heldAccountKeys = heldAccountKeys ?? [] }, releaseAccountKeys() { const held = heldAccountKeys ?? []; heldAccountKeys = null; for (const resolve of held) resolve() }, holdNextScan() { holdScan = true }, releaseScan() { releaseScan() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, holdConfiguredModels(provider) { heldConfiguredModels.set(provider, heldConfiguredModels.get(provider) ?? []) }, releaseConfiguredModels(provider) { const held = heldConfiguredModels.get(provider) ?? []; heldConfiguredModels.delete(provider); for (const resolve of held) resolve() }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, timelineFixture() { return timelineFixture() }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) }, holdNextResponses() { nextResponsesHeld = true }, releaseResponses() { releaseResponses() }, holdNextAccountSession() { nextAccountSessionHeld = true }, releaseAccountSession() { releaseAccountSession() }, signOutAccountPageSessionReads() { accountPageSessionSignedOut = true }, accountPageSessionSignedOutServed() { return accountPageSessionSignedOutServed }, dropSessionSilently() { session = { authenticated: false, account: null } }, holdNextUninstall() { nextUninstallHeld = true }, releaseUninstall() { releaseUninstall() }, holdNextInstall() { nextInstallHeld = true }, releaseInstall(error) { releaseInstall(error) }, holdNextNodeInstall() { nextNodeInstallHeld = true }, releaseNodeInstall() { releaseNodeInstall() }, addRecentSession(id, provider, cwd, updatedAt) { recentWorkspaceSessions.unshift(recentWorkspaceSession(id, provider, cwd, updatedAt)) }, setRelayRoute(line) { autoRelayLine = line; reportRoutedConfig() }, setToolsRunning(running) { fixtureToolsRunning = running }, holdNextImport() { nextImportHeld = true }, releaseImport() { releaseImport() }, holdNextChatHistoryRead() { nextChatHistoryReadHeld = true }, releaseChatHistoryRead() { releaseChatHistoryRead() }, chatHistory() { const index = [...chatHistoryFiles.values()][0]?.index ?? ''; return { ids: index ? (JSON.parse(index) as { conversations: Array<{ id: string }> }).conversations.map((entry) => entry.id) : [], index } }, releaseChatImage() { releaseChatImage() } }
 if (query.has('startupConfigFail')) window.v2Test.fail = 'getConfig'
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
@@ -562,6 +569,8 @@ const methods = {
   installExternalClient: async (tool) => {
     window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
     if (query.has('externalInstallPending')) await new Promise<void>((resolve, reject) => { releaseLaunch = resolve; cancelExternalInstall = reject })
+    // ?externalInstallFailure=claudeDesktop：主进程两路都没装上时写好的那句（claude-desktop-install-failure.ts）。
+    if (query.get('externalInstallFailure') === tool && tool === 'claudeDesktop') throw new Error(buildClaudeDesktopInstallFailureMessage('unreachable', { wingetTried: true }))
     if (query.has('externalInstallFailure')) throw new Error('客户端安装失败，请重试')
     const current = externalStatuses.find((entry) => entry.tool === tool)!
     Object.assign(current, { installed: true, version: '2.0.0' })
@@ -665,7 +674,7 @@ const methods = {
     }
     return query.has('launchPending') ? new Promise<{}>((resolve) => { releaseLaunch = () => resolve({}) }) : query.has('launchOverride') ? { configOverrideNotice: '这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。' } : {}
   },
-  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。' } } : {}) }),
+  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。' } } : {}) }),
   inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
   setCodexDesktopLocale: async (locale) => {
     settings = { ...settings, codexDesktopChineseRuntimePatch: locale === 'zh-CN' ? 'enabled' : 'disabled' }
@@ -677,11 +686,19 @@ const methods = {
   // 配置里「界面语言与文件夹权限」头一次展开就读一次（UI v4）。
   inspectCodexWorkspacePermissions: async () => ({ configPath: 'C:\\Fixture\\config.toml', workspace: config.workspace, configExists: true, trustLevel: 'trusted' as const, approvalPolicy: null, permissionProfile: null, sandboxMode: null, control: 'available' as const, error: null }),
   // 「安装」遇到缺 / 认不出的 Node 会先走这一步（第十一批 2），装完运行环境即就绪。
-  installNodeRuntime: async () => {
-    if (query.has('nodeInstallFail')) throw new Error('下载 Node.js 时 ETIMEDOUT')
-    system.runtime.node = { ...system.runtime.node, installed: true, version: 'v24.0.0', tooOld: false, versionStatus: 'supported' }
-    system.runtime.npm = { ...system.runtime.npm, installed: true, version: '11.0.0' }
-    return { installed: true as const, action: 'installed' as const, method: 'msi' as const, source: null, version: 'v24.0.0', architecture: 'x64' as const, pathRefreshRequired: true, systemRestartRequired: query.has('nodeRestart') }
+  installNodeRuntime: () => {
+    nodeInstallInFlight ??= (async () => {
+      // 停在半路，好看「正在准备 Node.js 运行环境」那一段里再点别的工具（并发竞态 BF3）。
+      if (nextNodeInstallHeld) {
+        nextNodeInstallHeld = false
+        await new Promise<void>((resolve) => { releaseNodeInstall = resolve })
+      }
+      if (query.has('nodeInstallFail')) throw new Error('下载 Node.js 时 ETIMEDOUT')
+      system.runtime.node = { ...system.runtime.node, installed: true, version: 'v24.0.0', tooOld: false, versionStatus: 'supported' }
+      system.runtime.npm = { ...system.runtime.npm, installed: true, version: '11.0.0' }
+      return { installed: true as const, action: 'installed' as const, method: 'msi' as const, source: null, version: 'v24.0.0', architecture: 'x64' as const, pathRefreshRequired: true, systemRestartRequired: query.has('nodeRestart') }
+    })().finally(() => { nodeInstallInFlight = null })
+    return nodeInstallInFlight
   },
   // 首页「安装 Git」：主进程按当前用户代装，装完重新检测就能看到版本。
   installGitRuntime: async () => {
@@ -868,7 +885,13 @@ const methods = {
   },
   refreshOfficialChatGptUsage: async () => ({ planLabel: 'Plus', renewsAt: null, resetCredits: null, windows: [{ id: 'weekly', label: '周限额', remainingPercent: 72, resetAt: null }], checkedAt: new Date().toISOString() }),
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
-  prepareAiChatGroup: async (group: string) => ({ group, models: ['gpt-test'], keyCreated: false }),
+  prepareAiChatGroup: async (group: string) => ({ group, models: query.has('chatImage') ? ['gpt-test', 'gpt-image-2'] : ['gpt-test'], keyCreated: false }),
+  generateAiImage: async (input) => {
+    // 没开 ?chatImage 的用例不该出图：照旧记成没 mock 的调用，clean() 会报出来。
+    if (!query.has('chatImage')) { window.v2Test.unexpected.push('generateAiImage'); throw new Error('Missing mock: generateAiImage') }
+    await new Promise<void>((resolve) => { releaseChatImage = resolve })
+    return [{ assetId: 'b'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png' as const, fileName: `${input.requestId}.png`, width: 288, height: 256 }]
+  },
   startAiChat: async (input) => ({ requestId: input.requestId, accepted: true }),
   cancelAiChat: async () => ({ canceled: true, mayStillComplete: false }),
   readAiChatHistory: async (scope) => {

@@ -97,7 +97,8 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     if (unsupported) throw new Error(unsupported)
     const remoteGenerations = canvasRunRemoteGenerationUpperBound(input.graph, input.scope)
     if (remoteGenerations > maxRemoteGenerationsPerRun) {
-      throw new Error(`单次运行最多允许 ${maxRemoteGenerationsPerRun} 个远程生成节点，请拆分后重试`)
+      // Counted per paid request: a node set to four images is four.
+      throw new Error(`这次运行最多要生成 ${remoteGenerations} 次，一次运行最多 ${maxRemoteGenerationsPerRun} 次（一次出几张的按张数算），请分几次运行`)
     }
     const lockKey = activeRunLockKey(input)
     const exclusiveNodeIds = canvasRunExclusiveNodeIds(input.graph, input.scope)
@@ -141,6 +142,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
         resolveAdmission()
       },
       persistRecord: (record) => options.store.saveRun(input.userId, record),
+      persistProgress: (record) => options.store.saveRun(input.userId, record, { deferWrite: true }),
       onEvent: (event) => publish(event, input.userId, input.ownerId),
     }).finally(() => {
       if (active.get(runId)?.handle === handle) active.delete(runId)
@@ -232,6 +234,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     cancelUser,
     shutdown,
     whenIdle: async () => { await Promise.allSettled([...active.values()].map((run) => run.handle.promise)) },
+    hasActiveRuns: () => active.size > 0,
     subscribe,
     descendants: canvasRunDescendants,
   }

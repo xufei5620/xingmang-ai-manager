@@ -348,7 +348,7 @@ export function HealthPage({
   // 「正常」那一组默认收着：能点的几项（比如 Node.js 的「换成新版」）照旧一行一行摆出来，其余并成一块只写名字。
   // 从别处点名要看的那一项正好收在里面，就先摆出来再翻过去。
   const [showPassing, setShowPassing] = useState(false)
-  // 设置里「企业证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
+  // 设置里「安全证书」「网络检查」点「去检查页」：检查结果出来以后翻到那一项、亮一下；
   // 开机提示「去看看」不知道是哪一项，翻到第一项问题。去过这一页再点名进来时正在重查，
   // 等新结果出来再翻，不在几个小时前那份上亮。
   useRowFocus('health', pageRef, Boolean(resource.data) && !resource.loading, (anchor) => {
@@ -839,6 +839,7 @@ export function HealthPage({
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
+        target={operation.failed === 'export' ? 'export' : undefined}
       />
       {diagnostics.length ? resultState(results) : <Card padding="none">{resultState(null)}</Card>}
       <section className="v2-health-group" aria-labelledby="health-connection-title">

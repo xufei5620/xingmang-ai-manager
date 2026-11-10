@@ -25,10 +25,12 @@ describe('renderer-v2 offline banner', () => {
     expect(withStatus({ offline: false }, createElement(OfflineBanner))).toBe('')
   })
 
-  it('explains what still works and offers a recheck when offline', () => {
+  it('says the AI tools wait for the network too and offers a recheck when offline', () => {
     const markup = withStatus({ offline: true }, createElement(OfflineBanner))
     expect(markup).toContain('data-testid="offline-banner"')
-    expect(markup).toContain('现在连不上网。已经装好的 AI 工具照常能用；充值、聊天、安装和更新要等网络恢复。')
+    // 中转和账号是同一个站点：本机连不上网时 Claude Code、Codex 一样连不上，不能叫客户照常去用。
+    expect(markup).toContain('现在连不上网。AI 工具、聊天、充值、安装和更新都要等网络恢复；装好的工具和设置都还在，不用重装。')
+    expect(markup).not.toContain('照常能用')
     expect(markup).toContain('data-testid="offline-banner-recheck"')
     expect(markup).toContain('>重试<')
     expect(markup).not.toContain('重新检测')
@@ -38,9 +40,22 @@ describe('renderer-v2 offline banner', () => {
     const openNetworkSettings = vi.fn()
     const markup = withStatus({ offline: true, cause: 'proxy', openNetworkSettings }, createElement(OfflineBanner))
     expect(markup).toContain('data-cause="proxy"')
-    expect(markup).toContain('电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理（加速）软件，或者把系统代理关掉。')
+    expect(markup).toContain('电脑里设置的代理连不上，所以现在上不了网。请重新打开你的代理软件，或者把系统代理关掉。')
+    // 「加速」是星芒已经下线的功能名，客户会以为是让他打开星芒自己的加速。
+    expect(markup).not.toContain('加速')
     expect(markup).toContain('data-testid="offline-banner-proxy-settings"')
     expect(markup).toContain('打开系统代理设置')
+    expect(markup).toContain('data-testid="offline-banner-recheck"')
+    expect(markup).not.toContain('打开认证页')
+  })
+
+  it('says the proxy wants a password instead of sending the user to reopen it', () => {
+    const markup = withStatus({ offline: true, cause: 'proxyAuth', openNetworkSettings() {} }, createElement(OfflineBanner))
+    expect(markup).toContain('data-cause="proxyAuth"')
+    expect(markup).toContain('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
+    expect(markup).not.toContain('代理软件')
+    // 按钮照旧：没做输入框（D32），能做的还是打开系统代理设置看一眼。
+    expect(markup).toContain('data-testid="offline-banner-proxy-settings"')
     expect(markup).toContain('data-testid="offline-banner-recheck"')
     expect(markup).not.toContain('打开认证页')
   })
@@ -56,7 +71,7 @@ describe('renderer-v2 offline banner', () => {
   it('explains the automatic direct connection once the broken proxy was bypassed', () => {
     const markup = withStatus({ offline: false, proxyBypassNotice: true, openNetworkSettings() {}, dismissProxyBypassNotice() {} }, createElement(OfflineBanner))
     expect(markup).toContain('data-testid="proxy-bypass-banner"')
-    expect(markup).toContain('星芒已经改为直接联网，可以照常使用')
+    expect(markup).toContain('电脑里设置的代理连不上，星芒已经改为直接联网，可以照常使用。浏览器等其他软件可能还上不了网，可以点右边去关掉代理。')
     expect(markup).toContain('打开系统代理设置')
     expect(markup).toContain('data-testid="proxy-bypass-banner-dismiss"')
     expect(markup).toContain('知道了')

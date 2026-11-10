@@ -10,7 +10,7 @@ import { isRecord } from './input-guards'
 // 上登录后，工具照常重新配好。
 export const DATA_TRANSFER_FORMAT = 'xingmang-data-transfer'
 export const DATA_TRANSFER_VERSION = 1
-// 图片不随文件走，剩下的都是文字；50 个对话碰到这个上限已经远超正常使用。
+// 图片不随文件走，剩下的都是文字；200 个对话碰到这个上限已经远超正常使用。
 export const MAX_DATA_TRANSFER_BYTES = 64 * 1024 * 1024
 export const MAX_CONVERSATION_TEXT_BYTES = 16 * 1024 * 1024
 const MAX_TITLE_LENGTH = 200
@@ -52,7 +52,7 @@ const portableLabels: Record<PortableKey, string | null> = {
   alwaysInstallLatestCli: '命令行工具总是装最新版',
   mirrorPolicy: '下载来源',
   desktopNotifications: '桌面通知',
-  crashReporting: '崩溃自动上报',
+  crashReporting: '自动发送错误报告',
 }
 const portableKeys = Object.keys(portableLabels) as PortableKey[]
 

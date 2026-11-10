@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, saveConversation, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation } from './state'
-import { autosaveDelay, ChatStorageError, createHistoryWriter, registerHistoryFlusher, type LoadedChatHistory } from './storage'
+import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { isWindowInFront } from '../tools/install-notice'
@@ -25,7 +25,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   // 落定模型要在同一拍里看到最新的准备结果，state 赶不上，另记一份。
   const preparationsRef = useRef<Record<string, GroupPreparation>>({})
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  // 只有几段对话读不出来时其余照常读写，说一句就行（D40）；整份读不出来的走下面那条红条。
+  const [notice, setNotice] = useState(initial.unreadable ? unreadableConversationsNotice(initial.unreadable) : '')
   const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
   const [attaching, setAttaching] = useState(false)
   const attachingRef = useRef(false)
@@ -244,7 +245,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const newConversation = () => {
     const current = activeConversation(stateRef.current)
     const keepDraft = current.id === stateRef.current.draftConversation.id && Boolean(current.draft.trim())
-    if (stateRef.current.conversations.length + (keepDraft ? 2 : 1) > 50) { setError('最多保存 50 个对话，请先删除不再需要的对话'); return }
+    if (stateRef.current.conversations.length + (keepDraft ? 2 : 1) > MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
     const next = createConversation(current.settings)
     commit((workspace) => {
       const preserved = keepDraft ? saveConversation(workspace, { ...current, title: current.draft.trim().slice(0, 32) }) : workspace
@@ -258,7 +259,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     if (!alive.current || isGenerating(current)) return
     // 断网时当场说，草稿原样留在输入框里，不先挂一条等超时的消息。
     if (offlineRef.current) { offlineRetry.current = { conversationId: current.id, options }; setError(offlineSendMessage); return }
-    if (!stateRef.current.conversations.some((item) => item.id === current.id) && stateRef.current.conversations.length >= 50) { setError('最多保存 50 个对话，请先删除不再需要的对话'); return }
+    if (!stateRef.current.conversations.some((item) => item.id === current.id) && stateRef.current.conversations.length >= MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
     if (requests.current.size >= 4) { setError('已有 4 个对话正在处理，请等待一个完成后再试'); return }
     try {
       const plan = planTurn(current, { prompt: options.prompt ?? current.draft, images: current.draftImages, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
@@ -303,7 +304,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   }
   const continueInNew = () => {
     const current = activeConversation(stateRef.current)
-    if (stateRef.current.conversations.length + 1 > 50) { setError('最多保存 50 个对话，请先删除不再需要的对话'); return }
+    if (stateRef.current.conversations.length + 1 > MAX_CONVERSATIONS) { setError(conversationLimitMessage); return }
     const carry = carried.current?.conversationId === current.id ? carried.current : { text: current.draft, fromDraft: true }
     carried.current = null
     commit((workspace) => continueInNewConversation(workspace, current.id, carry.text, carry.fromDraft))

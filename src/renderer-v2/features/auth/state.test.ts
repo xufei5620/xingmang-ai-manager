@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { networkFailureMessages } from '../../../../electron/network-failure'
-import { authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
+import { networkFailureMessages, proxyAuthRequiredMessage } from '../../../../electron/network-failure'
+import { authDiskFullMessage, authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -121,8 +121,8 @@ describe('v2 auth recovery boundaries', () => {
   it('does not expose raw server error text to the interface', () => {
     expect(authErrorMessage(new Error('GET https://example.test 500 internal stack trace'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
     expect(authErrorMessage(new Error('ETIMEDOUT'), '登录')).toBe(authUnreachableMessage)
-    expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('两步验证')
-    expect(authErrorMessage(new Error('此账号需要双重验证，请先完成验证'), '登录')).toContain('所选账号官网')
+    expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('双重验证')
+    expect(authErrorMessage(new Error('此账号需要双重验证，请先完成验证'), '登录')).toContain('请到账号官网登录')
   })
   // 校园网那位用户看到的就是这句兜底文案：真实原因是域名解析不了 / 证书被替换 /
   // 门户认证没做，界面却只说「请稍后重试」，于是他一遍遍重输密码。
@@ -132,6 +132,13 @@ describe('v2 auth recovery boundaries', () => {
       const wrapped = `Error invoking remote method 'account:login': Error: ${networkFailureMessages[reason]}（账号登录请求失败）`
       expect(authFailure(new Error(wrapped), '登录')).toEqual({ message: networkFailureMessages[reason], kind: 'network' })
     }
+  })
+  // D32：代理要账号密码时登录框也说单子上那句，不再叫人去检查代理设置。
+  it('says the proxy wants a password when the main process recognized one', () => {
+    const wrapped = `Error invoking remote method 'account:login': NewApiNetworkError: ${proxyAuthRequiredMessage}（账号登录请求失败）`
+    expect(authFailure(new Error(wrapped), '登录')).toEqual({ message: proxyAuthRequiredMessage, kind: 'network' })
+    expect(authFailure(new Error('net::ERR_PROXY_AUTH_UNSUPPORTED'), '登录')).toEqual({ message: proxyAuthRequiredMessage, kind: 'network' })
+    expect(authFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'), '登录')).toEqual({ message: networkFailureMessages.proxy, kind: 'network' })
   })
   // 第二十批 4：没网和连不上要分开说，连不上时提醒最常见的真实原因（加速器 / 翻墙 / 代理），和注册窗读设置同一套说法。
   it('tells a machine without network apart from an unreachable account service', () => {
@@ -197,7 +204,7 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error(networkFailureMessages.intercepted), '登录')).not.toContain('超时')
   })
   it('identifies local account storage failures without exposing details or blaming the password', () => {
-    const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。'
+    const expected = '这台电脑上存的登录信息暂时读不出来，原来的没动。请完全退出星芒再打开；还不行点「找客服」。'
     expect(authErrorMessage(new Error('账号安全存储不可用，原记录未修改'), '登录')).toBe(expected)
     expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
     expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')
@@ -206,7 +213,7 @@ describe('v2 auth recovery boundaries', () => {
     expect(full).not.toMatch(/安全存储|退出软件/)
   })
   it('tells a Mac customer how to answer the keychain prompt only when the keychain refused', () => {
-    const generic = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。'
+    const generic = '这台电脑上存的登录信息暂时读不出来，原来的没动。请完全退出星芒再打开；还不行点「找客服」。'
     const refused = new Error("Error invoking remote method 'account:login': RealmAccountError: 账号安全存储不可用：系统加密服务没有放行，原记录未修改")
     expect(authFailure(refused, '登录', true, 'mac')).toEqual({ message: macKeychainRefusedMessage, kind: 'keychain' })
     expect(macKeychainRefusedMessage).toBe('Mac 钥匙串这次没放行，星芒读不到本机的登录信息，原来的账号都还在。点「重新打开星芒」，弹出钥匙串密码框时输入这台 Mac 的开机密码，点「始终允许」就好。一直提示密码不对的话，试试以前用过的旧开机密码。')
@@ -217,12 +224,21 @@ describe('v2 auth recovery boundaries', () => {
     // 没网时主进程根本走不到这一步；真撞上了也先说存储，不说网络。
     expect(authFailure(refused, '登录', false, 'mac').kind).toBe('keychain')
   })
+  it('tells a customer whose system disk is full to free space instead of relaunching or calling support', () => {
+    // 主进程 realm-account-vault.ts 的 realmVaultDiskFullMessage（那边带 node:crypto，这里按字面写一份）。
+    const diskFull = new Error("Error invoking remote method 'account:login': RealmAccountError: 账号安全存储不可用：磁盘空间不足，原记录未修改")
+    expect(authDiskFullMessage).toBe('电脑的系统盘满了，清出一些空间再登录。')
+    for (const os of ['win', 'mac', 'linux', undefined] as const) expect(authFailure(diskFull, '登录', true, os)).toEqual({ message: authDiskFullMessage, kind: 'final' })
+    expect(authFailure(diskFull, '登录').message).not.toMatch(/找客服|退出星芒/)
+    // 别的存储失败照旧是那句「读不出来」，不说成盘满。
+    expect(authFailure(new Error('账号安全存储不可用，原记录未修改'), '登录').message).not.toBe(authDiskFullMessage)
+  })
   it('keeps the reason the server gave instead of asking the user to try again later', () => {
     expect(authErrorMessage(new Error('User has been banned'), '登录')).toBe('该账号已被封禁，请联系客服')
     expect(authErrorMessage(new Error('New user registration has been disabled by administrator'), '注册')).toBe('当前暂未开放注册，请联系客服')
     expect(authErrorMessage(new Error('Password login has been disabled by administrator'), '登录')).toBe('当前暂不支持密码登录，请联系客服')
     expect(authErrorMessage(new Error('Database error, please contact the administrator'), '登录')).toBe('服务暂时不可用，请稍后重试')
-    expect(authErrorMessage(new Error('Username already exists'), '注册')).toBe('该用户名已被注册，请更换用户名，或点击“已有账号，登录”')
+    expect(authErrorMessage(new Error('Username already exists'), '注册')).toBe('这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」')
     expect(authErrorMessage(new Error('Email address is already in use'), '注册')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
   })
   it('says the mailbox is not accepted when the server refuses its domain at send-code time', () => {
@@ -273,7 +289,7 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage(new Error("Error invoking remote method 'account:login': Error: 登录太频繁了，请过一会儿再试。"), '登录')).toBe('登录太频繁了，请过一会儿再试。')
   })
   it('does not send an account that never had a password back to the password field', () => {
-    expect(authErrorMessage(new Error('This account has no password set. Please use password reset or contact an administrator to reset it.'), '修改密码')).toBe('当前账号未设置密码，请先通过“找回密码”设置密码')
+    expect(authErrorMessage(new Error('This account has no password set. Please use password reset or contact an administrator to reset it.'), '修改密码')).toBe('这个账号还没设过密码，先点「找回密码」设一个')
     expect(authErrorMessage(new Error('Original password is incorrect'), '修改密码')).toBe('原密码错误，请重新输入')
   })
 })
@@ -381,7 +397,7 @@ describe('recovery password change outcome', () => {
     expect(sessionMatchesLogin({ authenticated: true, account: login.account, siteId: 'solov-api' }, login, 'solov')).toBe(false)
   })
   it('does not take a change that lost its login halfway or got no answer as proof the new password was not set', () => {
-    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试")
+    const lost = new Error("Error invoking remote method 'account:change-password': Error: 账号刚切换过，请再试一次")
     const unanswered = new Error(`Error invoking remote method 'account:change-password': Error: ${networkFailureMessages.timeout}（修改密码请求失败）`)
     expect(passwordChangeOutcomeUnknown(authFailure(lost, '设新密码').kind)).toBe(true)
     expect(passwordChangeOutcomeUnknown(authFailure(unanswered, '设新密码').kind)).toBe(true)

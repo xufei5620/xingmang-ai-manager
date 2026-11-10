@@ -44,7 +44,7 @@ export function appendWindowsPathEntries(base: string, extra: string): string {
   return entries.join(';')
 }
 
-function runRegistryQuery(executable: string, argv: string[], env: NodeJS.ProcessEnv): Promise<string> {
+export function runRegistryQuery(executable: string, argv: string[], env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(executable, argv, { encoding: 'utf8', env, windowsHide: true, timeout: 3_000, maxBuffer: 64 * 1024 }, (error, stdout) => {
       if (error) reject(error)

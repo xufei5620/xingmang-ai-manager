@@ -4,16 +4,25 @@
 //
 // 各簇共用的那份在 system-service-context.ts；归首页检测和工具钩子的几样由 createSystemService 传进来
 // （RuntimeInstallServiceDependencies）。这里只 import system-service.ts 的类型。
+//
+// Mac、Linux 上代装的 Node.js 比钉的版本旧时，装或更新工具前顺手换新（D86）也在这里，
+// 由 createSystemService 交给 cli-install-service.ts 在装工具的那个队列任务里调。
+import fs from 'node:fs'
+import path from 'node:path'
 import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
 import type { GitRuntimeInstallProgress, GitRuntimeInstallResult } from './git-runtime-install'
 import type { NodeRuntimeInstallRequest } from './ipc-contract'
+import { linuxNodeRuntimeVersion } from './linux-node-runtime'
 import { inspectCommandLineToolsShim } from './macos-command-line-tools'
 import { requestMacCommandLineToolsInstall, waitForMacCommandLineTools } from './macos-git-install'
+import { darwinNodeRuntimeVersion } from './macos-node-runtime'
+import { managedNodeRuntimeBinDirectory } from './managed-cli-paths'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import type { PythonRuntimeInstallResult } from './python-runtime'
 import { nodeReadsSystemCertificates } from './system-certificate-trust'
 import type { NetworkRegion, RendererMessageTarget, ToolStatus } from './system-service'
 import { buildToolStatusFromSettled, type ServiceContext } from './system-service-context'
+import { compareVersionNumbers, parseNodeVersion } from './versions'
 import {
   chooseNodeRuntimeArchitecture,
   inspectWindowsProcessorArchitecture,
@@ -41,6 +50,42 @@ export function shouldReplaceNodeForCertificates(input: {
 
 export const nodeStillOutdatedAfterReplaceMessage = '新版 Node.js 已经装上了，但电脑上另外还有一份旧的 Node.js 排在前面，工具仍会先用到它，还是认不了这台电脑的证书。请联系客服帮你处理。'
 
+/**
+ * 代装的 Node.js 现在钉的是哪一版（macos-node-runtime.ts、linux-node-runtime.ts，两边同一版）。
+ * Windows 装的是官方安装包、不钉版本（D88 交 Claude·win），返回 null：那边不做 D86 的顺手换新。
+ */
+export function managedNodeRuntimePinnedVersion(platform: NodeJS.Platform): string | null {
+  if (platform === 'darwin') return darwinNodeRuntimeVersion
+  if (platform === 'linux') return linuxNodeRuntimeVersion
+  return null
+}
+
+/**
+ * D86（yoyo 2026-11-10「决定单照推荐」）：Mac、Linux 上代装的 Node.js 只是第一次装时下的那一版。
+ * 钉的版本往后抬，只有新装的电脑拿得到，已经装过的一直停在老的那份，Node 的安全补丁到不了。
+ * 所以装或更新工具时，这份旧了就顺手换成钉的那版。下面几条都成立才换：
+ * - 本软件这会儿用的 node 正是产品目录里代装的那份。客户自己装的不碰；Mac 上代装的那份排在最后，
+ *   客户自己那份够新时轮不到它，换了也是白下几十 MB。
+ * - 它报得出版本，而且比钉的旧。报不出来时首页检测已经说「没准备好」，装工具前会整份重新准备；
+ *   比钉的新（客户退回了旧版星芒）不往回换。
+ */
+export function shouldRefreshManagedNodeRuntime(input: {
+  managedNode: string
+  node: Pick<ToolStatus, 'installed' | 'path' | 'version'>
+  pinnedVersion: string
+}): boolean {
+  const { managedNode, node, pinnedVersion } = input
+  if (!node.installed || !node.path) return false
+  if (path.posix.resolve(node.path) !== path.posix.resolve(managedNode)) return false
+  const current = parseNodeVersion(node.version)
+  const pinned = parseNodeVersion(pinnedVersion)
+  if (!current || !pinned) return false
+  return compareVersionNumbers(
+    [current.major, current.minor, current.patch],
+    [pinned.major, pinned.minor, pinned.patch],
+  ) < 0
+}
+
 /** 装运行环境要用、但归首页检测和工具钩子那两块管的几样，由 createSystemService 传进来。 */
 export interface RuntimeInstallServiceDependencies {
   inspectNetworkRegion: () => Promise<NetworkRegion>
@@ -60,7 +105,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
     inspectWindowsRestartRequiredForService, installNodeRuntimeForService, installGitRuntimeForService,
     installMacGitRuntimeWith, downloadFetch, resolveWindowsMachinePathsForService, installationQueue,
     nodeRuntimeInstall, inspectExecutableMachine, withDownloadAcceleration, forgetPreferredNodeDirectories,
-    forgetNpmGlobalRoots,
+    forgetNpmGlobalRoots, credentialFailureReason,
   } = context
   const {
     inspectNetworkRegion,
@@ -153,6 +198,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
         // macOS、Linux 一开始就是下载，整段已经包在线路里（installNodeRuntime）。
         withDownloadRoute: platform === 'win32' ? (operation) => withDownloadAcceleration(null, operation) : undefined,
         temporaryDirectoryMode: windowsExecutionMode,
+        ...(serviceOptions.windowsProcessElevated ? { processElevated: true } : {}),
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:node-install-progress', progress)
@@ -164,6 +210,61 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
       return result
     } finally {
       // 装成、装到一半失败都可能已经换了 npm，全局安装目录下次重新问；不必装的那条路多问一次也不贵。
+      forgetNpmGlobalRoots()
+      nodeRuntimeInstall.running = false
+    }
+  }
+
+  /**
+   * D86：装或更新命令行工具时，把旧了的代装 Node.js 换成钉的那版（判定见 shouldRefreshManagedNodeRuntime）。
+   * 调用方已经占着安装队列，这里直接装、不再排队：排进去就是等自己。
+   *
+   * 静默：不发进度、不上屏，只记运行日志。从来不往外抛：没换成时原来那份照样能用，这次装工具接着用它，
+   * 下次装工具再试；客户中途点了取消，交给调用方随后的 throwIfCancelled 说「已取消」。换的那一下是
+   * 目录整体改名（replaceDarwinNodeRuntime / replaceLinuxNodeRuntime），不会留下半份。
+   */
+  async function refreshOutdatedManagedNodeRuntime(signal?: AbortSignal): Promise<void> {
+    const pinnedVersion = managedNodeRuntimePinnedVersion(platform)
+    if (!pinnedVersion) return
+    let managedNode: string
+    try {
+      // 和代装时一样从 process.env 定产品目录（installDarwinNodeRuntime / installLinuxNodeRuntime 的缺省）。
+      managedNode = path.posix.join(managedNodeRuntimeBinDirectory(process.env, platform), 'node')
+    } catch {
+      return
+    }
+    // 绝大多数电脑上没有代装的那份（客户自己有能用的，就从来不下）：看一眼文件就回，不起进程。
+    const managed = await fs.promises.lstat(managedNode).catch(() => null)
+    if (!managed?.isFile()) return
+    // 单独装 Node.js 那一路也排在同一个队列里，正常碰不到；真碰到了说明有一份正在换，这次让给它。
+    if (nodeRuntimeInstall.running) return
+    const node = await inspectTool('node').catch(() => null)
+    if (!node || !shouldRefreshManagedNodeRuntime({ managedNode, node, pinnedVersion })) return
+    nodeRuntimeInstall.running = true
+    runtimeLog?.log('info', 'install', 'node.refresh.start', '代装的 Node.js 比钉的版本旧，装工具前顺手换新', {
+      from: node.version,
+      to: pinnedVersion,
+    })
+    try {
+      const result = await installNodeRuntimeForService({
+        networkRegion: inspectNetworkRegion,
+        temporaryDirectoryMode: windowsExecutionMode,
+        dependencies: { fetch: downloadFetch },
+        signal,
+      })
+      runtimeLog?.log('info', 'install', 'node.refresh.done', '代装的 Node.js 换好了', { version: result.version })
+    } catch (error) {
+      if (signal?.aborted) {
+        runtimeLog?.log('info', 'install', 'node.refresh.cancelled', '装工具取消了，代装的 Node.js 这次没换')
+      } else {
+        runtimeLog?.log('warn', 'install', 'node.refresh.failed', '代装的 Node.js 没换成，照旧用原来那份装工具', {
+          reason: credentialFailureReason(error),
+        })
+      }
+    } finally {
+      // 换成、换到一半失败都可能已经换了 node 和 npm（同 installNodeRuntimeOperation）：Mac 上要不要
+      // 改用代装的那份、npm 的全局目录，都重新问。
+      forgetPreferredNodeDirectories()
       forgetNpmGlobalRoots()
       nodeRuntimeInstall.running = false
     }
@@ -351,5 +452,12 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
       })
   }
 
-  return { installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime }
+  return {
+    installNodeRuntime,
+    inspectWindowsProcessor,
+    restartWindows,
+    installPythonRuntime,
+    installGitRuntime,
+    refreshOutdatedManagedNodeRuntime,
+  }
 }

@@ -4,17 +4,24 @@ import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, XingmangAp
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
+// 下面各处 ChatStorageError 的原文是给排查看的，只写进日志，上屏一律说这一句（W24）。
 const unreadableHistory = '以前的聊天记录暂时读不出来，原文件没动'
 
 // localStorage 现在只是旧版本留下的迁移来源，新记录一律写到主进程的文件里。读迁移来源时只读；
 // 文件里有了这个账号的记录之后，才把旧副本删掉并记一个「已迁移」标记（forgetLegacyHistory）。
 export interface ChatStorage { getItem: (key: string) => string | null; setItem?: (key: string, value: string) => void; removeItem?: (key: string) => void }
-const MAX_CONVERSATIONS = 50
+// 一个账号在这台电脑上最多存几个对话。主进程 ai-chat-history-store.ts 的 MAX_CHAT_HISTORY_CONVERSATIONS
+// 是同一个数（electron 不 import src），两边一起改。
+export const MAX_CONVERSATIONS = 200
 const HISTORY_VERSION = 3
 const ASSET_ID = /^[A-Za-z0-9_-]{43}$/
 const FILE_KEY = /^[A-Za-z0-9_-]{1,64}$/
 export class ChatStorageError extends Error {}
-const limitMessage = '聊天记录超过本地保存上限（50 个对话），原始记录已保留，未进行截断'
+// 超过上限是唯一一种原文就是说给客户听的：读的时候、存的时候都照这句上屏（W24）。
+class ChatHistoryLimitError extends ChatStorageError {}
+const limitMessage = `聊天记录超过 ${MAX_CONVERSATIONS} 个，这台电脑存不下，原来的记录没动`
+// 存满以后点「新对话」、在草稿里发第一句时说的。
+export const conversationLimitMessage = `最多保存 ${MAX_CONVERSATIONS} 个对话，请先删除不再需要的对话`
 
 export function historyKey(scope: string): string { return `xingmang-ui-v2:chat:${encodeURIComponent(scope)}` }
 function migratedKey(scope: string): string { return `xingmang-ui-v2:chat-migrated:${encodeURIComponent(scope)}` }
@@ -97,7 +104,7 @@ function readConversation(value: unknown): Conversation {
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))
   if (!parsed || parsed.version !== 2 || parsed.owner !== scope || !Array.isArray(parsed.conversations)) throw new Error('invalid owner or version')
-  if (parsed.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
+  if (parsed.conversations.length > MAX_CONVERSATIONS) throw new ChatHistoryLimitError(limitMessage)
   const conversations = parsed.conversations.map(readConversation)
   const draftConversation = parsed.draftConversation === undefined ? createConversation() : readConversation(parsed.draftConversation)
   assertUniqueIds([...conversations, draftConversation])
@@ -128,7 +135,7 @@ function mergeAliases(candidates: ChatWorkspace[], scope: string): ChatWorkspace
 // Reads what earlier versions left in localStorage. It never writes: the
 // caller saves the result to the file store, and every source key stays as it
 // was, so a failed first save can simply be retried from the same source.
-export function readWorkspace(storage: ChatStorage, scope: string): { state: ChatWorkspace; warning?: string; exists: boolean } {
+export function readWorkspace(storage: ChatStorage, scope: string): { state: ChatWorkspace; warning?: string; problem?: string; exists: boolean } {
   const empty = () => ({ state: createWorkspace(scope), exists: false })
   try {
     const raw = storage.getItem(historyKey(scope))
@@ -156,7 +163,24 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
       if (legacy) return { state: legacy, exists: true }
     }
     return empty()
-  } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : unreadableHistory } }
+  } catch (error) { return { ...empty(), exists: true, warning: historyWarning(error), problem: historyProblem(error) } }
+}
+
+/** 读不出来时上屏的那句：超过上限照原文说，别的一律是 unreadableHistory（W24）。 */
+function historyWarning(error: unknown): string {
+  return error instanceof ChatHistoryLimitError ? error.message : unreadableHistory
+}
+/** 读不出来的原文，只进日志。 */
+function historyProblem(error: unknown): string {
+  return error instanceof Error && error.message ? error.message : String(error)
+}
+/** 读不出来的原文写进本机运行日志：只记不报，客户看不到它。 */
+export function chatHistoryLogger(bridge: Pick<XingmangApi, 'reportRendererError'>): (detail: string) => void {
+  return (detail) => { void bridge.reportRendererError({ message: detail, context: 'chat-history', level: 'warn' }).catch(() => undefined) }
+}
+/** 有几段对话读不出来、已经挪开时，页面上那句（D40）。 */
+export function unreadableConversationsNotice(count: number): string {
+  return `有 ${count} 段对话读不出来，已经单独留着，其余照常。`
 }
 // The history files sit unencrypted in the user profile, and chat text is the one
 // surface where a pasted key, an Authorization header or a whole base64 image
@@ -181,8 +205,78 @@ const bearerValue = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi
 // 尾巴（共用表 KEY_TAIL 那段注释说的同一件事）。
 const relayKeyWithDots = /\bsk-[A-Za-z0-9._-]{7,}[A-Za-z0-9_-](?![A-Za-z0-9_-])/gi
 const secretQueryParameter = /([?&](?:api[_-]?key|token)=)[^&\s]+/gi
-// 「名字: 值」「名字 = 值」：名字是这几个词时，后面那一截整段不存。
-const namedSecretValue = /((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi
+// 「名字: 值」「名字 = 值」：名字是这几个词时，值长得像真密钥才不存（见 redactNamedSecretValue）。
+// 反引号也算引号：JS 模板字符串拼的请求头要整段拿去判断，不能只看到开头那个词。
+// （这里不写那行代码的原样：画布边界门禁会把它当成渲染层自己拼请求头。）
+// 引号后面紧跟、没隔空格的那截（`)`、`}`、`]`）算在值里：不带上的话，这次存成 `[密钥未保存])`，
+// 下次再存时这一整截又被当成没加引号的值，存两次结果就不一样了。
+const namedSecretValue = /((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?((?:"[^"]*"|'[^']*'|`[^`]*`)[^\s,;&]*|[^\s,;&]+)/gi
+// 值末尾的右括号、右引号、句号这类收尾符号。
+const closingPunctuation = /[)\]}>"'`.,;:]+$/
+// 一段标识符，或用点连起来的一串（`req.headers.authorization`、`os.environ`）。
+const identifierChain = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/
+// 标识符串后面紧跟括号、方括号、尖括号：函数调用、取下标、泛型（`input(`、`os.environ[`、`Optional[str]`）。
+const callOrIndex = /^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[([<]/
+// 变量、模板、占位符的开头：`$TOKEN`、`${TOKEN}`、`$(gh auth token)`、`$env:TOKEN`、`%TOKEN%`、
+// `{{ … }}`、`{token}`、`<YOUR_API_KEY>`。`$` 后面必须是字母、`{` 或 `(`，
+// `$2b$12$…` 这种 bcrypt 散列不算变量。
+const variableReference = /^(?:\$[A-Za-z_{(]|%[A-Za-z_]\w*%|\{\{|\{[A-Za-z_]|<[A-Za-z_])/
+
+// 带数字的常见类型名、编码名：`secret: Uint8Array`、`token: base64` 是代码。
+const numberedTypeName = /^(?:u?int(?:8|16|32|64|128)|float(?:16|32|64)|(?:big)?u?int(?:8|16|32|64)(?:clamped)?array|float(?:32|64)array|base(?:32|58|64)|sha(?:1|224|256|384|512)|md5|utf(?:8|16|32)|oauth2|http2|win32|x509)$/i
+
+// 一截标识符像不像随机串，按下划线拆开逐段看，一段像就算：
+// - 字母数字混着、又有 5 位以上（`hunter2`、`Summer2024`、`a1b2c3d4…`），上面那些类型名除外；
+//   纯数字 6 位以上也算；
+// - 大小写混写、12 位以上，拆成驼峰的「词」太碎：平均每个词不到 3 个字母（16 位起不到 3.5、
+//   20 位起不到 4）。`yKJxHGpzLz…` 拆出来是 y、K、Jx、H、Gpz…，`getElementById` 是
+//   get、Element、By、Id。拿本仓和 TypeScript、React 等依赖里四万个驼峰名字试过，认错的不到 0.2%，
+//   都是 `toBeGreaterThanOrEqual` 这种很长的名字（认错了也只是照旧换掉）；
+// - 全小写或全大写 24 位以上（真名字这么长一般会用下划线隔开）。
+// `OPENAI_API_KEY`、`authorization`、`string`、`v2`、`XMLHttpRequest` 都不算。
+// 认不全的是只有字母、一个数字都不带的随机串：16 位的约有 6% 认不出、20 位以上约 4%，
+// 实际的密钥这么长几乎都带数字，带了就走第一条。
+function randomLookingSegment(segment: string): boolean {
+  return segment.split('_').some((part) => {
+    if (/\d/.test(part)) return /[A-Za-z]/.test(part) ? part.length >= 5 && !numberedTypeName.test(part) : part.length >= 6
+    if (/[a-z]/.test(part) && /[A-Z]/.test(part)) {
+      if (part.length < 12) return false
+      const humps = part.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+/g) ?? []
+      return part.length / humps.length < (part.length < 16 ? 3 : part.length < 20 ? 3.5 : 4)
+    }
+    return part.length >= 24
+  })
+}
+function wordIsCode(word: string): boolean {
+  // 前面几条已经换成占位字样的地方当一个普通名字看：`getToken([密钥未保存])` 还是函数调用。
+  // 只剩占位字样本身的照旧整段换掉，和以前存出来的一样，存两次结果也一样。
+  const plain = word.split(secretNotSaved).join('x')
+  // 中文提示语、中文文案（`'请输入密码：'`、`password: '密码'`）和单独的符号：
+  // 一个英文字母、数字都没有，不会是密钥。
+  if (!/[A-Za-z0-9]/.test(plain)) return true
+  const core = plain.replace(closingPunctuation, '')
+  if (core === 'x' && plain !== word) return false
+  if (variableReference.test(core)) return true
+  const call = callOrIndex.exec(core)
+  if (call) return !call[1].split('.').some(randomLookingSegment)
+  return identifierChain.test(core) && !core.split('.').some(randomLookingSegment)
+}
+// 代码里的 `password: string`、`token = req.headers.authorization`、
+// `api_key = os.environ["OPENAI_API_KEY"]`、curl 请求头里的 `Bearer $TOKEN` 原样存；
+// 随机串、带符号的密码、十六进制、UUID 这些照旧换掉。引号里有空格的按词逐个看，右引号后面紧跟的那截
+// 也算一个词，一个词像密钥就整段换。换掉时留着末尾的收尾符号：`OpenAI(api_key="…")` 存成
+// `OpenAI(api_key=[密钥未保存])`。
+// 以前不看值、整段一律换掉，重开以后历史里的代码跑不起来（聊天页深查 C3，yoyo 11-09 打字「脱敏放开」）。
+function redactNamedSecretValue(match: string, name: string, value: string): string {
+  const quote = value[0]
+  const close = quote === '"' || quote === "'" || quote === '`' ? value.indexOf(quote, 1) : -1
+  const rest = close > 0 ? value.slice(close + 1) : value
+  const words = close > 0 ? [...value.slice(1, close).split(/\s+/), rest] : [value]
+  if (words.filter(Boolean).every(wordIsCode)) return match
+  // 占位字样自己以 `]` 结尾，先换成字母再找收尾符号，免得把它的 `]` 当成收尾。
+  const tail = closingPunctuation.exec(rest.split(secretNotSaved).join('x'))?.[0] ?? ''
+  return `${name}${secretNotSaved}${tail}`
+}
 
 export function redactPersistentChatText(value: string): string {
   // 图片数据和临时链接先整段换掉：base64 里随时可能夹着 `eyJ`、`sk-` 这类片段，
@@ -193,7 +287,7 @@ export function redactPersistentChatText(value: string): string {
     .replace(bearerValue, `$1${secretNotSaved}`)
     .replace(relayKeyWithDots, secretNotSaved)
     .replace(secretQueryParameter, `$1${secretNotSaved}`)
-    .replace(namedSecretValue, `$1${secretNotSaved}`)
+    .replace(namedSecretValue, redactNamedSecretValue)
   return redactSecretShapes(ownRules, secretNotSaved)
 }
 function persistedSettings(settings: ChatSettings): ChatSettings {
@@ -220,15 +314,22 @@ function persistedConversation(conversation: Conversation) {
 // What the file store holds after the last successful save. Conversations are
 // compared by identity: state updates replace only the conversation they
 // touch, so a save rewrites just those files instead of the whole history.
-export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>; conversations: ReadonlyMap<string, Conversation> }
+// setAside names the files of conversations that could not be read: the next
+// save asks the main process to move them into a backup folder instead of
+// deleting them, and no other conversation may take their file name meanwhile.
+export interface SavedHistory { index: string; keys: ReadonlyMap<string, string>; conversations: ReadonlyMap<string, Conversation>; setAside?: readonly string[] }
 // afterFirstSave is set only when the state came from localStorage (or from nothing,
 // before any migration): the writer runs it once the first save has succeeded.
-export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; saved: SavedHistory | null; afterFirstSave?: () => void }
+// warning = 整份读不出来，这一回不往本机写；unreadable = 只有这几段读不出来、已经挪开，其余照常读写（D40）。
+export interface LoadedChatHistory { state: ChatWorkspace; exists: boolean; warning?: string; unreadable?: number; saved: SavedHistory | null; afterFirstSave?: () => void }
+// 读的时候只要能读；日志是可选的（设置页「搬到新电脑」、测试里不一定接）。
+export interface ChatHistoryReader { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; logHistoryProblem?: (detail: string) => void }
 
 export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | null): { write: AiChatHistoryWrite; saved: SavedHistory } | null {
-  if (state.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
+  if (state.conversations.length > MAX_CONVERSATIONS) throw new ChatHistoryLimitError(limitMessage)
   const keys = new Map<string, string>()
-  const used = new Set<string>()
+  // 还没挪走的坏文件占着它的名字：新对话拿了它，主进程就会把新内容写到坏文件头上。
+  const used = new Set<string>(previous?.setAside)
   for (const conversation of state.conversations) {
     let key = previous?.keys.get(conversation.id) ?? (FILE_KEY.test(conversation.id) ? conversation.id : createId())
     while (used.has(key)) key = createId()
@@ -239,42 +340,63 @@ export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | 
     .filter((conversation) => previous?.conversations.get(conversation.id) !== conversation || previous.keys.get(conversation.id) !== keys.get(conversation.id))
     .map((conversation) => ({ key: keys.get(conversation.id)!, content: JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, conversation: persistedConversation(conversation) }) }))
   const index = JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, activeId: state.activeId, draftConversation: persistedConversation(state.draftConversation), conversations: state.conversations.map((conversation) => ({ id: conversation.id, key: keys.get(conversation.id) })) })
-  if (previous && !put.length && index === previous.index) return null
+  const setAside = previous?.setAside?.length ? { setAside: [...previous.setAside] } : {}
+  if (previous && !put.length && index === previous.index && !previous.setAside?.length) return null
   return {
-    write: { scope: state.owner, index, keys: [...keys.values()], put },
+    write: { scope: state.owner, index, keys: [...keys.values()], put, ...setAside },
     saved: { index, keys, conversations: new Map(state.conversations.map((conversation) => [conversation.id, conversation])) },
   }
 }
 
-export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: string): { state: ChatWorkspace; saved: SavedHistory } {
+/** 一段读不出来的对话：kept = 文件还在、下一次保存挪进备份文件夹；false = 文件已经没了，只从索引里拿掉。 */
+export interface UnreadableConversation { key: string; reason: string; kept: boolean }
+
+// 索引是一次原子写下的整份，它本身坏了（读不出、归属或版本不对、条目不成样、超过上限）就整份不读，
+// 这一回也不写，原文件不动。索引好好的，只有某一段对话的文件坏了、没了，就只跳过那一段，其余照常读写：
+// 以前一段坏了整份都读不出来，以后聊的也不存，「重新读取」永远读不出来（0.2.24 深查聊天页 C2）。
+export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: string): { state: ChatWorkspace; saved: SavedHistory; unreadable: UnreadableConversation[] } {
   if (snapshot.index === null) throw new ChatStorageError('聊天记录不存在')
   let parsed: Record<string, unknown> | null
   try { parsed = object(JSON.parse(snapshot.index)) } catch { throw new ChatStorageError('聊天记录索引无法读取，原始记录已保留') }
   if (!parsed || parsed.version !== HISTORY_VERSION || parsed.owner !== scope || !Array.isArray(parsed.conversations)) throw new ChatStorageError('聊天记录归属或版本无效，原始记录已保留')
-  if (parsed.conversations.length > MAX_CONVERSATIONS) throw new ChatStorageError(limitMessage)
-  const files = new Map(snapshot.conversations.map((file) => [file.key, file.content]))
-  const keys = new Map<string, string>()
-  const conversations = parsed.conversations.map((value) => {
+  if (parsed.conversations.length > MAX_CONVERSATIONS) throw new ChatHistoryLimitError(limitMessage)
+  const entries = parsed.conversations.map((value) => {
     const entry = object(value)
     const key = entry?.key
-    if (!entry || typeof key !== 'string' || !FILE_KEY.test(key) || [...keys.values()].includes(key)) throw new ChatStorageError('聊天记录索引无效，原始记录已保留')
-    const content = files.get(key)
-    if (content === undefined) throw new ChatStorageError('聊天记录缺少部分对话，原始记录已保留')
-    let file: Record<string, unknown> | null
-    try { file = object(JSON.parse(content)) } catch { throw new ChatStorageError('聊天对话无法读取，原始记录已保留') }
-    if (!file || file.version !== HISTORY_VERSION || file.owner !== scope) throw new ChatStorageError('聊天对话归属或版本无效，原始记录已保留')
-    const conversation = readConversation(file.conversation)
-    if (conversation.id !== entry.id) throw new ChatStorageError('聊天记录索引与对话不一致，原始记录已保留')
-    keys.set(conversation.id, key)
-    return conversation
+    if (!entry || typeof key !== 'string' || !FILE_KEY.test(key)) throw new ChatStorageError('聊天记录索引无效，原始记录已保留')
+    return { id: id(entry.id), key }
   })
   const draftConversation = parsed.draftConversation === undefined ? createConversation() : readConversation(parsed.draftConversation)
-  assertUniqueIds([...conversations, draftConversation])
+  if (new Set(entries.map((entry) => entry.key)).size !== entries.length) throw new ChatStorageError('聊天记录索引无效，原始记录已保留')
+  assertUniqueIds([...entries, draftConversation])
+  const files = new Map(snapshot.conversations.map((file) => [file.key, file.content]))
+  const keys = new Map<string, string>()
+  const conversations: Conversation[] = []
+  const unreadable: UnreadableConversation[] = []
+  for (const entry of entries) {
+    const content = files.get(entry.key)
+    if (content === undefined) { unreadable.push({ key: entry.key, reason: '聊天记录缺少这段对话的文件', kept: false }); continue }
+    try {
+      conversations.push(readStoredConversation(content, entry.id, scope))
+      keys.set(entry.id, entry.key)
+    } catch (error) { unreadable.push({ key: entry.key, reason: historyProblem(error), kept: true }) }
+  }
   const activeId = typeof parsed.activeId === 'string' && conversations.some((item) => item.id === parsed.activeId) ? parsed.activeId : null
+  const setAside = unreadable.filter((item) => item.kept).map((item) => item.key)
   return {
     state: { version: 2, owner: scope, conversations, activeId, draftConversation },
-    saved: { index: snapshot.index, keys, conversations: new Map(conversations.map((conversation) => [conversation.id, conversation])) },
+    saved: { index: snapshot.index, keys, conversations: new Map(conversations.map((conversation) => [conversation.id, conversation])), ...(setAside.length ? { setAside } : {}) },
+    unreadable,
   }
+}
+
+function readStoredConversation(content: string, expectedId: string, scope: string): Conversation {
+  let file: Record<string, unknown> | null
+  try { file = object(JSON.parse(content)) } catch { throw new ChatStorageError('聊天对话无法读取，原始记录已保留') }
+  if (!file || file.version !== HISTORY_VERSION || file.owner !== scope) throw new ChatStorageError('聊天对话归属或版本无效，原始记录已保留')
+  const conversation = readConversation(file.conversation)
+  if (conversation.id !== expectedId) throw new ChatStorageError('聊天记录索引与对话不一致，原始记录已保留')
+  return conversation
 }
 
 // The file store wins once it has a record for this account. Before that the
@@ -283,26 +405,34 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
 // source keys are removed only after that save succeeded; a failed save keeps
 // them for the next attempt. Once migrated, a missing file store stays empty.
 // An import running for this account is waited out first (runHistoryImport).
-export async function loadChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
+export async function loadChatHistory(api: ChatHistoryReader, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
   await settleHistoryImports(scope)
   return readChatHistory(api, storage, scope)
 }
 
-async function readChatHistory(api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot> }, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
+async function readChatHistory(api: ChatHistoryReader, storage: ChatStorage, scope: string): Promise<LoadedChatHistory> {
+  function log(detail: string): void {
+    try { api.logHistoryProblem?.(detail) } catch { /* Logging must never change what the page shows. */ }
+  }
+  function unreadable(error: unknown): LoadedChatHistory {
+    log(`聊天记录读不出来，这一回不保存：${historyProblem(error)}`)
+    return { state: createWorkspace(scope), exists: true, warning: historyWarning(error), saved: null }
+  }
   let snapshot: AiChatHistorySnapshot
-  try { snapshot = await api.readHistory(scope) } catch { return { state: createWorkspace(scope), exists: true, warning: unreadableHistory, saved: null } }
+  try { snapshot = await api.readHistory(scope) } catch (error) { return unreadable(error) }
   if (snapshot.index === null) {
     if (hasMigrated(storage, scope)) return { state: createWorkspace(scope), exists: false, saved: null }
-    const legacy = readWorkspace(storage, scope)
+    const { problem, ...legacy } = readWorkspace(storage, scope)
+    if (problem) log(`以前存在本机的聊天记录读不出来，这一回不保存：${problem}`)
     return legacy.warning ? { ...legacy, saved: null } : { ...legacy, saved: null, afterFirstSave: () => forgetLegacyHistory(storage, scope) }
   }
-  try {
-    const loaded = { ...parseHistorySnapshot(snapshot, scope), exists: true }
-    // Also covers earlier versions, which migrated without removing anything.
-    forgetLegacyHistory(storage, scope)
-    return loaded
-  }
-  catch (error) { return { state: createWorkspace(scope), exists: true, warning: error instanceof ChatStorageError ? error.message : unreadableHistory, saved: null } }
+  let parsed: ReturnType<typeof parseHistorySnapshot>
+  try { parsed = parseHistorySnapshot(snapshot, scope) } catch (error) { return unreadable(error) }
+  for (const item of parsed.unreadable) log(item.kept ? `聊天对话 c-${item.key}.json 读不出来，下次保存时挪进备份文件夹：${item.reason}` : `聊天对话 c-${item.key}.json 不见了，已从记录里拿掉`)
+  // Also covers earlier versions, which migrated without removing anything.
+  forgetLegacyHistory(storage, scope)
+  const kept = parsed.unreadable.filter((item) => item.kept).length
+  return { state: parsed.state, saved: parsed.saved, exists: true, ...(kept ? { unreadable: kept } : {}) }
 }
 
 // Saves still on their way to the file store, from every writer including
@@ -466,7 +596,7 @@ export function parseImportedConversations(values: unknown[]): Conversation[] {
   } catch { throw new ChatStorageError(transferInvalidMessage) }
 }
 
-/** 导入对话的结果：added 是导进来的新对话，skipped 是这台电脑存满 50 个、这次放不下的新对话。 */
+/** 导入对话的结果：added 是导进来的新对话，skipped 是这台电脑存满 MAX_CONVERSATIONS 个、这次放不下的新对话。 */
 export interface ChatImportResult { added: number; skipped: number }
 
 /**
@@ -487,7 +617,7 @@ export function mergeImportedConversations(state: ChatWorkspace, imported: Conve
 
 /**
  * 「重新读取」读出了以前的记录：这一回在窗口里聊的对话还没存过，一个不丢地排在读出来的
- * 前面。合起来超过 50 个时照常存不进去、提示先删掉一些，不替用户删。这一回什么都没动过
+ * 前面。合起来超过上限时照常存不进去、提示先删掉一些，不替用户删。这一回什么都没动过
  * 就停在上次看的那段，动过就停在正在看的那段；输入框里这一回打了字就留这一回的。
  */
 export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWorkspace): ChatWorkspace {
@@ -519,7 +649,7 @@ export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWork
  * first, so nothing else reads or writes this account's history in between.
  */
 export async function importConversationsIntoHistory(
-  api: { readHistory: (scope: string) => Promise<AiChatHistorySnapshot>; writeHistory: (input: AiChatHistoryWrite) => Promise<void> },
+  api: ChatHistoryReader & { writeHistory: (input: AiChatHistoryWrite) => Promise<void> },
   storage: ChatStorage,
   scope: string,
   imported: Conversation[],

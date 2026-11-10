@@ -9,6 +9,7 @@ const packageVersion = require('./package.json').version
 const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
 const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs')
 const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-checksums.cjs')
+const { buildReleaseCopyright } = require('./scripts/release-copyright.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
@@ -158,6 +159,15 @@ const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责�
 const adHocSigningMode = !ephemeralMacSigningMode && !freeMacReleaseMode && !releaseMode
 const selfSignedMacSigningMode = adHocSigningMode || ephemeralMacSigningMode || freeMacReleaseMode
 const macEntitlementsPrefix = selfSignedMacSigningMode ? 'build/entitlements.mac.adhoc' : 'build/entitlements.mac'
+// 画布项目文件（.xingcanvas，D92）关联到星芒，双击直接在画布里打开（主进程那半在
+// electron/canvas-project-file-launch.ts）。三个平台各写各的：Windows 的 name 是注册表里的
+// ProgID，只能是这种不带空格的英文名，build/installer.nsh 按同一个名字重写「打开」命令
+// （XINGMANG_CANVAS_PROGID）；Mac 的 name 是访达「种类」一栏显示的字，Linux 要一个 MIME 类型。
+// 显示的名字跟导入导出对话框里的文件类型同一个说法。
+const canvasProjectExtension = 'xingcanvas'
+const canvasProjectTypeName = '星芒画布项目'
+const windowsCanvasProjectProgId = 'XingMangAI.CanvasProject'
+
 const macPrivacyUsageDescriptions = {
   NSDocumentsFolderUsageDescription: '星芒把 AI 画的图、做的视频存进“文稿”里的 XingmangAI 文件夹；你放在“文稿”里的项目，也要读得到才能帮你打开。',
   NSDesktopFolderUsageDescription: '你放在桌面上的项目，星芒要读得到才能帮你用 AI 工具打开。',
@@ -170,7 +180,8 @@ module.exports = {
   appId: 'com.xingmang.ai.manager',
   productName,
   protocols: [{ name: '星芒AI管理工具', schemes: ['xingmang'] }],
-  copyright: 'Copyright © 2026 绍兴星芒文化传媒有限责任公司',
+  // 年份按出包那天的北京时间算，理由见 scripts/release-copyright.cjs。
+  copyright: buildReleaseCopyright(new Date()),
   // 浏览器内核自带 55 种语言的内置文字（表单校验提示、文件选择框、视频控件这类），星芒
   // 界面全是中文，只留简体、繁体（香港、澳门的系统也落到繁体）和 en-US：系统语言是别的
   // 时候，Chromium 一律退回 en-US，删了它就没有可退的。Electron 45.1.0 上 Windows 装好后
@@ -326,6 +337,7 @@ module.exports = {
     entitlements: `${macEntitlementsPrefix}.plist`,
     entitlementsInherit: `${macEntitlementsPrefix}.inherit.plist`,
     icon: 'assets/brand/v3/app-icon.icns',
+    fileAssociations: [{ ext: canvasProjectExtension, name: canvasProjectTypeName, role: 'Editor', rank: 'Owner' }],
     // macOS 第一次碰「文稿」「桌面」「下载」、U 盘、共享盘时弹的隐私询问框，标题是系统写的，
     // 下面那行说明取这几项；不写就只有「不允许」「好」两个按钮，客户不知道为什么要给（已知34）。
     extendInfo: macPrivacyUsageDescriptions,
@@ -362,6 +374,7 @@ module.exports = {
     icon: 'assets/brand/v3/favicon.ico',
     legalTrademarks: '星芒AI',
     artifactName: 'XingMang-AI-Manager-${version}-Setup.${ext}',
+    fileAssociations: [{ ext: canvasProjectExtension, name: windowsCanvasProjectProgId, description: canvasProjectTypeName }],
   },
   nsis: {
     oneClick: false,
@@ -381,6 +394,11 @@ module.exports = {
     // 已有的。**这一行不能删**:少了它兜底脚本不会被编进安装程序,而打包日志
     // 全绿,和现在一模一样。
     include: 'installer.nsh',
+    // 安装完成页、卸载欢迎页和完成页左边那张图（D93）。不写这一行时 electron-builder
+    // 也会去 build/ 找同名文件，但找不到就悄悄换回 NSIS 自带的通用图；写明以后文件
+    // 丢了打包直接报错。卸载向导没单独配，跟着用这一张。重新生成见
+    // scripts/generate-installer-sidebar.mjs。
+    installerSidebar: 'installerSidebar.bmp',
     shortcutName: '星芒AI管理工具',
     uninstallDisplayName: '星芒AI管理工具',
   },
@@ -397,6 +415,14 @@ module.exports = {
     category: 'Development',
     synopsis: '星芒AI管理工具',
     description: '一键安装、配置和启动 Claude Code、Codex、Grok 等 AI 编程工具。',
+    // 包里多一份 /usr/share/mime/packages/xingmang-ai-manager.xml，菜单文件的 MimeType 带上它，
+    // after-install.tpl 照旧跑 update-mime-database 和 update-desktop-database。
+    fileAssociations: [{
+      ext: canvasProjectExtension,
+      name: canvasProjectTypeName,
+      description: canvasProjectTypeName,
+      mimeType: 'application/x-xingcanvas',
+    }],
     maintainer: '绍兴星芒文化传媒有限责任公司 <xufei5620136@gmail.com>',
     vendor: '绍兴星芒文化传媒有限责任公司',
     desktop: {

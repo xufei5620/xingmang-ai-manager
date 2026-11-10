@@ -76,7 +76,7 @@ describe('per-tool usage summary', () => {
 
   it('says who spent the most, and says so as the current account', () => {
     expect(toolUsageHeadline(summary)).toBe('当前账号累计已用 $8.00，其中 Claude Code 最多（75%）。')
-    expect(toolUsageHeadline(summaryOf([]))).toContain('还没有为任何工具签发密钥')
+    expect(toolUsageHeadline(summaryOf([]))).toBe('当前账号还没给任何工具配过密钥，在首页配一次工具就会自动准备好。')
     expect(toolUsageHeadline(summaryOf([key({ id: 1, name: 'xingmang-desktop-claude' })]))).toContain('还没有产生用量')
   })
 

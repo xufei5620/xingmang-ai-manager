@@ -91,6 +91,11 @@ export interface NodeRuntimeProcessPlan {
   executable: string
   argv: readonly string[]
   timeoutMs: number
+  /**
+   * Counts only awake time toward timeoutMs (RunCommandOptions.timeoutExcludesSleep). Set on
+   * the long installer runs, so closing the lid while one works does not end it on wake.
+   */
+  timeoutExcludesSleep?: boolean
   acceptedExitCodes: readonly number[]
   env?: NodeJS.ProcessEnv
   trustedPaths?: readonly string[]
@@ -146,6 +151,11 @@ export interface InstallNodeRuntimeOptions {
   onProgress?: (progress: NodeRuntimeInstallProgress) => void
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
+  /**
+   * 星芒这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）：装安装包时 Windows
+   * 不弹授权窗口，进度那句不说会弹（已知19）。缺省 = 会弹。
+   */
+  processElevated?: boolean
   dependencies?: Partial<NodeRuntimeInstallerDependencies>
   /**
    * 退到下安装包时才借下载专用线路。只有 Windows 这一份认它：winget 自己下载、不走这条线路；
@@ -777,6 +787,7 @@ export function buildNodeRuntimeInstallPlan(
       executable: windowsSystemExecutable('msiexec.exe', process.env, 'win32', machinePaths),
       argv: ['/i', msiPath, '/qn', '/norestart', 'ADDLOCAL=ALL'],
       timeoutMs: installerTimeoutMs,
+      timeoutExcludesSleep: true,
       acceptedExitCodes: [0, 3010],
       env: signatureEnv,
       trustedPaths: [msiPath],
@@ -816,6 +827,7 @@ export function buildNodeRuntimeWingetPlan(
       ...(architecture ? ['--architecture', architecture] : []),
     ],
     timeoutMs: wingetTimeoutMs,
+    timeoutExcludesSleep: true,
     acceptedExitCodes: [0],
   }
 }
@@ -1047,6 +1059,7 @@ async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal)
       env: trustedCommandEnvironment(plan.env ?? process.env, machinePaths, 'win32'),
       trustedOnly: true,
       timeoutMs: plan.timeoutMs,
+      timeoutExcludesSleep: plan.timeoutExcludesSleep,
       acceptedExitCodes: plan.acceptedExitCodes,
       maxOutputBytes: 2 * 1024 * 1024,
       windowsHide: true,
@@ -1071,6 +1084,7 @@ async function defaultRunProcess(
   if (plan.elevation === 'uac') return runUacProcess(plan, signal)
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
+    timeoutExcludesSleep: plan.timeoutExcludesSleep,
     acceptedExitCodes: plan.acceptedExitCodes,
     maxOutputBytes: 2 * 1024 * 1024,
     windowsHide: true,
@@ -1332,6 +1346,17 @@ async function hashFileSha256(filePath: string): Promise<string> {
   return hash.digest('hex')
 }
 
+/**
+ * 装安装包那一步的进度。这时其实在等客户在授权窗口点「是」，那个窗口常常只在任务栏上闪、
+ * 不跳到最前面，写「正在静默安装」客户只会干等（深查 D24）。星芒本身带着管理员权限在跑时
+ * Windows 不弹窗，照旧说原来那句。
+ */
+export function nodeRuntimeMsiInstallingMessage(version: string, processElevated?: boolean): string {
+  return processElevated
+    ? `正在静默安装 Node.js ${version} LTS`
+    : `正在安装 Node.js ${version} LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。`
+}
+
 async function installFromSource(
   source: NodeRuntimeDownloadSource,
   architecture: NodeRuntimeArchitecture,
@@ -1412,7 +1437,7 @@ async function installFromSource(
   report(options, {
     phase: 'installing',
     source: source.id,
-    message: `正在静默安装 Node.js ${release.version} LTS`,
+    message: nodeRuntimeMsiInstallingMessage(release.version, options.processElevated),
     percent: null,
   })
   await verifyMsiBeforeInstall()

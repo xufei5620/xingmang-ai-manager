@@ -8,7 +8,7 @@ import { updateDiskCleanupStepsFor } from '../../registry/tutorials'
 import { Button, Progress } from '../../ui'
 import { requiredUpdateFollowUp, requiredUpdateGate, type RequiredUpdateAction } from './required-update'
 
-/** postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装（已知31）。 */
+/** postponed：还有工具在装或任务没做完，客户在主进程问的那一句里点了「继续安装」「等它做完」，这次没装（已知31、D10）。 */
 export interface RequiredUpdateInstallOutcome {
   postponed?: true
 }
@@ -27,7 +27,7 @@ export interface RequiredUpdateActions {
  *
  * 它故意关不掉：没有右上角的叉，Esc 和点空白处都不起作用，底下的界面被 showModal
  * 设成不可操作。能做的只有更新和找客服；自动更新走不通时再多一个「打开下载页」。
- * 「联系客服」打开的帮助框是后开的模态框，会叠在这层上面。
+ * 「找客服」打开的帮助框是后开的模态框，会叠在这层上面。
  *
  * 磁盘不够时更新器不下载、也不报错，这层就换成版本更新卡那段「只剩多少、要多少、怎么清理」，
  * 主按钮改成「空间够了，再试一次」；版本更新卡给了「仍要下载」，这里也给，说法相同。
@@ -138,7 +138,7 @@ export function RequiredUpdateGate({ update, windows, linux = false, mac = false
         </div>}
       </div>
       <footer>
-        <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>联系客服</Button>
+        <Button variant="ghost" testId="required-update-support" onClick={actions.contactSupport}>找客服</Button>
         {gate.failure && <Button variant={gate.manualReinstall ? 'primary' : 'secondary'} testId="required-update-download-page" onClick={actions.openDownloadPage}>打开下载页</Button>}
         {/* 空间是估算的：他清出了一点、或者就想试一次，由他决定，和版本更新卡一样。 */}
         {gate.diskShortfall && <Button testId="required-update-download-anyway" disabled={busy} onClick={() => start('download', { ignoreDiskSpace: true })}>仍要下载</Button>}

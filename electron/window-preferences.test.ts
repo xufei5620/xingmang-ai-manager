@@ -44,6 +44,43 @@ describe('window placement', () => {
     expect(resolveWindowPlacement(state(), [compact], 3).maximized).toBe(false)
   })
 
+  // D80: the sidebar collapses into its rail below 1272 logical DIP
+  // (Shell.tsx narrowWindowQuery). Work areas are the usual laptop screens
+  // minus a 40 DIP Windows taskbar or the macOS menu bar.
+  it.each([
+    { screen: '1366x768', workArea: { x: 0, y: 0, width: 1366, height: 728 }, maximized: true, width: 1152 },
+    { screen: '1280x800', workArea: { x: 0, y: 0, width: 1280, height: 760 }, maximized: true, width: 1152 },
+    { screen: '1280x1024', workArea: { x: 0, y: 0, width: 1280, height: 984 }, maximized: true, width: 1152 },
+    { screen: '1440x900 mac', workArea: { x: 0, y: 25, width: 1440, height: 875 }, maximized: false, width: 1152 },
+    { screen: '1536x864 (1080p at 125%)', workArea: { x: 0, y: 0, width: 1536, height: 824 }, maximized: false, width: 1229 },
+  ])('opens a first-run window on $screen wide enough to keep the sidebar expanded', ({ workArea, maximized, width }) => {
+    const display: WindowDisplay = { id: 7, workArea }
+    const placement = resolveWindowPlacement(undefined, [display], display.id)
+    expect(placement.maximized).toBe(maximized)
+    expect(placement.bounds.width).toBe(width)
+    for (const contentWidth of maximized ? [workArea.width, width] : [width]) {
+      expect(contentWidth / calculateUiZoom(contentWidth)).toBeGreaterThanOrEqual(1272)
+    }
+  })
+
+  it('keeps a saved small-screen layout exactly as the user left it', () => {
+    const laptop: WindowDisplay = { id: 7, workArea: { x: 0, y: 0, width: 1366, height: 728 } }
+    const saved = state({ bounds: { x: 137, y: 55, width: 1093, height: 619 }, maximized: false })
+    expect(resolveWindowPlacement(saved, [laptop], laptop.id)).toEqual({
+      bounds: saved.bounds,
+      minimumSize: { width: 960, height: 560 },
+      maximized: false,
+      restored: true,
+    })
+  })
+
+  it('never widens a first-run window beyond a work area narrower than the sidebar floor', () => {
+    const narrow: WindowDisplay = { id: 7, workArea: { x: 0, y: 0, width: 1093, height: 614 } }
+    const placement = resolveWindowPlacement(undefined, [narrow], narrow.id)
+    expect(placement.maximized).toBe(true)
+    expect(placement.bounds).toEqual({ x: 0, y: 27, width: 1093, height: 560 })
+  })
+
   it('preserves a valid user layout instead of enforcing first-run maximums', () => {
     const saved = state({ bounds: { x: 5, y: 6, width: 1800, height: 1000 }, maximized: true })
     const restored = resolveWindowPlacement(saved, [primary], primary.id)
@@ -249,7 +286,10 @@ describe('automatic DIP zoom', () => {
     [1440, '100', 1.125],
     [960, '90', 0.85],
     [1152, '90', 0.85],
-    [1920, '110', 1.25],
+    [1366, '110', 1.1739],
+    [1536, '110', 1.32],
+    [1600, '110', 1.375],
+    [1920, '110', 1.375],
   ] as const)('calculates the whole WebContents width %i DIP with %s preference', (width, preference, expected) => {
     expect(calculateUiZoom(width, preference)).toBe(expected)
   })
@@ -257,6 +297,25 @@ describe('automatic DIP zoom', () => {
   it('keeps 100 percent relative to automatic zoom, without a second DPI multiplier', () => {
     expect(calculateUiZoom(1440, '100')).toBe(calculateUiZoom(1440, 'auto'))
     expect(calculateUiZoom(1440, '100')).not.toBe(1)
+  })
+
+  // D79: the 110% step used to share the 1.25 ceiling with the automatic
+  // factor, so a maximized 1080p desktop (1600 DIP and up) got the same zoom
+  // for 自动, 100% and 110%.
+  it('makes 110 percent larger than automatic and 90 percent smaller at every width', () => {
+    for (let width = 320; width <= 3840; width += 16) {
+      expect(calculateUiZoom(width, '110')).toBeGreaterThan(calculateUiZoom(width, 'auto'))
+      expect(calculateUiZoom(width, '90')).toBeLessThan(calculateUiZoom(width, 'auto'))
+    }
+    expect(calculateUiZoom(1920, '110')).toBeGreaterThan(calculateUiZoom(1920, '100'))
+  })
+
+  it('leaves the automatic zoom where it was before the 110 percent ceiling moved', () => {
+    for (let width = 320; width <= 3840; width += 16) {
+      const before = Math.round(Math.min(1.25, Math.max(0.9, width / 1280)) * 10_000) / 10_000
+      expect(calculateUiZoom(width, 'auto')).toBe(before)
+      expect(calculateUiZoom(width, '100')).toBe(before)
+    }
   })
 
   it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('uses a readable fallback while content width is invalid: %s', (width) => {

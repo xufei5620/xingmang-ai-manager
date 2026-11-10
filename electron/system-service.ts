@@ -705,6 +705,11 @@ export interface SystemServiceOptions {
   inspectRunningToolsForRouteHint?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
+  /**
+   * Windows 上星芒这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）：装 Node.js
+   * 时不弹授权窗口，进度那句不说会弹（已知19）。缺省 = 不是。
+   */
+  windowsProcessElevated?: boolean
   platform?: NodeJS.Platform
   providerRoots?: ProviderConfigRoots
   codexEnv?: NodeJS.ProcessEnv
@@ -1206,7 +1211,10 @@ export function createSystemService(
     applyXingmangAiSkillForCodexAccount,
   })
   // 装运行环境和重启 Windows 那一段在 runtime-install-service.ts（#1070 第 3 步）。
-  const { installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime } = createRuntimeInstallService(context, {
+  const {
+    installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime,
+    refreshOutdatedManagedNodeRuntime,
+  } = createRuntimeInstallService(context, {
     inspectNetworkRegion,
     inspectTool,
     inspectNode,
@@ -1224,6 +1232,7 @@ export function createSystemService(
     invalidateCliUpdateCache,
     installGitRuntime,
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime,
   })
 
   // 卸载命令行工具那一段在 cli-uninstall-service.ts（#1070 第 3 步）。

@@ -79,7 +79,7 @@ export function sessionRowMeta(session: Pick<Session, 'model' | 'messageCount' |
   ].filter(Boolean).join(' · ')
 }
 function sessionTitle(session: Pick<Session, 'title'>) {
-  return session.title || '未命名会话'
+  return session.title || '未命名对话'
 }
 export function SessionsPage({
   api,
@@ -138,6 +138,8 @@ export function SessionsPage({
   )
   const counts = sessionToolCounts(latestResource.error ? undefined : latestResource.data?.stats.byProvider)
   const operation = useOperation()
+  // 导出存不进去时按「换个位置再存」说，不说安装目录（D16）。
+  const exportTarget = operation.failed === 'export' ? 'export' : undefined
   const [selected, setSelected] = useState<Session | null>(null)
   const [showAllMessages, setShowAllMessages] = useState(false)
   // 只有摘要的记录原文已经不在这台电脑上，不去读；详情里照样看工具、文件夹和模型。
@@ -362,7 +364,7 @@ export function SessionsPage({
       items.push({ label: '打开文件夹', icon: FolderOpen, disabled: busy || missingWorkspace, onSelect: () => openDirectory(session), testId: `sessions-open-directory-${session.id}` })
     items.push({ label: '导出对话', icon: Download, disabled: busy || !canExport(session), onSelect: () => exportSession(session), testId: `sessions-menu-export-${session.id}` })
     if (operations?.[session.archived ? 'restore' : 'archive'])
-      items.push({ label: session.archived ? '恢复到记录' : '归档', icon: Archive, disabled: busy, onSelect: () => archive(session), testId: `sessions-menu-archive-${session.id}` })
+      items.push({ label: session.archived ? '取消归档' : '归档', icon: Archive, disabled: busy, onSelect: () => archive(session), testId: `sessions-menu-archive-${session.id}` })
     if (operations?.delete)
       items.push('divider', { label: '彻底删除', icon: Trash2, danger: true, disabled: busy, onSelect: () => setDeleting(session), testId: `sessions-menu-delete-${session.id}` })
     return items
@@ -379,6 +381,7 @@ export function SessionsPage({
     >
       <PageHead
         title="记录"
+        lead="在首页打开工具聊过的对话都在这里"
         actions={
           <Button
             variant="ghost"
@@ -426,6 +429,7 @@ export function SessionsPage({
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
+        target={exportTarget}
       />
       <Card padding="none">
         <ListState
@@ -438,7 +442,7 @@ export function SessionsPage({
           filtered={Boolean(query)}
           retry={() => void resource.reload()}
           clear={() => setQuery('')}
-          emptyDescription="在首页打开工具，聊过的会话会出现在这里。"
+          emptyDescription="在首页打开工具，聊过的对话会出现在这里。"
           searchTitle="没有找到相关记录"
           searchDescription="换个关键词，或者切换到「全部」再看看。"
           action={
@@ -555,7 +559,7 @@ export function SessionsPage({
               <Button
                 variant="ghost"
                 icon={Download}
-                title="导出成文件"
+                title="导出对话"
                 disabled={!canExport(selected) || busy}
                 onClick={() => exportSession(selected)}
                 testId="session-detail-export"
@@ -571,7 +575,7 @@ export function SessionsPage({
               {selected.archived
                 ? capability?.operations.restore && (
                     <Button variant="primary" disabled={busy} onClick={() => archive(selected)} testId="session-detail-restore">
-                      恢复到记录
+                      取消归档
                     </Button>
                   )
                 : resumable.has(selected.id) && (
@@ -606,6 +610,7 @@ export function SessionsPage({
             <ResultNotice
               {...operation}
               onReveal={(path) => api.revealExportedFile(path)}
+              target={exportTarget}
             />
             <dl className="v2-session-detail-kv">
               <div>
@@ -632,10 +637,10 @@ export function SessionsPage({
                 <dd><RelativeTime value={selected.updatedAt} /></dd>
               </div>
               <div>
-                <dt>会话 ID</dt>
+                <dt>对话编号</dt>
                 <dd>
                   <span className="xm-mono">{selected.nativeId}</span>
-                  <Button size="xs" variant="ghost" icon={Copy} aria-label="复制会话 ID" title="复制会话 ID" onClick={() => copySessionId(selected)} testId="session-detail-copy-id" />
+                  <Button size="xs" variant="ghost" icon={Copy} aria-label="复制对话编号" title="复制对话编号" onClick={() => copySessionId(selected)} testId="session-detail-copy-id" />
                 </dd>
               </div>
             </dl>
@@ -691,8 +696,8 @@ export function SessionsPage({
         {detail?.messagesTruncated && (
           <Notice
             tone="warn"
-            title="已限制预览长度"
-            body="完整内容请通过导出记录查看。"
+            title="只显示了前面一部分"
+            body="要看全部，点「导出对话」。"
           />
         )}
       </Dialog>

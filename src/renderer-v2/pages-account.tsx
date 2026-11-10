@@ -75,6 +75,7 @@ import {
   keyExpiredTime,
   keyMetaParts,
   keyToolChoice,
+  limitKeyNameEdit,
   shortDate,
   type KeyExpiryChoice,
   type KeyToolTarget,
@@ -816,6 +817,8 @@ function AccountKeys({
   // 新建成功后弹窗不关，原地说「已创建」，并告诉用户怎么让工具用它（v4）。
   const [created, setCreated] = useState('')
   const [name, setName] = useState('')
+  // 拼音输入法正在拼的那几个字母不算数：开拼时记下名称原来是什么，选完字再按字节收一次。
+  const nameCompositionBase = useRef<string | null>(null)
   const [group, setGroup] = useState('')
   const [groups, setGroups] = useState<Awaited<ReturnType<V2Bridge['getAccountUsableGroups']>>>([])
   const [groupsLoading, setGroupsLoading] = useState(false)
@@ -830,9 +833,9 @@ function AccountKeys({
   const [removing, setRemoving] = useState<AccountKey | null>(null)
   // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
-  // 要给的是「去设置」（#478）。
+  // 要给的是「去配置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
-  // 点「去设置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // 点「去配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
   // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
   // 新来的信号，之前留下的那次不算。
   const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
@@ -912,6 +915,7 @@ function AccountKeys({
     setEditing(key)
     setCreated('')
     setName(key === 'new' ? '' : key.name)
+    nameCompositionBase.current = null
     setGroup(key === 'new' ? '' : key.group)
     setGroups([])
     setUnlimited(key !== 'new' && key.unlimitedQuota)
@@ -922,6 +926,20 @@ function AccountKeys({
     setCustomExpiry(key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt))
     operation.clear()
     void refreshGroups(true)
+  }
+  // 星芒账号的名称站点按字节数限 50，中文最多 16 个字（ZW-1）：多打的打不进去，跟英文打满 50 个字母一样。
+  // 历史账号那边的上限照旧，只靠输入框的 maxLength。
+  function changeName(input: HTMLInputElement, previous: string) {
+    const limited = siteId === 'solov-api' ? null : limitKeyNameEdit(previous, input.value)
+    if (!limited) {
+      setName(input.value)
+      return
+    }
+    // 当场把截过的名字写回框里再放光标：React 随后核对时框里已经是这个值，不会再写一遍把光标甩到最后。
+    // 以前等下一帧才挪，那一帧可能落在客户紧接着按 Home、→ 之后，把光标又拽回刚才那里。
+    input.value = limited.value
+    input.setSelectionRange(limited.caret, limited.caret)
+    setName(limited.value)
   }
   const selectedGroupAvailable = groups.some((entry) => entry.name === group)
   const groupDescription = groups.find((entry) => entry.name === group)?.description?.trim()
@@ -1083,7 +1101,7 @@ function AccountKeys({
         <Notice
           tone="warn"
           title={`${keyToolName(replaceFailed.provider)} 还在用刚撤销的密钥`}
-          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去设置」改用当前账号就好。' : '到首页打开它的设置，改用当前账号就好。'}`}
+          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去配置」改用当前账号就好。' :'到首页打开它的设置，改用当前账号就好。'}`}
           testId="account-key-replace-skipped"
           actions={onConfigureTool && (
             <Button
@@ -1092,7 +1110,7 @@ function AccountKeys({
               testId="account-key-replace-configure"
               onClick={() => onConfigureTool(replaceFailed.provider)}
             >
-              去设置
+              去配置
             </Button>
           )}
         />
@@ -1287,7 +1305,18 @@ function AccountKeys({
               value={name}
               maxLength={50}
               hint="方便你认出它"
-              onChange={(event) => setName(event.target.value)}
+              onCompositionStart={(event) => {
+                nameCompositionBase.current = event.currentTarget.value
+              }}
+              onCompositionEnd={(event) => {
+                const previous = nameCompositionBase.current ?? name
+                nameCompositionBase.current = null
+                changeName(event.currentTarget, previous)
+              }}
+              onChange={(event) => {
+                if (nameCompositionBase.current === null) changeName(event.target, name)
+                else setName(event.target.value)
+              }}
             />
             {groupControl}
             {groupsError && (
@@ -1336,7 +1365,7 @@ function AccountKeys({
                 type="number"
                 min="0"
                 step="0.01"
-                hint="美元，用完后这把密钥会暂停，不影响账户余额"
+                hint="美元，用完后这把密钥会暂停，不影响账号余额"
                 value={quota}
                 onChange={(event) => setQuota(event.target.value)}
               />
@@ -1522,7 +1551,8 @@ function AccountInvite({
               }}
               testId="account-invite-transfer"
             >
-              {profile.affQuota > 0 ? '转入余额' : '已全部转入'}
+              {/* 没有可转的分两种：赚过、都转完了，和从来没赚过（后者写「已全部转入」像是转过了）。 */}
+              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '还没有返利'}
             </Button>
           </div>
         </section>
@@ -1587,7 +1617,7 @@ function AccountInvite({
       >
         <p>转入后可以直接用来调用模型，不能再转回返利。</p>
         <Input
-          label="转入金额（USD）"
+          label="转入金额（美元）"
           type="number"
           min="0.01"
           step="0.01"

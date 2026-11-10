@@ -23,6 +23,7 @@ import {
   parseNodeShasums,
   parseSystemWingetPackage,
   nodeRuntimeElevationFailureMessage,
+  nodeRuntimeMsiInstallingMessage,
   nodeRuntimeStagingRequiresProtectedDirectory,
   parseWindowsRestartStatus,
   resolveNodeRuntimeBrokerPowerShell,
@@ -230,6 +231,17 @@ describe('Node.js installer routing and process plans', () => {
     const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths, 'b'.repeat(64))
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
+  })
+
+  it('counts only awake time toward the installer runs, not toward the short signature check', () => {
+    // 睡眠深查 G1：装的时候合盖超过 15 分钟，醒来不该按满时限当场掐掉。
+    const plan = buildNodeRuntimeInstallPlan('C:\\Temp\\node.msi', systemPowerShell, true, testMachinePaths, 'b'.repeat(64))
+    expect(plan.msi.timeoutExcludesSleep).toBe(true)
+    expect(plan.signature.timeoutExcludesSleep).toBeUndefined()
+    const winget = buildNodeRuntimeWingetPlan(
+      'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+    )
+    expect(winget.timeoutExcludesSleep).toBe(true)
   })
 
   it('binds UAC MSI execution to a digest and rechecks the signature in the broker', () => {
@@ -590,6 +602,20 @@ describe('Node.js response URL validation', () => {
   })
 })
 
+// 深查 D24：装安装包那一步其实在等授权窗口，不能写「正在静默安装」让客户干等。
+describe('Node.js MSI installing progress', () => {
+  it('tells the customer a Windows authorization window is coming and where to look for it', () => {
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0')).toBe(
+      '正在安装 Node.js v24.19.0 LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。',
+    )
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0', false)).toBe(nodeRuntimeMsiInstallingMessage('v24.19.0'))
+  })
+
+  it('keeps the silent-install wording when the app already runs elevated and no window appears', () => {
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0', true)).toBe('正在静默安装 Node.js v24.19.0 LTS')
+  })
+})
+
 describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
   it('stages the download in the user temp directory when the app is not elevated', () => {
     expect(nodeRuntimeStagingRequiresProtectedDirectory('same-user')).toBe(false)
@@ -886,7 +912,7 @@ describe('Node.js package download deadline', () => {
     }
 
     it('finishes a slow but steady download that takes longer than ten minutes', async () => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-slow-'))
       const target = path.join(directory, 'node.msi')
       const bytes = Buffer.alloc(2 * 1024 * 1024, 5)
@@ -911,7 +937,7 @@ describe('Node.js package download deadline', () => {
     })
 
     it('gives up at the ceiling and removes the partial package', async () => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-ceiling-'))
       const target = path.join(directory, 'node.msi')
       // At one chunk every 40 seconds this would need well over the ceiling to finish.

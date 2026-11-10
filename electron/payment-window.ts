@@ -41,9 +41,14 @@ export interface PaymentWindowTerminalEvent {
   confirming?: boolean
 }
 
+/** 窗口自己关掉的原因：到了本地时限（或二维码的到期时间），或者付款页上显示了超时、关闭、失败。 */
+export type PaymentWindowAutoCloseReason = 'time-limit' | 'page-expired' | 'page-failed'
+
 export interface PaymentWindowTerminalContext {
   /** 结果是窗口关掉以后在后台查到的；用户多半已经不在看付款这件事了。 */
   afterClose: boolean
+  /** 只出现在 closed 上：窗口不是客户关的，是自己关的。只进运行日志，客服好分清。缺省 = 客户关的。 */
+  autoClosed?: PaymentWindowAutoCloseReason
 }
 
 /** 关窗后第 elapsedMs 毫秒时，距离下一次查询还要等多久；null = 不再查。 */
@@ -142,6 +147,33 @@ export function validatePaymentQrCode(input: PaymentQrCodeInput): PaymentQrCodeI
   if (input.tradeNo !== null && (typeof input.tradeNo !== 'string' || input.tradeNo.length > paymentFormLimits.tradeNoLength)) throw new PaymentCheckoutRejected('支付订单号格式异常')
   if (input.expiresAt !== null && (typeof input.expiresAt !== 'string' || input.expiresAt.length > paymentQrLimits.expiresAtLength || Number.isNaN(Date.parse(input.expiresAt)))) throw new PaymentCheckoutRejected('二维码到期时间格式异常')
   return Object.freeze({ ...input, code: parsed.href, currency: input.currency.toUpperCase() })
+}
+
+function padClock(value: number): string { return String(value).padStart(2, '0') }
+
+/**
+ * 扫码付款页上的金额：人民币写「12.00 元」，别的币种照旧写代码（D51）。
+ */
+export function formatPaymentQrAmount(amount: number, currency: string): string {
+  return `${amount.toFixed(2)} ${currency === 'CNY' ? '元' : currency}`
+}
+
+/**
+ * 扫码付款页上的到期时间，按本机时间写（D51）：当天写「今天 14:35」，别的日子写「11月10日 00:20」，
+ * 跨年带上年份。跟渲染层 calendar-time.ts 的 formatClockTime 是同一套写法，主进程碰不到那个文件，
+ * 这里另写一份。不能照抄那边「不早于今天都算今天」：那边写的是过去的时间，这里是将来的，
+ * 23:50 下单、0:20 到期会被写成「今天 00:20」。秒数舍掉不进位，宁可说早一点也不说晚。
+ * 读不出时间返回 null，那一行就不写。
+ */
+export function formatPaymentQrDeadline(expiresAt: string, now: number): string | null {
+  const date = new Date(expiresAt)
+  if (!Number.isFinite(date.getTime())) return null
+  const today = new Date(now)
+  const clock = `${padClock(date.getHours())}:${padClock(date.getMinutes())}`
+  const sameYear = date.getFullYear() === today.getFullYear()
+  if (sameYear && date.getMonth() === today.getMonth() && date.getDate() === today.getDate()) return `今天 ${clock}`
+  if (sameYear) return `${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 ${clock}`
 }
 
 function escapeHtml(value: string): string {
@@ -373,8 +405,8 @@ export function createPaymentWindowController(
   let activeOrder: { window: BrowserWindow; tradeNo: string; reader: PaymentOrderStatusReader } | null = null
   const silentClosures = new WeakSet<BrowserWindow>()
 
-  function emit(event: PaymentWindowTerminalEvent, afterClose = false): void {
-    options.onTerminalState?.(event, { afterClose })
+  function emit(event: PaymentWindowTerminalEvent, afterClose = false, autoClosed?: PaymentWindowAutoCloseReason): void {
+    options.onTerminalState?.(event, autoClosed ? { afterClose, autoClosed } : { afterClose })
   }
 
   function stopFollowUp(): void {
@@ -428,13 +460,14 @@ export function createPaymentWindowController(
     schedule()
   }
 
-  /** 窗口被关掉（不是到账、失败、过期自动关）：订单还在，能确认就接着确认。 */
-  function reportClosed(order: typeof activeOrder, tradeNo: string | null): void {
+  /** 窗口关了，账号后端却还没说这笔订单的结果：订单还在，能确认就接着确认。
+   * 客户自己关窗走这里；到了时限、付款页显示结束而自己关窗的也走这里（带 autoClosed）。 */
+  function reportClosed(order: typeof activeOrder, tradeNo: string | null, autoClosed?: PaymentWindowAutoCloseReason): void {
     if (order) {
       startFollowUp(order.tradeNo, order.reader)
-      emit({ status: 'closed', tradeNo, confirming: true })
+      emit({ status: 'closed', tradeNo, confirming: true }, false, autoClosed)
     } else {
-      emit({ status: 'closed', tradeNo })
+      emit({ status: 'closed', tradeNo }, false, autoClosed)
     }
   }
 
@@ -564,19 +597,31 @@ export function createPaymentWindowController(
       let inspectionInFlight = false
       let orderQueryInFlight = false
       let terminalDetectionArmed = false
-      const finish = (status: PaymentWindowTerminalStatus) => {
-        if (!isCurrent()) return
+      const closeWindow = (): boolean => {
+        if (!isCurrent()) return false
         stopMonitoring()
         // BrowserWindow.close() can be cancelled by a third-party beforeunload
         // handler. Destroy first so the UI never reports a window still open.
         destroySilently(window)
         release(window)
-        emit({ status, tradeNo })
+        return true
+      }
+      // 只有账号后端查到的订单结果走这里：到账、失败、过期都由它说了算。
+      const finish = (status: PaymentWindowTerminalStatus) => {
+        if (closeWindow()) emit({ status, tradeNo })
+      }
+      // 到了时限、付款页上显示超时、关闭或失败，只说明这个窗口用不着了，不说明钱没扣：客户第 9 分钟扫了码、
+      // 第 10 分钟以后才在手机上输完密码，或者付款页先显示「交易已关闭」、支付商的到账通知晚一步到，
+      // 钱都已经扣了。以前这里直接报「支付已超时，不会再扣钱」并且不再查，晚到的钱就没人管。
+      // 现在照客户自己关窗那样处理：关窗，接着在后台确认这笔订单。
+      const closeAndKeepConfirming = (reason: PaymentWindowAutoCloseReason) => {
+        const order = activeOrder?.window === window ? activeOrder : null
+        if (closeWindow()) reportClosed(order, tradeNo, reason)
       }
       const inspect = async () => {
         if (!isCurrent()) return
         if (Date.now() >= deadline) {
-          finish('expired')
+          closeAndKeepConfirming('time-limit')
           return
         }
         if (inspectionInFlight) return
@@ -593,7 +638,7 @@ export function createPaymentWindowController(
             if (!terminalDetectionArmed) return
           }
           const status = detectPaymentWindowTerminalStatus(snapshot)
-          if (status) finish(status)
+          if (status) closeAndKeepConfirming(status === 'failed' ? 'page-failed' : 'page-expired')
         } catch {
           // Third-party pages may block inspection while navigating; the next bounded tick retries.
         } finally {
@@ -665,9 +710,10 @@ export function createPaymentWindowController(
         errorCorrectionLevel: 'M', margin: 2, width: 360,
       })
       if (requestGeneration !== openRequestGeneration) return
+      const deadline = validated.expiresAt ? formatPaymentQrDeadline(validated.expiresAt, Date.now()) : null
       // Static, script-free document. The QR payload is encoded into the
       // image only; the window never navigates to weixin:// or any QR URL.
-      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(validated.amount.toFixed(2))} ${escapeHtml(validated.currency)}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${validated.expiresAt ? `<p>有效期至：${escapeHtml(validated.expiresAt)}</p>` : ''}</main></body></html>`
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(formatPaymentQrAmount(validated.amount, validated.currency))}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${deadline ? `<p>请在${escapeHtml(deadline)} 前完成付款</p>` : ''}</main></body></html>`
       const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
       await openTarget(dataUrl, new Set([accountOrigin]), parent, undefined, validated.tradeNo, validated.expiresAt)
     },

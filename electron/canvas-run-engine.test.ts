@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   appendCanvasRunTimelineEvent,
+  canvasImageBatchFailureMessage,
   canvasRunDescendants,
   canvasRunDesktopUnsupportedReason,
   canvasRunExclusiveNodeIds,
+  canvasRunImageCandidateCount,
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
   type CanvasNodeExecutors,
@@ -19,6 +21,7 @@ import type {
   CanvasRunScope,
 } from './canvas-run-contract'
 import { canvasRunTimelineLimit } from './canvas-run-contract'
+import { canvasImageCandidateCacheKey } from './canvas-fingerprint'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 
 function node(id: string, kind: CanvasRunGraphNode['kind'], prompt = id): CanvasRunGraphNode {
@@ -535,6 +538,39 @@ describe('executeCanvasRun', () => {
     expect(order.every((entry, index) => index % 2 === 0 ? entry.startsWith('persist:') : entry.startsWith('notify:'))).toBe(true)
   })
 
+  // R-1: progress reports may wait in memory; whatever a paid request or its
+  // result depends on still goes through the ordinary, durable save.
+  it('saves stage and progress reports through persistProgress and every other step through persistRecord', async () => {
+    function lastEntry(snapshot: CanvasRunRecord): string {
+      const event = snapshot.events.at(-1)
+      if (!event) return 'none'
+      if (event.type === 'node-stage') return `stage:${event.stage}${event.progress === undefined ? '' : `:${event.progress}`}`
+      if (event.type === 'node-state') return `state:${event.state}`
+      return `terminal:${event.status}`
+    }
+    const durable: string[] = []
+    const progress: string[] = []
+    const imageExecutor = vi.fn(async ({ reportStage }) => {
+      expect(durable).toContain('state:running')
+      await reportStage('processing', { value: 30, mode: 'determinate', health: 'normal' })
+      await reportStage('processing', { value: 80, mode: 'determinate', health: 'normal' })
+      return { assets: [asset()] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('image', 'image')]), {
+      executors: executors({ image: imageExecutor }),
+      persistRecord: async (snapshot) => { durable.push(lastEntry(snapshot)) },
+      persistProgress: async (snapshot) => { progress.push(lastEntry(snapshot)) },
+    }))
+
+    expect(record.status).toBe('succeeded')
+    expect(imageExecutor).toHaveBeenCalledOnce()
+    expect(durable).toEqual(['state:running', 'state:succeeded', 'terminal:succeeded'])
+    expect(progress).toEqual([
+      'state:queued', 'stage:validating', 'stage:resolving-cache', 'stage:waiting-slot', 'stage:submitting',
+      'stage:processing', 'stage:processing:30', 'stage:processing:80',
+    ])
+  })
+
   it('continues persistence after one snapshot write fails without replaying the executor', async () => {
     const text = vi.fn(async () => ({ outputText: 'paid result' }))
     const persisted: Array<{ sequence: number | undefined; status: string }> = []
@@ -836,13 +872,326 @@ describe('executeCanvasRun adopted results', () => {
   })
 })
 
+function multiImageChain(count: 2 | 3 | 4 | undefined, adopted?: string, kind: CanvasRunGraphNode['kind'] = 'image-generate'): CanvasRunGraph {
+  const image = node('image', kind)
+  if (count) image.data.imageCandidateCount = count
+  if (adopted) image.data.adoptedAssetId = adopted
+  return graph(
+    [node('prompt', 'text', '一只猫'), image, node('video', 'video-generate')],
+    [edge('prompt', 'image'), edge('image', 'video', 'image')],
+  )
+}
+
+function multiImageHarness() {
+  const cache = new Map<string, CanvasRunCacheEntry>()
+  const records: CanvasRunRecord[] = []
+  const attemptIds: string[] = []
+  const videoInputs: Array<string | undefined> = []
+  let made = 0
+  let failNext: string | undefined
+  const image = vi.fn(async ({ attemptId }: { attemptId: string }) => {
+    attemptIds.push(attemptId)
+    if (failNext) {
+      const message = failNext
+      failNext = undefined
+      throw new Error(message)
+    }
+    return { assets: [asset(`image${++made}`.padEnd(43, 'x'))], costQuota: 10 }
+  })
+  const video = vi.fn(async ({ inputs }: { inputs: { image?: CanvasRunAsset } }) => {
+    videoInputs.push(inputs.image?.assetId)
+    const assetId = `video${videoInputs.length}`.padEnd(43, 'x')
+    return { assets: [{ kind: 'video' as const, assetId, localUrl: `xingmang-asset://video/${assetId}` }] }
+  })
+  async function run(workflow: CanvasRunGraph, scope: CanvasRunScope = { kind: 'all' }, projectId = 'project-a', extra: Partial<Parameters<typeof executeCanvasRun>[0]> = {}) {
+    const record = await executeCanvasRun(runOptions(workflow, {
+      projectId,
+      runId: `run-${records.length + 1}`,
+      randomUUID: (() => { let id = 0; return () => `run${records.length + 1}-uuid-${++id}` })(),
+      scope,
+      executors: executors({ image, video }),
+      resolveCache: async (fingerprint) => structuredClone(cache.get(fingerprint) ?? null),
+      storeCache: async (entry) => { cache.set(entry.fingerprint, structuredClone(entry)) },
+      resolveAssetOrigin: originResolver(records),
+      ...extra,
+    }))
+    records.unshift(record)
+    return record
+  }
+  return { cache, records, attemptIds, videoInputs, image, video, run, failOnce: (message: string) => { failNext = message } }
+}
+
+function imageNode(record: CanvasRunRecord) {
+  return record.nodes.find((entry) => entry.nodeId === 'image')!
+}
+
+function batchAssets(record: CanvasRunRecord): string[] {
+  return imageNode(record).attempts.flatMap((attempt) => attempt.candidates.map((candidate) => candidate.asset.assetId))
+}
+
+describe('executeCanvasRun multi-image nodes', () => {
+  it.each([2, 3, 4] as const)('sends %s independent one-image requests and keeps every image in order', async (count) => {
+    const harness = multiImageHarness()
+    const record = await harness.run(multiImageChain(count))
+
+    expect(harness.image).toHaveBeenCalledTimes(count)
+    expect(new Set(harness.attemptIds).size).toBe(count)
+    const entry = imageNode(record)
+    expect(entry.state).toBe('succeeded')
+    expect(entry.attempts).toHaveLength(count)
+    const batchIds = new Set(entry.attempts.map((attempt) => attempt.imageBatch?.batchId))
+    expect(batchIds.size).toBe(1)
+    expect(entry.attempts.map((attempt) => attempt.imageBatch?.index)).toEqual(Array.from({ length: count }, (_, index) => index + 1))
+    expect(entry.attempts.every((attempt) => attempt.imageBatch?.count === count && !attempt.cached && attempt.candidates.length === 1)).toBe(true)
+    // Every request is proven against the node's own fingerprint.
+    expect(new Set(entry.attempts.map((attempt) => attempt.fingerprint)).size).toBe(1)
+    expect(entry.attempts.every((attempt) => attempt.candidates[0].attemptId === attempt.attemptId)).toBe(true)
+    // Downstream gets the first image, as the canvas falls back to it.
+    expect(harness.videoInputs).toEqual([batchAssets(record)[0]])
+    // One cache entry per request: request 1 under the node fingerprint.
+    const fingerprint = entry.attempts[0].fingerprint
+    expect(harness.cache.get(fingerprint)?.candidate?.asset.assetId).toBe(batchAssets(record)[0])
+    for (let index = 2; index <= count; index++) {
+      expect(harness.cache.get(canvasImageCandidateCacheKey(fingerprint, index))?.candidate?.asset.assetId).toBe(batchAssets(record)[index - 1])
+    }
+    const terminal = record.events.find((event) => event.type === 'node-state' && event.nodeId === 'image' && event.state === 'succeeded')
+    expect(terminal).toMatchObject({ costQuota: 10 * count })
+  })
+
+  it('lets no request of a batch go out before the running state is on disk', async () => {
+    const harness = multiImageHarness()
+    let runningSaved = false
+    let saveRunning!: () => void
+    const disk = new Promise<void>((resolve) => { saveRunning = resolve })
+    const sentEarly: boolean[] = []
+    const image = vi.fn(async () => {
+      sentEarly.push(!runningSaved)
+      return { assets: [asset(`early${image.mock.calls.length}`.padEnd(43, 'x'))] }
+    })
+    const pending = harness.run(multiImageChain(3), { kind: 'all' }, 'project-a', {
+      executors: executors({ image, video: harness.video }),
+      persistRecord: async (snapshot) => {
+        if (imageNode(snapshot).state !== 'running' || runningSaved) return
+        await disk
+        runningSaved = true
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(image).not.toHaveBeenCalled()
+
+    saveRunning()
+    const record = await pending
+    expect(image).toHaveBeenCalledTimes(3)
+    expect(sentEarly).toEqual([false, false, false])
+    expect(imageNode(record).state).toBe('succeeded')
+  })
+
+  it('keeps a one-image node on the old single request', async () => {
+    const harness = multiImageHarness()
+    const record = await harness.run(multiImageChain(undefined))
+    expect(harness.image).toHaveBeenCalledOnce()
+    expect(imageNode(record).attempts).toHaveLength(1)
+    expect(imageNode(record).attempts[0].imageBatch).toBeUndefined()
+    expect(canvasRunImageCandidateCount(multiImageChain(4, undefined, 'image-edit').nodes[1])).toBe(4)
+    const video = node('video', 'video-generate')
+    video.data.imageCandidateCount = 4
+    expect(canvasRunImageCandidateCount(video)).toBe(1)
+  })
+
+  it('keeps the images that came out when one request fails, and a later run sends only the missing one', async () => {
+    const harness = multiImageHarness()
+    harness.failOnce('上游超时')
+    const failed = await harness.run(multiImageChain(3))
+
+    expect(harness.image).toHaveBeenCalledTimes(3)
+    const entry = imageNode(failed)
+    expect(entry.state).toBe('failed')
+    expect(entry.errorMessage).toBe('这次要出 3 张，出来 2 张，1 张没出来：上游超时')
+    expect(entry.attempts.map((attempt) => attempt.imageBatch?.index)).toEqual([1, 2, 3])
+    const failedAttempt = entry.attempts.find((attempt) => attempt.state === 'failed')!
+    expect(entry.attempts.filter((attempt) => attempt.state === 'succeeded')).toHaveLength(2)
+    expect(failedAttempt.errorMessage).toBe('上游超时')
+    expect(failedAttempt.candidates).toEqual([])
+    expect(failed.nodes.find((item) => item.nodeId === 'video')?.state).toBe('skipped')
+    expect(harness.video).not.toHaveBeenCalled()
+
+    const again = await harness.run(multiImageChain(3))
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    const retried = imageNode(again)
+    expect(retried.state).toBe('succeeded')
+    expect(retried.attempts.map((attempt) => [attempt.imageBatch?.index, attempt.state])).toEqual([1, 2, 3].map((index) => (
+      [index, index === failedAttempt.imageBatch?.index ? 'succeeded' : 'cached']
+    )))
+    expect(new Set(retried.attempts.map((attempt) => attempt.imageBatch?.batchId)).size).toBe(1)
+    const kept = batchAssets(failed)
+    expect(batchAssets(again).filter((assetId) => kept.includes(assetId))).toEqual(kept)
+  })
+
+  it('says plainly when none of the images came out', () => {
+    expect(canvasImageBatchFailureMessage(4, 0, '余额不足')).toBe('这次要出 4 张，一张都没出来：余额不足')
+    expect(canvasImageBatchFailureMessage(2, 1, 'x'.repeat(400)).length).toBe(300)
+  })
+
+  it('replays the whole batch from the cache, and a one-image run reuses request 1', async () => {
+    const harness = multiImageHarness()
+    const first = await harness.run(multiImageChain(4))
+    const replay = await harness.run(multiImageChain(4, batchAssets(first)[0]))
+
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    expect(imageNode(replay).state).toBe('cached')
+    expect(batchAssets(replay)).toEqual(batchAssets(first))
+    expect(imageNode(replay).attempts.map((attempt) => attempt.attemptId)).toEqual(imageNode(first).attempts.map((attempt) => attempt.attemptId))
+    expect(new Set(imageNode(replay).attempts.map((attempt) => attempt.imageBatch?.batchId)).size).toBe(1)
+    expect(imageNode(replay).attempts[0].imageBatch?.batchId).not.toBe(imageNode(first).attempts[0].imageBatch?.batchId)
+    expect(replay.nodes.find((item) => item.nodeId === 'video')?.state).toBe('cached')
+
+    const one = await harness.run(multiImageChain(undefined, batchAssets(first)[0]))
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    expect(imageNode(one).state).toBe('cached')
+    expect(batchAssets(one)).toEqual([batchAssets(first)[0]])
+  })
+
+  it('sends only the extra requests when the count goes up from one', async () => {
+    const harness = multiImageHarness()
+    const one = await harness.run(multiImageChain(undefined))
+    const shown = batchAssets(one)[0]
+    const three = await harness.run(multiImageChain(3, shown))
+
+    expect(harness.image).toHaveBeenCalledTimes(3)
+    expect(imageNode(three).attempts.map((attempt) => attempt.state)).toEqual(['cached', 'succeeded', 'succeeded'])
+    expect(batchAssets(three)[0]).toBe(shown)
+    // The image the canvas shows is in the batch, so downstream keeps it and
+    // its own cache still answers.
+    expect(harness.videoInputs).toEqual([shown])
+    expect(three.nodes.find((item) => item.nodeId === 'video')?.state).toBe('cached')
+  })
+
+  it('regenerates every image of the explicit to-node target', async () => {
+    const harness = multiImageHarness()
+    const first = await harness.run(multiImageChain(2))
+    const again = await harness.run(multiImageChain(2, batchAssets(first)[0]), { kind: 'to-node', nodeId: 'image' })
+
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    expect(imageNode(again).state).toBe('succeeded')
+    expect(batchAssets(again).some((assetId) => batchAssets(first).includes(assetId))).toBe(false)
+  })
+
+  it('hands downstream the image the user picked from the batch', async () => {
+    const harness = multiImageHarness()
+    const first = await harness.run(multiImageChain(4))
+    const picked = batchAssets(first)[2]
+    const replay = await harness.run(multiImageChain(4, picked))
+
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    expect(imageNode(replay).state).toBe('cached')
+    expect(replay.nodes.find((item) => item.nodeId === 'video')?.state).toBe('succeeded')
+    expect(harness.videoInputs).toEqual([batchAssets(first)[0], picked])
+  })
+
+  it('reuses an image picked from an older batch, then shows it inside the kept batch', async () => {
+    const harness = multiImageHarness()
+    const older = await harness.run(multiImageChain(2))
+    const newer = await harness.run(multiImageChain(2, batchAssets(older)[0]), { kind: 'to-node', nodeId: 'image' })
+    const picked = batchAssets(older)[1]
+
+    const switched = await harness.run(multiImageChain(2, picked))
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    expect(imageNode(switched).state).toBe('cached')
+    expect(imageNode(switched).attempts).toHaveLength(1)
+    expect(imageNode(switched).attempts[0].imageBatch).toBeUndefined()
+    expect(batchAssets(switched)).toEqual([picked])
+    expect(harness.videoInputs.at(-1)).toBe(picked)
+
+    const next = await harness.run(multiImageChain(2, picked))
+    expect(harness.image).toHaveBeenCalledTimes(4)
+    expect(imageNode(next).state).toBe('cached')
+    expect(batchAssets(next)).toEqual([picked, batchAssets(newer)[1]])
+  })
+
+  it('stops instead of showing another batch when the picked image cannot be proven', async () => {
+    const harness = multiImageHarness()
+    const first = await harness.run(multiImageChain(2))
+    harness.records.length = 0
+    const stranger = 'stranger'.padEnd(43, 'x')
+    const record = await harness.run(multiImageChain(2, stranger))
+
+    expect(harness.image).toHaveBeenCalledTimes(2)
+    expect(imageNode(record).state).toBe('failed')
+    expect(imageNode(record).errorMessage).toBe(unprovenImageMessage)
+    expect(batchAssets(first)).toHaveLength(2)
+  })
+
+  it('reuses what a duplicated project shows without sending the rest of its batch on the next run', async () => {
+    const harness = multiImageHarness()
+    const original = await harness.run(multiImageChain(3), { kind: 'all' }, 'project-a')
+    const shown = batchAssets(original)[1]
+
+    const copy = await harness.run(multiImageChain(3, shown), { kind: 'all' }, 'project-b')
+    expect(harness.image).toHaveBeenCalledTimes(3)
+    expect(imageNode(copy).state).toBe('cached')
+    expect(batchAssets(copy)).toEqual([shown])
+
+    const again = await harness.run(multiImageChain(3, shown), { kind: 'all' }, 'project-b')
+    expect(harness.image).toHaveBeenCalledTimes(3)
+    expect(imageNode(again).state).toBe('cached')
+    expect(batchAssets(again)).toEqual([shown])
+  })
+
+  it('never lets one cached image fill two places of a batch', async () => {
+    const harness = multiImageHarness()
+    const first = await harness.run(multiImageChain(2))
+    const fingerprint = imageNode(first).attempts[0].fingerprint
+    harness.cache.set(canvasImageCandidateCacheKey(fingerprint, 2), structuredClone(harness.cache.get(fingerprint)!))
+
+    const record = await harness.run(multiImageChain(2, batchAssets(first)[0]))
+    expect(harness.image).toHaveBeenCalledTimes(3)
+    expect(imageNode(record).attempts.map((attempt) => attempt.state)).toEqual(['cached', 'succeeded'])
+    expect(new Set(batchAssets(record)).size).toBe(2)
+  })
+
+  it('bounds concurrent requests and stops sending the rest once cancelled', async () => {
+    const controller = new AbortController()
+    let active = 0
+    let maximum = 0
+    const gates: Array<() => void> = []
+    const image = vi.fn(async () => {
+      active += 1
+      maximum = Math.max(maximum, active)
+      await new Promise<void>((resolve) => gates.push(resolve))
+      active -= 1
+      return { assets: [asset()] }
+    })
+    const pending = executeCanvasRun(runOptions(multiImageChain(4), {
+      executors: executors({ image }),
+      maxConcurrency: 2,
+      signal: controller.signal,
+    }))
+    await vi.waitFor(() => expect(image).toHaveBeenCalledTimes(2))
+    expect(maximum).toBe(2)
+    controller.abort(new Error('stop pressed'))
+    const record = await pending
+    gates.splice(0).forEach((release) => release())
+
+    expect(image).toHaveBeenCalledTimes(2)
+    expect(imageNode(record).state).toBe('cancelled')
+    expect(imageNode(record).attempts.map((attempt) => attempt.state)).toEqual(['cancelled', 'cancelled'])
+    expect(record.nodes.find((item) => item.nodeId === 'video')?.state).toBe('cancelled')
+  })
+
+  it('counts every image toward the per-run request estimate', () => {
+    const workflow = multiImageChain(4)
+    expect(canvasRunRemoteGenerationUpperBound(workflow, { kind: 'all' })).toBe(5)
+    expect(canvasRunRemoteGenerationUpperBound(multiImageChain(undefined), { kind: 'all' })).toBe(2)
+  })
+})
+
 describe('canvasRunDescendants', () => {
   it('fails a node the desktop cannot run without reaching an executor when a caller skips the service check', async () => {
     // A kernel-only kind falls back to the video executor, so this second
     // line is what keeps a direct engine call from spending money.
     const image = vi.fn(async () => ({ assets: [asset()] }))
     const video = vi.fn(async () => ({ assets: [] }))
-    const reason = '「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求'
+    const reason = '「参考图角色」桌面版暂不支持，本次没有提交任何付费请求'
     const workflow = graph(
       [
         node('prompt', 'text'),

@@ -56,7 +56,7 @@ async function openUsageDetails(page) {
 test('Sub2API subscriptions show independent quotas and never offer unsupported writes or tasks', async () => {
   const page = await fixture('page=account&sub2apiReliability=1&subscriptionExternal=1')
   try {
-    // 用量账单里没有「异步任务」这一节。
+    // 用量账单里没有「生成任务」这一节。
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     await page.getByTestId('account-usage-section').waitFor()
     assert.equal(await page.getByTestId('account-tasks-section').count(), 0)
@@ -222,7 +222,7 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     const midnight = await page.evaluate(() => { const now = new Date(); return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime() / 1000) })
     assert.equal(week[0].startTimestamp, midnight)
     for (let index = 1; index < week.length; index++) assert.equal(week[index].startTimestamp, week[index - 1].endTimestamp + 1)
-    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $35.00 日均 $5.00 请求次数 77 处理 Token 14,000')
+    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $35.00 日均 $5.00 请求次数 77 处理字数 14,000')
     const bars = page.locator('.v2-usage-chart-col')
     assert.equal(await bars.count(), 7)
     assert.equal(await bars.last().innerText().then((text) => text.replace(/\s+/g, ' ')), '$5.00 今天')
@@ -301,10 +301,10 @@ test('usage details include request metadata, token counts, exact billed cost an
       assert.equal(await dialog.locator('.xm-dialog-body').evaluate((element) => element.scrollTop), 0)
       // 调用信息和 Token 数平铺成一张（v4），计费单独一节「计费明细」。
       const summary = await dialog.innerText()
-      assert.match(summary, /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅，倍率 1×[\s\S]*16 秒[\s\S]*4,778 ms[\s\S]*xhigh/)
+      assert.match(summary, /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅，倍率 1×[\s\S]*16 秒[\s\S]*4\.8 秒[\s\S]*xhigh/)
       assert.match(summary, /输入 Token\s*368,531[\s\S]*输出 Token\s*311[\s\S]*缓存读取\s*368,000/)
       const billing = dialog.locator('section[aria-label="计费明细"]')
-      for (const expected of ['动态计费', 'long', '368,531 Token × $25 / 百万', '311 Token × $75 / 百万', '$2/M', '1.0000x', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
+      for (const expected of ['动态计费', 'long', '368,531 Token × $25 / 百万', '311 Token × $75 / 百万', '$2/M', '1×', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
       const table = dialog.getByRole('table')
       assert.equal(await table.locator('tbody tr').count(), 2)
       assert.equal(await table.locator('.is-matched').count(), 1)
@@ -330,17 +330,17 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
       const text = await dialog.innerText()
       if (kind === 'legacy') {
         // 输入、输出的单价写在下面那两行里：「N Token × $3 / 百万」。
-        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5000x[\s\S]*输入\s*[\d,]+ Token × \$3 \/ 百万[\s\S]*输出\s*[\d,]+ Token × \$15 \/ 百万/)
+        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5×[\s\S]*输入\s*[\d,]+ Token × \$3 \/ 百万[\s\S]*输出\s*[\d,]+ Token × \$15 \/ 百万/)
         assert.match(text, /缓存写入（5 分钟）\s*1,000[\s\S]*缓存写入（1 小时）\s*500/)
         assert.equal(await dialog.getByRole('table').count(), 0)
       } else if (kind === 'missing' || kind === 'unknown-tier') {
         assert.doesNotMatch(await billing.innerText(), /\$25 \/ 百万|\$75 \/ 百万/)
         assert.match(await billing.innerText(), /\$0\.7726/)
-        assert.match(text, /请以服务端记录的总费用为准/)
+        assert.match(text, /这一条没给出单价，以上面的总费用为准。/)
         assert.equal(await dialog.locator('.is-matched').count(), 0)
-        if (kind === 'missing') assert.doesNotMatch(text, /未提供 ms/)
+        if (kind === 'missing') assert.doesNotMatch(text, /未提供 秒/)
       } else if (kind === 'sub2') {
-        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5000x[\s\S]*已触发[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*输入[\s\S]*\$0\.013275[\s\S]*输出[\s\S]*\$0\.023325[\s\S]*合计\s*\$0\.3863/)
+        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5×[\s\S]*已触发[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*输入[\s\S]*\$0\.013275[\s\S]*输出[\s\S]*\$0\.023325[\s\S]*合计\s*\$0\.3863/)
         assert.equal(await dialog.getByRole('table').count(), 0)
         assert.doesNotMatch(await billing.innerText(), /\/M|百万/)
       } else if (kind === 'sub2-missing') {
@@ -512,7 +512,7 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
     ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
-    ['fail=tasks', '用量账单', '异步任务暂时没有读到', '任务服务暂时不可用', '暂无异步任务'],
+    ['fail=tasks', '用量账单', '生成任务暂时没有读到', '任务服务暂时不可用', '暂无生成任务'],
     ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
     ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
   ]) {
@@ -520,8 +520,8 @@ test('account lists that could not be read say so with the reason and read again
     try {
       await page.getByRole('tab', { name: tab, exact: true }).click()
       const panel = page.getByRole('tabpanel').filter({ visible: true })
-      // 异步任务和调用明细同一处，两段切换（v4）。
-      if (query === 'fail=tasks') await panel.getByRole('button', { name: '异步任务', exact: true }).click()
+      // 生成任务和调用明细同一处，两段切换（v4）。
+      if (query === 'fail=tasks') await panel.getByRole('button', { name: '生成任务', exact: true }).click()
       await panel.getByText(title, { exact: true }).waitFor()
       await panel.getByText(reason, { exact: false }).waitFor()
       await panel.getByRole('button', { name: '重新加载', exact: true }).first().waitFor()
@@ -547,7 +547,7 @@ test('the usage and task filters fold behind one button on the toolbar and count
     assert.equal(await usage.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
     // 一共不到 10 条：「每页多少条」不出。
     assert.equal(await usage.getByLabel('每页日志数量', { exact: true }).count(), 0)
-    // 「展开筛选」和「调用明细 | 异步任务」在同一行。
+    // 「展开筛选」和「调用明细 | 生成任务」在同一行。
     const switchBox = await usage.getByRole('button', { name: '调用明细', exact: true }).boundingBox()
     const toggleBox = await toggle.boundingBox()
     assert.ok(switchBox && toggleBox && Math.abs(switchBox.y + switchBox.height / 2 - (toggleBox.y + toggleBox.height / 2)) <= 4)
@@ -559,11 +559,11 @@ test('the usage and task filters fold behind one button on the toolbar and count
     await usage.getByRole('button', { name: '重置筛选', exact: true }).waitFor()
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 1')
-    assert.match(await page.getByTestId('usage-stats').innerText(), /总花费[\s\S]*请求次数[\s\S]*处理 Token/)
-    // 切到异步任务：焦点跟到新露出来那组按钮上，筛选框各管各的，也收着。
-    await usage.getByRole('button', { name: '异步任务', exact: true }).click()
+    assert.match(await page.getByTestId('usage-stats').innerText(), /总花费[\s\S]*请求次数[\s\S]*处理字数/)
+    // 切到生成任务：焦点跟到新露出来那组按钮上，筛选框各管各的，也收着。
+    await usage.getByRole('button', { name: '生成任务', exact: true }).click()
     const tasks = page.getByTestId('account-tasks-section')
-    const taskSwitch = tasks.getByRole('button', { name: '异步任务', exact: true })
+    const taskSwitch = tasks.getByRole('button', { name: '生成任务', exact: true })
     await taskSwitch.waitFor()
     assert.equal(await usage.isHidden(), true)
     assert.equal(await taskSwitch.getAttribute('aria-pressed'), 'true')
@@ -725,7 +725,7 @@ test('the transfer dialog starts from what is transferable now, also after part 
     const transferable = panel.locator('.v2-acct-kv').filter({ hasText: '可转入余额' })
     const transfer = panel.getByTestId('account-invite-transfer')
     const dialog = page.getByRole('dialog', { name: /返利转入余额？$/ })
-    const amount = dialog.getByLabel('转入金额（USD）', { exact: true })
+    const amount = dialog.getByLabel('转入金额（美元）', { exact: true })
     await transfer.click()
     await dialog.waitFor()
     assert.equal(await amount.inputValue(), '1')
@@ -740,6 +740,33 @@ test('the transfer dialog starts from what is transferable now, also after part 
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 40 }])
   } finally {
     await page.close()
+  }
+})
+
+test('the empty transfer button tells a drained rebate from one never earned', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const transfer = panel.getByTestId('account-invite-transfer')
+    await transfer.click()
+    const dialog = page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true })
+    await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await transfer.getByText('已全部转入', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+  const fresh = await fixture('page=account&noRebate=1')
+  try {
+    await fresh.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const transfer = fresh.getByRole('tabpanel').filter({ visible: true }).getByTestId('account-invite-transfer')
+    // 从来没赚过时写「已全部转入」像是转过了（W44）。
+    await transfer.getByText('还没有返利', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await fresh.close()
   }
 })
 
@@ -1188,6 +1215,45 @@ test('refreshing key groups preserves the draft and requires a new choice when t
   } finally { await page.close() }
 })
 
+// 站点按 UTF-8 字节数限名称 50，一个汉字 3 个字节：中文名字打到 16 个字就打不进去，跟英文打满 50 个字母一样，
+// 不再等点了保存才被站点拒（ZW-1）。
+test('a Chinese key name stops at 16 characters, the 50 bytes the server counts, instead of being refused on save', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥管理', exact: true }).click()
+    await page.getByTestId('account-key-row-1').waitFor()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
+    await page.getByTestId('account-key-add').click()
+    const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
+    await keyGroupChoice(page, 'group-A').and(page.locator('[aria-pressed="true"]')).waitFor()
+    const name = dialog.getByLabel('名称', { exact: true })
+    await name.fill('星芒'.repeat(9))
+    assert.equal(await name.inputValue(), '星芒'.repeat(8))
+    await name.press('End')
+    await page.keyboard.type('abc')
+    assert.equal(await name.inputValue(), `${'星芒'.repeat(8)}ab`)
+    // A character typed into the middle of a full name is refused and the caret stays put.
+    await name.press('Home')
+    await name.press('ArrowRight')
+    await page.keyboard.type('x')
+    assert.equal(await name.inputValue(), `${'星芒'.repeat(8)}ab`)
+    await page.waitForFunction(() => document.activeElement instanceof HTMLInputElement && document.activeElement.selectionStart === 1)
+    // Pinyin still being composed does not count; the characters picked are cut to what fits.
+    await name.fill('星'.repeat(15))
+    await name.press('End')
+    const cdp = await page.context().newCDPSession(page)
+    await cdp.send('Input.imeSetComposition', { text: 'xingmang', selectionStart: 8, selectionEnd: 8 })
+    assert.equal(await name.inputValue(), `${'星'.repeat(15)}xingmang`)
+    await cdp.send('Input.insertText', { text: '星芒' })
+    await page.waitForFunction(() => document.activeElement instanceof HTMLInputElement && document.activeElement.value.length === 16)
+    assert.equal(await name.inputValue(), '星'.repeat(16))
+    await dialog.getByRole('button', { name: '创建密钥', exact: true }).click()
+    await page.getByTestId('account-key-created').waitFor()
+    const args = (await calls(page)).find((call) => call.name === 'create-key').args
+    assert.equal(args.name, '星'.repeat(16))
+  } finally { await page.close() }
+})
+
 test('pending or failed key group requests block saves and can be retried without clearing inputs', async () => {
   const page = await fixture('page=account')
   try {
@@ -1474,6 +1540,23 @@ test('adding a uvx connection without Python says so first and still lets it thr
     // npx 型的命令不该被这条提示牵连。
     await page.getByTestId('mcp-source').fill('npx')
     await notice.waitFor({ state: 'detached' })
+  } finally {
+    await page.close()
+  }
+})
+
+// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「找客服」。
+test('a uvx connection missing uv points to customer support with a button instead of a pip command', async () => {
+  const page = await fixture('page=mcp&help')
+  try {
+    await page.getByTestId('mcp-add').click()
+    await page.getByRole('button', { name: '本地程序', exact: true }).click()
+    await page.getByTestId('mcp-source').fill('uvx')
+    const notice = page.getByTestId('mcp-runtime-notice')
+    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。/).waitFor()
+    assert.equal(await notice.getByText(/pip install uv/).count(), 0)
+    await notice.getByTestId('mcp-runtime-support').click()
+    assert.equal((await callsNamed(page, 'open-help')).length, 1)
   } finally {
     await page.close()
   }
@@ -1922,10 +2005,37 @@ test('removing a connection says which tool it leaves and that the others keep t
     await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    await dialog.getByText('其他工具里的不受影响。以后可以在官方目录或精选里重新添加。', { exact: true }).waitFor()
+    await dialog.getByText('其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '移除', exact: true }).click()
     await page.getByText('已从 Claude Code 移除「测试扩展」', { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'test-extension', scope: 'user' })
+  } finally {
+    await page.close()
+  }
+})
+
+// D67：自己加的市场点「移除市场」先问一句，点「移除」才真的移除，点「取消」什么都不动。
+test('removing a custom plugin market asks first and only removes it after confirming', async () => {
+  const page = await fixture('page=plugins&customMarket')
+  try {
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    const markets = page.getByTestId('plugins-custom-markets')
+    const openRemoval = async () => {
+      await markets.getByRole('button', { name: '市场 my-market 的更多操作', exact: true }).click()
+      await page.getByRole('menuitem', { name: '移除市场', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '移除市场「my-market」？', exact: true })
+      await dialog.getByText('移除后，这个市场就不在列表里了，要用时得重新添加。', { exact: true }).waitFor()
+      return dialog
+    }
+    let dialog = await openRemoval()
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal((await callsNamed(page, 'remove-marketplace')).length, 0)
+    dialog = await openRemoval()
+    await dialog.getByRole('button', { name: '移除', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'remove-marketplace')).map((call) => call.args), ['my-market'])
+    await markets.waitFor({ state: 'detached' })
   } finally {
     await page.close()
   }
@@ -2195,7 +2305,7 @@ test('backup restore requires preview and confirmation before touching files', a
     assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
     await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
     await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
-    await preview.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
+    await preview.getByText('备份在这台电脑上，里面可能有密钥，别随便发给别人。', { exact: true }).waitFor()
     await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
@@ -2323,7 +2433,7 @@ test('feedback opens on the message form and copies what the customer wrote toge
       '最近一次失败：安装 Codex CLI · 网络超时',
     ].join('\n') + '\n\n固定的脱敏报告内容'])
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 关掉「附带诊断报告」只复制客户写的那几行。
+    // 关掉「附带反馈报告」只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
     await page.getByTestId('feedback-send').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
@@ -2526,13 +2636,12 @@ test('feedback shows the latest 100 entries first and 100 more on request', asyn
 test('feedback copy and export retain the preview snapshot id', async () => {
   const page = await fixture('page=feedback')
   try {
-    await page
-      .getByRole('button', { name: '预览反馈报告', exact: true })
-      .click()
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    await page.getByTestId('feedback-preview').click()
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
     const privacy = page.getByTestId('feedback-privacy')
-    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
     assert.ok((await privacy.boundingBox()).height <= 50)
     // 报告里已经有检查结果时不提醒先去检查。
     assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)
@@ -2563,9 +2672,8 @@ test('feedback copy and export retain the preview snapshot id', async () => {
 test('the feedback preview sends the customer to the check page when the report has no check result', async () => {
   const page = await fixture('page=feedback&selfCheckMissing')
   try {
-    await page
-      .getByRole('button', { name: '预览反馈报告', exact: true })
-      .click()
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    await page.getByTestId('feedback-preview').click()
     const hint = page.getByTestId('feedback-report-unchecked')
     await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
     await hint.getByText('点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
@@ -3241,7 +3349,7 @@ test('settings that wait on the system state say they were not read and read aga
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
     await contrast.getByText('暂未读到', { exact: true }).waitFor()
-    assert.equal(await page.getByText('此版本暂不支持', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('这台电脑上用不了', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
@@ -3359,10 +3467,25 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await page.evaluate(() => window.remoteHarness.pair('小明'))
     await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    // 解绑先问一句：点「取消」什么都不做，点「解绑」才解。
+    const confirm = card.getByTestId('settings-remote-feishu-confirm')
     await card.getByTestId('settings-remote-feishu-unbind').click()
+    await confirm.getByRole('heading', { name: '解绑？', exact: true }).waitFor()
+    await confirm.getByText('解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '取消', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
+    assert.equal(await card.getByTestId('settings-remote-feishu-unbind').count(), 1)
+    assert.equal((await calls(page)).some((call) => call.name === 'remote-unbind'), false)
+    await card.getByTestId('settings-remote-feishu-unbind').click()
+    await confirm.getByRole('button', { name: '解绑', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
     await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
-    // 退出登录：凭据清掉、遥控关掉，回到填应用的框。
+    // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
+    await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
+    await confirm.getByText('退出后要重新填机器人的凭据，才能再用手机遥控。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '退出登录', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
     await card.getByTestId('settings-remote-feishu-form').waitFor()
     assert.equal(await toggle.getAttribute('aria-checked'), 'false')
     const recorded = await calls(page)
@@ -3411,7 +3534,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
     await code.fill('2580')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
-    await dialog.getByText('微信登录好了。下一步点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
+    await dialog.getByText('微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
     await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
     await dialog.getByTestId('settings-remote-weixin-close').click()
     await dialog.waitFor({ state: 'detached' })
@@ -3697,7 +3820,7 @@ test('desktop notifications start on, the master switch gates test notifications
     await waitForToast(page, '已发送一条测试通知')
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
-      name: '崩溃自动上报',
+      name: '自动发送错误报告',
       exact: true,
     })
     assert.equal(await crashReports.getAttribute('aria-checked'), 'true')
@@ -3751,7 +3874,7 @@ test('a previously observed account task sends one scoped completion notificatio
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-    // 异步任务藏在「调用明细 | 异步任务」后面也照样读，做完了照样提醒。
+    // 生成任务藏在「调用明细 | 生成任务」后面也照样读，做完了照样提醒。
     const tasks = page.getByTestId('account-tasks-section')
     await tasks.getByText('处理中 50%', { exact: true }).waitFor({ state: 'attached' })
     assert.equal(await tasks.isHidden(), true)
@@ -3778,7 +3901,7 @@ test('an async task result is copied as a link instead of asking the host to ope
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-    await page.getByRole('button', { name: '异步任务', exact: true }).click()
+    await page.getByRole('button', { name: '生成任务', exact: true }).click()
     const tasks = page.getByTestId('account-tasks-section')
     await tasks.getByText('处理中 50%', { exact: true }).waitFor()
     await page.getByTestId('account-refresh').click()

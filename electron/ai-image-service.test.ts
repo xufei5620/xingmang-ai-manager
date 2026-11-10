@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 function response(body: unknown, status = 200): Response {
@@ -201,6 +202,47 @@ describe('AI image service', () => {
       requestId: 'ambiguous-post', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
     })).rejects.toThrow(/结果不明确.*请勿立即重复提交/)
     expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  // 深查 W-1：两条线路都没走通、请求根本没出这台电脑时，以前也说「结果不明确，请勿立即重复提交」。
+  // Electron's net.fetch rejects with a bare Error carrying only the net:: text (no code, no cause).
+  it.each([
+    ['the name does not resolve', 'net::ERR_NAME_NOT_RESOLVED', networkFailureMessages.dns],
+    ['the connection is refused', 'net::ERR_CONNECTION_REFUSED', networkFailureMessages.refused],
+    ['the computer is offline', 'net::ERR_INTERNET_DISCONNECTED', networkFailureMessages.offline],
+    ['a company proxy refuses the tunnel', 'net::ERR_TUNNEL_CONNECTION_FAILED', networkFailureMessages.proxy],
+    ['the proxy software is not running', 'net::ERR_PROXY_CONNECTION_FAILED', networkFailureMessages.proxy],
+  ])('names the network cause instead of an ambiguous charge when %s before the POST left', async (_label, failure, expected) => {
+    const fetchImpl = vi.fn(async () => { throw new Error(failure) }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const result = service.generate(4, {
+      requestId: `unsent-${failure}`, group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
+    })
+    await expect(result).rejects.toThrow(expected)
+    await expect(result).rejects.not.toThrow(/不明确|重复提交|扣费/)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('names the network cause for an image edit that never left either', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.edit(4, {
+      requestId: 'unsent-edit', group: '生图分组', model: 'gpt-image-2', prompt: '改一下', sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7,
+    })).rejects.toThrow(networkFailureMessages.dns)
+  })
+
+  it.each([
+    ['the connection is reset after it was made', new Error('net::ERR_CONNECTION_RESET')],
+    ['the TLS handshake is cut mid-way', new Error('net::ERR_SSL_PROTOCOL_ERROR')],
+    ['the request times out', new Error('net::ERR_TIMED_OUT')],
+    ['a caller deadline passes', new DOMException('The operation was aborted due to timeout', 'TimeoutError')],
+    ['the network changes mid-request', new Error('net::ERR_NETWORK_CHANGED')],
+  ])('still warns against resubmitting when %s, because the POST may have been charged', async (label, failure) => {
+    const fetchImpl = vi.fn(async () => { throw failure }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, {
+      requestId: `maybe-sent-${label}`, group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
+    })).rejects.toThrow(/结果不明确.*请勿立即重复提交/)
   })
 
   it('does not let the request timeout interrupt downloading an image that was already generated', async () => {
@@ -649,6 +691,23 @@ describe('canvas image service after a stop', () => {
     // The run is already recorded as stopped; nothing of the late result may report into it.
     expect(stages).toEqual([])
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('counts a paid picture still coming in after a stop as pending, so an update restart asks first (D10)', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, onFinishedAfterStop } = canvasSetup(fetchImpl)
+    expect(service.hasPendingWork()).toBe(false)
+    const pending = service.generate(4, {
+      requestId: 'canvas-run:pending', group: '生图分组', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    expect(service.hasPendingWork()).toBe(true)
+    service.cancel(4, 'canvas-run:pending', 7)
+    await expect(pending).rejects.toThrow('已停止等待')
+    expect(service.hasPendingWork()).toBe(true)
+    requests[0].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalled())
+    await vi.waitFor(() => expect(service.hasPendingWork()).toBe(false))
   })
 
   it('still cancels requests that have not gone out, so nothing is paid for them', async () => {

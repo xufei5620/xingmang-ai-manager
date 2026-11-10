@@ -72,16 +72,18 @@
 ### 画布窗口与宿主桥
 - `canvas-window.ts` — **画布窗口的总控**：独立 `BrowserWindow`，加固与主窗口同级（`sandbox` / `contextIsolation` / `webviewTag:false` / `navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`（I12）；用自己的 `registerCanvasHandler` + `assertTrustedCanvasSender` 注册全部 `canvas-host:*` 通道，只放行画布窗口自身（I4 的登记例外）；文件读写只走原生对话框，项目工作文件夹也由主进程弹框选；Linux 上打开前先确认渲染进程沙箱真的生效（`linux-renderer-sandbox.ts`），崩溃后自动恢复
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
+- `canvas-project-file-launch.ts` — 双击画布项目文件（`.xingcanvas`，D92）时系统交来的路径：认启动参数、`second-instance` 的 argv（Linux 的 `file:` 网址）和 Mac 的 `open-file`，只收绝对路径、只留最近一个、十分钟作废；重开软件时从参数里去掉它；打不开时的报错框字。路径由系统直接给主进程，不经渲染层，不是 I15 的路径例外；真正打开在 `canvas-window.ts` 的 `openProjectFile`（照拖放那套严查后导入成新项目），由 `main.ts` 接线
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
 - `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）；生视频的 `parseVideoGenerateInput` 同理，另给主窗口的 `video:generate`（视频剪辑页）用，只是不收参考视频、参考音频
+- `canvas-account-summary.ts` — 画布顶上余额条的回答（`canvas-host:get-account-summary`，不收参数）：只给账号类型、打码的账号名（邮箱只留第一个字）、余额、读到的时间，不给邮箱、用户编号、密钥；用托盘和余额提醒同一份余额，过了 15 秒才替画布读一次站点，读的时候一次只读一次，读回来换了账号就不要（I15，画布完善第 2b 条）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度；主窗口的 `video:generate` 也套同一份（`ipc/handlers/ai-video.ts`）
 
 ### 运行引擎（都在主进程）
 - `canvas-run-contract.ts` — 画布运行的数据契约：节点种类（含漫剧节点）、运行范围、尝试与候选产物、事件时间线、运行记录
 - `canvas-run-engine.ts` — DAG 执行引擎 `executeCanvasRun`：按依赖调度、按节点指纹命中缓存、记时间线；挑图、路由、输出和漫剧角色/场景/道具节点**不进缓存**（它们读用户当前绑定的图，换图后命中缓存会一直交出旧图，#541），也刻意不把绑定的图加进指纹，免得升级后全部下游缓存失效重复扣费；生图、生视频节点先认画布上正在用的那张图（`adoptedAssetId`）：运行记录能证明它是同样输入生成的就直接交出它，复制出来的项目按原项目编号重算指纹去比，所以切回旧候选、在副本里运行都不会重新付费（O04、O06），现有指纹一个不改
 - `canvas-run-service.ts` — 运行的启动、取消与发布：同账号同窗口同项目的运行串行、节点加锁，限制并行运行数与单次运行的远程生成上限（防一次点击扣出大额费用），把事件推给画布窗口；推送失败不影响已落盘的运行，也不会重放付费节点
-- `canvas-run-store.ts` — 按账号存运行记录、节点结果缓存与产物来源清单，有保留上限；账号初始化时对账素材（`reconcileAssets`）；`resolveAssetOrigin` 在运行记录里找交出过某张图的那次尝试，给引擎核对「画布上那张图」能不能复用，只在核对通过后才读图
+- `canvas-run-store.ts` — 按账号存运行记录、节点结果缓存与产物来源清单，有保留上限；解析好的状态留在内存里，进度只改内存、最迟 2 秒合并写盘（R-1），文件被别人改过就以文件为准；账号初始化时对账素材（`reconcileAssets`）；`resolveAssetOrigin` 在运行记录里找交出过某张图的那次尝试，给引擎核对「画布上那张图」能不能复用，只在核对通过后才读图
 - `canvas-node-executors.ts` — 把运行引擎的 text / image / video 节点接到主进程的文本补全、图片服务、视频服务上；漫剧解析节点用 `drama-parse-prompt.ts` 发提示、`drama-parse.ts` 校验结果
 - `canvas-fingerprint.ts` — 节点指纹与图修订号：规范化 JSON 后算 sha256，指纹包含模型能力与上游交出的文字/产物，决定能不能命中缓存
 - `canvas-asset-references.ts` — 查一个素材被哪些运行用作输入或候选，删除素材前给用户看引用

@@ -1,5 +1,5 @@
 // 装和更新命令行工具（Claude Code、Codex、Grok）的那一整段（#1070 第 2 步，从 system-service.ts 的 createSystemService
-// 原样搬来）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、下载卡住就换源、核对国内镜像下的包和 npm 官方源一致、
+// 原样搬来）：找 npm（Windows 上没有就先装 Node.js，Mac / Linux 上代装的旧了先换新）、按网络挑源、下载卡住就换源、核对国内镜像下的包和 npm 官方源一致、
 // 托管目录整体替换、Grok 的原生通道和 Mac / Linux 上的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理
 // 下了一半的东西。
 //
@@ -9,6 +9,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createAwakeClock } from './awake-deadline'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, type ProviderId } from './catalog'
@@ -328,7 +329,9 @@ export interface NpmDownloadStallWatchOptions {
  * change counts, a shrink included, since npm discarding a broken partial
  * download before its own retry is activity rather than a hang. A measurement
  * that fails counts as activity too: a download is never ended on evidence the
- * watch could not collect.
+ * watch could not collect. The stall window counts only awake time
+ * (awake-deadline.ts): after a sleep it starts over, because npm's connections
+ * died with the sleep and the network is still coming back.
  */
 export function createNpmDownloadStallWatch(
   measureBytes: () => Promise<number>,
@@ -336,19 +339,30 @@ export function createNpmDownloadStallWatch(
 ): NpmDownloadStallWatch {
   const checkIntervalMs = options.checkIntervalMs ?? npmDownloadProgressCheckMs
   const stallTimeoutMs = options.stallTimeoutMs ?? npmDownloadStallTimeoutMs
-  const now = options.now ?? (() => performance.now())
+  const clock = createAwakeClock({ now: options.now, intervalMs: checkIntervalMs })
   const controller = new AbortController()
   let lastBytes: number | null = null
-  let lastChangeAt = now()
+  let lastChangeAt = 0
   let measuring = false
   let stopped = false
   let stalled = false
-  const timer = setInterval(() => { void check() }, checkIntervalMs)
+  const timer = setInterval(() => {
+    // 量着的那一拍也看一眼表：一次量得久，中间的拍子照样在走，睡眠才认得出来。
+    observe()
+    void check()
+  }, checkIntervalMs)
 
   function stop(): void {
     if (stopped) return
     stopped = true
     clearInterval(timer)
+  }
+
+  /** Awake milliseconds so far; a sleep since the last look starts the stall window over. */
+  function observe(): number {
+    const { awakeMs, woke } = clock.read()
+    if (woke) lastChangeAt = awakeMs
+    return awakeMs
   }
 
   async function check(): Promise<void> {
@@ -364,7 +378,8 @@ export function createNpmDownloadStallWatch(
       measuring = false
     }
     if (stopped) return
-    const checkedAt = now()
+    // 量到一半睡着、醒来这次先量完的话，也在这里认出那段睡眠。
+    const checkedAt = observe()
     if (bytes === null || bytes !== lastBytes) {
       if (bytes !== null) lastBytes = bytes
       lastChangeAt = checkedAt
@@ -881,6 +896,11 @@ export interface CliInstallServiceDependencies {
   ) => Promise<GitRuntimeInstallResult>
   /** 装完 Codex 时调：换上的新版读不进随包的型号名单，就把写进去的那份收回。 */
   takeBackUnreadableCodexModelCatalog: (trigger: 'cli-installed') => Promise<void>
+  /**
+   * 找 npm 之前调：Mac、Linux 上代装的 Node.js 比钉的版本旧就顺手换新（D86，runtime-install-service.ts）。
+   * 不往外抛，没换成照旧用原来那份；取消要看 signal。
+   */
+  refreshOutdatedManagedNodeRuntime: (signal?: AbortSignal) => Promise<void>
 }
 
 export function createCliInstallService(context: ServiceContext, dependencies: CliInstallServiceDependencies) {
@@ -900,6 +920,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     invalidateCliUpdateCache,
     installGitRuntime,
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime,
   } = dependencies
 
   function sendInstallProgress(
@@ -973,6 +994,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       await installNodeRuntimeLts({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
+        ...(serviceOptions.windowsProcessElevated ? { processElevated: true } : {}),
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (progress.message) sendInstallProgress(target, provider, 'output', progress.message)
@@ -1202,6 +1224,10 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
         }
       }
 
+      // 代装的那份 Node.js 旧了，先换成钉的那版再找 npm（D86），这次装工具就用上新的。Windows 上什么都不做。
+      // 换的时候没人在用：工具的安装、卸载、打开都排在同一个队列里，这会儿只有这一个任务在跑。
+      await refreshOutdatedManagedNodeRuntime(cancellation?.signal)
+      cancellation?.throwIfCancelled()
       // Mac 上客户自己那份 Node.js 太旧时用代下的那份装：npm 用它自带的，跑 npm 的环境也把它
       // 排最前，npm 和工具的安装脚本都靠 `#!/usr/bin/env node` 找 node（第三十四批 A）。
       const nodeDirectories = await preferredNodeDirectories()
@@ -1392,6 +1418,9 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           ...(abortSignal ? { signal: abortSignal } : {}),
           cwd,
           timeoutMs,
+          // 解析、下载、装到本机三步的时限都只算醒着的时间：下到 25 分钟合盖 10 分钟，醒来不该当场
+          // 按满 30 分钟掐掉（睡眠深查 G1）。
+          timeoutExcludesSleep: true,
           maxOutputBytes: 8 * 1024 * 1024,
           onOutput: ({ text }) => {
             const message = text.trim()

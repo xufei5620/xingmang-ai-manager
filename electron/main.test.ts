@@ -209,7 +209,7 @@ describe('main process quit cleanup', () => {
       ],
       'acceleration-notices': ['accelerationExpiry?.dispose()', 'codexDesktopAcceleration.dispose()', 'claudeDesktopAcceleration.dispose()', 'accelerationInterruption?.dispose()'],
       acceleration: ["void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))"],
-      'acceleration-host': ['void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)'],
+      'acceleration-host': ['accelerationHosts.dispose()'],
       'runtime-log-hooks': [
         "runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')",
         "process.off('uncaughtExceptionMonitor', onUncaughtException)",
@@ -331,11 +331,13 @@ describe('main process quit cleanup', () => {
     expect(names.indexOf('acceleration')).toBeLessThan(names.indexOf('acceleration-host'))
     const bodies = Object.fromEntries(steps.map((step) => [step.name, step.body]))
     expect(bodies.acceleration).toContain("void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))")
-    // 退出时加速文件还没读完的，读完建出来的宿主也要放掉，所以等的是 createAccelerationHost 给的那个 Promise。
-    expect(bodies['acceleration-host']).toContain('void accelerationHost.then((host) => host.developmentAcceleration?.dispose()).catch(() => undefined)')
+    // 退出时加速文件还没读完的，读完建出来的宿主也要放掉；一次都没用到的不为它去读文件。这两样都归
+    // createAccelerationHostLoader 的 dispose（bootstrap/acceleration.test.ts 钉住），这里只许叫它一次。
+    expect(bodies['acceleration-host']).toContain('accelerationHosts.dispose()')
     const all = steps.map((step) => step.body).join('\n')
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
-    expect(all.match(/developmentAcceleration\?\.dispose\(\)/g)).toHaveLength(1)
+    expect(all.match(/accelerationHosts\.dispose\(\)/g)).toHaveLength(1)
+    expect(all).not.toMatch(/developmentAcceleration\?\.dispose\(\)/)
   })
 })
 
@@ -347,6 +349,26 @@ describe('main process application protocol', () => {
     expect(body).toContain("registerFileProtocol('xingmang'")
     expect(body).toContain('callback({ path: target, headers: applicationSecurityResponseHeaders() })')
     expect(body).not.toMatch(/callback\(\{ path: target \}\)/)
+  })
+})
+
+describe('main process external links', () => {
+  it('lets both ways out of a failed Claude Desktop install through the external link allowlist', () => {
+    // 外链白名单是全等匹配（I12）：漏了这一条，错误框里的「下载离线安装包」点了只会报不允许打开（D64）。
+    const { source } = mainSource()
+    const entries: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'nonSiteExternalUrlAllowlist' && node.initializer) {
+        const list = ts.isAsExpression(node.initializer) ? node.initializer.expression : node.initializer
+        if (ts.isArrayLiteralExpression(list)) entries.push(...list.elements.map((element) => element.getText(source)))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
+    // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
+    expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
+    expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
   })
 })
 
@@ -383,7 +405,7 @@ describe('main process startup order', () => {
       'settingsStore.normalize',
       'installXingmangAiSkillFiles',
       'accounts.restoreActive',
-      'createAccelerationHost',
+      'createAccelerationHostLoader',
       'createAccelerationServices',
       'createAccelerationPower',
       'registerIpcHandlers',
@@ -399,9 +421,10 @@ describe('main process startup order', () => {
     expect([...started].sort((a, b) => a.at - b.at).map(({ callee }) => callee)).toEqual(order)
   })
 
-  it('builds the window without waiting for the bundled acceleration files to be checked', () => {
-    // 安装包里的加速内核三十多兆，慢盘、杀毒软件逐字节扫的电脑上校验要一两秒，绝大多数客户又不用加速
-    // （0.2.22 性能体检第 4 条）。启动回调里不许 await 它：宿主由 createAccelerationHost 在读完那一刻自己建。
+  it('neither reads nor waits for the bundled acceleration files at startup', () => {
+    // 安装包里的加速内核三十多兆，慢盘、杀毒软件逐字节扫的电脑上校验要一两秒，绝大多数客户又不用加速。
+    // 0.2.22 性能体检第 4 条起建窗口不等它；网络加速下线以后（0.2.24 启动速度深查 S-3）开机连读都不读：
+    // 启动回调只把「怎么读」交给 createAccelerationHostLoader，它看过恢复记录、或者真用到加速时才调。
     const { source } = mainSource()
     const callback = startupCallback(source)
     const awaited: string[] = []
@@ -410,15 +433,19 @@ describe('main process startup order', () => {
       ts.forEachChild(node, visit)
     }
     visit(callback)
-    expect(awaited.filter((expression) => /accelerationConfigRead|accelerationHost/.test(expression))).toEqual([])
-    const calls = directCallPositions(source, callback, ['createAccelerationHost'])
+    expect(awaited.filter((expression) => /ccelerationConfig|accelerationHost|AccelerationBundle/.test(expression))).toEqual([])
+    const reads = directCallPositions(source, callback, [
+      'readAccelerationConfig', 'readBundledAccelerationConfig', 'readAccelerationDevelopmentConfig', 'readAccelerationBundleStatus',
+    ])
+    for (const { callee, positions } of reads) expect({ callee, calls: positions.length }).toEqual({ callee, calls: 0 })
+    const calls = directCallPositions(source, callback, ['createAccelerationHostLoader'])
     expect(calls[0].positions).toHaveLength(1)
     const host = calls[0].positions[0]
     function hostCall(node: ts.Node): ts.CallExpression | undefined {
       if (ts.isCallExpression(node) && node.getStart(source) === host) return node
       return ts.forEachChild(node, hostCall)
     }
-    expect(hostCall(callback)?.arguments[0]?.getText(source)).toMatch(/^\{\s*read: accelerationConfigRead,/)
+    expect(hostCall(callback)?.arguments[0]?.getText(source)).toMatch(/^\{\s*read: readAccelerationConfig,/)
   })
 
   it('builds the routes before it starts checking them, and follows tool routes once a listener is attached', () => {
@@ -470,12 +497,13 @@ describe('main process startup order', () => {
 
   it('picks the update feed before it builds the updater, and reads service status once the updater exists', () => {
     // 包里那份还是直连那份更新目录开机就定（签名校验也在这时装上）；更新服务要等版本记录读好才建，
-    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。
+    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。记在本地的远程开关在第一次读之前就摆上（D83），
+    // 开机头几秒点的那一下也照它拦。
     const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'updates.ts'))
     const feed = moduleFunction(source, 'createUpdateFeed')
     const orders: Array<[ts.FunctionDeclaration, string[]]> = [
       [feed, ['installStrictUpdateCodeSignatureVerifier', 'locateDirectUpdateFeed', 'useUpdateFeedLine']],
-      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
+      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'updaterService.restoreServiceSwitches', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
     ]
     for (const [owner, order] of orders) {
       const calls = directCallPositions(source, owner, order)

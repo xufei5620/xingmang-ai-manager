@@ -1,16 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { classifyOperationError, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
+import { classifyOperationError, exportFailureSentence, operationFallbackActions, operationLogSection, operationTargetOf, presentOperationError, presentOperationFailure, type OperationErrorKey, type OperationTarget } from './operation-error'
 import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertificateMessages } from '../../electron/network-failure'
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
+import { configWriteBlockerMessage } from '../../electron/config-write-blocker'
 import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
   macosDesktopDiskFullMessage, macosDesktopDownloadFailedMessage, macosDesktopInstallErrorName, macosDesktopInstallFailedMessage,
   macosDesktopNameTakenMessage, macosDesktopNotOfficialMessage, macosDesktopSystemTooOldMessage, macosLegacyChatgptMessage,
 } from '../../electron/macos-desktop-install-failure'
-import { operationFailureFrom } from './business-common'
+import { failureWithDetail, operationFailureFrom } from './business-common'
 import { accelerationOffMessage, toolInstallOffMessage, toolLaunchOffMessage, videoStudioOffMessage } from '../../electron/remote-features'
 
 /**
@@ -68,9 +69,15 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
   configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
+  // 主进程查出没权限是哪一种时那半句（config-files-context.ts 的 explainConfigWriteFailure，D15），经 account-source-switch 包一层。
+  configAdminOwned: { sample: `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, target: 'config' },
+  configReadOnly: { sample: `Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`, target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
+  // 同一句 EPERM / ENOSPC，导出存的是客户在保存框里选的位置时（D16）。
+  exportPermission: { sample: "EPERM: operation not permitted, open '本机路径'", target: 'export' },
+  exportDiskFull: { sample: 'ENOSPC: no space left on device, write', target: 'export' },
   certDate: { sample: '账号接口请求失败：net::ERR_CERT_DATE_INVALID' },
   tlsIntercepted: { sample: 'Codex CLI 安装失败：npm 官方源：request to https://registry.npmjs.org failed, reason: self signed certificate in certificate chain' },
   // 主进程（system-scan-service.ts 的 withToolCertificateHint）把说明接在 npm 原文后面。
@@ -195,7 +202,7 @@ describe('renderer-v2 operation error classification', () => {
       '原密码错误，请重新输入',
       '该账号已被封禁，请联系客服',
       '用户名或密码错误',
-      '当前账号未设置密码，请先通过“找回密码”设置密码',
+      '这个账号还没设过密码，先点「找回密码」设一个',
     ]) expect(presentOperationError(resolved)).toBeNull()
   })
 
@@ -235,6 +242,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')).toBe('timeout')
   })
 
+  it('tells an offline user to check the network and retry instead of promising the tools still work', () => {
+    // 中转和账号是同一个站点：本机连不上网时装好的工具一样连不上中转，「照常能用」会把客户支去开一个也报错的工具。
+    const hint = presentOperationError('账号接口请求失败：getaddrinfo ENOTFOUND xm.solov.cc')
+    expect(hint?.title).toBe('网络连不上')
+    expect(hint?.body).toBe('已装好的工具不受影响。检查网络后再点「重试」。')
+    expect(hint?.actions).toContainEqual({ id: 'retry', label: '重试' })
+  })
+
   it('points a full disk at the config file, not the install folder, when a config write fails', () => {
     const hint = presentOperationError("改用当前账号没有完成：ENOSPC: no space left on device, write '本机路径'", 'config')
     expect(hint).toMatchObject({
@@ -250,8 +265,8 @@ describe('renderer-v2 operation error classification', () => {
     const message = `Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，${officialRegistryUnreachableMarker}（错误码 ETIMEDOUT）。到「设置 › 网络加速」开启加速后再试。`
     expect(presentOperationError(message)).toMatchObject({
       key: 'officialRegistryUnreachable',
-      title: '连不上 npm 官方源',
-      body: '这一步只能走官方源，换国内镜像也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
+      title: '连不上工具的官方下载站',
+      body: '这一步只能从官方下载站拿，换国内下载站也绕不过去。已安装的工具不受影响。照下面这句话做，再点「重试」。',
       actions: [{ id: 'retry', label: '重试' }, { id: 'network', label: '检查网络' }],
     })
   })
@@ -312,12 +327,14 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError("Access to the path '本机路径 is denied.", 'config')).toBe('configPermission')
   })
 
-  it('sends a permission failure to the directory and the log, never to an elevated retry', () => {
+  it('sends a permission failure to retry, the directory and support, never to an elevated retry', () => {
     // A2 余项：这一类以前只有「以管理员身份重试」这一颗按钮，没有提权通道
-    // 接得住它，于是整条落回「找客服」。现在两颗按钮都是这个应用真做得到的事。
+    // 接得住它，于是整条落回「找客服」。现在几颗按钮都是这个应用真做得到的事；
+    // 「找客服」是 D14 补上的：这一类客户自己最难处理。
     const hint = presentOperationError('安装失败：EACCES permission denied')
     expect(hint?.title).toBe('写不进安装目录')
-    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'log', label: '查看日志' }])
+    expect(hint?.body).toBe('这个文件夹不让星芒写东西，常见是杀毒软件拦了。点「复制路径」看是哪个文件夹，把它加进杀毒软件的信任名单后再点「重试」；还不行点「找客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '找客服' }])
   })
 
   it('says the config file could not be written when the caller writes one, never the install directory', () => {
@@ -338,6 +355,65 @@ describe('renderer-v2 operation error classification', () => {
     expect(classifyOperationError('写入配置失败：ENOSPC', 'config')).toBe('configDiskFull')
     // 日志照旧落「反馈与客服」的运行日志：那里记得全。
     expect(operationLogSection({ message: raw, tool: 'claude' })).toBe('log')
+  })
+
+  it('tells an export that could not be saved to pick another folder, never the install directory', () => {
+    // D16：导出到开了「受控文件夹访问」的桌面、写保护的 U 盘时，以前标题是「写不进安装目录」；
+    // 盘满时正文讲安装用的临时文件夹。导出存的是客户自己选的位置。
+    const denied = "EPERM: operation not permitted, open '本机路径'"
+    const permission = presentOperationError(denied, 'export')
+    expect(permission?.key).toBe('exportPermission')
+    // 红条上标题和正文用「，」连起来，就是 yoyo 批的那一句。
+    expect(`${permission?.title}，${permission?.body}`).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+    const full = presentOperationError('ENOSPC: no space left on device, write', 'export')
+    expect(full?.key).toBe('exportDiskFull')
+    expect(`${full?.title}，${full?.body}`).toBe('这块盘满了，清出一些空间，或者换一块盘再导出。')
+    // 导出失败上屏的是兜底句、原话在 detail 里（useOperation → ResultNotice），照样认得出。
+    expect(presentOperationFailure({ message: '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。', detail: 'EACCES: permission denied', target: 'export' })?.key).toBe('exportPermission')
+    // 不说是导出时照旧（装工具、更新工具）。
+    expect(presentOperationError(denied)?.title).toBe('写不进安装目录')
+    expect(presentOperationError('ENOSPC: no space left on device, write')?.title).toBe('磁盘空间不够')
+    // 文件被占用、搬过的文件夹不归这两句。
+    expect(classifyOperationError('EBUSY: resource busy or locked', 'export')).toBe('toolRunning')
+    expect(classifyOperationError('聊天对话导出文件不能经过符号链接或目录联接', 'export')).toBe('folderRelocated')
+  })
+
+  it('gives the chat page the same two export sentences and nothing for other failures', () => {
+    // 聊天页红条只有一行字，拿整句；认不出的交回 null，那边留「这段对话没有导出成功，可以重试」。
+    expect(exportFailureSentence({ message: '操作没有成功', detail: "EPERM: operation not permitted, open '本机路径'" })).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+    expect(exportFailureSentence({ message: '操作没有成功', detail: 'ENOSPC: no space left on device, write' })).toBe('这块盘满了，清出一些空间，或者换一块盘再导出。')
+    expect(exportFailureSentence({ message: '聊天对话导出文件写入被系统占用，请稍后重试' })).toBeNull()
+    expect(exportFailureSentence({ message: '操作没有成功', detail: 'EBUSY: resource busy or locked' })).toBeNull()
+    expect(exportFailureSentence({ message: '' })).toBeNull()
+    // 经 IPC 过来的原话（带通道名、本机路径）走 failureWithDetail 以后照样认得出。
+    const viaIpc = new Error("Error invoking remote method 'chat-history:export-text': Error: EPERM: operation not permitted, open 'C:\\Users\\小王\\Desktop\\.周报.txt.3f401a29-0000-4000-8000-000000000000.tmp'")
+    expect(exportFailureSentence(failureWithDetail(viaIpc))).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+  })
+
+  it('says which of the two known config write refusals it is instead of blaming security software (D15)', () => {
+    // 权限和写失败.md PW-3、PW-4：设置文件夹归管理员、文件被设成只读，重试多少次都一样，以前也叫人关窗口重试。
+    const adminOwned = `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
+    const readOnly = `Codex CLI 切回官方账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`
+    const actions = [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '找客服' }]
+    expect(presentOperationError(adminOwned, 'config')).toEqual({
+      key: 'configAdminOwned',
+      title: '写不进配置文件',
+      body: '这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。',
+      actions,
+    })
+    expect(presentOperationError(readOnly, 'config')).toEqual({
+      key: 'configReadOnly',
+      title: '写不进配置文件',
+      body: '这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。',
+      actions,
+    })
+    // 主进程只在写配置时这么说：调用方没说写的是配置（装工具时顺手写密钥）也照样认，不说成安装目录。
+    expect(classifyOperationError(adminOwned)).toBe('configAdminOwned')
+    expect(classifyOperationError(configWriteBlockerMessage('readOnly', 'EPERM'))).toBe('configReadOnly')
+    expect(presentOperationFailure({ message: '重新写入密钥没有完成', detail: configWriteBlockerMessage('adminOwned', 'EACCES'), target: 'config' })?.key).toBe('configAdminOwned')
+    // 没查出是哪一种的照旧是原来那句；自动恢复也没做成的照旧先叫人去备份迁移。
+    expect(classifyOperationError("重新写入密钥 没有完成：EACCES: permission denied, open '本机路径'", 'config')).toBe('configPermission')
+    expect(classifyOperationError(`改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。`, 'config')).toBe('switchUndoFailed')
   })
 
   it('treats exactly the home actions that rewrite a tool config as config writes', () => {
@@ -429,7 +505,7 @@ describe('renderer-v2 operation error classification', () => {
     }
   })
 
-  it('gives every failed Windows Claude Desktop install a retry, the download page, the log and support', () => {
+  it('gives every failed Windows Claude Desktop install a retry, the offline packages first, the Claude site second, the log and support', () => {
     // 这几句里有「连不上」「Windows 拒绝了这次安装」，不能被 timeout、permission 抢走。
     for (const reason of Object.keys(claudeDesktopInstallFailureReasons) as ClaudeDesktopInstallFailureReason[]) {
       for (const wingetTried of [true, false]) {
@@ -438,10 +514,13 @@ describe('renderer-v2 operation error classification', () => {
         expect([message, hint?.key]).toEqual([message, 'claudeDesktopInstallFailed'])
         expect(hint?.actions).toEqual([
           { id: 'retry', label: '重试' },
-          { id: 'claudeDesktopDownload', label: '去官网下载' },
+          { id: 'claudeDesktopOfflinePackages', label: '下载离线安装包' },
+          { id: 'claudeDesktopDownload', label: '去 Claude 官网' },
           { id: 'log', label: '查看日志' },
           { id: 'support', label: '找客服' },
         ])
+        // 正文点名的那颗按钮得真的在（D64 以前点名的是「去官网下载」）。
+        expect(hint?.body).toBe('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
         // 原话（签名、HTTP 状态码）只记在运行日志里。
         expect(operationLogSection({ message, tool: 'claudeDesktop' })).toBe('log')
       }
@@ -575,9 +654,10 @@ describe('renderer-v2 operation error classification', () => {
     }
   })
 
-  it('offers 复制路径 on the antivirus block, where the catalog has asked for it all along', () => {
+  it('offers retry, 复制路径 and support on the antivirus block', () => {
     const hint = presentOperationError('Grok CLI 安装失败：安装文件已被隔离，请检查杀毒软件的隔离记录')
-    expect(hint?.actions).toEqual([{ id: 'copyPath', label: '复制路径' }, { id: 'retry', label: '重试' }])
+    expect(hint?.body).toBe('杀毒软件把安装拦下了。打开杀毒软件，在「隔离区」或「恢复区」里把星芒放出来，再点「重试」；不会弄就点「找客服」。')
+    expect(hint?.actions).toEqual([{ id: 'retry', label: '重试' }, { id: 'copyPath', label: '复制路径' }, { id: 'support', label: '找客服' }])
   })
 
   it('accounts for every catalog entry, either with a real message or a reason it cannot be reached', () => {

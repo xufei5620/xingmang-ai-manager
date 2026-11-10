@@ -5,10 +5,13 @@ import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, ChoiceMenu, Confirm, Dialog, Input, Logo, Menu, Pill, SearchInput, Segment, Textarea, useToast } from '../../ui'
 import { useBackgroundWork } from '../../background-work'
+import { useChatImageWork } from '../../chat-image-work'
 import { useLatestRequest } from '../../latest-request'
+import { failureWithDetail } from '../../business-common'
+import { exportFailureSentence } from '../../operation-error'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace } from './state'
+import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, isGeneratingImage, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ParametersDialog } from './ParametersDialog'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
@@ -18,7 +21,7 @@ import './chat.css'
 
 const remarkPlugins = [remarkGfm]
 // 点了只填进输入框，不直接发：发一句就要花钱，得让人看一眼再发。
-const chatExamples = ['用大白话解释什么是 API Key', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
+const chatExamples = ['用大白话解释什么是 API 密钥', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
 const qualityNames: Record<ChatSettings['quality'], string> = { low: '低', medium: '中', high: '高', auto: '自动' }
 
 export interface ChatPageProps {
@@ -126,8 +129,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const imagesBlockedMessage = textMode ? noImageModelMessage : noImageEditModelMessage
   const attachTitle = !seesImages ? textMode ? '当前模型看不了图片，换一个能看图的模型才能发图' : '这个模型不能照着图片改，换一个能改图的模型才能加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '加图片（也可以直接粘贴截图）' : '加参考图（也可以直接粘贴截图）'
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const hasImage = [...event.clipboardData.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    if (!hasImage) return
+    if (!shouldPasteScreenshot(event.clipboardData)) return
     // 截图只在主进程从剪贴板里读，这里只负责拦下默认粘贴。
     event.preventDefault()
     if (pending) return
@@ -181,7 +183,10 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     try {
       const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
       if (ticket() && result) chat.setNotice('这段对话已存成文本文件')
-    } catch { if (ticket()) chat.setError('这段对话没有导出成功，可以重试') }
+    } catch (cause) {
+      // 没权限、盘满了跟设置页导出同一套说法（D16）；认不出原因的照旧说可以重试。
+      if (ticket()) chat.setError(exportFailureSentence(failureWithDetail(cause)) ?? '这段对话没有导出成功，可以重试')
+    }
   }
   const stop = async () => { const ticket = owner.capture(); setStopping(true); await chat.stop(); if (ticket()) setStopping(false) }
   const reloadHistory = async () => {
@@ -211,6 +216,10 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     if (action.kind === 'stop') void stop()
   }
   const switchConversation = (id: string) => { if (list.current) scrolls.current.set(conversation.id, list.current.scrollTop); chat.openConversation(id) }
+  // 对话列表的行也是 memo 的，同样只拿一个稳定的对象，里面总是调最新的处理函数。
+  const latestConversationActions = useRef<ConversationActions | null>(null)
+  latestConversationActions.current = { open: switchConversation, exportText: (id) => void exportConversation(id), remove: (id) => setConfirmation({ kind: 'delete-conversation', id }) }
+  const conversationActions = useMemo<ConversationActions>(() => ({ open: (id) => latestConversationActions.current?.open(id), exportText: (id) => latestConversationActions.current?.exportText(id), remove: (id) => latestConversationActions.current?.remove(id) }), [])
   const onModeChange = (mode: string) => { chat.selectMode(mode as ChatMode); setCustomSize(false) }
   const imageSizes = imageCapability?.sizePolicy.kind === 'allow-list' ? [...imageCapability.sizePolicy.values] : [...new Set(['1024x1024', '1536x1024', '1024x1536', conversation.settings.size])].filter((size) => {
     if (imageCapability?.sizePolicy.kind !== 'divisible') return true
@@ -243,13 +252,15 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const running = chat.state.conversations.some(isGenerating) || Object.values(preparations).some((item) => item.phase === 'loading')
   const anyGenerating = chat.state.conversations.some(isGenerating)
   // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
-  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation))
+  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation), 'chat')
+  // 换账号会停掉对话页正在出的图：「切换账号」框按这个先问一句（D44）。
+  useChatImageWork(chat.state.conversations.some(isGeneratingImage) || isGeneratingImage(chat.state.draftConversation))
   const searchText = search.trim()
   return <section ref={surface} className="chat-page" hidden={!active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={scope} onKeyDownCapture={(event) => { if (!active) { event.preventDefault(); event.stopPropagation() } }} onScrollCapture={(event) => { if (active && event.target instanceof HTMLElement && event.target.classList.contains('chat-conversation-list')) navigationScroll.current = event.target.scrollTop }}>
     <aside className="chat-conversations" aria-label="聊天会话">
       <div className="chat-conversations-top"><Button icon={Plus} onClick={chat.newConversation} testId="chat-conversation-new">新对话</Button></div>
       <div className="chat-conversation-search"><SearchInput value={search} onChange={setSearch} placeholder="搜索对话" testId="chat-conversation-search" /></div>
-      <nav className="chat-conversation-list" aria-label="已保存的对话">{groupConversationsByDay(candidates).map(({ day, conversations }) => <Fragment key={day}><div className="chat-conversation-day">{day}</div>{conversations.map((item) => <div key={item.id} className="chat-conversation-item" data-active={item.id === chat.state.activeId}><button type="button" className="chat-conversation-select" onClick={() => switchConversation(item.id)} aria-current={item.id === chat.state.activeId ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></button><Menu key={active ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => void exportConversation(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => setConfirmation({ kind: 'delete-conversation', id: item.id }) }]} /></div>)}</Fragment>)}{candidates.length === 0 && (searchText ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">没有找到「{searchText}」相关的对话</p> : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable ? '以前的对话暂时读不出来' : '聊过的对话会存在这里'}</p>)}</nav>
+      <nav className="chat-conversation-list" aria-label="已保存的对话">{groupConversationsByDay(candidates).map(({ day, conversations }) => <Fragment key={day}><div className="chat-conversation-day">{day}</div>{conversations.map((item) => <ConversationListItem key={item.id} item={item} current={item.id === chat.state.activeId} pageActive={active} actions={conversationActions} />)}</Fragment>)}{candidates.length === 0 && (searchText ? <p className="chat-conversation-empty" data-testid="chat-conversation-search-empty">没有找到「{searchText}」相关的对话</p> : <p className="chat-conversation-empty" data-testid="chat-conversation-empty">{chat.historyUnreadable ? '以前的对话暂时读不出来' : '聊过的对话会存在这里'}</p>)}</nav>
       {chat.state.conversations.length > 1 && <div className="chat-conversations-foot"><Button variant="ghost" size="xs" icon={Trash2} disabled={anyGenerating} onClick={() => setConfirmation({ kind: 'clear-all' })} testId="chat-conversations-clear">清空全部对话</Button></div>}
     </aside>
     <div className="chat-conversation">
@@ -293,6 +304,17 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
 }
 
 interface MessageActions { copyText: (text: string, done?: string) => void; preview: (asset: AiChatAsset, mine: boolean) => void; reuseImage: (asset: AiChatAsset) => void; copyAsset: (assetId: string) => void; saveAsset: (assetId: string) => void; assetMenu: (assetId: string) => void; confirm: (confirmation: NonNullable<Confirmation>) => void; edit: (editing: { id: string; text: string }) => void; openAccount: NonNullable<ChatPageProps['onOpenAccount']> }
+interface ConversationActions { open: (id: string) => void; exportText: (id: string) => void; remove: (id: string) => void }
+interface ConversationListItemProps { item: Conversation; current: boolean; pageActive: boolean; actions: ConversationActions }
+
+// A streamed chunk replaces only the conversation it belongs to (see
+// conversationSearchTexts in state.ts), so every other row keeps its props and
+// skips the render. The list holds up to MAX_CONVERSATIONS (200) rows, each with its own
+// menu; re-rendering all of them for every chunk made a reply stutter.
+const ConversationListItem = memo(function ConversationListItem({ item, current, pageActive, actions }: ConversationListItemProps) {
+  return <div className="chat-conversation-item" data-active={current}><button type="button" className="chat-conversation-select" onClick={() => actions.open(item.id)} aria-current={current ? 'page' : undefined} title={item.title} data-testid={`chat-conversation-${item.id}`}><strong>{item.title}</strong><span>{isGenerating(item) ? '正在回答…' : `${item.messages.length} 条消息`}</span></button><Menu key={pageActive ? 'active' : 'hidden'} label="对话操作" anchor={<Button variant="ghost" size="xs" icon={MoreHorizontal} aria-label={`「${item.title}」更多操作`} title="对话操作" />} items={[{ label: '导出这段对话', icon: FileText, disabled: isGenerating(item) || !item.messages.length, onSelect: () => actions.exportText(item.id) }, 'divider', { label: '删除这段对话…', icon: Trash2, danger: true, disabled: isGenerating(item), onSelect: () => actions.remove(item.id) }]} /></div>
+})
+
 interface ChatMessageItemProps { message: ChatMessage; model: string; pending: boolean; canRetry: boolean; canOpenAccount: boolean; markdownComponents: Components; replyComponents: Components; actions: MessageActions }
 
 // Every keystroke in the composer rewrites the conversation's draft. Messages

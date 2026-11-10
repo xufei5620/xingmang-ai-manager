@@ -10,8 +10,8 @@
  * design; there is deliberately no Linux "administrator mode" to fall back to, and the
  * app never chowns anything back.
  *
- * Windows and macOS are untouched: Windows has its own execution-mode model, and macOS
- * never reaches here as root through any supported launch.
+ * Windows and macOS are untouched here: Windows has its own execution-mode model, and
+ * macOS refuses root in macos-launch-guard.ts, reusing the root wording below (D18).
  *
  * This module imports nothing so platform/entry.ts can consult it before any other
  * module loads.
