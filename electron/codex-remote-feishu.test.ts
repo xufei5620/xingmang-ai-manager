@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildFeishuMessageBody,
+  classifyFeishuSendResponse,
   createFeishuRemoteChannel,
   extractFeishuText,
   FeishuAuthError,
@@ -11,9 +12,12 @@ import {
   requestFeishuTenantToken,
   resolveFeishuSocketUrl,
   serializeFeishuCredential,
+  transientFeishuRequestFailure,
   validateFeishuCredentialInput,
+  type FeishuChannelOptions,
   type FeishuSocket,
 } from './codex-remote-feishu'
+import { RemoteHttpError } from './codex-remote-http'
 import { decodeFeishuFrame, encodeFeishuFrame, feishuFrameHeader, type FeishuFrame } from './codex-remote-feishu-frame'
 import type { RemoteChannelDependencies, RemoteChannelStatus, RemoteInbound } from './codex-remote-channel'
 
@@ -142,7 +146,7 @@ function defaultRespond(url: string): Response {
   return json({ code: 404 }, 404)
 }
 
-async function startChannel(h: Harness) {
+async function startChannel(h: Harness, options: FeishuChannelOptions = {}) {
   const channel = createFeishuRemoteChannel(h.deps, {
     createSocket: (url) => {
       const socket = new FakeSocket(url)
@@ -150,6 +154,7 @@ async function startChannel(h: Harness) {
       return socket
     },
     random: () => 0,
+    ...options,
   })
   await channel.start({ onInbound: (message) => h.inbound.push(message), onStatus: (status) => h.statuses.push(status) })
   await vi.waitFor(() => expect(h.sockets).toHaveLength(1))
@@ -312,6 +317,31 @@ describe('codex-remote-feishu outbound', () => {
       { approval: '3', nonce: 'nonce-of-three', decision: 'decline' },
     ])
   })
+
+  // YKS-4：哪些回应值得等一会儿再发。照飞书文档：99991400 / 230020 限流、1500 内部错误、230049 正在发送中。
+  it('retries only answers Feishu documents as momentary', () => {
+    expect(classifyFeishuSendResponse(200, 0)).toBe('sent')
+    expect(classifyFeishuSendResponse(400, 99991663)).toBe('token-invalid')
+    expect(classifyFeishuSendResponse(400, 99991400)).toBe('retry')
+    expect(classifyFeishuSendResponse(400, 230020)).toBe('retry')
+    expect(classifyFeishuSendResponse(500, 1500)).toBe('retry')
+    expect(classifyFeishuSendResponse(400, 230049)).toBe('retry')
+    expect(classifyFeishuSendResponse(502, null)).toBe('retry')
+    expect(classifyFeishuSendResponse(429, null)).toBe('retry')
+    // Bad parameters, missing permission, a user who blocked the bot: sending again cannot help.
+    expect(classifyFeishuSendResponse(400, 230001)).toBe('failed')
+    expect(classifyFeishuSendResponse(400, 230053)).toBe('failed')
+    expect(classifyFeishuSendResponse(403, null)).toBe('failed')
+  })
+
+  it('treats only a lost or timed-out request as worth sending again', () => {
+    expect(transientFeishuRequestFailure(new RemoteHttpError('连不上飞书，请检查网络', 'network'))).toBe('network')
+    expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求超时', 'timeout'))).toBe('timeout')
+    expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求被重定向，已拒绝', 'redirected'))).toBeNull()
+    expect(transientFeishuRequestFailure(new RemoteHttpError('飞书请求地址不在允许范围内，已拒绝', 'blocked-url'))).toBeNull()
+    expect(transientFeishuRequestFailure(new FeishuAuthError())).toBeNull()
+    expect(transientFeishuRequestFailure(new Error('boom'))).toBeNull()
+  })
 })
 
 describe('codex-remote-feishu channel', () => {
@@ -445,6 +475,146 @@ describe('codex-remote-feishu channel', () => {
     await vi.advanceTimersByTimeAsync(30_000)
     expect(h.sockets[0].closed).toBe(true)
     expect(h.logs).toContain('feishu.pong-timeout')
+    await channel.stop()
+  })
+})
+
+// YKS-4：飞书发消息断一下网就丢，丢的要是审批卡，那一步直接当「拒绝」。
+describe('codex-remote-feishu send retries', () => {
+  const peer = { channel: 'feishu' as const, userId: 'ou_alice' }
+
+  function sendBodies(h: Harness): Array<Record<string, unknown>> {
+    return h.fetch.mock.calls
+      .filter(([url]) => String(url).includes('/im/v1/messages'))
+      .map(([, init]) => JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>)
+  }
+
+  it('sends again after the network drops, with the same uuid so Feishu delivers it once', async () => {
+    let sends = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) {
+        sends += 1
+        if (sends === 1) throw new TypeError('fetch failed')
+      }
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    const bodies = sendBodies(h)
+    expect(bodies).toHaveLength(2)
+    expect(typeof bodies[0].uuid).toBe('string')
+    // Feishu caps uuid at 50 characters.
+    expect(String(bodies[0].uuid).length).toBeLessThanOrEqual(50)
+    expect(bodies[1].uuid).toBe(bodies[0].uuid)
+    expect(bodies[1]).toMatchObject({ receive_id: 'ou_alice', msg_type: 'text', content: '{"text":"做完了"}' })
+    expect(waits).toEqual([1000])
+    expect(h.logs).toContain('feishu.send-retry')
+    await channel.stop()
+  })
+
+  it('waits longer each time Feishu is busy or rate limits, then delivers', async () => {
+    const answers = [json({}, 502), json({ code: 99991400, msg: 'request trigger frequency limit' }, 400), json({ code: 0 })]
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) return answers.shift() ?? json({ code: 0 })
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await channel.send(peer, {
+      kind: 'approval',
+      request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command', summary: 'npm test' },
+      text: 'Codex 想运行命令（第 3 条）：\nnpm test',
+    })
+    const bodies = sendBodies(h)
+    expect(bodies).toHaveLength(3)
+    expect(new Set(bodies.map((body) => body.uuid)).size).toBe(1)
+    expect(bodies[2].msg_type).toBe('interactive')
+    expect(waits).toEqual([1000, 4000])
+    await channel.stop()
+  })
+
+  it('gives up after two more tries and says it could not reach Feishu', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) throw new TypeError('fetch failed')
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toThrow('连不上飞书，请检查网络')
+    expect(sendBodies(h)).toHaveLength(3)
+    expect(waits).toEqual([1000, 4000])
+    expect(h.logs).toContain('feishu.send-failed')
+    await channel.stop()
+  })
+
+  it('does not send again when Feishu refuses the message itself', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) return json({ code: 230053, msg: 'The user has stopped the bot from sending messages.' }, 400)
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await expect(channel.send(peer, { kind: 'text', text: '做完了' })).rejects.toThrow('飞书没有发出这条消息（错误码 230053）')
+    expect(sendBodies(h)).toHaveLength(1)
+    expect(waits).toEqual([])
+    await channel.stop()
+  })
+
+  it('retries a token request lost to the network before sending', async () => {
+    let tokenCalls = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.endsWith('/tenant_access_token/internal')) {
+        tokenCalls += 1
+        if (tokenCalls === 1) throw new TypeError('fetch failed')
+      }
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    expect(tokenCalls).toBe(2)
+    expect(sendBodies(h)).toHaveLength(1)
+    expect(waits).toEqual([1000])
+    await channel.stop()
+  })
+
+  it('still refreshes an expired token once, without spending a retry on it', async () => {
+    const answers = [json({ code: 99991663, msg: 'token invalid' }, 400), json({}, 503), json({ code: 0 })]
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) return answers.shift() ?? json({ code: 0 })
+      return defaultRespond(url)
+    })
+    const waits: number[] = []
+    const channel = await startChannel(h, { sleep: async (milliseconds) => { waits.push(milliseconds) } })
+    await channel.send(peer, { kind: 'text', text: '做完了' })
+    expect(sendBodies(h)).toHaveLength(3)
+    expect(waits).toEqual([1000])
+    const tokenCalls = h.fetch.mock.calls.filter(([url]) => String(url).endsWith('/tenant_access_token/internal'))
+    expect(tokenCalls).toHaveLength(2)
+    await channel.stop()
+  })
+
+  it('gives every message its own uuid', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), defaultRespond)
+    const channel = await startChannel(h)
+    await channel.send(peer, { kind: 'text', text: '一' })
+    await channel.send(peer, { kind: 'text', text: '一' })
+    const [first, second] = sendBodies(h)
+    expect(first.uuid).not.toBe(second.uuid)
+    await channel.stop()
+  })
+
+  it('never logs message text while retrying', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) throw new TypeError('fetch failed')
+      return defaultRespond(url)
+    })
+    const logged: unknown[] = []
+    h.deps.log = (_level, event, fields) => { logged.push(event, fields) }
+    const channel = await startChannel(h, { sleep: async () => undefined })
+    await expect(channel.send(peer, { kind: 'text', text: '机密的回答' })).rejects.toThrow()
+    expect(JSON.stringify(logged)).not.toContain('机密')
     await channel.stop()
   })
 })
