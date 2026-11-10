@@ -91,6 +91,7 @@ import { externalClientOfficialDownloadUrls } from './external-client-contract'
 import { gitWindowsDownloadUrl } from './git-runtime'
 import { applicationSecurityResponseHeaders } from './app-protocol'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
+import { createCanvasAccountSummaryReader } from './canvas-account-summary'
 import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
 import { runCodexContextLimitsMigration } from './codex-config-migration'
@@ -1576,6 +1577,10 @@ if (!hasSingleInstanceLock) {
     let accelerationInterruption: AccelerationInterruptionNotice | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
+    // 什么时候读到的，画布余额条拿它写「几分钟前读的」，也拿它决定要不要再读一次（canvas-account-summary.ts）。
+    let latestTrayBalanceAt: number | null = null
+    // 画布最近一次运行结束的时间：这之前读到的余额不算新，画布余额条要再读一次（canvas-account-summary.ts）。
+    let canvasRunEndedAt: number | null = null
     let latestTraySubscription: AccountSubscriptionSelf | null = null
     let managedMainWindow: BrowserWindow | null = null
     // 主窗口这一页的界面报告过手上有没有事，也就是准备好了，主进程发过去的它接得住。换页、重新加载、界面进程没了都放下，
@@ -1882,6 +1887,8 @@ if (!hasSingleInstanceLock) {
           business.canvasRuns.shutdown()
         }
         latestTrayBalance = null
+        latestTrayBalanceAt = null
+        canvasRunEndedAt = null
         latestTraySubscription = null
         trayAcceleration?.reset()
         accelerationExpiry?.reset()
@@ -1930,6 +1937,7 @@ if (!hasSingleInstanceLock) {
     // 托盘余额和几条余额提醒跟着同一份走：界面读到的（account:get-balance），和界面关着时主进程自己读的。
     const observeAccountBalance = (balance: AccountBalance) => {
       latestTrayBalance = balance
+      latestTrayBalanceAt = Date.now()
       applicationTray?.updateSnapshot()
       const state = accountService.getSessionState()
       if (!state.authenticated || !state.account) return
@@ -2074,9 +2082,33 @@ if (!hasSingleInstanceLock) {
     // Run subscriptions outlive a selected realm, so keep them attached to
     // every store, including stores created lazily after the initial render.
     canvasRuns.subscribe = subscribeCanvasRuns
+    subscribeCanvasRuns(({ event }) => { if (event.type === 'run-terminal') canvasRunEndedAt = Date.now() })
     protocol.handle('xingmang-asset', async (request) => {
       try { return await accountWork.run(() => currentBusiness().assetProtocol(request)) }
       catch { return new Response(null, { status: 401, headers: { 'Cache-Control': 'no-store' } }) }
+    })
+    // 画布余额条（画布完善第 2b 条）：用托盘、余额提醒同一份余额，太旧了才替画布读一次，读回来时换了账号就不要。
+    const canvasAccountKey = () => {
+      const state = accountService.getSessionState()
+      return state.authenticated && state.account ? `${accounts.getSiteId()}:${state.account.userId}` : null
+    }
+    const readCanvasAccountSummary = createCanvasAccountSummaryReader({
+      current: () => {
+        const state = accountService.getSessionState()
+        const key = canvasAccountKey()
+        return key && state.account ? { key, siteId: accounts.getSiteId(), username: state.account.username } : null
+      },
+      latest: () => ({
+        balance: latestTrayBalance,
+        readAt: latestTrayBalanceAt,
+        subscriptionLabel: traySubscriptionLabel(latestTraySubscription, latestTrayBalance?.quotaPerUnit ?? 0, Date.now()),
+      }),
+      readBalance: async () => {
+        const before = canvasAccountKey()
+        const balance = await accountService.getBalance()
+        if (before !== null && canvasAccountKey() === before) observeAccountBalance(balance)
+      },
+      spentAt: () => canvasRunEndedAt,
     })
     const canvasController = createCanvasWindowController({
       accountWork,
@@ -2100,6 +2132,7 @@ if (!hasSingleInstanceLock) {
       // 新建画布项目默认放这里（Mac 的访达里叫「文稿」）；读到 Documents 要的系统授权说明在 electron-builder 的 NSDocumentsFolderUsageDescription。
       defaultProjectsDirectory: () => path.join(app.getPath('documents'), '星芒画布'),
       trashProjectFolder: (directory) => shell.trashItem(directory),
+      readAccountSummary: readCanvasAccountSummary,
     })
     // Session restoration may have completed before the controller was
     // constructed. Seed its ownership record so the first real account
