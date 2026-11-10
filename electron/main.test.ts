@@ -477,12 +477,13 @@ describe('main process startup order', () => {
 
   it('picks the update feed before it builds the updater, and reads service status once the updater exists', () => {
     // 包里那份还是直连那份更新目录开机就定（签名校验也在这时装上）；更新服务要等版本记录读好才建，
-    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。
+    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。记在本地的远程开关在第一次读之前就摆上（D83），
+    // 开机头几秒点的那一下也照它拦。
     const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'updates.ts'))
     const feed = moduleFunction(source, 'createUpdateFeed')
     const orders: Array<[ts.FunctionDeclaration, string[]]> = [
       [feed, ['installStrictUpdateCodeSignatureVerifier', 'locateDirectUpdateFeed', 'useUpdateFeedLine']],
-      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
+      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'updaterService.restoreServiceSwitches', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
     ]
     for (const [owner, order] of orders) {
       const calls = directCallPositions(source, owner, order)
