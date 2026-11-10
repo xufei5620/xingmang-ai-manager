@@ -278,6 +278,25 @@ export function calculateUiZoom(contentWidthDip: number, scale: AppUiScale = 'au
   return Math.round(clamp(automatic * multiplier, UI_MIN_ZOOM, UI_MAX_ZOOM) * 10_000) / 10_000
 }
 
+/** 「大字」「界面缩放」两项和「定过没有」的记录，字段与 AppSettings 同名。 */
+export interface TextSizePreferences {
+  largeText?: boolean
+  uiScale?: AppUiScale
+  textSizeChosen?: boolean
+}
+
+/**
+ * Windows「设置 › 辅助功能 › 文本大小」调大以后（`systemTextScale` 是那个百分比，读不到为 null），
+ * 系统弹框和托盘菜单的字都跟着大，界面里的网页内容不吃这一项。客户没定过字的大小（没开关过
+ * 「大字」，缩放还是「自动」）时，替他打开一次「大字」（D81）；之后由他自己在设置里开关。
+ * 只开「大字」、不动缩放：大字只放大说明文字和小字，布局和侧栏宽窄都不变。
+ */
+export function shouldFollowSystemTextSize(preferences: TextSizePreferences, systemTextScale: number | null): boolean {
+  if (systemTextScale === null || systemTextScale <= 100) return false
+  if (preferences.textSizeChosen === true || preferences.largeText === true) return false
+  return preferences.uiScale === undefined || preferences.uiScale === 'auto'
+}
+
 export function resolveCloseAction(
   preference: AppCloseBehavior = 'ask',
   trayAvailable: boolean,

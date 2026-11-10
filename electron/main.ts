@@ -30,7 +30,7 @@ import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
-import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
+import { calculateUiZoom, resolveWindowPlacement, shouldFollowSystemTextSize } from './window-preferences'
 import { attachEditContextMenu } from './context-menu'
 import { createSensitiveClipboard } from './sensitive-clipboard'
 import { fitOversizedWindow, recoverOffscreenWindow } from './window-recovery'
@@ -60,6 +60,7 @@ import { attachRendererDelivery, detachRendererDelivery } from './platform/rende
 import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createWindowsTaskbarThemeReader, WINDOWS_SETTING_CHANGE_MESSAGE } from './windows-taskbar-theme'
+import { readWindowsTextScaleFactor } from './windows-text-scale'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { buildCanvasProjectFileOpenFailurePrompt, createCanvasProjectFileInbox, withoutCanvasProjectFileArguments } from './canvas-project-file-launch'
@@ -1123,6 +1124,11 @@ if (!hasSingleInstanceLock) {
         context: '由 XINGMANG_CRASH_REPORT_TEST=1 触发',
       })
     }
+
+    // Windows「文本大小」调大了就替没定过字号的客户开「大字」（D81）。读注册表要起一次 reg.exe，
+    // 这里先发出去、和下面的迁移与执行模式探测叠着跑，建窗口前看一眼答没答；建窗口不等它。
+    let systemTextScale: number | null | undefined
+    if (process.platform === 'win32') void readWindowsTextScaleFactor().then((factor) => { systemTextScale = factor })
 
     // Overlap the migration's asynchronous marker write with the Windows probe.
     // Both operations still complete before services and the window are created.
@@ -2640,6 +2646,18 @@ if (!hasSingleInstanceLock) {
       })
     }
     attachTrayAvailability(() => applicationTray?.available ?? false)
+    // 必须在建窗口之前写好：界面一加载就读设置，之后再改它看不见。还没读回来（起进程特别慢的电脑）
+    // 这次就不管，下次打开再看；写不进去也不挡窗口，只记日志。
+    if (systemTextScale === undefined) {
+      if (process.platform === 'win32') runtimeLog.log('info', 'window', 'large-text.system-scale-late', '系统文本大小还没读回来，这次不跟')
+    } else if (shouldFollowSystemTextSize(systemService.readStoredConfig(), systemTextScale)) {
+      try {
+        await systemService.updateStoredConfig({ version: 2, largeText: true })
+        runtimeLog.log('info', 'window', 'large-text.follow-system', 'Windows 文本大小调大了，已自动打开「大字」', { textScale: systemTextScale })
+      } catch (error) {
+        runtimeLog.exception('window', 'large-text.follow-system-failed', error)
+      }
+    }
     const mainWindow = createWindow(systemService, urlPolicy, runtimeLog, () => shouldRevealInitialWindow({
       launchedAtLogin,
       trayAvailable: applicationTray?.available ?? false,
