@@ -9,6 +9,7 @@ import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
+import { inspectAiImage } from './ai-asset-store'
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
@@ -63,9 +64,23 @@ export interface AiImageGenerationInput {
   projectId?: string
 }
 
+/**
+ * A masked edit (画布完善第 5 条). The relay's edits endpoint repaints the
+ * transparent part of `mask` and needs it at exactly the source image's pixel
+ * size, so the request takes one source and checks that size against the bytes
+ * it is about to send.
+ */
+export interface AiImageEditMask {
+  width: number
+  height: number
+  /** The PNG sent as `mask`; built only once the source has been checked. */
+  png(signal: AbortSignal): Promise<Uint8Array>
+}
+
 export interface AiImageEditInput extends AiImageGenerationInput {
   sourceAssetIds: string[]
   expectedUserId?: number
+  mask?: AiImageEditMask
 }
 
 export interface AiImageCancelResult {
@@ -476,6 +491,8 @@ export function createAiImageService(options: {
       throw new Error('当前模型不支持 Images API 图片编辑')
     }
     const sourceAssetIds = requiredSourceAssetIds(input.sourceAssetIds)
+    const mask = input.mask
+    if (mask && sourceAssetIds.length !== 1) throw new Error('局部修改只能用一张原图')
     return runImageOperation(senderId, input, async (credential, signal, markDispatched) => {
       const form = new FormData()
       let sourceBytes = 0
@@ -486,11 +503,24 @@ export function createAiImageService(options: {
         sourceBytes += source.bytes.byteLength
         if (sourceBytes > MAXIMUM_EDIT_SOURCE_BYTES) throw new Error('图片编辑参考图总大小超过 64 MB 安全上限')
         if (signal.aborted) throw signal.reason
+        if (mask) {
+          // The size of the bytes going out, not the one recorded when the
+          // asset was stored: the relay compares the mask with these.
+          const inspected = inspectAiImage(source.bytes)
+          if (inspected.width !== mask.width || inspected.height !== mask.height) {
+            throw new Error('原图像素尺寸与蒙版不一致，请重新核对蒙版后运行')
+          }
+        }
         form.append('image', new File(
           [Uint8Array.from(source.bytes)],
           source.asset.fileName,
           { type: source.asset.mimeType },
         ))
+      }
+      if (mask) {
+        const png = await mask.png(signal)
+        if (signal.aborted) throw signal.reason
+        form.append('mask', new File([Uint8Array.from(png)], 'mask.png', { type: 'image/png' }))
       }
       form.set('model', fields.model)
       form.set('prompt', fields.prompt)

@@ -72,6 +72,15 @@ function runEncoded(script) {
   return runPowerShell(['-EncodedCommand', encodeWindowsPowerShellCommand(script)])
 }
 
+// Where an application-control policy is enforced, every -Command string runs
+// in ConstrainedLanguage. Switching the session there first stands in for it;
+// how close that comes is written beside the checks that use it.
+const constrainedWrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
+
+function runConstrained(script) {
+  return runPowerShell(['-Command', constrainedWrapper], { ...trustedCommandEnvironment(), XINGMANG_CONSTRAINED_SCRIPT: script })
+}
+
 const codexProcessMocks = String.raw`
   $script:ownerCalls = 0
   function Get-CimInstance {
@@ -157,11 +166,9 @@ const checks = [
   // stand-in for an installed Codex is built from Select-Object alone, which
   // ConstrainedLanguage allows, so the version still reaches the parser.
   ['Codex merged and package probes still answer in ConstrainedLanguage', async () => {
-    const wrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
     const failingAppx = "function Get-AppxPackage { throw 'The AppX Deployment Service is not running.' }\n"
     const installedAppx = String.raw`function Get-AppxPackage { 'x' | Select-Object @{n='Name';e={'OpenAI.Codex'}}, @{n='Version';e={'26.1103.4239.0'}}, @{n='PackageFullName';e={'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}}, @{n='PackageFamilyName';e={'OpenAI.Codex_2p2nqsd0c76g0'}}, @{n='InstallLocation';e={'C:\Program Files\WindowsApps\OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0'}} }
 `
-    const runConstrained = (script) => runPowerShell(['-Command', wrapper], { ...trustedCommandEnvironment(), XINGMANG_CONSTRAINED_SCRIPT: script })
     for (const [label, script, combined, expect] of [
       ['merged', buildCodexDesktopCombinedProbeScript(), true, 'conclusion'],
       ['package', buildCodexDesktopPackageProbeScript(), false, 'conclusion'],
@@ -181,6 +188,45 @@ const checks = [
       } else {
         assert.ok(probe.value !== null || probe.confirmedAbsent === true || probe.error !== null, `${label}: ${output}`)
       }
+    }
+  }],
+  // The process segment names this user and session with two .NET calls that
+  // ConstrainedLanguage refuses, so it failed whole there and the home page
+  // could never say 「正在运行」 (2026-11-10). Now it asks WMI about its own
+  // PowerShell process instead. The stand-in window is node.exe copied under a
+  // WindowsApps-shaped folder as Codex.exe: the real query, WMI owner check
+  // included, has to find it from both language modes as the same entry, the
+  // parser has to keep it, and the close path's probe has to see it too.
+  ['Codex process probes find a running window in ConstrainedLanguage as in FullLanguage', async () => {
+    const standInRoot = path.join(scratch, 'running-codex')
+    const appDir = path.join(standInRoot, 'WindowsApps', 'OpenAI.Codex_26.1103.4239.0_x64__2p2nqsd0c76g0', 'app')
+    fs.mkdirSync(appDir, { recursive: true })
+    const exe = path.join(appDir, 'Codex.exe')
+    fs.copyFileSync(process.execPath, exe)
+    const standIn = spawn(exe, ['-e', 'setTimeout(() => {}, 300000)'], { stdio: 'ignore', windowsHide: true })
+    const gone = new Promise((resolve) => {
+      standIn.once('exit', resolve)
+      standIn.once('error', resolve)
+    })
+    try {
+      const script = buildCodexDesktopCombinedProbeScript()
+      const full = await runPowerShell(['-Command', script], trustedCommandEnvironment())
+      const constrained = await runConstrained(script)
+      assert.match(constrained.trim(), /^[\x00-\x7F]+$/, constrained)
+      const constrainedRecord = JSON.parse(constrained.trim())
+      assert.equal(constrainedRecord.processesError, null, constrained)
+      assert.deepEqual(constrainedRecord.processes, JSON.parse(full.trim()).processes, `${full}\n${constrained}`)
+      for (const output of [full, constrained]) {
+        const found = parseCodexDesktopCombinedProbeJson(output).processes
+        assert.deepEqual(found.map((entry) => [entry.processId, entry.packageFamilyName]), [[standIn.pid, 'OpenAI.Codex_2p2nqsd0c76g0']], output)
+      }
+      const closing = await runConstrained(buildCodexDesktopProcessProbeScript('all'))
+      assert.deepEqual(parseWindowsProcessesJson(closing).map((entry) => entry.processId), [standIn.pid], closing)
+    } finally {
+      standIn.kill()
+      await gone
+      // The image can stay locked for a moment after exit; the scratch cleanup at the end must not trip on it.
+      fs.rmSync(standInRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     }
   }],
   ['Codex close probe checks only roots during scans and each pid before closing', async () => {

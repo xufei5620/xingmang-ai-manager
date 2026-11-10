@@ -16,11 +16,11 @@ const allMethods = {
 describe('canvas host entry points', () => {
   it('offers none of them to a desktop without the methods or the switches', () => {
     // The 000f913 desktop bridge has none of these methods and declares nothing.
-    expect(Object.values(canvasHostEntryPoints({}, v2EquivalentCapabilities))).toEqual(Array(15).fill(false))
+    expect(Object.values(canvasHostEntryPoints({}, v2EquivalentCapabilities))).toEqual(Array(16).fill(false))
   })
 
   it('offers all of them to a host with every method and switch', () => {
-    expect(Object.values(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile))).toEqual(Array(15).fill(true))
+    expect(Object.values(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile))).toEqual(Array(16).fill(true))
   })
 
   it('turns off every entry that reads complete asset records when that method is missing', () => {
@@ -28,7 +28,7 @@ describe('canvas host entry points', () => {
     expect(canvasHostEntryPoints(rest, fullCanvasCapabilityProfile)).toEqual({
       batchAdd: false, batchDownload: true, assetOrigin: true, runResultCollection: false,
       imageAnnotation: false, videoFrames: false, menuPaste: true, pageDownload: true, projectHistory: true, projectPackageExport: true,
-      projectDefaultFolder: true, projectFolderRelink: true, projectDelete: true, accountSummary: true, quote: true,
+      projectDefaultFolder: true, projectFolderRelink: true, projectDelete: true, accountSummary: true, quote: true, maskAssetSave: true,
     })
   })
 
@@ -60,6 +60,14 @@ describe('canvas host entry points', () => {
     const undeclared = resolveCanvasCapabilities({ ...fullCanvasCapabilities, features: { ...fullCanvasCapabilities.features, quote: false } })
     expect(canvasHostEntryPoints(allMethods, undeclared).quote).toBe(false)
     expect(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile).quote).toBe(true)
+  })
+
+  it('offers saving a mask as an image only where the host takes page-built bytes', () => {
+    // The desktop can run a masked edit before it can take the PNG the editor builds.
+    const desktopLike = resolveCanvasCapabilities({ ...fullCanvasCapabilities, features: { ...fullCanvasCapabilities.features, imageEditMask: true, byteUpload: false } })
+    expect(canvasHostEntryPoints(allMethods, desktopLike).maskAssetSave).toBe(false)
+    expect(canvasHostEntryPoints(allMethods, v2EquivalentCapabilities).maskAssetSave).toBe(false)
+    expect(canvasHostEntryPoints({}, fullCanvasCapabilityProfile).maskAssetSave).toBe(true)
   })
 
   it('offers frame selection only where frame extraction can run', () => {

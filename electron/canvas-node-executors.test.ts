@@ -161,6 +161,56 @@ describe('createCanvasNodeExecutors', () => {
     expect(edit).not.toHaveBeenCalled()
   })
 
+  it('sends a masked edit with its one bound source and a mask PNG at the source size', async () => {
+    const edit = vi.fn(async () => [{
+      assetId: 'c'.repeat(43), localUrl: `xingmang-asset://image/${'c'.repeat(43)}`,
+      mimeType: 'image/png' as const, fileName: 'edited.png',
+    }])
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const source = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, width: 64, height: 48 }
+    const imageEditMask = { version: 1 as const, sourceAssetId: source.assetId, width: 64, height: 48, strokes: [{ tool: 'brush' as const, size: 0.2, points: [{ x: 0.5, y: 0.5 }] }] }
+    await executors['image-edit']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'mask-attempt', ownerId: 9, userId: 42,
+      node: { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成红色', model: 'gpt-image-2', imageEditMask } },
+      inputs: { image: source },
+      signal: new AbortController().signal,
+    })
+    expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({
+      requestId: 'canvas-run:mask-attempt', sourceAssetIds: [source.assetId],
+      mask: { width: 64, height: 48, png: expect.any(Function) },
+    }))
+    const input = (edit.mock.calls[0] as unknown as [number, { mask: { png(signal: AbortSignal): Promise<Uint8Array> } }])[1]
+    const png = Buffer.from(await input.mask.png(new AbortController().signal))
+    expect(png.toString('ascii', 12, 16)).toBe('IHDR')
+    expect([png.readUInt32BE(16), png.readUInt32BE(20), png[24], png[25]]).toEqual([64, 48, 8, 6])
+  })
+
+  it('refuses a mask that does not fit its source before paid dispatch', async () => {
+    const edit = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const source = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, width: 64, height: 48 }
+    const other = { ...source, assetId: 'b'.repeat(43) }
+    const imageEditMask = { version: 1 as const, sourceAssetId: source.assetId, width: 64, height: 48, strokes: [{ tool: 'brush' as const, size: 0.2, points: [{ x: 0.5, y: 0.5 }] }] }
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['gpt-image-2.5-flare', { image: source }, '当前模型尚未接通蒙版局部修改'],
+      ['gpt-image-2', { image: other }, '局部修改需要唯一且与蒙版绑定一致的原图'],
+      ['gpt-image-2', { images: [source, other] }, '局部修改需要唯一且与蒙版绑定一致的原图'],
+      ['gpt-image-2', { image: { ...source, width: 128 } }, '原图像素尺寸与蒙版不一致'],
+    ]
+    for (const [model, inputs, message] of cases) {
+      await expect(executors['image-edit']!({
+        runId: 'run', graphRevision: 'revision', attemptId: 'mask-attempt', ownerId: 9, userId: 42,
+        node: { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成红色', model, imageEditMask } },
+        inputs, signal: new AbortController().signal,
+      }), model).rejects.toThrow(message)
+    }
+    expect(edit).not.toHaveBeenCalled()
+  })
+
   it('cancels the exact image-edit request when the run aborts', async () => {
     const controller = new AbortController()
     const cancel = vi.fn(() => ({ canceled: true, mayStillComplete: true }))
