@@ -374,19 +374,24 @@ export interface AutoInstallNotice {
  * 身份运行，见 windows-elevation.ts 的 highIntegrity）不弹授权窗口，那句不说（已知19）。
  *
  * Mac 装好重开时会弹钥匙串密码框，同样事先说一声（mac-keychain-update-copy.ts）。
+ *
+ * `rollback`：发布者撤回了本机这一版、要装的是更旧的一版（quit-blocking-tasks.ts 的
+ * isRollbackInstall）。这时还说「新版」，客户会以为写错了或者中了毒，换成「换回」那几句
+ * （D11，yoyo 2026-11-10 批）。缺省 = 平时的说法。
  */
-export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform, elevated = false): AutoInstallNotice {
+export function buildAutoInstallNotice(version: string, moment: AutoInstallMoment, platform: NodeJS.Platform, elevated = false, rollback = false): AutoInstallNotice {
   const consent = platform === 'win32' && !elevated ? 'Windows 弹出授权窗口时请点「是」。' : ''
   const keychain = platform === 'darwin' ? macKeychainUpdateHint : ''
   if (moment === 'quit') {
-    return {
-      title: '正在安装星芒AI新版本',
-      body: `正在装新版 ${version}，装好会自动打开。${consent}${keychain}`,
-    }
+    return rollback
+      ? { title: `正在换回星芒AI的 ${version} 版`, body: `正在换回 ${version} 版，装好会自动打开。${consent}${keychain}` }
+      : { title: '正在安装星芒AI新版本', body: `正在装新版 ${version}，装好会自动打开。${consent}${keychain}` }
   }
   return {
     title: '星芒AI马上更新',
-    body: `上次下好的新版 ${version} 几秒后开始安装，软件会先关掉，装好自动打开。${consent}${keychain}`,
+    body: rollback
+      ? `上次下好的 ${version} 版几秒后开始安装，软件会先关掉，装好自动打开。${consent}${keychain}`
+      : `上次下好的新版 ${version} 几秒后开始安装，软件会先关掉，装好自动打开。${consent}${keychain}`,
   }
 }
 
@@ -401,17 +406,25 @@ export interface QuitInstallPrompt {
  * 退出时「顺手装上吗」那一问。交给系统安装器的版本（Linux）装完不会自己打开，还要在
  * 系统窗口里输一次开机密码，事先说清楚，免得客户以为软件闪退、被病毒弹窗。Mac 重开时的钥匙串
  * 密码框同理（`platform` 缺省 = 不说那句，旧行为）。
+ *
+ * `rollback`：要装的是更旧的一版（quit-blocking-tasks.ts 的 InstallableUpdateOnQuit），问的那句
+ * 换成「建议退回」，跟设置页的说法一致（D11）。没有版本号时说不出「X 版」，照旧。
  */
-export function quitInstallPrompt(version: string | null, installMethod: UpdateInstallMethod | null | undefined, platform?: NodeJS.Platform): QuitInstallPrompt {
+export function quitInstallPrompt(version: string | null, installMethod: UpdateInstallMethod | null | undefined, platform?: NodeJS.Platform, rollback = false): QuitInstallPrompt {
+  const rollbackVersion = rollback ? version : null
   if (installMethod === 'system-installer') {
     return {
-      message: version ? `新版本 ${version} 已经下载好，现在装上吗？` : '新版本已经下载好，现在装上吗？',
+      message: rollbackVersion
+        ? `建议退回的 ${rollbackVersion} 版已经下好，现在装上吗？`
+        : version ? `新版本 ${version} 已经下载好，现在装上吗？` : '新版本已经下载好，现在装上吗？',
       detail: '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码就行。装好后从应用菜单重新打开星芒。现在不装也行，下次退出时再问你。',
       buttons: ['关掉并安装', '先退出，下次再装'],
     }
   }
   return {
-    message: version ? `新版本 ${version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
+    message: rollbackVersion
+      ? `建议退回的 ${rollbackVersion} 版已经下好，顺手装上吗？`
+      : version ? `新版本 ${version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
     detail: `安装很快，装完会自动打开新版本。${platform === 'darwin' ? macKeychainUpdateHint : ''}现在不装也行，更新会一直留着，下次退出时再问你。`,
     buttons: ['安装并退出', '先退出，下次再装'],
   }

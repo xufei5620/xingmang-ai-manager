@@ -725,7 +725,7 @@ test('the transfer dialog starts from what is transferable now, also after part 
     const transferable = panel.locator('.v2-acct-kv').filter({ hasText: '可转入余额' })
     const transfer = panel.getByTestId('account-invite-transfer')
     const dialog = page.getByRole('dialog', { name: /返利转入余额？$/ })
-    const amount = dialog.getByLabel('转入金额（USD）', { exact: true })
+    const amount = dialog.getByLabel('转入金额（美元）', { exact: true })
     await transfer.click()
     await dialog.waitFor()
     assert.equal(await amount.inputValue(), '1')
@@ -740,6 +740,33 @@ test('the transfer dialog starts from what is transferable now, also after part 
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 40 }])
   } finally {
     await page.close()
+  }
+})
+
+test('the empty transfer button tells a drained rebate from one never earned', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const transfer = panel.getByTestId('account-invite-transfer')
+    await transfer.click()
+    const dialog = page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true })
+    await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await transfer.getByText('已全部转入', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+  const fresh = await fixture('page=account&noRebate=1')
+  try {
+    await fresh.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const transfer = fresh.getByRole('tabpanel').filter({ visible: true }).getByTestId('account-invite-transfer')
+    // 从来没赚过时写「已全部转入」像是转过了（W44）。
+    await transfer.getByText('还没有返利', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await fresh.close()
   }
 })
 
@@ -1518,6 +1545,23 @@ test('adding a uvx connection without Python says so first and still lets it thr
   }
 })
 
+// D20：缺 uv 不再叫客户去命令行敲 pip，交给客服教，并给一颗「找客服」。
+test('a uvx connection missing uv points to customer support with a button instead of a pip command', async () => {
+  const page = await fixture('page=mcp&help')
+  try {
+    await page.getByTestId('mcp-add').click()
+    await page.getByRole('button', { name: '本地程序', exact: true }).click()
+    await page.getByTestId('mcp-source').fill('uvx')
+    const notice = page.getByTestId('mcp-runtime-notice')
+    await notice.getByText(/这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。/).waitFor()
+    assert.equal(await notice.getByText(/pip install uv/).count(), 0)
+    await notice.getByTestId('mcp-runtime-support').click()
+    assert.equal((await callsNamed(page, 'open-help')).length, 1)
+  } finally {
+    await page.close()
+  }
+})
+
 test('curated MCP install confirms the exact command before writing any configuration', async () => {
   const page = await fixture('page=mcp')
   try {
@@ -1961,10 +2005,37 @@ test('removing a connection says which tool it leaves and that the others keep t
     await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
     await page.getByRole('menuitem', { name: '从 Claude Code 移除…', exact: true }).click()
     const dialog = page.getByRole('dialog', { name: '从 Claude Code 移除「测试扩展」？', exact: true })
-    await dialog.getByText('其他工具里的不受影响。以后可以在官方目录或精选里重新添加。', { exact: true }).waitFor()
+    await dialog.getByText('其他工具里的不受影响。精选里的以后可以在精选里再加，自己加的要重新填一遍。', { exact: true }).waitFor()
     await dialog.getByRole('button', { name: '移除', exact: true }).click()
     await page.getByText('已从 Claude Code 移除「测试扩展」', { exact: true }).waitFor()
     assert.deepEqual((await callsNamed(page, 'extension')).at(-1).args, { provider: 'claude', kind: 'mcp', action: 'uninstall', id: 'test-extension', scope: 'user' })
+  } finally {
+    await page.close()
+  }
+})
+
+// D67：自己加的市场点「移除市场」先问一句，点「移除」才真的移除，点「取消」什么都不动。
+test('removing a custom plugin market asks first and only removes it after confirming', async () => {
+  const page = await fixture('page=plugins&customMarket')
+  try {
+    await page.getByRole('tab', { name: /^Codex CLI/ }).click()
+    const markets = page.getByTestId('plugins-custom-markets')
+    const openRemoval = async () => {
+      await markets.getByRole('button', { name: '市场 my-market 的更多操作', exact: true }).click()
+      await page.getByRole('menuitem', { name: '移除市场', exact: true }).click()
+      const dialog = page.getByRole('dialog', { name: '移除市场「my-market」？', exact: true })
+      await dialog.getByText('移除后，这个市场就不在列表里了，要用时得重新添加。', { exact: true }).waitFor()
+      return dialog
+    }
+    let dialog = await openRemoval()
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.equal((await callsNamed(page, 'remove-marketplace')).length, 0)
+    dialog = await openRemoval()
+    await dialog.getByRole('button', { name: '移除', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'remove-marketplace')).map((call) => call.args), ['my-market'])
+    await markets.waitFor({ state: 'detached' })
   } finally {
     await page.close()
   }
@@ -2362,7 +2433,7 @@ test('feedback opens on the message form and copies what the customer wrote toge
       '最近一次失败：安装 Codex CLI · 网络超时',
     ].join('\n') + '\n\n固定的脱敏报告内容'])
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page opens after copying')
-    // 关掉「附带诊断报告」只复制客户写的那几行。
+    // 关掉「附带反馈报告」只复制客户写的那几行。
     await page.getByTestId('feedback-attach').getByRole('switch').click()
     await page.getByTestId('feedback-send').click()
     await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-clipboard').length === 2)
@@ -2565,13 +2636,12 @@ test('feedback shows the latest 100 entries first and 100 more on request', asyn
 test('feedback copy and export retain the preview snapshot id', async () => {
   const page = await fixture('page=feedback')
   try {
-    await page
-      .getByRole('button', { name: '预览反馈报告', exact: true })
-      .click()
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    await page.getByTestId('feedback-preview').click()
     await page.getByTestId('feedback-report-text').waitFor()
     // 脱敏提示挪进了预览框，一行细条（v4 第 10 批）。
     const privacy = page.getByTestId('feedback-privacy')
-    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
+    assert.equal(await privacy.innerText().then((text) => text.replace(/\s+/g, '')), '密钥、密码和电脑用户名都已隐去。发送前再看一眼有没有私有项目名称和地址。')
     assert.ok((await privacy.boundingBox()).height <= 50)
     // 报告里已经有检查结果时不提醒先去检查。
     assert.equal(await page.getByTestId('feedback-report-unchecked').count(), 0)
@@ -2602,9 +2672,8 @@ test('feedback copy and export retain the preview snapshot id', async () => {
 test('the feedback preview sends the customer to the check page when the report has no check result', async () => {
   const page = await fixture('page=feedback&selfCheckMissing')
   try {
-    await page
-      .getByRole('button', { name: '预览反馈报告', exact: true })
-      .click()
+    // 留言表单里「附带反馈报告」旁边的链接也叫「预览反馈报告」（W68），按名字找会撞上两颗，点的是「找客服」卡上那颗。
+    await page.getByTestId('feedback-preview').click()
     const hint = page.getByTestId('feedback-report-unchecked')
     await hint.getByText('报告里还没有检查结果', { exact: true }).waitFor()
     await hint.getByText('点「去检查」，等检查页查完再回来复制或导出，客服能少问你几句。', { exact: true }).waitFor()
@@ -3398,10 +3467,25 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await page.evaluate(() => window.remoteHarness.pair('小明'))
     await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    // 解绑先问一句：点「取消」什么都不做，点「解绑」才解。
+    const confirm = card.getByTestId('settings-remote-feishu-confirm')
     await card.getByTestId('settings-remote-feishu-unbind').click()
+    await confirm.getByRole('heading', { name: '解绑？', exact: true }).waitFor()
+    await confirm.getByText('解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '取消', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
+    assert.equal(await card.getByTestId('settings-remote-feishu-unbind').count(), 1)
+    assert.equal((await calls(page)).some((call) => call.name === 'remote-unbind'), false)
+    await card.getByTestId('settings-remote-feishu-unbind').click()
+    await confirm.getByRole('button', { name: '解绑', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
     await card.getByText('还没配对。点「开始配对」，把配对码私聊发给机器人。', { exact: true }).waitFor()
-    // 退出登录：凭据清掉、遥控关掉，回到填应用的框。
+    // 退出登录也先问：确认后凭据清掉、遥控关掉，回到填应用的框。
     await card.getByRole('button', { name: '退出飞书登录', exact: true }).click()
+    await confirm.getByRole('heading', { name: '退出飞书登录？', exact: true }).waitFor()
+    await confirm.getByText('退出后要重新填机器人的凭据，才能再用手机遥控。', { exact: true }).waitFor()
+    await confirm.getByRole('button', { name: '退出登录', exact: true }).click()
+    await confirm.waitFor({ state: 'detached' })
     await card.getByTestId('settings-remote-feishu-form').waitFor()
     assert.equal(await toggle.getAttribute('aria-checked'), 'false')
     const recorded = await calls(page)
@@ -3450,7 +3534,7 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
     await code.fill('2580')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
-    await dialog.getByText('微信登录好了。下一步点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
+    await dialog.getByText('微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
     await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
     await dialog.getByTestId('settings-remote-weixin-close').click()
     await dialog.waitFor({ state: 'detached' })

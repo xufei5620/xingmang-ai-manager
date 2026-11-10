@@ -11,7 +11,7 @@ describe('account work drain', () => {
     let release!: () => void
     const blocked = new Promise<void>((resolve) => { release = resolve })
     const work = gate.run(async () => { await blocked; return 'old secret' })
-    const rejected = expect(work).rejects.toThrow('账号上下文已变化')
+    const rejected = expect(work).rejects.toThrow('账号刚切换过')
     busy = true
     revision++
     expect(() => gate.run(() => 'new work')).toThrow('switching')
@@ -42,7 +42,7 @@ describe('account work drain', () => {
     busy = true
     revision++
     gate.abortQueued()
-    await expect(launch).rejects.toThrow('账号上下文已变化')
+    await expect(launch).rejects.toThrow('账号刚切换过')
     finishInstall()
     await install
     expect(started).toBe(false)
@@ -66,7 +66,7 @@ describe('account work drain', () => {
     const waiting = gate.queue()
     revision++
     let ran = false
-    await expect(waiting.run(async () => { ran = true })).rejects.toThrow('账号上下文已变化')
+    await expect(waiting.run(async () => { ran = true })).rejects.toThrow('账号刚切换过')
     expect(ran).toBe(false)
   })
 

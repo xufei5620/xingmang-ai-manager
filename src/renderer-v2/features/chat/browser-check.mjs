@@ -1233,6 +1233,28 @@ test('the conversation list groups by day, finds by title and clears everything 
   } finally { await page.close() }
 })
 
+test('a conversation that could not be saved says whether to pick another folder or free up the disk', async () => {
+  // D16：没权限、盘满了跟设置页导出同一套说法；认不出原因的照旧说可以重试。
+  const expected = {
+    denied: '这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。',
+    full: '这块盘满了，清出一些空间，或者换一块盘再导出。',
+    other: '这段对话没有导出成功，可以重试',
+  }
+  const state = storedWorkspace()
+  state.conversations[0].messages = [{ id: 'm1', role: 'user', content: '你好', status: 'complete', createdAt: 1 }, { id: 'm2', role: 'assistant', content: '你好呀', reasoning: '', status: 'complete', createdAt: 2 }]
+  for (const [failure, banner] of Object.entries(expected)) {
+    const page = await open(`exportFail=${failure}`, { [storedChatKey]: JSON.stringify(state) })
+    try {
+      await ready(page)
+      await page.getByTestId('chat-conversation-export').click()
+      await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
+      const shown = page.locator('.chat-banner[data-tone="bad"] > span')
+      await shown.waitFor()
+      assert.equal(await shown.innerText(), banner)
+    } finally { await page.close() }
+  }
+})
+
 test('a message typed while offline stays in the composer and goes out from the banner once the network is back', async () => {
   const page = await open()
   try {

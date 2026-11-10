@@ -240,7 +240,7 @@ test('customer support returns to the default QR and browser destination after h
     await dialog.locator('[data-modal-close]').click()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-support').waitFor()
     const session = await page.evaluate(() => window.xingmang.getAccountSession())
     assert.equal(session.authenticated, false)
@@ -368,6 +368,42 @@ test('external client install failures clear busy state and remain retryable', a
     await page.getByRole('button', { name: '返回', exact: true }).click()
     assert.equal(await row.getByRole('button', { name: '安装', exact: true }).isEnabled(), true)
     assert.equal(await row.getByRole('progressbar').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed Claude Desktop install offers the offline packages first and the Claude site second', async () => {
+  // D64：Claude 官网在国内多半打不开，先给教程站「备用安装包」那一节，官网退到第二个。
+  const page = await open('externalInstallFailure=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    async function failInstall() {
+      await row.getByRole('button', { name: '安装', exact: true }).click()
+      const dialog = page.getByTestId('operation-error')
+      await dialog.getByText('没能装好 Claude Desktop', { exact: true }).waitFor()
+      return dialog
+    }
+    async function openedBy(dialog, label) {
+      const previous = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length)
+      await dialog.getByRole('button', { name: label, exact: true }).click()
+      await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length > count, previous)
+      return await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').at(-1).args[0])
+    }
+    let dialog = await failInstall()
+    // 返回、重试、两个出口、查看日志、复制给客服、找客服一行放不下：折行，不能有哪颗被挤出框外。
+    // 量的是排版宽度，不受弹出动画的缩放影响。
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth, rows: new Set([...element.querySelectorAll('button')].map((button) => button.offsetTop)).size }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    assert.ok(footer.rows > 1, `七颗按钮应该折成两行：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'claude-desktop-install-failed-exits.png') })
+    await expect(dialog.getByTestId('operation-error-body')).toHaveText('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
+    const exits = await dialog.locator('[data-testid^="operation-error-claudeDesktop"]').allTextContents()
+    assert.deepEqual(exits, ['下载离线安装包', '去 Claude 官网'])
+    assert.equal(await dialog.getByRole('button', { name: '去官网下载', exact: true }).count(), 0)
+    assert.equal(await openedBy(dialog, '下载离线安装包'), 'https://docs-new.solov.cc/guide/manager#offline-packages')
+    await expect(dialog).toHaveCount(0)
+    dialog = await failInstall()
+    assert.equal(await openedBy(dialog, '去 Claude 官网'), 'https://claude.com/download')
     await clean(page)
   } finally { await page.close() }
 })
@@ -527,7 +563,7 @@ test('external client incomplete Claude configuration requires setup before prim
   try {
     const row = page.getByTestId('tool-row-claudeDesktop')
     await row.getByText('待连接', { exact: true }).waitFor()
-    await expect(row).toContainText('第三方推理配置待完善')
+    await expect(row).toContainText('用的是别家的设置，还没填完')
     assert.equal(await row.getByRole('button', { name: '打开', exact: true }).count(), 0)
     await row.getByRole('button', { name: '确认连接', exact: true }).click()
     await page.getByTestId('external-client-dialog').waitFor()
@@ -706,7 +742,7 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     assert.equal(await row.count(), 0)
     await page.getByTestId('welcome-steps').click()
@@ -1398,6 +1434,33 @@ test('an exported report can be revealed in its folder and says so when it moved
     await reveal.click()
     await health.getByText('导出的文件已经不在原来的位置了，可能被移动或删除。').waitFor()
     await health.getByText('检查报告已导出：C:\\Fixture\\xingmang-diagnostics.txt', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an export the chosen folder will not take says to pick another folder or free up the disk, not the install directory (D16)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    // 开了「受控文件夹访问」的桌面：主进程那句经 IPC 过来，是带着通道名的英文原话。
+    await page.evaluate(() => { window.v2Test.fail = 'exportDiagnostics'; window.v2Test.failMessage = "Error invoking remote method 'diagnostics:export': Error: EPERM: operation not permitted, open 'C:\\Users\\fixture\\Desktop\\.xingmang-diagnostics.txt.tmp'" })
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.waitFor()
+    await health.getByRole('button', { name: '导出检查报告', exact: true }).click()
+    const healthNotice = health.locator('.v2-business-notice.is-error')
+    await healthNotice.waitFor()
+    assert.match(await healthNotice.innerText(), /这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。/)
+    assert.doesNotMatch(await healthNotice.innerText(), /安装目录/)
+
+    // 设置页「导出聊天记录和设置」时盘满了：不再说安装用的临时文件夹。
+    await page.evaluate(() => { window.v2Test.fail = 'exportAppData'; window.v2Test.failMessage = "Error invoking remote method 'data-transfer:export': Error: ENOSPC: no space left on device, write" })
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-export').click()
+    const settingsNotice = settings.locator('.v2-business-notice.is-error')
+    await settingsNotice.waitFor()
+    assert.match(await settingsNotice.innerText(), /这块盘满了，清出一些空间，或者换一块盘再导出。/)
+    assert.doesNotMatch(await settingsNotice.innerText(), /临时文件夹|安装目录/)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
   } finally { await page.close() }
@@ -2830,6 +2893,12 @@ test('the leftover dialog cleans up through the main process and says what is st
     // 第一次那个文件还被占着：框留着，红字说还剩几个、接下来怎么办。
     await expect(dialog.getByTestId('manual-uninstall-cleanup-problem'))
       .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「帮我清理」；还是不行，请联系客服。')
+    // 红字叫人找客服，框底就给「找客服」：帮助框叠在上面，关掉还回到这个框（D21）。
+    await dialog.getByTestId('manual-uninstall-support').click()
+    const support = page.getByTestId('support-dialog')
+    await support.waitFor()
+    await page.keyboard.press('Escape')
+    await support.waitFor({ state: 'detached' })
     await dialog.getByTestId('manual-uninstall-cleanup').click()
     await waitForToast(page, '清理好了。')
     await dialog.waitFor({ state: 'detached' })
@@ -3069,7 +3138,7 @@ test('an install that finishes while signed out keeps the welcome page and leave
     await row.getByTestId('tool-grok-cancel').waitFor()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     const scansBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanSystem').length)
     await page.evaluate(() => window.v2Test.releaseInstall())
@@ -3301,7 +3370,7 @@ test('read-only account matches do not survive logout or a late config read when
     // 不是配对去取 Key，所以从退出以后再接着查。
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     const loggedOut = await page.evaluate(() => window.v2Test.calls.length)
     await page.getByTestId('welcome-steps').click()
@@ -5115,7 +5184,7 @@ test('the required-update gate stays up however many times Esc is pressed', asyn
     await pressEscape()
     assert.equal(await modal(), true)
 
-    // 门里点「联系客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
+    // 门里点「找客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
     await gate.getByTestId('required-update-support').click()
     const support = page.getByTestId('support-dialog')
     await support.waitFor()
@@ -5693,8 +5762,8 @@ test('running desktop offers a real restart and official quotas can be refreshed
   const page = await open('running=1&official=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('button', { name: '重启 Codex', exact: true }).click()
-    await page.getByRole('heading', { name: 'Codex 已在运行' }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: '重开 Codex', exact: true }).click()
+    await page.getByRole('heading', { name: 'Codex 桌面端还开着' }).waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'launchCodexDesktop').args), ['restart'])
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: 'ChatGPT 账号额度…', exact: true }).click()
@@ -6497,7 +6566,7 @@ test('an obsolete balance rejection stays silent before the session-change event
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
-    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号上下文已变化，请重试"))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"))
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
@@ -6842,7 +6911,8 @@ test('logging out yourself does not warn that the login ended from either entry 
         await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
         await page.getByTestId('command-result-account:logout').click()
       }
-      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+      // 两个入口的确认框按钮都写「退出登录」，不写「退出」，免得当成退出星芒（W83）。
+      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
       await page.getByTestId('welcome-login').waitFor()
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 1)
@@ -7278,7 +7348,7 @@ test('explicit automatic key configuration shows the right group and adopts the 
     const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(before.slice(opened).includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
     await openConfigAdvanced(page)
-    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时自动准备/)
     // The automatic key has no models to list until it is written, so the one button saves and then lists them.
     assert.equal((await page.getByTestId('tool-save-config').innerText()).trim(), '保存并检测')
     await page.getByTestId('tool-save-config').click()
@@ -7416,7 +7486,7 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     assert.doesNotMatch(question, /调试端口/)
     assert.match(question, /关掉 Codex，通道也跟着关上。/)
     // 照实说同机别的程序和账户也连得上（#1067），共用电脑的劝先不用。
-    assert.match(question, /通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.match(question, /通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
     assert.doesNotMatch(question, /只有这台电脑自己能连/)
 
     await decline.click()
@@ -7621,7 +7691,7 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   const page = await open('localeLaunchWarning=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。', { exact: true }).waitFor()
+    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)

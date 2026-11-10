@@ -358,6 +358,30 @@ describe('buildFeedbackRuntimeLines', () => {
       .toContain('运行权限: 普通用户')
   })
 
+  it('says whether error reports and anonymous usage stats are sent, right below the privilege line', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ privacy: { crashReporting: true, anonymousUsage: false } }))
+
+    expect(lines.slice(lines.indexOf('运行权限: 普通用户'), lines.indexOf('软件位置: C:\\Program Files\\XingMang'))).toEqual([
+      '运行权限: 普通用户',
+      '错误报告：开',
+      '匿名使用统计：关',
+    ])
+    expect(buildFeedbackRuntimeLines(runtimeInput({ privacy: { crashReporting: false, anonymousUsage: true } })))
+      .toEqual(expect.arrayContaining(['错误报告：关', '匿名使用统计：开']))
+  })
+
+  it('keeps the two switch lines even before any scan and off Windows, since they are not read from the scan', () => {
+    const lines = buildFeedbackRuntimeLines(runtimeInput({ snapshot: null, platform: 'darwin', privacy: { crashReporting: true, anonymousUsage: true } }))
+
+    expect(lines).toEqual(expect.arrayContaining(['错误报告：开', '匿名使用统计：开']))
+  })
+
+  it('adds no switch lines when the host passes none', () => {
+    for (const privacy of [undefined, null]) {
+      expect(buildFeedbackRuntimeLines(runtimeInput({ privacy })).some((line) => line.startsWith('错误报告') || line.startsWith('匿名使用统计'))).toBe(false)
+    }
+  })
+
   it('omits the privilege line outside Windows', () => {
     const lines = buildFeedbackRuntimeLines(runtimeInput({ platform: 'darwin', executionMode: 'same-user' }))
 

@@ -699,6 +699,99 @@ describe('credential redaction before persistence', () => {
     expect(restored.state.conversations[0].messages[0].reasoning).toBe(kept)
     expect(restored.state.conversations[0].draft).toBe(kept)
   })
+
+  // Code that merely names a token, password, secret, API key or Authorization
+  // header used to lose everything after the name on the next start, so commands
+  // copied back out of the history no longer ran. The first six lines are the
+  // ones the chat-page audit (C3) saw broken.
+  const codeThatNamesSecrets = [
+    'const token = req.headers.authorization',
+    'password: string',
+    'api_key = os.environ["OPENAI_API_KEY"]',
+    'password = input("请输入密码：")',
+    'curl -H "Authorization: Bearer $TOKEN" https://api.example.test/v1/models',
+    'secret: ${{ secrets.DEPLOY_KEY }}',
+    'client = OpenAI(api_key=api_key)',
+    'headers: { Authorization: `Bearer ${token}` }',
+    'token: process.env.GITHUB_TOKEN,',
+    'password=os.getenv("DB_PASSWORD")',
+    "const labels = { token: '令牌', password: '密码', secret: 'Client secret' }",
+    'api_key: Optional[str] = None',
+    'interface Login { password: string; token?: string; secret: Uint8Array }',
+    "token = ''",
+    'OPENAI_API_KEY=<YOUR_API_KEY>',
+    'export GITHUB_TOKEN=$(gh auth token)',
+    'set API_KEY=%OPENAI_API_KEY%',
+    'api_key: {{ .Values.apiKey }}',
+    'const token = await getAccessToken()',
+    'csrf_token = request.cookies.get("csrftoken")',
+    'token = document.getElementById("token").value',
+  ]
+
+  it('keeps code that only names a token, password, secret, API key or Authorization header', () => {
+    for (const line of codeThatNamesSecrets) expect(redactPersistentChatText(line)).toBe(line)
+  })
+
+  // Invented at run time like the shapes above. Each one is something a person
+  // could really paste as a value: random letters and digits, a password with
+  // symbols, hex, a UUID, base64, a bcrypt hash, a prefixed vendor token.
+  const fakeHex = 'f0e1d2c3b4a59687'.repeat(2)
+  const fakeMixed = ['a1B2c3', 'D4e5F6', 'g7H8i9'].join('')
+  const fakePassword = ['Xk9', '#mP2', '$vL'].join('')
+  const fakeShortPassword = ['hun', 'ter', '2'].join('')
+  const fakeUuid = [fakeHex.slice(0, 8), fakeHex.slice(8, 12), fakeHex.slice(12, 16), fakeHex.slice(16, 20), fakeHex.slice(20, 32)].join('-')
+  const fakeBase64 = `${'ZmFrZS1zZWNy'.repeat(2)}==`
+  const fakeBcrypt = `$2b$12$${fakeMixed.repeat(3)}`
+  const fakeVendor = `pk_live_${fakeMixed}`
+  const fakeLetters = ['yKJxHG', 'pzLzGk', 'BBsmID', 'cIbbzX'].join('')
+  const namedSecrets: Array<[string, string]> = [
+    [`token=${fakeMixed}`, fakeMixed],
+    [`DB_PASSWORD=${fakePassword}`, fakePassword],
+    [`password: ${fakeShortPassword}`, fakeShortPassword],
+    [`secret = ${fakeHex}`, fakeHex],
+    [`token: ${fakeUuid}`, fakeUuid],
+    [`api_key: "${fakeBase64}"`, fakeBase64],
+    [`password: ${fakeBcrypt}`, fakeBcrypt],
+    [`apiKey: '${fakeVendor}'`, fakeVendor],
+    [`api_key = ${fakeLetters}`, fakeLetters],
+    [`token = \`${fakeMixed} extra\``, fakeMixed],
+    [`password = "my pass ${fakePassword}"`, fakePassword],
+    [`password=${fakeMixed}，记得改`, fakeMixed],
+    [`token = getToken${fakeMixed}()`, fakeMixed],
+    ['token: 12345678', '12345678'],
+  ]
+
+  it('still hides named values that look like real secrets', () => {
+    for (const [line, secret] of namedSecrets) {
+      const saved = redactPersistentChatText(line)
+      expect(saved).not.toContain(secret)
+      expect(saved).toContain('[密钥未保存]')
+    }
+  })
+
+  it('keeps the brackets and quotes around a hidden value and gives the same text on a second save', () => {
+    expect(redactPersistentChatText(`client = OpenAI(api_key="${fakeHex}")`)).toBe('client = OpenAI(api_key=[密钥未保存])')
+    expect(redactPersistentChatText(`curl -H "X-Api-Key: ${fakeHex}" https://api.example.test`)).toBe('curl -H "X-Api-Key: [密钥未保存]" https://api.example.test')
+    expect(redactPersistentChatText(`client = OpenAI(api_key="sk-${fakeHex}")`)).toBe('client = OpenAI(api_key=[密钥未保存])')
+    const mixed = [...codeThatNamesSecrets, ...namedSecrets.map(([line]) => line), `{"x": "y"}api_key='${fakeHex}'}]`].join('\n')
+    const once = redactPersistentChatText(mixed)
+    expect(redactPersistentChatText(once)).toBe(once)
+  })
+
+  it('keeps code intact in the history files, the export for another computer and the plain-text export', async () => {
+    const files = memoryFiles()
+    const code = codeThatNamesSecrets.join('\n')
+    const state = workspace()
+    state.conversations[0].messages = [message(0, { content: `用 token=${fakeMixed} 写一段调用接口的代码` }), message(1, { content: code })]
+    const restored = await saveAndReopen(state, files)
+    expect(restored.state.conversations[0].messages[1].content).toBe(code)
+    expect(files.raw() ?? '').not.toContain(fakeMixed)
+    const exported = JSON.stringify(exportableConversations(state))
+    expect(exported).toContain(JSON.stringify(code).slice(1, -1))
+    expect(exported).not.toContain(fakeMixed)
+    expect(conversationPlainText(state.conversations[0])).toContain(code)
+    expect(conversationPlainText(state.conversations[0])).not.toContain(fakeMixed)
+  })
 })
 describe('complete legacy and account-alias migration', () => {
   it('imports all historical messages, reasoning and system text without writing any localStorage key', () => {

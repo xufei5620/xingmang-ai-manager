@@ -160,6 +160,13 @@ export interface ReleaseGuard {
   updatedAt?: string
 }
 
+/**
+ * 远程关功能、已知问题提示、充值方式开关这三样（D83）：跟撤回名单一样，读成功一次就记在电脑上
+ * （service-switches-store.ts），重开软件时状态文件还没读到、或者一直读不到，也照记下的这份办，读成功的那次再换。
+ * 记的是没按版本、平台筛过的原样，用的时候按这一版、这种安装包再筛：升了级的电脑照样只认管到它的那几条。
+ */
+export type ServiceSwitches = Pick<ServiceStatus, 'knownIssues' | 'paymentMethodsOff' | 'featuresOff'>
+
 // 一份只写着几个开关的 JSON 远用不到这么大；上限是给「这个地址被换成了别的东西」
 // 准备的，免得把一整张网页读进内存再去解析。
 const maxStatusBytes = 16 * 1024
@@ -551,6 +558,27 @@ function readFeaturesOff(value: unknown): ServiceFeatureOff[] | null {
     switches.push({ feature, ...scope })
   }
   return switches.length ? switches : null
+}
+
+/** 从读成功的这份里取出要记在电脑上的三样；文件里没写的那一样不带。 */
+export function pickServiceSwitches(status: ServiceStatus): ServiceSwitches {
+  return {
+    ...(status.knownIssues ? { knownIssues: status.knownIssues } : {}),
+    ...(status.paymentMethodsOff ? { paymentMethodsOff: status.paymentMethodsOff } : {}),
+    ...(status.featuresOff ? { featuresOff: status.featuresOff } : {}),
+  }
+}
+
+/** 记在本地的那三样（service-switches-store.ts），按状态文件的同一套口径重新校验：写错的那一条丢掉。 */
+export function parseServiceSwitches(value: Record<string, unknown>): ServiceSwitches {
+  const knownIssues = readKnownIssues(value.knownIssues)
+  const paymentMethodsOff = readPaymentMethodsOff(value.paymentMethodsOff)
+  const featuresOff = readFeaturesOff(value.featuresOff)
+  return {
+    ...(knownIssues ? { knownIssues } : {}),
+    ...(paymentMethodsOff ? { paymentMethodsOff } : {}),
+    ...(featuresOff ? { featuresOff } : {}),
+  }
 }
 
 function switchApplies(scope: ServiceSwitchScope, version: string, here: readonly string[]): boolean {
