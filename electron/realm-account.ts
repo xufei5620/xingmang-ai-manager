@@ -1,5 +1,5 @@
 /** Backend-neutral account contracts. No Node imports; credential types stay main-only. */
-import { classifyNetworkFailure, networkFailureMessages } from './network-failure'
+import { networkFailureMessages, resolveNetworkFailureMessage } from './network-failure'
 
 export type AccountRealmId = 'xm-account' | 'api-account'
 export type AccountBackendKind = 'new-api' | 'sub2api'
@@ -49,7 +49,7 @@ export type RealmErrorCode = 'INVALID' | 'UNSUPPORTED' | 'DISABLED' | 'BUSY' | '
 
 const messages: Record<RealmErrorCode, string> = {
   INVALID: '账号参数无效', UNSUPPORTED: '当前账号暂不支持此功能', DISABLED: '当前账号服务尚未启用',
-  BUSY: '账号切换正在进行，请稍后重试', STALE: '账号上下文已变化，请重试', SIGNED_OUT: '请先登录账号',
+  BUSY: '账号切换正在进行，请稍后重试', STALE: '账号刚切换过，请再试一次', SIGNED_OUT: '请先登录账号',
   STORAGE: '账号安全存储不可用，原记录未修改',
   // 切到一个登录已失效的保存账号（全面检测 Q12）。以前报 UNAUTHORIZED，界面套上
   // 「登录已过期」的标题，看起来像当前账号掉线了；其实当前账号完好，一字没动。
@@ -80,8 +80,7 @@ export class RealmAccountError extends Error {
 
 function networkFailureMessageFor(cause: unknown): string | null {
   if (cause === undefined) return null
-  const reason = classifyNetworkFailure(cause)
-  return reason ? networkFailureMessages[reason] : null
+  return resolveNetworkFailureMessage(cause)
 }
 
 export function isRealmRecord(value: unknown): value is Record<string, unknown> {

@@ -10,17 +10,17 @@ const allMethods = {
   readRunHistory: method, renderImageAnnotation: method, readVideoForFramePreview: method,
   listProjectHistory: method, readProjectRevision: method, restoreProjectRevision: method, inspectProjectRestore: method,
   previewProjectExport: method, exportProjectPackage: method, cancelProjectExport: method,
-  createProjectInDefaultFolder: method, relinkProjectFolder: method,
+  createProjectInDefaultFolder: method, relinkProjectFolder: method, deleteProject: method,
 }
 
 describe('canvas host entry points', () => {
   it('offers none of them to a desktop without the methods or the switches', () => {
     // The 000f913 desktop bridge has none of these methods and declares nothing.
-    expect(Object.values(canvasHostEntryPoints({}, v2EquivalentCapabilities))).toEqual(Array(12).fill(false))
+    expect(Object.values(canvasHostEntryPoints({}, v2EquivalentCapabilities))).toEqual(Array(13).fill(false))
   })
 
   it('offers all of them to a host with every method and switch', () => {
-    expect(Object.values(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile))).toEqual(Array(12).fill(true))
+    expect(Object.values(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile))).toEqual(Array(13).fill(true))
   })
 
   it('turns off every entry that reads complete asset records when that method is missing', () => {
@@ -28,7 +28,7 @@ describe('canvas host entry points', () => {
     expect(canvasHostEntryPoints(rest, fullCanvasCapabilityProfile)).toEqual({
       batchAdd: false, batchDownload: true, assetOrigin: true, runResultCollection: false,
       imageAnnotation: false, videoFrames: false, menuPaste: true, pageDownload: true, projectHistory: true, projectPackageExport: true,
-      projectDefaultFolder: true, projectFolderRelink: true,
+      projectDefaultFolder: true, projectFolderRelink: true, projectDelete: true,
     })
   })
 
@@ -37,6 +37,12 @@ describe('canvas host entry points', () => {
     expect(canvasHostEntryPoints(withoutDefault, fullCanvasCapabilityProfile)).toMatchObject({ projectDefaultFolder: false, projectFolderRelink: true })
     const { relinkProjectFolder: _relink, ...withoutRelink } = allMethods
     expect(canvasHostEntryPoints(withoutRelink, fullCanvasCapabilityProfile)).toMatchObject({ projectDefaultFolder: true, projectFolderRelink: false })
+  })
+
+  it('offers deleting an archived project only where the host can confirm and delete it', () => {
+    const { deleteProject: _delete, ...withoutDelete } = allMethods
+    expect(canvasHostEntryPoints(withoutDelete, fullCanvasCapabilityProfile)).toMatchObject({ projectDelete: false, projectFolderRelink: true })
+    expect(canvasHostEntryPoints(allMethods, fullCanvasCapabilityProfile).projectDelete).toBe(true)
   })
 
   it('offers frame selection only where frame extraction can run', () => {

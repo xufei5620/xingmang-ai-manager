@@ -120,7 +120,7 @@ export function vaultRecoveredNotice(): StartupNotice {
     failure: false,
     tone: 'warn',
     title: '本机保存的登录信息已重置，请重新登录',
-    body: '这台电脑上保存的登录信息已经读不出来，应用已重新建立它。之前记住的账号需要各自重新登录一次，已经写进各个工具的配置不受影响。',
+    body: '这台电脑上保存的登录信息已经读不出来，星芒已重新建了一份。之前记住的账号需要各自重新登录一次，已经写进各个工具的配置不受影响。',
     action: { label: '去登录', login: true },
   }
 }
@@ -169,9 +169,10 @@ export function updatedNotice(currentVersion: string, release: InstalledRelease 
  */
 export function settingsSaveNotice(issue: SettingsSaveIssue | null | undefined): StartupNotice | null {
   if (!issue) return null
-  const drive = issue.drive && /^[A-Z]$/.test(issue.drive) ? `${issue.drive} 盘` : '磁盘'
+  // 盘符是字母，前后跟汉字隔一个空格（「电脑上的 C 盘」）；没有盘符写「磁盘」，不加空格。
+  const drive = issue.drive && /^[A-Z]$/.test(issue.drive) ? ` ${issue.drive} 盘` : '磁盘'
   const body = issue.kind === 'disk-full'
-    ? `电脑${drive}空间快满了，部分设置可能保存不上。清理一下${drive}（比如清空回收站、删掉不用的大文件）后重开软件就好。`
+    ? `电脑上的${drive}空间快满了，部分设置可能保存不上。清理一下${drive}（比如清空回收站、删掉不用的大文件）后重开软件就好。`
     : issue.kind === 'blocked'
       ? '软件的设置文件被别的程序（常见是杀毒软件）拦住了，部分设置可能保存不上。把星芒AI管理工具加进杀毒软件的信任名单后重开软件就好。'
       : '这次打开时设置没保存上，部分设置可能要重新选一次。重开软件一般就好了。'
@@ -324,7 +325,7 @@ export function claudeDesktopRepairedNotice(
 ): StartupNotice | null {
   if (capabilities?.claudeDesktopRepaired !== true) return null
   const quit = platform === 'macos'
-    ? '只关窗口不算，要按 Command + Q'
+    ? '只关窗口不算，要按 ⌘Q'
     : platform === 'windows' ? '只关窗口不算，还要退出屏幕右下角托盘里的 Claude 图标' : '只关窗口不算'
   return {
     id: 'claude-desktop-repaired',
@@ -358,8 +359,8 @@ export function toolRouteRestartNotice(hint: ToolRouteRestartHint): StartupNotic
 
 const codexPayloadNewConversation = '请新开一个对话继续；对话里的截图和大文件会让体积变大很快。这时让 Codex 压缩对话也不管用，压缩同样要先把整段对话发上去。'
 const codexPayloadReasons: Partial<Record<CodexPayloadNoticeKind, string>> = {
-  locked: '你在设置里选了只用线路 1，所以没有自动换线路。',
-  unreachable: '线路 2 这会儿也连不上，所以没能帮你换过去。',
+  locked: '你在设置里选了只用线路1，所以没有自动换线路。',
+  unreachable: '线路2 这会儿也连不上，所以没能帮你换过去。',
 }
 
 /**
@@ -373,8 +374,8 @@ export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
       id: 'codex-payload',
       failure: false,
       tone: 'neutral',
-      title: 'Codex 里有个对话快到线路 1 的上限了',
-      body: '对话越聊越大，超过 100MB 后线路 1 就发不出去了。建议手上这件事做完就新开一个对话；截图和大文件会让体积变大很快。',
+      title: 'Codex 里有个对话快到线路1 的上限了',
+      body: '对话越聊越大，超过 100MB 后线路1 就发不出去了。建议手上这件事做完就新开一个对话；截图和大文件会让体积变大很快。',
       action,
     }
   }
@@ -384,7 +385,7 @@ export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
       failure: false,
       tone: 'warn',
       title: 'Codex 里这个对话太大，发不出去了',
-      body: `这个对话已经超过线路 2 的上限，在这个对话里发什么都会失败。${codexPayloadNewConversation}`,
+      body: `这个对话已经超过线路2 的上限，在这个对话里发什么都会失败。${codexPayloadNewConversation}`,
       action,
     }
   }
@@ -392,8 +393,8 @@ export function codexPayloadNotice(notice: CodexPayloadNotice): StartupNotice {
     id: 'codex-payload',
     failure: false,
     tone: 'warn',
-    title: 'Codex 里这个对话太大，线路 1 发不出去',
-    body: `这个对话已经超过 100MB，线路 1 发不出去，在这个对话里发什么都会失败。${codexPayloadNewConversation}${codexPayloadReasons[notice.kind] ?? ''}`,
+    title: 'Codex 里这个对话太大，线路1 发不出去',
+    body: `这个对话已经超过 100MB，线路1 发不出去，在这个对话里发什么都会失败。${codexPayloadNewConversation}${codexPayloadReasons[notice.kind] ?? ''}`,
     action,
   }
 }

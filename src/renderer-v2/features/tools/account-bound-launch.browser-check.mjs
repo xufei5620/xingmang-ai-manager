@@ -245,7 +245,7 @@ test('a desktop status response from the previous account cannot show a restart 
     await switchAccount(page)
     await page.evaluate(() => window.releaseDesktopStatus())
     await settle(page)
-    assert.equal(await page.getByRole('dialog', { name: 'Codex 已在运行' }).count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: 'Codex 桌面端还开着' }).count(), 0)
     assert.deepEqual(await launchCalls(page), [])
   } finally { await page.close() }
 })
@@ -257,7 +257,7 @@ test('a Codex Desktop already running on Windows still offers the restart prompt
       window.xingmang.getCodexDesktopStatus = async () => ({ running: true })
     })
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('dialog', { name: 'Codex 已在运行' }).waitFor()
+    await page.getByRole('dialog', { name: 'Codex 桌面端还开着' }).waitFor()
     await settle(page)
     assert.deepEqual(await launchCalls(page), [])
   } finally { await page.close() }
@@ -272,7 +272,7 @@ test('a Codex Desktop already running on a Mac comes to the front without the re
     await page.getByTestId('tool-codexDesktop-primary').click()
     await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
     await settle(page)
-    assert.equal(await page.getByRole('dialog', { name: 'Codex 已在运行' }).count(), 0)
+    assert.equal(await page.getByRole('dialog', { name: 'Codex 桌面端还开着' }).count(), 0)
     assert.deepEqual((await launchCalls(page)).map((entry) => entry.args), [['open']])
   } finally { await page.close() }
 })

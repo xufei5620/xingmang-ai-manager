@@ -68,7 +68,7 @@ function RestoreCheckNotice({ check, navigate }: { check: RestoreCheck; navigate
       <Notice
         tone={check.error ? 'bad' : 'neutral'}
         title={check.error ? `${name} · 没测成` : `正在测 ${name} 的连接`}
-        body={check.error ?? '配置已恢复，正在用恢复出来的配置发一次最小请求。'}
+        body={check.error ?? '配置已恢复，正在用它试连一次。'}
         testId="backups-restore-check"
       />
     )
@@ -263,7 +263,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
               />
             ))}
             <p className="v2-backup-preview-note">恢复前会先把当前配置另存一份，恢复后需要重新打开工具。</p>
-            <p className="v2-backup-preview-note">备份在本机，可能含凭据，请妥善保管。</p>
+            <p className="v2-backup-preview-note">备份在这台电脑上，里面可能有密钥，别随便发给别人。</p>
           </>
         )}
       </Dialog>
@@ -293,7 +293,7 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
                         void checkRestored(result.provider)
                       }
                       await resource.reload()
-                      if (!result.preRestoreBackupId) throw new Error('恢复结果缺少恢复前备份信息，请查看反馈日志。')
+                      if (!result.preRestoreBackupId) throw new Error('恢复好了，但没找到恢复前存的那一份。请到「反馈与客服 › 运行日志」导出发给客服。')
                     },
                     `已恢复到 ${restoringTime} 的配置，原来的配置已另存`,
                   )

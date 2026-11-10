@@ -6,6 +6,7 @@ const test = require('node:test')
 const {
   assertControlFields,
   assertDesktopEntry,
+  assertMimePackage,
   assertPackagedMetadata,
   assertPayloadEntries,
   assertPostinst,
@@ -63,6 +64,9 @@ const PAYLOAD = [
   ['drwxr-xr-x', 'root/root', './usr/share/doc/'],
   ['drwxr-xr-x', 'root/root', './usr/share/doc/xingmang-ai-manager/'],
   ['-rw-r--r--', 'root/root', './usr/share/doc/xingmang-ai-manager/changelog.gz'],
+  ['drwxr-xr-x', 'root/root', './usr/share/mime/'],
+  ['drwxr-xr-x', 'root/root', './usr/share/mime/packages/'],
+  ['-rw-r--r--', 'root/root', './usr/share/mime/packages/xingmang-ai-manager.xml'],
 ]
 
 function payloadWith(replace) {
@@ -91,7 +95,7 @@ const DESKTOP = [
   'Type=Application',
   'Icon=xingmang-ai-manager',
   'StartupWMClass=xingmang-ai-manager',
-  'MimeType=x-scheme-handler/xingmang;',
+  'MimeType=application/x-xingcanvas;x-scheme-handler/xingmang;',
   'Categories=Development;',
   '',
   '[Desktop Action Extra]',
@@ -224,6 +228,7 @@ test('the payload must carry the files a launch needs and not the Electron defau
     './opt/xingmang-ai-manager/resources/app.asar',
     './opt/xingmang-ai-manager/resources/package-type',
     './usr/share/applications/xingmang-ai-manager.desktop',
+    './usr/share/mime/packages/xingmang-ai-manager.xml',
   ]) {
     const entries = parseContentsListing(listing(PAYLOAD.filter(([, , file]) => file !== required)))
     assert.throws(() => assertPayloadEntries(entries), new RegExp(`缺少 ${required.replace(/[.]/g, '\\.')}`), required)
@@ -257,8 +262,33 @@ test('the menu entry has to start the app sandboxed and own its window and links
   )
   assert.throws(() => assertDesktopEntry(DESKTOP.replace('Exec=/opt/xingmang-ai-manager/xingmang-ai-manager %U', 'Exec=xingmang-ai-manager %U')), /Exec/)
   assert.throws(() => assertDesktopEntry(DESKTOP.replace('StartupWMClass=xingmang-ai-manager', 'StartupWMClass=星芒AI管理工具')), /StartupWMClass/)
-  assert.throws(() => assertDesktopEntry(DESKTOP.replace('MimeType=x-scheme-handler/xingmang;', 'MimeType=')), /xingmang:\/\//)
+  assert.throws(() => assertDesktopEntry(DESKTOP.replace('x-scheme-handler/xingmang;', '')), /xingmang:\/\//)
+  assert.throws(() => assertDesktopEntry(DESKTOP.replace('application/x-xingcanvas;', '')), /双击画布项目文件/)
   assert.throws(() => assertDesktopEntry(DESKTOP.replace('Terminal=false', 'Terminal=true')), /Terminal/)
+})
+
+test('the package teaches the system that .xingcanvas files are canvas projects', () => {
+  // What electron-builder 26.15.3 writes for linux.fileAssociations (LinuxTargetHelper.computeMimeTypeFiles).
+  const mimePackage = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">',
+    '<mime-type type="application/x-xingcanvas">',
+    '  <glob pattern="*.xingcanvas"/>',
+    '    <comment>星芒画布项目</comment>',
+    '  <icon name="x-office-document" />',
+    '</mime-type>',
+    '</mime-info>',
+  ].join('\n')
+  assert.doesNotThrow(() => assertMimePackage(mimePackage))
+  assert.throws(() => assertMimePackage(mimePackage.replace('application/x-xingcanvas', 'application/x-other')), /没有声明 application\/x-xingcanvas/)
+  assert.throws(() => assertMimePackage(mimePackage.replace('*.xingcanvas', '*.json')), /没有认 \.xingcanvas/)
+})
+
+test('the payload may only add the canvas project MIME file under /usr/share/mime', () => {
+  assert.throws(
+    () => assertPayloadEntries(parseContentsListing(listing([...PAYLOAD, ['-rw-r--r--', 'root/root', './usr/share/mime/packages/other.xml']]))),
+    /意料之外的位置/,
+  )
 })
 
 test('ELF headers decide which architecture a binary was built for', () => {

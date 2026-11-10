@@ -455,7 +455,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   // 「暂时连不上，登录还在」之后的自动重试（全面检测 Q9）。以前每次重试都走一遍
   // transition：先推 revision、再占 busy，网络那一段（超时时十几秒）里读工具配置、
   // 打开工具、保存、一键切回官方全报「账号切换正在进行」，正在跑的保存做完了又报
-  // 「账号上下文已变化」。可这时当前身份本来就是未登录，没有什么要保护的：续期只动
+  // 「账号刚切换过」。可这时当前身份本来就是未登录，没有什么要保护的：续期只动
   // 一个还没接上的候选句柄。所以网络那段不占锁，只在真要换身份的那一下进 transition。
   //
   // The refresh may rotate the saved cookie on the server. When the candidate

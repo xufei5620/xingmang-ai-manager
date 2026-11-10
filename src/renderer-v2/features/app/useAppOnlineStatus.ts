@@ -31,7 +31,8 @@ export function useAppOnlineStatus({ native, toast, authenticated, balanceStore,
   }, [browserOnline, balanceStore, authenticated])
   const onlineCause = offline ? offlineCause({ browserOnline, networkFailureReason: balanceState.networkFailureReason }) : undefined
   // 代理连不上时，星芒先替用户试一次直连（只改自己的连接，下次打开软件照旧跟随系统）。
-  // 自动只试一次；之后点「重新检测」再试。
+  // 自动只试一次；之后点「重新检测」再试。代理要账号密码时也试：直连通了就不用找管理员。
+  const proxyCause = onlineCause === 'proxy' || onlineCause === 'proxyAuth'
   const proxyBypassTried = useRef(false)
   const [proxyBypassNotice, setProxyBypassNotice] = useState(false)
   const tryProxyBypass = useCallback(async () => {
@@ -41,19 +42,19 @@ export function useAppOnlineStatus({ native, toast, authenticated, balanceStore,
     return outcome === 'direct'
   }, [native, mounted])
   useEffect(() => {
-    if (onlineCause !== 'proxy' || proxyBypassTried.current) return
+    if (!proxyCause || proxyBypassTried.current) return
     void tryProxyBypass().then((direct) => { if (direct) void balanceStore.refresh('manual') })
-  }, [onlineCause, tryProxyBypass, balanceStore])
+  }, [proxyCause, tryProxyBypass, balanceStore])
   const recheckOnline = useCallback(() => {
     if (!navigator.onLine || !authenticated) { toast.show(stillOfflineText, 'warn'); return }
     setOnlineChecking(true)
-    const bypass = onlineCause === 'proxy' ? tryProxyBypass() : Promise.resolve(false)
+    const bypass = proxyCause ? tryProxyBypass() : Promise.resolve(false)
     void bypass.then(() => balanceStore.refresh('manual')).finally(() => {
       if (!mounted.current) return
       setOnlineChecking(false)
       if (isOffline({ browserOnline: navigator.onLine, networkFailures: balanceStore.getSnapshot().networkFailures })) toast.show(stillOfflineText, 'warn')
     })
-  }, [balanceStore, authenticated, onlineCause, tryProxyBypass, toast, mounted])
+  }, [balanceStore, authenticated, proxyCause, tryProxyBypass, toast, mounted])
   const openNetworkSettings = useCallback((kind: NetworkSettingsKind) => {
     void Promise.resolve().then(() => native.openNetworkSettings(kind)).then((opened) => {
       if (!opened) throw new Error('not-opened')
