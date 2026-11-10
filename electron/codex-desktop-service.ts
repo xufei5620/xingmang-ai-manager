@@ -1879,7 +1879,9 @@ function codexDesktopPackageProbeStatements(): string[] {
     'if ($null -ne $currentError) {',
     '  $errorMessage = \'读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。\'',
     '}',
-    '$packageProbe = [pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
+    // A hashtable, not [pscustomobject]@{}: ConstrainedLanguage refuses that
+    // hashtable-to-object conversion, and ConvertTo-Json writes both the same.
+    '$packageProbe = @{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
   ]
 }
 
@@ -1936,7 +1938,9 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '} catch { $packageError = $_.Exception.Message }',
-    ...buildPowerShellJsonOutputStatements('[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6'),
+    // 受限语言模式下 [pscustomobject]@{} 被拒，最后这句一失败整条就是退出码 1、结果全丢
+    // （2026-11-10 客户电脑），所以用普通哈希表，JSON 照样是同一个对象。
+    ...buildPowerShellJsonOutputStatements('@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6'),
   ].join('\n')
 }
 
