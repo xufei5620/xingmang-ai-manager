@@ -438,3 +438,9 @@ export function completeImages(state: ChatWorkspace, requestId: string, assets: 
 export function shouldSendOnEnter(input: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }, composing = false): boolean {
   return input.key === 'Enter' && !input.shiftKey && !input.isComposing && input.keyCode !== 229 && !composing
 }
+// Excel、WPS 里复制几格表格，剪贴板里除了文字还附一张表格的图。以前一见图就整次拦下当截图贴，
+// 文字被吞（0.2.24 深查剪贴板 J3）。有字就照常贴字，只有纯图片（截图）才交给主进程读图。
+export function shouldPasteScreenshot(clipboard: { items: Iterable<{ kind: string; type: string }>; getData: (format: string) => string }): boolean {
+  if (clipboard.getData('text/plain').trim()) return false
+  return [...clipboard.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
+}
