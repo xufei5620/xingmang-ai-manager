@@ -13,7 +13,34 @@ export const feishuSetupSteps = [
 ] as const
 
 /**
- * 飞书那一块里「填凭据」的部分：还没填时摆两个框和怎么建机器人，填过了只说是哪个应用。
+ * 保存凭据以后、配对成功以前留着的「还差这几步」（YF-1）。上面那 6 步的后两步要在保存、打开遥控以后才做，
+ * 原来保存一下说明就收走了。4 步固定摆着，不按做没做完增减：小字里按编号说「第 2 步」。
+ */
+export const feishuNextSteps = {
+  title: '保存好了。再做下面几步，手机上才收得到',
+  steps: [
+    '先打开下面的「打开遥控」，等它显示「已连上」。',
+    '回飞书开放平台的「事件与回调」：事件订阅方式选「使用长连接接收事件」，添加事件「接收消息」；回调订阅方式也选长连接，添加「卡片回传交互」。',
+    '在「版本管理与发布」里发布一个版本。',
+    '在飞书里搜这个机器人的名字，私聊它。回这里点「开始配对」，把 6 位数字发给它。',
+  ],
+  note: '第 2 步要先把遥控打开，飞书后台才存得上。',
+} as const
+
+function FeishuSetupGuide() {
+  return (
+    <details className="v2-remote-guide">
+      <summary>怎么建飞书机器人</summary>
+      <ol>
+        {feishuSetupSteps.map((step) => <li key={step}>{step}</li>)}
+      </ol>
+    </details>
+  )
+}
+
+/**
+ * 飞书那一块里「填凭据」的部分：还没填时摆两个框和怎么建机器人；填过了说是哪个应用，配对成功前下面跟着
+ * 还差的几步，配对成功后收成一行「怎么建飞书机器人」。
  * 保存时主进程先拿去飞书换一次访问凭证，填错了当场说；App Secret 不回到界面上。
  * 清掉凭据是卡片上各渠道共用的「退出登录」，不在这里。
  */
@@ -30,24 +57,32 @@ export function FeishuRemoteSection({ snapshot, api, disabled, busy, run }: Remo
   }
   if (!showForm) {
     return (
-      <SettingRow
-        title="飞书应用"
-        description={`App ID：${snapshot.accountLabel ?? '已保存'}`}
-        control={<Button size="sm" disabled={disabled} onClick={() => setEditing(true)} testId="settings-remote-feishu-edit">重新填写</Button>}
-        testId="settings-remote-feishu-app"
-      />
+      <>
+        <SettingRow
+          title="飞书应用"
+          description={`App ID：${snapshot.accountLabel ?? '已保存'}`}
+          control={<Button size="sm" disabled={disabled} onClick={() => setEditing(true)} testId="settings-remote-feishu-edit">重新填写</Button>}
+          testId="settings-remote-feishu-app"
+        />
+        {snapshot.boundPeer
+          ? <div className="v2-remote-guide-row" data-testid="settings-remote-feishu-guide"><FeishuSetupGuide /></div>
+          : (
+            <div className="v2-remote-next" data-testid="settings-remote-feishu-next">
+              <p className="v2-remote-next-title">{feishuNextSteps.title}</p>
+              <ol>
+                {feishuNextSteps.steps.map((step) => <li key={step}>{step}</li>)}
+              </ol>
+              <p className="v2-remote-next-note">{feishuNextSteps.note}</p>
+            </div>
+          )}
+      </>
     )
   }
   const saving = busy === 'feishu-save'
   return (
     <div className="v2-remote-form" data-testid="settings-remote-feishu-form">
       <p className="v2-remote-note">先在飞书开放平台建一个企业自建应用（机器人），把它的 App ID 和 App Secret 填在这里。</p>
-      <details className="v2-remote-guide">
-        <summary>怎么建飞书机器人</summary>
-        <ol>
-          {feishuSetupSteps.map((step) => <li key={step}>{step}</li>)}
-        </ol>
-      </details>
+      <FeishuSetupGuide />
       <div className="v2-remote-fields">
         <Input label="App ID" mono value={appId} onChange={(event) => setAppId(event.target.value)} placeholder="cli_ 开头" autoComplete="off" spellCheck={false} testId="settings-remote-feishu-app-id" />
         <Input label="App Secret" mono password value={appSecret} onChange={(event) => setAppSecret(event.target.value)} autoComplete="off" spellCheck={false} testId="settings-remote-feishu-app-secret" />
