@@ -67,6 +67,8 @@ export const announcementPollIntervalMs = 10 * 60 * 1000
 interface AnnouncementError {
   message: string
   responseTooLarge: boolean
+  /** 公告合集读不出来：那句叫客户「重新读取」或到官网看，两个按钮都要摆出来。 */
+  collectionUnreadable?: boolean
 }
 
 const announcementBlockTags = new Set([
@@ -898,8 +900,14 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
  */
 export function formatAnnouncementLoadError(cause: unknown): AnnouncementError {
   const formatted = formatAnnouncementError(cause)
-  if (formatted.responseTooLarge || cause instanceof AnnouncementCollectionError) return formatted
+  if (formatted.responseTooLarge) return formatted
+  if (cause instanceof AnnouncementCollectionError) return { ...formatted, collectionUnreadable: true }
   return { responseTooLarge: false, message: '公告暂时没读到，过一会儿点铃铛再看。' }
+}
+
+/** 这句报错指客户去官网时，旁边就得有「打开官网查看完整公告」；只说「暂时没读到」的不给。 */
+export function announcementErrorOffersSite(error: AnnouncementError): boolean {
+  return error.responseTooLarge || error.collectionUnreadable === true
 }
 
 // 已读没记上时只说这一句，原因不上屏。
@@ -1382,9 +1390,10 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     {noticeSlot === undefined ? stripArea : noticeSlot ? createPortal(stripArea, noticeSlot) : null}
     {open && <AnnouncementPopover onClose={onClose}>
       <div className="v2-announcement-pop-head"><b>公告</b>{entries?.some((entry) => !entry.read) && <button type="button" className="v2-announcement-mark-all" onClick={() => void markAllRead()} data-testid="announcement-mark-all-read">全部已读</button>}</div>
-      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl
-        ? <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>
-        : <Button size="sm" onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>}</div>}
+      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p><div className="v2-announcement-error-actions">
+        {!(error.responseTooLarge && noticeUrl) && <Button size="sm" onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>}
+        {announcementErrorOffersSite(error) && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}
+      </div></div>}
       {entries?.map((entry) => readErrors[entry.id] && <p key={entry.id} className="v2-announcement-error" role="alert">{readErrors[entry.id]}</p>)}
       {loading ? <p role="status" className="v2-announcement-pop-note">正在读取公告</p> : entries?.length ? (
         <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
@@ -1406,7 +1415,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     {dialogOpen && <Dialog open title="公告" width={640} onClose={closeDialog} footer={selected
       ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
       : <><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && !entries && <Button variant="primary" onClick={() => markLegacyRead(true)}>标为已读</Button>}</>}>
-      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
+      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{announcementErrorOffersSite(error) && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
       {blockedLink && <BlockedLinkHint notice={blockedLink} testId="announcement-blocked-link" />}
       {loading ? <p role="status">正在读取公告</p> : announcement ? entries ? selected ? (
         <article className="v2-announcement-entry" data-testid="announcement-detail" key={selected.id}>

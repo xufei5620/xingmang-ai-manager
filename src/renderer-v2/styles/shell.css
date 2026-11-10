@@ -223,6 +223,7 @@ button, input, select, textarea { font: inherit; }
 .v2-announcement-pop-note { margin: 0; padding: 10px; color: var(--text-3); font-size: 13px; }
 .v2-announcement-popover > .v2-announcement-error { margin: 4px 10px 8px; display: grid; justify-items: start; gap: 6px; font-size: var(--font-small-compact); }
 .v2-announcement-popover > .v2-announcement-error > p { margin: 0; }
+.v2-announcement-popover .v2-announcement-error-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .v2-announcement-popover .v2-announcement-list > li + li { border: 0; }
 .v2-announcement-popover .v2-announcement-row { position: relative; display: block; min-height: 0; padding: 9px 10px 9px 22px; border-radius: 8px; }
 .v2-announcement-popover .v2-announcement-row:hover { background: var(--panel-hover); }
