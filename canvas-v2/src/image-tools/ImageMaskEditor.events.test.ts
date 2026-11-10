@@ -31,7 +31,7 @@ function text(tree: unknown): string {
   if (Array.isArray(tree)) return tree.map(text).join('')
   return tree && typeof tree === 'object' && 'props' in tree ? text((tree as ElementShape).props.children) : ''
 }
-function harness(initial?: ImageEditMask, dimensions = { width: 4096, height: 256 }) {
+function harness(initial?: ImageEditMask, dimensions = { width: 4096, height: 256 }, extra: Partial<Parameters<typeof ImageMaskEditor>[0]> = {}) {
   hooks.cursor = 0; hooks.values = []; hooks.pending = []; hooks.rasterCalls = 0
   const assetId = 'a'.repeat(43), onApply = vi.fn(), onClose = vi.fn()
   const frames = new Map<number, () => void>(); let nextFrame = 0
@@ -41,7 +41,7 @@ function harness(initial?: ImageEditMask, dimensions = { width: 4096, height: 25
   vi.stubGlobal('requestAnimationFrame', (callback: () => void) => { frames.set(++nextFrame, callback); return nextFrame })
   vi.stubGlobal('cancelAnimationFrame', (id: number) => { frames.delete(id) })
   let tree: unknown
-  function render() { hooks.cursor = 0; tree = ImageMaskEditor({ asset: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}` }, initial, onApply, onClose }); hooks.pending.splice(0).forEach((effect) => effect()) }
+  function render() { hooks.cursor = 0; tree = ImageMaskEditor({ asset: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}` }, initial, onApply, onClose, ...extra }); hooks.pending.splice(0).forEach((effect) => effect()) }
   function element(predicate: (element: ElementShape) => boolean) { const found = findElement(tree, predicate); if (!found) throw new Error('Missing element'); return found }
   function action(el: ElementShape, name: string, event: unknown = {}) { (el.props[name] as (event: unknown) => void)(event); render() }
   function click(label: string) { const el = element((entry) => entry.type === 'button' && (entry.props['aria-label'] === label || text(entry.props.children) === label)); if (el.props.disabled) throw new Error(`Disabled: ${label}`); action(el, 'onClick') }
@@ -89,6 +89,21 @@ describe('actual mask editor interactions', () => {
     expect(saved.strokes.map((stroke) => stroke.tool)).toEqual(['erase', 'brush'])
     expect(saved.strokes[1].points).toHaveLength(1)
     const cancelled = harness(); cancelled.load(); cancelled.key('Escape'); expect(cancelled.onApply).not.toHaveBeenCalled(); expect(cancelled.onClose).toHaveBeenCalledOnce()
+  })
+
+  it('speaks only of the AI edit where the host neither downloads nor takes the mask image', () => {
+    const save = vi.fn(async () => undefined)
+    const exporting = harness(undefined, { width: 400, height: 200 }, { allowDownload: false, onSaveAsset: save, allowLinkedAsset: true }); exporting.load()
+    expect(exporting.text()).toContain('另存图片只保存黑白蒙版')
+    expect(exporting.text()).toContain('保存图片不提交 AI 请求')
+    expect(exporting.text()).toContain('另存为关联图片节点')
+    const desktop = harness(undefined, { width: 400, height: 200 }, { allowDownload: false, saveLabel: '创建 AI 局部修改节点' }); desktop.load()
+    expect(desktop.text()).toContain('白色表示希望修改的区域，黑色表示保留。AI 局部修改需之后单独确认运行，模型可能同时调整其他区域。')
+    for (const absent of ['另存', '图片保存方式', '保存图片不提交 AI 请求', '下载黑白蒙版']) expect(desktop.text()).not.toContain(absent)
+    desktop.pointer('onPointerDown', 280, 125); desktop.pointer('onPointerUp', 280, 125)
+    desktop.click('创建 AI 局部修改节点')
+    expect(desktop.onApply).toHaveBeenCalledOnce()
+    expect(desktop.onClose).toHaveBeenCalledOnce()
   })
 
   it('requires explicit adaptation of a portable recipe and disables oversized source images', () => {
