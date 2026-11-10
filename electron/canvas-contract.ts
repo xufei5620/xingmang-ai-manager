@@ -137,7 +137,7 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
     byteUpload: false,
     promptPresetGroups: false,
   },
-  imageCandidates: { maximum: 1 },
+  imageCandidates: { maximum: 4 },
   videoCandidates: { maximum: 1 },
   promptPresetNameMaxLength: maximumCanvasPromptPresetNameLength,
   imageResolutions: {

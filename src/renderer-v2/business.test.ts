@@ -455,7 +455,7 @@ describe('v2 business boundaries', () => {
           "Error invoking remote method 'account:change-password': Error: This account has no password set.",
         ),
       ),
-    ).toBe('当前账号未设置密码，请先通过“找回密码”设置密码')
+    ).toBe('这个账号还没设过密码，先点「找回密码」设一个')
     expect(errorMessage(new Error('User has been banned'))).toBe(
       '该账号已被封禁，请联系客服',
     )

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -298,6 +298,16 @@ describe('v2 chat request transitions', () => {
     expect(shouldSendOnEnter({ key: 'Enter', shiftKey: false, isComposing: false, keyCode: 229 })).toBe(false)
     expect(shouldSendOnEnter({ key: 'Enter', shiftKey: false, isComposing: false }, true)).toBe(false)
   })
+  it('pastes spreadsheet cells as text and only takes a clipboard with no text as a screenshot', () => {
+    function clipboard(text: string, items: Array<{ kind: string; type: string }>) { return { items, getData: (format: string) => format === 'text/plain' ? text : '' } }
+    const image = { kind: 'file', type: 'image/png' }
+    // Excel and WPS put the cells as text plus a picture of the table on the clipboard.
+    expect(shouldPasteScreenshot(clipboard('姓名\t金额\r\n张三\t12\r\n', [{ kind: 'string', type: 'text/plain' }, { kind: 'string', type: 'text/html' }, image]))).toBe(false)
+    expect(shouldPasteScreenshot(clipboard('', [image]))).toBe(true)
+    expect(shouldPasteScreenshot(clipboard(' \r\n', [{ kind: 'string', type: 'text/plain' }, image])), 'blank text is not worth keeping over the picture').toBe(true)
+    expect(shouldPasteScreenshot(clipboard('plain words', [{ kind: 'string', type: 'text/plain' }]))).toBe(false)
+    expect(shouldPasteScreenshot(clipboard('', [{ kind: 'file', type: 'application/pdf' }]))).toBe(false)
+  })
   it('validates optional numeric parameters and does not coerce blank values to zero', () => {
     expect(parseParameters(createParameterDraft({})).parameters).toEqual({})
     const invalid = { ...createParameterDraft({}), temperature: '2.1', maxTokens: '1.5', seed: 'Infinity' }
@@ -306,7 +316,7 @@ describe('v2 chat request transitions', () => {
   })
   it('says what to type when a whole number is expected, and gives the range only when the number is whole', () => {
     const { errors } = parseParameters({ ...createParameterDraft({}), maxTokens: '1.5', seed: 'abc' })
-    expect(errors).toEqual({ maxTokens: '最大输出 Token 要填整数，比如 4096', seed: '随机种子要填整数' })
+    expect(errors).toEqual({ maxTokens: '要填整数，比如 4096（不填就是不限）', seed: '随机种子要填整数' })
     expect(parseParameters({ ...createParameterDraft({}), maxTokens: '0', seed: '3000000000' }).errors).toEqual({ maxTokens: '请输入 1 至 131072 之间的整数', seed: '请输入 -2147483648 至 2147483647 之间的整数' })
     expect(parseParameters({ ...createParameterDraft({}), temperature: '2.1' }).errors).toEqual({ temperature: '请输入 0 至 2 之间的数值' })
   })

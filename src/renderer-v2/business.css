@@ -371,6 +371,8 @@
 .v2-remote-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .v2-remote-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .v2-remote-code { color: var(--text); font-size: var(--font-h1); font-weight: 600; letter-spacing: 0.18em; }
+/* 配对码发错过几次、错满作废（D66）：紧跟在配对那一行下面。 */
+.v2-remote-pairing-note { margin: -6px 16px 12px; color: var(--warn-tx); font-size: var(--font-small-compact); line-height: var(--line-body); }
 /* 微信那一块和扫码弹窗。二维码保持白底：暗色主题下手机也要扫得出来。 */
 .v2-remote-weixin-notice { padding: 6px 16px 0; }
 .v2-remote-weixin-login { display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; }
