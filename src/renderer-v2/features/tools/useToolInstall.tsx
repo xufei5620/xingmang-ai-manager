@@ -315,7 +315,7 @@ export function useToolInstall(options: ToolInstallOptions) {
   function finishExternalConfigSave() {
     const epoch = accountEpoch.capture()
     void toolbox.refreshExternal().catch(() => {
-      if (mounted.current && epoch()) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
+      if (mounted.current && epoch()) toast.show('配置已保存，但还没读到它现在的状态，点「重新检测」再看一次。', 'warn')
     })
   }
   function requestUninstall(id: ToolId) {
@@ -394,7 +394,7 @@ export function useToolInstall(options: ToolInstallOptions) {
       if (outcome !== 'installed' || !mounted.current) return
       if (!wasInstalled) toast.show(done.keyWritten ? `${spacedName(name)}已装好，并配好了你的账号` : `${spacedName(name)}已装好`, 'ok')
       else if (shownKind === 'rollback' && target) toast.show(`${spacedName(name)}已回到推荐版本 v${target}`, 'ok')
-      else if (shownKind === 'update' && target) toast.show(`${spacedName(name)}已更新到 v${target}，有问题可以在「更多操作」里退回`, 'ok')
+      else if (shownKind === 'update' && target) toast.show(`${spacedName(name)}已更新到 v${target}，有问题可以在右边「…」里退回`, 'ok')
     } catch (cause) {
       const action = '安装工具'
       const operationTarget = operationTargetOf(action)

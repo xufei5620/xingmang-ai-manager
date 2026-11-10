@@ -25,12 +25,12 @@ export interface ManagedSwitchConfirmation {
 
 /**
  * 确认框里的三句话，照 yoyo 2026-10-04 点过头的原话（另一颗按钮是 Confirm 默认的「取消」）。
- * 「工具配置、账户数据和历史记录会保留」与卸载确认框是同一句：卸载只删程序本身。
+ * 「工具配置、账号数据和历史记录会保留」与卸载确认框是同一句：卸载只删程序本身。
  */
 export function managedSwitchConfirmation(version: string): ManagedSwitchConfirmation {
   return {
     title: '换成星芒装的 Claude Code？',
-    body: `这台电脑上的 Claude Code 是官方安装器装的，星芒没法直接更新它。点「换成星芒装的」，星芒会先把它卸掉，再装上 ${version}。工具配置、账户数据和历史记录会保留，以后在星芒里点一下就能更新。`,
+    body: `这台电脑上的 Claude Code 是官方安装器装的，星芒没法直接更新它。点「换成星芒装的」，星芒会先把它卸掉，再装上 ${version}。工具配置、账号数据和历史记录会保留，以后在星芒里点一下就能更新。`,
     okLabel: '换成星芒装的',
   }
 }

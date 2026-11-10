@@ -33,7 +33,7 @@ const fixedLabels: Readonly<Record<string, string>> = {
   model: '模型',
   enabled: '已开启',
   bypass: '跳过命令确认',
-  managed: '由本软件写入',
+  managed: '由星芒写入',
   count: '共几项',
   measured: '查看的磁盘数',
   relocated: '被搬走的文件夹数',

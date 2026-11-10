@@ -21,6 +21,12 @@ describe('renderer-v2 component contract', () => {
     expect(closable).toContain('aria-label="关闭"');
     expect(renderToStaticMarkup(<Toast text="已复制" tone="ok" />)).not.toContain('<button');
   });
+  it('keeps a toast with a button until it is closed and puts the button before the close mark', () => {
+    expect(toastDurationMs('已复制', 'neutral', true)).toBeNull();
+    expect(toastDurationMs('已复制', 'ok', true)).toBeNull();
+    const html = renderToStaticMarkup(<Toast text="邀请码 XM-7K2Q" action={{ label: '复制邀请码', onClick: () => undefined }} onDismiss={() => undefined} />);
+    expect(html).toContain('<span>邀请码 XM-7K2Q</span><button class="xm-toast-action" type="button">复制邀请码</button><button class="xm-toast-close"');
+  });
   it('透传 testId 并支持语义按钮状态', () => {
     const html = renderToStaticMarkup(<Button testId="button-save" variant="primary">保存</Button>);
     expect(html).toContain('data-testid="button-save"');

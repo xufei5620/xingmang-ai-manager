@@ -188,6 +188,13 @@ export interface AppSettings {
   largeText?: boolean
   /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
   uiScale?: Exclude<AppUiScale, 'auto'>
+  /**
+   * 字的大小已经有人定过：客户自己开关过「大字」、选过「界面缩放」（快捷键、「恢复默认外观」也算），
+   * 或者星芒照 Windows「文本大小」替他开过一次「大字」。只落 true，没有单独的写法：任何一次写入带了
+   * largeText 或 uiScale 就记上（mergeAppSettings）。老版本没有这个字段，读出来就是「还没定过」。
+   * 记上以后开机不再照系统字号自动开「大字」，客户关掉了不会再被打开（D81）。
+   */
+  textSizeChosen?: boolean
   /** Absent = ask. The host must keep a visible entry when no tray exists. */
   closeBehavior?: Exclude<AppCloseBehavior, 'ask'>
   /**
@@ -480,6 +487,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(value.hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(optionalBoolean(value.largeText, false) ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
+    ...(value.textSizeChosen === true ? { textSizeChosen: true as const } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(value.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
@@ -656,6 +664,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const hardwareAcceleration = update.hardwareAcceleration ?? base.hardwareAcceleration
   const largeText = update.largeText ?? base.largeText
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
+  // 带了这两项就是有人定过字的大小，关掉、选回「自动」也算（D81）。
+  const textSizeChosen = base.textSizeChosen === true || update.largeText !== undefined || update.uiScale !== undefined
   const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
   const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
   const offeredModelUpgrades = parseOfferedModelUpgrades([...(base.offeredModelUpgrades ?? []), ...(update.offeredModelUpgrades ?? [])])
@@ -686,6 +696,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(hardwareAcceleration === false ? { hardwareAcceleration: false as const } : {}),
     ...(largeText ? { largeText: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
+    ...(textSizeChosen ? { textSizeChosen: true as const } : {}),
     ...(closeBehavior !== undefined ? { closeBehavior } : {}),
     ...(update.trayHintShown === true || base.trayHintShown === true ? { trayHintShown: true as const } : {}),
     ...(offeredModelUpgrades.length > 0 ? { offeredModelUpgrades } : {}),
