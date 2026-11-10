@@ -16,21 +16,18 @@ const guardedHeader = "if ($ExecutionContext.SessionState.LanguageMode -eq 'Full
 const escapeLine = "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage' -and $xingmangJson -match '[^\\x00-\\x7F]') { $xingmangJson = -join @(foreach ($xingmangChar in $xingmangJson.ToCharArray()) { if ([int]$xingmangChar -gt 127) { '\\u{0:x4}' -f [int]$xingmangChar } else { [string]$xingmangChar } }) }"
 const manualClm = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XM_SCRIPT"
 
+const failingAppx = "function Get-AppxPackage { throw 'boom' }\n"
 const tests = [
   ['lang', '$ExecutionContext.SessionState.LanguageMode.ToString()'],
-  ['write-error-then-ok', "Write-Error 'x'\n'ok'"],
-  ['utf8-header-then-ok', "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n'ok'"],
-  ['guarded-header-then-ok', `${guardedHeader}\n'ok'`],
-  ['json-raw', "$s = [string][char]0x4e2d + [char]0x6587\n@{ a = $s } | ConvertTo-Json -Compress"],
-  ['json-escaped', `${guardedHeader}\n$s = [string][char]0x4e2d + [char]0x6587\n$xingmangJson = @{ a = $s } | ConvertTo-Json -Compress\n${escapeLine}\n$xingmangJson`],
-  ['self-sid-cim', "Import-Module -Name 'Microsoft.PowerShell.Utility', 'CimCmdlets' -ErrorAction SilentlyContinue\n$self = Get-CimInstance -ClassName Win32_Process -Filter \"ProcessId=$PID\"\n$owner = Invoke-CimMethod -InputObject $self -MethodName GetOwnerSid\n[pscustomobject]@{ sidPrefix = ([string]$owner.Sid).Substring(0, 6); session = $self.SessionId } | ConvertTo-Json -Compress"],
+  ['ordered-hashtable', "[ordered]@{ a = 1; b = 2 } | ConvertTo-Json -Compress"],
   ['combined-current', scripts.combinedCurrent],
   ['combined-fixed', scripts.combinedFixed],
-  ['inventory-current', scripts.inventoryCurrent],
-  ['manual-clm lang', manualClm, { XM_SCRIPT: '$ExecutionContext.SessionState.LanguageMode.ToString()' }],
-  ['manual-clm utf8-header-then-ok', manualClm, { XM_SCRIPT: "$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)\n'ok'" }],
-  ['manual-clm combined-current', manualClm, { XM_SCRIPT: scripts.combinedCurrent }],
+  ['package-fixed', scripts.packageFixed],
+  ['combined-fixed appx-error', failingAppx + scripts.combinedFixed],
+  ['package-fixed appx-error', failingAppx + scripts.packageFixed],
   ['manual-clm combined-fixed', manualClm, { XM_SCRIPT: scripts.combinedFixed }],
+  ['manual-clm package-fixed', manualClm, { XM_SCRIPT: scripts.packageFixed }],
+  ['manual-clm combined-fixed appx-error', manualClm, { XM_SCRIPT: failingAppx + scripts.combinedFixed }],
 ]
 
 function cut(text, max) {
@@ -44,8 +41,9 @@ function summarize(stdout) {
     if (parsed && typeof parsed === 'object' && 'package' in parsed) {
       const packages = parsed.package?.packages
       const list = Array.isArray(packages) ? packages : packages ? [packages] : []
-      return `parsed: startApps=${parsed.startApps ? 'yes' : 'none'} startAppsError=${parsed.startAppsError ? cut(parsed.startAppsError, 160) : 'none'} processesError=${parsed.processesError ? cut(parsed.processesError, 160) : 'none'} packages=${list.length} confirmedAbsent=${parsed.package?.confirmedAbsent} packageError=${parsed.packageError ? cut(parsed.packageError, 160) : 'none'}`
+      return `parsed: error=${JSON.stringify(parsed.package?.error ?? null)} startApps=${parsed.startApps ? 'yes' : 'none'} startAppsError=${parsed.startAppsError ? cut(parsed.startAppsError, 160) : 'none'} processesError=${parsed.processesError ? cut(parsed.processesError, 160) : 'none'} packages=${list.length} confirmedAbsent=${parsed.package?.confirmedAbsent} packageError=${parsed.packageError ? cut(parsed.packageError, 160) : 'none'}`
     }
+    if (parsed && typeof parsed === 'object' && 'confirmedAbsent' in parsed) return `parsed package probe: confirmedAbsent=${parsed.confirmedAbsent} error=${JSON.stringify(parsed.error)}`
     return `parsed: ${cut(JSON.stringify(parsed), 300)}`
   } catch (error) {
     return `not JSON (${error.message})`
