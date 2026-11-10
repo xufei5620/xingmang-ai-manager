@@ -3882,6 +3882,67 @@ test('choosing to switch anyway while the chat page draws an image switches the 
   } finally { await page.close() }
 })
 
+// 去登录另一个账号也会停掉对话页的图：登录框一提交主进程就先停（密码输错也停），所以打开登录框之前问同一句（复查第 7 条）。
+test('adding another account while the chat page draws an image asks first; waiting keeps the login closed (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('account-add').click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.waitFor()
+    assert.equal((await ask.locator('.xm-dialog-body').innerText()).trim(), chatImageSwitchWarning)
+    assert.deepEqual(await ask.locator('footer').getByRole('button').allTextContents(), ['等它出完', '仍然切换'])
+    assert.equal(await ask.getByRole('button', { name: '等它出完', exact: true }).evaluate((button) => button === document.activeElement), true)
+    await ask.getByRole('button', { name: '等它出完', exact: true }).click()
+    await ask.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByTestId('login-dialog').count(), 0)
+    assert.equal(await switcher.isVisible(), true)
+    await switcher.getByTestId('account-add').click()
+    await ask.getByRole('button', { name: '仍然切换', exact: true }).click()
+    await page.getByRole('heading', { name: '登录星芒账号' }).waitFor()
+    await ask.waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'loginAccount').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 退出登录也会停掉对话页的图：个人中心和命令面板的确认框里补同一句；图出完了再点，一个字不加（复查第 7 条）。
+test('the logout prompt says the chat image stops while one is drawing, from either entry point (D44)', async () => {
+  for (const entry of ['account', 'command']) {
+    const page = await open('chatImage=1')
+    async function logoutDialog() {
+      if (entry === 'account') {
+        await page.getByTestId('sidebar-account-open').click()
+        await page.getByTestId('account-overview-logout').click()
+      } else {
+        await page.keyboard.press('Control+k')
+        await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
+        await page.getByTestId('command-result-account:logout').click()
+      }
+      const dialog = page.getByRole('dialog', { name: '退出登录？', exact: true })
+      await dialog.waitFor()
+      return dialog
+    }
+    try {
+      await startHeldChatImage(page)
+      let dialog = await logoutDialog()
+      await expect(dialog).toContainText(`已配好的工具会保留。${chatImageSwitchWarning}`)
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await dialog.waitFor({ state: 'hidden' })
+      assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 0)
+      await page.evaluate(() => window.v2Test.releaseChatImage())
+      await page.waitForFunction(() => document.querySelector('[data-testid=page-chat] .chat-generating') === null)
+      dialog = await logoutDialog()
+      await dialog.getByText('已配好的工具会保留。', { exact: true }).waitFor()
+      await expect(dialog).not.toContainText('对话还在出图')
+      await dialog.getByRole('button', { name: '退出登录', exact: true }).click()
+      await page.getByTestId('welcome-login').waitFor()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('read-only account matches switch only explicitly selected CLI providers one at a time', async () => {
   const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
   try {
