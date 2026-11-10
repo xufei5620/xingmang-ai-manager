@@ -62,6 +62,27 @@ describe('codex remote card', () => {
     expect(markup).toContain('还没配对。打开遥控后才能配对。')
   })
 
+  // YF-1：飞书后两步要在保存、打开遥控以后才做，保存以后不能把说明一起收走。
+  it('keeps the remaining Feishu steps after saving until someone is paired, then folds the guide into one line', () => {
+    const saved = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' } }))
+    expect(saved).toContain('data-testid="settings-remote-feishu-next"')
+    expect(saved).toContain('保存好了。再做下面几步，手机上才收得到')
+    expect(saved).toContain('<li>先打开下面的「打开遥控」，等它显示「已连上」。</li>')
+    expect(saved).toContain('<li>在「版本管理与发布」里发布一个版本。</li>')
+    expect(saved).toContain('<li>在飞书里搜这个机器人的名字，私聊它。回这里点「开始配对」，把 6 位数字发给它。</li>')
+    expect(saved).toContain('第 2 步要先把遥控打开，飞书后台才存得上。')
+    expect(saved).not.toContain('data-testid="settings-remote-feishu-guide"')
+    // 摆在「打开遥控」上面，第 1 步说的「下面」才对得上。
+    expect(saved.indexOf('settings-remote-feishu-next')).toBeLessThan(saved.indexOf('settings-remote-feishu-enable'))
+
+    const paired = render(snapshot(
+      { workspaceDirectory: '~/projects/demo' },
+      { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' }, boundPeer: { userIdTail: 'a1b2', boundAt: 0 } },
+    ))
+    expect(paired).not.toContain('settings-remote-feishu-next')
+    expect(paired).toMatch(/data-testid="settings-remote-feishu-guide"><details class="v2-remote-guide"><summary>怎么建飞书机器人<\/summary>/)
+  })
+
   it('shows the pairing code with where to send it', () => {
     const markup = render(snapshot(
       { workspaceDirectory: '~/projects/demo' },

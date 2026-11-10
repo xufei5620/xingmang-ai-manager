@@ -3455,6 +3455,8 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByTestId('settings-remote-feishu-app').getByText('App ID：cli_a1b2c3d4e5', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-form').count(), 0)
     assert.equal(await card.getByRole('alert').count(), 0)
+    // YF-1：保存以后还差的几步留在卡上，配对成功才收起。
+    await card.getByTestId('settings-remote-feishu-next').getByText('保存好了。再做下面几步，手机上才收得到', { exact: true }).waitFor()
     await card.getByText('还没配对。打开遥控后才能配对。', { exact: true }).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').isDisabled(), true)
     await toggle.click()
@@ -3467,6 +3469,8 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await page.evaluate(() => window.remoteHarness.pair('小明'))
     await card.getByTestId('settings-remote-feishu-peer').getByText(/^小明（尾号 9f3c），10 月 25 日 \d\d:\d\d 配对$/).waitFor()
     assert.equal(await card.getByTestId('settings-remote-feishu-pair').innerText(), '换人')
+    assert.equal(await card.getByTestId('settings-remote-feishu-next').count(), 0)
+    await card.getByTestId('settings-remote-feishu-guide').getByText('怎么建飞书机器人', { exact: true }).waitFor()
     // 解绑先问一句：点「取消」什么都不做，点「解绑」才解。
     const confirm = card.getByTestId('settings-remote-feishu-confirm')
     await card.getByTestId('settings-remote-feishu-unbind').click()
