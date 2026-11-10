@@ -685,7 +685,7 @@ test('WorkBuddy loses current-account readiness when switching saved accounts on
     const row = page.getByTestId('tool-row-workbuddy')
     // 连上当前账号的卡片左下角写「当前账号」（v4 没有「N 个已连接」那句了），余额卡上不写连接的事。
     assert.equal(await row.getByTestId('tool-workbuddy-source').innerText(), '当前账号')
-    assert.equal(await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '账号余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
     await page.evaluate(() => window.v2Test.holdNextExternalScan())
     const switcher = await openAccountSwitcher(page)
@@ -2797,7 +2797,7 @@ test('switching the official-installer Claude Code to the app asks first, then u
     const dialog = page.getByTestId('managed-switch-confirm')
     await update.click()
     await dialog.getByText('换成星芒装的 Claude Code？', { exact: true }).waitFor()
-    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账户数据和历史记录会保留，以后在星芒里点一下就能更新。/)
+    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账号数据和历史记录会保留，以后在星芒里点一下就能更新。/)
     // 点「取消」什么都不动。
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -5378,7 +5378,7 @@ test('an app already running with administrator rights does not promise a consen
   for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
     const page = await open(query)
     try {
-      await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
+      await expect(page.getByTestId('home-runtime-row-node')).toContainText('可选 · 未安装')
       const nodeNotice = page.getByTestId('home-runtime-node-elevation')
       await expect(nodeNotice).toContainText('装工具时会自动准备，一般不用单独点。')
       if (elevated) assert.doesNotMatch(await nodeNotice.innerText(), /管理员授权|授权窗口/, query)
@@ -8088,7 +8088,7 @@ test('installing Node.js from the check page updates the home runtime card', asy
   const page = await open('desktopOnly=1')
   try {
     const node = page.getByTestId('home-runtime-row-node')
-    await expect(node).toContainText('未装')
+    await expect(node).toContainText('可选 · 未安装')
     await stubHealthReport(page, [{ code: 'RUNTIME_NODE', title: 'Node.js', state: 'fail', summary: '还没装 Node.js', details: { installed: false } }])
     await page.getByTestId('nav-health').click()
     const install = page.getByTestId('maintenance-runtime-action-node')

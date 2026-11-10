@@ -171,7 +171,7 @@ export function updatesOutsideApp(
 /** 外部来源安装时那句被动提示；npm 装的或来源未知的返回 null。 */
 export function externalInstallHint(installSource: ToolStatus['installSource']): string | null {
   if (installSource === 'native') return '该版本由官方安装器管理，请用它自己的方式更新'
-  if (installSource === 'path') return '该版本不是通过本工具安装的，更新请用它原本的安装方式'
+  if (installSource === 'path') return '这一份不是星芒装的，要更新请用它原来的安装方式'
   return null
 }
 

@@ -228,7 +228,7 @@ if (query.has('detectionFailed')) {
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
 }
-// 缺 Python（可选环境）：首页那一行写「可选 · 未装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
+// 缺 Python（可选环境）：首页那一行写「可选 · 未安装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
 if (query.has('pythonMissing')) {
   system.runtime.python = { ...status, installed: false, version: null, path: null }
 }
