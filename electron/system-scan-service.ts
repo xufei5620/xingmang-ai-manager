@@ -66,6 +66,8 @@ import { createSystemSnapshotCache } from './system-snapshot-cache'
 import { classifyCliInstallDisplaySource, type CliInstallation, cliUninstallCapability } from './tool-installation'
 import { isExactCliVersion, isNewerVersion, nodeVersionStatus } from './versions'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { powerShellUtf8OutputStatement } from './powershell-constrained-language'
 
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
@@ -231,6 +233,25 @@ async function readNpmPackageVersion(executable: string): Promise<string | null>
   return null
 }
 
+export const windowsExecutableProductVersionModules = ['Microsoft.PowerShell.Management'] as const
+
+/**
+ * Reads the file's product version without calling .NET directly, which
+ * ConstrainedLanguage refuses (an application-control policy runs every
+ * -Command there): Get-Item's VersionInfo is PowerShell's own wrapper around the
+ * same FileVersionInfo.GetVersionInfo. Versions are ASCII, so no escaping is
+ * needed; the trailing newline is trimmed by normalizeRuntimeVersion.
+ */
+export function buildWindowsExecutableProductVersionScript(): string {
+  return [
+    powerShellUtf8OutputStatement,
+    buildPowerShellModuleImportStatement(windowsExecutableProductVersionModules),
+    '$ErrorActionPreference = "Stop"',
+    '$value = (Get-Item -LiteralPath $env:XINGMANG_VERSION_TARGET -Force).VersionInfo.ProductVersion',
+    'if ($value) { [string]$value }',
+  ].join('; ')
+}
+
 async function readWindowsExecutableProductVersion(
   executable: string,
   command: string,
@@ -239,12 +260,7 @@ async function readWindowsExecutableProductVersion(
   try {
     const stats = await fs.promises.stat(executable)
     if (!stats.isFile()) return null
-    const script = [
-      '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-      '$ErrorActionPreference = "Stop"',
-      '$value = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:XINGMANG_VERSION_TARGET).ProductVersion',
-      'if ($value) { [Console]::Out.Write([string]$value) }',
-    ].join('; ')
+    const script = buildWindowsExecutableProductVersionScript()
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
       '-NoLogo',
       '-NoProfile',
