@@ -91,7 +91,7 @@ const runGraphs = {
       expect: { refusal: null },
     },
     { name: 'image candidates above one', input: { graph: graphWith({ kind: 'image-generate', data: { prompt: '', model: 'gpt-image-2', group: '图片模型', imageCandidateCount: 4 } }), scope: { kind: 'all' } }, expect: { refusal: null } },
-    { name: 'web search on', input: { graph: graphWith({ kind: 'text-generate', data: { prompt: '', model: 'gpt-5.5', textWebSearch: true } }), scope: { kind: 'all' } }, expect: { refusal: `「文字生成」节点${refused}` } },
+    { name: 'web search on', input: { graph: graphWith({ kind: 'text-generate', data: { prompt: '', model: 'gpt-5.5', textWebSearch: true } }), scope: { kind: 'all' } }, expect: { refusal: `「联网搜索」${refused}` } },
     { name: 'image edit mask', input: { graph: graphWith({ kind: 'image-edit', data: { prompt: '改背景', model: 'gpt-image-2', group: '图片模型', imageEditMask: { version: 1, width: 64, height: 48, strokes: [{ tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }] } } }), scope: { kind: 'all' } }, expect: { refusal: null } },
     { name: 'image edit mask on an image node', input: { graph: graphWith({ kind: 'image-generate', data: { prompt: '改背景', model: 'gpt-image-2', group: '图片模型', imageEditMask: { version: 1, width: 64, height: 48, strokes: [{ tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }] } } }), scope: { kind: 'all' } }, expect: { parseError: '蒙版局部修改配置只能保存在局部修改图像节点中' } },
     { name: 'native video protocol', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'grok-imagine-video', group: '视频模型', seconds: '5', videoProtocol: 'xai-native' } }), scope: { kind: 'all' } }, expect: { refusal: `「这个视频接口」${refused}` } },

@@ -11,6 +11,7 @@ import {
 } from './managed-cli-paths'
 import { ensureTrustedDirectory } from './trusted-temp'
 import { authenticodeSignatureModules, buildPowerShellModuleImportStatement } from './powershell-module-imports'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 export interface NativeCliSignature {
@@ -117,12 +118,15 @@ export function validateNativeCliSignature(
 // Imported by name first: under trustedCommandEnvironment() an autoloaded
 // cmdlet costs the whole System32 module scan (see
 // buildPowerShellModuleImportStatement) out of the 20 s this check gets.
+// A hashtable rather than [pscustomobject]: ConstrainedLanguage refuses the
+// conversion, and as the last statement it failed the whole check (see
+// powershell-constrained-language.ts).
 export const nativeCliSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   buildPowerShellModuleImportStatement(authenticodeSignatureModules),
   '$ErrorActionPreference = "Stop"',
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NATIVE_CLI',
-  '[pscustomobject]@{ Status = [string]$signature.Status; Subject = [string]$signature.SignerCertificate.Subject; Issuer = [string]$signature.SignerCertificate.Issuer } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ Status = [string]$signature.Status; Subject = [string]$signature.SignerCertificate.Subject; Issuer = [string]$signature.SignerCertificate.Issuer } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 export const nativeCliSignatureTimeoutMs = 20_000

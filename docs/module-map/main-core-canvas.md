@@ -89,6 +89,7 @@
 - `canvas-node-executors.ts` — 把运行引擎的 text / image / video 节点接到主进程的文本补全、图片服务、视频服务上；漫剧解析节点用 `drama-parse-prompt.ts` 发提示、`drama-parse.ts` 校验结果
 - `canvas-fingerprint.ts` — 节点指纹与图修订号：规范化 JSON 后算 sha256，指纹包含模型能力与上游交出的文字/产物，决定能不能命中缓存
 - `canvas-image-mask.ts` — 蒙版局部修改（画布完善第 5 条）：按内核同一套上限解析改图节点的蒙版笔画，发之前核对型号、唯一原图和尺寸，按内核同一套几何画成像素，做成透明处重画的 RGBA PNG 随 `/v1/images/edits` 发出（`canvas-image-mask.test.ts` 拿同步进来的内核对拍像素）
+- `canvas-text-image-input.ts` — 文字生成节点连的图片（画布完善第 6 条）：只认内核确认过能看图的型号，按内核同一套上限（4 张、单张 4 MB、合计 8 MB、像素和边长）在发请求前从当前账号的项目素材库读图、转成 data URI；`canvas-text-image-input.test.ts` 拿内核 `runtime/text-image-input.ts` 对拍。
 - `canvas-asset-references.ts` — 查一个素材被哪些运行用作输入或候选，删除素材前给用户看引用
 
 ### 画布项目

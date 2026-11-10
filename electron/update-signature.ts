@@ -8,6 +8,7 @@ import {
   type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import {
   encodeWindowsPowerShellCommand,
   resolveWindowsPowerShellExecutable,
@@ -52,20 +53,28 @@ function errorDetail(error: unknown): string {
   return String(error)
 }
 
-function signatureScript(): string {
+// Where an application-control policy runs PowerShell in ConstrainedLanguage,
+// the old first line was refused under Stop and ended the script, and so did
+// the closing [pscustomobject]: every update failed this check and the app
+// could never install a new version there (checked on the Windows runner under
+// the system lockdown, 2026-11-10). The check itself is unchanged: the same
+// cmdlet, the same three fields, and the same comparison in parseSignatureResult.
+export function buildUpdateSignatureScript(): string {
   return [
     '$ErrorActionPreference = "Stop"',
-    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    powerShellUtf8OutputStatement,
     'Import-Module -Name $env:XINGMANG_UPDATE_SECURITY_MODULE -Force -ErrorAction Stop',
     'Import-Module -Name $env:XINGMANG_UPDATE_UTILITY_MODULE -Force -ErrorAction Stop',
     '$signature = Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_UPDATE_SIGNATURE_TARGET -ErrorAction Stop',
     'if ($null -eq $signature) { throw "Get-AuthenticodeSignature did not return a result" }',
     'if ($null -eq $signature.SignerCertificate) { throw "The update installer has no signer certificate" }',
-    '[pscustomobject]@{',
-    '  Status = [string]$signature.Status',
-    '  Path = [string]$signature.Path',
-    '  Subject = [string]$signature.SignerCertificate.Subject',
-    '} | Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress',
+    ...buildPowerShellJsonOutputStatements([
+      '@{',
+      '  Status = [string]$signature.Status',
+      '  Path = [string]$signature.Path',
+      '  Subject = [string]$signature.SignerCertificate.Subject',
+      '} | Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress',
+    ].join('\n')),
   ].join('\n')
 }
 
@@ -189,7 +198,7 @@ export function createStrictUpdateCodeSignatureVerifier(
           '-InputFormat',
           'None',
           '-EncodedCommand',
-          encodeWindowsPowerShellCommand(signatureScript()),
+          encodeWindowsPowerShellCommand(buildUpdateSignatureScript()),
         ],
       }, {
         env: commandEnv,

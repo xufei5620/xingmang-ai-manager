@@ -3543,7 +3543,14 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await dialog.getByTestId('settings-remote-weixin-close').click()
     await dialog.waitFor({ state: 'detached' })
     assert.equal(await block.getByTestId('settings-remote-weixin-login-start').innerText(), '重新扫码')
-    await card.getByRole('button', { name: '退出微信登录', exact: true }).waitFor()
+    // 微信的退出登录框说的是重新扫码，不是重新填凭据；点「取消」什么都不做。
+    await card.getByRole('button', { name: '退出微信登录', exact: true }).click()
+    const logoutConfirm = card.getByTestId('settings-remote-weixin-confirm')
+    await logoutConfirm.getByRole('heading', { name: '退出微信登录？', exact: true }).waitFor()
+    await logoutConfirm.getByText('退出后要重新用微信扫码登录，才能再用手机遥控。', { exact: true }).waitFor()
+    await logoutConfirm.getByRole('button', { name: '取消', exact: true }).click()
+    await logoutConfirm.waitFor({ state: 'detached' })
+    assert.equal((await calls(page)).some((call) => call.name === 'remote-clear'), false)
     // 重新扫码又不扫了：点取消，主进程那边的这次登录一起收掉。
     await block.getByTestId('settings-remote-weixin-login-start').click()
     await dialog.getByRole('img', { name: '微信登录二维码', exact: true }).waitFor()
