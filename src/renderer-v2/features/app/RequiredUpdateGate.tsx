@@ -8,7 +8,7 @@ import { updateDiskCleanupStepsFor } from '../../registry/tutorials'
 import { Button, Progress } from '../../ui'
 import { requiredUpdateFollowUp, requiredUpdateGate, type RequiredUpdateAction } from './required-update'
 
-/** postponed：还有工具在装，客户在主进程问的那一句里点了「继续安装」，这次没装（已知31）。 */
+/** postponed：还有工具在装或任务没做完，客户在主进程问的那一句里点了「继续安装」「等它做完」，这次没装（已知31、D10）。 */
 export interface RequiredUpdateInstallOutcome {
   postponed?: true
 }

@@ -379,7 +379,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const submitRegistration = () => {
     if (!status) { setError('注册还没准备好，请稍等，或点「重新读取」后再注册'); return }
     if (!status.registerEnabled || !status.passwordRegisterEnabled) { setError('目前暂未开放账号注册'); return }
-    if (status.turnstileCheckEnabled) { setError('服务端需要安全验证，请在浏览器完成注册'); return }
+    if (status.turnstileCheckEnabled) { setError('账号服务要先做一次安全验证，请在浏览器里完成注册'); return }
     const draft = { ...registration, email: checkEmail() }
     const errors = validateRegistration(draft, status.emailVerificationEnabled, codeSent)
     setFieldErrors(errors)
@@ -528,7 +528,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   ].filter(Boolean) : []
 
   if (legal) return <LegalDocument api={api} kind={legal} onClose={() => setLegal(null)} />
-  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重启星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
+  if (routesOpen && connectionSettings) return <Dialog key="connection-routes" open title="切换连接线路" subtitle="返回后可继续填写；新线路要重开星芒才生效。" width={640} onClose={() => setRoutesOpen(false)} busy={routesBusy} testId="auth-connection-routes" footer={<Button disabled={routesBusy} onClick={() => setRoutesOpen(false)} testId="auth-connection-back">返回继续填写</Button>}>
     {connectionSettings(setRoutesBusy)}
   </Dialog>
   function link(label: string, testId: string, onClick: () => void, disabled = busy) {
@@ -596,7 +596,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
         {/* 按钮灰着却不说为什么，客户只会一遍遍去点。 */}
         {!status && <p className="auth-hint" data-testid="register-submit-hint">{statusError ? '要先连上账号服务，「注册并登录」才能点。' : '准备好之后就能点「注册并登录」。'}</p>}
       </>}
-      {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-note" data-testid="forgot-official-help"><Info size={15} aria-hidden="true" /><span>历史账号暂不支持在客户端重置密码。请前往历史账号官网使用找回入口；官网没有找回入口的话，请联系官网客服恢复访问。</span></p>}
+      {mode === 'recovery' && !source.supportsPasswordReset && <p className="auth-note" data-testid="forgot-official-help"><Info size={15} aria-hidden="true" /><span>历史账号不能在星芒里重置密码。请前往历史账号官网使用找回入口；官网没有找回入口的话，请联系官网客服恢复访问。</span></p>}
       {recoveryResetStep && !twoFactor && <>
         <ol className="auth-stepper" aria-label="找回密码进度">{['获取邮件', '粘贴重置码', '设新密码'].map((text, index) => <li key={text} aria-current={recoveryStep === index + 1 ? 'step' : undefined} data-completed={index + 1 < recoveryStep}><i aria-hidden="true" /><span>{text}</span></li>)}</ol>
         {recoveryStep === 1 && <><p className="auth-lead">填写注册时用的邮箱，我们会发一封带重置码的邮件。</p>{field('注册邮箱', 'forgot-email', recoveryEmail, setRecoveryEmail, { type: 'email', autoComplete: 'email', placeholder: 'name@example.com' })}</>}

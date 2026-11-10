@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canonicalCanvasJson,
+  canvasImageCandidateCacheKey,
   computeCanvasGraphRevision,
   computeCanvasNodeFingerprint,
 } from './canvas-fingerprint'
@@ -186,5 +187,25 @@ describe('canvas fingerprints', () => {
       expect(computeCanvasGraphRevision({ nodes: [{ ...video, data: { ...video.data, ...overrides } }], edges: [] }))
         .not.toBe(base)
     }
+  })
+
+  it('keeps one image per request of a multi-image node, with request 1 on the node fingerprint', () => {
+    const fingerprint = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    // Not part of the node fingerprint: a run that asks for more images
+    // still finds what a one-image run made.
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageCandidateCount: 4 }), upstream: [] })).toBe(fingerprint)
+    expect(canvasImageCandidateCacheKey(fingerprint, 1)).toBe(fingerprint)
+    const keys = [2, 3, 4].map((index) => canvasImageCandidateCacheKey(fingerprint, index))
+    expect(new Set([fingerprint, ...keys]).size).toBe(4)
+    for (const key of keys) expect(key).toMatch(/^[a-f0-9]{64}$/)
+    expect(canvasImageCandidateCacheKey(fingerprint, 3)).toBe(keys[1])
+    expect(() => canvasImageCandidateCacheKey(fingerprint, 5)).toThrow('画布图片序号格式错误')
+    expect(() => canvasImageCandidateCacheKey('not-a-fingerprint', 2)).toThrow('画布节点指纹格式错误')
+  })
+
+  it('changes the graph revision with the image count but keeps it for one image', () => {
+    const base = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageCandidateCount: 2 })], edges: [] })).not.toBe(base)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageCandidateCount: undefined })], edges: [] })).toBe(base)
   })
 })

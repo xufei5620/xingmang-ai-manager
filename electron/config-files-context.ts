@@ -19,6 +19,7 @@ import type { FilePlan, FileRemovePlan, NativeConfigSaveResult, NativeConfigWrit
 import { assertNoReparseComponents, renameWithTransientRetrySync } from './safe-local-data'
 import { resolveRelocatedPath } from './relocated-folders'
 import { configLinkRefusalMessage } from './config-link-refusal'
+import { configWriteBlockerMessage, type ConfigWriteBlocker } from './config-write-blocker'
 
 export const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -99,13 +100,94 @@ export function requireRawConfigText(
     info = fs.lstatSync(filePath)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
-    throw error
+    throw explainConfigWriteFailure(error, [filePath], path.dirname(filePath), 'read')
   }
   if (isLinkedFile(info)) throw linkedConfigError(filePath, 'file', `${label} 必须是单链接普通文件，未执行修改`)
   if (!info.isFile() || info.nlink !== 1) {
     throw new Error(`${label} 必须是单链接普通文件，未执行修改`)
   }
-  return readBoundedUtf8FileSync(filePath, maximumBytes, label)
+  try {
+    return readBoundedUtf8FileSync(filePath, maximumBytes, label)
+  } catch (error) {
+    throw explainConfigWriteFailure(error, [filePath], path.dirname(filePath), 'read')
+  }
+}
+
+/** 认「没权限」是哪一种时要看的几样东西；正式运行用这台电脑的（systemConfigWriteBlockerProbe），测试换成假的。 */
+export interface ConfigWriteBlockerProbe {
+  platform: NodeJS.Platform
+  /** 星芒自己跑在哪个用户编号下；Windows 上没有。 */
+  uid: number | undefined
+  /** 拿不到（不存在、也没权限看）就抛错，调用方当它不算数。 */
+  lstat(filePath: string): Pick<fs.Stats, 'uid' | 'mode' | 'isFile'>
+}
+
+function systemConfigWriteBlockerProbe(): ConfigWriteBlockerProbe {
+  return { platform: process.platform, uid: process.getuid?.(), lstat: (filePath) => fs.lstatSync(filePath) }
+}
+
+function probedOrNull(probe: ConfigWriteBlockerProbe, filePath: string): Pick<fs.Stats, 'uid' | 'mode' | 'isFile'> | null {
+  try {
+    return probe.lstat(filePath)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 写工具配置撞上「没权限」时，是不是 D15 说的那两种（权限和写失败.md PW-3、PW-4）：
+ * - Mac、Linux：工具的设置文件夹（或里面要写的那一层、那个文件）归管理员（root）所有。照网上教程 `sudo npm i -g`、
+ *   `sudo claude` 跑过一次，sudo 保留 HOME，~/.claude、~/.codex 就建成了 root 的。星芒在这两个平台从不提权，
+ *   也就改不了它，只能说清楚。星芒自己是管理员时（Linux 拒绝这样跑，Mac 从不提权）归谁都写得进去，没权限另有原因。
+ * - Windows：要盖掉的配置文件被设成了「只读」（Node 把只读属性反映成 mode 没有写位）。只在写的时候算：
+ *   只读不挡读，读不了另有原因。
+ * 只看这一次牵涉到的东西：工具的配置文件夹本身、它下面到目标为止的每一层、目标文件。看不到的不算数。
+ */
+export function resolveConfigWriteBlocker(
+  targets: readonly string[],
+  rootDirectory: string,
+  access: 'read' | 'write',
+  probe: ConfigWriteBlockerProbe = systemConfigWriteBlockerProbe(),
+): ConfigWriteBlocker | null {
+  if (probe.platform === 'win32') {
+    if (access !== 'write') return null
+    const readOnly = targets.some((target) => {
+      const info = probedOrNull(probe, target)
+      return Boolean(info?.isFile() && (info.mode & 0o200) === 0)
+    })
+    return readOnly ? 'readOnly' : null
+  }
+  if (probe.uid === undefined || probe.uid === 0) return null
+  const root = path.resolve(rootDirectory)
+  const inspected = new Set<string>([root])
+  for (const target of targets) {
+    const relative = path.relative(root, path.resolve(target))
+    if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) continue
+    let current = root
+    for (const segment of relative.split(path.sep)) {
+      current = path.join(current, segment)
+      inspected.add(current)
+    }
+  }
+  return [...inspected].some((entry) => probedOrNull(probe, entry)?.uid === 0) ? 'adminOwned' : null
+}
+
+/**
+ * 写配置（含写之前读原来那份）撞上 EACCES、EPERM 时，查得出是上面哪一种就换成那半句（D15），原话挂在 cause 上进运行日志；
+ * 查不出、或者是别的错，原样交回。错误码照旧挂在 code 上：按码认「文件被占用」「没权限」的那几处照旧认得出。
+ */
+export function explainConfigWriteFailure(
+  error: unknown,
+  targets: readonly string[],
+  rootDirectory: string,
+  access: 'read' | 'write' = 'write',
+  probe?: ConfigWriteBlockerProbe,
+): unknown {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code
+  if (code !== 'EACCES' && code !== 'EPERM') return error
+  const blocker = resolveConfigWriteBlocker(targets, rootDirectory, access, probe)
+  if (!blocker) return error
+  return Object.assign(new Error(configWriteBlockerMessage(blocker, code), { cause: error }), { code })
 }
 
 /** 符号链接、硬链接都算：dotfiles 工具两种都做。 */
@@ -419,7 +501,13 @@ export function executeFilePlans(
   // 来回切几次就会把客户自己保存时留下的备份挤掉，那几份才是有用的（原件另由调用方留一份）。
   backupRetention: 'rotate' | 'discard' = 'rotate',
 ): NativeConfigSaveResult {
-  const prepared = prepareFilePlans(plans, providerRoot)
+  const targets = plans.map((plan) => plan.path)
+  let prepared: PreparedFilePlan[]
+  try {
+    prepared = prepareFilePlans(plans, providerRoot)
+  } catch (error) {
+    throw explainConfigWriteFailure(error, targets, providerRoot)
+  }
   const committed: PreparedFilePlan[] = []
 
   try {
@@ -462,7 +550,7 @@ export function executeFilePlans(
         '配置写入失败，且部分文件无法自动回滚；请从 .bak 备份恢复',
       )
     }
-    throw error
+    throw explainConfigWriteFailure(error, targets, providerRoot)
   }
 
   const cleanupErrors = cleanupPreparedPlans(prepared, providerRoot)

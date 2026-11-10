@@ -153,6 +153,7 @@ export function createRuntimeInstallService(context: ServiceContext, dependencie
         // macOS、Linux 一开始就是下载，整段已经包在线路里（installNodeRuntime）。
         withDownloadRoute: platform === 'win32' ? (operation) => withDownloadAcceleration(null, operation) : undefined,
         temporaryDirectoryMode: windowsExecutionMode,
+        ...(serviceOptions.windowsProcessElevated ? { processElevated: true } : {}),
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:node-install-progress', progress)
