@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { backgroundWorkActive, markBackgroundWork, subscribeBackgroundWork } from './background-work'
+import { activeRestartWork, backgroundWorkActive, markBackgroundWork, subscribeBackgroundWork } from './background-work'
 
 describe('background work registry', () => {
   it('is active while any registered work is running', () => {
@@ -26,5 +26,27 @@ describe('background work registry', () => {
     markBackgroundWork(token, true)
     markBackgroundWork(token, false)
     expect(listener).toHaveBeenCalledTimes(2)
+  })
+
+  it('names the running work the update restart has to ask about, once each and in a stable order', () => {
+    const chat = Symbol('chat')
+    const compose = Symbol('video-compose')
+    const secondCompose = Symbol('video-compose')
+    const install = Symbol('tool-jobs')
+    expect(activeRestartWork()).toEqual([])
+    markBackgroundWork(install, true)
+    expect(activeRestartWork()).toEqual([])
+    markBackgroundWork(compose, true, 'video-compose')
+    markBackgroundWork(secondCompose, true, 'video-compose')
+    markBackgroundWork(chat, true, 'chat')
+    expect(activeRestartWork()).toEqual(['chat', 'video-compose'])
+    markBackgroundWork(compose, false)
+    expect(activeRestartWork()).toEqual(['chat', 'video-compose'])
+    markBackgroundWork(secondCompose, false)
+    markBackgroundWork(chat, false)
+    expect(activeRestartWork()).toEqual([])
+    expect(backgroundWorkActive()).toBe(true)
+    markBackgroundWork(install, false)
+    expect(backgroundWorkActive()).toBe(false)
   })
 })

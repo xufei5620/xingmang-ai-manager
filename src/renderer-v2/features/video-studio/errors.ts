@@ -7,6 +7,10 @@ export class VideoStudioError extends Error {
   }
 }
 
+// 回包读不懂、后台线程停了、片段交不过去、请求本身不对，都是程序自己出的岔子，客户照着做不了什么，
+// 统一说这一句，不提「线程」「编码器」。
+export const videoStudioComposeGlitchMessage = '拼的时候出了点问题，请再试一次'
+
 export function videoStudioAbortError(): DOMException {
   return new DOMException('已取消', 'AbortError')
 }
