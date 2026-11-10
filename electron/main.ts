@@ -47,7 +47,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -2668,6 +2668,18 @@ if (!hasSingleInstanceLock) {
       })
       return result.response === 1
     }
+    // 退出时聊天还在回复（D39）。true = 点了「仍然退出」。
+    const confirmChatReplyQuit = async (prompt: ChatReplyQuitPrompt): Promise<boolean> => {
+      // 托盘「退出」时主窗口通常是隐藏的，挂在隐藏窗口上的模态框用户看不见。
+      if (!mainWindow.isVisible()) showMainWindow()
+      const result = await dialog.showMessageBox(mainWindow, {
+        type: 'question', title: '关闭星芒AI管理工具', message: prompt.message,
+        buttons: prompt.buttons,
+        // 回车、Esc 都落在「等它说完」上：手滑不会把已经扣了费的回复停在半截。
+        defaultId: 0, cancelId: 0, noLink: true,
+      })
+      return result.response === 1
+    }
     // 更新页「确认重启安装」、托盘「重启并安装」：重启会打断正在装、排着队的工具，先问退出时那一句；
     // 聊天、视频剪辑、画布还在做的再问一句（D10）。点「继续安装」「等它做完」这次就不装，新版本留着，
     // 以后再点或下次退出时照常装（已知31）。
@@ -2811,15 +2823,20 @@ if (!hasSingleInstanceLock) {
       // 画布开着时退出先让它存一次，在生成的由画布自己的关窗确认框问一句（#1368 第 9 条）。没开着时立刻放行。
       closeCanvas: () => canvasController.requestCloseForQuit(),
       confirmQuit: async () => {
-        // 没有安装在跑、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟
-        // 测试的预算就那几秒。两件事按轻重排队，一次退出最多只问一句。
+        // 没有安装在跑、聊天没在回复、也没有装好的更新时这里不做任何 IO，也不弹窗：关窗冒烟
+        // 测试的预算就那几秒。先问会被打断的（工具在装、聊天在回复，D39），再问更新。
         if (mainWindow.isDestroyed()) return 'quit'
-        const task = resolveInterruptibleInstallTask(systemService.inspectInstallationQueue())
-        if (task) {
-          runtimeLog.log('info', 'window', 'quit.install-in-progress', `退出前确认：${task.key}`)
-          // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
-          return await confirmInterruptingInstall(task) ? 'quit' : 'cancel'
-        }
+        const interruption = await confirmQuitInterruptions({
+          installTask: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()),
+          confirmInstall: confirmInterruptingInstall,
+          // 跟重启装更新那一问看的是同一份（界面报上来的 rendererWork）；不看 rendererBusy，开着的对话框不算在回复。
+          chatReply: () => buildChatReplyQuitPrompt(mainRendererRelease?.rendererWork ?? []),
+          // 头一问问着的时候主窗口没了，照常退出。
+          confirmChatReply: async (prompt) => mainWindow.isDestroyed() || await confirmChatReplyQuit(prompt),
+          log: (event, message) => runtimeLog.log('info', 'window', event, message),
+        })
+        // 刚劝过一次的人不该紧接着再被问一句更新，这次退出就干净地退出。
+        if (interruption !== 'none') return interruption
         let update = resolveInstallableUpdateOnQuit(updaterService.getState())
         if (!update) return 'quit'
         // 账号不是管理员时退出不装也不问（decideQuitInstall），下面的撤回名单也就不用等。账号是不是
