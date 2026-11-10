@@ -512,7 +512,7 @@ describe('renderer update offer for the start guide', () => {
     expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'native' } })))
       .toMatchObject({ manualHint: '该版本由官方安装器管理，请用它自己的方式更新' })
     expect(toolUpdateOffer(row({ status: { installed: true, version: '2.1.42', path: null, installDirectory: null, installSource: 'path', uninstall: { available: true, reason: null, manualCommand: null } } })))
-      .toMatchObject({ manualHint: '该版本不是通过本工具安装的，更新请用它原本的安装方式' })
+      .toMatchObject({ manualHint: '这一份不是星芒装的，要更新请用它原来的安装方式' })
   })
 
   it('offers the official-installer Claude Code the same update button, since the app can switch it over', () => {
@@ -617,7 +617,7 @@ describe('renderer install source labelling', () => {
 
   it('gives a source-specific passive hint instead of an npm update', () => {
     expect(externalInstallHint('native')).toBe('该版本由官方安装器管理，请用它自己的方式更新')
-    expect(externalInstallHint('path')).toBe('该版本不是通过本工具安装的，更新请用它原本的安装方式')
+    expect(externalInstallHint('path')).toBe('这一份不是星芒装的，要更新请用它原来的安装方式')
     expect(externalInstallHint('npm')).toBeNull()
     expect(externalInstallHint(undefined)).toBeNull()
   })

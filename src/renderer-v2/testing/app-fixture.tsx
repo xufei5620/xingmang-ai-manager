@@ -63,6 +63,7 @@ let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: que
   ...(query.has('chineseAsk') ? {} : { codexDesktopChineseRuntimePatch: 'enabled' as const }) }
 // ?longUsername：历史账号没有用户名时界面上写的是邮箱，用一个真实长度的（42 字）。
 const account = { userId: 17, username: query.has('longUsername') ? 'zhangwei.developer2026@company-mail.com.cn' : 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
+let inviteLinkTaken = false
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
 const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
 if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
@@ -227,7 +228,7 @@ if (query.has('detectionFailed')) {
 if (query.has('gitMissing')) {
   system.runtime.git = { ...status, installed: false, version: null, path: null }
 }
-// 缺 Python（可选环境）：首页那一行写「可选 · 未装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
+// 缺 Python（可选环境）：首页那一行写「可选 · 未安装」；「外接工具」页加要 Python 的连接时给「自动安装 Python」。
 if (query.has('pythonMissing')) {
   system.runtime.python = { ...status, installed: false, version: null, path: null }
 }
@@ -605,6 +606,8 @@ const methods = {
   },
   takeExternalDeepLink: async () => {
     if (query.has('deepLinkFail')) throw new Error('回跳参数已过期')
+    // 已登录时点开的邀请链接：主进程只交出一次，跟真的一样。
+    if (query.has('inviteLink') && !inviteLinkTaken) { inviteLinkTaken = true; return { kind: 'invite' as const, code: query.get('inviteLink') ?? '' } }
     return null
   },
   // 首页活动卡片按它列档位：110 付 100、240 付 200、4000 付 2000。
