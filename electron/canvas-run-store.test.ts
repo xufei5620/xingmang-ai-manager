@@ -173,6 +173,31 @@ describe('CanvasRunStore', () => {
     expect(recovered[0].nodes[0].errorMessage).toContain('未自动重试')
   })
 
+  it('forgets the frames an interrupted run waited on and reads back only well-formed ones', async () => {
+    const { root, store } = fixture()
+    const preparation = { operationId: 'attempt-1', nodeId: 'node', attemptId: 'attempt-1', sourceAssetId: 'V'.repeat(43), timestampSeconds: 2.5 }
+    const waiting = { ...record('waiting', 'running'), framePreparations: [preparation] }
+    await store.saveRun(7, waiting)
+    expect((await store.listRuns(7))[0].framePreparations).toEqual([preparation])
+    const recovered = await store.initializeUser(7)
+    expect(recovered[0].status).toBe('interrupted')
+    expect(recovered[0]).not.toHaveProperty('framePreparations')
+
+    const filePath = path.join(root, 'user-7', 'canvas-runtime.json')
+    const valid = fs.readFileSync(filePath, 'utf8')
+    for (const wrong of [
+      { ...preparation, sourceAssetId: '../../secret' },
+      { ...preparation, timestampSeconds: 86_401 },
+      { ...preparation, operationId: 'a\u0001b' },
+    ]) {
+      const state = JSON.parse(valid) as { runs: Array<Record<string, unknown>> }
+      state.runs[0].framePreparations = [wrong]
+      fs.writeFileSync(filePath, JSON.stringify(state), 'utf8')
+      expect(await store.listRuns(7), JSON.stringify(wrong)).toEqual([])
+      fs.writeFileSync(filePath, valid, 'utf8')
+    }
+  })
+
   it('backs up corrupt state and degrades to an empty history', async () => {
     const { root, store } = fixture()
     await store.saveRun(7, record('valid'))

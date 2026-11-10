@@ -65,6 +65,7 @@ import type { AiVideoAssetStore } from './ai-video-asset-store'
 import type { AiVideoService } from './ai-video-service'
 import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
+import { parseCanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
 import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
@@ -116,6 +117,7 @@ export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspec
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
 export const canvasHostImportAssetBytesChannel = canvasHostChannels.importAssetBytes
+export const canvasHostCompleteRunPreparationChannel = canvasHostChannels.completeRunPreparation
 export const canvasHostListPromptPresetsChannel = canvasHostChannels.listPromptPresets
 export const canvasHostCreatePromptPresetChannel = canvasHostChannels.createPromptPreset
 export const canvasHostUpdatePromptPresetChannel = canvasHostChannels.updatePromptPreset
@@ -1238,6 +1240,15 @@ export function createCanvasWindowController(
     const userId = authenticatedCanvasUserId()
     const bytes = parseCanvasUploadedImageBytes(bytesInput)
     return byteUploadAdmission.run(event.sender.id, bytes.length, () => importCanvasImageBytes(event.sender.id, userId, bytes))
+  })
+
+  // 画布完善第 7 条第二步：页面替抽帧节点抽好的那一帧。只认这个窗口自己开的、还在跑的运行里主进程发出去的编号，
+  // 一个编号只收一次（canvas-run-service.ts completePreparation 与 canvas-run-preparations.ts）。
+  registerCanvasHandler(canvasHostCompleteRunPreparationChannel, async (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const completion = parseCanvasRunPreparationCompletion(input)
+    await options.canvasRuns.completePreparation(userId, event.sender.id, completion)
+    assertCanvasUserUnchanged(userId)
   })
 
   registerCanvasHandler(canvasHostStartRunChannel, async (event, input) => {

@@ -220,6 +220,23 @@ describe('canvas fingerprints', () => {
     expect(computeCanvasGraphRevision({ nodes: [edit(mask)], edges: [] })).not.toBe('5ddbdb7f62d91ee381cc3d9b2234c37619c16bcf15973e4ce73f3b9729791234')
   })
 
+  it('gives a frame at another second its own fingerprint and keeps every node without one as it was', () => {
+    const frame = (frameTimestampSeconds?: number): CanvasRunGraphNode => ({
+      id: 'frame', kind: 'frame-extract', definitionVersion: 1,
+      data: { prompt: '', model: '', ...(frameTimestampSeconds !== undefined ? { frameTimestampSeconds } : {}) },
+    })
+    // Absent, the field changes nothing: the same key as before frames ran.
+    const plain = computeCanvasNodeFingerprint({ node: frame(), upstream: [] })
+    expect(computeCanvasNodeFingerprint({ node: { ...frame(), data: { prompt: '', model: '', frameTimestampSeconds: undefined } }, upstream: [] })).toBe(plain)
+    const atOne = computeCanvasNodeFingerprint({ node: frame(1), upstream: [] })
+    expect(atOne).not.toBe(plain)
+    expect(computeCanvasNodeFingerprint({ node: frame(2), upstream: [] })).not.toBe(atOne)
+    expect(computeCanvasNodeFingerprint({ node: frame(1), upstream: [] })).toBe(atOne)
+    const revision = computeCanvasGraphRevision({ nodes: [frame(1)], edges: [] })
+    expect(computeCanvasGraphRevision({ nodes: [frame(2)], edges: [] })).not.toBe(revision)
+    expect(computeCanvasGraphRevision({ nodes: [frame()], edges: [] })).toBe(computeCanvasGraphRevision({ nodes: [{ ...frame(), data: { prompt: '', model: '', frameTimestampSeconds: undefined } }], edges: [] }))
+  })
+
   it('changes the graph revision with the image count but keeps it for one image', () => {
     const base = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
     expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageCandidateCount: 2 })], edges: [] })).not.toBe(base)

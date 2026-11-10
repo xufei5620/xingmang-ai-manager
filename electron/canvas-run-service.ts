@@ -16,11 +16,14 @@ import {
   type CanvasNodeExecutors,
 } from './canvas-run-engine'
 import type { CanvasRunStore } from './canvas-run-store'
+import type { CanvasRunPreparationBroker, CanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasRunChargeChecker } from './canvas-run-charges'
 
 export interface CanvasRunServiceOptions {
   store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'resolveAssetOrigin' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
+  /** The frames this service's frame-extract executor waits on; the page answers through completePreparation. */
+  preparations?: Pick<CanvasRunPreparationBroker, 'complete'>
   /**
    * Builds the checker of each finished run's 实扣 against the account's usage
    * records, handed this service's own publisher; left out where the records
@@ -249,6 +252,18 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     listAssetIdsByLineage: (userId: number, selector: { runId?: string; nodeId?: string }) => options.store.listAssetIdsByLineage(userId, selector),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
     start,
+    /**
+     * A frame the page decoded for one of this window's running runs. The
+     * broker checks the operation itself; this only lets a window answer for
+     * a run it started, under the account that started it.
+     */
+    completePreparation: async (userId: number, ownerId: number, completion: CanvasRunPreparationCompletion) => {
+      const run = active.get(completion.runId)
+      if (!run || run.userId !== userId || run.ownerId !== ownerId || !options.preparations) {
+        throw new Error('这一帧不在等待中，可能已经超时或运行已停止')
+      }
+      await options.preparations.complete(userId, completion)
+    },
     cancel,
     cancelOwner,
     cancelUser,

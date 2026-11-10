@@ -8,6 +8,7 @@ import {
   canvasRunImageCandidateCount,
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
+  type CanvasNodeExecutor,
   type CanvasNodeExecutors,
   type CanvasRunAssetOrigin,
 } from './canvas-run-engine'
@@ -546,6 +547,7 @@ describe('executeCanvasRun', () => {
       if (!event) return 'none'
       if (event.type === 'node-stage') return `stage:${event.stage}${event.progress === undefined ? '' : `:${event.progress}`}`
       if (event.type === 'node-state') return `state:${event.state}`
+      if (event.type === 'run-waiting') return 'waiting'
       return `terminal:${event.status}`
     }
     const durable: string[] = []
@@ -1369,5 +1371,65 @@ describe('executeCanvasRun relay billing', () => {
     })
     const record = await executeCanvasRun(runOptions(workflow, { executors: executors({ image }) }))
     expect(attemptsOf(record, 'i').map((entry) => entry.relayBilling?.requestIds).sort()).toEqual([['req-1'], ['req-2']])
+  })
+})
+
+// 画布完善第 7 条第二步: a frame-extract node waits for the page to decode a frame.
+describe('executeCanvasRun frame preparations', () => {
+  function framePreparation(nodeId = 'frame', attemptId = 'attempt') {
+    return { operationId: attemptId, nodeId, attemptId, sourceAssetId: 'V'.repeat(43), timestampSeconds: 1.5 }
+  }
+
+  it('tells the page which frame to decode, and that it no longer has to, while the node runs', async () => {
+    const snapshots: Array<{ type: string; framePreparations?: unknown; recordFrames?: unknown }> = []
+    const frameExecutor = vi.fn<CanvasNodeExecutor>(async ({ attemptId, reportFramePreparation }) => {
+      const preparation = { ...framePreparation(), operationId: attemptId, attemptId }
+      await reportFramePreparation!(preparation, true)
+      await reportFramePreparation!(preparation, false)
+      // A second clear changes nothing and sends nothing.
+      await reportFramePreparation!(preparation, false)
+      return { assets: [asset()] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('frame', 'frame-extract')]), {
+      executors: executors({ 'frame-extract': frameExecutor }),
+      onEvent: (event, snapshot) => {
+        if (event.type === 'run-waiting') snapshots.push({ type: event.type, framePreparations: event.framePreparations, recordFrames: structuredClone(snapshot.framePreparations) })
+      },
+    }))
+    expect(record.status).toBe('succeeded')
+    const attemptId = record.nodes[0].attempts.at(-1)!.attemptId
+    const expected = { ...framePreparation(), operationId: attemptId, attemptId }
+    expect(snapshots).toEqual([
+      { type: 'run-waiting', framePreparations: [expected], recordFrames: [expected] },
+      { type: 'run-waiting', framePreparations: [], recordFrames: undefined },
+    ])
+    expect(record.events.filter((event) => event.type === 'run-waiting').map((event) => event.type === 'run-waiting' && event.waitingForVideo)).toEqual([false, false])
+    expect(record).not.toHaveProperty('framePreparations')
+  })
+
+  it('refuses a frame for another node and clears what a run still waits on when it ends', async () => {
+    let wrongNode: unknown
+    const record = await executeCanvasRun(runOptions(graph([node('frame', 'frame-extract')]), {
+      executors: executors({
+        'frame-extract': async ({ attemptId, reportFramePreparation }) => {
+          wrongNode = await reportFramePreparation!({ ...framePreparation('other'), operationId: attemptId, attemptId }, true).catch((error: Error) => error.message)
+          // Left waiting on purpose: the run's end still clears it.
+          await reportFramePreparation!({ ...framePreparation(), operationId: attemptId, attemptId }, true)
+          throw new Error('视频帧没有交回来（画布关了或处理超时），请重新运行这个节点')
+        },
+      }),
+    }))
+    expect(wrongNode).toBe('视频帧不属于这个节点')
+    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '视频帧没有交回来（画布关了或处理超时），请重新运行这个节点' })
+    expect(record).not.toHaveProperty('framePreparations')
+  })
+
+  it('never hands a frame-extract node without its own executor to the paid video executor', async () => {
+    const video = vi.fn(async () => ({ assets: [asset()] }))
+    const record = await executeCanvasRun(runOptions(graph([node('frame', 'frame-extract')]), {
+      executors: executors({ video }),
+    }))
+    expect(video).not.toHaveBeenCalled()
+    expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求' })
   })
 })

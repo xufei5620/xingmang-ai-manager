@@ -346,6 +346,39 @@ describe('createCanvasRunService', () => {
     await expect(handle.promise).resolves.toMatchObject({ status: 'cancelled' })
   })
 
+  it('takes a frame back only for a run the same window started under the same account', async () => {
+    const graph = workflow()
+    let release: (() => void) | undefined
+    const complete = vi.fn(async () => undefined)
+    const executors = {
+      text: () => new Promise<{ outputText: string }>((resolve) => { release = () => resolve({ outputText: 'done' }) }),
+      image: async () => ({ assets: [] }),
+      video: async () => ({ assets: [] }),
+    }
+    const service = createCanvasRunService({ store: memoryStore(), randomUUID: () => 'run-frame', executors, preparations: { complete } })
+    const handle = await service.start({ userId: 7, ownerId: 10, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    const completion = { runId: handle.runId, operationId: 'attempt-1', kind: 'frame' as const, outcome: 'failed' as const }
+
+    const refusal = '这一帧不在等待中，可能已经超时或运行已停止'
+    await expect(service.completePreparation(7, 11, completion)).rejects.toThrow(refusal)
+    await expect(service.completePreparation(8, 10, completion)).rejects.toThrow(refusal)
+    await expect(service.completePreparation(7, 10, { ...completion, runId: 'run-other' })).rejects.toThrow(refusal)
+    expect(complete).not.toHaveBeenCalled()
+    await service.completePreparation(7, 10, completion)
+    expect(complete).toHaveBeenCalledWith(7, completion)
+
+    release?.()
+    await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
+    await vi.waitFor(() => expect(service.hasActiveRuns()).toBe(false))
+    await expect(service.completePreparation(7, 10, completion)).rejects.toThrow(refusal)
+    expect(complete).toHaveBeenCalledTimes(1)
+
+    // A service without a broker takes no frames at all.
+    const bare = createCanvasRunService({ store: memoryStore(), executors })
+    await expect(bare.completePreparation(7, 10, completion)).rejects.toThrow(refusal)
+  })
+
   it('lets sibling generate nodes run together and only locks the overlapping ones', async () => {
     const graph: CanvasRunGraph = {
       nodes: [

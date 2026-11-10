@@ -6,6 +6,7 @@ import {
   type CanvasRenameAssetInput,
   type CanvasStartRunInput,
   type CanvasUpdateAssetMetadataInput,
+  desktopCanvasCapabilities,
 } from './canvas-contract'
 import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
@@ -337,7 +338,7 @@ function referenceSlotCount(value: unknown, label: string, maximum: number, budg
  * undefined when every kernel field is absent or equal to what the desktop
  * already does. The wording names what the user switched on, never a field.
  */
-function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }): string | undefined {
+function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): string | undefined {
   const reasons: string[] = []
   // Image kinds run 2-4 independent requests (canvas-run-engine.ts); the
   // kernel never sends a count for any other kind.
@@ -376,8 +377,12 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
     if (typeof data.frameTimestampSeconds !== 'number' || !Number.isFinite(data.frameTimestampSeconds) || data.frameTimestampSeconds < 0 || data.frameTimestampSeconds > 86_400) {
       throw new Error('画布抽帧时间格式错误')
     }
-    reasons.push('视频抽帧')
+    // A frame-extract node is the only one the desktop decodes a frame for.
+    if (kind !== 'frame-extract' || !options.frameExtract) reasons.push('视频抽帧')
   }
+  // Without its own executor a frame-extract node would otherwise fall back to
+  // the paid video executor (canvas-run-engine.ts executorFor refuses too).
+  if (kind === 'frame-extract' && !options.frameExtract) reasons.push('视频抽帧')
   const structured: Array<[string, string, string]> = [
     ['commerceTask', '画布电商创作配置', '电商创作'],
     ['interiorTask', '画布室内创作配置', '室内创作'],
@@ -595,7 +600,15 @@ function parseRunScope(value: unknown): CanvasRunScope {
   throw new Error('画布运行范围格式错误')
 }
 
-export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
+export interface CanvasStartRunParseOptions {
+  /** Whether frame-extract nodes run; the canvas window passes desktopCanvasCapabilities.features.frameExtract. */
+  frameExtract: boolean
+}
+
+export function parseCanvasStartRunInput(
+  value: unknown,
+  options: CanvasStartRunParseOptions = { frameExtract: desktopCanvasCapabilities.features.frameExtract },
+): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
   // The kernel's agent panel starts runs on the user's behalf from a cloud
   // conversation the desktop does not have. Refuse it by name instead of the
@@ -619,7 +632,11 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     ], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
-    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget)
+    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options)
+    // Range-checked by kernelFieldsUnsupported above; kept only where it runs.
+    const frameTimestampSeconds = kind === 'frame-extract' && options.frameExtract
+      ? (typeof entry.data.frameTimestampSeconds === 'number' ? entry.data.frameTimestampSeconds : 0)
+      : undefined
     const imageEditMask = optionalImageEditMask(kind, entry.data.imageEditMask, kernelFieldBudget)
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
@@ -673,6 +690,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
         ...(typeof promptOptimization === 'boolean' ? { promptOptimization } : {}),
         ...(imageCandidateCount ? { imageCandidateCount } : {}),
         ...(imageEditMask ? { imageEditMask } : {}),
+        ...(frameTimestampSeconds !== undefined ? { frameTimestampSeconds: Object.is(frameTimestampSeconds, -0) ? 0 : frameTimestampSeconds } : {}),
       },
     }
   })

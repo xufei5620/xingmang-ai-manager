@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { executeCanvasRun } from './canvas-run-engine'
-import type { CanvasRunGraph } from './canvas-run-contract'
+import type { CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { dramaParseMaximumRequestCount } from '../canvas-v2/src/runtime/run-preflight'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction, type CanvasFrameExtraction } from './canvas-run-preparations'
 
 describe('createCanvasNodeExecutors', () => {
   it('delegates image generation through the injected main-process service', async () => {
@@ -755,5 +756,128 @@ describe('canvas node executors relay billing', () => {
     await executors['drama-parse']!(context('drama-parse', billing))
     expect(completeOnce).toHaveBeenCalledTimes(2)
     expect(completeOnce.mock.calls.every((call) => call[0].billing === billing)).toBe(true)
+  })
+})
+
+// 画布完善第 7 条第二步: the main process does not decode video; it asks the page for the frame.
+describe('canvas frame-extract executor', () => {
+  const videoAsset = { kind: 'video' as const, assetId: 'V'.repeat(43), localUrl: `xingmang-asset://video/${'V'.repeat(43)}`, mimeType: 'video/mp4' }
+  const frameAsset = { kind: 'image' as const, assetId: 'F'.repeat(43), localUrl: `xingmang-asset://image/${'F'.repeat(43)}`, mimeType: 'image/png', width: 8, height: 8 }
+  const imageService = { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) }
+  const frameNode = { id: 'frame', kind: 'frame-extract' as const, definitionVersion: 1, data: { prompt: '', model: '', frameTimestampSeconds: 2.5 } }
+  const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7, projectId: '11111111-1111-4111-8111-111111111111' }
+
+  function png(width: number, height: number): Buffer {
+    const header = Buffer.alloc(33)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0)
+    header.writeUInt32BE(13, 8)
+    header.write('IHDR', 12, 'ascii')
+    header.writeUInt32BE(width, 16)
+    header.writeUInt32BE(height, 20)
+    header[24] = 8
+    header[25] = 6
+    return Buffer.concat([header, Buffer.alloc(16)])
+  }
+
+  it('stays refused without a frame extractor, without a video, or for a video the page cannot decode', async () => {
+    const report = vi.fn(async () => undefined)
+    const refused = createCanvasNodeExecutors({ imageService })['frame-extract']!
+    await expect(refused({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report }))
+      .rejects.toThrow('当前不会提交付费请求')
+
+    const frames: CanvasFrameExtraction = {
+      assertDecodableVideo: vi.fn(async () => { throw new Error('视频超过 32 MB，画布抽不了这一帧') }),
+      waitForFrame: vi.fn(async () => frameAsset),
+    }
+    const executor = createCanvasNodeExecutors({ imageService, frames })['frame-extract']!
+    await expect(executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal }))
+      .rejects.toThrow('「视频抽帧」节点桌面版暂不支持')
+    await expect(executor({ ...base, node: frameNode, inputs: {}, signal: new AbortController().signal, reportFramePreparation: report }))
+      .rejects.toThrow('请先给视频抽帧节点连接一段视频')
+    await expect(executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report }))
+      .rejects.toThrow('视频超过 32 MB，画布抽不了这一帧')
+    expect(frames.assertDecodableVideo).toHaveBeenCalledWith(7, videoAsset.assetId)
+    expect(frames.waitForFrame).not.toHaveBeenCalled()
+    expect(report).not.toHaveBeenCalled()
+    expect(imageService.generate).not.toHaveBeenCalled()
+  })
+
+  it('waits for the frame before telling the page, and clears the request whether or not it came back', async () => {
+    const order: string[] = []
+    let answer!: (asset: CanvasRunAsset) => void
+    let refuse!: (error: Error) => void
+    const frames: CanvasFrameExtraction = {
+      assertDecodableVideo: vi.fn(async () => undefined),
+      waitForFrame: vi.fn(() => {
+        order.push('wait')
+        return new Promise<CanvasRunAsset>((resolve, reject) => { answer = resolve; refuse = reject })
+      }),
+    }
+    const report = vi.fn(async (_preparation: unknown, waiting: boolean) => { order.push(waiting ? 'ask' : 'clear') })
+    const executor = createCanvasNodeExecutors({ imageService, frames })['frame-extract']!
+    const preparation = { operationId: 'attempt', nodeId: 'frame', attemptId: 'attempt', sourceAssetId: videoAsset.assetId, timestampSeconds: 2.5 }
+
+    const running = executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report })
+    await vi.waitFor(() => expect(order).toEqual(['wait', 'ask']))
+    expect(frames.waitForFrame).toHaveBeenCalledWith({ runId: 'run', userId: 7, projectId: base.projectId, preparation, signal: expect.any(AbortSignal) })
+    answer(frameAsset)
+    await expect(running).resolves.toEqual({ assets: [frameAsset] })
+    expect(order).toEqual(['wait', 'ask', 'clear'])
+    expect(report.mock.calls).toEqual([[preparation, true], [preparation, false]])
+
+    const failing = executor({ ...base, node: { ...frameNode, data: { prompt: '', model: '' } }, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report })
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(3))
+    expect(report.mock.calls[2]).toEqual([{ ...preparation, timestampSeconds: 0 }, true])
+    refuse(new Error('视频帧没有抽出来：视频读不出来，或者时间点不在视频里'))
+    await expect(failing).rejects.toThrow('视频帧没有抽出来')
+    expect(report.mock.calls[3]).toEqual([{ ...preparation, timestampSeconds: 0 }, false])
+  })
+
+  it('runs a video into a frame node end to end with the frame the page hands back, without a paid request', async () => {
+    const broker = new CanvasRunPreparationBroker()
+    const storeLocalBytes = vi.fn(async () => ({ assetId: frameAsset.assetId, localUrl: frameAsset.localUrl, mimeType: 'image/png' as const, width: 8, height: 8, fileName: 'frame.png' }))
+    const setSource = vi.fn(async () => undefined)
+    const frames = createCanvasFrameExtraction({
+      broker,
+      assets: {
+        readOwnedVideoRange: vi.fn(async () => ({ totalBytes: 1024 })),
+        forProject: vi.fn(async () => ({ images: { storeLocalBytes }, media: { setSource } })),
+      },
+    })
+    const readOwned = vi.fn(async () => ({ asset: videoAsset }))
+    const generateVideo = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService,
+      videoService: { generate: generateVideo, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoGroup: 'grok',
+      assets: { readOwned },
+      frames,
+    })
+    const graph: CanvasRunGraph = {
+      nodes: [
+        { id: 'clip', kind: 'video-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: videoAsset.assetId } },
+        frameNode,
+      ],
+      edges: [{ id: 'e', source: 'clip', sourceHandle: 'out:video', target: 'frame', targetHandle: 'in:video' }],
+    }
+    const asked: unknown[] = []
+    const record = await executeCanvasRun({
+      userId: 7, ownerId: 9, projectId: base.projectId, runId: 'run-frame', graphRevision: 'revision', graph, scope: { kind: 'all' },
+      executors, signal: new AbortController().signal,
+      onEvent: async (event) => {
+        if (event.type !== 'run-waiting' || !event.framePreparations.length) return
+        asked.push(...event.framePreparations)
+        const [preparation] = event.framePreparations
+        await broker.complete(7, { runId: 'run-frame', operationId: preparation.operationId, kind: 'frame', outcome: 'completed', png: png(8, 8) })
+      },
+    })
+    expect(record.status).toBe('succeeded')
+    expect(asked).toEqual([expect.objectContaining({ nodeId: 'frame', sourceAssetId: videoAsset.assetId, timestampSeconds: 2.5 })])
+    expect(record.nodes.find((entry) => entry.nodeId === 'frame')?.state).toBe('succeeded')
+    expect(storeLocalBytes).toHaveBeenCalledTimes(1)
+    expect(setSource).toHaveBeenCalledWith(7, frameAsset.assetId, 'imported')
+    expect(generateVideo).not.toHaveBeenCalled()
+    expect(broker.size()).toBe(0)
+    expect(record).not.toHaveProperty('framePreparations')
   })
 })
