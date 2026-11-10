@@ -3,7 +3,7 @@ import type { WindowOs } from '../app/window-os'
 
 // Mac 上星芒不会替人重开 Codex（主进程拒绝重启），新设置要等 Codex 完全退出、再从星芒打开才读得到；
 // 只关窗口它还在后台跑，照样读不到（第二十九批 A）。
-const macQuitThenOpen = '先在 Codex 窗口里按 Command + Q 完全退出，再回星芒点「打开」。'
+const macQuitThenOpen = '先在 Codex 窗口里按 ⌘Q 完全退出，再回星芒点「打开」。'
 
 /**
  * 配置里「界面语言与文件夹权限」那段说明的 Mac 版：Mac 上不开那条本机通道，也不会替人重开 Codex。

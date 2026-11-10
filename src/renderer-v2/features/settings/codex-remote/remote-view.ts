@@ -60,6 +60,15 @@ export function remoteChannelStateTone(status: RemoteChannelStatus): 'neutral' |
   return 'neutral'
 }
 
+/**
+ * 配对那一行下面的小字（D66 / YKS-21）：手机上发来过错的码就说错了几次，错满作废了说要重新开始配对。
+ * 只在电脑卡片上说，手机那边照旧不回，计数规则也不动。
+ */
+export function pairingAttemptText(channel: Pick<CodexRemoteChannelSnapshot, 'pairing' | 'pairingLocked'>): string | null {
+  if (channel.pairing) return channel.pairing.failures ? `配对码错了 ${channel.pairing.failures} 次` : null
+  return channel.pairingLocked ? '这个码已经作废，请重新开始配对。' : null
+}
+
 function twoDigits(value: number): string {
   return String(value).padStart(2, '0')
 }

@@ -1,3 +1,5 @@
+import type { RendererRestartWork } from './ipc-contract'
+
 /**
  * 主窗口缩在托盘里久了，把界面进程关掉省内存；再叫出来时重新加载（排队项「托盘关界面省内存」）。
  *
@@ -64,12 +66,17 @@ export interface RendererRelease {
    * 界面关着的都算没事：关着时那边没有活在跑。别处要「界面在忙就先别动」（例如闲时装更新）读这个。
    */
   readonly rendererBusy: boolean
+  /**
+   * 界面最后一次报告里、重启装更新前要点名问一句的那几样（聊天在回复或出图、视频剪辑在拼接，D10）。
+   * 跟 rendererBusy 一样，没报告过的、界面关着的都算没有。
+   */
+  readonly rendererWork: readonly RendererRestartWork[]
   /** 窗口藏起来了（缩到托盘、开机自启没弹窗）：开始计时。 */
   noteHidden(): void
   /** 窗口出来了：不再计时；界面关着就马上重新加载。 */
   noteShown(): void
   /** 界面报告手上有没有事（装工具、聊天回复、出视频、同步密钥）。重新加载后第一次报告也算准备好了。 */
-  reportActivity(busy: boolean): void
+  reportActivity(busy: boolean, work?: readonly RendererRestartWork[]): void
   /** 界面关着就重新加载。返回 true = 这次加载归它管（调用方别再自己重载）。 */
   restore(reason: RendererRestoreReason): boolean
   /** 界面进程没了：是不是这里自己关的。是就别当崩溃处理。 */
@@ -93,6 +100,7 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
   // 界面报告过手上有没有事：旧回滚界面没有这一条，永远是 false，也就永远不关。
   let reporting = false
   let rendererBusy = false
+  let rendererWork: readonly RendererRestartWork[] = []
   let expectedExit = false
   let shownOnce = false
   let restoredBoot = false
@@ -150,6 +158,7 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
     state = 'released'
     reporting = false
     rendererBusy = false
+    rendererWork = []
     write('release.done')
     try { options.onReleased?.() } catch (error) { report(error) }
   }
@@ -178,6 +187,7 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
     get state() { return state },
     get restoredBoot() { return restoredBoot },
     get rendererBusy() { return rendererBusy },
+    get rendererWork() { return rendererWork },
     noteHidden() {
       if (disposed || state !== 'live') return
       deferredReason = null
@@ -190,9 +200,10 @@ export function createRendererRelease(options: RendererReleaseOptions): Renderer
       restore('show')
       shownOnce = true
     },
-    reportActivity(busy) {
+    reportActivity(busy, work = []) {
       if (disposed || state === 'released') return
       rendererBusy = busy
+      rendererWork = [...work]
       reporting = true
       if (state !== 'restoring') return
       state = 'live'
