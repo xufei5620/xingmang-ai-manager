@@ -5944,6 +5944,22 @@ describe('Darwin Codex Desktop integration', () => {
     expect(release).not.toHaveBeenCalled()
   })
 
+  it('tells a Mac user to grant folder access when the stored workspace cannot be looked at (D29)', async () => {
+    const { service, workspace, execute, release } = await createDarwinService()
+    const statSync = fs.statSync
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (target === workspace) throw Object.assign(new Error(`EPERM: operation not permitted, stat '${workspace}'`), { code: 'EPERM' })
+      return statSync(target, options)
+    }) as typeof fs.statSync)
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
+    expect(execute).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
+  })
+
   it('opens the verified Darwin desktop app without CLI, Node, or npm installed', async () => {
     const { service, workspace, codexEnv, resolveCli, execute, findExecutable, release } = await createDarwinService()
     resolveCli.mockRejectedValue(new Error('未检测到 Codex CLI'))
@@ -7216,7 +7232,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号上下文已变化')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()

@@ -44,9 +44,9 @@ try {
     const page = await open('desktop-running')
     try {
       await page.getByTestId('tool-codexDesktop-primary').click()
-      const dialog = page.getByRole('dialog', { name: 'Codex 已在运行', exact: true })
+      const dialog = page.getByRole('dialog', { name: 'Codex 桌面端还开着', exact: true })
       await dialog.waitFor()
-      result.observations.push({ id: 'desktop-restart-entry', buttons: await dialog.getByRole('button').allTextContents(), restartActions: await dialog.getByRole('button', { name: /重启/ }).count() })
+      result.observations.push({ id: 'desktop-restart-entry', buttons: await dialog.getByRole('button').allTextContents(), restartActions: await dialog.getByRole('button', { name: /重开/ }).count() })
     } finally { await page.close() }
   }
   {

@@ -186,6 +186,8 @@ export async function confirmQuitInterruptions(steps: QuitInterruptionConfirmati
 export interface InstallableUpdateOnQuit {
   /** 已经下载并校验过的版本号；快照里没有时为 null，文案要能少了它也说得通。 */
   version: string | null
+  /** 这一版比本机旧：发布者撤回了本机这一版，装上是退回（updater.ts 的 rollback），说法要换（D11）。 */
+  rollback: boolean
 }
 
 /**
@@ -197,7 +199,16 @@ export interface InstallableUpdateOnQuit {
  */
 export function resolveInstallableUpdateOnQuit(snapshot: UpdateSnapshot): InstallableUpdateOnQuit | null {
   if (snapshot.phase !== 'downloaded' || snapshot.error || snapshot.development) return null
-  return { version: snapshot.availableVersion }
+  return { version: snapshot.availableVersion, rollback: snapshot.rollback === true }
+}
+
+/**
+ * 马上要装的这个版本是不是一次退回。预告和跳框要先等几秒、等人停手，这期间快照可能已经换成
+ * 别的版本：只有快照里下好的还是这一版时才算，对不上时按平时的说法（D11）。
+ */
+export function isRollbackInstall(snapshot: UpdateSnapshot | null, version: string): boolean {
+  const installable = snapshot ? resolveInstallableUpdateOnQuit(snapshot) : null
+  return installable !== null && installable.version === version && installable.rollback
 }
 
 /**

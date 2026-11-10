@@ -215,10 +215,10 @@ describe('Codex conversation too large reminders', () => {
   it('says what happened to the conversation in fixed words, once per notice, under the terminal trouble switch', () => {
     const h = setup()
     const expected = {
-      codexPayloadSwitched: ['Codex 的对话已换到线路 2', '这个对话超过了线路 1 的 100MB 上限，已为你切到线路 2。完全退出 Codex 再打开，就能接着聊。'],
-      codexPayloadTooLarge: ['Codex 里这个对话太大，发不出去了', '这个对话已经超过 100MB，线路 1 发不出去。请新开一个对话继续，点这里看原因。'],
+      codexPayloadSwitched: ['Codex 的对话已换到线路2', '这个对话超过了线路1 的 100MB 上限，已为你切到线路2。完全退出 Codex 再打开，就能接着聊。'],
+      codexPayloadTooLarge: ['Codex 里这个对话太大，发不出去了', '这个对话已经超过 100MB，线路1 发不出去。请新开一个对话继续，点这里看原因。'],
       codexPayloadLineTwoTooLarge: ['Codex 里这个对话太大，发不出去了', '请新开一个对话继续，点这里看原因。'],
-      codexPayloadNearing: ['Codex 里有个对话快到线路 1 的上限了', '超过 100MB 后线路 1 就发不出去了，建议做完手上这件事就新开一个对话。'],
+      codexPayloadNearing: ['Codex 里有个对话快到线路1 的上限了', '超过 100MB 后线路1 就发不出去了，建议做完手上这件事就新开一个对话。'],
     } as const
     for (const [event, [title, body]] of Object.entries(expected) as Array<[keyof typeof expected, readonly [string, string]]>) {
       expect(h.controller.notifyHost(event, '1800000000000')).toBe('requested')
