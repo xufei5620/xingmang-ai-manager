@@ -725,7 +725,7 @@ test('the transfer dialog starts from what is transferable now, also after part 
     const transferable = panel.locator('.v2-acct-kv').filter({ hasText: '可转入余额' })
     const transfer = panel.getByTestId('account-invite-transfer')
     const dialog = page.getByRole('dialog', { name: /返利转入余额？$/ })
-    const amount = dialog.getByLabel('转入金额（USD）', { exact: true })
+    const amount = dialog.getByLabel('转入金额（美元）', { exact: true })
     await transfer.click()
     await dialog.waitFor()
     assert.equal(await amount.inputValue(), '1')
@@ -740,6 +740,33 @@ test('the transfer dialog starts from what is transferable now, also after part 
     assert.deepEqual((await calls(page)).filter((call) => call.name === 'transfer-affiliate-quota').map((call) => call.args), [{ quota: 40 }])
   } finally {
     await page.close()
+  }
+})
+
+test('the empty transfer button tells a drained rebate from one never earned', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const transfer = panel.getByTestId('account-invite-transfer')
+    await transfer.click()
+    const dialog = page.getByRole('dialog', { name: '把 $1.00 返利转入余额？', exact: true })
+    await dialog.getByRole('button', { name: '转入余额', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await transfer.getByText('已全部转入', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+  const fresh = await fixture('page=account&noRebate=1')
+  try {
+    await fresh.getByRole('tab', { name: '邀请返利', exact: true }).click()
+    const transfer = fresh.getByRole('tabpanel').filter({ visible: true }).getByTestId('account-invite-transfer')
+    // 从来没赚过时写「已全部转入」像是转过了（W44）。
+    await transfer.getByText('还没有返利', { exact: true }).waitFor()
+    assert.equal(await transfer.isDisabled(), true)
+  } finally {
+    await fresh.close()
   }
 })
 

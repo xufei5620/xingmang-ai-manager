@@ -833,9 +833,9 @@ function AccountKeys({
   const [removing, setRemoving] = useState<AccountKey | null>(null)
   // 撤销了工具在用的 Key、自动换新却没成：记下是哪个工具，好给一颗「再换一次」。
   // skipped = 这个工具的配置不归自动流程管（手填、来源没确认等），再换一次也还是跳过，
-  // 要给的是「去设置」（#478）。
+  // 要给的是「去配置」（#478）。
   const [replaceFailed, setReplaceFailed] = useState<{ provider: Provider; skipped: boolean } | null>(null)
-  // 点「去设置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
+  // 点「去配置」只是打开了设置窗口，用户可能取消，也可能保存失败，工具手里还是那把撤销掉的
   // Key。所以警告要等那个工具的设置真的保存、并读回之后才收起（#546）。只认点开之后
   // 新来的信号，之前留下的那次不算。
   const confirmedSequence = useRef(toolConfigConfirmed?.sequence ?? 0)
@@ -1101,7 +1101,7 @@ function AccountKeys({
         <Notice
           tone="warn"
           title={`${keyToolName(replaceFailed.provider)} 还在用刚撤销的密钥`}
-          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去设置」改用当前账号就好。' : '到首页打开它的设置，改用当前账号就好。'}`}
+          body={`${keyToolName(replaceFailed.provider)} 的配置不是按当前账号自动写的，这次没有替你改，它现在会连不上。${onConfigureTool ? '点「去配置」改用当前账号就好。' :'到首页打开它的设置，改用当前账号就好。'}`}
           testId="account-key-replace-skipped"
           actions={onConfigureTool && (
             <Button
@@ -1110,7 +1110,7 @@ function AccountKeys({
               testId="account-key-replace-configure"
               onClick={() => onConfigureTool(replaceFailed.provider)}
             >
-              去设置
+              去配置
             </Button>
           )}
         />
@@ -1365,7 +1365,7 @@ function AccountKeys({
                 type="number"
                 min="0"
                 step="0.01"
-                hint="美元，用完后这把密钥会暂停，不影响账户余额"
+                hint="美元，用完后这把密钥会暂停，不影响账号余额"
                 value={quota}
                 onChange={(event) => setQuota(event.target.value)}
               />
@@ -1551,7 +1551,8 @@ function AccountInvite({
               }}
               testId="account-invite-transfer"
             >
-              {profile.affQuota > 0 ? '转入余额' : '已全部转入'}
+              {/* 没有可转的分两种：赚过、都转完了，和从来没赚过（后者写「已全部转入」像是转过了）。 */}
+              {profile.affQuota > 0 ? '转入余额' : profile.affHistoryQuota > 0 ? '已全部转入' : '还没有返利'}
             </Button>
           </div>
         </section>
@@ -1616,7 +1617,7 @@ function AccountInvite({
       >
         <p>转入后可以直接用来调用模型，不能再转回返利。</p>
         <Input
-          label="转入金额（USD）"
+          label="转入金额（美元）"
           type="number"
           min="0.01"
           step="0.01"
