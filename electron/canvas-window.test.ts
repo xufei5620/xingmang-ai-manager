@@ -1525,6 +1525,17 @@ describe('createCanvasWindowController', () => {
       overrides: Partial<CanvasWindowControllerOptions> = {},
       storeBase64?: (directory: string) => (userId: number, dataUrl: string) => Promise<unknown>,
     ) {
+      const created = projectController(createImported, overrides, storeBase64)
+      await created.controller.open()
+      await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), openProjectId)
+      return created
+    }
+
+    function projectController(
+      createImported: (...args: unknown[]) => Promise<unknown>,
+      overrides: Partial<CanvasWindowControllerOptions> = {},
+      storeBase64?: (directory: string) => (userId: number, dataUrl: string) => Promise<unknown>,
+    ) {
       const root = path.join(temporaryDirectory(), '星芒画布')
       const contexts: ReturnType<typeof folderAssets>[] = []
       const forNewWorkspace = vi.fn((directory: string) => {
@@ -1545,9 +1556,7 @@ describe('createCanvasWindowController', () => {
         aiAssets: aiAssets as never,
         ...overrides,
       }))
-      await controller.open()
-      await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), openProjectId)
-      return { root, projects, forNewWorkspace, contexts, aiAssets }
+      return { controller, root, projects, forNewWorkspace, contexts, aiAssets }
     }
 
     it('puts the package into a new project in the default folder and leaves the open project alone', async () => {
@@ -1625,6 +1634,124 @@ describe('createCanvasWindowController', () => {
         .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），这次没有导入$/)
       expect(forNewWorkspace).not.toHaveBeenCalled()
       expect(projects.createImported).not.toHaveBeenCalled()
+    })
+
+    describe('opening a project file the system handed over (double-click, D92)', () => {
+      function importsNewProject(_userId: unknown, name: unknown, directory: unknown, content: unknown) {
+        return Promise.resolve({ project: summary(newProjectId, String(name)), content, directory })
+      }
+
+      function loadedProjectId(window: Record<string, unknown> | null): string | null {
+        const loadURL = window!.loadURL as ReturnType<typeof vi.fn>
+        return new URL(loadURL.mock.calls.at(-1)![0] as string).searchParams.get('project')
+      }
+
+      function latestCloseRequestId(): string | undefined {
+        const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+        return [...send.mock.calls].reverse().find(([channel]) => channel === canvasHostChannels.closeRequested)?.[1].requestId
+      }
+
+      it('imports the file as a new project and opens the canvas on it, without any dialog', async () => {
+        const { controller, root, projects, contexts } = projectController(importsNewProject)
+
+        await expect(controller.openProjectFile(packageFile([oldAssetId]))).resolves.toBe(true)
+        const folder = path.join(root, '可移植项目')
+        expect(projects.createImported).toHaveBeenCalledWith(7, '可移植项目', folder, expect.stringContaining(newAssetId))
+        expect(contexts[0]!.media.setSource).toHaveBeenCalledWith(7, newAssetId, 'imported')
+        expect(electronMocks.browserWindowOptions).toHaveLength(1)
+        expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(newProjectId)
+        expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+        expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      })
+
+      it('lets an open canvas save and close through its own confirmation before switching to the new project', async () => {
+        const { controller, projects } = await openedController(importsNewProject)
+        const firstWindow = electronMocks.latestBrowserWindow!
+
+        const opening = controller.openProjectFile(packageFile([oldAssetId]))
+        await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+        expect(projects.createImported).not.toHaveBeenCalled()
+        expect(electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)).toBe(true)
+
+        await expect(opening).resolves.toBe(true)
+        expect(firstWindow.close).toHaveBeenCalledOnce()
+        expect(projects.createImported).toHaveBeenCalledOnce()
+        expect(electronMocks.latestBrowserWindow).not.toBe(firstWindow)
+        expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(newProjectId)
+      })
+
+      it('stays on the open project and imports nothing when the user keeps the canvas open', async () => {
+        const { controller, projects, forNewWorkspace } = await openedController(importsNewProject)
+        const firstWindow = electronMocks.latestBrowserWindow!
+        const shown = (firstWindow.show as ReturnType<typeof vi.fn>).mock.calls.length
+
+        const opening = controller.openProjectFile(packageFile([oldAssetId]))
+        await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+        electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), false)
+
+        await expect(opening).resolves.toBe(false)
+        expect(firstWindow.close).not.toHaveBeenCalled()
+        expect((firstWindow.show as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(shown)
+        expect(forNewWorkspace).not.toHaveBeenCalled()
+        expect(projects.createImported).not.toHaveBeenCalled()
+        expect(electronMocks.browserWindowOptions).toHaveLength(1)
+      })
+
+      it('refuses a broken file before it touches the open canvas', async () => {
+        const { controller, projects } = await openedController(importsNewProject)
+        const broken = path.join(temporaryDirectory(), '坏的.xingcanvas')
+        fs.writeFileSync(broken, '{not json', 'utf8')
+
+        await expect(controller.openProjectFile(broken)).rejects.toThrow('画布项目文件不是有效 JSON')
+        expect(latestCloseRequestId()).toBeUndefined()
+        expect(projects.createImported).not.toHaveBeenCalled()
+      })
+
+      it('checks the path the way it checks a dropped file: absolute, the right kind, one link, no links on the way', async () => {
+        const { controller, projects } = projectController(importsNewProject)
+        const original = packageFile([oldAssetId])
+        const hardLink = path.join(temporaryDirectory(), '硬链接.xingcanvas')
+        fs.linkSync(original, hardLink)
+        const renamed = path.join(temporaryDirectory(), '样稿.json')
+        fs.copyFileSync(original, renamed)
+
+        await expect(controller.openProjectFile('样稿.xingcanvas')).rejects.toThrow('画布项目文件路径无效')
+        await expect(controller.openProjectFile(renamed)).rejects.toThrow('画布项目文件路径无效')
+        await expect(controller.openProjectFile(hardLink)).rejects.toThrow('画布项目文件不安全')
+        expect(projects.createImported).not.toHaveBeenCalled()
+        expect(electronMocks.browserWindowOptions).toHaveLength(0)
+      })
+
+      it.runIf(process.platform !== 'win32')('refuses a file reached through a link', async () => {
+        const { controller, projects } = projectController(importsNewProject)
+        const original = packageFile([oldAssetId])
+        const linkedFolder = path.join(temporaryDirectory(), 'linked')
+        fs.symlinkSync(path.dirname(original), linkedFolder)
+        const linkedFile = path.join(temporaryDirectory(), '链接.xingcanvas')
+        fs.symlinkSync(original, linkedFile)
+
+        await expect(controller.openProjectFile(path.join(linkedFolder, path.basename(original)))).rejects.toThrow('不能经过符号链接或目录联接')
+        await expect(controller.openProjectFile(linkedFile)).rejects.toThrow('不能经过符号链接或目录联接')
+        expect(projects.createImported).not.toHaveBeenCalled()
+      })
+
+      it('needs a signed-in account and does not import for an account that changed while the canvas was closing', async () => {
+        const signedOut = projectController(importsNewProject, {
+          accountService: { getSessionState: vi.fn(() => ({ authenticated: false, account: null })) } as never,
+        })
+        await expect(signedOut.controller.openProjectFile(packageFile([oldAssetId]))).rejects.toThrow('请先登录星芒账号')
+
+        let userId = 7
+        const { controller, projects } = await openedController(importsNewProject, {
+          accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) } as never,
+        })
+        const opening = controller.openProjectFile(packageFile([oldAssetId]))
+        await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+        userId = 9
+        electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)
+        await expect(opening).rejects.toThrow('账号已切换')
+        expect(projects.createImported).not.toHaveBeenCalled()
+      })
     })
   })
 

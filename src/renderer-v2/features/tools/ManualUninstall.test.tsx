@@ -17,7 +17,22 @@ describe('renderer-v2 manual uninstall help', () => {
       state={{ name: 'Grok CLI', reason: '安全检查没有通过', manualCommand: null }} />)
     expect(markup).toContain('安全检查没有通过')
     expect(markup).not.toContain('manual-uninstall-command')
-    expect(markup).toContain('请联系客服协助处理')
+    expect(markup).toContain('这次没能确认哪些文件能安全删掉，先别自己删，点「找客服」。')
+  })
+
+  it('gives the support button the no-command wording points at (D21)', () => {
+    const state = { name: 'Grok CLI', reason: '安全检查没有通过', manualCommand: null }
+    const markup = renderToStaticMarkup(<ManualUninstallDialog platform="macos" onClose={() => undefined} onHelp={() => undefined} state={state} />)
+    expect(markup).toMatch(/data-testid="manual-uninstall-support"[^>]*><span>找客服<\/span><\/button>/)
+    expect(markup.indexOf('manual-uninstall-support')).toBeLessThan(markup.indexOf('知道了'))
+    // 没给入口就不画一颗点了没反应的按钮。
+    expect(renderToStaticMarkup(<ManualUninstallDialog platform="macos" onClose={() => undefined} state={state} />)).not.toContain('manual-uninstall-support')
+  })
+
+  it('keeps the support button out while there is still a command to follow', () => {
+    const markup = renderToStaticMarkup(<ManualUninstallDialog platform="windows" onClose={() => undefined} onHelp={() => undefined} cleanUp={async () => ({ remaining: 0 })}
+      state={{ name: 'Claude Code', reason: '有 1 个旧版本程序文件没能自动删除', manualCommand: "Remove-Item -LiteralPath 'C:\\v\\2.1.3.exe' -Force", cleanUpTool: 'claude' }} />)
+    expect(markup).not.toContain('manual-uninstall-support')
   })
 
   it('offers to clean up when the main process recorded the files, ahead of copying the command', () => {

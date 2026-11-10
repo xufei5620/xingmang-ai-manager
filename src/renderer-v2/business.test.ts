@@ -328,8 +328,8 @@ describe('v2 business boundaries', () => {
     expect(
       parseCommandArguments('["-y", "C:\\\\Program Files\\\\tool"]'),
     ).toEqual(['-y', 'C:\\Program Files\\tool'])
-    expect(() => parseCommandArguments('[true]')).toThrow('字符串数组')
-    expect(() => parseCommandArguments('"-y"')).toThrow('字符串数组')
+    expect(() => parseCommandArguments('[true]')).toThrow('附加参数照提供方说明原样粘贴')
+    expect(() => parseCommandArguments('"-y"')).toThrow('附加参数照提供方说明原样粘贴')
   })
   it('routes actionable diagnostic categories to their owning page', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')

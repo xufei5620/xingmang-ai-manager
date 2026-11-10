@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountBalance } from '../../../../electron/ipc-contract'
+import { proxyAuthRequiredMessage } from '../../../../electron/network-failure'
 import { createAccountBalanceStore, type AccountBalanceStore } from './balance-store'
 
 const balance = (displayAmount: number): AccountBalance => ({
@@ -347,6 +348,16 @@ describe('shared account balance network failure streak', () => {
     read.mockResolvedValueOnce(balance(5))
     await store.refresh('manual')
     expect(store.getSnapshot().networkFailureReason).toBeUndefined()
+  })
+
+  it('remembers a proxy that wants a password as its own kind for the banner', async () => {
+    const read = vi.fn<() => Promise<AccountBalance>>()
+    const store = createAccountBalanceStore({ read })
+    stores.push(store)
+    read.mockRejectedValueOnce(new Error(`Error invoking remote method 'account:get-balance': NewApiNetworkError: ${proxyAuthRequiredMessage}（余额请求失败）`))
+    store.setScope('new-api:1')
+    await store.refresh()
+    expect(store.getSnapshot()).toMatchObject({ networkFailures: 1, networkFailureReason: 'proxyAuth' })
   })
 
   it('counts consecutive local network failures and resets on success or another failure', async () => {

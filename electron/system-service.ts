@@ -1211,7 +1211,10 @@ export function createSystemService(
     applyXingmangAiSkillForCodexAccount,
   })
   // 装运行环境和重启 Windows 那一段在 runtime-install-service.ts（#1070 第 3 步）。
-  const { installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime } = createRuntimeInstallService(context, {
+  const {
+    installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime,
+    refreshOutdatedManagedNodeRuntime,
+  } = createRuntimeInstallService(context, {
     inspectNetworkRegion,
     inspectTool,
     inspectNode,
@@ -1229,6 +1232,7 @@ export function createSystemService(
     invalidateCliUpdateCache,
     installGitRuntime,
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime,
   })
 
   // 卸载命令行工具那一段在 cli-uninstall-service.ts（#1070 第 3 步）。

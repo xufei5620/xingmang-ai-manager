@@ -237,6 +237,14 @@ export interface CanvasWindowControllerOptions {
 export interface CanvasWindowController {
   /** Opens the canvas window, or focuses it if already open. Idempotent under rapid repeat calls (in-flight creation is reused, never doubled). */
   open(): Promise<void>
+  /**
+   * Opens a canvas project file the system handed to the main process (a
+   * double-click on a .xingcanvas file, D92): imports it as a new project in
+   * the default folder and shows the canvas on it. An open canvas goes through
+   * its own close confirmation first; resolves false when the user stayed on
+   * it, and rejects when the file cannot be opened. Calls run one at a time.
+   */
+  openProjectFile(filePath: string): Promise<boolean>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
@@ -1298,7 +1306,7 @@ export function createCanvasWindowController(
   // 导入成新项目：文件夹跟「创建」一样建在「文档 › 星芒画布」下面（不带 recursive、同名加「 (2)」，不会用已经在的文件夹），
   // 素材先放进新文件夹，最后才登记项目；中途出错就删掉刚放进去的素材和空文件夹，项目中心里不会多出一个半成品。
   // 这里不换当前项目：画布拿到 projectId 以后自己走「打开项目」，打不开时原来那个项目照旧能保存。
-  async function importAsNewProject(userId: number, pending: PendingCanvasProjectImport): Promise<CanvasProjectImportResult> {
+  async function importAsNewProject(userId: number, pending: Pick<PendingCanvasProjectImport, 'parsed' | 'projectName'>): Promise<CanvasProjectImportResult> {
     const projects = options.projects
     const projectAssets = options.projectAssets
     const projectsDirectory = options.defaultProjectsDirectory
@@ -1344,6 +1352,60 @@ export function createCanvasWindowController(
     }
   }
 
+  // 双击打开的画布项目文件（D92）。路径是系统交给主进程的，从没经过画布页面，所以这不是 I15 说的由渲染层给路径的通道；
+  // 读之前照拖放进来的素材那样严查（绝对路径、路径上没有链接和联接、单链接普通文件），readBoundedUtf8File 读的时候再以 open + fstat 复核。
+  async function readLaunchedCanvasProjectFile(filePath: string): Promise<ParsedCanvasProjectPackage> {
+    if (!path.isAbsolute(filePath) || filePath.includes('\0') || path.extname(filePath).toLowerCase() !== '.xingcanvas') {
+      throw new Error('画布项目文件路径无效')
+    }
+    assertNoReparseComponents(filePath, '画布项目导入文件')
+    const source = await fs.promises.lstat(filePath, { bigint: true })
+    if (!source.isFile() || source.isSymbolicLink() || source.nlink !== 1n) throw new Error('画布项目文件不安全')
+    return parseCanvasProjectPackage(await readBoundedUtf8File(filePath, maximumCanvasProjectBytes, '画布项目导入文件'))
+  }
+
+  // 跟画布里「导入工作流」一样导入成新项目（同一个 importAsNewProject），再把画布开在这个项目上。
+  // 文件先读、先查，坏文件不会让开着的画布关掉。画布开着就先走它自己的关闭确认：有任务在跑会问，
+  // 没有就存好直接关，换项目不丢正在画的东西；用户在那里点了取消，就留在原来的项目上，这个文件不导入。
+  async function openLaunchedProjectFile(filePath: string): Promise<boolean> {
+    if (disposed) throw new Error('画布宿主已关闭')
+    const userId = authenticatedCanvasUserId()
+    if (!options.projects || !options.projectAssets || !options.defaultProjectsDirectory) throw new Error('导入成新项目暂时不可用，请重新选择文件')
+    const parsed = await readLaunchedCanvasProjectFile(filePath)
+    assertCanvasUserUnchanged(userId)
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed() && !await requestClose()) {
+      if (canvasWindow && !canvasWindow.isDestroyed()) await open()
+      return false
+    }
+    if (disposed) return false
+    assertCanvasUserUnchanged(userId)
+    const pending = { parsed, projectName: importedCanvasProjectName(parsed.workflow.name, filePath) }
+    const imported = options.accountWork
+      ? await options.accountWork.run(() => importAsNewProject(userId, pending))
+      : await importAsNewProject(userId, pending)
+    if (disposed) return false
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      // 导入这一会儿里又从主窗口打开了画布：不再关它，新项目就在项目中心里。
+      await open()
+      return true
+    }
+    pendingOpen = createWindow(imported.projectId).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+    return true
+  }
+
+  let projectFileQueue: Promise<unknown> = Promise.resolve()
+
+  function openProjectFile(filePath: string): Promise<boolean> {
+    const next = projectFileQueue.then(() => openLaunchedProjectFile(filePath))
+    projectFileQueue = next.catch(() => undefined)
+    return next
+  }
+
   const unsubscribeRunEvents = options.canvasRuns.subscribe(({ event, userId, ownerId }) => {
     if (!canvasWindow || canvasWindow.isDestroyed()) return
     if (canvasWindow.webContents.id !== ownerId) return
@@ -1362,7 +1424,7 @@ export function createCanvasWindowController(
     }
   }
 
-  function canvasEntryUrl(): string {
+  function canvasEntryUrl(projectId?: string): string {
     // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
     // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
     // path 404s in its router; the protocol handler's catch-all still serves
@@ -1371,10 +1433,12 @@ export function createCanvasWindowController(
     canvasUrl.searchParams.set('theme', currentTheme)
     if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
     if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
+    // 内核开机时读 ?project= 直接打开这个项目（canvas-v2 App.tsx 的 initialRoute），双击项目文件就靠它。
+    if (projectId) canvasUrl.searchParams.set('project', projectId)
     return canvasUrl.href
   }
 
-  async function createWindow(): Promise<void> {
+  async function createWindow(launchProjectId?: string): Promise<void> {
     assertCanvasDistPresent()
     const sandbox = await inspectRendererSandbox()
     if (sandbox.kind !== 'sandboxed') {
@@ -1554,7 +1618,8 @@ export function createCanvasWindowController(
     })
 
     try {
-      await window.loadURL(canvasEntryUrl())
+      // Only the first load opens the project; a crash reload above rebuilds the URL without it.
+      await window.loadURL(canvasEntryUrl(launchProjectId))
     } catch (error) {
       rendererReady = false
       markRendererUnavailable('画布主页面加载失败', error)
@@ -1563,23 +1628,26 @@ export function createCanvasWindowController(
     }
   }
 
+  async function open(): Promise<void> {
+    if (disposed) throw new Error('画布宿主已关闭')
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      if (canvasWindow.isMinimized()) canvasWindow.restore()
+      canvasWindow.show()
+      canvasWindow.focus()
+      canvasCrashRecovery?.handleReopen(canvasWindow.webContents.isCrashed())
+      return
+    }
+    if (!pendingOpen) {
+      pendingOpen = createWindow().finally(() => {
+        pendingOpen = null
+      })
+    }
+    await pendingOpen
+  }
+
   return {
-    async open() {
-      if (disposed) throw new Error('画布宿主已关闭')
-      if (canvasWindow && !canvasWindow.isDestroyed()) {
-        if (canvasWindow.isMinimized()) canvasWindow.restore()
-        canvasWindow.show()
-        canvasWindow.focus()
-        canvasCrashRecovery?.handleReopen(canvasWindow.webContents.isCrashed())
-        return
-      }
-      if (!pendingOpen) {
-        pendingOpen = createWindow().finally(() => {
-          pendingOpen = null
-        })
-      }
-      await pendingOpen
-    },
+    open,
+    openProjectFile,
     setTheme(theme) {
       currentTheme = theme
       currentAppearance = { ...currentAppearance, theme }

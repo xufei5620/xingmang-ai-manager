@@ -30,7 +30,7 @@ export function toolKeyLimitReached(limit: ManagedCliKeyLimit): boolean {
 }
 
 export function toolKeyLimitDescription(limit: ManagedCliKeyLimit): string {
-  if (!limit.key) return '还没有这把密钥，在首页配置一次这个工具就会自动签发。'
+  if (!limit.key) return '还没有这把密钥，在首页配一次这个工具就会自动准备好。'
   const used = `已用 ${dollars(limit.used)}`
   if (limit.unlimited) return `${used} · 不限额度`
   // 「上限剩余 $0.00」不告诉用户任何事:工具已经在报错了,而屏幕上只有一个零。
@@ -85,7 +85,7 @@ export function ToolKeyLimitRow({
             step="0.01"
             placeholder="不限"
             disabled={disabled || !limit.key}
-            aria-label={`${name} 的额度上限（USD）`}
+            aria-label={`${name} 的额度上限（美元）`}
             testId={`tool-key-limit-input-${limit.provider}`}
             value={value}
             onChange={(event) => onChange(event.target.value)}

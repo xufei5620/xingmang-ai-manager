@@ -13,6 +13,8 @@
 #   7. 装到 Program Files 以外时，把安装目录改成只有管理员能改（见 XINGMANG_INSTALL_DIRECTORY_SDDL）。
 #   8. 升级时旧版本的卸载程序挪不走旧文件：先去掉清单里已经不在的项（customInit），还是没挪走
 #      就用中文说清楚、给「重试」（customUnInstallCheck），不再停在模板那句英文上。
+#   9. customInstall：把画布项目文件（.xingcanvas）的「打开」命令重写成程序路径带引号的（见
+#      XINGMANG_CANVAS_PROGID 那段）。
 #
 # 2 和 3 是一对。老版本允许用户把安装目录选成任意已有目录（比如 D:\下载），
 # 而卸载时执行的是 electron-builder 默认的 `RMDir /r $INSTDIR`——整个目录连
@@ -44,6 +46,17 @@
 # S-1-15-2-2，Program Files 也给它们）只能读和运行，子目录和文件都继承（OICI）。程序运行
 # 本来就不往安装目录里写东西，装在 Program Files 时也是这样跑的。
 !define XINGMANG_INSTALL_DIRECTORY_SDDL "O:BAD:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;OICI;0x1200a9;;;BU)(A;OICI;0x1200a9;;;AC)(A;OICI;0x1200a9;;;S-1-15-2-2)"
+
+# 画布项目文件的 ProgID，跟 electron-builder.config.cjs 里 win.fileAssociations 的 name 是同一个值，
+# scripts/windows-installer-file-association.test.cjs 钉住两边一致。
+#
+# 模板的 registerFileAssociations 刚在 customInstall 之前把关联写进注册表，但「打开」命令写成
+# C:\Program Files\星芒AI管理工具\星芒AI管理工具.exe "%1"，程序路径没带引号。路径里有空格时，
+# 资源管理器按空格一段一段试：先找 C:\Program.exe；装在 D:\My Apps\ 这类自选位置时先找 D:\My.exe，
+# 而非系统盘的盘根普通用户也能放文件，双击项目文件就成了运行别人放的程序。所以这里照 Electron
+# 登记 xingmang:// 链接的写法，把命令重写成 "程序路径" "%1"。同时删掉它写在「打开」上的那句英文
+# 「Open with 星芒AI管理工具」，右键菜单显示系统自己的「打开」。卸载时模板整个删掉这个 ProgID，不用另管。
+!define XINGMANG_CANVAS_PROGID "XingMangAI.CanvasProject"
 
 !ifdef BUILD_UNINSTALLER
   # "1" 表示要清。没赋过值的变量是空串，所以不勾、静默卸载不带参数、升级时跑的
@@ -774,6 +787,11 @@
       ${EndIf}
     !endif
   ${EndIf}
+
+  # 每次安装都写：升级时旧卸载程序先把关联整个删掉，模板随后又写回不带引号的那条。
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${XINGMANG_CANVAS_PROGID}\shell\open\command" "" '"$appExe" "%1"'
+  DeleteRegValue SHELL_CONTEXT "Software\Classes\${XINGMANG_CANVAS_PROGID}\shell\open" ""
+  System::Call 'Shell32::SHChangeNotify(i 0x8000000, i 0, i 0, i 0)'
 
   # 升级安装也要记：清单跟着这一次实际装进去的文件走。
   Call xingmangRecordInstalledEntries
