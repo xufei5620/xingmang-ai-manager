@@ -5,10 +5,13 @@ import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, ChoiceMenu, Confirm, Dialog, Input, Logo, Menu, Pill, SearchInput, Segment, Textarea, useToast } from '../../ui'
 import { useBackgroundWork } from '../../background-work'
+import { useChatImageWork } from '../../chat-image-work'
 import { useLatestRequest } from '../../latest-request'
+import { failureWithDetail } from '../../business-common'
+import { exportFailureSentence } from '../../operation-error'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, isGeneratingImage, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ParametersDialog } from './ParametersDialog'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
@@ -180,7 +183,10 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
     try {
       const result = await api.exportText({ title: item.title, text: conversationPlainText(item) })
       if (ticket() && result) chat.setNotice('这段对话已存成文本文件')
-    } catch { if (ticket()) chat.setError('这段对话没有导出成功，可以重试') }
+    } catch (cause) {
+      // 没权限、盘满了跟设置页导出同一套说法（D16）；认不出原因的照旧说可以重试。
+      if (ticket()) chat.setError(exportFailureSentence(failureWithDetail(cause)) ?? '这段对话没有导出成功，可以重试')
+    }
   }
   const stop = async () => { const ticket = owner.capture(); setStopping(true); await chat.stop(); if (ticket()) setStopping(false) }
   const reloadHistory = async () => {
@@ -247,6 +253,8 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const anyGenerating = chat.state.conversations.some(isGenerating)
   // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
   useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation), 'chat')
+  // 换账号会停掉对话页正在出的图：「切换账号」框按这个先问一句（D44）。
+  useChatImageWork(chat.state.conversations.some(isGeneratingImage) || isGeneratingImage(chat.state.draftConversation))
   const searchText = search.trim()
   return <section ref={surface} className="chat-page" hidden={!active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={scope} onKeyDownCapture={(event) => { if (!active) { event.preventDefault(); event.stopPropagation() } }} onScrollCapture={(event) => { if (active && event.target instanceof HTMLElement && event.target.classList.contains('chat-conversation-list')) navigationScroll.current = event.target.scrollTop }}>
     <aside className="chat-conversations" aria-label="聊天会话">

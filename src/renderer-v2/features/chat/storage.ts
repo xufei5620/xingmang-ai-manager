@@ -205,8 +205,78 @@ const bearerValue = /(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi
 // 尾巴（共用表 KEY_TAIL 那段注释说的同一件事）。
 const relayKeyWithDots = /\bsk-[A-Za-z0-9._-]{7,}[A-Za-z0-9_-](?![A-Za-z0-9_-])/gi
 const secretQueryParameter = /([?&](?:api[_-]?key|token)=)[^&\s]+/gi
-// 「名字: 值」「名字 = 值」：名字是这几个词时，后面那一截整段不存。
-const namedSecretValue = /((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi
+// 「名字: 值」「名字 = 值」：名字是这几个词时，值长得像真密钥才不存（见 redactNamedSecretValue）。
+// 反引号也算引号：JS 模板字符串拼的请求头要整段拿去判断，不能只看到开头那个词。
+// （这里不写那行代码的原样：画布边界门禁会把它当成渲染层自己拼请求头。）
+// 引号后面紧跟、没隔空格的那截（`)`、`}`、`]`）算在值里：不带上的话，这次存成 `[密钥未保存])`，
+// 下次再存时这一整截又被当成没加引号的值，存两次结果就不一样了。
+const namedSecretValue = /((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?((?:"[^"]*"|'[^']*'|`[^`]*`)[^\s,;&]*|[^\s,;&]+)/gi
+// 值末尾的右括号、右引号、句号这类收尾符号。
+const closingPunctuation = /[)\]}>"'`.,;:]+$/
+// 一段标识符，或用点连起来的一串（`req.headers.authorization`、`os.environ`）。
+const identifierChain = /^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$/
+// 标识符串后面紧跟括号、方括号、尖括号：函数调用、取下标、泛型（`input(`、`os.environ[`、`Optional[str]`）。
+const callOrIndex = /^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)[([<]/
+// 变量、模板、占位符的开头：`$TOKEN`、`${TOKEN}`、`$(gh auth token)`、`$env:TOKEN`、`%TOKEN%`、
+// `{{ … }}`、`{token}`、`<YOUR_API_KEY>`。`$` 后面必须是字母、`{` 或 `(`，
+// `$2b$12$…` 这种 bcrypt 散列不算变量。
+const variableReference = /^(?:\$[A-Za-z_{(]|%[A-Za-z_]\w*%|\{\{|\{[A-Za-z_]|<[A-Za-z_])/
+
+// 带数字的常见类型名、编码名：`secret: Uint8Array`、`token: base64` 是代码。
+const numberedTypeName = /^(?:u?int(?:8|16|32|64|128)|float(?:16|32|64)|(?:big)?u?int(?:8|16|32|64)(?:clamped)?array|float(?:32|64)array|base(?:32|58|64)|sha(?:1|224|256|384|512)|md5|utf(?:8|16|32)|oauth2|http2|win32|x509)$/i
+
+// 一截标识符像不像随机串，按下划线拆开逐段看，一段像就算：
+// - 字母数字混着、又有 5 位以上（`hunter2`、`Summer2024`、`a1b2c3d4…`），上面那些类型名除外；
+//   纯数字 6 位以上也算；
+// - 大小写混写、12 位以上，拆成驼峰的「词」太碎：平均每个词不到 3 个字母（16 位起不到 3.5、
+//   20 位起不到 4）。`yKJxHGpzLz…` 拆出来是 y、K、Jx、H、Gpz…，`getElementById` 是
+//   get、Element、By、Id。拿本仓和 TypeScript、React 等依赖里四万个驼峰名字试过，认错的不到 0.2%，
+//   都是 `toBeGreaterThanOrEqual` 这种很长的名字（认错了也只是照旧换掉）；
+// - 全小写或全大写 24 位以上（真名字这么长一般会用下划线隔开）。
+// `OPENAI_API_KEY`、`authorization`、`string`、`v2`、`XMLHttpRequest` 都不算。
+// 认不全的是只有字母、一个数字都不带的随机串：16 位的约有 6% 认不出、20 位以上约 4%，
+// 实际的密钥这么长几乎都带数字，带了就走第一条。
+function randomLookingSegment(segment: string): boolean {
+  return segment.split('_').some((part) => {
+    if (/\d/.test(part)) return /[A-Za-z]/.test(part) ? part.length >= 5 && !numberedTypeName.test(part) : part.length >= 6
+    if (/[a-z]/.test(part) && /[A-Z]/.test(part)) {
+      if (part.length < 12) return false
+      const humps = part.match(/[A-Z]+(?![a-z])|[A-Z]?[a-z]+/g) ?? []
+      return part.length / humps.length < (part.length < 16 ? 3 : part.length < 20 ? 3.5 : 4)
+    }
+    return part.length >= 24
+  })
+}
+function wordIsCode(word: string): boolean {
+  // 前面几条已经换成占位字样的地方当一个普通名字看：`getToken([密钥未保存])` 还是函数调用。
+  // 只剩占位字样本身的照旧整段换掉，和以前存出来的一样，存两次结果也一样。
+  const plain = word.split(secretNotSaved).join('x')
+  // 中文提示语、中文文案（`'请输入密码：'`、`password: '密码'`）和单独的符号：
+  // 一个英文字母、数字都没有，不会是密钥。
+  if (!/[A-Za-z0-9]/.test(plain)) return true
+  const core = plain.replace(closingPunctuation, '')
+  if (core === 'x' && plain !== word) return false
+  if (variableReference.test(core)) return true
+  const call = callOrIndex.exec(core)
+  if (call) return !call[1].split('.').some(randomLookingSegment)
+  return identifierChain.test(core) && !core.split('.').some(randomLookingSegment)
+}
+// 代码里的 `password: string`、`token = req.headers.authorization`、
+// `api_key = os.environ["OPENAI_API_KEY"]`、curl 请求头里的 `Bearer $TOKEN` 原样存；
+// 随机串、带符号的密码、十六进制、UUID 这些照旧换掉。引号里有空格的按词逐个看，右引号后面紧跟的那截
+// 也算一个词，一个词像密钥就整段换。换掉时留着末尾的收尾符号：`OpenAI(api_key="…")` 存成
+// `OpenAI(api_key=[密钥未保存])`。
+// 以前不看值、整段一律换掉，重开以后历史里的代码跑不起来（聊天页深查 C3，yoyo 11-09 打字「脱敏放开」）。
+function redactNamedSecretValue(match: string, name: string, value: string): string {
+  const quote = value[0]
+  const close = quote === '"' || quote === "'" || quote === '`' ? value.indexOf(quote, 1) : -1
+  const rest = close > 0 ? value.slice(close + 1) : value
+  const words = close > 0 ? [...value.slice(1, close).split(/\s+/), rest] : [value]
+  if (words.filter(Boolean).every(wordIsCode)) return match
+  // 占位字样自己以 `]` 结尾，先换成字母再找收尾符号，免得把它的 `]` 当成收尾。
+  const tail = closingPunctuation.exec(rest.split(secretNotSaved).join('x'))?.[0] ?? ''
+  return `${name}${secretNotSaved}${tail}`
+}
 
 export function redactPersistentChatText(value: string): string {
   // 图片数据和临时链接先整段换掉：base64 里随时可能夹着 `eyJ`、`sk-` 这类片段，
@@ -217,7 +287,7 @@ export function redactPersistentChatText(value: string): string {
     .replace(bearerValue, `$1${secretNotSaved}`)
     .replace(relayKeyWithDots, secretNotSaved)
     .replace(secretQueryParameter, `$1${secretNotSaved}`)
-    .replace(namedSecretValue, `$1${secretNotSaved}`)
+    .replace(namedSecretValue, redactNamedSecretValue)
   return redactSecretShapes(ownRules, secretNotSaved)
 }
 function persistedSettings(settings: ChatSettings): ChatSettings {

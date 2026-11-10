@@ -2677,7 +2677,7 @@ export function withCodexDesktopDarwinUpdate(status: DesktopAppStatus, latestVer
  * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
  * withCodexDesktopLocaleFailureReport）。这条路只在 Windows 上走，首页「打开」在 Codex 开着时会问要不要重启。
  */
-export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。'
+export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。'
 
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
@@ -2829,7 +2829,7 @@ function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
 /**
  * 打开 Codex 桌面端分两段（#1085）：start 做到发出启动请求为止，算账号工作；它交回来的那段只等本机的
  * Codex 进程起来、给它换中文，Windows 上最长一分多钟，换账号、退出不陪它等。start 跑的时候开始换账号，
- * 照旧报「账号上下文已变化，请重试」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
+ * 照旧报「账号刚切换过，请再试一次」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
  * 还在起来就放别的安装、卸载进来换同一个包（I11）。
  */
 export async function launchThenWaitOutsideAccountWork<T>(

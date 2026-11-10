@@ -161,7 +161,7 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
   const sourceOptions: PickerOption[] = [
     ...currentSources.map((entry) => ({ value: `configured:${entry.id}`, label: `使用 ${entry.name} 当前的星芒密钥` })),
     ...keys.map((key) => ({ value: `account:${key.id}`, label: key.name || key.maskedKey || '密钥预览未提供', description: accountKeyDescription(key) })),
-    { value: 'manual', label: '自己填写星芒密钥', description: '粘贴一把已有的密钥' },
+    { value: 'manual', label: '自己填写密钥', description: '粘贴星芒创建的密钥' },
   ]
   // 保存完主进程会把刚写下去的配置回读一遍再核对一次当前账号，结论跟在同一张
   // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。

@@ -504,6 +504,12 @@ export interface CanvasProjectImportProgress {
   bytesUploaded: number
 }
 
+export interface CanvasProjectDeleteResult {
+  projectId: string
+  /** The host moved the project folder to the system trash; otherwise every file stays where it was. */
+  folderMovedToTrash: boolean
+}
+
 export interface CanvasStoredProjectSummary {
   access?: import('./lib/project-access-contract').ProjectAccessSnapshot
   version?: number
@@ -735,6 +741,13 @@ export interface CanvasHostBridge {
    * binds the project to it. Null when the user cancels.
    */
   relinkProjectFolder?(projectId: string): Promise<CanvasStoredProjectSummary | null>
+  /**
+   * Deletes an archived project. The host asks the user itself (a system
+   * confirmation that says what happens to the project folder) and decides
+   * what happens to the folder; the canvas only names the project. Null when
+   * the user cancels.
+   */
+  deleteProject?(projectId: string): Promise<CanvasProjectDeleteResult | null>
   createTemplateProject?(input: { operationId: string; content: string }): Promise<{ project: CanvasStoredProjectSummary; content: string }>
   inspectProjectCreation?(input: { operationId: string; creationDigest: string }): Promise<CanvasProjectCreationReceipt>
   openProject(projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> }>

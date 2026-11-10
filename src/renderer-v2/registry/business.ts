@@ -52,7 +52,7 @@ export const accountSections = [
   { value: accountSwitchAnchor, tab: 'overview', label: '切换账号', keywords: accountSwitchKeywords },
   { value: accountProfileAnchor, tab: 'overview', label: '编辑资料', keywords: ['改名', '改头像', '换头像', '显示名称'] },
   { value: 'orders', tab: 'recharge', label: '我的订单', keywords: ['订单', '到账', '没到账', '付款记录'], gated: true },
-  { value: 'tasks', tab: 'usage', label: '异步任务', keywords: ['任务', '生成进度'], gated: true },
+  { value: 'tasks', tab: 'usage', label: '生成任务', keywords: ['任务', '生成进度', '异步任务'], gated: true },
   { value: 'change-password', tab: 'security', label: '修改密码', keywords: ['改密码', '密码'] },
   { value: 'remember-password', tab: 'security', label: '记住密码', keywords: [] },
   { value: 'devices', tab: 'security', label: '登录设备', keywords: ['设备', '下线', '其他电脑', '登录记录'], gated: true },
@@ -467,7 +467,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'launch-at-login', group: 'startup', label: '开机自动启动', keywords: ['开机', '自启'] },
   { id: 'close-behavior', group: 'startup', label: '点关闭按钮时', keywords: ['托盘', '最小化', '关闭'] },
   { id: 'startup-diagnostics', group: 'startup', label: '启动时检查环境', keywords: [] },
-  { id: 'workspace', group: 'tools', label: '打开工具时进入的文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
+  { id: 'workspace', group: 'tools', label: '工作文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
@@ -479,7 +479,7 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'mirror', group: 'network', section: 'download', label: '下载来源', keywords: ['镜像', '下载慢', '国内', '官方源'] },
   { id: 'proxy', group: 'network', section: 'download', label: '连接方式', keywords: ['网络连接', '代理', 'VPN', '梯子'] },
   { id: 'network-check', group: 'network', section: 'download', label: '网络检查', keywords: [] },
-  { id: 'certificate', group: 'network', section: 'download', label: '企业证书', keywords: ['证书', '公司电脑'] },
+  { id: 'certificate', group: 'network', section: 'download', label: '安全证书', keywords: ['证书', '公司电脑'] },
   // 「发测试通知」并进了这一行，原来搜「测试通知」的说法跟过来。
   { id: 'desktop-notifications', group: 'notifications', label: '桌面通知', keywords: ['测试通知', '通知不弹', '收不到通知'] },
   ...notificationOptions.map((option): SettingsItem => ({
@@ -494,7 +494,7 @@ export const settingsItems: readonly SettingsItem[] = [
   // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
   { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
-  { id: 'crash-reporting', group: 'privacy', label: '崩溃自动上报', keywords: [] },
+  { id: 'crash-reporting', group: 'privacy', label: '自动发送错误报告', keywords: [] },
   { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
   { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },
   { id: 'legal', group: 'privacy', label: '用户协议与隐私政策', keywords: [] },

@@ -18,8 +18,12 @@ export function toolUninstallRowDescription(isLinux: boolean): string {
     : '打开 Windows「设置 → 应用」，找到「星芒AI管理工具」卸载；工具和它们的配置会保留'
 }
 
-/** 勾了「连同星芒替你装的命令行工具一起删」之后那条提醒。删之前确实会先备份配置（macos-uninstall.ts 的 backupCliConfigs）。 */
-export const appUninstallRemoveToolsWarning = '会删掉星芒替你装的 Claude Code、Codex CLI、Grok CLI，你自己装的不动。删之前会先备份它们的配置。'
+/**
+ * 勾了「连同星芒替你装的命令行工具一起删」之后那条提醒。删之前确实会先备份配置（macos-uninstall.ts 的 backupCliConfigs）。
+ * Grok 单说：Mac 上它在 ~/.grok（macos-grok.ts），客户自己用官方脚本装的也在那儿、分不出是谁装的，
+ * removeMacManagedTools 只删星芒自己的目录，所以这里不删它，指去首页卡片上的卸载（0.2.24 深查 Mac M2，决定单 D8 选 a）。
+ */
+export const appUninstallRemoveToolsWarning = '会删掉星芒替你装的 Claude Code、Codex CLI，你自己装的不动。Grok CLI 装在你自己的个人文件夹里，这里不删；要删的话，先在主页 Grok 那张卡片上点「卸载工具」。删之前会先备份它们的配置。'
 
 const leftoverLabels: Record<AppUninstallLeftover, string> = {
   'cli-hooks': '有工具里的提醒设置没收回来',
