@@ -7,36 +7,44 @@ const maximumNodes = 20_000
 const maximumRememberedEntries = 200
 const entryIdPattern = /^newapi-[a-f0-9]{64}$/
 
-function malformed(): never { throw new Error('公告合集格式无法识别，请重新读取或到官网查看。') }
+/**
+ * 公告合集读不出来（格式不认识、太大、条目太多）。界面上照原句显示，不跟网络失败一起换成「暂时没读到」：
+ * 等一会儿再读多半还是这样，得给客户「重新读取」和官网两条路。
+ */
+export class AnnouncementCollectionError extends Error {
+  constructor() { super('公告没读出来，可以点「重新读取」，或到官网查看。') }
+}
+
+function unreadable(): never { throw new AnnouncementCollectionError() }
 
 /** Extract the published collection envelope, leaving each body for the existing sanitizer. */
 export async function parseNewApiAnnouncementCollection(text: string): Promise<LocalAnnouncementEntry[] | null> {
   if (!/\bdata-newapi-collection\s*=/i.test(text) || typeof DOMParser === 'undefined') return null
-  if (text.length > maximumContentLength) throw new Error('公告合集超出读取上限，请到官网查看。')
+  if (text.length > maximumContentLength) unreadable()
   const parsed = new DOMParser().parseFromString(text, 'text/html')
   const roots = Array.from(parsed.body.children)
   const root = roots[0]
   if (roots.length !== 1 || root?.getAttribute('data-newapi-collection') !== 'v1'
-    || Array.from(parsed.body.childNodes).some((node) => node.nodeType === 3 && node.textContent?.trim())) malformed()
+    || Array.from(parsed.body.childNodes).some((node) => node.nodeType === 3 && node.textContent?.trim())) unreadable()
   const walker = parsed.createTreeWalker(root, NodeFilter.SHOW_ALL)
   let count = 0
-  while (walker.nextNode()) if (++count > maximumNodes) throw new Error('公告合集内容过多，请到官网查看。')
+  while (walker.nextNode()) if (++count > maximumNodes) unreadable()
   const items = Array.from(root.children).filter((element) => element.matches('details.collection-entry'))
-  if (items.length > maximumEntries) throw new Error('公告合集条目过多，请到官网查看。')
+  if (items.length > maximumEntries) unreadable()
   // Never flatten an unrecognized collection back into a wall of mixed details.
-  if (!items.length || root.querySelectorAll('details.collection-entry').length !== items.length) malformed()
+  if (!items.length || root.querySelectorAll('details.collection-entry').length !== items.length) unreadable()
   const entries: LocalAnnouncementEntry[] = []
   const ids = new Set<string>()
   for (const item of items) {
     const summaries = Array.from(item.children).filter((element) => element.matches('summary.collection-summary'))
     const bodies = Array.from(item.children).filter((element) => element.matches('.collection-body'))
     const titles = summaries[0]?.querySelectorAll('.collection-entry-title')
-    if (summaries.length !== 1 || bodies.length !== 1 || titles?.length !== 1) malformed()
+    if (summaries.length !== 1 || bodies.length !== 1 || titles?.length !== 1) unreadable()
     const titleNode = titles[0].cloneNode(true) as Element
     titleNode.querySelectorAll('script, style, template').forEach((element) => element.remove())
     const title = (titleNode.textContent ?? '').replace(/\s+/g, ' ').trim()
     const body = bodies[0].innerHTML.trim()
-    if (!title || title.length > 512 || !body) malformed()
+    if (!title || title.length > 512 || !body) unreadable()
     // A collection wrapper/id changes when another notice is published. Hash
     // only this entry so old read states survive insertions and reordering.
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify([title, body])))

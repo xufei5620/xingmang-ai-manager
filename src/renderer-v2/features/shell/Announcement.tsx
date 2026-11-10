@@ -10,7 +10,7 @@ import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
-import { formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import { AnnouncementCollectionError, formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
 
 interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; publishedAt?: string; timeline?: TimelineMeta }
@@ -887,10 +887,23 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
   return responseTooLarge
     ? {
         responseTooLarge: true,
-        message: '公告包含过大的内嵌媒体，客户端已按安全上限拦截。可打开官网查看完整公告。',
+        message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
       }
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
+
+/**
+ * 读公告失败时上屏的那句。服务端原话、「HTTP 502」这类只进日志（主进程记 IPC 失败那一行带着原话），
+ * 客户看到的统一是「暂时没读到」；公告太大、合集读不出来这两种另有去官网的路，照各自那句。
+ */
+export function formatAnnouncementLoadError(cause: unknown): AnnouncementError {
+  const formatted = formatAnnouncementError(cause)
+  if (formatted.responseTooLarge || cause instanceof AnnouncementCollectionError) return formatted
+  return { responseTooLarge: false, message: '公告暂时没读到，过一会儿点铃铛再看。' }
+}
+
+// 已读没记上时只说这一句，原因不上屏。
+const announcementReadFailedMessage = '没记上已读，下次打开可能还会提醒。'
 
 interface PromoCardProps {
   title: string
@@ -1112,7 +1125,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
     returnToRow.current = null
     setReadId(readLegacyAnnouncementId(scope))
     lastSilentLoad.current = Date.now()
-    void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
+    void loadNotice(() => current).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementLoadError(cause)) }).finally(() => { if (current) setLoading(false) })
     return () => { current = false; revision.invalidate() }
   }, [scope, loadNotice, attempt])
   // 后台再读不打断用户：不清空、不转圈，读失败就保留眼前的内容，下一轮再试。
@@ -1277,8 +1290,8 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       setAnnouncement((current) => current?.id === announcement.id ? {
         ...current, entries: current.entries?.map((item) => item.id === entry.id ? { ...item, read: true } : item),
       } : current)
-    } catch (cause) {
-      if (capturedRevision()) setReadErrors((current) => ({ ...current, [entry.id]: formatAnnouncementError(cause).message }))
+    } catch {
+      if (capturedRevision()) setReadErrors((current) => ({ ...current, [entry.id]: announcementReadFailedMessage }))
     } finally {
       pending.delete(entry.id)
       if (capturedRevision()) setMarkingIds((current) => current.filter((id) => id !== entry.id))
@@ -1364,10 +1377,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       <Button size="xs" variant="ghost" icon={X} aria-label="关闭公告提示" title="关闭，有新公告时再提醒" onClick={acknowledge} testId="announcement-banner-close" />
     </div>,
   ].filter(Boolean).slice(0, noticeSlot === undefined ? undefined : Math.max(0, noticeRoom))
-  const stripArea = <>
-    {!offline && !shown && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
-    {strips}
-  </>
+  const stripArea = <>{strips}</>
   return <>
     {noticeSlot === undefined ? stripArea : noticeSlot ? createPortal(stripArea, noticeSlot) : null}
     {open && <AnnouncementPopover onClose={onClose}>
@@ -1375,7 +1385,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
       {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl
         ? <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>
         : <Button size="sm" onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>}</div>}
-      {entries?.map((entry) => readErrors[entry.id] && <p key={entry.id} className="v2-announcement-error" role="alert">已读状态保存失败：{readErrors[entry.id]}</p>)}
+      {entries?.map((entry) => readErrors[entry.id] && <p key={entry.id} className="v2-announcement-error" role="alert">{readErrors[entry.id]}</p>)}
       {loading ? <p role="status" className="v2-announcement-pop-note">正在读取公告</p> : entries?.length ? (
         <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
           {entries.map((entry) => { const publishedAt = entryPublishedAt(entry); const preview = announcementTextPreview(entry.text); return <li key={entry.id}>
@@ -1407,7 +1417,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
           </p>}
           {markingIds.includes(selected.id) && <p className="v2-announcement-read-status" role="status">正在保存已读状态…</p>}
           {readErrors[selected.id] && <div className="v2-announcement-error" role="alert">
-            <p>已读状态保存失败：{readErrors[selected.id]}</p>
+            <p>{readErrors[selected.id]}</p>
             <Button size="sm" onClick={() => void markEntryRead(selected)}>重试保存已读</Button>
           </div>}
           <AnnouncementContent text={selected.timeline ? withMarkdownLineBreaks(selected.text) : selected.text} noticeUrl={noticeUrl} openExternal={openLink} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={closeDialog} />
