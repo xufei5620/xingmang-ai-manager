@@ -48,6 +48,7 @@ export const canvasHostChannels = {
   createProjectInDefaultFolder: 'canvas-host:create-project-in-default-folder',
   relinkProjectFolder: 'canvas-host:relink-project-folder',
   deleteProject: 'canvas-host:delete-project',
+  getAccountSummary: 'canvas-host:get-account-summary',
   runEvent: 'canvas-host:run-event',
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
@@ -122,7 +123,7 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
   ],
   features: {
     quote: false,
-    accountSummary: false,
+    accountSummary: true,
     imageEditMask: false,
     textGenerate: false,
     textWebSearch: false,
@@ -394,6 +395,24 @@ export interface CanvasProjectDeleteResult {
   projectId: string
   /** The project's own folder directly under the default projects folder went to the system trash; any other folder is left alone. */
   folderMovedToTrash: boolean
+}
+
+/**
+ * The balance chip's answer (画布完善第 2b 条). Four things and nothing else:
+ * which kind of account, its name half-hidden, the balance, when it was read.
+ * Never the email, the user id or any key (I15).
+ */
+export interface CanvasAccountSummary {
+  /** 星芒账号 or 历史账号. */
+  siteLabel: string
+  /** maskCanvasAccountLabel's output; null when the account has no name. */
+  accountLabel: string | null
+  /** US dollars, quota / quotaPerUnit as in the main window; null while not read. */
+  balanceUsd: number | null
+  /** 「订阅剩余 USD 12.30 · 10月3日到期」 when a subscription is usable, else null. */
+  subscriptionLabel: string | null
+  /** When the balance was read (ISO); null while not read. */
+  readAt: string | null
 }
 
 export interface CanvasStoredProjectSummary {

@@ -76,6 +76,7 @@
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
 - `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）；生视频的 `parseVideoGenerateInput` 同理，另给主窗口的 `video:generate`（视频剪辑页）用，只是不收参考视频、参考音频
+- `canvas-account-summary.ts` — 画布顶上余额条的回答（`canvas-host:get-account-summary`，不收参数）：只给账号类型、打码的账号名（邮箱只留第一个字）、余额、读到的时间，不给邮箱、用户编号、密钥；用托盘和余额提醒同一份余额，过了 15 秒才替画布读一次站点，读的时候一次只读一次，读回来换了账号就不要（I15，画布完善第 2b 条）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度；主窗口的 `video:generate` 也套同一份（`ipc/handlers/ai-video.ts`）
 
 ### 运行引擎（都在主进程）

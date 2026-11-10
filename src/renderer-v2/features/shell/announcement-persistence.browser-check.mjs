@@ -146,7 +146,7 @@ test('a failed durable write commits no marker and a successful retry survives r
     return store.sync(scope, ids)
   } })
   await current.list.getByRole('button', { name: '图片模型上线 未读' }).click()
-  await current.dialog.getByRole('alert').filter({ hasText: '本机没有保存已读状态' }).waitFor()
+  await current.dialog.getByRole('alert').filter({ hasText: '没记上已读，下次打开可能还会提醒。' }).waitFor()
   assert.deepEqual(await store.sync('xm-account:17', []), [])
   assert.equal(await current.page.evaluate(() => localStorage.getItem('xingmang-v2-notice-entries:xm-account:17')), null)
   fail = false
