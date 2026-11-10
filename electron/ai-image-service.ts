@@ -12,6 +12,7 @@ import {
 import { readBoundedResponseBytes } from './bounded-response'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver, AiOperationProgressStage } from './ai-operation-progress'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import { networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
@@ -314,7 +315,10 @@ export function createAiImageService(options: {
         if (signal.aborted) throw signal.reason
         let response: Response
         try {
-          response = await request(credential, signal, () => { operation.dispatched = true })
+          response = await request(credential, signal, () => {
+            operation.dispatched = true
+            reportRelayDispatch(progress, true)
+          })
         } catch (error) {
           if (!signal.aborted && operation.dispatched) {
             // 断网、解析不出地址、连不上、代理回绝：请求根本没出去，没扣钱，照网络原因说，客户放心再点一次。
@@ -322,12 +326,15 @@ export function createAiImageService(options: {
             const unsent = unsentRequestFailure(error)
             if (unsent) {
               operation.dispatched = false
+              reportRelayDispatch(progress, false)
               throw new Error(networkFailureMessages[unsent])
             }
             throw ambiguousImageSubmission()
           }
           throw error
         }
+        // 画布跑完按这个号到用量记录里对实扣（画布完善第 2b 条第 3 步）。
+        reportRelayAnswer(progress, response.headers)
         await reportStage('processing')
         await reportStage('downloading')
         let bytes: Buffer

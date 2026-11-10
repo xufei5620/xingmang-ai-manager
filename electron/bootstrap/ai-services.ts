@@ -27,6 +27,7 @@ import { createCanvasNodeExecutors } from '../canvas-node-executors'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from '../canvas-project-asset-manager'
 import { CanvasProjectStore } from '../canvas-project-store'
 import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
+import { createCanvasRunChargeChecker } from '../canvas-run-charges'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
 import { createChatCredentialCoordinator } from '../chat-credential-coordinator'
@@ -151,6 +152,8 @@ export interface RealmBusinessesOptions {
   runtimeLog: RuntimeLogStore
   sessionFetch: typeof fetch
   routedRelayFetch: typeof fetch
+  /** Quota per dollar from the balance main.ts already read; null when it has none yet. */
+  cachedQuotaPerUnit?: () => number | null
 }
 
 export function createRealmBusinesses(options: RealmBusinessesOptions) {
@@ -539,8 +542,33 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const canvasPromptPresets = new CanvasPromptPresetStore({
       rootDirectory: path.join(roots.rootDirectory, 'canvas-content'),
     })
+    // 跑完写实扣只认星芒账号：它的用量记录按请求号记每一笔扣费（画布完善第 2b 条第 3 步）。
+    const canvasRunCharges = siteId === 'solov'
+      ? (publish: Parameters<typeof createCanvasRunChargeChecker>[0]['publish']) => createCanvasRunChargeChecker({
+        current: () => {
+          try {
+            if (accounts.getSiteId() !== siteId) return null
+            const revision = accountService.getSessionRevision!()
+            const state = accountService.getSessionState()
+            const userId = state.authenticated ? state.account?.userId : undefined
+            return typeof userId === 'number' ? { userId, key: `${revision}:${userId}` } : null
+          } catch {
+            return null
+          }
+        },
+        readUsage: async (query) => {
+          const page = await accountService.getUsage({ ...query, type: 2, recordsOnly: true })
+          return { records: page.records.map((record) => ({ requestId: record.requestId, quota: record.quota, type: record.type })), total: page.total }
+        },
+        readQuotaPerUnit: async () => options.cachedQuotaPerUnit?.() ?? (await accountService.getBalance()).quotaPerUnit,
+        getRun: (userId, runId) => canvasRunStore.getRun(userId, runId),
+        saveRun: (userId, record) => canvasRunStore.saveRun(userId, record),
+        publish,
+      })
+      : undefined
     const canvasRuns = createCanvasRunService({
       store: canvasRunStore,
+      ...(canvasRunCharges ? { charges: canvasRunCharges } : {}),
       executors: createCanvasNodeExecutors({
         imageService: canvasImageService,
         videoService,
@@ -554,6 +582,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
               { role: 'user', content: input.user },
             ],
             signal: input.signal,
+            ...(input.billing ? { billing: input.billing } : {}),
           }),
         },
       }),

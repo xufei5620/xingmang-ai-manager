@@ -22,6 +22,8 @@ import {
   type CanvasRunStatus,
 } from './canvas-run-contract'
 import { canvasImageCandidateCacheKey, computeCanvasNodeFingerprint } from './canvas-fingerprint'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
+import { createCanvasRelayBillingRecorder, type CanvasRelayBillingRecorder } from './canvas-run-charges'
 
 const DEFAULT_MAX_CONCURRENCY = 20
 const MAXIMUM_ERROR_LENGTH = 300
@@ -117,6 +119,8 @@ export interface CanvasNodeExecutionContext {
   node: CanvasRunGraphNode
   inputs: CanvasNodeInputs
   signal: AbortSignal
+  /** Hand to every paid request this attempt makes; the run's 实扣 is matched by what it records. */
+  billing?: AiRelayBillingObserver
   reportStage?(
     stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>,
     progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
@@ -706,6 +710,16 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   const outputs = new Map<string, NodeOutput>()
   const settled = new Map<string, Promise<void>>()
   const semaphore = createSemaphore(options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
+  // A stopped request can still be answered after its attempt is recorded, so
+  // each paid attempt's request ids are read once more before the terminal save.
+  const relayBillings: { attempt: CanvasRunAttempt; recorder: CanvasRelayBillingRecorder }[] = []
+  function withRelayBilling(attempt: CanvasRunAttempt, recorder: CanvasRelayBillingRecorder | undefined): CanvasRunAttempt {
+    if (!recorder) return attempt
+    relayBillings.push({ attempt, recorder })
+    const relayBilling = recorder.snapshot()
+    if (relayBilling) attempt.relayBilling = relayBilling
+    return attempt
+  }
 
   function upstreamSettled(nodeId: string): Promise<void>[] {
     return (index.incoming.get(nodeId) ?? [])
@@ -886,6 +900,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
       const attemptId = randomUUID()
       const attemptStartedAt = now()
+      const billing = createCanvasRelayBillingRecorder()
       running.add(index)
       try {
         runningSaved ??= updateNode(nodeId, 'running', { attemptId, fingerprint })
@@ -907,6 +922,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           node,
           inputs,
           signal: options.signal,
+          billing: billing.observer,
           reportStage: async (stage, progress) => {
             await stageReportingReady
             if (leads(index)) await updateStage(nodeId, stage, attemptId, progress)
@@ -927,7 +943,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(result.costQuota !== undefined ? { costQuota: result.costQuota } : {}),
         }))
         if (candidates.length === 0) throw new Error('这一张没有拿到图片')
-        keep({
+        keep(withRelayBilling({
           attemptId,
           fingerprint,
           state: 'succeeded',
@@ -941,7 +957,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(result.group ? { group: result.group } : {}),
           ...(result.model ? { model: result.model } : {}),
           imageBatch: { batchId, index, count },
-        })
+        }, billing))
         try {
           await options.storeCache?.({
             version: canvasRunContractVersion,
@@ -957,7 +973,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       } catch (error) {
         const completedAt = now()
         const cancelled = options.signal.aborted
-        keep({
+        keep(withRelayBilling({
           attemptId,
           fingerprint,
           state: cancelled ? 'cancelled' : 'failed',
@@ -971,7 +987,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(node.data.group ? { group: node.data.group } : {}),
           ...(node.data.model ? { model: node.data.model } : {}),
           imageBatch: { batchId, index, count },
-        })
+        }, billing))
       } finally {
         running.delete(index)
         release()
@@ -1130,6 +1146,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
       const attemptId = randomUUID()
       const attemptStartedAt = now()
+      const billing = usesRemoteGeneration(node.kind) ? createCanvasRelayBillingRecorder() : undefined
       await updateNode(nodeId, 'running', { attemptId, fingerprint })
       try {
         const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
@@ -1151,6 +1168,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           node,
           inputs: collected.inputs,
           signal: options.signal,
+          ...(billing ? { billing: billing.observer } : {}),
           reportStage: async (stage, progress) => {
             await stageReportingReady
             await updateStage(nodeId, stage, attemptId, progress)
@@ -1191,7 +1209,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(result.group ? { group: result.group } : {}),
           ...(result.model ? { model: result.model } : {}),
         }
-        nodeRecords.get(nodeId)!.attempts.push(attempt)
+        nodeRecords.get(nodeId)!.attempts.push(withRelayBilling(attempt, billing))
         outputs.set(nodeId, {
           fingerprint,
           ...(result.outputText !== undefined ? { text: result.outputText } : {}),
@@ -1222,7 +1240,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       } catch (error) {
         if (options.signal.aborted) {
           const completedAt = now()
-          nodeRecords.get(nodeId)!.attempts.push({
+          nodeRecords.get(nodeId)!.attempts.push(withRelayBilling({
             attemptId,
             fingerprint,
             state: 'cancelled',
@@ -1234,12 +1252,12 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             candidates: [],
             ...(node.data.group ? { group: node.data.group } : {}),
             ...(node.data.model ? { model: node.data.model } : {}),
-          })
+          }, billing))
           await updateNode(nodeId, 'cancelled', { attemptId, fingerprint })
         } else {
           const errorMessage = sanitizeRunError(error)
           const completedAt = now()
-          nodeRecords.get(nodeId)!.attempts.push({
+          nodeRecords.get(nodeId)!.attempts.push(withRelayBilling({
             attemptId,
             fingerprint,
             state: 'failed',
@@ -1252,7 +1270,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             errorMessage,
             ...(node.data.group ? { group: node.data.group } : {}),
             ...(node.data.model ? { model: node.data.model } : {}),
-          })
+          }, billing))
           await updateNode(nodeId, 'failed', { attemptId, fingerprint, errorMessage })
         }
       } finally {
@@ -1271,6 +1289,10 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     skipped: record.nodes.filter((node) => node.state === 'skipped').map((node) => node.nodeId),
     cancelled: record.nodes.filter((node) => node.state === 'cancelled').map((node) => node.nodeId),
     cached: record.nodes.filter((node) => node.state === 'cached').map((node) => node.nodeId),
+  }
+  for (const { attempt, recorder } of relayBillings) {
+    const relayBilling = recorder.snapshot()
+    if (relayBilling) attempt.relayBilling = relayBilling
   }
   const completedAt = now()
   record.status = runStatus(outcome)

@@ -39,6 +39,7 @@ import { BalanceTierProvider, Button, Confirm, Dialog, Notice, Switch, ToastProv
 import { bridge as getBridge } from './bridge'
 import { useLatestRequest } from './latest-request'
 import { SavedAccounts } from './SavedAccounts'
+import { logoutChatImageNote } from './chat-image-work'
 import { accountSwitchNeedsAttention } from './account-switch-sync'
 import { accountSources } from './features/auth/state'
 import { AnnouncementCenter } from './features/shell/Announcement'
@@ -461,7 +462,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), installUpdate: openInstallConfirm, openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}${logoutChatImageNote()}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}

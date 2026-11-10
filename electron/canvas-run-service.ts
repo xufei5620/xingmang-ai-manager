@@ -1,5 +1,6 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
 import type {
+  CanvasRunChargeEvent,
   CanvasRunEvent,
   CanvasRunGraph,
   CanvasRunRecord,
@@ -15,10 +16,17 @@ import {
   type CanvasNodeExecutors,
 } from './canvas-run-engine'
 import type { CanvasRunStore } from './canvas-run-store'
+import type { CanvasRunChargeChecker } from './canvas-run-charges'
 
 export interface CanvasRunServiceOptions {
   store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'resolveAssetOrigin' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
+  /**
+   * Builds the checker of each finished run's 实扣 against the account's usage
+   * records, handed this service's own publisher; left out where the records
+   * cannot be matched.
+   */
+  charges?: (publish: (event: CanvasRunChargeEvent, userId: number, ownerId: number) => Promise<void>) => Pick<CanvasRunChargeChecker, 'schedule' | 'clear'>
   maxConcurrency?: number
   maxActiveRuns?: number
   maxRemoteGenerationsPerRun?: number
@@ -52,7 +60,7 @@ interface ActiveRun {
 }
 
 export interface CanvasRunPublication {
-  event: CanvasRunEvent
+  event: CanvasRunEvent | CanvasRunChargeEvent
   userId: number
   ownerId: number
 }
@@ -74,12 +82,13 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     return `${lockKey}\u0000${nodeId}`
   }
   const listeners = new Set<(publication: CanvasRunPublication) => void | Promise<void>>()
+  const charges = options.charges?.((event, userId, ownerId) => publish(event, userId, ownerId))
 
   function activeRunLockKey(input: Pick<StartCanvasRunInput, 'userId' | 'ownerId' | 'projectId'>): string {
     return JSON.stringify([input.userId, input.ownerId, input.projectId ?? null])
   }
 
-  async function publish(event: CanvasRunEvent, userId: number, ownerId: number): Promise<void> {
+  async function publish(event: CanvasRunEvent | CanvasRunChargeEvent, userId: number, ownerId: number): Promise<void> {
     for (const listener of listeners) {
       try {
         await listener({ event: structuredClone(event), userId, ownerId })
@@ -144,6 +153,14 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       persistRecord: (record) => options.store.saveRun(input.userId, record),
       persistProgress: (record) => options.store.saveRun(input.userId, record, { deferWrite: true }),
       onEvent: (event) => publish(event, input.userId, input.ownerId),
+    }).then((record) => {
+      // The terminal record is on disk by now; its charges are checked a few seconds later.
+      try {
+        charges?.schedule(record, input.ownerId)
+      } catch {
+        // 实扣 is a display; failing to schedule it never fails the run.
+      }
+      return record
     }).finally(() => {
       if (active.get(runId)?.handle === handle) active.delete(runId)
       for (const nodeId of exclusiveNodeIds) {
@@ -204,6 +221,9 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
   }
 
   function shutdown(): number {
+    // Runs keep coming after this (main.ts calls it on every account change), so
+    // only the checks still waiting go; the checker itself stays.
+    charges?.clear()
     let count = 0
     for (const run of active.values()) {
       if (run.controller.signal.aborted) continue

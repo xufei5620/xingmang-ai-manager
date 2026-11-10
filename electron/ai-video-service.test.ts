@@ -222,6 +222,25 @@ describe('createAiVideoService', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
+  it('reports the request id of the submission, which is the request the relay charges for', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_123', status: 'queued' }, 200, { 'x-oneapi-request-id': 'req-submit' })
+      if (url.endsWith('/content')) return mp4Response()
+      return jsonResponse({ id: 'video_123', status: 'completed', progress: 100 }, 200, { 'x-oneapi-request-id': 'req-poll' })
+    }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const reports: unknown[] = []
+    await service.generate(41, {
+      requestId: 'billed-video', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    }, {
+      onStage: () => undefined,
+      onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id) => { reports.push(['answer', id]) },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-submit']])
+  })
+
   it('prefers the completed TOS URL and never sends the API key to it', async () => {
     const signedUrl = 'https://storage.example.com/videos/video_signed.mp4?X-Amz-Signature=test'
     const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {

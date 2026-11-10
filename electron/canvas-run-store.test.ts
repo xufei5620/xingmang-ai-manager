@@ -384,6 +384,37 @@ describe('CanvasRunStore', () => {
     expect(reloaded?.nodes[0].errorMessage).toBe('生成失败：参考 https://example.com/ref.png')
   })
 
+  it('keeps the relay request ids and the charge checked after the run', async () => {
+    const { store } = fixture()
+    const run = record('charged')
+    run.nodes = [{
+      nodeId: 'image-node',
+      kind: 'image',
+      state: 'succeeded',
+      attempts: [{
+        attemptId: 'attempt-1',
+        fingerprint: 'f'.repeat(64),
+        state: 'succeeded',
+        startedAt: run.startedAt,
+        completedAt: run.completedAt!,
+        durationMs: 1_000,
+        cached: false,
+        candidates: [],
+        relayBilling: { requestIds: ['2026111013000012345678abcdefgh'], unanswered: true },
+        charge: { state: 'unmatched', usd: 0.06 },
+      }],
+    }]
+    run.charge = { state: 'unmatched', usd: 0.06, unmatchedAttempts: 1, checkedAt: '2026-08-13T00:00:07.000Z' }
+
+    await store.saveRun(7, run)
+    const reloaded = await store.getRun(7, 'charged')
+    expect(reloaded?.nodes[0].attempts[0]).toMatchObject({
+      relayBilling: { requestIds: ['2026111013000012345678abcdefgh'], unanswered: true },
+      charge: { state: 'unmatched', usd: 0.06 },
+    })
+    expect(reloaded?.charge).toEqual(run.charge)
+  })
+
   it('round-trips cached text containing URLs without treating it as corrupt', async () => {
     const { store } = fixture()
     const outputText = '参考 https://example.com/素材?size=2K&名称=封面'

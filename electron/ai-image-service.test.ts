@@ -844,3 +844,47 @@ describe('chat image service stop behaviour', () => {
     expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
   })
 })
+
+describe('AI image service relay billing', () => {
+  it('reports the request leaving and the request id the relay answered with', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: 'aGVsbG8=' }] }), {
+      headers: { 'content-type': 'application/json', 'x-oneapi-request-id': '20261110130000123456789abcdef' },
+    })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const reports: unknown[] = []
+    await service.generate(4, { requestId: 'billed', group: '生图分组', model: 'gpt-image-2', prompt: '一张图' }, {
+      onStage: () => undefined,
+      onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id) => { reports.push(['answer', id]) },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', '20261110130000123456789abcdef']])
+  })
+
+  it('takes back the dispatch of a request that never left, and reports a refused answer too', async () => {
+    const unsent = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') }) as unknown as typeof fetch
+    const reports: unknown[] = []
+    const observer = {
+      onStage: () => undefined,
+      onRelayDispatch: (sent: boolean) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id: string | null) => { reports.push(['answer', id]) },
+    }
+    await expect(setup(unsent).service.generate(4, { requestId: 'unsent', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, observer)).rejects.toThrow(networkFailureMessages.dns)
+    expect(reports).toEqual([['dispatch', true], ['dispatch', false]])
+    reports.length = 0
+    const refused = vi.fn(async () => new Response(JSON.stringify({ error: { message: '图片内容审核未通过' } }), {
+      status: 400, headers: { 'content-type': 'application/json', 'x-oneapi-request-id': 'req-refused' },
+    })) as unknown as typeof fetch
+    await expect(setup(refused).service.generate(4, { requestId: 'refused', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, observer)).rejects.toThrow()
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-refused']])
+  })
+
+  it('never lets a broken billing observer break the request', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, { requestId: 'broken', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, {
+      onStage: () => undefined,
+      onRelayDispatch: () => { throw new Error('boom') },
+      onRelayAnswer: () => { throw new Error('boom') },
+    })).resolves.toHaveLength(1)
+  })
+})

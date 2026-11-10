@@ -1282,3 +1282,78 @@ describe('canvasRunDesktopUnsupportedReason', () => {
       .toThrow('不存在的节点')
   })
 })
+
+describe('executeCanvasRun relay billing', () => {
+  function attemptsOf(record: CanvasRunRecord, nodeId: string) {
+    return record.nodes.find((entry) => entry.nodeId === nodeId)!.attempts
+  }
+
+  it('records the request ids a paid attempt was answered with, and gives local work no billing at all', async () => {
+    const text = vi.fn(async (context: Parameters<CanvasNodeExecutors['text']>[0]) => ({ outputText: context.billing ? 'billed' : 'free' }))
+    const image = vi.fn(async ({ billing }: Parameters<CanvasNodeExecutors['image']>[0]) => {
+      billing?.onRelayDispatch?.(true)
+      billing?.onRelayAnswer?.('req-1')
+      return { assets: [asset()] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('t', 'text'), node('i', 'image')]), { executors: executors({ text, image }) }))
+    expect(attemptsOf(record, 'i')[0].relayBilling).toEqual({ requestIds: ['req-1'] })
+    expect(attemptsOf(record, 't')[0]).not.toHaveProperty('relayBilling')
+    expect(attemptsOf(record, 't')[0].outputText).toBe('free')
+  })
+
+  it('keeps no billing for a paid attempt that failed before anything left', async () => {
+    const image = vi.fn(async () => { throw new Error('请输入图像提示词') })
+    const record = await executeCanvasRun(runOptions(graph([node('i', 'image')]), { executors: executors({ image }) }))
+    expect(attemptsOf(record, 'i')[0]).toMatchObject({ state: 'failed' })
+    expect(attemptsOf(record, 'i')[0]).not.toHaveProperty('relayBilling')
+  })
+
+  it('marks a request that was stopped before its answer, and picks up an answer that lands before the run ends', async () => {
+    const controller = new AbortController()
+    let answer!: () => void
+    const image = vi.fn(({ billing }: Parameters<CanvasNodeExecutors['image']>[0]) => {
+      billing?.onRelayDispatch?.(true)
+      return new Promise<never>(() => { answer = () => billing?.onRelayAnswer?.('late-1') })
+    })
+    const pending = executeCanvasRun(runOptions(graph([node('i', 'image')]), { executors: executors({ image }), signal: controller.signal }))
+    await vi.waitFor(() => expect(image).toHaveBeenCalledOnce())
+    controller.abort(new Error('cancel'))
+    const record = await pending
+    expect(attemptsOf(record, 'i')[0]).toMatchObject({ state: 'cancelled', relayBilling: { requestIds: [], unanswered: true } })
+
+    const second = new AbortController()
+    const persisted: CanvasRunRecord[] = []
+    const slow = vi.fn(({ billing }: Parameters<CanvasNodeExecutors['image']>[0]) => {
+      billing?.onRelayDispatch?.(true)
+      return new Promise<never>(() => { answer = () => billing?.onRelayAnswer?.('late-2') })
+    })
+    const run = executeCanvasRun(runOptions(graph([node('i', 'image')]), {
+      executors: executors({ image: slow }),
+      signal: second.signal,
+      persistRecord: async (snapshot) => {
+        persisted.push(snapshot)
+        // The answer arrives while the cancelled attempt is being saved, before the terminal save.
+        if (snapshot.nodes[0].state === 'cancelled' && snapshot.status === 'running') answer()
+      },
+    }))
+    await vi.waitFor(() => expect(slow).toHaveBeenCalledOnce())
+    second.abort(new Error('cancel'))
+    const done = await run
+    expect(attemptsOf(done, 'i')[0].relayBilling).toEqual({ requestIds: ['late-2'] })
+    expect(attemptsOf(persisted.at(-1)!, 'i')[0].relayBilling).toEqual({ requestIds: ['late-2'] })
+  })
+
+  it('gives every request of a multi-image node its own billing', async () => {
+    const workflow = graph([node('i', 'image')])
+    workflow.nodes[0].data.imageCandidateCount = 2
+    let calls = 0
+    const image = vi.fn(async ({ billing }: Parameters<CanvasNodeExecutors['image']>[0]) => {
+      calls += 1
+      billing?.onRelayDispatch?.(true)
+      billing?.onRelayAnswer?.(`req-${calls}`)
+      return { assets: [asset(String(calls).repeat(43))] }
+    })
+    const record = await executeCanvasRun(runOptions(workflow, { executors: executors({ image }) }))
+    expect(attemptsOf(record, 'i').map((entry) => entry.relayBilling?.requestIds).sort()).toEqual([['req-1'], ['req-2']])
+  })
+})
