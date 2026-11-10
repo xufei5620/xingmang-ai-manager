@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { AppWindow, Archive, ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, CheckCircle2, ChevronLeft, Clapperboard, Clock, Clock3, Code2, Compass, Copy, CreditCard, Download, InfinityIcon, Laptop, LifeBuoy, MessageSquare, MessageSquareWarning, Package, Plug, Rocket, Search, SlidersHorizontal, Sparkles, Terminal, type LucideIcon } from 'lucide-react'
+import { AppWindow, Archive, ArrowLeft, ArrowLeftRight, ArrowRight, BookOpen, Braces, CheckCircle2, ChevronLeft, Clapperboard, Clock, Clock3, Code2, Compass, Copy, CreditCard, Download, InfinityIcon, Laptop, LifeBuoy, MessageSquare, MessageSquareWarning, Package, Plug, Rocket, Search, SlidersHorizontal, Smartphone, Sparkles, Terminal, Undo2, type LucideIcon } from 'lucide-react'
 import { Button, Card, Chips, Empty, PageHead, Pill, SearchInput } from '../../ui'
 import type { BusinessActions } from '../../pages-maintenance'
 import { tutorialCategories, tutorialTopicsFor, type TutorialCategoryFilter, type TutorialTopic } from '../../registry/tutorials'
@@ -17,8 +17,8 @@ const viewKey = 'xingmang-v2-tutorial-reading'
 export const tutorialIcons: Readonly<Partial<Record<string, LucideIcon>>> = {
   start: Rocket, install: Download, config: SlidersHorizontal, 'switch-account': ArrowLeftRight, launch: AppWindow,
   account: CreditCard, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, video: Clapperboard,
-  cli: Terminal, mcp: Plug, skills: Sparkles, plugins: Package, safety: Archive,
-  'runtime-mac': Code2, 'mac-desktop-apps': Laptop, messages: MessageSquareWarning, trouble: LifeBuoy,
+  cli: Terminal, editor: Braces, mcp: Plug, skills: Sparkles, plugins: Package, 'phone-remote': Smartphone, safety: Archive,
+  'runtime-mac': Code2, 'mac-desktop-apps': Laptop, undo: Undo2, messages: MessageSquareWarning, trouble: LifeBuoy,
 }
 
 interface TutorialView {
