@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { CanvasGroupSummary, CanvasRunEvent, CanvasRunGraph, CanvasRunRecord } from '../host'
 import type { WorkflowNode } from '../model'
 import { canvasRunStatusLabel, mergeCanvasRunEvent } from './run-events'
+import { mergeCanvasRunChargeEvent } from './run-charge'
 import { matchingCanvasRunNodeIds, matchingRunRecordNodes } from './run-input-matching'
 import { autoFixedDownstreamNodeIds, projectRunRecordToNodes } from './run-projection'
 
@@ -44,7 +45,7 @@ function fixture(options: { submitted?: CanvasRunGraph; nodes?: WorkflowNode[]; 
   const groupsLoadedRef = { current: options.groupsLoaded ?? true }, groupsRef = { current: [] as CanvasGroupSummary[] }, runGroupsRef = { current: { video: 'provider-a', videoProtocol: 'relay-videos' as 'relay-videos' | 'xai-native' } }
   const forgetActiveRun = vi.fn((runId: string) => activeRunsRef.current.delete(runId))
   const rememberActiveRun = vi.fn((entry: CanvasRunRecord) => { activeRunsRef.current.set(entry.runId, { graphRevision: entry.graphRevision, projectId: entry.projectId! }); pendingRunProjectionIdsRef.current.add(entry.runId) })
-  const setRunsError = vi.fn(), setRunsLoading = vi.fn(), setSelectedRunId = vi.fn(), refreshAssets = vi.fn(), patchNodeData = vi.fn()
+  const setRunsError = vi.fn(), setRunsLoading = vi.fn(), setSelectedRunId = vi.fn(), refreshAssets = vi.fn(), patchNodeData = vi.fn(), setAccountSummarySignal = vi.fn()
   const setNodes = vi.fn((update: (nodes: WorkflowNode[]) => WorkflowNode[]) => { nodes = update(nodes); graphRef.current = { ...graphRef.current, nodes } })
   const setDirtyNodeIds = vi.fn((update: (ids: Set<string>) => Set<string>) => { dirtyNodeIds = update(dirtyNodeIds) })
   function toCanvasRunGraph(current: WorkflowNode[], _edges: unknown, groups: typeof runGroupsRef.current, sourceCatalog: CanvasNodeSourceCatalog = {}): CanvasRunGraph {
@@ -55,7 +56,7 @@ function fixture(options: { submitted?: CanvasRunGraph; nodes?: WorkflowNode[]; 
   }
   const confirmedRunGroups = actual<() => typeof runGroupsRef.current>('confirmedRunGroups', { groupsRef, runGroupsRef })
   const nodeSourceCatalogRef: { current: CanvasNodeSourceCatalog } = { current: {} }
-  const environment = { awaitingCanvasFixedVideoSources, nodeSourceCatalogRef, projectCanRunRef: { current: true }, hostBridge: () => ({ listRuns }), window: { xingmangCanvasHost: {}, setTimeout }, activeRunsRef, runWaitingBannerRef, projectEpochRef, activeProjectIdRef, runsRequestRevisionRef, graphRef, pendingRunProjectionIdsRef, runInputGraphsRef, groupsLoadedRef, groupsRef, runGroupsRef, confirmedRunGroups, setBanner, setRunRecords, forgetActiveRun, rememberActiveRun, setRunsError, setRunsLoading, setSelectedRunId, selectedRunId: 'run-1', setNodes, setDirtyNodeIds, matchingCanvasRunNodeIds, toCanvasRunGraph, matchingRunRecordNodes, projectRunRecordToNodes, autoFixedDownstreamNodeIds, isDramaAssetNodeType: () => false, canvasRunStatusLabel, mergeCanvasRunEvent, refreshAssets, patchNodeData, assetQuery: {} }
+  const environment = { awaitingCanvasFixedVideoSources, nodeSourceCatalogRef, projectCanRunRef: { current: true }, hostBridge: () => ({ listRuns }), window: { xingmangCanvasHost: {}, setTimeout }, activeRunsRef, runWaitingBannerRef, projectEpochRef, activeProjectIdRef, runsRequestRevisionRef, graphRef, pendingRunProjectionIdsRef, runInputGraphsRef, groupsLoadedRef, groupsRef, runGroupsRef, confirmedRunGroups, setBanner, setRunRecords, forgetActiveRun, rememberActiveRun, setRunsError, setRunsLoading, setSelectedRunId, selectedRunId: 'run-1', setNodes, setDirtyNodeIds, matchingCanvasRunNodeIds, toCanvasRunGraph, matchingRunRecordNodes, projectRunRecordToNodes, autoFixedDownstreamNodeIds, isDramaAssetNodeType: () => false, canvasRunStatusLabel, mergeCanvasRunEvent, mergeCanvasRunChargeEvent, refreshAssets, patchNodeData, setAccountSummarySignal, assetQuery: {} }
   const refresh = actual<(runId?: string) => Promise<void>>('refreshRuns', { ...environment, outputPlacementCoordinator: { accept: vi.fn() } })
   const refreshRuns = (runId?: string) => { const promise = refresh(runId); refreshes.push(promise); return promise }
   const event = actual<(event: CanvasRunEvent) => void>('runEvent', { ...environment, refreshRuns })
@@ -123,6 +124,25 @@ describe('actual App waiting notification reconciliation', () => {
     expect(f.banner()).toBe(message)
   })
 
+  it('takes the charge that arrives after the run ended into the run record without touching the canvas', async () => {
+    const f = fixture()
+    f.event(terminal())
+    for (const pending of f.reads) pending.resolve([record('run-1', 'succeeded')])
+    await Promise.all(f.refreshes)
+    expect(f.activeRunsRef.current.has('run-1')).toBe(false)
+    const banner = f.banner()
+    const charge = { state: 'settled' as const, usd: 0.18, unmatchedAttempts: 0, checkedAt: '2026-10-14T12:00:08.000Z' }
+    // 2b step 3: no longer an active run, and still taken in.
+    f.event({ version: 1, type: 'run-charge', runId: 'run-1', graphRevision: 'graph-1', sequence: 3, at: '2026-10-14T12:00:08.000Z', charge, attempts: [] } as unknown as CanvasRunEvent)
+    expect(f.records()[0]).toMatchObject({ status: 'succeeded', charge })
+    expect(f.patchNodeData).not.toHaveBeenCalled()
+    expect(f.banner()).toBe(banner)
+    // A broken one changes nothing.
+    const before = f.records()
+    f.event({ version: 1, type: 'run-charge', runId: 'run-1', graphRevision: 'graph-1', sequence: 4, at: '2026-10-14T12:00:09.000Z', charge: { ...charge, usd: -1 }, attempts: [] } as unknown as CanvasRunEvent)
+    expect(f.records()).toBe(before)
+  })
+
   it('keeps another run waiting when a different terminal event arrives first', async () => {
     const f = fixture(); f.activeRunsRef.current.set('run-2', { graphRevision: 'graph-1', projectId: 'project-1' })
     f.waiting('run-1'); f.waiting('run-2'); f.event(terminal('run-1'))
@@ -142,6 +162,8 @@ describe('actual App waiting notification reconciliation', () => {
       f.event(terminal())
       expect(f.banner()).toBe('运行结束：已完成')
       expect(f.runWaitingBannerRef.current).toBeNull()
+      // The balance chip asks the host again once the run has ended (2b).
+      expect(f.setAccountSummarySignal).toHaveBeenCalledTimes(1)
       for (const pending of f.reads) pending.resolve([record('run-1', 'succeeded')])
       await Promise.all(f.refreshes)
       expect(f.banner()).toBe('运行结束：已完成')
