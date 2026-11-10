@@ -1,9 +1,18 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { providerIds } from './catalog'
 import { externalToolIds } from './external-client-contract'
 import { isKeepAwakeInstallKey } from './install-keep-awake'
 import { codexRemoteLaunchQueueKey } from './provider-launch-service'
-import { resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure } from './quit-blocking-tasks'
+import {
+  buildUnfinishedRestartWorkPrompt,
+  confirmUpdateRestart,
+  resolveInstallableUpdateOnQuit,
+  resolveInterruptibleInstallTask,
+  waitForUpdateInstallFailure,
+  type InterruptibleInstallTask,
+  type UnfinishedRestartWorkPrompt,
+  type UpdateRestartConfirmation,
+} from './quit-blocking-tasks'
 import type { UpdateSnapshot } from './updater'
 
 function snapshot(activeKey: string | null, pendingKeys: string[] = []) {
@@ -107,6 +116,96 @@ function updateSnapshot(overrides: Partial<UpdateSnapshot> = {}): UpdateSnapshot
     ...overrides,
   }
 }
+
+describe('unfinished work before restarting to install an update', () => {
+  it('says nothing when none of the listed work is running', () => {
+    expect(buildUnfinishedRestartWorkPrompt([])).toBeNull()
+  })
+
+  it('uses the approved sentence word for word when all three are running', () => {
+    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat', 'video-compose'])).toEqual({
+      kinds: ['chat', 'video-compose', 'canvas'],
+      message: '还有任务没做完',
+      detail: '对话还在回复或出图，视频剪辑还在拼接，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。',
+      buttons: ['等它做完', '仍然重启'],
+    })
+  })
+
+  it('lists only the work that is actually running', () => {
+    expect(buildUnfinishedRestartWorkPrompt(['chat'])?.detail).toBe('对话还在回复或出图。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['video-compose'])?.detail).toBe('视频剪辑还在拼接。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas'])?.detail).toBe('画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
+    expect(buildUnfinishedRestartWorkPrompt(['canvas', 'chat'])?.detail).toBe('对话还在回复或出图，或者画布还在生成。现在重启会把它们停下，出到一半的图可能已经扣费。')
+  })
+
+  it('names each kind once however often it is reported', () => {
+    expect(buildUnfinishedRestartWorkPrompt(['chat', 'chat'])?.kinds).toEqual(['chat'])
+  })
+})
+
+describe('confirming a restart to install an update', () => {
+  const task: InterruptibleInstallTask = { key: 'cli:install:claude', description: '正在安装 Claude Code', count: 1 }
+  const work = buildUnfinishedRestartWorkPrompt(['chat']) as UnfinishedRestartWorkPrompt
+
+  function steps(overrides: Partial<UpdateRestartConfirmation> = {}) {
+    return {
+      installTask: vi.fn(() => null),
+      confirmInstall: vi.fn(async () => true),
+      unfinishedWork: vi.fn(() => null),
+      confirmWork: vi.fn(async () => true),
+      log: vi.fn(),
+      ...overrides,
+    } satisfies UpdateRestartConfirmation
+  }
+
+  it('installs without asking when nothing would be interrupted', async () => {
+    const host = steps()
+    await expect(confirmUpdateRestart(host)).resolves.toBe(true)
+    expect(host.confirmInstall).not.toHaveBeenCalled()
+    expect(host.confirmWork).not.toHaveBeenCalled()
+    expect(host.log).not.toHaveBeenCalled()
+  })
+
+  it('asks about chat, video editing and canvas work even when no tool is installing', async () => {
+    const host = steps({ unfinishedWork: () => work })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(true)
+    expect(host.confirmWork).toHaveBeenCalledWith(work)
+    expect(host.confirmInstall).not.toHaveBeenCalled()
+  })
+
+  it('keeps the downloaded update for later when the user waits for the work to finish', async () => {
+    const host = steps({ unfinishedWork: () => work, confirmWork: vi.fn(async () => false) })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(false)
+    expect(host.log).toHaveBeenLastCalledWith('install.postponed', '还有任务没做完，这次不装新版本，新版本留着')
+  })
+
+  it('asks about the running install first and stops there when the user keeps installing', async () => {
+    const unfinishedWork = vi.fn(() => work)
+    const host = steps({ installTask: () => task, confirmInstall: vi.fn(async () => false), unfinishedWork })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(false)
+    expect(host.confirmInstall).toHaveBeenCalledWith(task)
+    expect(unfinishedWork).not.toHaveBeenCalled()
+    expect(host.confirmWork).not.toHaveBeenCalled()
+  })
+
+  it('still asks about the other work after the user agreed to interrupt the install, since that box never mentioned it', async () => {
+    const host = steps({ installTask: () => task, unfinishedWork: () => work, confirmWork: vi.fn(async () => false) })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(false)
+    expect(host.confirmInstall).toHaveBeenCalledOnce()
+    expect(host.confirmWork).toHaveBeenCalledOnce()
+  })
+
+  it('reads the running work only after the install question, which can take the user minutes to answer', async () => {
+    const order: string[] = []
+    const host = steps({
+      installTask: () => task,
+      confirmInstall: async () => { order.push('install-asked'); return true },
+      unfinishedWork: () => { order.push('work-read'); return null },
+    })
+    await expect(confirmUpdateRestart(host)).resolves.toBe(true)
+    expect(order).toEqual(['install-asked', 'work-read'])
+  })
+})
 
 describe('update ready to install on quit', () => {
   it('offers the verified package waiting on disk', () => {
