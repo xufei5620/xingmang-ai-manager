@@ -539,17 +539,28 @@ describe('registerIpcHandlers', () => {
     expect(acceleration.getAccelerationState).toHaveBeenCalledTimes(5)
   })
 
-  it('forwards the renderer activity report with its sender and refuses anything but a busy flag', async () => {
+  it('forwards the renderer activity report with its sender and refuses anything but a busy flag and the named work', async () => {
     const onRendererActivity = vi.fn()
     register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, {}, { onRendererActivity })
     const report = electronMocks.handlers.get('window:report-activity')!
     const event = trustedEvent()
     await report(event, { busy: true })
     expect(onRendererActivity).toHaveBeenCalledWith(event.sender, { busy: true })
-    for (const bad of [undefined, null, { busy: 'yes' }, { busy: false, extra: 1 }, [true]]) {
+    await report(event, { busy: true, work: ['video-compose', 'chat'] })
+    expect(onRendererActivity).toHaveBeenLastCalledWith(event.sender, { busy: true, work: ['video-compose', 'chat'] })
+    await report(event, { busy: true, work: ['chat', 'chat'] })
+    expect(onRendererActivity).toHaveBeenLastCalledWith(event.sender, { busy: true, work: ['chat'] })
+    await report(event, { busy: false, work: [] })
+    expect(onRendererActivity).toHaveBeenLastCalledWith(event.sender, { busy: false })
+    for (const bad of [
+      undefined, null, { busy: 'yes' }, { busy: false, extra: 1 }, [true],
+      { busy: true, work: 'chat' }, { busy: true, work: ['canvas'] }, { busy: true, work: [1] },
+      // Never more entries than there are kinds: the list stays bounded however the renderer is driven.
+      { busy: true, work: ['chat', 'chat', 'chat'] },
+    ]) {
       await expect(Promise.resolve().then(() => report(trustedEvent(), bad))).rejects.toThrow('界面忙闲报告格式错误')
     }
-    expect(onRendererActivity).toHaveBeenCalledOnce()
+    expect(onRendererActivity).toHaveBeenCalledTimes(4)
   })
 
   it('hands every notice the renderer reads to the host so a released window can tell when a new one arrives', async () => {

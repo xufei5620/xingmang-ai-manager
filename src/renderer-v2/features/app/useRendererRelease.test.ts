@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { markBackgroundWork } from '../../background-work'
-import { pageNeedsAccount, parseReleasedPage, rendererBusy } from './useRendererRelease'
+import { pageNeedsAccount, parseReleasedPage, rendererActivity, rendererBusy } from './useRendererRelease'
 
 afterEach(() => { vi.unstubAllGlobals() })
 
@@ -45,5 +45,15 @@ describe('renderer busy', () => {
     expect(rendererBusy()).toBe(true)
     markBackgroundWork(token, false)
     expect(rendererBusy()).toBe(false)
+  })
+
+  it('reports the named work beside the busy flag and leaves it out when there is none', () => {
+    vi.stubGlobal('document', { querySelector: () => null })
+    expect(rendererActivity()).toEqual({ busy: false })
+    const compose = Symbol('video-compose')
+    markBackgroundWork(compose, true, 'video-compose')
+    expect(rendererActivity()).toEqual({ busy: true, work: ['video-compose'] })
+    markBackgroundWork(compose, false)
+    expect(rendererActivity()).toEqual({ busy: false })
   })
 })

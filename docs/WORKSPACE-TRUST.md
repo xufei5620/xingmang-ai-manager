@@ -42,6 +42,26 @@ Claude Code 的主题写在 `~/.claude/settings.json` 的 `theme`，**本软件�
 - **不改就不写。** 已经信任过的目录第二次打开时 `changed === false`，一个字节都不动，也不会
   再堆一份备份。
 
+## 文件夹自带 Claude Code 设置时不替他答（D4）
+
+Claude Code 那道「你信任这个文件夹吗」拦的正是**文件夹里自带的配置**：项目的
+`.claude/settings.json` / `.claude/settings.local.json` 能写 hooks（每次用工具都自动跑的命令）、
+`env`、`statusLine`、`apiKeyHelper`，`.mcp.json` 能起本机进程。客户从网上下了一个项目、在本软件里
+选它打开，本软件替他答了信任，这些命令就不声不响地在他电脑上跑起来（0.2.24 深查 `安全.md` 新-1，
+yoyo 11-10 回「按照你的推荐做」，D4 照推荐收紧）。
+
+- 打开 Claude Code 前先看文件夹里有没有这三份里的任何一份（名单是 `workspace-guard.ts` 的
+  `claudeProjectSettingsFiles`，看盘的是 `provider-launch-service.ts` 的
+  `workspaceCarriesClaudeProjectSettings`）。有的话不写这个文件夹的 `hasTrustDialogAccepted`，
+  连空的项目条目也不建，信任那一问交还给 Claude Code 自己；`hasCompletedOnboarding` 照旧补，
+  那一页只问主题和安全须知，跟文件夹里带了什么无关。日志记一条 `workspace.trust.left-to-cli`。
+- 只认「确实没有」：`ENOENT`，或 `.claude` 是个文件时的 `ENOTDIR`。看不了的（没权限、读到一半出错）
+  一律按带着算——多看一次英文提问，比替客户信任一个看不清的文件夹便宜。
+- 空文件夹、「新建一个项目文件夹」建的那种、只有 `CLAUDE.md` 或 `.claude/commands` 的客户自己的项目，
+  照旧替他答，体验不变。
+- 收紧，不是放宽：以前替客户写下的信任不回收（分不清是谁写的），客户自己在 Claude Code 里答过的
+  照旧不动。Codex、Grok 不走这条路；Gemini CLI 已下线，那一支照旧。
+
 ## 哪些目录一律不写
 
 判定在 `electron/workspace-guard.ts` 的纯函数 `classifyWorkspace` 里，十类：
