@@ -52,7 +52,7 @@ const portableLabels: Record<PortableKey, string | null> = {
   alwaysInstallLatestCli: '命令行工具总是装最新版',
   mirrorPolicy: '下载来源',
   desktopNotifications: '桌面通知',
-  crashReporting: '崩溃自动上报',
+  crashReporting: '自动发送错误报告',
 }
 const portableKeys = Object.keys(portableLabels) as PortableKey[]
 

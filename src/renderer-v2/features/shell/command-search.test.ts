@@ -77,7 +77,7 @@ describe('searchCommands', () => {
     const retired = { settingsItemVisible: (item: { when?: string }) => item.when !== 'acceleration' }
     expect(searchCommands('网络连接', retired).find((item) => item.group === 'settings')).toEqual({ key: 'settings:network', group: 'settings', label: '网络连接', page: 'settings', section: 'network' })
     // 别的行照旧写成「组名 › 行名」。
-    expect(searchCommands('企业证书', retired).find((item) => item.group === 'settings')).toMatchObject({ label: '网络连接 › 企业证书', section: 'certificate' })
+    expect(searchCommands('安全证书', retired).find((item) => item.group === 'settings')).toMatchObject({ label: '网络连接 › 安全证书', section: 'certificate' })
     for (const word of ['加速', '网络加速', '游戏']) {
       expect(searchCommands(word, retired).some((item) => item.page === 'acceleration' || item.section === 'acceleration' || item.section === 'notify-acceleration' || item.section === 'network'), word).toBe(false)
     }
