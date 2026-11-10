@@ -243,6 +243,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // logs differently from its siblings.
   'account:list-keys': { label: '星芒账号 Key 列表读取', log: 'quiet-success', account: 'scoped' },
   'account:list-groups': { label: '星芒账号可用分组读取', log: 'quiet-success', account: 'scoped' },
+  'account:get-price-list': { label: '星芒账号价格表读取', log: 'quiet-success', account: 'scoped' },
   'account:revoke-key': { label: '星芒账号 Key 撤销', log: 'normal', account: 'scoped' },
   'account:copy-key': { label: '星芒账号 Key 复制', log: 'quiet-success', account: 'scoped' },
   // The input is the plaintext password the reset just produced.

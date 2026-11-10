@@ -26,6 +26,7 @@ const allCapabilitiesTrue: RelayBackendCapabilities = {
   supportsDashboard: true,
   supportsDashboardTrends: true,
   supportsTasks: true,
+  supportsPriceList: true,
   supportsProfileUpdate: true,
   supportsSessionManagement: true,
   supportsAutoKeyProvision: true,
