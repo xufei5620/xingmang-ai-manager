@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { XingmangApi } from '../../../../electron/ipc-contract'
-import { backgroundWorkActive, subscribeBackgroundWork } from '../../background-work'
+import type { RendererActivity, XingmangApi } from '../../../../electron/ipc-contract'
+import { activeRestartWork, backgroundWorkActive, subscribeBackgroundWork } from '../../background-work'
 import { pages, type PageId } from '../../registry/pages'
 import { readWindowSession, writeWindowSession } from '../../window-session'
 
@@ -79,6 +79,12 @@ export function rendererBusy(): boolean {
   return backgroundWorkActive() || (typeof document !== 'undefined' && document.querySelector('dialog[open]') !== null)
 }
 
+/** 报给主进程的那一份：有没有事，加上重启装更新前要点名的那几样（D10，一样都没有就不带）。 */
+export function rendererActivity(): RendererActivity {
+  const work = activeRestartWork()
+  return work.length > 0 ? { busy: rendererBusy(), work } : { busy: rendererBusy() }
+}
+
 // 事情做完到界面画好（例如装失败弹出的错误框）要等一下，再看一眼才准。
 const settleDelayMs = 1_000
 
@@ -86,15 +92,17 @@ const settleDelayMs = 1_000
 export function useRendererActivityReport(native: XingmangApi, ready: boolean): void {
   useEffect(() => {
     if (!ready) return
-    let last: boolean | null = null
+    let last: string | null = null
     let timer: ReturnType<typeof setTimeout> | undefined
     function report() {
       if (timer !== undefined) clearTimeout(timer)
       timer = undefined
-      const busy = rendererBusy()
-      if (busy === last) return
-      last = busy
-      void native.reportWindowActivity({ busy }).catch(() => undefined)
+      const activity = rendererActivity()
+      // 对话框开着时聊天开始回复，忙闲没变，点名的那几样变了，也要再报一次。
+      const key = `${activity.busy}:${activity.work?.join(',') ?? ''}`
+      if (key === last) return
+      last = key
+      void native.reportWindowActivity(activity).catch(() => undefined)
     }
     // 有事了马上说；没事了等界面画好再说。
     function changed() {

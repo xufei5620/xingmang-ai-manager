@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, saveConversation, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation } from './state'
-import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, type LoadedChatHistory } from './storage'
+import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
 import { isWindowInFront } from '../tools/install-notice'
@@ -25,7 +25,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   // 落定模型要在同一拍里看到最新的准备结果，state 赶不上，另记一份。
   const preparationsRef = useRef<Record<string, GroupPreparation>>({})
   const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
+  // 只有几段对话读不出来时其余照常读写，说一句就行（D40）；整份读不出来的走下面那条红条。
+  const [notice, setNotice] = useState(initial.unreadable ? unreadableConversationsNotice(initial.unreadable) : '')
   const [storageError, setStorageError] = useState(initial.warning ? `${initial.warning}。现在聊的内容不会保存，关掉软件就没了。` : '')
   const [attaching, setAttaching] = useState(false)
   const attachingRef = useRef(false)

@@ -8,7 +8,7 @@ import { useBackgroundWork } from '../../background-work'
 import { useLatestRequest } from '../../latest-request'
 import { PageLoading } from '../app/PageLoading'
 import { canEditImages, canReadImages, chatLimits, createChatApi, inspectModel, noImageEditModelMessage, type ChatApi } from './api'
-import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { buildChatCatalog, chatErrorAction, chatErrorMessage, chatModelVendor, chatModelVendors, filterConversations, groupConversationsByDay, isConversationTooLongMessage, isGenerating, noImageModelMessage, offlineSendMessage, pendingChatGroups, pickChatGroup, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 import { ParametersDialog } from './ParametersDialog'
 import { useChatController } from './useChatController'
 import { inspectChatLink, plainText } from './links'
@@ -18,7 +18,7 @@ import './chat.css'
 
 const remarkPlugins = [remarkGfm]
 // 点了只填进输入框，不直接发：发一句就要花钱，得让人看一眼再发。
-const chatExamples = ['用大白话解释什么是 API Key', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
+const chatExamples = ['用大白话解释什么是 API 密钥', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
 const qualityNames: Record<ChatSettings['quality'], string> = { low: '低', medium: '中', high: '高', auto: '自动' }
 
 export interface ChatPageProps {
@@ -126,8 +126,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const imagesBlockedMessage = textMode ? noImageModelMessage : noImageEditModelMessage
   const attachTitle = !seesImages ? textMode ? '当前模型看不了图片，换一个能看图的模型才能发图' : '这个模型不能照着图片改，换一个能改图的模型才能加图片' : draftImages.length >= chatLimits.imagesPerMessage ? `一条消息最多带 ${chatLimits.imagesPerMessage} 张图片` : textMode ? '加图片（也可以直接粘贴截图）' : '加参考图（也可以直接粘贴截图）'
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const hasImage = [...event.clipboardData.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
-    if (!hasImage) return
+    if (!shouldPasteScreenshot(event.clipboardData)) return
     // 截图只在主进程从剪贴板里读，这里只负责拦下默认粘贴。
     event.preventDefault()
     if (pending) return
@@ -247,7 +246,7 @@ function ChatView({ api, scope, active, onOpenAccount, openParameters, onParamet
   const running = chat.state.conversations.some(isGenerating) || Object.values(preparations).some((item) => item.phase === 'loading')
   const anyGenerating = chat.state.conversations.some(isGenerating)
   // 回复是界面一段段接着收、收完写进聊天记录的：在回复的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
-  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation))
+  useBackgroundWork('chat', anyGenerating || isGenerating(chat.state.draftConversation), 'chat')
   const searchText = search.trim()
   return <section ref={surface} className="chat-page" hidden={!active} data-testid="page-chat" data-page-id="ai-chat" data-account-scope={scope} onKeyDownCapture={(event) => { if (!active) { event.preventDefault(); event.stopPropagation() } }} onScrollCapture={(event) => { if (active && event.target instanceof HTMLElement && event.target.classList.contains('chat-conversation-list')) navigationScroll.current = event.target.scrollTop }}>
     <aside className="chat-conversations" aria-label="聊天会话">

@@ -1,7 +1,7 @@
 import { videoStudioMusicUnreadableMessage } from '../../../../electron/video-studio-plan'
 import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize } from './captions'
 import { isVideoStudioAudioCodec, isVideoStudioVideoCodec, type VideoStudioAudioCodec, type VideoStudioEncodingPreference, type VideoStudioVideoCodec } from './encoding'
-import { VideoStudioError } from './errors'
+import { VideoStudioError, videoStudioComposeGlitchMessage } from './errors'
 import {
   isVideoStudioAspect,
   isVideoStudioFit,
@@ -96,7 +96,7 @@ function optionalSeconds(value: unknown, label: string): number | undefined {
 
 function optionalGain(value: unknown): number | undefined {
   if (value === undefined) return undefined
-  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) throw new VideoStudioError('拼片请求的格式不对')
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) throw new VideoStudioError(videoStudioComposeGlitchMessage)
   return value
 }
 
@@ -105,18 +105,18 @@ function parseMusic(value: unknown): VideoStudioComposeMusic | undefined {
   if (!isRecord(value) || !(value.data instanceof ArrayBuffer) || value.data.byteLength === 0) throw new VideoStudioError(videoStudioMusicUnreadableMessage)
   if (value.data.byteLength > maxVideoStudioMusicBytes) throw new VideoStudioError(videoStudioMusicUnreadableMessage)
   const gain = optionalGain(value.gain)
-  if (gain === undefined) throw new VideoStudioError('拼片请求的格式不对')
+  if (gain === undefined) throw new VideoStudioError(videoStudioComposeGlitchMessage)
   return { data: value.data, gain }
 }
 
 function parseCodecList<T>(value: unknown, guard: (item: unknown) => item is T): readonly T[] | undefined {
   if (value === undefined) return undefined
-  if (!Array.isArray(value) || value.length === 0 || !value.every(guard)) throw new VideoStudioError('指定的编码器不对')
+  if (!Array.isArray(value) || value.length === 0 || !value.every(guard)) throw new VideoStudioError(videoStudioComposeGlitchMessage)
   return value
 }
 
 export function parseVideoStudioComposeRequest(value: unknown): VideoStudioComposeRequest {
-  if (!isRecord(value) || !Array.isArray(value.clips) || !isRecord(value.options)) throw new VideoStudioError('拼片请求的格式不对')
+  if (!isRecord(value) || !Array.isArray(value.clips) || !isRecord(value.options)) throw new VideoStudioError(videoStudioComposeGlitchMessage)
   const { aspect, resolution, fit, frameRate, transition, fadeOut, captionSize, captionPosition } = value.options
   if (!isVideoStudioAspect(aspect) || !isVideoStudioResolution(resolution) || !isVideoStudioFit(fit) || !isVideoStudioFrameRate(frameRate)
     || (transition !== undefined && !isVideoStudioTransition(transition)) || (fadeOut !== undefined && typeof fadeOut !== 'boolean')
@@ -146,7 +146,7 @@ export function parseVideoStudioComposeRequest(value: unknown): VideoStudioCompo
   if (totalBytes > maxVideoStudioTotalBytes) throw new VideoStudioError(videoStudioTotalTooLargeMessage)
   let encoding: VideoStudioEncodingPreference | undefined
   if (value.encoding !== undefined) {
-    if (!isRecord(value.encoding)) throw new VideoStudioError('指定的编码器不对')
+    if (!isRecord(value.encoding)) throw new VideoStudioError(videoStudioComposeGlitchMessage)
     encoding = { video: parseCodecList(value.encoding.video, isVideoStudioVideoCodec), audio: parseCodecList(value.encoding.audio, isVideoStudioAudioCodec) }
   }
   const music = parseMusic(value.music)
