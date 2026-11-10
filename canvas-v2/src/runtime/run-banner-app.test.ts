@@ -56,7 +56,8 @@ function fixture(options: { submitted?: CanvasRunGraph; nodes?: WorkflowNode[]; 
   }
   const confirmedRunGroups = actual<() => typeof runGroupsRef.current>('confirmedRunGroups', { groupsRef, runGroupsRef })
   const nodeSourceCatalogRef: { current: CanvasNodeSourceCatalog } = { current: {} }
-  const environment = { awaitingCanvasFixedVideoSources, nodeSourceCatalogRef, projectCanRunRef: { current: true }, hostBridge: () => ({ listRuns }), window: { xingmangCanvasHost: {}, setTimeout }, activeRunsRef, runWaitingBannerRef, projectEpochRef, activeProjectIdRef, runsRequestRevisionRef, graphRef, pendingRunProjectionIdsRef, runInputGraphsRef, groupsLoadedRef, groupsRef, runGroupsRef, confirmedRunGroups, setBanner, setRunRecords, forgetActiveRun, rememberActiveRun, setRunsError, setRunsLoading, setSelectedRunId, selectedRunId: 'run-1', setNodes, setDirtyNodeIds, matchingCanvasRunNodeIds, toCanvasRunGraph, matchingRunRecordNodes, projectRunRecordToNodes, autoFixedDownstreamNodeIds, isDramaAssetNodeType: () => false, canvasRunStatusLabel, mergeCanvasRunEvent, mergeCanvasRunChargeEvent, refreshAssets, patchNodeData, setAccountSummarySignal, assetQuery: {} }
+  const runPreparationsRef = { current: { update: vi.fn(), resume: vi.fn(), finish: vi.fn(), stopAll: vi.fn() } }
+  const environment = { awaitingCanvasFixedVideoSources, nodeSourceCatalogRef, runPreparationsRef, projectCanRunRef: { current: true }, hostBridge: () => ({ listRuns }), window: { xingmangCanvasHost: {}, setTimeout }, activeRunsRef, runWaitingBannerRef, projectEpochRef, activeProjectIdRef, runsRequestRevisionRef, graphRef, pendingRunProjectionIdsRef, runInputGraphsRef, groupsLoadedRef, groupsRef, runGroupsRef, confirmedRunGroups, setBanner, setRunRecords, forgetActiveRun, rememberActiveRun, setRunsError, setRunsLoading, setSelectedRunId, selectedRunId: 'run-1', setNodes, setDirtyNodeIds, matchingCanvasRunNodeIds, toCanvasRunGraph, matchingRunRecordNodes, projectRunRecordToNodes, autoFixedDownstreamNodeIds, isDramaAssetNodeType: () => false, canvasRunStatusLabel, mergeCanvasRunEvent, mergeCanvasRunChargeEvent, refreshAssets, patchNodeData, setAccountSummarySignal, assetQuery: {} }
   const refresh = actual<(runId?: string) => Promise<void>>('refreshRuns', { ...environment, outputPlacementCoordinator: { accept: vi.fn() } })
   const refreshRuns = (runId?: string) => { const promise = refresh(runId); refreshes.push(promise); return promise }
   const event = actual<(event: CanvasRunEvent) => void>('runEvent', { ...environment, refreshRuns })
@@ -104,6 +105,17 @@ describe('actual App waiting notification reconciliation', () => {
     const f = fixture(); f.waiting('run-1', type)
     f.reads[0].resolve([record('run-1', 'succeeded')]); await f.refreshes[0]
     expect(f.banner()).toBe('运行结束：已完成')
+  })
+
+  it('hands the frames a run waits on to the host preparations, resumes them from a record and stops them with the run', async () => {
+    const f = fixture(); f.waiting('run-1', 'frame')
+    expect(f.runPreparationsRef.current.update).toHaveBeenCalledExactlyOnceWith('run-1', [{}])
+    const listed = { operationId: 'attempt-1', nodeId: 'frame', attemptId: 'attempt-1', sourceAssetId: 'V'.repeat(43), timestampSeconds: 2.5 }
+    f.reads[0].resolve([{ ...record('run-1'), framePreparations: [listed] }, { ...record('run-2'), projectId: 'project-2', framePreparations: [listed] }]); await f.refreshes[0]
+    // Only a still-running record of the open project starts frames.
+    expect(f.runPreparationsRef.current.resume).toHaveBeenCalledExactlyOnceWith('run-1', [listed])
+    f.event(terminal())
+    expect(f.runPreparationsRef.current.finish).toHaveBeenCalledExactlyOnceWith('run-1')
   })
 
   it.each(['请核对恢复结果', null])('does not overwrite a later unrelated or dismissed notification: %s', async (message) => {
