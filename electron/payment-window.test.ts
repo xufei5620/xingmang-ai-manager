@@ -434,14 +434,16 @@ describe('createPaymentWindowController', () => {
     expect(harness.window.setTitle.mock.calls.every(([title]) => title === '安全支付 - 星芒AI')).toBe(true)
   })
 
-  it('closes the window and reports the matching trade number when the provider page expires', async () => {
+  // 付款页上的字只说明这个窗口用不着了，不说明钱没扣：报「窗口已关闭」，不报「支付已超时」（那句说不会再扣钱）。
+  it('closes the window when the provider page expires, reporting it as closed rather than expired', async () => {
     const harness = createHarness(undefined, '支付剩余时间\n00:00\n支付超时后，请重新创建订单')
 
     await harness.controller.open(paymentForm())
     await vi.waitFor(() => expect(harness.onTerminalState).toHaveBeenCalledWith({
-      status: 'expired',
+      status: 'closed',
       tradeNo: 'XM-20260815-1',
-    }, inWindow))
+    }, { afterClose: false, autoClosed: 'page-expired' }))
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
     expect(harness.window.destroy).toHaveBeenCalledOnce()
     expect(harness.window.close).not.toHaveBeenCalled()
     expect(harness.window.destroy.mock.invocationCallOrder[0]).toBeLessThan(
@@ -712,13 +714,17 @@ describe('authenticated payment order monitoring', () => {
     harness.controller.destroy()
   })
 
-  it('expires a QR window at its server deadline even when page inspection never completes', async () => {
+  it('closes a QR window at its server deadline even when page inspection never completes, and keeps confirming', async () => {
     const harness = createHarness(undefined, '', { createOrderStatusReader: () => async () => 'pending' })
     harness.webContents.executeJavaScript.mockReturnValue(new Promise(() => undefined))
     await harness.controller.openQrCode({ ...qrPayment(), expiresAt: new Date(Date.now() + 5_000).toISOString() })
     await vi.advanceTimersByTimeAsync(5_000)
-    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith({ status: 'expired', tradeNo: 'sub2-qr-1' }, inWindow)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'sub2-qr-1', confirming: true },
+      { afterClose: false, autoClosed: 'time-limit' },
+    )
     expect(harness.window.destroy).toHaveBeenCalledOnce()
+    harness.controller.destroy()
   })
 
   it('does not resurrect a QR window if destroyed while its image is being prepared', async () => {
@@ -982,6 +988,69 @@ describe('background order confirmation after the payment window closes', () => 
     expect(oldReader).toHaveBeenCalledOnce()
     expect(onTerminalState).not.toHaveBeenCalledWith(expect.objectContaining({ status: 'success' }), expect.anything())
     controller.destroy()
+  })
+
+  // 客户第 9 分钟扫了码、第 10 分钟以后才在手机上付完：窗口到点关了，钱照样要到账。
+  it('keeps confirming for 15 minutes after the 10-minute limit closes the window, so a late payment still arrives', async () => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockResolvedValue('pending')
+    const harness = createHarness(undefined, '', { createOrderStatusReader: () => reader })
+    await harness.controller.openQrCode(qrPayment())
+    await vi.advanceTimersByTimeAsync(10 * 60_000 - 1_000)
+    expect(harness.window.destroy).not.toHaveBeenCalled()
+    expect(harness.onTerminalState).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.controller.isOpen()).toBe(false)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'sub2-qr-1', confirming: true },
+      { afterClose: false, autoClosed: 'time-limit' },
+    )
+
+    const asked = reader.mock.calls.length
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(reader.mock.calls.length).toBeGreaterThan(asked)
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
+    reader.mockResolvedValue('success')
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'success', tradeNo: 'sub2-qr-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
+  })
+
+  // 付款页先显示「交易已关闭」、支付商的到账通知晚一步到，也是同一回事：只有账号后端能说这笔没付成。
+  it.each([
+    ['支付剩余时间 04:59\n交易已关闭', 'page-expired'],
+    ['支付剩余时间\n00:00\n支付超时后，请重新创建订单', 'page-expired'],
+    ['支付剩余时间 04:59\n支付失败', 'page-failed'],
+  ] as const)('keeps confirming the order after the provider page shows %j', async (snapshot, reason) => {
+    const reader = vi.fn<() => Promise<NewApiTopupOrderStatus>>().mockResolvedValue('pending')
+    const harness = createHarness(undefined, snapshot, { createOrderStatusReader: () => reader })
+    await harness.controller.open(paymentForm())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'XM-20260815-1', confirming: true },
+      { afterClose: false, autoClosed: reason },
+    )
+
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(reader).toHaveBeenCalledOnce()
+    await vi.advanceTimersByTimeAsync(paymentFollowUpMaxMs)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'unconfirmed', tradeNo: 'XM-20260815-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
+  })
+
+  it('still lets the account backend report expired after the window closed itself', async () => {
+    const harness = createHarness(undefined, '支付剩余时间 04:59\n交易已关闭', { createOrderStatusReader: () => async () => 'expired' })
+    await harness.controller.open(paymentForm())
+    await vi.advanceTimersByTimeAsync(0)
+    expect(harness.onTerminalState).toHaveBeenCalledExactlyOnceWith(
+      { status: 'closed', tradeNo: 'XM-20260815-1', confirming: true },
+      { afterClose: false, autoClosed: 'page-expired' },
+    )
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(harness.onTerminalState).toHaveBeenLastCalledWith({ status: 'expired', tradeNo: 'XM-20260815-1' }, afterClose)
+    expect(harness.onTerminalState).toHaveBeenCalledTimes(2)
   })
 
   // #1157 第 15 条：付款页的 beforeunload 能让 close() 不了了之，界面上却已经说关了。

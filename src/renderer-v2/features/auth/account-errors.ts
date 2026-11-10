@@ -35,7 +35,7 @@ const usernameTakenPattern = /username\s+already\s+exists|用户名已存在/i
 const accountErrorPatterns: readonly AccountErrorPattern[] = [
   {
     test: usernameTakenPattern,
-    friendly: '该用户名已被注册，请更换用户名，或点击“已有账号，登录”',
+    friendly: '这个用户名已经有人用了，换一个；如果是你自己的，点下面「去登录」',
     kind: 'taken',
   },
   {
@@ -146,7 +146,7 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     // OAuth-only account that never had a password to verify against. 这条尤其
     // 不能退化：用户该去走“找回密码”，而不是反复确认自己的密码。
     test: /this account has no password set|当前账号未设置密码/i,
-    friendly: '当前账号未设置密码，请先通过“找回密码”设置密码',
+    friendly: '这个账号还没设过密码，先点「找回密码」设一个',
   },
 ]
 

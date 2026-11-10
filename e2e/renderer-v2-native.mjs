@@ -29,7 +29,7 @@ const UI_DESIGN_WIDTH_DIP = 1280
 // 它们）。冒烟脚本不 import 主进程产物（那是压缩过的 CommonJS），这份重复是有意的：
 // 它表达的是「产品应该算出什么」，独立于被测代码。
 const UI_AUTO_MIN_ZOOM = 0.9
-const UI_MAX_ZOOM = 1.25
+const UI_AUTO_MAX_ZOOM = 1.25
 const widths = [960, 1280, 1440]
 
 const { stepBudgetMs, progress, withDeadline, trackProcessIds, attachEvidence, run } = createSmokeRuntime({
@@ -51,8 +51,8 @@ async function assertNoStartupDialog(page, evidence, when) {
 }
 
 function expectedZoom(contentWidthDip) {
-  // 这里只量「自动」那一档：用户乘数是 1，最终下限 0.85 在 0.9 之下，碰不到。
-  const automatic = Math.min(UI_MAX_ZOOM, Math.max(UI_AUTO_MIN_ZOOM, contentWidthDip / UI_DESIGN_WIDTH_DIP))
+  // 这里只量「自动」那一档：用户乘数是 1，最终下限 0.85、上限 1.375 都在自动倍率的 0.9～1.25 之外，碰不到。
+  const automatic = Math.min(UI_AUTO_MAX_ZOOM, Math.max(UI_AUTO_MIN_ZOOM, contentWidthDip / UI_DESIGN_WIDTH_DIP))
   return Math.round(automatic * 10_000) / 10_000
 }
 

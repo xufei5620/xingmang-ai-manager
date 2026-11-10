@@ -176,6 +176,19 @@ export function resolveRememberedWorkspace(
   return workspace
 }
 
+/**
+ * Claude Code 在「你信任这个文件夹吗」那一问答了信任之后才会照着做的项目自带配置（相对工作目录）：
+ * 两份 settings 里能写 hooks（每次用工具都自动跑的命令）、env、statusLine、apiKeyHelper，.mcp.json 能
+ * 起本机进程。文件夹里已经有其中任何一份，多半是别人带进来的（网上下载的项目、群里发的源码），本软件
+ * 替客户答了信任，这些命令就不声不响地在客户电脑上跑起来。所以这种文件夹不替他答，那一问交还给 CLI
+ * 自己（D4，0.2.24 深查安全.md 新-1）；空文件夹和客户自己的新项目照旧不问。
+ */
+export const claudeProjectSettingsFiles: readonly (readonly string[])[] = [
+  ['.claude', 'settings.json'],
+  ['.claude', 'settings.local.json'],
+  ['.mcp.json'],
+]
+
 function isSystemFolder(name: string, platform: NodeJS.Platform): boolean {
   if (platform === 'win32') return windowsSystemFolders.some((folder) => samePath(name, folder, true))
   if (platform === 'darwin') return darwinSystemFolders.some((folder) => samePath(name, folder, true))
