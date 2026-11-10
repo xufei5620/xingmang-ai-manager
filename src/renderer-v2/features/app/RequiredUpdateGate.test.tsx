@@ -40,7 +40,7 @@ describe('RequiredUpdateGate', () => {
     expect(html).toContain('现在是 0.2.12，将更新到 0.2.13')
     expect(html).toContain('是否允许更改')
     expect(html).toContain('data-testid="required-update-start"')
-    expect(html).toContain('data-testid="required-update-support"')
+    expect(html).toMatch(/data-testid="required-update-support"[^>]*><span>找客服<\/span><\/button>/)
     expect(html).not.toContain('data-modal-close')
     expect(html).not.toContain('required-update-download-page')
   })

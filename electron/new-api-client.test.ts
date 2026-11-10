@@ -57,7 +57,7 @@ import {
 } from './new-api-client'
 import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
 import { createRelayEndpointRoutingSnapshot } from './relay-sites'
-import { networkFailureMessages } from './network-failure'
+import { networkFailureMessages, proxyAuthRequiredMessage } from './network-failure'
 import { buildManagedCliKeyLimitUpdate, managedKeyStoppedMessage, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
@@ -869,6 +869,38 @@ describe('login failures', () => {
     expect((error as Error).message).toContain(networkFailureMessages[reason])
     expect(String(error)).not.toContain('private-password')
     expect(client.isAuthenticated()).toBe(false)
+  })
+
+  // 代理要账号密码（D32）：Electron 45 走 https 时先交出代理回的 407，读正文才报 ERR_TUNNEL_CONNECTION_FAILED；
+  // 认证方式它不认、或者代理连认证方式都没说时，直接报 ERR_PROXY_AUTH_UNSUPPORTED（沙箱里实测的两种形状）。
+  function proxyAuthAnswer(): Response {
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error('net::ERR_TUNNEL_CONNECTION_FAILED')) } })
+    return new Response(body, { status: 407, headers: { 'Proxy-Authenticate': 'Basic realm="corp"' } })
+  }
+
+  it.each([
+    ['a 407 answer whose body then fails', () => vi.fn<NewApiFetch>().mockImplementation(async () => proxyAuthAnswer())],
+    ['a challenge Chromium cannot answer', () => vi.fn<NewApiFetch>().mockRejectedValue(new Error('net::ERR_PROXY_AUTH_UNSUPPORTED'))],
+  ])('says the proxy wants a user name and password for %s, still as a proxy failure', async (_label, makeFetch) => {
+    const fetchImpl = makeFetch()
+    const retryOffProxy = vi.fn(async () => false)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'proxy' })
+    expect((error as Error).message).toBe(`${proxyAuthRequiredMessage}（账号登录请求失败）`)
+    expect((error as Error).message).not.toContain(networkFailureMessages.proxy)
+    // 归类没变：照旧问一句要不要改直连再发。
+    expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason: 'proxy' }))
+  })
+
+  it('keeps the proxy-down wording when the proxy refused the tunnel without asking for a password', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((cause: unknown) => cause)
+    expect(error).toMatchObject({ reason: 'proxy' })
+    expect((error as Error).message).toContain(networkFailureMessages.proxy)
+    expect((error as Error).message).not.toContain(proxyAuthRequiredMessage)
   })
 
   it('names the timeout rather than leaving an aborted login unexplained', async () => {

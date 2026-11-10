@@ -56,7 +56,7 @@ async function openUsageDetails(page) {
 test('Sub2API subscriptions show independent quotas and never offer unsupported writes or tasks', async () => {
   const page = await fixture('page=account&sub2apiReliability=1&subscriptionExternal=1')
   try {
-    // 用量账单里没有「异步任务」这一节。
+    // 用量账单里没有「生成任务」这一节。
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
     await page.getByTestId('account-usage-section').waitFor()
     assert.equal(await page.getByTestId('account-tasks-section').count(), 0)
@@ -222,7 +222,7 @@ test('the usage range drives the stats, one bar per local day or week and the ca
     const midnight = await page.evaluate(() => { const now = new Date(); return Math.floor(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 6).getTime() / 1000) })
     assert.equal(week[0].startTimestamp, midnight)
     for (let index = 1; index < week.length; index++) assert.equal(week[index].startTimestamp, week[index - 1].endTimestamp + 1)
-    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $35.00 日均 $5.00 请求次数 77 处理 Token 14,000')
+    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $35.00 日均 $5.00 请求次数 77 处理字数 14,000')
     const bars = page.locator('.v2-usage-chart-col')
     assert.equal(await bars.count(), 7)
     assert.equal(await bars.last().innerText().then((text) => text.replace(/\s+/g, ' ')), '$5.00 今天')
@@ -301,10 +301,10 @@ test('usage details include request metadata, token counts, exact billed cost an
       assert.equal(await dialog.locator('.xm-dialog-body').evaluate((element) => element.scrollTop), 0)
       // 调用信息和 Token 数平铺成一张（v4），计费单独一节「计费明细」。
       const summary = await dialog.innerText()
-      assert.match(summary, /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅，倍率 1×[\s\S]*16 秒[\s\S]*4,778 ms[\s\S]*xhigh/)
+      assert.match(summary, /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅，倍率 1×[\s\S]*16 秒[\s\S]*4\.8 秒[\s\S]*xhigh/)
       assert.match(summary, /输入 Token\s*368,531[\s\S]*输出 Token\s*311[\s\S]*缓存读取\s*368,000/)
       const billing = dialog.locator('section[aria-label="计费明细"]')
-      for (const expected of ['动态计费', 'long', '368,531 Token × $25 / 百万', '311 Token × $75 / 百万', '$2/M', '1.0000x', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
+      for (const expected of ['动态计费', 'long', '368,531 Token × $25 / 百万', '311 Token × $75 / 百万', '$2/M', '1×', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
       const table = dialog.getByRole('table')
       assert.equal(await table.locator('tbody tr').count(), 2)
       assert.equal(await table.locator('.is-matched').count(), 1)
@@ -330,17 +330,17 @@ test('usage details retain ordinary cache prices and distinguish missing prices 
       const text = await dialog.innerText()
       if (kind === 'legacy') {
         // 输入、输出的单价写在下面那两行里：「N Token × $3 / 百万」。
-        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5000x[\s\S]*输入\s*[\d,]+ Token × \$3 \/ 百万[\s\S]*输出\s*[\d,]+ Token × \$15 \/ 百万/)
+        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5×[\s\S]*输入\s*[\d,]+ Token × \$3 \/ 百万[\s\S]*输出\s*[\d,]+ Token × \$15 \/ 百万/)
         assert.match(text, /缓存写入（5 分钟）\s*1,000[\s\S]*缓存写入（1 小时）\s*500/)
         assert.equal(await dialog.getByRole('table').count(), 0)
       } else if (kind === 'missing' || kind === 'unknown-tier') {
         assert.doesNotMatch(await billing.innerText(), /\$25 \/ 百万|\$75 \/ 百万/)
         assert.match(await billing.innerText(), /\$0\.7726/)
-        assert.match(text, /请以服务端记录的总费用为准/)
+        assert.match(text, /这一条没给出单价，以上面的总费用为准。/)
         assert.equal(await dialog.locator('.is-matched').count(), 0)
-        if (kind === 'missing') assert.doesNotMatch(text, /未提供 ms/)
+        if (kind === 'missing') assert.doesNotMatch(text, /未提供 秒/)
       } else if (kind === 'sub2') {
-        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5000x[\s\S]*已触发[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*输入[\s\S]*\$0\.013275[\s\S]*输出[\s\S]*\$0\.023325[\s\S]*合计\s*\$0\.3863/)
+        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5×[\s\S]*已触发[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*输入[\s\S]*\$0\.013275[\s\S]*输出[\s\S]*\$0\.023325[\s\S]*合计\s*\$0\.3863/)
         assert.equal(await dialog.getByRole('table').count(), 0)
         assert.doesNotMatch(await billing.innerText(), /\/M|百万/)
       } else if (kind === 'sub2-missing') {
@@ -512,7 +512,7 @@ test('an unread profile keeps the account pages and only blocks the ones that ne
 test('account lists that could not be read say so with the reason and read again on request', async () => {
   for (const [query, tab, title, reason, absent] of [
     ['fail=orders', '充值订阅', '订单暂时没有读到', '订单服务暂时不可用', '还没有订单'],
-    ['fail=tasks', '用量账单', '异步任务暂时没有读到', '任务服务暂时不可用', '暂无异步任务'],
+    ['fail=tasks', '用量账单', '生成任务暂时没有读到', '任务服务暂时不可用', '暂无生成任务'],
     ['fail=usage', '用量账单', '调用明细暂时没有读到', '调用记录服务暂时不可用', '这段时间没有调用'],
     ['fail=devices', '账号安全', '登录设备暂时没有读到', '设备服务暂时不可用', '正在读取登录设备…'],
   ]) {
@@ -520,8 +520,8 @@ test('account lists that could not be read say so with the reason and read again
     try {
       await page.getByRole('tab', { name: tab, exact: true }).click()
       const panel = page.getByRole('tabpanel').filter({ visible: true })
-      // 异步任务和调用明细同一处，两段切换（v4）。
-      if (query === 'fail=tasks') await panel.getByRole('button', { name: '异步任务', exact: true }).click()
+      // 生成任务和调用明细同一处，两段切换（v4）。
+      if (query === 'fail=tasks') await panel.getByRole('button', { name: '生成任务', exact: true }).click()
       await panel.getByText(title, { exact: true }).waitFor()
       await panel.getByText(reason, { exact: false }).waitFor()
       await panel.getByRole('button', { name: '重新加载', exact: true }).first().waitFor()
@@ -547,7 +547,7 @@ test('the usage and task filters fold behind one button on the toolbar and count
     assert.equal(await usage.getByRole('button', { name: '重置筛选', exact: true }).count(), 0)
     // 一共不到 10 条：「每页多少条」不出。
     assert.equal(await usage.getByLabel('每页日志数量', { exact: true }).count(), 0)
-    // 「展开筛选」和「调用明细 | 异步任务」在同一行。
+    // 「展开筛选」和「调用明细 | 生成任务」在同一行。
     const switchBox = await usage.getByRole('button', { name: '调用明细', exact: true }).boundingBox()
     const toggleBox = await toggle.boundingBox()
     assert.ok(switchBox && toggleBox && Math.abs(switchBox.y + switchBox.height / 2 - (toggleBox.y + toggleBox.height / 2)) <= 4)
@@ -559,11 +559,11 @@ test('the usage and task filters fold behind one button on the toolbar and count
     await usage.getByRole('button', { name: '重置筛选', exact: true }).waitFor()
     await toggle.click()
     assert.equal(await toggle.innerText(), '展开筛选 · 1')
-    assert.match(await page.getByTestId('usage-stats').innerText(), /总花费[\s\S]*请求次数[\s\S]*处理 Token/)
-    // 切到异步任务：焦点跟到新露出来那组按钮上，筛选框各管各的，也收着。
-    await usage.getByRole('button', { name: '异步任务', exact: true }).click()
+    assert.match(await page.getByTestId('usage-stats').innerText(), /总花费[\s\S]*请求次数[\s\S]*处理字数/)
+    // 切到生成任务：焦点跟到新露出来那组按钮上，筛选框各管各的，也收着。
+    await usage.getByRole('button', { name: '生成任务', exact: true }).click()
     const tasks = page.getByTestId('account-tasks-section')
-    const taskSwitch = tasks.getByRole('button', { name: '异步任务', exact: true })
+    const taskSwitch = tasks.getByRole('button', { name: '生成任务', exact: true })
     await taskSwitch.waitFor()
     assert.equal(await usage.isHidden(), true)
     assert.equal(await taskSwitch.getAttribute('aria-pressed'), 'true')
@@ -2234,7 +2234,7 @@ test('backup restore requires preview and confirmation before touching files', a
     assert.equal(await page.getByTestId('backup-preview-drawer').count(), 1)
     await preview.getByText('已校验，文件完整', { exact: true }).waitFor()
     await preview.getByText('恢复前会先把当前配置另存一份，恢复后需要重新打开工具。', { exact: true }).waitFor()
-    await preview.getByText('备份在本机，可能含凭据，请妥善保管。', { exact: true }).waitFor()
+    await preview.getByText('备份在这台电脑上，里面可能有密钥，别随便发给别人。', { exact: true }).waitFor()
     await preview
       .getByRole('button', { name: '恢复这份配置', exact: true })
       .click()
@@ -3280,7 +3280,7 @@ test('settings that wait on the system state say they were not read and read aga
     await page.getByText('系统状态暂时读不到', { exact: true }).waitFor()
     const contrast = page.locator('[data-anchor="high-contrast"]')
     await contrast.getByText('暂未读到', { exact: true }).waitFor()
-    assert.equal(await page.getByText('此版本暂不支持', { exact: true }).count(), 0)
+    assert.equal(await page.getByText('这台电脑上用不了', { exact: true }).count(), 0)
     await page.getByRole('button', { name: '重新读取', exact: true }).click()
     await page.getByRole('switch', { name: '高对比度', exact: true }).waitFor()
     assert.equal(await page.getByText('系统状态暂时读不到', { exact: true }).count(), 0)
@@ -3736,7 +3736,7 @@ test('desktop notifications start on, the master switch gates test notifications
     await waitForToast(page, '已发送一条测试通知')
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
-      name: '崩溃自动上报',
+      name: '自动发送错误报告',
       exact: true,
     })
     assert.equal(await crashReports.getAttribute('aria-checked'), 'true')
@@ -3790,7 +3790,7 @@ test('a previously observed account task sends one scoped completion notificatio
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-    // 异步任务藏在「调用明细 | 异步任务」后面也照样读，做完了照样提醒。
+    // 生成任务藏在「调用明细 | 生成任务」后面也照样读，做完了照样提醒。
     const tasks = page.getByTestId('account-tasks-section')
     await tasks.getByText('处理中 50%', { exact: true }).waitFor({ state: 'attached' })
     assert.equal(await tasks.isHidden(), true)
@@ -3817,7 +3817,7 @@ test('an async task result is copied as a link instead of asking the host to ope
   const page = await fixture('page=account&system=1&taskTransition=1')
   try {
     await page.getByRole('tab', { name: '用量账单', exact: true }).click()
-    await page.getByRole('button', { name: '异步任务', exact: true }).click()
+    await page.getByRole('button', { name: '生成任务', exact: true }).click()
     const tasks = page.getByTestId('account-tasks-section')
     await tasks.getByText('处理中 50%', { exact: true }).waitFor()
     await page.getByTestId('account-refresh').click()

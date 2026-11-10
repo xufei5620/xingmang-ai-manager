@@ -34,6 +34,7 @@ import {
   quickFilterQuery,
   sub2ApiFilterId,
   sub2ApiUsageFilterFields,
+  usageCalendarNote,
   usageChartScale,
   usageEmptyText,
   usageHourBlocks,
@@ -201,7 +202,7 @@ function UsageDashboard({
       <div className="v2-usage-stats" data-testid="usage-stats">
         {stat('总花费', data ? quotaMoney(data.totals.quota, balance) : undefined, trends && !summaryOnly && costUsd !== null ? `日均 ${dollars(costUsd / days)}` : undefined, true)}
         {stat('请求次数', data?.totals.count.toLocaleString())}
-        {stat('处理 Token', data?.totals.tokens.toLocaleString())}
+        {stat('处理字数', data?.totals.tokens.toLocaleString())}
       </div>
       {trends && !summaryOnly && (
         <div className="v2-usage-charts">
@@ -243,15 +244,15 @@ function UsageDashboard({
   )
 }
 
-/** 「调用明细 | 异步任务」两段切换（只有两样都有的账号才出），和收起来时读屏用的那个标题。 */
+/** 「调用明细 | 生成任务」两段切换（只有两样都有的账号才出），和收起来时读屏用的那个标题。 */
 function ViewSwitch({ view, both, onChange }: { view: UsageView; both: boolean; onChange: (view: UsageView) => void }) {
-  if (!both) return <h2>{view === 'tasks' ? '异步任务' : '调用明细'}</h2>
+  if (!both) return <h2>{view === 'tasks' ? '生成任务' : '调用明细'}</h2>
   return (
     <>
-      <h2 className="xm-visually-hidden">{view === 'tasks' ? '异步任务' : '调用明细'}</h2>
+      <h2 className="xm-visually-hidden">{view === 'tasks' ? '生成任务' : '调用明细'}</h2>
       <div data-usage-view-switch="true">
         <Segment
-          options={[{ value: 'calls', label: '调用明细' }, { value: 'tasks', label: '异步任务' }]}
+          options={[{ value: 'calls', label: '调用明细' }, { value: 'tasks', label: '生成任务' }]}
           value={view}
           onChange={(value) => onChange(value === 'tasks' ? 'tasks' : 'calls')}
         />
@@ -345,7 +346,7 @@ function AccountCalls({
           fields={calendar ? sub2ApiUsageFilterFields : usageFilterFields}
           primary={[]}
           initialValues={calendar ? defaultDates : undefined}
-          note={calendar ? `按整日统计（时区 ${timezone}），包含结束日期全天。默认最近 7 个日历日。` : undefined}
+          note={calendar ? usageCalendarNote(timezone) : undefined}
           onApply={(values) => {
             if (calendar) {
               const dates = usageDateRange({ ...values, timezone })
@@ -391,7 +392,7 @@ function AccountCalls({
               { key: 'when', label: '时间' },
               { key: 'model', label: '模型' },
               { key: 'key', label: '密钥' },
-              { key: 'tokens', label: '输入 / 输出 Token' },
+              { key: 'tokens', label: '输入 / 输出字数' },
               { key: 'amount', label: '花费' },
               { key: 'status', label: '状态' },
             ]}
@@ -509,7 +510,7 @@ function AccountTasks({
         {failed ? (
           <ListReadFailure
             page="tasks"
-            noun="异步任务"
+            noun="生成任务"
             description={<FailureReason error={resource.error} detail={resource.detail} />}
             retry={() => void resource.reload()}
           />
@@ -519,7 +520,7 @@ function AccountTasks({
               { key: 'task', label: '任务' },
               { key: 'model', label: '模型' },
               { key: 'status', label: '状态' },
-              { key: 'cost', label: '消耗（USD）' },
+              { key: 'cost', label: '消耗（美元）' },
             ]}
             rows={tasks.map((task) => ({
               id: String(task.id),
@@ -536,8 +537,8 @@ function AccountTasks({
             rowKey={(row) => String(row.id)}
             rowLabel={(row) => String(row.label)}
             onRowClick={(row) => setSelected(tasks.find((task) => String(task.id) === row.id) ?? null)}
-            empty={resource.loading ? '正在读取异步任务…' : '暂无异步任务'}
-            label="异步任务"
+            empty={resource.loading ? '正在读取生成任务…' : '暂无生成任务'}
+            label="生成任务"
           />
         )}
       </Card>
@@ -593,7 +594,7 @@ function AccountTasks({
               <div><dt>完成时间</dt><dd>{displayDate(selected.finishAt)}</dd></div>
               <div><dt>操作</dt><dd>{selected.action}</dd></div>
               <div><dt>状态</dt><dd>{state(selected).label}</dd></div>
-              <div><dt>消耗（USD）</dt><dd>{quotaMoney(selected.quota, balance)}</dd></div>
+              <div><dt>消耗（美元）</dt><dd>{quotaMoney(selected.quota, balance)}</dd></div>
               <div><dt>失败原因</dt><dd>{selected.failReason || '无'}</dd></div>
               <div><dt>结果链接</dt><dd className="v2-usage-detail-mono">{selected.resultUrl || '无'}</dd></div>
             </dl>
@@ -607,7 +608,7 @@ function AccountTasks({
 
 /**
  * 个人中心「用量账单」（v4 第 07 批）：上面是用量看板（时间范围、三个数、花费趋势和按模型），
- * 下面「调用明细 | 异步任务」两段切换，最下面各工具累计用量。异步任务藏着时也挂着：
+ * 下面「调用明细 | 生成任务」两段切换，最下面各工具累计用量。生成任务藏着时也挂着：
  * 它读回来才能在任务做完时发通知（同改版前）。
  */
 export function AccountUsagePage({

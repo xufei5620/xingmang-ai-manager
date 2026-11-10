@@ -49,7 +49,8 @@ import { nodeVersionStatus } from './versions'
  * 升级版本：改下面两个常量，跟 macos-node-runtime.ts 一起抬。摘要从 https://nodejs.org/dist/<版本>/SHASUMS256.txt.asc 抄
  * `node-<版本>-linux-x64.tar.gz` 与 `node-<版本>-linux-arm64.tar.gz` 两行，抄之前先用
  * https://github.com/nodejs/release-keys 的公钥核过签名（gpgv --keyring pubring.kbx …）。
- * 用 .tar.gz 不用 .tar.xz：解压只用到系统必带的 gzip，不依赖 xz。
+ * 用 .tar.gz 不用 .tar.xz：解压只用到系统必带的 gzip，不依赖 xz。抬了以后，已经代装过的电脑在下次装或
+ * 更新工具时顺手换成新钉的这版（D86，runtime-install-service.ts 的 refreshOutdatedManagedNodeRuntime）。
  */
 export const linuxNodeRuntimeVersion = 'v24.22.1'
 const linuxNodeRuntimeSha256: Readonly<Record<NodeRuntimeArchitecture, string>> = {

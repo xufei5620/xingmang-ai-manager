@@ -188,7 +188,7 @@ async function removeTemporaryRoot(temporaryRoot) {
 }
 
 // 设置页的外观、开机启动和六个通知分项都靠隔离 preload 暴露的 window.xingmangPlatform；
-// 它没挂上时页面不报错，只把这些开关换成「此版本暂不支持」（0.2.10 第四版 Mac 测试包就是这样）。
+// 它没挂上时页面不报错，只把这些开关换成「这台电脑上用不了」（0.2.10 第四版 Mac 测试包就是这样，当时写的是「此版本暂不支持」）。
 // 渲染层一启动就会调一次 getState 同步系统外观，所以主进程日志里有没有这条审计记录，
 // 就是打包后的 Mac 应用里这座桥通没通的证据。
 async function waitForPlatformBridge(runtimeLogPath) {
@@ -262,7 +262,7 @@ async function main() {
       const related = bridge.log.split('\n').filter((line) => /xingmang-platform|platform\.denied|renderer-v2 platform|page\.load/.test(line))
       assert.ok(
         bridge.ok,
-        '打包后的 macOS 应用里系统设置桥（window.xingmangPlatform）没有接通，设置页的通知分项会显示「此版本暂不支持」。'
+        '打包后的 macOS 应用里系统设置桥（window.xingmangPlatform）没有接通，设置页的通知分项会显示「这台电脑上用不了」。'
           + `\n相关日志：\n${related.join('\n') || '（无）'}\n进程输出：\n${output.text.trim() || '（无）'}`,
       )
       process.stdout.write('打包后的 macOS 应用系统设置桥已接通\n')

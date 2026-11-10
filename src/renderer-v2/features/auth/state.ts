@@ -1,5 +1,5 @@
 import type { AccountLoginResult, AccountSessionState, AccountSiteId } from '../../../../electron/ipc-contract'
-import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
+import { classifyNetworkFailure, networkFailureMessages, networkFailureReasonForMessage, resolveNetworkFailureMessage } from '../../../../electron/network-failure'
 import { matchAccountError } from './account-errors'
 import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
 import type { WindowOs } from '../app/window-os'
@@ -272,7 +272,8 @@ export function authFailure(error: unknown, action: string, online = true, os?: 
   const reason = classifyNetworkFailure(message)
   if (!online || reason === 'offline') return { message: authOfflineMessage, kind: 'offline' }
   if (reason === 'timeout' || reason === 'refused') return { message: authUnreachableMessage, kind: 'unreachable' }
-  if (reason) return { message: networkFailureMessages[reason], kind: 'network' }
+  // 代理要账号密码是 proxy 里的一种，说法不同（D32），按原句认回来。
+  if (reason) return { message: resolveNetworkFailureMessage(message) ?? networkFailureMessages[reason], kind: 'network' }
   // 发验证码时服务器发信失败的原话要在服务端那张表之前认：表里登录那条会把「User does not exist」认走。
   const sendingCode = action === '发送验证码'
   const mail = sendingCode ? verificationMailFailure(message) : null
