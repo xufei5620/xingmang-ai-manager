@@ -1,6 +1,8 @@
 ## 用户
 
-- 聊天记录里 AI 写的代码，重开软件以后不再被改坏：`const token = req.headers.authorization`、`password: string`、`api_key = os.environ["OPENAI_API_KEY"]` 这类只是写着名字的代码原样保存，导出的文件里也一样。真正贴进来的密钥、密码照旧存成「[密钥未保存]」。
+- 聊天记录里的密钥认得更准：贴进去的 Grok、GitHub、Google 等密钥，网站登录令牌，还有网址里带的密码，
+  存到电脑上、搬到新电脑导出时也会换成「[密钥未保存]」，不再原样留在记录里；AI 写的代码里只是写着 token、password、api_key 这类名字的，
+  重开软件以后原样保存、不再被改坏，导出的文件里也一样。
 
 ## 开发
 

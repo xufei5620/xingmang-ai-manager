@@ -1,6 +1,9 @@
 const fs = require('node:fs')
 const path = require('node:path')
 const { execFileSync } = require('node:child_process')
+// The update page's cap and the way it counts entries live with the build step
+// that enforces them, so the check below can never count differently.
+const { MAX_ITEMS: maxUserItems, splitReleaseNoteItems } = require('./bundle-release-notes.cjs')
 
 const fragmentDirectory = 'changes/unreleased'
 // README.md documents the format and TEMPLATE.md.example keeps the directory in
@@ -224,13 +227,37 @@ function assertNoDirectUnreleasedEdit(root, event, eventName, git = execFileSync
   }
 }
 
+// What release-notes.md's unreleased section will hold once collect runs: the
+// entries already there plus every fragment's user half.
+function countUserItems(root, fragments) {
+  const section = sections.find((entry) => entry.key === 'user')
+  const collected = readUnreleasedSection(fs.readFileSync(path.join(root, section.file), 'utf8'), section)
+  const pending = fragments.flatMap((fragment) => fragment.entries.user)
+  return splitReleaseNoteItems([...collected, ...pending].join('\n')).length
+}
+
+// bundle-release-notes.cjs refuses a version over the cap, but only at release
+// time, after the version bump; by then a dozen merged PRs have to be squeezed
+// in a hurry. 0.2.24 reached 70 user entries with every PR green, because this
+// check never counted. Counting here fails the PR whose fragment tips it over,
+// while its author can still merge entries.
+function assertUserItemsFit(root, fragments) {
+  const count = countUserItems(root, fragments)
+  if (count <= maxUserItems) return count
+  throw new Error(
+    `给客户看的「## 用户」合起来已经 ${count} 条，装完后的更新页一版最多放 ${maxUserItems} 条，超了发版构建会报错。`
+    + `请把相近的几条并成一条（可以并进别的分片已有的那一条，被并掉的分片只留「## 开发」），压到 ${maxUserItems} 条以内；`
+    + '客户报过的问题（001- 开头的分片）放在最前面。',
+  )
+}
+
 function checkChanges(root) {
   const fragments = readFragments(root)
   const eventPath = process.env.GITHUB_EVENT_PATH
   if (eventPath && fs.existsSync(eventPath)) {
     assertNoDirectUnreleasedEdit(root, JSON.parse(fs.readFileSync(eventPath, 'utf8')), process.env.GITHUB_EVENT_NAME)
   }
-  return fragments
+  return { fragments, userItems: assertUserItemsFit(root, fragments) }
 }
 
 if (require.main === module) {
@@ -243,10 +270,11 @@ if (require.main === module) {
       assertAllCollected(root)
       console.log(`${fragmentDirectory} 下的分片都已汇总`)
     } else if (argv.includes('--check')) {
-      const fragments = checkChanges(root)
+      const { fragments, userItems } = checkChanges(root)
+      const userSummary = `「## 用户」合计 ${userItems} 条（一版最多 ${maxUserItems} 条）`
       console.log(fragments.length === 0
-        ? '变更分片校验通过：本次没有分片'
-        : `变更分片校验通过：${fragments.length} 个分片（${fragments.map((fragment) => fragment.name).join('、')}）`)
+        ? `变更分片校验通过：本次没有分片，${userSummary}`
+        : `变更分片校验通过：${fragments.length} 个分片，${userSummary}（${fragments.map((fragment) => fragment.name).join('、')}）`)
     } else {
       const result = collectChanges(root)
       if (result.fragments.length === 0) {
@@ -266,9 +294,11 @@ module.exports = {
   appendToUnreleasedSection,
   assertAllCollected,
   assertNoDirectUnreleasedEdit,
+  assertUserItemsFit,
   changedFileStatuses,
   checkChanges,
   collectChanges,
+  countUserItems,
   parseFragment,
   readFragments,
   readUnreleasedSection,
