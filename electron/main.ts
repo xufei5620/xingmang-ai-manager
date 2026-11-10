@@ -2366,7 +2366,7 @@ if (!hasSingleInstanceLock) {
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
-      desktopDirectory: () => app.getPath('desktop'),
+      downloadsDirectory: () => app.getPath('downloads'),
       accountService,
       paymentWindow,
       accountSessionReady,

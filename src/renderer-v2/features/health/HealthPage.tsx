@@ -839,6 +839,7 @@ export function HealthPage({
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
+        target={operation.failed === 'export' ? 'export' : undefined}
       />
       {diagnostics.length ? resultState(results) : <Card padding="none">{resultState(null)}</Card>}
       <section className="v2-health-group" aria-labelledby="health-connection-title">
