@@ -1,7 +1,15 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
 import { environmentOverrideNames } from './diagnostics'
+import {
+  buildPowerShellConstrainedLanguageBranch,
+  buildPowerShellEnvironmentBroadcastStatements,
+  powerShellMachineEnvironmentKey,
+  powerShellReadEnvironmentValueFunction,
+  powerShellUserEnvironmentKey,
+} from './powershell-constrained-language'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { GENERATED_PROJECT_INSTRUCTION_FILENAME, hasUntouchedHomeProjectInstructions } from './project-instructions'
 import { assertNoReparseComponents, assertSafeDataFile } from './safe-local-data'
 import { runPowerShell, type PowerShellRunner } from './stale-proxy-environment'
@@ -70,16 +78,46 @@ export function setAsideHomeProjectInstructions(home: string, now: Date = new Da
   return { kind: 'set-aside-home-agents-md', fixed: 1, machineRemaining: false }
 }
 
+// 开着应用控制策略的电脑上 PowerShell 跑在受限语言模式里，下面这条的 [Environment]::...
+// 和设 UTF-8 输出那句都被拒，第二句就整条结束，检查页「删掉这几项」次次失败（2026-11-10
+// Windows CI 锁定实测）。受限模式下改走注册表命令，原来那几行一个字不动。
+export const clearProviderOverridesConstrainedModules = ['Microsoft.PowerShell.Management'] as const
+
+function buildClearProviderOverridesConstrainedStatements(allowed: string): string[] {
+  return [
+    buildPowerShellModuleImportStatement(clearProviderOverridesConstrainedModules),
+    ...powerShellReadEnvironmentValueFunction,
+    `$allowed = @(${allowed})`,
+    '$cleared = @()',
+    '$machine = @()',
+    'foreach ($name in ($env:XINGMANG_CLEAR_OVERRIDES -split ";")) {',
+    '  if (-not ($allowed -contains $name)) { continue }',
+    `  if ($null -ne (Read-XingmangEnvironmentValue '${powerShellUserEnvironmentKey}' $name)) {`,
+    `    Remove-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name $name`,
+    '    $cleared += $name',
+    '  }',
+    `  if ($null -ne (Read-XingmangEnvironmentValue '${powerShellMachineEnvironmentKey}' $name)) { $machine += $name }`,
+    '}',
+    'if ($cleared.Count -gt 0) {',
+    ...buildPowerShellEnvironmentBroadcastStatements().map((line) => `  ${line}`),
+    '}',
+    '"cleared:" + ($cleared -join ";")',
+    '"machine:" + ($machine -join ";")',
+  ]
+}
+
 /**
  * 删掉当前 Windows 账号下 `$env:XINGMANG_CLEAR_OVERRIDES` 列出的几个设置。名字经
  * 环境变量传入、不拼进脚本；脚本里再对照固定名单过一遍，名单外的一律不碰。只删
  * 「当前账号」那一份，整台电脑那一份要管理员，只报告它还在，不提权。
- * 值一律不读出来：ANTHROPIC_AUTH_TOKEN 这类的值本身就是一把 Key（I3、I13）。
+ * 值一律不读出来：ANTHROPIC_AUTH_TOKEN 这类的值本身就是一把 Key（I3、I13）；受限模式那段
+ * 在 PowerShell 里读到值只看它在不在，同样不输出。
  */
 export function buildClearProviderOverridesScript(): string {
   const allowed = environmentOverrideNames.map((name) => `"${name}"`).join(',')
   return [
     '$ErrorActionPreference = "Stop"',
+    ...buildPowerShellConstrainedLanguageBranch(buildClearProviderOverridesConstrainedStatements(allowed)),
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     `$allowed = @(${allowed})`,
     '$cleared = @()',
@@ -125,6 +163,8 @@ export async function clearUserProviderOverrides(options: ClearProviderOverrides
   const result = parseClearProviderOverridesOutput(await run(buildClearProviderOverridesScript(), {
     ...trustedCommandEnvironment(),
     XINGMANG_CLEAR_OVERRIDES: targets.join(';'),
+    // 只有受限模式那一段用它（I14：System32 里那一份的绝对路径）。
+    XINGMANG_SETX_EXE: windowsSystemExecutable('setx.exe'),
   }))
   const processEnv = options.processEnv ?? process.env
   // 整台电脑那一份还在的，本进程里的值多半就是它，留着；只删只有当前账号那份的。

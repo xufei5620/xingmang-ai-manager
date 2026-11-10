@@ -1,5 +1,6 @@
 import net from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
+import { windowsSystemExecutable } from './command-runner'
 import {
   buildClearUserProxyScript,
   buildReadProxyScopesScript,
@@ -191,6 +192,8 @@ describe('clearStaleUserProxyVariables', () => {
     const result = await clearStaleUserProxyVariables({ platform: 'win32', run, probe: probeFor([1080]).probe, processEnv })
     expect(result).toEqual({ cleared: ['HTTPS_PROXY'], machineRemaining: false })
     expect(calls[1].env.XINGMANG_CLEAR_PROXY).toBe('HTTPS_PROXY')
+    // Only the ConstrainedLanguage branch runs it, by System32's absolute path (I14).
+    expect(calls[1].env.XINGMANG_SETX_EXE).toBe(windowsSystemExecutable('setx.exe'))
     expect(processEnv).toEqual({ HTTP_PROXY: 'http://127.0.0.1:1080' })
   })
 

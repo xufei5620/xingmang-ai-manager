@@ -839,6 +839,144 @@ try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catc
   }
 }])
 
+const { buildEnsureUserPathScript, buildRemoveUserPathScript } = compiled('windows-cli-shell-access')
+const { buildClearUserProxyScript } = compiled('stale-proxy-environment')
+const { buildClearProviderOverridesScript } = compiled('diagnostic-fixes')
+
+// reg export writes UTF-16LE whatever the console code page is, so what comes
+// back is what is stored: the kind, and the text with %VAR% left as written.
+async function readUserEnvironment() {
+  const file = path.join(scratch, `user-environment-${Date.now()}.reg`)
+  await runFile(path.join(machinePaths.system32, 'reg.exe'), ['export', 'HKCU\\Environment', file, '/y'])
+  const text = fs.readFileSync(file).toString('utf16le').replace(/^\uFEFF/, '').replace(/\\\r?\n\s*/g, '')
+  fs.rmSync(file, { force: true })
+  const values = new Map()
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^"((?:[^"\\]|\\.)*)"=(.*)$/.exec(line)
+    if (!match) continue
+    const data = match[2]
+    let entry = { kind: 'other', value: data }
+    if (data.startsWith('"')) entry = { kind: 'REG_SZ', value: data.slice(1, -1).replace(/\\(.)/g, '$1') }
+    else if (data.startsWith('hex(2):')) {
+      const bytes = Buffer.from(data.slice('hex(2):'.length).split(',').filter(Boolean).map((byte) => parseInt(byte, 16)))
+      entry = { kind: 'REG_EXPAND_SZ', value: bytes.toString('utf16le').replace(/\0+$/, '') }
+    } else if (data.startsWith('dword:')) entry = { kind: 'REG_DWORD', value: String(parseInt(data.slice('dword:'.length), 16)) }
+    values.set(match[1].replace(/\\(.)/g, '$1').toLowerCase(), entry)
+  }
+  return values
+}
+
+async function setUserEnvironmentValue(name, kind, value) {
+  await runFile(path.join(machinePaths.system32, 'reg.exe'), ['add', 'HKCU\\Environment', '/v', name, '/t', kind, '/d', value, '/f'])
+}
+
+async function deleteUserEnvironmentValue(name) {
+  await runFile(path.join(machinePaths.system32, 'reg.exe'), ['delete', 'HKCU\\Environment', '/v', name, '/f']).catch(() => undefined)
+}
+
+// Adding a CLI's folder to the user PATH, taking it out again, reading and
+// clearing stale proxy variables, clearing provider overrides: each was refused
+// at its second line where an application-control policy is enforced (this
+// runner under __PSLockdownPolicy=4, 2026-11-10). Each step runs here once as
+// the app runs it and once in a session switched to ConstrainedLanguage, which
+// takes the scripts' other branch, against this runner's own HKCU\Environment,
+// and both must leave the same values behind: the user PATH keeps its
+// %USERPROFILE% entries as written, a Chinese folder name, and its kind. The
+// runner's own values are put back at the end.
+checks.push(['the user environment scripts leave the same registry values behind in ConstrainedLanguage as in FullLanguage', async () => {
+  const executables = {
+    XINGMANG_REG_EXE: windowsSystemExecutable('reg.exe'),
+    XINGMANG_SETX_EXE: windowsSystemExecutable('setx.exe'),
+    XINGMANG_SMOKE_HOST: '127.0.0.1',
+  }
+  const profile = process.env.USERPROFILE
+  // The long spelling: this runner's temp folder is the 8.3 one (RUNNER~1),
+  // which GetFullPath in Windows PowerShell expands and the ConstrainedLanguage
+  // statements leave as written (see windows-cli-shell-access.ts).
+  const target = path.join(fs.realpathSync.native(scratch), '中文目录', 'npm')
+  const stored = 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-ref;C:\\中文工具\\bin;%XINGMANG_SMOKE_UNSET%\\x'
+  const watchedProxies = ['HTTP_PROXY', 'ALL_PROXY', 'HTTPS_PROXY', 'NO_PROXY']
+  const watchedOverrides = ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'CODEX_HOME']
+  fs.mkdirSync(target, { recursive: true })
+  // [label, setup, script, extra environment, watched values]
+  const steps = [
+    ['add the folder', () => setUserEnvironmentValue('Path', 'REG_EXPAND_SZ', stored), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['add it again', null, buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['add it spelled another way', null, buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: `${target.replaceAll('\\', '/')}/../npm/` }, ['Path']],
+    ['take it out', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['take it out again', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['find a %USERPROFILE% spelling', () => setUserEnvironmentValue('Path', 'REG_EXPAND_SZ', '%USERPROFILE%\\xingmang-smoke-npm'), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: `${profile}\\xingmang-smoke-npm` }, ['Path']],
+    ['take out a %USERPROFILE% spelling', () => setUserEnvironmentValue('Path', 'REG_EXPAND_SZ', 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-npm'), buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: `${profile}\\xingmang-smoke-npm` }, ['Path']],
+    ['add to a REG_SZ PATH', () => setUserEnvironmentValue('Path', 'REG_SZ', 'C:\\xingmang-smoke-keep;C:\\中文工具\\bin'), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['take out of a REG_SZ PATH', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['add without a user PATH', () => deleteUserEnvironmentValue('Path'), buildEnsureUserPathScript(), { XINGMANG_ADD_PATH: target }, ['Path']],
+    ['take out the only entry', null, buildRemoveUserPathScript(), { XINGMANG_REMOVE_PATH: target }, ['Path']],
+    ['read the proxy settings', async () => {
+      await setUserEnvironmentValue('HTTP_PROXY', 'REG_SZ', 'http://127.0.0.1:9/中文')
+      await setUserEnvironmentValue('ALL_PROXY', 'REG_EXPAND_SZ', 'socks5://%XINGMANG_SMOKE_HOST%:1080')
+      await setUserEnvironmentValue('HTTPS_PROXY', 'REG_DWORD', '1')
+      await setUserEnvironmentValue('NO_PROXY', 'REG_SZ', 'localhost')
+    }, buildReadProxyScopesScript(), {}, []],
+    ['clear the proxy settings', null, buildClearUserProxyScript(), { XINGMANG_CLEAR_PROXY: 'HTTP_PROXY;ALL_PROXY;NOT_A_PROXY;HTTPS_PROXY' }, watchedProxies],
+    ['clear the provider overrides', async () => {
+      await setUserEnvironmentValue('ANTHROPIC_BASE_URL', 'REG_SZ', 'http://127.0.0.1:9')
+      await setUserEnvironmentValue('OPENAI_BASE_URL', 'REG_EXPAND_SZ', 'http://%XINGMANG_SMOKE_HOST%:9')
+      await setUserEnvironmentValue('CODEX_HOME', 'REG_DWORD', '1')
+    }, buildClearProviderOverridesScript(), { XINGMANG_CLEAR_OVERRIDES: 'ANTHROPIC_BASE_URL;OPENAI_BASE_URL;CODEX_HOME;NOT_AN_OVERRIDE' }, watchedOverrides],
+  ]
+  const original = await readUserEnvironment()
+  const outcomes = { full: [], constrained: [] }
+  try {
+    for (const mode of ['full', 'constrained']) {
+      for (const [label, setup, script, extra, watched] of steps) {
+        if (setup) await setup()
+        const env = trustedEnv({ ...executables, ...extra })
+        const stdout = mode === 'full'
+          ? await runPowerShell(['-Command', script], env)
+          : await runPowerShell(['-Command', constrainedWrapper], { ...env, XINGMANG_CONSTRAINED_SCRIPT: script })
+        if (mode === 'constrained') assert.match(stdout, /^[\x00-\x7F]*$/, `${label}: ${stdout}`)
+        const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        // The proxy reader answers in UTF-8 in FullLanguage and with \uXXXX escapes otherwise.
+        const answer = script === buildReadProxyScopesScript() ? JSON.parse(lines.at(-1)).user : lines
+        const values = await readUserEnvironment()
+        assert.equal(values.has('xingmang_environment_refresh') || values.has('xingmang_path_refresh'), false, `${mode} ${label} left its refresh value behind`)
+        outcomes[mode].push({ label, answer, state: Object.fromEntries(watched.map((name) => [name, values.get(name.toLowerCase()) ?? null])) })
+      }
+    }
+  } finally {
+    for (const name of [...watchedProxies, ...watchedOverrides]) {
+      const entry = original.get(name.toLowerCase())
+      if (entry) await setUserEnvironmentValue(name, entry.kind, entry.value)
+      else await deleteUserEnvironmentValue(name)
+    }
+    const originalPath = original.get('path')
+    if (originalPath) await setUserEnvironmentValue('Path', originalPath.kind, originalPath.value)
+    else await deleteUserEnvironmentValue('Path')
+  }
+  assert.deepEqual(outcomes.constrained, outcomes.full)
+  const byLabel = new Map(outcomes.full.map((outcome) => [outcome.label, outcome]))
+  assert.deepEqual(byLabel.get('add the folder'), { label: 'add the folder', answer: ['added'], state: { Path: { kind: 'REG_EXPAND_SZ', value: `${stored};${target}` } } })
+  assert.deepEqual(byLabel.get('add it again').answer, ['present'])
+  assert.deepEqual(byLabel.get('add it spelled another way').answer, ['present'])
+  assert.deepEqual(byLabel.get('take it out').state.Path, { kind: 'REG_EXPAND_SZ', value: stored })
+  assert.deepEqual(byLabel.get('take it out again').answer, ['absent'])
+  assert.deepEqual(byLabel.get('find a %USERPROFILE% spelling').answer, ['present'])
+  assert.deepEqual(byLabel.get('take out a %USERPROFILE% spelling').state.Path, { kind: 'REG_EXPAND_SZ', value: 'C:\\xingmang-smoke-keep' })
+  assert.deepEqual(byLabel.get('add to a REG_SZ PATH').state.Path, { kind: 'REG_SZ', value: `C:\\xingmang-smoke-keep;C:\\中文工具\\bin;${target}` })
+  assert.deepEqual(byLabel.get('add without a user PATH').state.Path, { kind: 'REG_EXPAND_SZ', value: target })
+  assert.deepEqual(byLabel.get('read the proxy settings').answer, { HTTP_PROXY: 'http://127.0.0.1:9/中文', ALL_PROXY: 'socks5://127.0.0.1:1080' })
+  assert.deepEqual(byLabel.get('clear the proxy settings'), {
+    label: 'clear the proxy settings',
+    answer: ['cleared:HTTP_PROXY;ALL_PROXY;HTTPS_PROXY'],
+    state: { HTTP_PROXY: null, ALL_PROXY: null, HTTPS_PROXY: null, NO_PROXY: { kind: 'REG_SZ', value: 'localhost' } },
+  })
+  assert.deepEqual(byLabel.get('clear the provider overrides'), {
+    label: 'clear the provider overrides',
+    answer: ['cleared:ANTHROPIC_BASE_URL;OPENAI_BASE_URL', 'machine:'],
+    state: { ANTHROPIC_BASE_URL: null, OPENAI_BASE_URL: null, CODEX_HOME: { kind: 'REG_DWORD', value: '1' } },
+  })
+}])
+
 // Where an application-control policy is enforced, every -Command string runs
 // in ConstrainedLanguage; on a customer's machine the inventory was refused as
 // a whole, so the Claude Desktop, OpenCode and WorkBuddy cards read
@@ -1285,7 +1423,8 @@ const trustedProbeScripts = [
 
 async function reportTrustedProbesWithoutAutoloading() {
   for (const [name, script, extra] of trustedProbeScripts) {
-    const silenced = script.replace(/(Import-Module [^\n;]*)/, "$1; $PSModuleAutoLoadingPreference = 'None'")
+    // Every import: the proxy reader imports once in its ConstrainedLanguage branch and once after it.
+    const silenced = script.replace(/(Import-Module [^\n;]*)/g, "$1; $PSModuleAutoLoadingPreference = 'None'")
     const startedAt = Date.now()
     const { error, stderr } = await runPowerShellCollecting(silenced, trustedEnv(extra))
     const missing = [...new Set([...String(stderr).matchAll(/(?:The term '|无法将“)([A-Za-z]+-[A-Za-z]+)/g)].map((match) => match[1]))]
