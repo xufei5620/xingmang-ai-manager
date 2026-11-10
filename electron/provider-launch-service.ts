@@ -61,6 +61,7 @@ import {
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
 } from './workspace-config-overrides'
+import { assertWorkspaceDirectory } from './workspace-access'
 import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 
 /**
@@ -412,9 +413,7 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
-    if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
-      throw new Error('工作目录不存在，请重新选择')
-    }
+    assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
     // 从星芒打开的窗口读的是现在的配置：之前标的「需重开生效」说的不是它了（C19 另按「开着」算 Gemini）。
     toolLaunchedAt.set(provider, Date.now())
     toolRouteRestartPending.delete(provider)

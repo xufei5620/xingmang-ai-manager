@@ -183,6 +183,16 @@ export interface FeedbackMacHardware {
   translated: boolean
 }
 
+/**
+ * 「错误报告」「匿名使用统计」这次运行到底发不发（D61）。写的是两个上报器每次发之前问的那个结论，
+ * 不只是设置里的勾：开发版、测试包、客服让设了关闭变量的，设置里开着也写「关」。客服在 Sentry
+ * 里查不到时，靠这一行分清是没报出来，还是这台电脑本来就不发。
+ */
+export interface FeedbackPrivacySwitches {
+  crashReporting: boolean
+  anonymousUsage: boolean
+}
+
 export interface FeedbackRuntimeInput {
   /** 上一次扫描的快照；还没扫过时传 null，工具与网络几行都写「未能读取」。 */
   snapshot: FeedbackRuntimeSnapshot | null
@@ -217,6 +227,8 @@ export interface FeedbackRuntimeInput {
    * 排查是不是路上换了证书要用（需求 5.1.9：具体解析出的 IP 只进本机诊断包）。
    */
   toolRouteCertificate?: ToolRouteCertificateFailure | null
+  /** 缺省时这两行不出。 */
+  privacy?: FeedbackPrivacySwitches | null
   /** 软件主程序所在目录。 */
   appDirectory: string | null
   dataDirectory: string | null
@@ -370,6 +382,11 @@ export function buildFeedbackRuntimeLines(input: FeedbackRuntimeInput): string[]
   if (input.certificateTrust?.trim()) lines.push(`安全证书: ${input.certificateTrust.trim()}`)
   if (input.platform === 'win32' && input.executionMode) {
     lines.push(`运行权限: ${executionModeText(input.executionMode, input.executionProbeFailure)}`)
+  }
+  if (input.privacy) {
+    // 字照 D61 逐字，冒号用的是单子上的中文冒号。
+    lines.push(`错误报告：${input.privacy.crashReporting ? '开' : '关'}`)
+    lines.push(`匿名使用统计：${input.privacy.anonymousUsage ? '开' : '关'}`)
   }
   lines.push(`软件位置: ${input.appDirectory?.trim() || unreadable}`)
   lines.push(`数据目录: ${input.dataDirectory?.trim() || unreadable}`)

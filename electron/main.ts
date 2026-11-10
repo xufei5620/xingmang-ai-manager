@@ -47,7 +47,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -194,6 +194,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import type { CodexRemoteReleaseAction } from './codex-remote-service'
@@ -216,6 +217,8 @@ const nonSiteExternalUrlAllowlist = [
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
   codexDesktopStoreUrl,
+  // Claude Desktop 装不上时错误框里的「下载离线安装包」：教程站「备用安装包」那一节（D64）。
+  claudeDesktopOfflinePackagesUrl,
   // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
   appReleaseDownloadUrl,
 ] as const
@@ -712,6 +715,22 @@ function appValue<T>(read: () => T, fallback: T): T {
   }
 }
 
+// 反馈报告「错误报告：开/关」那一行问的也是这个函数（D61），跟真发不发说同一句话。
+function crashReportingEnabled(): boolean {
+  return shouldReportCrashes({
+    packaged: appValue(() => app.isPackaged, false),
+    // Re-read per report so switching the preference off stops the very next
+    // send, with no refresh plumbing between the settings handler and here.
+    // The fallback is the opt-out, not the default: if the preference cannot
+    // be read at all, staying silent is the answer the user cannot object to.
+    crashReporting: appValue(
+      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
+      false,
+    ),
+    env: process.env,
+  })
+}
+
 /**
  * Composed at module scope, not inside whenReady: a crash during startup is
  * exactly the class of bug a user cannot report themselves, so the reporter
@@ -734,18 +753,7 @@ const crashReporter = createCrashReporter({
     osRelease: os.release(),
     arch: process.arch,
   },
-  isEnabled: () => shouldReportCrashes({
-    packaged: appValue(() => app.isPackaged, false),
-    // Re-read per report so switching the preference off stops the very next
-    // send, with no refresh plumbing between the settings handler and here.
-    // The fallback is the opt-out, not the default: if the preference cannot
-    // be read at all, staying silent is the answer the user cannot object to.
-    crashReporting: appValue(
-      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
-      false,
-    ),
-    env: process.env,
-  }),
+  isEnabled: crashReportingEnabled,
   // net.fetch follows the session's proxy settings, which is what a user
   // behind a corporate proxy needs -- but it only exists once the app is
   // ready, and a startup crash happens before that.
@@ -1593,7 +1601,27 @@ if (!hasSingleInstanceLock) {
       if (mainRendererRelease) mainRendererRelease.deliver(event, send)
       else send()
     }
-    diagnostics.attachFeedbackDescribers({ latestTraySystem: () => latestTraySystem })
+    // 匿名使用统计的开关是设置「隐私数据」里的「匿名使用统计」，存在系统界面设置那份文件里；读不出来按关算，
+    // 同崩溃上报。放在这里是因为反馈报告「匿名使用统计：开/关」那一行（D61）也问它，报告接上时它得已经在。
+    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
+    const usageStatsEnabled = (): boolean => {
+      let preference: boolean | undefined
+      try {
+        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
+      } catch {
+        return false
+      }
+      return shouldSendUsageStats({
+        packaged: app.isPackaged,
+        localBuild: applicationPackage.xingmangLocalBuild === true,
+        env: process.env,
+        preference,
+      })
+    }
+    diagnostics.attachFeedbackDescribers({
+      latestTraySystem: () => latestTraySystem,
+      readPrivacySwitches: () => ({ crashReporting: crashReportingEnabled(), anonymousUsage: usageStatsEnabled() }),
+    })
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications !== false,
       focusMainWindow: () => {
@@ -1693,7 +1721,7 @@ if (!hasSingleInstanceLock) {
       // 后台装的没人在看，不预告也不等。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
         if (!background) {
-          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true)
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true, isRollbackInstall(updaterService.getState(), version))
           desktopNotifications.announce(notice)
           // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
           updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
@@ -1938,23 +1966,7 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? externalClientOwner(accounts.getSiteId(), state.account.userId) : null
     }
     // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
-    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
-    // 存在系统界面设置那份文件里；读不出来按关算，同崩溃上报。
-    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
-    const usageStatsEnabled = (): boolean => {
-      let preference: boolean | undefined
-      try {
-        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
-      } catch {
-        return false
-      }
-      return shouldSendUsageStats({
-        packaged: app.isPackaged,
-        localBuild: applicationPackage.xingmangLocalBuild === true,
-        env: process.env,
-        preference,
-      })
-    }
+    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关 usageStatsEnabled 在上面接反馈报告那里。
     const usageStats = createUsageStatsReporter({
       filePath: path.join(managerDataDirectory, 'usage-stats.json'),
       isEnabled: usageStatsEnabled,
@@ -2357,7 +2369,7 @@ if (!hasSingleInstanceLock) {
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
-      desktopDirectory: () => app.getPath('desktop'),
+      downloadsDirectory: () => app.getPath('downloads'),
       accountService,
       paymentWindow,
       accountSessionReady,
@@ -2893,7 +2905,7 @@ if (!hasSingleInstanceLock) {
         }
         if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true))
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true, update.rollback))
           // 给系统一点时间把通知摆出来，再让安装器接手退出。
           await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           if (lifecycle.isSystemShuttingDown) {
@@ -2912,7 +2924,7 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
-        const prompt = quitInstallPrompt(update.version, installMethod, process.platform)
+        const prompt = quitInstallPrompt(update.version, installMethod, process.platform, update.rollback)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具',
           message: prompt.message,

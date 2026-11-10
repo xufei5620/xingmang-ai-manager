@@ -104,6 +104,7 @@
 - `remote-features.ts` — 远程关功能（`service-status.ts` 的 `featuresOff`，商业级差距 G04）能关的名单和关掉后那几句话：视频剪辑、手机遥控、Mac 闲时装、托盘省内存、网络加速的新连接、Codex 桌面端中文补丁、每个工具的安装和打开。名单写死，状态文件只能挑几样关、打不开任何东西。它进渲染包，不许依赖 node 或 electron（I6）
 - `remote-feature-gate.ts` — 主进程这头的开关：跟着更新快照里的 `featuresOff` 走，点了才做的事用 `assertOn`（状态文件第一次没读完时最多等 2 秒）、同步的 IPC 处理器套 `runWhenOn`，后台的事用 `isOff`；`main.ts` 组装，接进安装、打开、视频、加速、手机遥控、闲时装、托盘省内存
 - `release-guard-store.ts` — 把最近一次读成功的撤回名单和放量比例记到本地 `release-guard.json`（#1055），开机先用它。不记最低版本。读回来的内容用状态文件同一个解析器重新校验
+- `service-switches-store.ts` — 把最近一次读成功的远程关功能、已知问题提示、充值方式开关记到本地 `service-switches.json`（D83，深查 RC-06），重开软件时状态文件还没读到、或者读不到，先用它；一样都没写的那次记成空的。记的是没筛过的原样，用的时候按这一版、这种安装包再筛。读回来的内容用状态文件同一个解析器重新校验
 
 ## 星芒 AI 技能与画图 MCP
 - `xingmang-ai-skill.ts` — 生图技能（文件夹和技能名都叫 `images`，0.2.20 及以前叫「星芒AI」），管这几件事：

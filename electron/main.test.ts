@@ -352,6 +352,26 @@ describe('main process application protocol', () => {
   })
 })
 
+describe('main process external links', () => {
+  it('lets both ways out of a failed Claude Desktop install through the external link allowlist', () => {
+    // 外链白名单是全等匹配（I12）：漏了这一条，错误框里的「下载离线安装包」点了只会报不允许打开（D64）。
+    const { source } = mainSource()
+    const entries: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'nonSiteExternalUrlAllowlist' && node.initializer) {
+        const list = ts.isAsExpression(node.initializer) ? node.initializer.expression : node.initializer
+        if (ts.isArrayLiteralExpression(list)) entries.push(...list.elements.map((element) => element.getText(source)))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
+    // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
+    expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
+    expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
+  })
+})
+
 describe('main process startup order', () => {
   it('starts the subsystems in the order they depend on each other', () => {
     // 启动回调里直接跑的语句按源码先后执行（中间的 await 也是一句等完再走下一句），所以这里的先后就是启动时的先后。
@@ -477,12 +497,13 @@ describe('main process startup order', () => {
 
   it('picks the update feed before it builds the updater, and reads service status once the updater exists', () => {
     // 包里那份还是直连那份更新目录开机就定（签名校验也在这时装上）；更新服务要等版本记录读好才建，
-    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。
+    // 服务状态文件读到的结果要交给它，所以监视器建在它后面。记在本地的远程开关在第一次读之前就摆上（D83），
+    // 开机头几秒点的那一下也照它拦。
     const { source } = parseWiringFile(path.join(__dirname, 'bootstrap', 'updates.ts'))
     const feed = moduleFunction(source, 'createUpdateFeed')
     const orders: Array<[ts.FunctionDeclaration, string[]]> = [
       [feed, ['installStrictUpdateCodeSignatureVerifier', 'locateDirectUpdateFeed', 'useUpdateFeedLine']],
-      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
+      [innerFunction(feed, 'createUpdater'), ['createUpdateRequestGuard', 'createUpdaterService', 'updaterService.restoreServiceSwitches', 'createServiceStatusMonitor', 'serviceStatusMonitor?.start']],
     ]
     for (const [owner, order] of orders) {
       const calls = directCallPositions(source, owner, order)
