@@ -21,7 +21,8 @@ describe('external client lifecycle presentation', () => {
     expect(value.action).toBe('launch')
     expect(value.ready).toBe(true)
     expect(value.configurationStatus).toBe('unknownSource')
-    expect(value.detail).toContain('已有第三方配置')
+    expect(value.detail).toContain('用的是别家的设置')
+    expect(value.detail).not.toContain('还没填完')
   })
   it('shows a complete manual Claude configuration as ready without associating an account', () => {
     const value = present({ tool: 'claudeDesktop', installed: true, configurationSource: 'other', configurationReady: true })
@@ -42,7 +43,7 @@ describe('external client lifecycle presentation', () => {
   it('does not mark an incomplete or unreadable Claude configuration as ready', () => {
     const value = present({ tool: 'claudeDesktop', installed: true, configurationSource: 'other', configurationReady: false })
     expect(value).toMatchObject({ ready: false, action: 'configure', configurationStatus: 'unconfigured' })
-    expect(value.detail).toContain('配置待完善')
+    expect(value.detail).toContain('用的是别家的设置，还没填完')
     expect(present({ tool: 'claudeDesktop', installed: true, configured: true, configurationReady: true, configurationError: 'config denied' }))
       .toMatchObject({ ready: false, action: 'configure', configurationStatus: 'unconfigured', detail: 'config denied' })
   })

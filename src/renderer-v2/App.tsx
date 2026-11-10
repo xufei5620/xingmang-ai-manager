@@ -460,7 +460,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), installUpdate: openInstallConfirm, openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen((current) => !current), openNotifications: () => navigate('updates'),
             startCheck,
             ...(toggleTheme ? { toggleTheme } : {}),
-            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
+            logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
@@ -625,7 +625,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button onClick={() => setStoreNewerVersion(null)}>先不用</Button>
       <Button variant="primary" testId="codex-desktop-store-newer-open" onClick={() => { setStoreNewerVersion(null); void perform('打开微软商店', openCodexDesktopStore) }}>去微软商店装</Button>
     </>}><p>国内下载线路还没跟上，这台电脑上的 Codex 桌面端这次没有变。微软商店里已经有 {storeNewerVersion}，想用最新版就去商店点「更新」或「获取」。</p></Dialog>}
-    {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} cleanUp={(tool) => toolsApi.cleanUninstallLeftovers(tool)} />}
+    {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} cleanUp={(tool) => toolsApi.cleanUninstallLeftovers(tool)} onHelp={() => setHelp(true)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<>
       <Button onClick={() => setAccountReadError(null)}>返回</Button>
       {accountReadErrorAction(accountReadError.message) === 'relogin'
@@ -640,11 +640,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>先不用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>
     </>}><p>{switchRestartOffer === 'official' ? '它还在用刚才的账号，要重开才会换回官方账号。' : '它还在用刚才的账号，要重开才会用上当前账号。'}重开会打断它正在进行的回答。</p></Dialog>}
-    {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+    {restartDialog && <Dialog open title="Codex 桌面端还开着" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
-      <Button onClick={() => void perform('重启 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重启 Codex</Button>
+      <Button onClick={() => void perform('重开 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重开 Codex</Button>
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>
-    </>}><p>可以直接打开现有窗口；需要重新加载配置时，选择重启 Codex。</p></Dialog>}
+    </>}><p>可以直接切到开着的窗口。刚改过配置的话，点「重开 Codex」才会用上。</p></Dialog>}
     {/* 显示中文要在本机开一个调试端口（早先审查标过的安全点），所以仍然问一次、不替用户默认开。
         两个按钮同等样式，键盘焦点落在「先不用」：随手一按回车不会开端口，想要中文的人点一下就行。
         Codex 的中文开关每次启动时才拿，只有星芒打开的那一下连了加速、开了通道，开机后直接点 Codex 自己的图标还是英文，
@@ -652,7 +652,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {chineseDialog && <Dialog open title="要让 Codex 的界面显示中文吗？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} initialFocus={chineseDecline} footer={<>
       <Button ref={chineseDecline} testId="codex-chinese-decline" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>先不用</Button>
       <Button testId="codex-chinese-enable" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>显示中文</Button>
-    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个本机通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
+    </>}><p>选「显示中文」后，星芒每次打开 Codex 时会顺带开一个本机通道，用来把界面换成中文；关掉 Codex，通道也跟着关上。通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。</p>
       <p>不用也没关系，Codex 照样能用，只是界面是英文。只问这一次，以后想改，随时可以在 Codex 桌面端的配置里打开或关掉。</p></Dialog>}
     {/* 默认模型换不换由用户点，不替付费客户自动换（第十二批候选 5、第十五批 6）；关掉对话框 = 这次先不打开。 */}
     {modelSwap && <Dialog open title={modelSwapTitle(modelSwap.offer)} onClose={() => modelSwap.answer('cancel')} footer={<>
