@@ -125,7 +125,7 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
   features: {
     quote: true,
     accountSummary: true,
-    imageEditMask: false,
+    imageEditMask: true,
     textGenerate: false,
     textWebSearch: false,
     imageTools: false,

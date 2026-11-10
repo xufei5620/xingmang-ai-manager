@@ -1635,9 +1635,28 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
           ($pidFamilies[[int]$_.Process.ParentProcessId] -ne $_.PackageFamilyName)
       })`
     : '$toCheck = $candidates'
+  // Where an application-control policy holds PowerShell to ConstrainedLanguage,
+  // the two .NET calls that name this user and session are refused, the whole
+  // segment fails, and the home page could never say 「正在运行」 there
+  // (2026-11-10 customer machine). WMI answers both questions about this very
+  // PowerShell process instead: GetOwnerSid is the same call every candidate's
+  // owner is read with below, so the comparison stays like for like. FullLanguage
+  // keeps the .NET lines untouched. Without a SID the segment fails rather than
+  // compare against nothing: unknown ownership must never become a taskkill
+  // target. The candidate and result objects are hashtables because
+  // ConstrainedLanguage refuses [pscustomobject]@{}; the result keeps its key
+  // order with [ordered], so ConvertTo-Json writes the same JSON as before.
   return String.raw`& {
-    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {
+      $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    } else {
+      $selfProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+      $selfOwner = Invoke-CimMethod -InputObject $selfProcess -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+      $currentSid = if ($null -ne $selfOwner -and $selfOwner.ReturnValue -eq 0) { [string]$selfOwner.Sid } else { $null }
+      $currentSessionId = $selfProcess.SessionId
+      if (-not $currentSid -or $null -eq $currentSessionId) { throw 'Codex desktop process probe: WMI did not name the owner and session of this PowerShell process' }
+    }
     $targetIds = ${targetIds}
     $candidates = @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId${nameFilter}" | ForEach-Object {
       $path = [string]$_.ExecutablePath
@@ -1652,7 +1671,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
       $package = [regex]::Match($path, '(?i)\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__(?<publisher>[A-Za-z0-9.]+)\\')
       if ($package.Success -and $null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and ($null -eq $targetIds -or ($targetIds -contains [int]$_.ProcessId))) {
         $packageFamilyName = $package.Groups['name'].Value + '_' + $package.Groups['publisher'].Value
-        [pscustomobject]@{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
+        @{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
       }
     })
     ${ownerTargets}
@@ -1664,7 +1683,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
         try { $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop } catch {}
         # Unknown ownership must never become a taskkill target.
         if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and $owner.Sid -eq $currentSid) {
-          [pscustomobject]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
+          [ordered]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
         }
       }
     })

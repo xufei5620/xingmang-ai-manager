@@ -108,6 +108,10 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       seconds: input.node.data.seconds,
       adoptedAssetId: adoptedAssetIdForFingerprint(input.node),
       ...generationParametersForFingerprint(input.node),
+      // Absent on every node that ran before masks, so their keys stay as
+      // they were; a masked edit never reuses a plain edit's image, or the
+      // other way round, and a new stroke is a new request.
+      imageEditMask: input.node.data.imageEditMask,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -156,6 +160,7 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         videoAspectRatio: node.data.videoAspectRatio,
         promptOptimization: node.data.promptOptimization,
         imageCandidateCount: node.data.imageCandidateCount,
+        imageEditMask: node.data.imageEditMask,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges

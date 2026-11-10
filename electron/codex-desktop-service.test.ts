@@ -1412,6 +1412,42 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('$owner.Sid -eq $currentSid')
     expect(script).toContain('$_.SessionId -eq $currentSessionId')
     expect(script).toContain('PackageFamilyName = $packageFamilyName')
+    // Same fields in the same order as the [pscustomobject] it replaced, so
+    // ConvertTo-Json writes the same JSON in FullLanguage.
+    expect(script).toContain('[ordered]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }')
+  })
+
+  it('names this user and session through WMI where PowerShell is held to ConstrainedLanguage', () => {
+    // 应用控制策略开着的电脑上，WindowsIdentity 和 Process 这两句 .NET 调用被拒，查进程那段整段失败，
+    // 首页认不出「正在运行」（2026-11-10 客户电脑）。受限模式下改问 WMI 这个 PowerShell 进程自己是谁、
+    // 在哪个会话；FullLanguage 照旧走原来那两句。
+    const fullLanguageBranch = /if \(\$ExecutionContext\.SessionState\.LanguageMode -eq 'FullLanguage'\) \{[^}]*\}/g
+    for (const script of [
+      buildCodexDesktopProcessProbeScript('roots'),
+      buildCodexDesktopProcessProbeScript('all', new Set([101])),
+      buildCodexDesktopCombinedProbeScript(),
+    ]) {
+      const scan = scanPowerShell(script)
+      expect(scan.unterminated).toBe(false)
+      expect(unbalancedBracket(scan.code)).toBeNull()
+      const branches = script.match(fullLanguageBranch) ?? []
+      expect(branches.some((branch) => (
+        branch.includes('$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+        && branch.includes('$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId')
+      ))).toBe(true)
+      const constrained = script.replace(fullLanguageBranch, '')
+      expect(constrained).toContain('Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop')
+      expect(constrained).toContain('Invoke-CimMethod -InputObject $selfProcess -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop')
+      expect(constrained).toContain('$selfOwner.ReturnValue -eq 0) { [string]$selfOwner.Sid }')
+      expect(constrained).toContain('$currentSessionId = $selfProcess.SessionId')
+      // Without our own SID, `$owner.Sid -eq $currentSid` must not get to compare against nothing.
+      expect(constrained).toContain('if (-not $currentSid -or $null -eq $currentSessionId) { throw ')
+      // What ConstrainedLanguage refuses is left only inside the FullLanguage branches:
+      // .NET types other than [regex], and the hashtable-to-object conversion.
+      expect(constrained).not.toContain('[pscustomobject]')
+      expect(constrained).not.toContain('[System.')
+      expect(constrained.replace(/\[regex\]::Match\(/g, '')).not.toContain('::')
+    }
   })
 
   it('keeps status and launch scans quiet when the process check fails', async () => {
@@ -1513,8 +1549,8 @@ describe('Codex Desktop Appx probe script', () => {
   it('lets the merged and package probes finish where PowerShell is held to ConstrainedLanguage', () => {
     // 应用控制策略（WDAC、AppLocker 一类）开着的电脑上，-Command 跑在受限语言模式里：
     // [pscustomobject]@{} 被拒，最后一句一失败整条就按退出码 1 退回，装着的 Codex 桌面端次次
-    // 显示检测失败（2026-11-10 客户电脑）。查进程那段在受限模式下本来就查不到，自己 try/catch，
-    // 不影响别的段；查包和最后输出这两处不能碰被拒的写法。
+    // 显示检测失败（2026-11-10 客户电脑）。查包和最后输出这两处不能碰被拒的写法；查进程那段
+    // 见上面 names this user and session through WMI 那条。
     const combined = buildCodexDesktopCombinedProbeScript()
     const packageProbe = buildCodexDesktopPackageProbeScript()
     for (const script of [combined, packageProbe]) {
