@@ -17,10 +17,16 @@ function appendEvent(events: readonly CanvasRunEvent[], event: CanvasRunEvent): 
   return [...events, structuredClone(event)].slice(-canvasRunTimelineLimit)
 }
 
+// A host may push event types this kernel does not know on the same channel
+// (the desktop's 实扣 arrives as 'run-charge'). Folded in below as if it were a
+// terminal event, one would wipe the run's status and outcome.
+const mergeableEventTypes = new Set<string>(['node-state', 'node-stage', 'run-waiting', 'run-terminal'])
+
 export function mergeCanvasRunEvent(
   records: readonly CanvasRunRecord[],
   event: CanvasRunEvent,
 ): CanvasRunRecord[] {
+  if (!mergeableEventTypes.has(event.type)) return [...records]
   return records.map((record) => {
     if (record.runId !== event.runId || record.graphRevision !== event.graphRevision) return record
     const events = appendEvent(record.events, event)

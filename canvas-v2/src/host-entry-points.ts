@@ -31,11 +31,15 @@ export interface CanvasHostEntryPoints {
   projectFolderRelink: boolean
   /** "Delete" on an archived project; the host confirms with the user itself. */
   projectDelete: boolean
+  /** The balance chip in the toolbar: the host declared accountSummary and can answer getAccountSummary. */
+  accountSummary: boolean
+  /** 「预计约 $x」 in the run preflight: the host declared quote and can answer getPriceSnapshot. */
+  quote: boolean
 }
 
 type EntryPointMethods = Pick<CanvasHostBridge, 'getAssetDetail' | 'downloadAssets' | 'readAssetOrigin' | 'listRunHistory' | 'readRunHistory' | 'renderImageAnnotation' | 'readVideoForFramePreview'
   | 'listProjectHistory' | 'readProjectRevision' | 'restoreProjectRevision' | 'inspectProjectRestore' | 'previewProjectExport' | 'exportProjectPackage' | 'cancelProjectExport'
-  | 'createProjectInDefaultFolder' | 'relinkProjectFolder' | 'deleteProject'>
+  | 'createProjectInDefaultFolder' | 'relinkProjectFolder' | 'deleteProject' | 'getAccountSummary' | 'getPriceSnapshot'>
 
 export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profile: CanvasCapabilityProfile): CanvasHostEntryPoints {
   const assetDetail = typeof bridge.getAssetDetail === 'function'
@@ -54,6 +58,8 @@ export function canvasHostEntryPoints(bridge: Partial<EntryPointMethods>, profil
     projectDefaultFolder: typeof bridge.createProjectInDefaultFolder === 'function',
     projectFolderRelink: typeof bridge.relinkProjectFolder === 'function',
     projectDelete: typeof bridge.deleteProject === 'function',
+    accountSummary: profile.features.accountSummary && typeof bridge.getAccountSummary === 'function',
+    quote: profile.features.quote && typeof bridge.getPriceSnapshot === 'function',
   }
 }
 

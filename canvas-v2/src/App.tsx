@@ -77,6 +77,7 @@ import { buildLayerPsdGraph } from './image-tools/layer-psd-apply'
 import { assertLayerEditorScope, layerEditorScopeToken } from './image-tools/layer-editor-scope'
 import { collectGalleryCandidateAssetIds, currentNodeCandidates } from './runtime/current-batch-candidates'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { AccountBalanceChip } from './components/AccountBalanceChip'
 import { parsePromptReferences, type PromptReference } from './library/prompt-references'
 import { applyCanvasPromptDraft } from './editor/prompt-draft'
 import {
@@ -252,6 +253,7 @@ import { buildResourceTree, buildResourceExportWorkflow, resourceGroupSelectionI
 import { CanvasInspector, type CanvasInspectorNode, type CanvasInspectorTab } from './components/CanvasInspector'
 import { projectCanvasInspectorNodes } from './components/canvas-inspector-model'
 import { RunPreflight } from './components/RunPreflight'
+import { useCanvasRunQuote } from './components/run-quote'
 import { DramaParseConfirm } from './components/DramaParseConfirm'
 import type { DramaParseTables } from './library/drama-model'
 import type { DramaConfirmSelection } from './library/drama-layout'
@@ -324,6 +326,7 @@ import {
   type CanvasRunPreflight,
 } from './runtime/run-preflight'
 import { canvasRunStatusLabel, mergeCanvasRunEvent } from './runtime/run-events'
+import { latestCanvasNodeCharges, mergeCanvasRunChargeEvent } from './runtime/run-charge'
 import { matchingCanvasRunNodeIds, matchingRunRecordNodes } from './runtime/run-input-matching'
 import { sameCanvasMediaAsset } from './library/media-result'
 import {
@@ -1047,6 +1050,8 @@ function CanvasWorkspace({
   const { CanvasAgentPanel, ProjectCollaborationPanel, CanvasWorkshopLibraryDialog, SaveCanvasWorkshopDialog, WorkshopAssetPickerDialog, WorkshopModelMappingDialog, WorkshopSetupPanel, WorkshopContentRecoveryNotice, WorkshopCreationRecoveryNotice, VideoTaskRecovery } = slots
   // 宿主少了的方法、没开的能力，对应的入口不给（#4，见 host-entry-points.ts）。
   const hostEntryPoints = canvasHostEntryPoints(hostBridge(), canvasCapabilities())
+  // 运行结束一次加一，余额条跟着重新问宿主（第 2b 条）。
+  const [accountSummarySignal, setAccountSummarySignal] = useState(0)
   const [projectAccessState, setProjectAccessState] = useState(() => window.xingmangCanvasHost?.getProjectAccess?.() ?? null)
   const [activeProject, setActiveProject] = useState<CanvasStoredProjectSummary | null>(null)
   const projectEpochRef = useRef(0)
@@ -1404,6 +1409,8 @@ function CanvasWorkspace({
   const [inspectorTab, setInspectorTab] = useState<CanvasInspectorTab>('node')
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
   const [runPreflight, setRunPreflight] = useState<CanvasRunPreflight | null>(null)
+  // 运行前检查里的「预计约 $x」（第 2b 条第 2 步），宿主没有价目时是 null。
+  const runQuote = useCanvasRunQuote(runPreflight, hostEntryPoints.quote)
   const [dramaParseConfirm, setDramaParseConfirm] = useState<{ nodeId: string; tables: DramaParseTables } | null>(null)
   const [pendingCanvasRun, setPendingCanvasRun] = useState<{ graph: CanvasRunGraph; scope: CanvasRunScope; outputPlacement?: { nodeId: string; editorScope: string }; agentExecution?: { origin: CanvasAgentExecutionOrigin; scopeKey: string; label: string } } | null>(null)
   const [agentExecutionRefreshKey, setAgentExecutionRefreshKey] = useState(0)
@@ -3574,6 +3581,11 @@ function CanvasWorkspace({
   }, [closeInspector, inspectorTab, openInspectorTab, runInspectorOpen])
 
   useEffect(() => hostBridge().onRunEvent((event) => {
+    if (event.type === 'run-charge') {
+      // 实扣在运行结束几秒后才到，那时这次运行早已不算进行中：只并进运行记录，不碰画布上的节点。
+      setRunRecords((current) => mergeCanvasRunChargeEvent(current, event))
+      return
+    }
     const active = activeRunsRef.current.get(event.runId)
     if (!active || event.graphRevision !== active.graphRevision || (active.projectId && active.projectId !== activeProjectIdRef.current)) return
     const submitted = runInputGraphsRef.current.get(event.runId)
@@ -3633,6 +3645,7 @@ function CanvasWorkspace({
       }
       void refreshAssets()
       void refreshRuns(event.runId)
+      setAccountSummarySignal((signal) => signal + 1)
     }
   }), [confirmedRunGroups, forgetActiveRun, patchNodeData, refreshAssets, refreshRuns, assetQuery])
 
@@ -8607,6 +8620,7 @@ function CanvasWorkspace({
     () => projectCanvasInspectorNodes(nodes, edges),
     [edges, nodes],
   )
+  const inspectorNodeCharges = useMemo(() => latestCanvasNodeCharges(runRecords), [runRecords])
   const inspectorShown = !focusMode && !agentOpen && (
     (inspectorTab === 'node' && nodeInspectorOpen && selectedInspectorNodes.length > 0)
     || (inspectorTab === 'assets' && assetTrayOpen)
@@ -8936,6 +8950,7 @@ function CanvasWorkspace({
             aria-pressed={focusMode}
             onClick={() => setFocusMode((current) => !current)}
           ><PanelRight size={15} /></button>
+          {hostEntryPoints.accountSummary && <AccountBalanceChip refreshSignal={accountSummarySignal} />}
           {projectCanRun && <MediaConfiguration
             open={mediaConfigOpen}
             groups={groups}
@@ -9392,6 +9407,7 @@ function CanvasWorkspace({
           canRun={projectCanRun}
           tab={inspectorTab}
           nodes={selectedInspectorNodes}
+          nodeCharges={inspectorNodeCharges}
           imageModels={imageModels}
           videoModels={videoModels}
           textModels={textModels}
@@ -9547,6 +9563,7 @@ function CanvasWorkspace({
         <RunPreflight
           preflight={runPreflight}
           groups={groups}
+          quote={runQuote}
           agentRequestLabel={pendingCanvasRun?.agentExecution?.label}
           onCancel={() => { setRunPreflight(null); setPendingCanvasRun(null) }}
           onConfigure={() => {

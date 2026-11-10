@@ -372,6 +372,34 @@ export type CanvasRunEvent = CanvasRunEventBase & (
   }
 )
 
+/**
+ * 跑完以后宿主对出来的实扣（桌面仓画布完善第 2b 条第 3 步）：宿主到这个账号自己的用量记录里按请求号
+ * 对出每次尝试扣了多少，运行结束几秒后单独推一次。不进 `events`，老宿主不推，老内核收到也不认。
+ */
+export interface CanvasRunAttemptCharge {
+  /** settled：这次尝试发出去的请求都对上了；unmatched：有没对上的，写「待核对」。 */
+  state: 'settled' | 'unmatched'
+  /** 对上的那几笔一共多少美元；没扣就是 0。 */
+  usd: number
+  /** 站点事后还可能退补（视频）。 */
+  approximate?: true
+}
+
+export interface CanvasRunCharge {
+  state: 'settled' | 'unmatched'
+  usd: number
+  /** 没对上的付费尝试有几次。 */
+  unmatchedAttempts: number
+  approximate?: true
+  checkedAt: string
+}
+
+export interface CanvasRunChargeEvent extends CanvasRunEventBase {
+  type: 'run-charge'
+  charge: CanvasRunCharge
+  attempts: Array<{ nodeId: string; attemptId: string; charge: CanvasRunAttemptCharge }>
+}
+
 export type CanvasRunNodeState =
   | 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed'
   | 'skipped' | 'cancelled' | 'cached' | 'interrupted'
@@ -472,9 +500,13 @@ export interface CanvasRunRecord {
       model?: string
       /** Owner-scoped durable job ID, never an upstream task identifier. */
       videoTaskId?: string
+      /** The host's settled charge for this attempt; desktop only, filled a few seconds after the run. */
+      charge?: CanvasRunAttemptCharge
     }>
   }>
   events: CanvasRunEvent[]
+  /** The host's settled charge for the whole run; desktop only, filled a few seconds after the run. */
+  charge?: CanvasRunCharge
 }
 
 export interface CanvasProjectPreview {
@@ -508,6 +540,46 @@ export interface CanvasProjectDeleteResult {
   projectId: string
   /** The host moved the project folder to the system trash; otherwise every file stays where it was. */
   folderMovedToTrash: boolean
+}
+
+/**
+ * What the balance chip shows. The host builds it from the account it already
+ * knows about and never puts an email, a user id or a token in it.
+ */
+export interface CanvasAccountSummary {
+  /** Which account this is, in the words the host uses to customers (desktop: 星芒账号 / 历史账号). */
+  siteLabel: string
+  /** A display name the host already masked; null when it has nothing to show. */
+  accountLabel: string | null
+  /** Balance in US dollars, the unit the desktop main window shows. Null while the host has not read it. */
+  balanceUsd: number | null
+  /** One line about a usable subscription, written by the host; null or missing when there is none. */
+  subscriptionLabel?: string | null
+  /** When the host read the balance (ISO time); null while it has not. */
+  readAt: string | null
+}
+
+/** One model's price for one generation, before the group ratio. */
+export interface CanvasModelPrice {
+  /** US dollars at ratio 1. */
+  usd: number
+  /** The host's estimate rather than the exact charge (the charge depends on what the request ends up producing). */
+  approximate?: boolean
+}
+
+/**
+ * What the run preflight prices with. The host fills it from its own price
+ * list; the kernel multiplies and never sends the result anywhere. Models the
+ * host cannot price per generation (priced by tokens, say) are left out and
+ * show as 价格未知.
+ */
+export interface CanvasPriceSnapshot {
+  /** By model name. */
+  models: Record<string, CanvasModelPrice>
+  /** The ratio this account pays in each group, by group name. */
+  groupRatios: Record<string, number>
+  /** When the host read its price list (ISO time). */
+  readAt: string
 }
 
 export interface CanvasStoredProjectSummary {
@@ -748,6 +820,17 @@ export interface CanvasHostBridge {
    * the user cancels.
    */
   deleteProject?(projectId: string): Promise<CanvasProjectDeleteResult | null>
+  /**
+   * The account the canvas spends from and its balance, for the balance chip.
+   * Read-only and without arguments; null while nobody is signed in. Hosts may
+   * answer from a recent read instead of asking their server every time.
+   */
+  getAccountSummary?(): Promise<CanvasAccountSummary | null>
+  /**
+   * The price list for 「预计约 $x」 in the run preflight. Read-only and without
+   * arguments; null when the host cannot price this account at all.
+   */
+  getPriceSnapshot?(): Promise<CanvasPriceSnapshot | null>
   createTemplateProject?(input: { operationId: string; content: string }): Promise<{ project: CanvasStoredProjectSummary; content: string }>
   inspectProjectCreation?(input: { operationId: string; creationDigest: string }): Promise<CanvasProjectCreationReceipt>
   openProject(projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> }>
@@ -760,7 +843,7 @@ export interface CanvasHostBridge {
   duplicateProject(projectId: string, name: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> } | null>
   setProjectArchived(projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary>
   onAccountChange(listener: (change: CanvasAccountChange) => void): () => void
-  onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
+  onRunEvent(listener: (event: CanvasRunEvent | CanvasRunChargeEvent) => void): () => void
   onThemeChange(listener: (theme: 'light' | 'dark') => void): () => void
   onAppearanceChange(listener: (appearance: CanvasAppearance) => void): () => void
   onCloseRequested(listener: (request: { requestId: string }) => void): () => void
