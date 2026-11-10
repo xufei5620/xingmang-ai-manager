@@ -2,6 +2,7 @@ const {
   resolveUpdateUrlForVersion,
   normalizeUpdateBaseUrl,
 } = require('./scripts/update-release-utils.cjs')
+const fs = require('node:fs')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const { Arch } = require('builder-util')
@@ -10,12 +11,20 @@ const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = req
 const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs')
 const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-checksums.cjs')
 const { buildReleaseCopyright } = require('./scripts/release-copyright.cjs')
+const { feedReleaseNotes } = require('./scripts/extract-release-notes.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
   const rawUrl = process.env.XINGMANG_UPDATE_URL?.trim() || resolveUpdateUrlForVersion(packageVersion)
   const allowsLocalHttp = process.env.XINGMANG_UPDATE_DEV === '1'
   return normalizeUpdateBaseUrl(rawUrl, { allowLocalHttp: allowsLocalHttp })
+}
+
+// 更新清单里的说明只带这一版那一节，为什么见 scripts/extract-release-notes.cjs 的 feedReleaseNotes。
+// 首节对不上这一版（测试包临时调高了版本号）才照原来把整份文件交给 electron-builder。
+function resolveReleaseInfo() {
+  const releaseNotes = feedReleaseNotes(fs.readFileSync(path.join(__dirname, 'release-notes.md'), 'utf8'), packageVersion)
+  return releaseNotes ? { releaseNotes } : { releaseNotesFile: 'release-notes.md' }
 }
 
 const outputDirectory = process.env.XINGMANG_OUTPUT_DIR?.trim() || 'release'
@@ -315,9 +324,7 @@ module.exports = {
     // unsigned update, with no way back short of a manual reinstall.
     ...(releaseMode ? { publisherName: [updatePublisher] } : {}),
   },
-  releaseInfo: {
-    releaseNotesFile: 'release-notes.md',
-  },
+  releaseInfo: resolveReleaseInfo(),
   forceCodeSigning: publicReleaseMode,
   mac: {
     ...(accelerationBundle.metadata?.version === 2 ? {
