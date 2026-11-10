@@ -121,7 +121,7 @@
 - `ai-asset-index.ts` — 枚举一个账号的全部素材文件而不读任何媒体字节，替代以前"读全文件、最多 500 条"的做法，让搜索和排序面对的是完整结果、只为当前页补元数据
 - `ai-asset-locator.ts` — 按编号找作品在哪个日期文件夹：先问记下的位置（存入、找到过、索引列出的），没有再从最新的日期往回、每个候选一次异步 lstat；只答「在哪」，打开文件前的 I8 全套检查仍由各 store 做
 - `ai-asset-metadata-store.ts` — 素材的逻辑元数据（显示名、收藏、标签、最近使用、来源、生成时的提示词、回收站），每个账号文件夹下 `asset-metadata/` 里按作品编号分 16 个分片（0.2.24 起；之前是单个 `asset-metadata.json`，2 MB / 5,000 条就写满，第一次用到时并进分片、原样改名留作 `.migrated-*.bak` 备份），每片 16 MB，加新信息的写入给回收站留出余量；删除是逻辑删除
-- `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）
+- `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）。`readOwnedDetail` 按同一套读法读一条（回收站里的也读），给画布的 `canvas-host:get-asset-detail`（批量加入画布、核对蒙版和成品前先读一遍），有种类提示就只翻那一个仓库的索引
 - `ai-asset-protocol.ts` — `xingmang-asset://` 协议处理（image / video / audio / thumb）：每次都在最后一次 await 之后重新核对当前账号再返回，响应 `no-store`，支持单段 Range；视频的 Range 只读要的那一段、一次最多回 8 MB（`maximumVideoRangeBytes`，`AiVideoAssetStore.readOwnedRange` 先照整读那套核对文件，0.2.24 深查 P-3），图片和音频照旧整份读再切；主窗口（聊天图片、视频剪辑看片）和画布都靠它显示素材，CSP 只放行这个 scheme
 - `ai-output-location.ts` — AI 作品保存位置：安装版放「文档/XingmangAI」，「文档」被云盘同步或不让写时改用主目录下的 XingmangAI（`chooseAiOutputRoot`，试写与权限判定在 `documents-fallback.ts`），开发环境用项目下的 output；启动时把老版本放在安装目录旁 output 里的作品搬过来、合并元数据
 - `ai-operation-lifecycle.ts` / `ai-operation-progress.ts` — AI 操作的观察钩子：开始/结束回调（用量统计用，观察失败绝不影响生成结果）与处理中/下载中/保存中的进度阶段，以及画布对实扣用的「真发出去没有、回答带的请求号」

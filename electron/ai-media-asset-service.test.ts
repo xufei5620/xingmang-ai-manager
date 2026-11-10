@@ -86,6 +86,56 @@ describe('createAiMediaAssetService', () => {
     await expect(service.readOwned(7, audioId, 'audio')).resolves.toMatchObject({ bytes: Buffer.from('audio') })
   })
 
+  it('reads one asset as a library page lists it, from the bin too, reading a video once', async () => {
+    const imageId = 'a'.repeat(43)
+    const videoId = 'b'.repeat(43)
+    const images = {
+      listOwnedIndex: vi.fn(async () => [indexEntry(imageId, 'image.png', '2026-08-14T00:00:00.000Z', 'image' as const)]),
+      readOwned: vi.fn(async () => ({
+        asset: { assetId: imageId, localUrl: `xingmang-asset://image/${imageId}`, mimeType: 'image/png' as const, fileName: 'image.png', width: 64, height: 32 },
+        bytes: Buffer.from('image'),
+      })),
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const videos = {
+      listOwnedIndex: vi.fn(async () => [indexEntry(videoId, 'video.mp4', '2026-08-14T00:01:00.000Z', 'video' as const)]),
+      readOwned: vi.fn(async () => ({
+        asset: { assetId: videoId, localUrl: `xingmang-asset://video/${videoId}`, mimeType: 'video/mp4' as const, fileName: 'video.mp4', width: 320, height: 180, durationSeconds: 4 },
+        bytes: Buffer.from('video'),
+      })),
+      saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const metadata = metadataStore({ getAll: vi.fn(async () => ({
+      [imageId]: { displayName: '回收的图', favorite: true, tags: ['猫'], source: 'imported', deletedAt: '2026-08-15T00:00:00.000Z' },
+      [videoId]: { displayName: '片段', source: 'generated', prompt: '海边' },
+    })) })
+    const service = createAiMediaAssetService({ images: images as never, videos: videos as never, metadata, trashItem })
+
+    await expect(service.readOwnedDetail(7, imageId)).resolves.toEqual({
+      assetId: imageId, localUrl: `xingmang-asset://image/${imageId}`, mimeType: 'image/png', fileName: 'image.png', width: 64, height: 32,
+      createdAt: '2026-08-14T00:00:00.000Z', mediaType: 'image', thumbnailUrl: expect.stringContaining(imageId),
+      displayName: '回收的图', favorite: true, tags: ['猫'], source: 'imported', deletedAt: '2026-08-15T00:00:00.000Z',
+    })
+    // The page lists the same picture only in the bin view.
+    expect((await service.listOwnedPage(7)).items.map((item) => item.assetId)).toEqual([videoId])
+    const video = await service.readOwnedDetail(7, videoId)
+    expect(video).toMatchObject({ mediaType: 'video', displayName: '片段', source: 'generated', prompt: '海边', durationSeconds: 4 })
+    expect(video).not.toHaveProperty('deletedAt')
+    expect(videos.readOwned).toHaveBeenCalledTimes(2)
+    videos.readOwned.mockClear()
+    images.listOwnedIndex.mockClear()
+    await service.readOwnedDetail(7, videoId)
+    expect(videos.readOwned).toHaveBeenCalledTimes(1)
+    expect(images.readOwned).toHaveBeenCalledTimes(1)
+    // A known video is looked up in the video index alone.
+    expect(images.listOwnedIndex).not.toHaveBeenCalled()
+
+    await expect(service.readOwnedDetail(7, 'c'.repeat(43))).rejects.toThrow('AI 素材不存在或无权访问')
+    // Indexed but no longer readable: refused, like a page leaves it out.
+    videos.readOwned.mockRejectedValueOnce(new Error('文件损坏'))
+    await expect(service.readOwnedDetail(7, videoId)).rejects.toThrow('AI 素材不存在或无权访问')
+  })
+
   it('searches, sorts and counts across the whole library instead of an arbitrary prefix', async () => {
     // The library used to be truncated to 500 fully decoded assets before any
     // filter ran, so a match past that point was invisible and `total` reported

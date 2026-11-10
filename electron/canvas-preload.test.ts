@@ -123,6 +123,13 @@ describe('canvas sandbox preload', () => {
     ])
   })
 
+  it('reads one asset by its id alone and leaves the kernel signal behind', async () => {
+    const invoke = vi.fn(async () => ({ assetId: 'a'.repeat(43) }))
+    const bridge = loadCanvasBridge(invoke)
+    await expect(bridge.getAssetDetail('a'.repeat(43), new AbortController().signal)).resolves.toEqual({ assetId: 'a'.repeat(43) })
+    expect(invoke.mock.calls).toEqual([['canvas-host:get-asset-detail', 'a'.repeat(43)]])
+  })
+
   it('sends a dropped file by its path and a picture the page drew by its bytes alone', async () => {
     const invoke = vi.fn(async (..._args: unknown[]) => ({ assetId: 'a' }))
     const dropped = { name: 'cat.png', type: 'image/png', size: 4, arrayBuffer: vi.fn() }

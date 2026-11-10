@@ -122,6 +122,7 @@ import {
   canvasHostResumeVideoTaskChannel,
   canvasHostListGroupsChannel,
   canvasHostListAssetsChannel,
+  canvasHostGetAssetDetailChannel,
   canvasHostListProjectsChannel,
   canvasHostMarkAssetUsedChannel,
   canvasHostListPromptPresetsChannel,
@@ -351,6 +352,7 @@ describe('createCanvasWindowController', () => {
       canvasHostGenerateVideoChannel,
       canvasHostResumeVideoTaskChannel,
       canvasHostListAssetsChannel,
+      canvasHostGetAssetDetailChannel,
       canvasHostMarkAssetUsedChannel,
       canvasHostListProjectsChannel,
       canvasHostListPromptPresetsChannel,
@@ -1406,6 +1408,53 @@ describe('createCanvasWindowController', () => {
     expect(completePreparation).toHaveBeenCalledTimes(1)
   })
 
+  it('reads one asset from the library the canvas lists, with its lineage, for the account that asked', async () => {
+    let activeUserId = 7
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '抽帧项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const row = (assetId: string) => ({ assetId, localUrl: `xingmang-asset://image/${assetId}`, mediaType: 'image', displayName: '一帧', source: 'imported' })
+    const lineage = { runId: 'run-1', nodeId: 'frame', attemptId: 'attempt-1' }
+    let releaseLateRead!: () => void
+    const folder = {
+      media: {
+        readOwnedDetail: vi.fn(async (_userId: number, assetId: string) => {
+          if (assetId === 'Q'.repeat(43)) await new Promise<void>((resolve) => { releaseLateRead = resolve })
+          return row(assetId)
+        }),
+      },
+    }
+    const mediaAssets = { readOwnedDetail: vi.fn(async (_userId: number, assetId: string) => row(assetId)) }
+    const getAssetLineage = vi.fn(async (_userId: number, assetIds: string[]) => (assetIds[0] === 'L'.repeat(43) ? { [assetIds[0]]: lineage } : {}))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => folder), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+      canvasRuns: { ...controllerOptions().canvasRuns, getAssetLineage } as never,
+    }))
+    await controller.open()
+    const detail = electronMocks.handlers.get(canvasHostGetAssetDetailChannel)!
+
+    // Like listAssets: no open project, no library to read from.
+    await expect(detail(trustedEvent(), 'L'.repeat(43))).rejects.toThrow('请先选择或新建一个画布项目')
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await expect(detail(trustedEvent(), 'L'.repeat(43))).resolves.toEqual({ ...row('L'.repeat(43)), lineage })
+    await expect(detail(trustedEvent(), 'P'.repeat(43))).resolves.toEqual(row('P'.repeat(43)))
+    expect(folder.media.readOwnedDetail).toHaveBeenCalledWith(7, 'L'.repeat(43))
+    expect(getAssetLineage).toHaveBeenCalledWith(7, ['L'.repeat(43)])
+
+    // An answer that lands after an account switch is dropped.
+    const pending = detail(trustedEvent(), 'Q'.repeat(43))
+    await vi.waitFor(() => expect(folder.media.readOwnedDetail).toHaveBeenCalledWith(7, 'Q'.repeat(43)))
+    activeUserId = 9
+    controller.setAccountUser(9)
+    releaseLateRead()
+    await expect(pending).rejects.toThrow('账号已切换')
+    // The open project's library answered every read; the account-wide one never did.
+    expect(mediaAssets.readOwnedDetail).not.toHaveBeenCalled()
+  })
+
   it('offers MP4 in the native media picker', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     await controller.open()
@@ -1987,11 +2036,13 @@ describe('createCanvasWindowController', () => {
       markUsed: vi.fn(async () => ({ assetId: 'a', lastUsedAt: '2026-08-19T00:00:00.000Z' })),
       softDelete: vi.fn(async () => ({ assetId: 'a', deletedAt: '2026-08-19T00:00:00.000Z' })),
       restore: vi.fn(async () => ({ assetId: 'a' })),
+      readOwnedDetail: vi.fn(async () => ({ assetId: 'a' })),
     }
     const controller = createCanvasWindowController(controllerOptions({ mediaAssets: mediaAssets as never }))
     await controller.open()
 
     for (const channel of [
+      canvasHostGetAssetDetailChannel,
       canvasHostCopyAssetChannel,
       canvasHostSaveAssetChannel,
       canvasHostShowAssetMenuChannel,
@@ -2009,6 +2060,7 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.markUsed).not.toHaveBeenCalled()
     expect(mediaAssets.softDelete).not.toHaveBeenCalled()
     expect(mediaAssets.restore).not.toHaveBeenCalled()
+    expect(mediaAssets.readOwnedDetail).not.toHaveBeenCalled()
   })
 
   it('rejects a completed asset rename when the account changes in flight', async () => {

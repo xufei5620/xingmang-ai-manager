@@ -107,6 +107,7 @@ export const canvasHostCopyAssetChannel = canvasHostChannels.copyAsset
 export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
 export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
 export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
+export const canvasHostGetAssetDetailChannel = canvasHostChannels.getAssetDetail
 export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
 export const canvasHostUpdateAssetMetadataChannel = canvasHostChannels.updateAssetMetadata
 export const canvasHostMarkAssetUsedChannel = canvasHostChannels.markAssetUsed
@@ -219,7 +220,7 @@ export interface CanvasWindowControllerOptions {
   aiAssets: AiAssetStore
   videoAssets?: AiVideoAssetStore
   audioAssets?: AiAudioAssetStore
-  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'purge'>
+  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'readOwnedDetail' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'purge'>
   promptPresets: CanvasPromptPresetStore
   canvasRuns: CanvasRunService
   projects?: CanvasProjectStore
@@ -1034,6 +1035,18 @@ export function createCanvasWindowController(
         ...(lineage[asset.assetId] ? { lineage: lineage[asset.assetId] } : {}),
       })),
     }
+  })
+
+  // One asset, read the way the library page lists it (same scope, same
+  // lineage). The kernel checks an output, a picked frame or a reference
+  // against it before placing it; nothing is written.
+  registerCanvasHandler(canvasHostGetAssetDetailChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const asset = await (context?.media ?? options.mediaAssets).readOwnedDetail(userId, parseCanvasAssetId(assetIdInput))
+    const lineage = await options.canvasRuns.getAssetLineage(userId, [asset.assetId])
+    assertCanvasUserUnchanged(userId)
+    return { ...asset, ...(lineage[asset.assetId] ? { lineage: lineage[asset.assetId] } : {}) }
   })
 
   registerCanvasHandler(canvasHostRenameAssetChannel, async (event, input) => {
