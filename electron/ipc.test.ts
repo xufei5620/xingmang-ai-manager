@@ -194,6 +194,7 @@ function accountServiceStub(): NewApiClientService {
     listKeys: vi.fn() as never,
     listUsableGroups: vi.fn() as never,
     listGroupModels: vi.fn() as never,
+    getModelPricing: vi.fn() as never,
     revokeKey: vi.fn() as never,
     revealKey: vi.fn() as never,
     createKey: vi.fn(async () => undefined),

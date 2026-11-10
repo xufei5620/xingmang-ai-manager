@@ -40,6 +40,7 @@ import {
   parseCliKeySecret,
   parseCodexStartupTicket,
   parseGroupModels,
+  parseModelPricing,
   parseLoginResponseData,
   parseLoginSessions,
   parsePaymentForm,
@@ -2775,6 +2776,76 @@ describe('listGroupModels', () => {
     await expect(client.listGroupModels('a\nb')).rejects.toThrow('分组格式错误')
     await expect(client.listGroupModels('x'.repeat(129))).rejects.toThrow('分组格式错误')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('getModelPricing', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.getModelPricing()).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('reads the price list with the session, so the ratios are this account\'s', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      data: [{ model_name: 'gpt-image-2', quota_type: 1, model_price: 0.06, model_ratio: 0, enable_groups: ['图片模型'] }],
+      group_ratio: { 图片模型: 0.8 },
+      usable_group: { 图片模型: '图片模型' },
+    }))
+
+    await expect(client.getModelPricing()).resolves.toEqual({
+      models: [{ model: 'gpt-image-2', quotaType: 1, modelPrice: 0.06, expressionPriced: false }],
+      groupRatios: { 图片模型: 0.8 },
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(new URL(String(url)).pathname).toBe('/api/pricing')
+    expect(init?.method).toBe('GET')
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc', 'New-Api-User': '42' })
+  })
+
+  it('accepts a long price list that would not fit the usual response limit', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    const data = Array.from({ length: 1500 }, (_, index) => ({ model_name: `model-${index}`, quota_type: 1, model_price: 0.01, description: 'x'.repeat(400) }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, data, group_ratio: {} }))
+    const pricing = await client.getModelPricing()
+    expect(pricing.models).toHaveLength(1500)
+  })
+})
+
+describe('parseModelPricing', () => {
+  it('keeps what it understands and skips the rest', () => {
+    const pricing = parseModelPricing([
+      { model_name: ' a ', quota_type: 1, model_price: 0.1 },
+      { model_name: 'a', quota_type: 1, model_price: 0.2 },
+      { model_name: 'tokens', quota_type: 0, model_price: 0, model_ratio: 2 },
+      { model_name: 'expr', quota_type: 1, model_price: 0, billing_expr: 'p * 2' },
+      { model_name: 'plugin', quota_type: 1, model_price: 0, billing_plugin_variants: [{ plugin_key: 'x' }] },
+      { model_name: 'a\nb', quota_type: 1, model_price: 0.1 },
+      { model_name: 'nan', quota_type: 1, model_price: Number.NaN },
+      { model_name: 3 }, null,
+    ], { group_ratio: { default: 1, vip: 0.5, auto: 'auto', bad: -1, '': 1 } })
+    expect(pricing).toEqual({
+      models: [
+        { model: 'a', quotaType: 1, modelPrice: 0.1, expressionPriced: false },
+        { model: 'tokens', quotaType: 0, modelPrice: 0, expressionPriced: false },
+        { model: 'expr', quotaType: 1, modelPrice: 0, expressionPriced: true },
+        { model: 'plugin', quotaType: 1, modelPrice: 0, expressionPriced: true },
+      ],
+      groupRatios: { default: 1, vip: 0.5 },
+    })
+  })
+
+  it('refuses a list that is not a list, and reads no ratios when there are none', () => {
+    expect(() => parseModelPricing({}, {})).toThrow('价目响应格式异常')
+    expect(parseModelPricing([], null)).toEqual({ models: [], groupRatios: {} })
   })
 })
 
