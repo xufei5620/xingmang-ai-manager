@@ -46,17 +46,19 @@ describe('v2 auth recovery boundaries', () => {
     }
   })
   it('honors the actual verification capability while preserving independent username and email', () => {
-    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', code: '', invite: '', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
     expect(validateRegistration(draft, true).code).toBe('请填写邮件中的验证码')
     expect(validateRegistration(draft, true, false).code).toBe('请先点「获取验证码」，再填写邮件中的验证码')
-    expect(validateRegistration({ ...draft, confirm: 'different', agreed: false }, false)).toEqual({ confirm: '两次密码不一致', agreed: '请先同意用户协议和隐私政策' })
+    // The agreement is asked in its own prompt once everything else is right (D49), not as a field error.
+    expect(validateRegistration({ ...draft, agreed: false }, false)).toEqual({})
     expect(validateRegistration({ ...draft, username: '', email: '' }, false)).toHaveProperty('username')
     expect(validateRegistration({ ...draft, username: '', email: '' }, false)).toHaveProperty('email')
-    expect(validateRegistration({ ...draft, password: 'a'.repeat(21), confirm: 'a'.repeat(21) }, false)).toEqual({ password: '密码不能超过 20 位' })
+    expect(validateRegistration({ ...draft, password: 'a'.repeat(21) }, false)).toEqual({ password: '密码不能超过 20 位' })
+    expect(validateRegistration({ ...draft, password: 'a'.repeat(7) }, false)).toEqual({ password: '密码至少 8 位' })
   })
   it('accepts every username the account server accepts and only caps its length', () => {
-    const draft: RegistrationDraft = { username: 'ab', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    const draft: RegistrationDraft = { username: 'ab', email: 'a@example.test', password: 'long-password', code: '', invite: '', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
     expect(validateRegistration({ ...draft, username: 'a' }, false)).toEqual({})
     expect(validateRegistration({ ...draft, username: 'a'.repeat(20) }, false)).toEqual({})
@@ -73,19 +75,14 @@ describe('v2 auth recovery boundaries', () => {
     // Cut by character, not UTF-16 unit, so an emoji is never split in half.
     const derived = usernameFromEmail(`${'a'.repeat(19)}😀😀@example.test`)
     expect(derived).toBe(`${'a'.repeat(19)}😀`)
-    const draft: RegistrationDraft = { username: derived, email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    const draft: RegistrationDraft = { username: derived, email: 'a@example.test', password: 'long-password', code: '', invite: '', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
-  })
-  it('tells an empty confirmation apart from a mismatched one', () => {
-    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: '', code: '', invite: '', agreed: true }
-    expect(validateRegistration(draft, false)).toEqual({ confirm: '请再次输入密码' })
-    expect(validateRegistration({ ...draft, confirm: 'other-password' }, false)).toEqual({ confirm: '两次密码不一致' })
   })
   it('reads an invitation code out of a poster link that carries no scheme', () => {
     expect(parseInviteCode('example.test/sign-up?aff=6B4j')).toBe('6B4j')
     expect(parseInviteCode('aff=6B4j')).toBe('6B4j')
     expect(parseInviteCode('example.test/sign-up')).toBe('')
-    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: 'example.test/sign-up?aff=6B4j', agreed: true }
+    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', code: '', invite: 'example.test/sign-up?aff=6B4j', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
     expect(validateRegistration({ ...draft, invite: 'example.test/sign-up' }, false)).toEqual({ invite: '邀请链接中没有邀请码，请检查后重试' })
     expect(validateRegistration({ ...draft, invite: 'a'.repeat(33) }, false)).toEqual({ invite: '邀请码不能超过 32 位' })
@@ -97,7 +94,6 @@ describe('v2 auth recovery boundaries', () => {
         username: 'test-user',
         email,
         password: 'long-password',
-        confirm: 'long-password',
         code: '',
         invite: '',
         agreed: true,
@@ -107,7 +103,6 @@ describe('v2 auth recovery boundaries', () => {
       username: 'test-user',
       email: 'person@localhost',
       password: 'long-password',
-      confirm: 'long-password',
       code: '',
       invite: '',
       agreed: true,
@@ -349,7 +344,7 @@ describe('v2 registration email typos', () => {
     expect(normalizeEmail('plain@example.test')).toBe('plain@example.test')
   })
   it('accepts a full-width address in the registration check once normalized', () => {
-    const draft: RegistrationDraft = { username: 'u', email: '123456＠qq。com', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    const draft: RegistrationDraft = { username: 'u', email: '123456＠qq。com', password: 'long-password', code: '', invite: '', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
   })
   it('suggests the common mailbox a customer most likely meant', () => {

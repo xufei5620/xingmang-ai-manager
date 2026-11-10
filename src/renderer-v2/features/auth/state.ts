@@ -4,8 +4,9 @@ import { matchAccountError } from './account-errors'
 import { stripIpcErrorPrefix } from '../../ipc-error-prefix'
 import type { WindowOs } from '../app/window-os'
 
-export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
-export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
+export interface RegistrationDraft { email: string; username: string; password: string; code: string; invite: string; agreed: boolean }
+// 没勾协议不算哪一格填错：注册框在别的都填对以后弹框问一句（D49），所以不在这里报。
+export type RegistrationErrors = Partial<Record<Exclude<keyof RegistrationDraft, 'agreed'>, string>>
 export type RecoveryCodeResult = { ok: true; token: string; source: 'code' | 'link' } | { ok: false; error: string }
 
 export const accountSources = {
@@ -144,15 +145,12 @@ export function validateRegistration(draft: RegistrationDraft, verificationRequi
   else if (Array.from(username).length > maxUsernameLength) errors.username = `用户名不能超过 ${maxUsernameLength} 位`
   if (draft.password.length < minPasswordLength) errors.password = `密码至少 ${minPasswordLength} 位`
   else if (draft.password.length > maxPasswordLength) errors.password = `密码不能超过 ${maxPasswordLength} 位`
-  if (!draft.confirm) errors.confirm = '请再次输入密码'
-  else if (draft.password !== draft.confirm) errors.confirm = '两次密码不一致'
   if (verificationRequired && !draft.code.trim()) errors.code = codeSent ? '请填写邮件中的验证码' : '请先点「获取验证码」，再填写邮件中的验证码'
   if (invite) {
     const parsed = parseInviteCode(invite)
     if (!parsed) errors.invite = '邀请链接中没有邀请码，请检查后重试'
     else if (parsed.length > maxInviteCodeLength) errors.invite = `邀请码不能超过 ${maxInviteCodeLength} 位`
   }
-  if (!draft.agreed) errors.agreed = '请先同意用户协议和隐私政策'
   return errors
 }
 
