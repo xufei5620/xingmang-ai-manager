@@ -16,12 +16,15 @@ describe('desktop canvas capabilities', () => {
     expect([...desktopCanvasCapabilities.executableNodeKinds].sort()).toEqual(working)
   })
 
-  it('switches on the balance chip and the run quote and off every feature the desktop does not have yet', () => {
+  it('switches on the balance chip, the run quote and masked edits and off every feature the desktop does not have yet', () => {
     // 画布完善第 2b 条: the chip reads canvas-host:get-account-summary, the quote
-    // canvas-host:get-price-snapshot; the rest stays off.
-    const { accountSummary, quote, ...rest } = desktopCanvasCapabilities.features
+    // canvas-host:get-price-snapshot. 第 5 条: an image-edit node's mask rides
+    // canvas-host:start-run and goes out as the edits request's mask PNG
+    // (canvas-image-mask.ts). The rest stays off.
+    const { accountSummary, quote, imageEditMask, ...rest } = desktopCanvasCapabilities.features
     expect(accountSummary).toBe(true)
     expect(quote).toBe(true)
+    expect(imageEditMask).toBe(true)
     expect(Object.values(rest).every((enabled) => enabled === false)).toBe(true)
     // Image nodes send 2-4 independent one-image requests (canvas-run-engine.ts).
     expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(4)
