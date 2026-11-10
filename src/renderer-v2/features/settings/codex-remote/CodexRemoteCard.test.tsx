@@ -72,6 +72,18 @@ describe('codex remote card', () => {
     expect(markup).toContain('已连上')
   })
 
+  // D66 / YKS-21：配对码发错了只在电脑卡片上说。
+  it('says how many wrong codes came in and that a voided code needs a new pairing', () => {
+    const connected = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
+    const clean = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1 } }))
+    expect(clean).not.toContain('settings-remote-feishu-pairing-note')
+    const wrong = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: { code: '482915', expiresAt: 1, failures: 3 } }))
+    expect(wrong).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>配对码错了 3 次</)
+    const voided = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { ...connected, pairing: null, pairingLocked: true }))
+    expect(voided).toMatch(/data-testid="settings-remote-feishu-pairing-note"[^>]*>这个码已经作废，请重新开始配对。</)
+    expect(voided).toContain('开始配对')
+  })
+
   it('says why the channel stopped and does not repeat it once connected', () => {
     const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: 'App ID 或 App Secret 不对' } }))
     expect(stopped).toContain('要重新登录')

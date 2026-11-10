@@ -9,6 +9,7 @@ import { remoteChannelSections, type RemoteChannelSectionDefinition, type Remote
 import {
   boundPeerText,
   newerRemoteSnapshot,
+  pairingAttemptText,
   remoteCardMeta,
   remoteChannelStateLabel,
   remoteChannelStateTone,
@@ -46,6 +47,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
   const { Section } = definition
   const canEnable = channel.hasCredential && Boolean(snapshot.workspaceDirectory)
   const pairing = channel.pairing
+  const pairingNote = channel.hasCredential ? pairingAttemptText(channel) : null
   const [asking, setAsking] = useState<'unbind' | 'logout' | null>(null)
   // 先关框再做：做不成的原因摆在卡上的红条里，框开着会挡住它。
   function confirmAsked() {
@@ -146,6 +148,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
         testId={`settings-remote-${id}-enable`}
       />
       {binding}
+      {pairingNote && <p className="v2-remote-pairing-note" data-testid={`settings-remote-${id}-pairing-note`}>{pairingNote}</p>}
       <Confirm
         open={asking !== null}
         title={asking === 'logout' ? codexRemoteConfirmText.logout.title(definition.title) : codexRemoteConfirmText.unbind.title}
