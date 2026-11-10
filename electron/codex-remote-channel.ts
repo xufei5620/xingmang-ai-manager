@@ -184,6 +184,11 @@ export interface CodexRemotePairingSnapshot {
   expiresAt: number
   /** 这个码发来过几次错的（D66 / YKS-21），只在电脑卡片上显示；没错过不填。 */
   failures?: number
+  /**
+   * 码挂了 1 分钟还没收到过私聊（YF-2）：nothing = 这次打开以后平台一条消息都没送来（多半是平台后台没配好），
+   * group-only = 只收到过群里的。收到过私聊、还没满 1 分钟时不填。只在电脑卡片上说，手机那边照旧不回。
+   */
+  quiet?: 'nothing' | 'group-only'
 }
 
 export interface CodexRemoteChannelSnapshot {

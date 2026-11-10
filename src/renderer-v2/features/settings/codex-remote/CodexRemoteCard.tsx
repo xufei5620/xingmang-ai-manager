@@ -48,7 +48,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
   const { Section } = definition
   const canEnable = channel.hasCredential && Boolean(snapshot.workspaceDirectory)
   const pairing = channel.pairing
-  const pairingNote = channel.hasCredential ? pairingAttemptText(channel) : null
+  const pairingNote = channel.hasCredential ? pairingAttemptText(channel, definition.pairingQuietHint) : null
   const [asking, setAsking] = useState<'unbind' | 'logout' | null>(null)
   // 先关框再做：做不成的原因摆在卡上的红条里，框开着会挡住它。
   function confirmAsked() {

@@ -759,6 +759,47 @@ describe('codex-remote-service pairing', () => {
     expect((await s.service.snapshot()).channels.feishu.pairingLocked).toBeUndefined()
   })
 
+  // YF-2：码挂了 1 分钟还没收到私聊，电脑卡片上说是一条都没收到还是只收到群里的；手机那边照旧不回。
+  it('tells the window a minute into pairing whether nothing or only group messages arrived', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let clock = Date.UTC(2026, 10, 10, 9)
+    const s = await setup({ now: () => clock })
+    await s.service.setChannelEnabled('feishu', true)
+    const channel = s.channels[0]
+    await s.service.startPairing('feishu')
+    clock += 59_000
+    await vi.advanceTimersByTimeAsync(59_000)
+    expect((await s.service.snapshot()).channels.feishu.pairing).not.toHaveProperty('quiet')
+    const shown = s.snapshots.length
+    clock += 1_000
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.waitFor(() => expect(s.snapshots.length).toBeGreaterThan(shown))
+    expect(s.snapshots.at(-1)?.channels.feishu.pairing?.quiet).toBe('nothing')
+    channel.handlers?.onInbound(text(alice, '000042', { direct: false }))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.channels.feishu.pairing?.quiet).toBe('group-only'))
+    // Any private message, even one that is not the code, shows the bot is set up.
+    channel.handlers?.onInbound(text(mallory, '你好'))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.channels.feishu.pairing).not.toHaveProperty('quiet'))
+    expect(s.snapshots.at(-1)?.channels.feishu.pairing?.code).toBe('000042')
+    expect(s.snapshots.at(-1)?.channels.feishu.boundPeer).toBeNull()
+    expect(channel.sent).toHaveLength(0)
+  })
+
+  it('counts only what arrived since the channel was last turned on', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let clock = Date.UTC(2026, 10, 10, 9)
+    const s = await setup({ now: () => clock })
+    await s.service.setChannelEnabled('feishu', true)
+    s.channels[0].handlers?.onInbound(text(mallory, '你好'))
+    await vi.advanceTimersByTimeAsync(20)
+    await s.service.setChannelEnabled('feishu', false)
+    await s.service.setChannelEnabled('feishu', true)
+    await s.service.startPairing('feishu')
+    clock += 60_000
+    await vi.advanceTimersByTimeAsync(60_000)
+    expect((await s.service.snapshot()).channels.feishu.pairing?.quiet).toBe('nothing')
+  })
+
   it('drops the code by itself after ten minutes and tells the window', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
     const s = await setup()

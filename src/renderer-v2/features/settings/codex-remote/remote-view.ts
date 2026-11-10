@@ -60,13 +60,21 @@ export function remoteChannelStateTone(status: RemoteChannelStatus): 'neutral' |
   return 'neutral'
 }
 
+/** 码挂了 1 分钟只收到群里的消息时，数字下面那句（YF-2）。两个渠道一样。 */
+export const pairingGroupOnlyText = '收到的是群里的消息，不算。要点开机器人单独私聊它。'
+
 /**
  * 配对那一行下面的小字（D66 / YKS-21）：手机上发来过错的码就说错了几次，错满作废了说要重新开始配对。
+ * 挂了 1 分钟还没收到私聊时说可能是哪儿没配好（YF-2）：quietHint 是这个渠道「一条都没收到」那句。
  * 只在电脑卡片上说，手机那边照旧不回，计数规则也不动。
  */
-export function pairingAttemptText(channel: Pick<CodexRemoteChannelSnapshot, 'pairing' | 'pairingLocked'>): string | null {
-  if (channel.pairing) return channel.pairing.failures ? `配对码错了 ${channel.pairing.failures} 次` : null
-  return channel.pairingLocked ? '这个码已经作废，请重新开始配对。' : null
+export function pairingAttemptText(channel: Pick<CodexRemoteChannelSnapshot, 'pairing' | 'pairingLocked'>, quietHint: string): string | null {
+  const pairing = channel.pairing
+  if (!pairing) return channel.pairingLocked ? '这个码已经作废，请重新开始配对。' : null
+  if (pairing.failures) return `配对码错了 ${pairing.failures} 次`
+  if (pairing.quiet === 'group-only') return pairingGroupOnlyText
+  if (pairing.quiet === 'nothing') return quietHint
+  return null
 }
 
 function twoDigits(value: number): string {
