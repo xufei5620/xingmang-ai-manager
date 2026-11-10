@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { createAccountWorkGate } from './account-work-gate'
@@ -1507,6 +1508,26 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
+  })
+
+  it('lets the merged and package probes finish where PowerShell is held to ConstrainedLanguage', () => {
+    // 应用控制策略（WDAC、AppLocker 一类）开着的电脑上，-Command 跑在受限语言模式里：
+    // [pscustomobject]@{} 被拒，最后一句一失败整条就按退出码 1 退回，装着的 Codex 桌面端次次
+    // 显示检测失败（2026-11-10 客户电脑）。查进程那段在受限模式下本来就查不到，自己 try/catch，
+    // 不影响别的段；查包和最后输出这两处不能碰被拒的写法。
+    const combined = buildCodexDesktopCombinedProbeScript()
+    const packageProbe = buildCodexDesktopPackageProbeScript()
+    for (const script of [combined, packageProbe]) {
+      expect(script.startsWith(powerShellUtf8OutputStatement)).toBe(true)
+      expect(script.split(powerShellUtf8OutputStatement).join('')).not.toContain('UTF8Encoding]::new')
+      expect(script).toContain(buildPowerShellJsonOutputStatements('$value')[1])
+      expect(script.trimEnd().endsWith('$xingmangJson')).toBe(true)
+    }
+    expect(packageProbe).not.toContain('[pscustomobject]')
+    const afterProcesses = combined.slice(combined.indexOf('$packageProbe = $null'))
+    expect(afterProcesses.length).toBeGreaterThan(0)
+    expect(afterProcesses).not.toContain('[pscustomobject]')
+    expect(afterProcesses).not.toContain('::')
   })
 
   it('imports the module of every cmdlet the merged probe calls before the first one runs', () => {
