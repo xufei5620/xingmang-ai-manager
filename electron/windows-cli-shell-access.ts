@@ -154,6 +154,12 @@ const userPathConstrainedFunctions: readonly string[] = [
   // [IO.Path]::GetFullPath(...).TrimEnd("\") for the absolute paths PATH
   // holds, in string operations alone: quotes trimmed, / read as \, empty and
   // . segments dropped, .. taking the segment before it, no trailing \.
+  // One difference: Windows PowerShell's GetFullPath also turns an 8.3 name
+  // such as RUNNER~1 into the long one, and nothing allowed here does (seen on
+  // the Windows runner). The folder the app hands over is the npm prefix,
+  // normally the long spelling under %APPDATA% or ProgramData, so the most it
+  // costs is a second entry next to a short-spelled one the user wrote, or one
+  // left behind on removal.
   'function ConvertTo-XingmangDirectory([string]$value) {',
   "  $text = $value.Trim() -replace '^\"+', '' -replace '\"+$', ''",
   "  $text = $text.Replace('/', '\\')",

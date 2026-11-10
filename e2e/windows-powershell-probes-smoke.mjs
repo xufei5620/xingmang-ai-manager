@@ -890,7 +890,10 @@ checks.push(['the user environment scripts leave the same registry values behind
     XINGMANG_SMOKE_HOST: '127.0.0.1',
   }
   const profile = process.env.USERPROFILE
-  const target = path.join(scratch, '中文目录', 'npm')
+  // The long spelling: this runner's temp folder is the 8.3 one (RUNNER~1),
+  // which GetFullPath in Windows PowerShell expands and the ConstrainedLanguage
+  // statements leave as written (see windows-cli-shell-access.ts).
+  const target = path.join(fs.realpathSync.native(scratch), '中文目录', 'npm')
   const stored = 'C:\\xingmang-smoke-keep;%USERPROFILE%\\xingmang-smoke-ref;C:\\中文工具\\bin;%XINGMANG_SMOKE_UNSET%\\x'
   const watchedProxies = ['HTTP_PROXY', 'ALL_PROXY', 'HTTPS_PROXY', 'NO_PROXY']
   const watchedOverrides = ['ANTHROPIC_BASE_URL', 'OPENAI_BASE_URL', 'CODEX_HOME']
