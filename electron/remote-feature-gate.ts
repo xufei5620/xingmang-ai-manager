@@ -4,7 +4,8 @@ import { RemoteFeatureOffError, type RemoteFeatureId } from './remote-features'
  * 主进程这一头的远程开关（remote-features.ts）：手上这份关掉了哪几样，各处做事之前问一声。
  *
  * 关掉了哪几样照更新快照里的 featuresOff（updater.ts），只认最近一次读成功的那份状态文件：一次没读到
- * 就放出来，坏掉的那条路又开了。从没读成功过（刚打开、连不上更新目录）就什么都不关，跟没有这项的旧版一样。
+ * 就放出来，坏掉的那条路又开了。重开软件时先用上次读成功时记在本地的那份（service-switches-store.ts，D83），
+ * 免得读不到更新目录的电脑一重开又放出来；从来没读成功过才什么都不关，跟没有这项的旧版一样。
  *
  * 点了才做的事（装工具、打开、出视频）用 assertOn：刚打开星芒、状态文件第一次还没读完的那一会儿，等它读完
  * （最多 firstReadWaitMs）再看，免得开机就点的那一下溜过去。读完以后当场判断、不再等：之后每隔一阵重读的

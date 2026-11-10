@@ -88,6 +88,15 @@ test('the Linux package installs under an ASCII name while the menu keeps the Ch
   }
 })
 
+test('the Linux package registers canvas project files with a MIME type the menu entry claims', () => {
+  // D92：electron-builder 据此写 /usr/share/mime/packages/xingmang-ai-manager.xml，菜单文件的 MimeType 也带上它；
+  // scripts/verify-linux-deb.cjs 在真出的包上核对这两样。
+  const { linux } = loadConfig({ XINGMANG_LINUX_PACKAGE: '1', XINGMANG_LOCAL_BUILD: '1' })
+  assert.deepEqual(linux.fileAssociations, [{
+    ext: 'xingcanvas', name: '星芒画布项目', description: '星芒画布项目', mimeType: 'application/x-xingcanvas',
+  }])
+})
+
 test('a malformed Linux marker is refused instead of guessed', () => {
   const result = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(configPath)})`], {
     cwd: root,

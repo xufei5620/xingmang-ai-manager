@@ -47,7 +47,13 @@ export function usagePerMillion(value: number | null | undefined): string | null
   return `$${value.toLocaleString('en-US', { maximumFractionDigits: 8 })} / 百万`
 }
 
-/** 「分组」那一行的倍率：「1×」「0.5×」，多余的零不写。 */
+/** 倍率：「1×」「0.5×」，多余的零不写。「分组」那一行和计费明细里的倍率都这么写，同一个数不写成两个样子。 */
 export function usageRatioText(value: number): string {
   return `${Number(value.toFixed(4))}×`
+}
+
+/** 「首字响应」那一行：接口给毫秒，按秒写、留一位小数（「1.2 秒」），跟上面「用时」一样用秒。 */
+export function usageSecondsText(milliseconds: number | null | undefined): string {
+  if (typeof milliseconds !== 'number' || !Number.isFinite(milliseconds)) return '未提供'
+  return `${(milliseconds / 1000).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })} 秒`
 }

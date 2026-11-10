@@ -3,7 +3,7 @@ import { isChineseSentence } from './chinese-sentence'
 import { classifyNetworkFailure, isProxyConnectionFailure, isServiceUnavailableResponse, updateNetworkFailureMessages } from './network-failure'
 import { redactSecretQueryParameters, redactSecretShapes } from './redaction-patterns'
 import type { RemoteFeatureId } from './remote-features'
-import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus } from './service-status'
+import { isOlderReleaseGuard, resolveFeaturesOffFor, resolveKnownIssuesFor, resolveMinimumVersionFor, resolveReleaseGuardFor, resolveReleasePlatforms, type KnownIssue, type ReleaseGuard, type ServiceMaintenance, type ServiceRollout, type ServiceStatus, type ServiceSwitches } from './service-status'
 import type { UpdateSignatureVerdict } from './update-package-signature'
 import { compareVersionsBy, parseUpdateVersion } from './versions'
 
@@ -291,6 +291,11 @@ export interface UpdaterService {
   install(): { accepted: true }
   /** 更新目录上的状态文件读到了新内容（null = 读不到，当没有）。 */
   setServiceStatus(status: ServiceStatus | null): void
+  /**
+   * 开机时状态文件还没读到：先摆上次读成功时记在本地的已知问题提示和关掉的功能（D83），按这一版、这种安装包筛。
+   * 这次打开以后已经读成功过就不动，以读到的为准。
+   */
+  restoreServiceSwitches(switches: ServiceSwitches): void
   /** 开机自动装前的预告摆出来（或收回，null）。 */
   setLaunchInstallNotice(notice: LaunchInstallNotice | null): void
   /** 主进程问出了这个 Windows 账号不在管理员组（见 UpdateSnapshot.installNeedsAdminPassword）。 */
@@ -1119,6 +1124,8 @@ export function createUpdaterService(
   let releaseGuard: ReleaseGuard = runtime.releaseGuardAtLaunch ?? { badVersions: [], rollout: null }
   // 本地记着的那份；读到的跟它一样就不再写盘。没记下来时清掉，下次读成功再写。
   let rememberedReleaseGuard: string | null = JSON.stringify(releaseGuard)
+  // 这次打开以后状态文件读成功过没有：读成功过，开机时记下的已知问题提示和关掉的功能就不再拿来用（D83）。
+  let serviceStatusRead = false
   let manualCheck = false
   let lastProgressPercent = -1
   let progressSamples: DownloadProgressSample[] = []
@@ -1307,6 +1314,16 @@ export function createUpdaterService(
     })
   }
 
+  // 这一版、这种安装包该看到的已知问题和关掉的功能，跟快照里不一样的那几项。
+  const serviceSwitchesPatch = (switches: ServiceSwitches): Partial<UpdateSnapshot> => {
+    const patch: Partial<UpdateSnapshot> = {}
+    const knownIssues = resolveKnownIssuesFor(switches, runtime.currentVersion, releasePlatforms)
+    if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
+    const featuresOff = resolveFeaturesOffFor(switches, runtime.currentVersion, releasePlatforms)
+    if (JSON.stringify(featuresOff) !== JSON.stringify(snapshot.featuresOff ?? [])) patch.featuresOff = featuresOff
+    return patch
+  }
+
   const applyServiceStatus = (status: ServiceStatus | null) => {
     if (status) {
       adoptReleaseGuard({
@@ -1322,12 +1339,10 @@ export function createUpdaterService(
       patch.serviceMaintenance = maintenance
     }
     // 已知问题跟撤回名单一样只认读成功的那份：一次没读到就收起「先这样绕过去」那句，客户会当成已经修好了。
-    // 关掉的功能同理：一次没读到就放出来，坏掉的那条路又开了。
+    // 关掉的功能同理：一次没读到就放出来，坏掉的那条路又开了。重开软件时先用记在本地的那份（restoreServiceSwitches）。
     if (status) {
-      const knownIssues = resolveKnownIssuesFor(status, runtime.currentVersion, releasePlatforms)
-      if (JSON.stringify(knownIssues) !== JSON.stringify(snapshot.knownIssues ?? [])) patch.knownIssues = knownIssues
-      const featuresOff = resolveFeaturesOffFor(status, runtime.currentVersion, releasePlatforms)
-      if (JSON.stringify(featuresOff) !== JSON.stringify(snapshot.featuresOff ?? [])) patch.featuresOff = featuresOff
+      serviceStatusRead = true
+      Object.assign(patch, serviceSwitchesPatch(status))
     }
     const withdrawn = isWithdrawn(runtime.currentVersion)
     if (withdrawn !== (snapshot.currentVersionWithdrawn === true)) patch.currentVersionWithdrawn = withdrawn
@@ -2318,6 +2333,11 @@ export function createUpdaterService(
     setServiceStatus(status) {
       if (disposed) return
       applyServiceStatus(status)
+    },
+    restoreServiceSwitches(switches) {
+      if (disposed || serviceStatusRead) return
+      const patch = serviceSwitchesPatch(switches)
+      if (Object.keys(patch).length) emit(patch)
     },
     setLaunchInstallNotice(notice) {
       if (disposed) return

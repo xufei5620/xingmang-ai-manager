@@ -197,9 +197,31 @@ export const sub2ApiUsageFilterFields: AccountFilterField[] = [
   { key: 'apiKeyId', label: '密钥编号', type: 'number' },
   { key: 'groupId', label: '分组编号', type: 'number' },
   { key: 'billingType', label: '计费来源', options: [
-    { value: '', label: '全部来源' }, { value: '0', label: '账户余额' }, { value: '1', label: '订阅额度' },
+    { value: '', label: '全部来源' }, { value: '0', label: '账号余额' }, { value: '1', label: '订阅额度' },
   ] },
 ]
+
+/**
+ * 历史账号筛选框下面那句（时间数字格式 N-7）。日子按这台电脑的时区切，原来直接写「时区 Asia/Shanghai」，
+ * 英文代号客户看不懂：本机钟跟北京时间一样就不提时区，不一样才补一句按这台电脑的时间算。
+ */
+export function usageCalendarNote(timezone: string, now = new Date()): string {
+  const note = '按整日统计，包含结束日期全天，默认最近 7 天。'
+  return sameClockAsBeijing(timezone, now) ? note : `${note}按这台电脑的时间算。`
+}
+
+// 比的是此刻墙上的钟，不是时区名：香港、台北这类跟北京同一个钟的也算，认不出的时区当不一样。
+function sameClockAsBeijing(timezone: string, now: Date): boolean {
+  try {
+    return wallClock(timezone, now) === wallClock('Asia/Shanghai', now)
+  } catch {
+    return false
+  }
+}
+
+function wallClock(timeZone: string, at: Date): string {
+  return new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(at)
+}
 
 /** 历史账号「密钥编号」「分组编号」：空着不筛，填了必须是正整数。 */
 export function sub2ApiFilterId(value: string | undefined): number | undefined {

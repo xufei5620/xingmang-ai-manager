@@ -59,7 +59,7 @@ export function OfficialQuotaDialog({ email, initial, refresh, onClose }: {
         return <div className="v2-quota-window" key={window.id}><div className="v2-quota-row"><span>{window.label}</span><strong>已用 {used}%</strong></div>
           <Progress value={used} tone={used > 80 ? 'warn' : 'accent'} />{window.resetAt && <small>{quotaFutureText(window.resetAt, true)} 恢复</small>}</div>
       })}
-      {official.resetCredits !== null && <p>剩余额度 {official.resetCredits}</p>}
+      {official.resetCredits !== null && <p>还能手动恢复额度 {official.resetCredits} 次</p>}
       <p className="v2-quota-note">用完后可以在 Codex 配置里改用当前账号接着用。</p>
     </div> : <p>官方额度暂未读取，刷新后查看。</p>}
   </Dialog>

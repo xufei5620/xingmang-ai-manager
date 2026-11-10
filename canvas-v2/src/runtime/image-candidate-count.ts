@@ -14,6 +14,7 @@ export function parseImageCandidateCount(value: unknown, kind: string): ImageCan
   return value as ImageCandidateCount
 }
 
+/** Plain-language billing note: each candidate is its own paid request, so a batch of N costs N single images. */
 export function imageCandidateCountNotice(count: ImageCandidateCount): string {
-  return `最多发起 ${count} 次独立生成，按次计费；具体金额以所选服务为准`
+  return count > 1 ? `一次出 ${count} 张挑着用，每张单独扣一次费` : '想一次多出几张挑着用，选 ×2～×4，每张单独扣一次费'
 }

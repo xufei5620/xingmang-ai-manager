@@ -47,7 +47,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -59,8 +59,10 @@ import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
 import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createWindowsTaskbarThemeReader, WINDOWS_SETTING_CHANGE_MESSAGE } from './windows-taskbar-theme'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
 import { createExternalDeepLinkInbox } from './external-deep-links'
+import { buildCanvasProjectFileOpenFailurePrompt, createCanvasProjectFileInbox, withoutCanvasProjectFileArguments } from './canvas-project-file-launch'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { inspectDeviceHardware, isLowEndDevice } from './device-profile'
 import { buildUnexpectedExitRelaunchArgs, describeUnexpectedExitError, recordUnexpectedExit, takeUnexpectedExitNotice, unexpectedExitRecordPath } from './unexpected-exit'
@@ -192,6 +194,7 @@ import {
 import { buildStartupFailureDialog, classifyStorageFailure, dataDriveLetter } from './startup-failure'
 import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
+import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import type { CodexRemoteReleaseAction } from './codex-remote-service'
@@ -214,6 +217,8 @@ const nonSiteExternalUrlAllowlist = [
   'https://chatgpt.com/download/',
   // Codex 桌面端装不上时错误框里的「去微软商店装」（第十九批 5）。
   codexDesktopStoreUrl,
+  // Claude Desktop 装不上时错误框里的「下载离线安装包」：教程站「备用安装包」那一节（D64）。
+  claudeDesktopOfflinePackagesUrl,
   // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
   appReleaseDownloadUrl,
 ] as const
@@ -710,6 +715,22 @@ function appValue<T>(read: () => T, fallback: T): T {
   }
 }
 
+// 反馈报告「错误报告：开/关」那一行问的也是这个函数（D61），跟真发不发说同一句话。
+function crashReportingEnabled(): boolean {
+  return shouldReportCrashes({
+    packaged: appValue(() => app.isPackaged, false),
+    // Re-read per report so switching the preference off stops the very next
+    // send, with no refresh plumbing between the settings handler and here.
+    // The fallback is the opt-out, not the default: if the preference cannot
+    // be read at all, staying silent is the answer the user cannot object to.
+    crashReporting: appValue(
+      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
+      false,
+    ),
+    env: process.env,
+  })
+}
+
 /**
  * Composed at module scope, not inside whenReady: a crash during startup is
  * exactly the class of bug a user cannot report themselves, so the reporter
@@ -732,18 +753,7 @@ const crashReporter = createCrashReporter({
     osRelease: os.release(),
     arch: process.arch,
   },
-  isEnabled: () => shouldReportCrashes({
-    packaged: appValue(() => app.isPackaged, false),
-    // Re-read per report so switching the preference off stops the very next
-    // send, with no refresh plumbing between the settings handler and here.
-    // The fallback is the opt-out, not the default: if the preference cannot
-    // be read at all, staying silent is the answer the user cannot object to.
-    crashReporting: appValue(
-      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
-      false,
-    ),
-    env: process.env,
-  }),
+  isEnabled: crashReportingEnabled,
   // net.fetch follows the session's proxy settings, which is what a user
   // behind a corporate proxy needs -- but it only exists once the app is
   // ready, and a startup crash happens before that.
@@ -843,12 +853,26 @@ if (!hasSingleInstanceLock) {
   let receiveDeepLink = (raw: string) => { deepLinkInbox.accept(raw) }
   for (const argument of process.argv) receiveDeepLink(argument)
   app.on('open-url', (event, url) => { event.preventDefault(); receiveDeepLink(url) })
+  // 双击画布项目文件（D92）：Windows、Linux 的文件路径在启动参数里，Mac 发 open-file（第一次启动时
+  // 在 ready 之前就发，所以这里就得接住）。窗口和画布都还没建好之前先存着，建好以后换成真的打开。
+  const canvasProjectFileInbox = createCanvasProjectFileInbox(process.platform)
+  let receiveCanvasProjectFile = (raw: string): boolean => canvasProjectFileInbox.accept(raw)
+  let openPendingCanvasProjectFile = (): void => {}
+  for (const argument of process.argv.slice(1)) receiveCanvasProjectFile(argument)
+  app.on('open-file', (event, filePath) => {
+    event.preventDefault()
+    receiveCanvasProjectFile(filePath)
+  })
   if (!singleInstanceDisabledForDevelopment) {
     app.on('second-instance', (_event, argv) => {
       for (const argument of argv) receiveDeepLink(argument)
+      let openedCanvasProjectFile = false
+      for (const argument of argv.slice(1)) openedCanvasProjectFile = receiveCanvasProjectFile(argument) || openedCanvasProjectFile
       // 已经开着的时候开机项又拉起一次（比如注销再登录没关进程），那不是用户
       // 要看窗口，别把它顶到最前面。
       if (hasLoginLaunchArgument(argv)) return
+      // 双击的是画布项目：顶到最前面的是画布（没登录才露出主窗口，见 openPendingCanvasProjectFile）。
+      if (openedCanvasProjectFile) return
       if (!focusExistingWindow()) focusWhenWindowIsReady = true
     })
   }
@@ -1577,7 +1601,27 @@ if (!hasSingleInstanceLock) {
       if (mainRendererRelease) mainRendererRelease.deliver(event, send)
       else send()
     }
-    diagnostics.attachFeedbackDescribers({ latestTraySystem: () => latestTraySystem })
+    // 匿名使用统计的开关是设置「隐私数据」里的「匿名使用统计」，存在系统界面设置那份文件里；读不出来按关算，
+    // 同崩溃上报。放在这里是因为反馈报告「匿名使用统计：开/关」那一行（D61）也问它，报告接上时它得已经在。
+    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
+    const usageStatsEnabled = (): boolean => {
+      let preference: boolean | undefined
+      try {
+        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
+      } catch {
+        return false
+      }
+      return shouldSendUsageStats({
+        packaged: app.isPackaged,
+        localBuild: applicationPackage.xingmangLocalBuild === true,
+        env: process.env,
+        preference,
+      })
+    }
+    diagnostics.attachFeedbackDescribers({
+      latestTraySystem: () => latestTraySystem,
+      readPrivacySwitches: () => ({ crashReporting: crashReportingEnabled(), anonymousUsage: usageStatsEnabled() }),
+    })
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications !== false,
       focusMainWindow: () => {
@@ -1677,7 +1721,7 @@ if (!hasSingleInstanceLock) {
       // 后台装的没人在看，不预告也不等。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
         if (!background) {
-          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true)
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true, isRollbackInstall(updaterService.getState(), version))
           desktopNotifications.announce(notice)
           // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
           updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
@@ -1857,6 +1901,8 @@ if (!hasSingleInstanceLock) {
             // 视频剪辑页上次关掉时还在出的视频：取回来放进作品库。
             void current.chatVideoService.resumeUser(userId).catch((error) => runtimeLog.exception('ai-chat', 'video.resume.failed', error))
           }
+          // 没登录时双击的画布项目文件，登录好了接着打开。
+          openPendingCanvasProjectFile()
         }
       },
     })
@@ -1920,23 +1966,7 @@ if (!hasSingleInstanceLock) {
       return state.authenticated && state.account ? externalClientOwner(accounts.getSiteId(), state.account.userId) : null
     }
     // 匿名使用统计（usage-stats.ts，yoyo 10-26 选的「推荐档」）：每天最多发成一次版本、系统、装了哪些工具、
-    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关是设置「隐私数据」里的「匿名使用统计」，
-    // 存在系统界面设置那份文件里；读不出来按关算，同崩溃上报。
-    const platformPreferencesPath = path.join(app.getPath('userData'), 'platform-settings.json')
-    const usageStatsEnabled = (): boolean => {
-      let preference: boolean | undefined
-      try {
-        preference = new PlatformSettingsStore(platformPreferencesPath).read().privacy?.anonymousUsage
-      } catch {
-        return false
-      }
-      return shouldSendUsageStats({
-        packaged: app.isPackaged,
-        localBuild: applicationPackage.xingmangLocalBuild === true,
-        env: process.env,
-        preference,
-      })
-    }
+    // 更新和安装成没成功、卡住几次，不带账号和电脑编号。开关 usageStatsEnabled 在上面接反馈报告那里。
     const usageStats = createUsageStatsReporter({
       filePath: path.join(managerDataDirectory, 'usage-stats.json'),
       isEnabled: usageStatsEnabled,
@@ -2339,7 +2369,7 @@ if (!hasSingleInstanceLock) {
       providerRoots: rootedOptions.system.providerRoots,
       documentsDirectory: () => app.getPath('documents'),
       aiOutputDirectory: () => currentBusiness().aiOutputPlacement.root,
-      desktopDirectory: () => app.getPath('desktop'),
+      downloadsDirectory: () => app.getPath('downloads'),
       accountService,
       paymentWindow,
       accountSessionReady,
@@ -2768,6 +2798,32 @@ if (!hasSingleInstanceLock) {
       showMainWindow()
       deliverToMainWindow('onExternalDeepLink', undefined)
     }
+    // 没登录先露出主窗口（登录页），文件留着，登录好了由上面账号变化那里再来一次。打不开就弹框说清楚，
+    // 原因进运行日志。
+    openPendingCanvasProjectFile = () => {
+      if (!canvasProjectFileInbox.hasPending()) return
+      const session = accountService.getSessionState()
+      if (!session.authenticated || !session.account) {
+        showMainWindow()
+        return
+      }
+      const filePath = canvasProjectFileInbox.take()
+      if (!filePath) return
+      canvasController.openProjectFile(filePath).then((opened) => {
+        if (!opened) runtimeLog.log('info', 'canvas', 'project-file.kept-open', '画布开着、用户没关，双击的画布项目文件没有导入')
+      }, async (error: unknown) => {
+        runtimeLog.exception('canvas', 'project-file.open.failed', error)
+        const prompt = buildCanvasProjectFileOpenFailurePrompt(error)
+        await dialog.showMessageBox({ type: 'error', ...prompt, noLink: true })
+      }).catch((error: unknown) => runtimeLog.exception('canvas', 'project-file.prompt.failed', error))
+    }
+    receiveCanvasProjectFile = (raw) => {
+      if (!canvasProjectFileInbox.accept(raw)) return false
+      openPendingCanvasProjectFile()
+      return true
+    }
+    // 启动参数里带着的那个（双击文件把星芒拉起来的情况），和窗口建好之前 Mac 发来的 open-file。
+    openPendingCanvasProjectFile()
     let trayHintShown = false
     const lifecycle = createWindowLifecycle({
       readPreference: () => systemService.readStoredConfig().closeBehavior ?? 'ask',
@@ -2849,7 +2905,7 @@ if (!hasSingleInstanceLock) {
         }
         if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true))
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true, update.rollback))
           // 给系统一点时间把通知摆出来，再让安装器接手退出。
           await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           if (lifecycle.isSystemShuttingDown) {
@@ -2868,7 +2924,7 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
-        const prompt = quitInstallPrompt(update.version, installMethod, process.platform)
+        const prompt = quitInstallPrompt(update.version, installMethod, process.platform, update.rollback)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具',
           message: prompt.message,
@@ -2927,7 +2983,8 @@ if (!hasSingleInstanceLock) {
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
-        if (relaunchRequested) app.relaunch()
+        // 双击画布项目文件拉起来的那次，参数里带着文件；重启时不带，不然又导入一遍。
+        if (relaunchRequested) app.relaunch({ args: withoutCanvasProjectFileArguments(process.argv.slice(1), process.platform) })
         app.quit()
       },
       onError: (cause) => {
@@ -3059,7 +3116,7 @@ if (!hasSingleInstanceLock) {
       ]).then(() => runtimeLog.idle())
       void Promise.race([settle, new Promise((resolve) => { setTimeout(resolve, 3_000).unref() })]).finally(() => {
         try {
-          if (relaunch) app.relaunch({ args: buildUnexpectedExitRelaunchArgs(process.argv.slice(1), windowVisible) })
+          if (relaunch) app.relaunch({ args: buildUnexpectedExitRelaunchArgs(withoutCanvasProjectFileArguments(process.argv.slice(1), process.platform), windowVisible) })
         } finally {
           app.exit(1)
         }
@@ -3145,6 +3202,11 @@ if (!hasSingleInstanceLock) {
     const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
     applicationTray = !trayHostAvailable ? null : createApplicationTray({
       iconPath: path.join(trayAssets, 'tray-16.png'), icon2xPath: path.join(trayAssets, 'tray-32.png'),
+      windowsIcons: {
+        standard: path.join(trayAssets, 'tray.ico'),
+        darkTaskbar: path.join(trayAssets, 'tray-dark.ico'),
+        readDarkTaskbar: createWindowsTaskbarThemeReader(),
+      },
       templateIconPath: path.join(trayAssets, 'trayTemplate-16.png'), templateIcon2xPath: path.join(trayAssets, 'trayTemplate-32.png'),
       getSnapshot: () => {
         const state = accountService.getSessionState()
@@ -3188,6 +3250,19 @@ if (!hasSingleInstanceLock) {
       onError: (cause) => runtimeLog.exception('window', 'tray.failed', cause),
     })
     quitCleanup.add('window-lifecycle-and-tray', () => { lifecycle.dispose(); applicationTray?.dispose() })
+    if (process.platform === 'win32') {
+      // 客户换了任务栏深浅，托盘图标跟着换（D94）。换深浅时 Windows 给所有顶层窗口广播这条消息，
+      // 窗口缩到托盘时也收得到；nativeTheme 的 'updated' 靠不住（windows-taskbar-theme.ts）。
+      // 一次换深浅会连着来好几条，等它停下来再读，也不在窗口消息里起进程。
+      let trayIconRefresh: NodeJS.Timeout | null = null
+      mainWindow.hookWindowMessage(WINDOWS_SETTING_CHANGE_MESSAGE, () => {
+        if (trayIconRefresh) clearTimeout(trayIconRefresh)
+        trayIconRefresh = setTimeout(() => {
+          trayIconRefresh = null
+          applicationTray?.refreshWindowsIcon()
+        }, 300)
+      })
+    }
     // The canvas window is a secondary, opt-in surface -- it must not
     // outlive the main window (which would otherwise leave the app running
     // in the background with no way back to the dashboard on Windows/Linux,

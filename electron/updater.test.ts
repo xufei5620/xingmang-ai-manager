@@ -1235,6 +1235,54 @@ describe('service status from the update feed', () => {
     service.dispose()
   })
 
+  it('puts back the switches remembered from the last launch until the status file is read', () => {
+    // D83：读不到更新目录的电脑重开一次，关掉的功能不能又放出来，「先这样绕过去」那句也不能收起来。
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.24', isPackaged: true, platform: 'win32', arch: 'x64' })
+    const seen: unknown[] = []
+    service.subscribe((state) => seen.push([state.featuresOff, state.knownIssues]))
+    service.restoreServiceSwitches({
+      knownIssues: [
+        { page: 'chat', message: '聊天先换个型号用。' },
+        { page: 'home', message: '只给 0.2.23', versions: ['0.2.23'] },
+      ],
+      featuresOff: [
+        { feature: 'launch:codex' },
+        { feature: 'video-studio', platforms: ['windows'] },
+        { feature: 'codex-remote', platforms: ['mac'] },
+      ],
+    })
+    expect(service.getState().featuresOff).toEqual(['video-studio', 'launch:codex'])
+    expect(service.getState().knownIssues).toEqual([{ page: 'chat', message: '聊天先换个型号用。' }])
+    // 这次还是没读到：照记下的那份办。
+    service.setServiceStatus(null)
+    expect(service.getState().featuresOff).toEqual(['video-studio', 'launch:codex'])
+    // 读到了，以读到的为准；之后再交记下的那份也不理。
+    service.setServiceStatus({ maintenance: null, featuresOff: [{ feature: 'codex-remote' }] })
+    expect(service.getState().featuresOff).toEqual(['codex-remote'])
+    expect(service.getState().knownIssues).toEqual([])
+    service.restoreServiceSwitches({ featuresOff: [{ feature: 'launch:codex' }] })
+    expect(service.getState().featuresOff).toEqual(['codex-remote'])
+    expect(seen).toEqual([
+      [['video-studio', 'launch:codex'], [{ page: 'chat', message: '聊天先换个型号用。' }]],
+      [['codex-remote'], []],
+    ])
+    service.dispose()
+  })
+
+  it('leaves the snapshot untouched when nothing remembered applies to this version and package', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '0.2.24', isPackaged: true, platform: 'darwin', arch: 'arm64' })
+    const listener = vi.fn()
+    service.subscribe(listener)
+    service.restoreServiceSwitches({})
+    service.restoreServiceSwitches({ featuresOff: [{ feature: 'video-studio', versions: ['0.2.23'] }], knownIssues: [{ page: 'all', message: '只给 Windows', platforms: ['windows'] }] })
+    expect(listener).not.toHaveBeenCalled()
+    expect(service.getState()).not.toHaveProperty('featuresOff')
+    expect(service.getState()).not.toHaveProperty('knownIssues')
+    service.dispose()
+  })
+
   it('does not disturb an update failure the user is looking at', () => {
     const client = new FakeUpdater()
     const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })

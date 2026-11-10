@@ -144,6 +144,8 @@ export function FeedbackPage({
   // 错误框「查看日志」把人带回这一页时，刚出的那个错要在「运行日志」最上面，不用再点「刷新」。
   useReloadWhenShown(active, () => void resource.reload())
   const operation = useOperation()
+  // 导出存不进去时按「换个位置再存」说，不说安装目录（D16）。
+  const exportTarget = operation.failed === 'export' ? 'export' : undefined
   const toast = useToast()
   const [tab, setTab] = useState<FeedbackTabValue>(feedbackRequest?.tab ?? 'form')
   const [query, setQuery] = useState('')
@@ -540,6 +542,7 @@ export function FeedbackPage({
       <ResultNotice
         {...operation}
         onReveal={(path) => api.revealExportedFile(path)}
+        target={exportTarget}
       />
       {/* 两个页签都挂着、只藏不卸：留言写到一半去翻日志，回来字还在，关窗口时也照样提醒没复制出去。 */}
       <div id="feedback-panel-form" role="tabpanel" aria-label="留言反馈" hidden={tab !== 'form'} data-testid="feedback-panel-form">{form}</div>
@@ -620,6 +623,7 @@ export function FeedbackPage({
         <ResultNotice
           {...operation}
           onReveal={(path) => api.revealExportedFile(path)}
+          target={exportTarget}
         />
         <Textarea
           aria-label="预览反馈报告"

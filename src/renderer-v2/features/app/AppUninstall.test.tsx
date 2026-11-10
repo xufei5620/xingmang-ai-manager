@@ -83,6 +83,15 @@ describe('app uninstall dialog', () => {
     expect(markup).toContain(appUninstallRemoveToolsWarning)
     expect(appUninstallRemoveToolsWarning).toContain('你自己装的不动')
   })
+
+  // Mac 上 Grok 在 ~/.grok，removeMacManagedTools 不删它（0.2.24 深查 Mac M2 / 决定单 D8）：
+  // 提醒不能再把 Grok 算进「会删掉」里，要说清楚这里不删、去哪儿删。
+  it('does not promise to remove Grok and points to its own uninstall', () => {
+    expect(appUninstallRemoveToolsWarning).toBe(
+      '会删掉星芒替你装的 Claude Code、Codex CLI，你自己装的不动。Grok CLI 装在你自己的个人文件夹里，这里不删；要删的话，先在主页 Grok 那张卡片上点「卸载工具」。删之前会先备份它们的配置。',
+    )
+    expect(appUninstallRemoveToolsWarning).not.toContain('Codex CLI、Grok CLI')
+  })
 })
 
 describe('appUninstallNotice', () => {
