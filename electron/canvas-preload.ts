@@ -18,6 +18,7 @@ const channels = {
   saveAsset: 'canvas-host:save-asset',
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
+  getAssetDetail: 'canvas-host:get-asset-detail',
   renameAsset: 'canvas-host:rename-asset',
   updateAssetMetadata: 'canvas-host:update-asset-metadata',
   markAssetUsed: 'canvas-host:mark-asset-used',
@@ -204,6 +205,9 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   saveAsset: (assetId: string) => invoke(channels.saveAsset, assetId),
   showAssetMenu: (assetId: string) => invoke(channels.showAssetMenu, assetId),
   listAssets: (query?: unknown) => invoke(channels.listAssets, query),
+  // One asset as the library lists it. The kernel also passes an AbortSignal;
+  // it does not cross the isolation boundary, so only the id is sent.
+  getAssetDetail: (assetId: string) => invoke(channels.getAssetDetail, assetId),
   renameAsset: (input: unknown) => invoke(channels.renameAsset, input),
   updateAssetMetadata: (input: unknown) => invoke(channels.updateAssetMetadata, input),
   markAssetUsed: (assetId: string) => invoke(channels.markAssetUsed, assetId),

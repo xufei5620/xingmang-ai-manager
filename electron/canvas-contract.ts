@@ -19,6 +19,7 @@ export const canvasHostChannels = {
   saveAsset: 'canvas-host:save-asset',
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
+  getAssetDetail: 'canvas-host:get-asset-detail',
   renameAsset: 'canvas-host:rename-asset',
   updateAssetMetadata: 'canvas-host:update-asset-metadata',
   markAssetUsed: 'canvas-host:mark-asset-used',
