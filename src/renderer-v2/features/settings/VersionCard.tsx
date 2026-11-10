@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { BookOpen, Download, ExternalLink, FileText, RefreshCw } from 'lucide-react'
-import { Button, Dialog, Logo, Notice, Pill, Progress, useToast } from '../../ui'
+import { Button, Logo, Notice, Pill, Progress, useToast } from '../../ui'
 import { ResultNotice, relativeTimeText, useOperation, useResource, userFacingErrorMessage } from '../../business-common'
 import {
   standardAccountUpdateNotice,
@@ -8,27 +8,16 @@ import {
   updateDownloadDetail,
   updateFailureLabel,
   updateInstallActionLabel,
-  updateInstallNote,
   updateNewVersion,
   updateStatusLabel,
   withdrawnVersionAdvice,
 } from '../../registry/business'
 import { updateDiskCleanupDetail } from '../../registry/tutorials'
 import { releaseNotesSection } from '../app/release-notes'
-import { redownloadUpdate, retryFailedUpdateStep, subscribeUpdateInstallConfirm, takeUpdateInstallConfirm, updateNeedsManualReinstall, updateOffersDownloadPage } from '../app/update-retry'
+import { redownloadUpdate, retryFailedUpdateStep, updateNeedsManualReinstall, updateOffersDownloadPage } from '../app/update-retry'
 import { appReleaseDownloadUrl } from '../../../../electron/app-download-page'
-import { macKeychainUpdateHint } from '../../../../electron/mac-keychain-update-copy'
 import type { V2Bridge, V2Page } from '../../types'
-
-// 为什么 Mac 每换一版都会问一次钥匙串密码，见 registry/tutorials.ts 的
-// macKeychainTutorialDetail。重启前说一句，客户就不会慌着点「拒绝」；那句和跳框、必须更新那层、
-// 自动装的通知共用一份（electron/mac-keychain-update-copy.ts）。
-// 安装包装在「所有用户」的程序目录下，Windows 会弹一次授权窗口；点了「否」就装不上。
-export const windowsConsentUpdateHint = 'Windows 会弹出一个授权窗口问要不要允许更改，点「是」就好；点了「否」这次就装不上。'
-// 账号不在管理员组时那个窗口要的是管理员密码，只点「是」过不去。
-export const windowsAdminPasswordUpdateHint = 'Windows 会弹出一个授权窗口，要在里面输入管理员密码；点了「否」这次就装不上。'
-// Linux 上星芒不提权，装这一步交给系统的安装窗口；它要开机密码，装完也不会替他重开星芒。
-export const systemInstallerUpdateHint = '星芒会先关掉，再打开这台电脑的安装窗口：在里面点「安装」，输入开机密码。装好后从应用菜单重新打开星芒。'
+import { UpdateInstallDialog } from './UpdateInstallDialog'
 
 /**
  * 设置 › 版本更新最上面那张版本卡（v4 批09，原来是单独的更新页）：当前版本、状态小标签、更新内容、
@@ -47,25 +36,8 @@ export function VersionCard({ api, navigate, autoUpdate }: {
   const operation = useOperation()
   const showToast = useToast().show
   const [confirm, setConfirm] = useState(false)
-  const [isMac, setIsMac] = useState(false)
-  const [isWindows, setIsWindows] = useState(false)
-  // 星芒这次本身就带着管理员权限在跑（自带 Administrator 之类）：装更新不弹授权窗口，确认框不说会弹（已知19）。
-  const [processElevated, setProcessElevated] = useState(false)
   const [diskCleanupOpen, setDiskCleanupOpen] = useState(false)
   useEffect(() => api.onUpdateState(resource.setData), [api, resource.setData])
-  useEffect(() => {
-    let current = true
-    // 读不到平台就不提示：多说一句对 Windows 客户是噪音，少说一句只是回到原来的样子。
-    void api.getPlatformCapabilities()
-      .then((capability) => {
-        if (!current) return
-        setIsMac(capability.platform === 'macos')
-        setIsWindows(capability.platform === 'windows')
-        setProcessElevated(capability.processElevated === true)
-      })
-      .catch(() => undefined)
-    return () => { current = false }
-  }, [api])
   const update = resource.data
   const autoUpdateOn = Boolean(update?.autoUpdateSupported && autoUpdate)
   // Linux 的 .deb：装这一步交给系统安装程序，软件只关掉、不会自己重开（updater.ts 的 UpdateInstallMethod）。
@@ -100,14 +72,6 @@ export function VersionCard({ api, navigate, autoUpdate }: {
   const manualReinstall = updateNeedsManualReinstall(update)
   const offerDownloadPage = updateOffersDownloadPage(update)
   const openDownloadPage = () => void operation.execute('download-page', async () => { await api.openExternal(appReleaseDownloadUrl) }, '')
-  // 首页气泡上点了「重新安装」：跳过来直接弹确认框。设置页已经开在「版本更新」时，跳过来会把整页
-  // 重新挂一次（settings-group-intent），旧卡的监听先被叫到；所以监听只记一笔，等这张卡真挂上了再取走，
-  // 要不然请求被马上要拆掉的旧卡拿走，新卡就不弹了。
-  const [confirmRequest, setConfirmRequest] = useState(0)
-  useEffect(() => subscribeUpdateInstallConfirm(() => setConfirmRequest((current) => current + 1)), [])
-  useEffect(() => {
-    if (confirmRequest && takeUpdateInstallConfirm()) setConfirm(true)
-  }, [confirmRequest])
   // 下好了说一句「下载完成，重启后生效」。只说正在这张卡前看着下的那一次，打开设置时已经下好的不说；
   // Linux 要点「安装新版本」、要管理员密码的 Windows 也不会重启后生效，这两种不说。
   const [downloadSeen, setDownloadSeen] = useState(false)
@@ -169,14 +133,17 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         message={operation.message}
       />
       <div className="v2-version-card-notes">
-        <h3>{releaseNotes.title}</h3>
-        {releaseNotes.items ? (
-          <ul className="v2-business-release-notes-list" data-testid="updates-installed-notes">
-            {releaseNotes.items.map((item, index) => <li key={index}>{item}</li>)}
-          </ul>
-        ) : (
-          <p>{releaseNotes.text}</p>
-        )}
+        <h3 id="v2-version-card-notes-title">{releaseNotes.title}</h3>
+        {/* 说明再长也只占卡里一截，多了在这一截里自己滚：「重启并安装」不会被挤到看不见的地方（11-10）。 */}
+        <div className="v2-version-card-notes-body" role="region" aria-labelledby="v2-version-card-notes-title" tabIndex={0} data-testid="updates-notes-body">
+          {releaseNotes.items ? (
+            <ul className="v2-business-release-notes-list" data-testid={update?.availableVersion ? 'updates-new-notes' : 'updates-installed-notes'}>
+              {releaseNotes.items.map((item, index) => <li key={index}>{item}</li>)}
+            </ul>
+          ) : (
+            <p>{releaseNotes.text}</p>
+          )}
+        </div>
       </div>
       {update?.progress && (
         <div className="v2-version-card-progress">
@@ -241,44 +208,7 @@ export function VersionCard({ api, navigate, autoUpdate }: {
         {checkedText && <span>{checkedText}</span>}
         {action}
       </div>
-      <Dialog
-        open={confirm}
-        title={systemInstaller ? '安装新版本？' : '重启并安装更新？'}
-        onClose={() => setConfirm(false)}
-        footer={
-          <>
-            <Button onClick={() => setConfirm(false)}>稍后安装</Button>
-            <Button
-              variant="primary"
-              icon={RefreshCw}
-              loading={operation.busy === 'install'}
-              onClick={() =>
-                void operation.execute(
-                  'install',
-                  async () => {
-                    // 有工具在装或排着队时主进程先问一句再重启（已知31）。
-                    const result = await api.installUpdate({ askIfInstalling: true })
-                    setConfirm(false)
-                    return result
-                  },
-                  // 还有工具在装、或者聊天视频剪辑画布还在做，客户在问的那一句里点了「继续安装」「等它做完」：这次不装，回到原来的样子（已知31、D10）。
-                  (result) => (result.postponed ? null : '安装请求已提交'),
-                )
-              }
-            >
-              {systemInstaller ? '关掉并安装' : operation.busy === 'install' ? '正在重启' : '重启并安装'}
-            </Button>
-          </>
-        }
-      >
-        {systemInstaller
-          ? <p data-testid="updates-system-installer-hint">请先保存当前工作。{systemInstallerUpdateHint}</p>
-          : <p>请先保存当前工作。星芒会先关掉，装好自动重新打开。</p>}
-        <p data-testid="updates-install-note">{updateInstallNote}</p>
-        {isMac && <p data-testid="updates-mac-keychain-hint">{macKeychainUpdateHint}</p>}
-        {isWindows && !processElevated && <p data-testid="updates-windows-consent-hint">{update?.installNeedsAdminPassword ? windowsAdminPasswordUpdateHint : windowsConsentUpdateHint}</p>}
-        <ResultNotice error={operation.error} detail={operation.detail} />
-      </Dialog>
+      <UpdateInstallDialog api={api} update={update} open={confirm} onClose={() => setConfirm(false)} operation={operation} />
     </section>
   )
 }
