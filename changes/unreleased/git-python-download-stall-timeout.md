@@ -1,7 +1,3 @@
-## 用户
-
-- Windows 上自动装 Git、Python 时，网慢也不会下到 10 分钟就被掐断、从头再下了：只要还在下就接着等，3 分钟一点数据都没有才算没下好，和装 Node.js 一样。
-
 ## 开发
 
 - 深查 D-1：`git-runtime-install.ts`、`python-runtime.ts` 的安装包下载去掉从开始就算的 10 分钟总时限，
