@@ -693,6 +693,23 @@ describe('canvas image service after a stop', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it('counts a paid picture still coming in after a stop as pending, so an update restart asks first (D10)', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, onFinishedAfterStop } = canvasSetup(fetchImpl)
+    expect(service.hasPendingWork()).toBe(false)
+    const pending = service.generate(4, {
+      requestId: 'canvas-run:pending', group: '生图分组', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    expect(service.hasPendingWork()).toBe(true)
+    service.cancel(4, 'canvas-run:pending', 7)
+    await expect(pending).rejects.toThrow('已停止等待')
+    expect(service.hasPendingWork()).toBe(true)
+    requests[0].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalled())
+    await vi.waitFor(() => expect(service.hasPendingWork()).toBe(false))
+  })
+
   it('still cancels requests that have not gone out, so nothing is paid for them', async () => {
     const { fetchImpl, requests } = heldFetch()
     const { service, credentials, assets, addTag } = canvasSetup(fetchImpl, { maxActive: 1, maxQueued: 1 })
