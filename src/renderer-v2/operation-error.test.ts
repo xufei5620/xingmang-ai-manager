@@ -4,6 +4,7 @@ import { networkFailureMessages, officialRegistryUnreachableMarker, toolCertific
 import { errors } from './registry/errors'
 import { codexDesktopKnownIssueLaunchSentence } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalMessage } from '../../electron/config-link-refusal'
+import { configWriteBlockerMessage } from '../../electron/config-write-blocker'
 import { buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, type ClaudeDesktopInstallFailureReason } from '../../electron/claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage, codexDesktopInstallFailureReasons, type CodexDesktopInstallFailureReason } from '../../electron/codex-desktop-install-failure'
 import {
@@ -68,6 +69,9 @@ const catalogCoverage: Record<OperationErrorKey, { sample: string; target?: Oper
   permission: { sample: 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename' },
   // 同一句 EPERM，调用方说明写的是工具的配置文件时（已知29）。
   configPermission: { sample: "重新写入密钥 没有完成：EPERM: operation not permitted, rename '本机路径'", target: 'config' },
+  // 主进程查出没权限是哪一种时那半句（config-files-context.ts 的 explainConfigWriteFailure，D15），经 account-source-switch 包一层。
+  configAdminOwned: { sample: `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, target: 'config' },
+  configReadOnly: { sample: `Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`, target: 'config' },
   diskFull: { sample: 'Claude Code 安装失败：npm 官方源：ENOSPC: no space left on device, write' },
   // 同一句磁盘满，写的是工具的配置文件时（#1100 第6条）。
   configDiskFull: { sample: "重新写入密钥 没有完成：ENOSPC: no space left on device, write '本机路径'", target: 'config' },
@@ -198,7 +202,7 @@ describe('renderer-v2 operation error classification', () => {
       '原密码错误，请重新输入',
       '该账号已被封禁，请联系客服',
       '用户名或密码错误',
-      '当前账号未设置密码，请先通过“找回密码”设置密码',
+      '这个账号还没设过密码，先点「找回密码」设一个',
     ]) expect(presentOperationError(resolved)).toBeNull()
   })
 
@@ -384,6 +388,32 @@ describe('renderer-v2 operation error classification', () => {
     // 经 IPC 过来的原话（带通道名、本机路径）走 failureWithDetail 以后照样认得出。
     const viaIpc = new Error("Error invoking remote method 'chat-history:export-text': Error: EPERM: operation not permitted, open 'C:\\Users\\小王\\Desktop\\.周报.txt.3f401a29-0000-4000-8000-000000000000.tmp'")
     expect(exportFailureSentence(failureWithDetail(viaIpc))).toBe('这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。')
+  })
+
+  it('says which of the two known config write refusals it is instead of blaming security software (D15)', () => {
+    // 权限和写失败.md PW-3、PW-4：设置文件夹归管理员、文件被设成只读，重试多少次都一样，以前也叫人关窗口重试。
+    const adminOwned = `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`
+    const readOnly = `Codex CLI 切回官方账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`
+    const actions = [{ id: 'retry', label: '重试' }, { id: 'log', label: '查看日志' }, { id: 'support', label: '找客服' }]
+    expect(presentOperationError(adminOwned, 'config')).toEqual({
+      key: 'configAdminOwned',
+      title: '写不进配置文件',
+      body: '这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。',
+      actions,
+    })
+    expect(presentOperationError(readOnly, 'config')).toEqual({
+      key: 'configReadOnly',
+      title: '写不进配置文件',
+      body: '这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。',
+      actions,
+    })
+    // 主进程只在写配置时这么说：调用方没说写的是配置（装工具时顺手写密钥）也照样认，不说成安装目录。
+    expect(classifyOperationError(adminOwned)).toBe('configAdminOwned')
+    expect(classifyOperationError(configWriteBlockerMessage('readOnly', 'EPERM'))).toBe('configReadOnly')
+    expect(presentOperationFailure({ message: '重新写入密钥没有完成', detail: configWriteBlockerMessage('adminOwned', 'EACCES'), target: 'config' })?.key).toBe('configAdminOwned')
+    // 没查出是哪一种的照旧是原来那句；自动恢复也没做成的照旧先叫人去备份迁移。
+    expect(classifyOperationError("重新写入密钥 没有完成：EACCES: permission denied, open '本机路径'", 'config')).toBe('configPermission')
+    expect(classifyOperationError(`改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。自动恢复也没有完成（EPERM），请到「设置 › 备份迁移」里恢复切换前那一份。`, 'config')).toBe('switchUndoFailed')
   })
 
   it('treats exactly the home actions that rewrite a tool config as config writes', () => {

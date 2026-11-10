@@ -705,6 +705,11 @@ export interface SystemServiceOptions {
   inspectRunningToolsForRouteHint?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
+  /**
+   * Windows 上星芒这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）：装 Node.js
+   * 时不弹授权窗口，进度那句不说会弹（已知19）。缺省 = 不是。
+   */
+  windowsProcessElevated?: boolean
   platform?: NodeJS.Platform
   providerRoots?: ProviderConfigRoots
   codexEnv?: NodeJS.ProcessEnv

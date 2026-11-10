@@ -4801,7 +4801,7 @@ test('the update failure bubble retries the failed step without a detour', async
 })
 
 // 已知31：版本更新卡确认框里的「重启并安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
-// 客户在那一句里点了「继续安装」：确认框关掉，不说「安装请求已提交」，新版本留着。
+// 客户在那一句里点了「继续安装」（或者 D10 那一句里点了「等它做完」）：确认框关掉，不说「安装请求已提交」，新版本留着。
 test('the version card asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
   const page = await open('installPostponed=1')
   try {
@@ -4817,6 +4817,8 @@ test('the version card asks about running installs before restarting and stays q
     }).toBe(1)
     await restart.click()
     const confirm = page.getByRole('dialog', { name: '重启并安装更新？' })
+    // D9：装完会自己重新打开，不再叫客户「重新打开工具箱」。
+    await confirm.getByText('请先保存当前工作。星芒会先关掉，装好自动重新打开。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '重启并安装', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
@@ -8430,7 +8432,7 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
     // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
     const notes = article.locator('details.v2-tutorial-extra')
-    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 已在运行？'])
+    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 桌面端还开着？'])
     const explanationHit = explanation.locator('mark.v2-tutorial-hit')
     await expect(explanationHit).toHaveText('重新读取时')
     await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)
