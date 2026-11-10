@@ -4,6 +4,7 @@ import {
   requireAccountRealm, requireRealmUserId,
   type AccountRealmId, type RealmAccountOwner, type RealmAccountSummary, type RealmSavedAccount,
 } from './realm-account'
+import { classifyStorageFailure } from './startup-failure'
 
 const maxFileBytes = 512 * 1024
 const maxPlaintextBytes = 320 * 1024
@@ -34,12 +35,20 @@ const keyStoreRefusedStages: readonly RealmVaultFailureStage[] = ['availability'
 // 渲染层 features/auth/state.ts 按「系统加密服务没有放行」认这句：这个模块带 node:crypto，
 // 那边值导入不了，只能按字面认（有意重复）。前半句照旧是 STORAGE 那句，认不出的地方仍按存储不可用处理。
 export const realmVaultKeyStoreRefusedMessage = '账号安全存储不可用：系统加密服务没有放行，原记录未修改'
+// 系统盘满了写不进去（数据和迁移 DM-4）：以前跟别的写失败一样只剩 stage=write，登录框叫客户重开、找客服，
+// 日志里也看不出是盘满。渲染层按「账号安全存储不可用：磁盘空间不足」认这句（同上，有意重复）。
+export const realmVaultDiskFullMessage = '账号安全存储不可用：磁盘空间不足，原记录未修改'
 
-/** Stage only: native errors/JSON parse failures can contain credential material. */
+/**
+ * Stage only: native errors/JSON parse failures can contain credential material.
+ * A write that failed for lack of disk space keeps just that one bit, never the
+ * native error itself.
+ */
 export class RealmVaultStorageError extends RealmAccountError {
-  constructor(readonly stage: RealmVaultFailureStage) {
+  constructor(readonly stage: RealmVaultFailureStage, readonly diskFull = false) {
     super('STORAGE')
     if (keyStoreRefusedStages.includes(stage)) this.message = realmVaultKeyStoreRefusedMessage
+    else if (diskFull) this.message = realmVaultDiskFullMessage
   }
 }
 
@@ -184,7 +193,9 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
 
   async function write(document: VaultDocument): Promise<void> {
     const ciphertext = encode(document)
-    try { await storage.writeAtomic(ciphertext) } catch { throw new RealmVaultStorageError('write') }
+    try { await storage.writeAtomic(ciphertext) } catch (error) {
+      throw new RealmVaultStorageError('write', classifyStorageFailure(error) === 'disk-full')
+    }
   }
 
   function recoverUnreadable(): Promise<boolean> {

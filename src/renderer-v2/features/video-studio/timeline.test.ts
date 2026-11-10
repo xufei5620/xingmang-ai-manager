@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { VideoStudioError } from './errors'
 import {
   buildVideoStudioRenderPlan,
+  formatVideoStudioDuration,
   maxVideoStudioClips,
   normalizeVideoStudioCaption,
   resolveVideoStudioOutputSize,
@@ -125,7 +126,40 @@ describe('video studio timeline', () => {
     expect(failure(() => buildVideoStudioRenderPlan([{ start: 0, end: 1 }], { ...options, frameRate: 60 as never }))).toBe('不支持这个帧率')
   })
 
+  it('does not call a timeline a fraction of a second over the limit exactly ten minutes', () => {
+    const message = (() => {
+      try {
+        buildVideoStudioRenderPlan([{ start: 0, end: 300 }, { start: 0, end: 300.1 }], options)
+      } catch (error) {
+        return error instanceof Error ? error.message : ''
+      }
+      throw new Error('expected a failure')
+    })()
+    expect(message).toBe('成片最长 10 分钟，现在是 10 分 1 秒')
+  })
+
   it('accepts a timeline exactly at the length limit', () => {
     expect(buildVideoStudioRenderPlan([{ start: 0, end: 300 }, { start: 0, end: 300 }], options).duration).toBe(600)
+  })
+})
+
+describe('formatVideoStudioDuration', () => {
+  it('writes seconds, then minutes and seconds, then hours and minutes', () => {
+    expect(formatVideoStudioDuration(0)).toBe('0 秒')
+    expect(formatVideoStudioDuration(45.4)).toBe('45 秒')
+    expect(formatVideoStudioDuration(60)).toBe('1 分 0 秒')
+    expect(formatVideoStudioDuration(602)).toBe('10 分 2 秒')
+    expect(formatVideoStudioDuration(3600)).toBe('1 小时 0 分钟')
+    expect(formatVideoStudioDuration(4503)).toBe('1 小时 15 分钟')
+  })
+
+  it('rounds the whole duration before splitting it, so seconds never reach 60', () => {
+    expect(formatVideoStudioDuration(59.6)).toBe('1 分 0 秒')
+    expect(formatVideoStudioDuration(659.7)).toBe('11 分 0 秒')
+    expect(formatVideoStudioDuration(3599.6)).toBe('1 小时 0 分钟')
+  })
+
+  it('does not pad seconds with a leading zero', () => {
+    expect(formatVideoStudioDuration(65)).toBe('1 分 5 秒')
   })
 })

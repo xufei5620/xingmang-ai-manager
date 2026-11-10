@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest'
 import {
   approvalTitle,
+  classifyRemoteTurnFailure,
   formatApprovalText,
+  formatFileChangeLine,
   normalizePairingAttempt,
   parseRemoteCommand,
   redactRemoteText,
+  remoteMessages,
+  remoteTurnFailureMessages,
   splitRemoteText,
+  staleMessageNotice,
   statusMessage,
   truncateRemoteText,
 } from './codex-remote-text'
@@ -108,5 +113,56 @@ describe('codex-remote-text', () => {
   it('truncates with an ellipsis', () => {
     expect(truncateRemoteText('abcdef', 4)).toBe('abc…')
     expect(truncateRemoteText('abc', 4)).toBe('abc')
+  })
+
+  // D66：手机上收到的这几句，字照 0.2.24 深查决定单一字不差。
+  it('says what the phone receives in so many words', () => {
+    expect(remoteMessages.codexStarting).toBe('电脑正在准备 Codex，稍等一下；想取消就发「停止」。')
+    expect(remoteMessages.threadReset).toBe('这是新对话，前面的记不得了。')
+    expect(remoteMessages.unbound).toBe('电脑上已经把你解绑了，之后发的消息不会再执行。')
+    expect(remoteMessages.idleClosingSoon).toBe('手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。')
+    expect(staleMessageNotice(25)).toBe('这条是 25 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。')
+    expect(remoteTurnFailureMessages).toEqual({
+      balance: '余额不够了，充值后再发一次。',
+      keyLimit: '这一轮没做完：这把密钥设置的额度上限用完了，到「个人中心 › 密钥管理」调高上限后再试',
+      login: '电脑上的登录失效了，请在电脑上的星芒里重新登录。',
+      context: '这段对话太长了，发「新对话」重新开始。',
+      connection: '电脑这会儿连不上星芒的线路，过一会儿再发。',
+    })
+  })
+
+  it('reads whose money or login ran out from what the relay said', () => {
+    const http = (status: number) => ({ httpConnectionFailed: { httpStatusCode: status } })
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: {"error":{"code":"insufficient_user_quota"}}', http(403))).toBe('balance')
+    // Sub2API, and the status read from the message when codexErrorInfo has none.
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: {"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}', null)).toBe('balance')
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: {"error":{"message":"token quota is not enough","code":"pre_consume_token_quota_failed"}}', http(403))).toBe('keyLimit')
+    expect(classifyRemoteTurnFailure('unexpected status 401 Unauthorized: {"error":{"message":"无效的令牌"}}', http(401))).toBe('login')
+    expect(classifyRemoteTurnFailure('token refresh failed', 'unauthorized')).toBe('login')
+    // A 403 that says nothing about money is not the customer's to fix.
+    expect(classifyRemoteTurnFailure('unexpected status 403 Forbidden: Access blocked by Cloudflare', http(403))).toBeNull()
+  })
+
+  it('tells a conversation that grew too long and a line that cannot be reached', () => {
+    expect(classifyRemoteTurnFailure('Codex ran out of room in the model\'s context window.', 'contextWindowExceeded')).toBe('context')
+    expect(classifyRemoteTurnFailure('error sending request', { httpConnectionFailed: { httpStatusCode: null } })).toBe('connection')
+    expect(classifyRemoteTurnFailure('stream disconnected', { responseStreamDisconnected: { httpStatusCode: null } })).toBe('connection')
+    expect(classifyRemoteTurnFailure('exceeded retry limit, last status: 502', { responseTooManyFailedAttempts: { httpStatusCode: 502 } })).toBe('connection')
+    expect(classifyRemoteTurnFailure('We’re currently experiencing high demand', 'serverOverloaded')).toBe('connection')
+    // An answer that is not a gateway failure says nothing about the line.
+    expect(classifyRemoteTurnFailure('unexpected status 400 Bad Request: model not found', { httpConnectionFailed: { httpStatusCode: 400 } })).toBeNull()
+    expect(classifyRemoteTurnFailure('Quota exceeded. Check your plan and billing details.', 'usageLimitExceeded')).toBeNull()
+    expect(classifyRemoteTurnFailure('failed to read configuration layers', undefined)).toBeNull()
+    expect(classifyRemoteTurnFailure('something', { a: 1, b: 2 })).toBeNull()
+  })
+
+  it('puts what happens to a file in front of it and the line counts after it', () => {
+    expect(formatFileChangeLine({ kind: 'add', path: '~/p/a.ts', added: 12, removed: 0 })).toBe('新建 ~/p/a.ts +12 -0 行')
+    expect(formatFileChangeLine({ kind: 'delete', path: '~/p/a.ts', added: 0, removed: 3 })).toBe('删除 ~/p/a.ts +0 -3 行')
+    expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts', added: 12, removed: 3 })).toBe('改 ~/p/a.ts +12 -3 行')
+    expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts', movePath: '~/p/b.ts', added: 1, removed: 1 })).toBe('~/p/a.ts 挪到 ~/p/b.ts +1 -1 行')
+    // Without the change contents there is nothing to count; without a kind only the path is known.
+    expect(formatFileChangeLine({ kind: 'update', path: '~/p/a.ts' })).toBe('改 ~/p/a.ts')
+    expect(formatFileChangeLine({ kind: null, path: '~/p/a.ts' })).toBe('~/p/a.ts')
   })
 })

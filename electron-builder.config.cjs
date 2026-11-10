@@ -9,6 +9,7 @@ const packageVersion = require('./package.json').version
 const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
 const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs')
 const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-checksums.cjs')
+const { buildReleaseCopyright } = require('./scripts/release-copyright.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
@@ -170,7 +171,8 @@ module.exports = {
   appId: 'com.xingmang.ai.manager',
   productName,
   protocols: [{ name: '星芒AI管理工具', schemes: ['xingmang'] }],
-  copyright: 'Copyright © 2026 绍兴星芒文化传媒有限责任公司',
+  // 年份按出包那天的北京时间算，理由见 scripts/release-copyright.cjs。
+  copyright: buildReleaseCopyright(new Date()),
   // 浏览器内核自带 55 种语言的内置文字（表单校验提示、文件选择框、视频控件这类），星芒
   // 界面全是中文，只留简体、繁体（香港、澳门的系统也落到繁体）和 en-US：系统语言是别的
   // 时候，Chromium 一律退回 en-US，删了它就没有可退的。Electron 45.1.0 上 Windows 装好后
