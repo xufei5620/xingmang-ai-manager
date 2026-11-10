@@ -1591,10 +1591,11 @@ describe('registerIpcHandlers', () => {
       await expect(importData(trustedEvent())).rejects.toThrow('不是星芒导出的')
 
       const good = path.join(directory, 'good.json')
-      fs.writeFileSync(good, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'light', desktopNotifications: false }, conversations: [{ id: 'c1' }] }))
+      fs.writeFileSync(good, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'light', desktopNotifications: false }, conversations: [{ id: 'c1' }], phrases: ['回答尽量简短'] }))
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [good] })
       await expect(importData(trustedEvent())).resolves.toEqual({
         conversations: [{ id: 'c1' }],
+        phrases: ['回答尽量简短'],
         settings: { version: 2, desktopNotifications: false },
         conflictingSettings: { version: 2, theme: 'light' },
         conflictLabels: ['主题'],

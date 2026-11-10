@@ -10415,6 +10415,11 @@ test('a chat page opened while an import is still saving waits for it and keeps 
     await page.evaluate(() => window.v2Test.releaseChatHistoryRead())
     await waitForToast(page, '导入了 1 个对话。')
     await page.getByTestId('chat-conversation-from-old-computer').waitFor()
+    // 「常用的话」跟聊天记录一起搬过来（Fable 第二轮 Q7）。
+    await page.getByTestId('chat-phrases-open').click()
+    assert.deepEqual(await page.getByTestId('chat-phrases-dialog').locator('.chat-phrase-text').allTextContents(), ['旧电脑上存的一句'])
+    await page.getByTestId('chat-phrases-close').click()
+    await page.getByTestId('chat-phrases-dialog').waitFor({ state: 'detached' })
     await page.getByTestId('chat-composer-input').fill('接着聊')
     await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('接着聊')
     assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])

@@ -945,7 +945,7 @@ const methods = {
       await new Promise<void>((resolve) => { releaseImport = resolve })
     }
     const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages: [{ id: 'old-message', role: 'user' as const, content: '旧电脑上问过的话', reasoning: '', status: 'complete' as const, createdAt: 1 }] }
-    return { conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    return { conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] }
   },
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
