@@ -70,7 +70,7 @@ export function AccountProfileDialog({
           <LocalAvatar identity={identity} name={shownName} size={48} />
           <div>
             <strong>头像</strong>
-            <p>只存在这台电脑上，支持 JPG、PNG、WebP，选好后可以裁剪</p>
+            <p>只存在这台电脑上，支持 JPG、PNG、WebP，不超过 2 MB，选好后可以裁剪</p>
           </div>
           <Button size="sm" icon={Pencil} onClick={() => setAvatarOpen(true)} disabled={busy} testId="account-avatar-change">更换头像</Button>
         </div>
@@ -80,7 +80,7 @@ export function AccountProfileDialog({
             label="显示名称"
             value={name}
             maxLength={20}
-            placeholder="别人看到的名字"
+            placeholder="显示在左下角的名字"
             hint="最多 20 个字"
             disabled={!editable || busy}
             onChange={(event) => setName(event.target.value)}

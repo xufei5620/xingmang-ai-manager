@@ -1,11 +1,21 @@
 import { describe, expect, it } from 'vitest'
+import { appReleaseDownloadUrl } from './app-download-page'
 import {
-  buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, classifyClaudeDesktopInstallFailure,
+  buildClaudeDesktopInstallFailureMessage, claudeDesktopInstallFailureReasons, claudeDesktopOfflinePackagesUrl, classifyClaudeDesktopInstallFailure,
   isClaudeDesktopInstallFailureMessage, isPlainClaudeDesktopInstallMessage, type ClaudeDesktopInstallFailureReason,
 } from './claude-desktop-install-failure'
 import { buildCodexDesktopInstallFailureMessage } from './codex-desktop-install-failure'
 
 describe('Claude Desktop install failure wording', () => {
+  it('sends the offline package button to the tutorial page the app download button already uses', () => {
+    // 同一个教程站页面、同一个主机，只换到「备用安装包」那一节（D64）；那边的包来自国内存储桶。
+    const offline = new URL(claudeDesktopOfflinePackagesUrl)
+    const tutorial = new URL(appReleaseDownloadUrl)
+    expect(offline.href).toBe(claudeDesktopOfflinePackagesUrl)
+    expect([offline.protocol, offline.host, offline.pathname, offline.search]).toEqual([tutorial.protocol, tutorial.host, tutorial.pathname, ''])
+    expect(offline.hash).toBe('#offline-packages')
+  })
+
   it('names both routes only when the system installer was actually tried', () => {
     expect(buildClaudeDesktopInstallFailureMessage('unreachable', { wingetTried: true }))
       .toBe('Claude Desktop 没装上：系统自带的安装组件和 Claude 官网的离线安装包这次都没装上，Claude 官网这会儿连不上。')

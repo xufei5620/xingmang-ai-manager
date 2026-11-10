@@ -48,7 +48,7 @@ function currentAccountLabel(accountName: string | null | undefined): string {
 }
 
 function installationResult(route: GuideRoute, tool: GuideToolState | undefined, prepared: boolean): GuideResultRow {
-  if (route === 'chat') return { value: '不用另装', detail: '聊天就在本软件里，直接提问就行。', tone: 'ok' }
+  if (route === 'chat') return { value: '不用另装', detail: '聊天就在星芒里，直接提问就行。', tone: 'ok' }
   if (!tool || tool.detectionError) return { value: '暂时没读到', detail: '点「重新检测」再看一次。', tone: 'warn' }
   if (!tool.installed) return { value: '还没装好', detail: '回到上一步把它装好。', tone: 'warn' }
   const version = tool.version?.replace(/^v/i, '')
@@ -87,16 +87,17 @@ function connectionResult(input: GuideSetupInput): { row: GuideResultRow; billin
   if (source === 'unknown') return {
     // 别家的站认不出来，只说是不是当前账号的，不说对方是谁（和第 3 步的提示一致）。
     row: tool.keyState === 'otherAccount' ? { value: '可能不是当前账号的密钥', detail: '能用，但用量可能算到别的账号上。', tone: 'warn' }
-      : tool.keyState === 'changed' ? { value: '设置被改过', detail: '在本软件之外被改过，现在还能用。', tone: 'warn' }
+      : tool.keyState === 'changed' ? { value: '设置被改过', detail: '在星芒之外被改过，现在还能用。', tone: 'warn' }
         : tool.keyState === 'otherSite' ? { value: '不是当前账号的密钥', detail: '换成当前账号就能接着用。', tone: 'warn' }
           : { value: '别处的配置', detail: '原来的配置原样留着，先看看怎么处理。', tone: 'warn' },
     billing: '可能不扣当前账号的余额。改用当前账号后，就花当前账号的。',
   }
   if (source === 'account') {
+    // 余额是 $0 时打开了也用不了，「设置已读到」后面不再叫人去打开（D47，新手流程 N6）。
     const detail = switched?.target === 'account'
       ? switched.verified ? '刚才改用时试连过，能连上。' : '已经改好，但这次没试通，原因看下面。'
-      : !readiness.connected ? '还没设好，点「去完成连接配置」保存一次。'
-        : signedIn ? '设置已读到，打开工具试一次。' : '设置已读到，登录后能核对是不是你的账号。'
+      : !readiness.connected ? '还没设好，点「去连好」保存一次。'
+        : signedIn ? input.walletEmpty ? '设置已读到。' : '设置已读到，打开工具试一次。' : '设置已读到，登录后能核对是不是你的账号。'
     const verified = switched?.target === 'account' && switched.verified
     return {
       row: { value: signedIn ? current : '还没登录', detail, tone: !readiness.connected || (switched && !switched.verified) ? 'warn' : verified ? 'ok' : 'neutral' },
@@ -117,20 +118,26 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
   // 桌面端里「ChatGPT」那边的「聊天」「工作」要登录 ChatGPT 账号，用密钥发会报「提交消息时出错」，
   // 只有「Codex」那一栏走得通（2026-10-18 客户报）。用官方账号的照旧，不多说这一句。
   const keyedDesktop = route === 'codexDesktop' && (input.switched ? input.switched.target : input.tool?.source) !== 'official'
+  const usesAccountBalance = connection.usesAccountBalance ?? false
+  const walletEmpty = usesAccountBalance && input.walletEmpty === true
+  // 余额是 $0 时，顶上那句已经叫人先充值（StartGuide 的 walletFirst），下一步跟着说先充值，
+  // 不再一句说充值、两句说去打开（D47，新手流程 N6）。没试通的改用自己带着出口，和 walletFirst 一样不叠这一套。
+  const topUpFirst = walletEmpty && !(input.switched?.target === 'account' && !input.switched.verified)
   const next: GuideResultRow = !readiness.prepared
     ? { value: '先回上一步', detail: '把工具准备好后，点「重新检测」。', tone: 'warn' }
     : !readiness.connected
       ? { value: '先把账号设好', detail: '保存设置或在工具里登录后，点「重新检测」。', tone: 'warn' }
       : route === 'chat'
         ? { value: '可以开始聊天', detail: '把下面这句话发出去试试。', tone: 'neutral' }
-        : { value: '打开工具试一次', detail: keyedDesktop ? '打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。' : prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
-  const usesAccountBalance = connection.usesAccountBalance ?? false
+        : topUpFirst
+          ? { value: '先充值', detail: '充值后回来点「打开」就能用。', tone: 'warn' }
+          : { value: '打开工具试一次', detail: keyedDesktop ? '打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。' : prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
   return {
     install: installationResult(route, input.tool, readiness.prepared),
     connection: connection.row,
     billing: connection.billing,
     usesAccountBalance,
-    walletEmpty: usesAccountBalance && input.walletEmpty === true,
+    walletEmpty,
     next,
     prompt,
   }

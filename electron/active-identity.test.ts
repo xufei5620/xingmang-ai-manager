@@ -71,7 +71,7 @@ describe('main-process active identity', () => {
     account.login()
     const captured = account.reader.capture()
     account.beginAttempt()
-    assert.throws(() => account.reader.assertCurrent(captured), /上下文已变化/)
+    assert.throws(() => account.reader.assertCurrent(captured), /账号刚切换过/)
   })
 
   it('invalidates a snapshot after logout', () => {
@@ -79,7 +79,7 @@ describe('main-process active identity', () => {
     account.login()
     const captured = account.reader.capture()
     account.logout()
-    assert.throws(() => account.reader.assertCurrent(captured), /上下文已变化/)
+    assert.throws(() => account.reader.assertCurrent(captured), /账号刚切换过/)
   })
 
   it('does not revive a snapshot on re-login as the same user', () => {
@@ -88,7 +88,7 @@ describe('main-process active identity', () => {
     const captured = account.reader.capture()
     account.logout()
     account.login()
-    assert.throws(() => account.reader.assertCurrent(captured), /上下文已变化/)
+    assert.throws(() => account.reader.assertCurrent(captured), /账号刚切换过/)
     assert.doesNotThrow(() => account.reader.assertCurrent(account.reader.capture()))
   })
 
@@ -97,7 +97,7 @@ describe('main-process active identity', () => {
     account.login()
     const captured = account.reader.capture()
     account.setState({ authenticated: true, account: { userId: 8 } })
-    assert.throws(() => account.reader.assertCurrent(captured), /上下文已变化/)
+    assert.throws(() => account.reader.assertCurrent(captured), /账号刚切换过/)
   })
 
   it('does not accept a cloned or fabricated ownership snapshot', () => {
@@ -168,7 +168,7 @@ describe('main-process active identity', () => {
       account.beginAttempt()
       return getState()
     }
-    assert.throws(() => account.reader.capture(), /上下文已变化/)
+    assert.throws(() => account.reader.capture(), /账号刚切换过/)
   })
 
   it('blocks publication of an old asynchronous result when the caller checks ownership', async () => {
@@ -184,7 +184,7 @@ describe('main-process active identity', () => {
       published = true
       return value
     })()
-    const rejected = assert.rejects(operation, /上下文已变化/)
+    const rejected = assert.rejects(operation, /账号刚切换过/)
     account.logout()
     account.login()
     resolve('old-result')

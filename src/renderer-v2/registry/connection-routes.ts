@@ -5,8 +5,8 @@ import type { RelayRoutePreference, RelayRoutePreferences } from '../../../elect
 // 两个账号按入口对应：默认那条（CF）是线路1，直连（洛杉矶）是线路2，客服对报告时同一个名字指同一种入口。
 // 星芒账号「自动」先走直连，所以它的说明是先走线路2；历史账号先走 CF（yoyo 10-14），先走线路1。
 export const connectionRouteSettings = [
-  { siteId: 'solov', id: 'relay-route-solov', label: '星芒账号线路', description: '自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。' },
-  { siteId: 'solov-api', id: 'relay-route-solov-api', label: '历史账号线路', description: '自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。' },
+  { siteId: 'solov', id: 'relay-route-solov', label: '星芒账号线路', description: '自动会先走线路2，连不上时改走线路1。重开星芒后生效，不会切换账号。' },
+  { siteId: 'solov-api', id: 'relay-route-solov-api', label: '历史账号线路', description: '自动会先走线路1，线路1连不上时改走线路2。重开星芒后生效，不会切换账号。' },
 ] as const;
 
 export interface ConnectionRoutePreferences {

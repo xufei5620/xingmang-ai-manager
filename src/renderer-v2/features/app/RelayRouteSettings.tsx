@@ -64,7 +64,7 @@ export function RelayRouteRestartNotice({
     <>
       <div className="v2-settings-route-wait" role="status" data-testid="settings-relay-relaunch">
         <Info size={15} aria-hidden="true" />
-        <strong>线路已保存，等待重启</strong>
+        <strong>线路已保存，重开星芒后生效</strong>
         <Button
           size="sm"
           testId="settings-relay-relaunch-now"
