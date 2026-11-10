@@ -27,6 +27,11 @@
 .v2-operation-detail {
   color: var(--text-3);
 }
+/* 错误框底部一行只放得下四五颗按钮。Claude Desktop、Codex 桌面端装不上时连「返回」「复制给客服」
+   有六七颗，不折行就从左边挤出框外，客户看不见「返回」和排在前面的出口（D64 的「下载离线安装包」）。 */
+.xm-dialog[data-testid='operation-error'] > .xm-modal-content > footer {
+  flex-wrap: wrap;
+}
 .v2-business-loading {
   min-height: 200px;
   display: grid;

@@ -13,7 +13,7 @@ import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopDownload'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload'
 export interface OperationAction { id: OperationActionId; label: string }
 /**
  * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
@@ -70,7 +70,7 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
   // Windows 上 Claude Desktop 一键安装没装上（系统自带的安装组件、Claude 官网的离线安装包，
   // 主进程 claude-desktop-install-failure.ts 写好的整句）。同 Codex 那一类，那句话会说
-  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「去官网下载」。
+  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「下载离线安装包」和「去 Claude 官网」。
   { key: 'claudeDesktopInstallFailed', match: (message) => isClaudeDesktopInstallFailureMessage(message) },
   // Mac 上一键装桌面端没装成（主进程 macos-desktop-install-failure.ts 写好的整句，认法也
   // 取那边的）。那句话已经说了下一步，这里配「看安装指南」：照教程自己从官网下载安装
@@ -287,8 +287,10 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   '改用 Codex 命令行版': 'useCodexCli',
   // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
   看安装指南: 'installGuide',
-  // 只有 Windows 上 Claude Desktop 没装上那一类会出这颗：打开 Claude 官网的下载页。
-  去官网下载: 'claudeDesktopDownload',
+  // 只有 Windows 上 Claude Desktop 没装上那一类会出这两颗（D64）：Claude 官网在国内多半打不开，
+  // 先给教程站「备用安装包」那一节（包来自国内存储桶），官网退到第二个。
+  下载离线安装包: 'claudeDesktopOfflinePackages',
+  '去 Claude 官网': 'claudeDesktopDownload',
 }
 
 /**

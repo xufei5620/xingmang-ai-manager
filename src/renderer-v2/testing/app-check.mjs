@@ -372,6 +372,42 @@ test('external client install failures clear busy state and remain retryable', a
   } finally { await page.close() }
 })
 
+test('a failed Claude Desktop install offers the offline packages first and the Claude site second', async () => {
+  // D64：Claude 官网在国内多半打不开，先给教程站「备用安装包」那一节，官网退到第二个。
+  const page = await open('externalInstallFailure=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    async function failInstall() {
+      await row.getByRole('button', { name: '安装', exact: true }).click()
+      const dialog = page.getByTestId('operation-error')
+      await dialog.getByText('没能装好 Claude Desktop', { exact: true }).waitFor()
+      return dialog
+    }
+    async function openedBy(dialog, label) {
+      const previous = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length)
+      await dialog.getByRole('button', { name: label, exact: true }).click()
+      await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length > count, previous)
+      return await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').at(-1).args[0])
+    }
+    let dialog = await failInstall()
+    // 返回、重试、两个出口、查看日志、复制给客服、找客服一行放不下：折行，不能有哪颗被挤出框外。
+    // 量的是排版宽度，不受弹出动画的缩放影响。
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth, rows: new Set([...element.querySelectorAll('button')].map((button) => button.offsetTop)).size }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    assert.ok(footer.rows > 1, `七颗按钮应该折成两行：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'claude-desktop-install-failed-exits.png') })
+    await expect(dialog.getByTestId('operation-error-body')).toHaveText('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
+    const exits = await dialog.locator('[data-testid^="operation-error-claudeDesktop"]').allTextContents()
+    assert.deepEqual(exits, ['下载离线安装包', '去 Claude 官网'])
+    assert.equal(await dialog.getByRole('button', { name: '去官网下载', exact: true }).count(), 0)
+    assert.equal(await openedBy(dialog, '下载离线安装包'), 'https://docs-new.solov.cc/guide/manager#offline-packages')
+    await expect(dialog).toHaveCount(0)
+    dialog = await failInstall()
+    assert.equal(await openedBy(dialog, '去 Claude 官网'), 'https://claude.com/download')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external clients recognize complete manual configurations without claiming account ownership', async () => {
   const page = await open('externalInstalled=1&externalOther=claudeDesktop&externalLocalReady=claudeDesktop&externalConfigError=workbuddy')
   try {
