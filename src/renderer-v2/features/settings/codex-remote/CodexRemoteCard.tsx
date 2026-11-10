@@ -30,11 +30,12 @@ export const codexRemotePersistenceNotices = {
 
 /**
  * 「解绑」「退出登录」点了先问一句（0.2.24 D67）：做完那个人立刻用不了，得重新配对或重新登录。
- * 退出登录那个框的标题带渠道名，跟按钮的读屏名字（退出飞书登录 / 退出微信登录）一样。
+ * 退出登录那个框的标题带渠道名，跟按钮的读屏名字（退出飞书登录 / 退出微信登录）一样；正文各渠道不同
+ * （飞书重新填凭据、微信重新扫码），放在 remoteChannelSections 的 logoutHint。
  */
 export const codexRemoteConfirmText = {
   unbind: { title: '解绑？', body: '解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', ok: '解绑' },
-  logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, body: '退出后要重新填机器人的凭据，才能再用手机遥控。', ok: '退出登录' },
+  logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
 function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
@@ -152,7 +153,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
       <Confirm
         open={asking !== null}
         title={asking === 'logout' ? codexRemoteConfirmText.logout.title(definition.title) : codexRemoteConfirmText.unbind.title}
-        body={<p>{asking === 'logout' ? codexRemoteConfirmText.logout.body : codexRemoteConfirmText.unbind.body}</p>}
+        body={<p>{asking === 'logout' ? definition.logoutHint : codexRemoteConfirmText.unbind.body}</p>}
         okLabel={asking === 'logout' ? codexRemoteConfirmText.logout.ok : codexRemoteConfirmText.unbind.ok}
         danger
         onOk={confirmAsked}
