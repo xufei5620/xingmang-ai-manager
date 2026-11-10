@@ -88,6 +88,7 @@
 - `canvas-run-store.ts` — 按账号存运行记录、节点结果缓存与产物来源清单，有保留上限；解析好的状态留在内存里，进度只改内存、最迟 2 秒合并写盘（R-1），文件被别人改过就以文件为准；账号初始化时对账素材（`reconcileAssets`）；`resolveAssetOrigin` 在运行记录里找交出过某张图的那次尝试，给引擎核对「画布上那张图」能不能复用，只在核对通过后才读图
 - `canvas-node-executors.ts` — 把运行引擎的 text / image / video 节点接到主进程的文本补全、图片服务、视频服务上；漫剧解析节点用 `drama-parse-prompt.ts` 发提示、`drama-parse.ts` 校验结果
 - `canvas-fingerprint.ts` — 节点指纹与图修订号：规范化 JSON 后算 sha256，指纹包含模型能力与上游交出的文字/产物，决定能不能命中缓存
+- `canvas-image-mask.ts` — 蒙版局部修改（画布完善第 5 条）：按内核同一套上限解析改图节点的蒙版笔画，发之前核对型号、唯一原图和尺寸，按内核同一套几何画成像素，做成透明处重画的 RGBA PNG 随 `/v1/images/edits` 发出（`canvas-image-mask.test.ts` 拿同步进来的内核对拍像素）
 - `canvas-asset-references.ts` — 查一个素材被哪些运行用作输入或候选，删除素材前给用户看引用
 
 ### 画布项目
