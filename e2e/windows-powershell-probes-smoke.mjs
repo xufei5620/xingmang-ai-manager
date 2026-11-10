@@ -772,6 +772,82 @@ try { Get-ItemProperty -LiteralPath 'Registry::${key}' | Out-Null; 'read' } catc
   }
 }])
 
+// Where an application-control policy is enforced, every -Command string runs
+// in ConstrainedLanguage; on a customer's machine the inventory was refused as
+// a whole, so the Claude Desktop, OpenCode and WorkBuddy cards read
+// 「命令执行失败（退出码 1）」 on every scan (2026-11-10). Real stand-ins here:
+// a WorkBuddy uninstall key that also holds the malformed DWORD above, so its
+// values are read one by one (the part that differs in ConstrainedLanguage),
+// pointing into a folder with a Chinese name, and an OpenCode key found through
+// its DisplayIcon; both executables are copies of this Node.js. The session is
+// switched to ConstrainedLanguage before the script runs: on this runner under
+// the system lockdown debug policy (__PSLockdownPolicy=4) the same script found
+// the same two clients with the same results. It must answer in ASCII (the
+// output stays in the console code page there), find both at their real
+// paths, reuse a remembered signature whose subject is not ASCII, and still
+// turn away every path GetFullPath would rewrite.
+checks.push(['external client inventory answers in ConstrainedLanguage', async () => {
+  const root = path.join(fs.realpathSync.native(scratch), '星芒 盘点')
+  const workbuddy = path.join(root, 'WorkBuddy', 'WorkBuddy.exe')
+  const opencode = path.join(root, 'OpenCode', 'OpenCode.exe')
+  const uninstall = 'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall'
+  const keys = [`${uninstall}\\{BFD312E9-1019-4F57-9F44-F86246833B50}`, `${uninstall}\\{d074f30d-5f88-5885-b075-be1348cc7676}`]
+  const quoted = (value) => `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+  for (const file of [workbuddy, opencode]) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.copyFileSync(process.execPath, file)
+  }
+  const registryFile = path.join(scratch, 'constrained-inventory.reg')
+  const contents = ['Windows Registry Editor Version 5.00', '',
+    `[${keys[0]}]`, '"DisplayName"="WorkBuddy"', '"DisplayVersion"="9.9.9"', `"InstallLocation"=${quoted(path.dirname(workbuddy))}`, '"NoModify"=hex(4):01,00,00,00,00,00,00,00', '',
+    `[${keys[1]}]`, '"DisplayName"="OpenCode"', '"DisplayVersion"="1.2.3"', `"DisplayIcon"=${quoted(`"${opencode}",0`)}`, ''].join('\r\n')
+  fs.writeFileSync(registryFile, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(contents, 'utf16le')]))
+  const reg = path.join(machinePaths.system32, 'reg.exe')
+  const wrapper = "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\nInvoke-Expression $env:XINGMANG_CONSTRAINED_SCRIPT"
+  const runConstrained = (script, extra = {}) => runPowerShell(['-Command', wrapper], trustedEnv({ XINGMANG_CONSTRAINED_SCRIPT: script, ...extra }))
+  const inventory = async (script) => {
+    const output = (await runConstrained(script)).trim()
+    assert.match(output, /^[\x00-\x7F]+$/, output)
+    return JSON.parse(output)
+  }
+  const client = (data, tool) => data.clients.find((entry) => entry.tool === tool)
+  try {
+    // Inside the try: an import that fails halfway may still have created a key.
+    await runFile(reg, ['import', registryFile])
+    const scan = await inventory(windowsExternalClientInventoryScript())
+    assert.equal(client(scan, 'workbuddy')?.path, workbuddy, JSON.stringify(scan))
+    assert.equal(client(scan, 'workbuddy')?.version, '9.9.9')
+    assert.match(client(scan, 'workbuddy')?.signatureStamp ?? '', /^\d+:\d+:\d+$/)
+    assert.ok(client(scan, 'workbuddy')?.signatureStatus, JSON.stringify(scan))
+    assert.equal(client(scan, 'opencode')?.path, opencode, JSON.stringify(scan))
+    assert.equal(client(scan, 'opencode')?.version, '1.2.3')
+    assert.deepEqual(scan.registryFailures, [])
+    assert.equal(scan.timings.signaturesChecked, 2)
+    for (const [section, value] of Object.entries(scan.timings)) assert.ok(Number.isSafeInteger(value) && value >= 0, `${section}: ${JSON.stringify(scan.timings)}`)
+    const remembered = { path: workbuddy, stamp: client(scan, 'workbuddy').signatureStamp, status: 'Valid', subject: 'CN=星芒 Remembered', version: '9.9.9' }
+    const launch = await inventory(windowsExternalClientInventoryScript([remembered], 'workbuddy'))
+    assert.deepEqual(launch.clients.map((entry) => [entry.tool, entry.path, entry.signatureSubject]), [['workbuddy', workbuddy, 'CN=星芒 Remembered']])
+    assert.equal(launch.timings.signaturesReused, 1)
+    const directory = path.dirname(workbuddy)
+    const cases = [
+      [workbuddy, 'True'],
+      [workbuddy.toLowerCase(), 'True'],
+      [`${directory}\\.\\WorkBuddy.exe`, 'False'],
+      [`${directory}\\..\\WorkBuddy\\WorkBuddy.exe`, 'False'],
+      [`${directory}\\\\WorkBuddy.exe`, 'False'],
+      [`${directory}/WorkBuddy.exe`, 'False'],
+      [`${directory}.\\WorkBuddy.exe`, 'False'],
+      [`${directory} \\WorkBuddy.exe`, 'False'],
+    ]
+    const checked = await runConstrained(`${windowsExternalClientInventoryScript()}\n'CHECKED:' + (@(foreach ($pathCase in (ConvertFrom-Json $env:XINGMANG_PATH_CASES)) { [string](Test-LocalExecutablePath $pathCase) }) -join ',')`, { XINGMANG_PATH_CASES: JSON.stringify(cases.map(([candidate]) => candidate)) })
+    assert.equal(checked.split(/\r?\n/).find((line) => line.startsWith('CHECKED:')), `CHECKED:${cases.map(([, expected]) => expected).join(',')}`, checked)
+    console.log(`info external client inventory in ConstrainedLanguage: timings=${JSON.stringify(scan.timings)}`)
+  } finally {
+    for (const key of keys) await runFile(reg, ['delete', key, '/f']).catch((error) => console.log(`::warning::could not delete ${key} (left behind, unless the import never created it): ${error.message}`))
+    fs.rmSync(root, { recursive: true, force: true })
+  }
+}])
+
 // The CLI terminal itself stays closed, but the step of its launch that reads
 // the folder's name runs here. The broker's Start-Process resolves
 // -WorkingDirectory as a wildcard, so a project folder such as 作业[1] used to
