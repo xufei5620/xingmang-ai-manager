@@ -8,6 +8,8 @@
 
 2026-10-15（v4 批03 欢迎登录引导）：加欢迎页用的 `--star`、`--ring`、`--welcome`；欢迎页动效只动 transform 和 opacity，窗口没焦点或看不见时停（§4）。
 
+2026-11-10（D82，产品负责人 2026-11-10 北京回「按照你的推荐做」）：两套默认配色里输入框和次要按钮的边加深到对底色 3 : 1，悬停再深一档；改动只在 `src/renderer-v2/styles/tokens.css`，[tokens.css](tokens.css) 里仍是原型的值。新增 `--input-line-hover`、`--btn-2-line`、`--btn-2-line-hover`（§1）。
+
 v3.0 起颜色与共享变量的实际定义是 [tokens.css](tokens.css)。主原型、组件检阅页统一采用正文14px、主控件36px、紧凑32px、小控件28px；局部密集例外在本节明确登记。
 
 ## 1. 品牌与语义色
@@ -35,7 +37,8 @@ v4 新增的语义变量（名字照原型）：
 | `--soft` / `--soft-line` / `--soft-tx` | 金色淡底的标签、气泡边 |
 | `--ok-tx` / `--warn-tx` / `--bad-tx` / `--info-tx` | 状态**文字**一律用 `-tx`，`--ok/--warn/--bad` 只给图标、圆点和描边 |
 | `--focus` | 键盘焦点环 |
-| `--input` / `--input-line` | 输入框的底和边 |
+| `--input` / `--input-line` / `--input-line-hover` | 输入框的底、边和悬停时的边（边对底色 3 : 1，D82 起比原型深，值在 `src/renderer-v2/styles/tokens.css`） |
+| `--btn-2-line` / `--btn-2-line-hover` | 次要按钮的边和悬停时的边（同上；底是 `--btn-2-bg` / `--btn-2-hover`） |
 | `--pop` / `--pop-line` / `--shadow-pop` | 弹窗、菜单、导览气泡、提示气泡 |
 | `--toast` / `--toast-tx` / `--toast-ok` / `--toast-info` / `--toast-warn` | 右下角的短提示和它的图标 |
 | `--sw-on` / `--seg-on` | 开关打开、分段选中的底 |
@@ -48,7 +51,7 @@ v4 新增的语义变量（名字照原型）：
 | `--status` | 状态栏的底（半透明，不加 backdrop-filter） |
 | `--star` / `--ring` / `--welcome` | 欢迎页的星点、星轨那一圈细线、整页底色（一团淡金光加底色）；高对比度下星点和轨道换成不透明的线色，底色换成纯色 |
 
-深色主按钮是金色渐变配深色字；浅色主按钮是海军蓝渐变配白字。警告用橙色。状态同时有文字；余额、Key、官方额度分别由自己的状态来源决定。正文、状态文字和必要说明检查 4.5:1 对比，焦点环、输入框边、开关打开检查 3:1（`src/renderer-v2/styles/contrast-tokens.test.ts`）。高对比是补充模式（`src/renderer-v2/styles/tokens.css` 里每套主题各一整套值），不能掩盖默认主题不可读。
+深色主按钮是金色渐变配深色字；浅色主按钮是海军蓝渐变配白字。警告用橙色。状态同时有文字；余额、Key、官方额度分别由自己的状态来源决定。正文、状态文字和必要说明检查 4.5:1 对比，焦点环、输入框边、次要按钮边、开关打开检查 3:1（`src/renderer-v2/styles/contrast-tokens.test.ts`，默认两套和高对比度两套都查）。高对比是补充模式（`src/renderer-v2/styles/tokens.css` 里每套主题各一整套值），不能掩盖默认主题不可读。
 
 ## 1A. 皮肤（v4 已去掉）
 
