@@ -11,7 +11,7 @@ import type { BalanceUsage, ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import { accountKeyChangeInProgress, accountKeyChangePending, bootstrapOnlyFollowedRoute, type AccountBootstrapProgress, type AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
-import { macDesktopTutorialTopic, macRuntimeTutorialTopic } from '../../registry/business'
+import { macDesktopTutorialTopic, macRuntimeTutorialTopic, otherAppsAnchor } from '../../registry/business'
 import { homeToolBlurbs, homeToolOrder, officialAccountNames, shortcutTools, tools as toolRegistry } from '../../registry/tools'
 import { statuses } from '../../registry/status'
 import { FirstRunSteps } from './FirstRun'
@@ -66,6 +66,8 @@ export interface HomeProps {
   supportsBilling?: boolean
   /** 后台给得出按天的花费（历史账号给不出）：余额卡画近 7 天的七根柱子。缺省 = 只写合计。 */
   supportsUsageTrend?: boolean
+  /** 当前账号有密钥管理：工具区最后一格改去「用在别的软件里」。缺省 = 照旧去反馈。 */
+  supportsKeys?: boolean
   balance: AccountBalance | null
   /** 当前账号能用的订阅；缺省 / null = 没有，一切按钱包说（旧行为）。 */
   subscription?: UsableSubscription | null
@@ -340,6 +342,16 @@ export function homeMoneyNotice(dollars: number | null, subscription: UsableSubs
 }
 
 /**
+ * 工具区最后一格「想用的工具不在这里？」点了去哪（Q1）：登录了、账号有密钥管理，先去密钥管理最下面
+ * 「用在别的软件里」，那里再留一句去反馈；没登录或没有密钥管理的照旧直接去反馈。
+ */
+export function homeToolRequest(signedIn: boolean, supportsKeys: boolean | undefined): { page: PageId; section: string; text: string } {
+  return signedIn && supportsKeys === true
+    ? { page: 'account', section: otherAppsAnchor, text: '看看怎么用在别的软件里' }
+    : { page: 'feedback', section: 'form', text: '告诉我们，我们来接入' }
+}
+
+/**
  * 钱包是 $0、也没有能用的订阅：跟上面那条 $0 提示同一个判断。订阅客户的钱包常是 0、扣的却是订阅；
  * 余额还没读到、账号不能在这里充值时都不算。
  */
@@ -563,6 +575,7 @@ export function Home(props: HomeProps) {
   const runway = account ? buildBalanceRunway({ walletUsd: dollars, subscription, weekUsageUsd: weekUsd }) : null
   const moneyNotice = props.supportsBilling !== false ? homeMoneyNotice(dollars, subscription, runway) : null
   const walletEmpty = homeWalletEmpty(dollars, subscription, props.supportsBilling !== false)
+  const toolRequest = homeToolRequest(Boolean(account), props.supportsKeys)
   const bootstrapResult = props.bootstrap?.result
   const bootstrapFailed = bootstrapResult?.failed ?? []
   const bootstrapWarnings = bootstrapResult ? homeBootstrapWarnings(bootstrapResult, tools) : []
@@ -1269,7 +1282,7 @@ export function Home(props: HomeProps) {
       {firstScan ? <div className="v2-home-tools-detecting" data-testid="home-tools-detecting"><p className="v2-loading-inline" role="status">正在检测这台电脑上装了哪些工具</p><Skeleton rows={3} /></div>
         : <div className="v2-home-tool-grid" data-testid="home-tools">
           {cards}
-          <button type="button" className="v2-home-tool-add" onClick={() => props.onNavigate('feedback', 'form')} data-testid="home-tools-request"><Plus size={18} aria-hidden="true" /><b>想用的工具不在这里？</b><span>告诉我们，我们来接入</span></button>
+          <button type="button" className="v2-home-tool-add" onClick={() => props.onNavigate(toolRequest.page, toolRequest.section)} data-testid="home-tools-request"><Plus size={18} aria-hidden="true" /><b>想用的工具不在这里？</b><span>{toolRequest.text}</span></button>
         </div>}
       {!firstScan && (externalCached || (props.externalLoading && !external.length)) && <div className="v2-loading-inline" role="status" data-testid="home-external-detecting">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
     </section>

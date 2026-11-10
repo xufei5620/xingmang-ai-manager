@@ -7025,6 +7025,43 @@ test('Sub2API keeps fractional key limits and changing its password returns to l
   } finally { await page.close() }
 })
 
+// Q1：首页工具区最后一格落到密钥管理最下面「用在别的软件里」，三行地址一行一颗「复制」，
+// 写不进剪贴板时叫客户自己选中；「告诉我们」去反馈表单。历史账号给的是它自己那个站的地址。
+test('the last home tool card lands on the addresses for other apps, each copied on its own (Q1)', async () => {
+  for (const [query, site] of [['', 'https://xm.solov.cc'], ['sub2api=1', 'https://api.solov.cc']]) {
+    const page = await open(query)
+    try {
+      await page.evaluate(() => {
+        window.__copied = []
+        window.__refuseCopy = false
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: { writeText: (text) => window.__refuseCopy ? Promise.reject(new Error('Document is not focused.')) : (window.__copied.push(text), Promise.resolve()) },
+        })
+      })
+      const tile = page.getByTestId('home-tools-request')
+      await expect(tile).toContainText('看看怎么用在别的软件里')
+      await tile.click()
+      const card = page.getByTestId('account-other-apps')
+      await expect(card).toBeInViewport()
+      await expect(page.getByTestId('account-tabs').getByRole('tab', { name: '密钥管理', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await expect(card.locator('code')).toHaveText([site, `${site}/v1`, `${site}/v1/chat/completions`])
+      await page.getByTestId('account-other-apps-copy-host').click()
+      await waitForToast(page, '地址已复制')
+      await page.getByTestId('account-other-apps-copy-chat').click()
+      await waitForToast(page, '地址已复制')
+      assert.deepEqual(await page.evaluate(() => window.__copied), [site, `${site}/v1/chat/completions`])
+      await page.evaluate(() => { window.__refuseCopy = true })
+      await page.getByTestId('account-other-apps-copy-v1').click()
+      await waitForToast(page, '没复制上，请选中地址自己复制。')
+      await clean(page)
+      // 反馈页一打开就读运行日志，这份假桥没接那一条，所以先查干净再过去。
+      await page.getByTestId('account-other-apps-request').click()
+      await page.getByTestId('feedback-form').waitFor()
+    } finally { await page.close() }
+  }
+})
+
 
 // 自己点的退出：会话变化的事件比退出的返回先到，不能当成「登录被结束」去提醒（#1098）。
 // 改密码后被登出那条（上面）照样要提醒。个人中心和命令面板两个入口都走这一条。

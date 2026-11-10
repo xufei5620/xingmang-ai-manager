@@ -1002,6 +1002,11 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-acct-key-line { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .v2-acct-key-line > code { min-width: 0; overflow: hidden; color: var(--text-3); text-overflow: ellipsis; white-space: nowrap; user-select: all; }
 .v2-acct-key-line > code.is-shown { color: var(--text); overflow-wrap: anywhere; white-space: normal; }
+/* 密钥管理最下面「用在别的软件里」（Q1）：地址要原样填进别的软件，整串露出来、点一下选中，窄了折行不省略。 */
+.v2-acct-other-apps-url { font-family: var(--mono); font-weight: 500; overflow-wrap: anywhere; user-select: all; }
+.v2-acct-other-apps .xm-row-desc { overflow: visible; white-space: normal; }
+.v2-acct-other-apps-note { margin: 14px 0 0; line-height: 1.6; }
+.v2-acct-other-apps-ask { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; margin-top: 6px; color: var(--text-2); font-size: var(--font-small); }
 .v2-acct-key-meta { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: 3px; color: var(--text-3); font-size: 12px; }
 .v2-acct-field { display: grid; gap: 6px; }
 .v2-acct-field-label { color: var(--text); font-size: var(--font-small); font-weight: 500; }

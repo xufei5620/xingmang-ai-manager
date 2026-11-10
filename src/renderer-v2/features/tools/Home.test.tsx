@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, homeWalletEmpty, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
+import { Home, bootstrapNoticeExpiresAt, cliHooksAutoRepairedText, homeMoneyNotice, homeToolRequest, homeWalletEmpty, hookRepairsToAnnounce, lowBalanceText, parseAnnouncedHookRepairs, pickFirstRunTool, recentResumeOffered, type HomeProps } from './Home'
 import { presentTools, type ToolboxSnapshot } from './model'
 import type { ProviderId } from '../../../../electron/ipc-contract'
 import type { ToolboxPartitionFailure, ToolsApi } from './api'
@@ -2172,6 +2172,15 @@ describe('renderer-v2 home v4 top cards', () => {
     const order = [...markup.matchAll(/data-testid="tool-row-([a-zA-Z]+)"/g)].map((match) => match[1])
     expect(order).toEqual(['claude', 'claudeDesktop', 'codex', 'codexDesktop', 'grok'])
     expect(markup).toContain('data-testid="home-tools-request"')
+  })
+
+  it('sends the last tool card to the addresses for other apps once there is a key page to send it to', () => {
+    expect(homeToolRequest(true, true)).toEqual({ page: 'account', section: 'other-apps', text: '看看怎么用在别的软件里' })
+    for (const [signedIn, supportsKeys] of [[true, false], [true, undefined], [false, true]] as const)
+      expect(homeToolRequest(signedIn, supportsKeys)).toEqual({ page: 'feedback', section: 'form', text: '告诉我们，我们来接入' })
+    const account = { userId: 7, username: 'fixture' } as unknown as HomeProps['account']
+    expect(render({}, undefined, { account, supportsKeys: true })).toMatch(/data-testid="home-tools-request"[^>]*>(?:<[^>]+>)*想用的工具不在这里？<\/b><span>看看怎么用在别的软件里<\/span>/)
+    expect(render({}, undefined, { account })).toContain('<span>告诉我们，我们来接入</span>')
   })
 
   it('says why the last install did not finish and offers to try again', () => {

@@ -177,6 +177,16 @@ describe('searchCommands', () => {
     expect(landing('账号安全')).toMatchObject({ section: 'security' })
   })
 
+  it('finds the addresses for other apps by the words those apps use', () => {
+    const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
+    expect(landing('接口地址')).toEqual({ key: 'account:other-apps', group: 'account', label: '用在别的软件里', page: 'account', section: 'other-apps' })
+    expect(landing('Cherry Studio')).toMatchObject({ section: 'other-apps' })
+    expect(landing('沉浸式翻译')).toMatchObject({ section: 'other-apps' })
+    expect(landing('base url')).toMatchObject({ section: 'other-apps' })
+    const noKeys = { accountTabVisible: (tab: string) => !['keys', 'other-apps'].includes(tab) }
+    expect(searchCommands('接口地址', noKeys).some((item) => item.section === 'other-apps')).toBe(false)
+  })
+
   it('leaves out the moved parts the current account cannot use', () => {
     const historical = { accountTabVisible: (tab: string) => !['tasks', 'devices'].includes(tab) }
     expect(searchCommands('生成任务', historical).some((item) => item.section === 'tasks')).toBe(false)
