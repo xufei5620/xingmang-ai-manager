@@ -1,0 +1,31 @@
+# 临时：核受限语言模式下改用户 PATH、读 / 清代理变量、清覆盖设置这几条 PowerShell 脚本改前改后的结果，核完就删
+name: tmp-clm-env-probe
+
+on:
+  push:
+    branches:
+      - claude/project-thread-bi13yj
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the broadcast listener
+        shell: cmd
+        run: C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:exe /out:tmp-clm-env-probe\listener.exe /r:System.Windows.Forms.dll tmp-clm-env-probe\listener.cs
+      - name: Full language
+        shell: cmd
+        run: node tmp-clm-env-probe\probe.cjs full
+      - name: Turn on the system lockdown debug policy
+        shell: powershell
+        run: "[Environment]::SetEnvironmentVariable('__PSLockdownPolicy', '4', 'Machine')"
+      - name: System lockdown
+        shell: cmd
+        run: node tmp-clm-env-probe\probe.cjs lockdown

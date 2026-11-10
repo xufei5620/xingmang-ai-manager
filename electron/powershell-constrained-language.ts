@@ -43,3 +43,67 @@ export function buildPowerShellJsonOutputStatements(expression: string): string[
     '$xingmangJson',
   ]
 }
+
+/**
+ * Runs `statements` only where the session is not in FullLanguage, then ends
+ * the script. The lines that follow it are left exactly as they were, so a
+ * script that used to call into .NET keeps doing so, byte for byte, wherever
+ * that is allowed, and only a locked-down machine takes the other way.
+ */
+export function buildPowerShellConstrainedLanguageBranch(statements: readonly string[]): string[] {
+  return [
+    "if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') {",
+    ...statements.map((line) => `  ${line}`),
+    '  return',
+    '}',
+  ]
+}
+
+/** Where `[Environment]::GetEnvironmentVariable(name, 'User')` reads and writes. */
+export const powerShellUserEnvironmentKey = 'HKCU:\\Environment'
+
+/** Where `[Environment]::GetEnvironmentVariable(name, 'Machine')` reads. */
+export const powerShellMachineEnvironmentKey = 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'
+
+/**
+ * `Read-XingmangEnvironmentValue <key> <name>` answers what
+ * `[Environment]::GetEnvironmentVariable(name, 'User' | 'Machine')` answers,
+ * through the registry provider instead of the refused .NET call: the value
+ * when it is a string (REG_EXPAND_SZ expanded the same way, against this
+ * process's environment), $null when it is missing or of another kind.
+ * Registry value names are case-insensitive, and so is the property lookup.
+ * Needs Microsoft.PowerShell.Management.
+ */
+export const powerShellReadEnvironmentValueFunction: readonly string[] = [
+  'function Read-XingmangEnvironmentValue([string]$key, [string]$name) {',
+  '  $item = Get-ItemProperty -LiteralPath $key -Name $name -ErrorAction SilentlyContinue',
+  '  if ($null -eq $item) { return $null }',
+  '  $value = $item.$name',
+  '  if ($value -is [string]) { return $value }',
+  '  return $null',
+  '}',
+]
+
+/**
+ * What `[Environment]::SetEnvironmentVariable(..., 'User')` does besides
+ * writing the registry: it tells every top-level window, Explorer above all,
+ * that the environment changed, so a terminal opened from now on sees the new
+ * value without signing out. Under ConstrainedLanguage the .NET call is refused
+ * and no cmdlet sends that message, but setx.exe sends it after every write.
+ * It is given an empty value, which it stores as an empty string, and the
+ * value is taken out again at once, so nothing is left behind, as with the
+ * throwaway name the FullLanguage PATH scripts clear for the same reason.
+ * `--%` hands setx its arguments verbatim: Windows PowerShell 5.1 drops an
+ * empty string argument, PowerShell 7.3 quotes it differently, and the empty
+ * pair of quotes has to arrive as is.
+ *
+ * `$env:XINGMANG_SETX_EXE` is System32's setx.exe, resolved by the main
+ * process (I14). Needs Microsoft.PowerShell.Management.
+ */
+export function buildPowerShellEnvironmentBroadcastStatements(): string[] {
+  return [
+    '$null = & $env:XINGMANG_SETX_EXE --% XINGMANG_ENVIRONMENT_REFRESH ""',
+    "if ($LASTEXITCODE -ne 0) { throw ('setx exited with ' + $LASTEXITCODE) }",
+    `Remove-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name 'XINGMANG_ENVIRONMENT_REFRESH' -ErrorAction SilentlyContinue`,
+  ]
+}
