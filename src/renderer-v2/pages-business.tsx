@@ -105,6 +105,7 @@ export function BusinessPage({
         onBack={actions.navigate ? () => actions.navigate?.('home') : undefined}
         onSwitchAccount={actions.switchAccount}
         onOpenHealth={actions.navigate ? () => actions.navigate?.('health') : undefined}
+        onRequestApp={actions.navigate ? () => actions.navigate?.('feedback', 'form') : undefined}
         onRewriteKey={actions.onRewriteKey}
         onConfigureTool={actions.openConfig}
         onToolConfigSaved={onToolConfigSaved}

@@ -69,6 +69,7 @@ import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import { AccountOverview, type AccountSummary } from './features/account/AccountOverview'
 import { AccountProfileDialog } from './features/account/AccountProfileDialog'
 import { AccountSecurity } from './features/account/AccountSecurity'
+import { OtherAppsCard } from './features/account/OtherApps'
 import {
   currentExpiryText,
   inviteRuleText,
@@ -299,6 +300,7 @@ export function AccountPage({
   onSubscriptionPurchased,
   onOpenHelp,
   onOpenHealth,
+  onRequestApp,
   onTabChange,
   onLogout,
   logoutNote,
@@ -339,6 +341,8 @@ export function AccountPage({
   onOpenHelp?: () => void
   /** 去「检查」页；缺省 = 订阅开通后工具没换过去时，不给「去检查页」。 */
   onOpenHealth?: () => void
+  /** 「用在别的软件里」最底下的「告诉我们」，去反馈表单；缺省 = 不出那一行。 */
+  onRequestApp?: () => void
   /** 现在摆出来的是哪个页签，顶栏的「个人中心 / 页签名」跟着它；缺省 = 不报。 */
   onTabChange?: (tab: AccountTab) => void
   /** 概览「退出登录」交给外壳退，外壳才不把自己退出说成「登录已结束」（#1098）；缺省 = 直接让主进程退出。 */
@@ -553,6 +557,7 @@ export function AccountPage({
             onConfigureTool={onConfigureTool}
             onToolConfigSaved={onToolConfigSaved}
             toolConfigConfirmed={toolConfigConfirmed}
+            onRequestApp={onRequestApp}
             refreshRequest={refresh}
           />
         )
@@ -766,6 +771,7 @@ function AccountKeys({
   onConfigureTool,
   onToolConfigSaved,
   toolConfigConfirmed,
+  onRequestApp,
   refreshRequest,
 }: {
   api: V2Bridge
@@ -779,6 +785,7 @@ function AccountKeys({
   onConfigureTool?: (provider: Provider) => void
   onToolConfigSaved?: () => void
   toolConfigConfirmed?: ToolConfigConfirmation | null
+  onRequestApp?: () => void
   refreshRequest?: number
 }) {
   const [page, setPage] = useState(1)
@@ -1268,6 +1275,7 @@ function AccountKeys({
         failed={Boolean(resource.error)}
         onChange={setPage}
       />
+      <OtherAppsCard siteId={siteId} onRequestApp={onRequestApp} />
       <Dialog
         open={Boolean(editing)}
         title={created ? '新建密钥' : editingKey ? `编辑「${editingKey.name}」` : '新建密钥'}

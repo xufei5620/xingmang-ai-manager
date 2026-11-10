@@ -51,6 +51,7 @@ describe('account center tabs and landings', () => {
     expect(resolveAccountLanding('switch-account')).toEqual({ tab: 'overview', anchor: 'switch-account' });
     expect(resolveAccountLanding('edit-profile')).toEqual({ tab: 'overview', anchor: 'edit-profile' });
     expect(resolveAccountLanding('keys')).toEqual({ tab: 'keys' });
+    expect(resolveAccountLanding('other-apps')).toEqual({ tab: 'keys', anchor: 'other-apps' });
   });
 
   it('falls back to the overview for names it does not know, including inherited object keys', () => {
