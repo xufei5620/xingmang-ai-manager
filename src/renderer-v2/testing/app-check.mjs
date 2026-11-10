@@ -240,7 +240,7 @@ test('customer support returns to the default QR and browser destination after h
     await dialog.locator('[data-modal-close]').click()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-support').waitFor()
     const session = await page.evaluate(() => window.xingmang.getAccountSession())
     assert.equal(session.authenticated, false)
@@ -527,7 +527,7 @@ test('external client incomplete Claude configuration requires setup before prim
   try {
     const row = page.getByTestId('tool-row-claudeDesktop')
     await row.getByText('待连接', { exact: true }).waitFor()
-    await expect(row).toContainText('第三方推理配置待完善')
+    await expect(row).toContainText('用的是别家的设置，还没填完')
     assert.equal(await row.getByRole('button', { name: '打开', exact: true }).count(), 0)
     await row.getByRole('button', { name: '确认连接', exact: true }).click()
     await page.getByTestId('external-client-dialog').waitFor()
@@ -706,7 +706,7 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     assert.equal(await row.count(), 0)
     await page.getByTestId('welcome-steps').click()
@@ -2830,6 +2830,12 @@ test('the leftover dialog cleans up through the main process and says what is st
     // 第一次那个文件还被占着：框留着，红字说还剩几个、接下来怎么办。
     await expect(dialog.getByTestId('manual-uninstall-cleanup-problem'))
       .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「帮我清理」；还是不行，请联系客服。')
+    // 红字叫人找客服，框底就给「找客服」：帮助框叠在上面，关掉还回到这个框（D21）。
+    await dialog.getByTestId('manual-uninstall-support').click()
+    const support = page.getByTestId('support-dialog')
+    await support.waitFor()
+    await page.keyboard.press('Escape')
+    await support.waitFor({ state: 'detached' })
     await dialog.getByTestId('manual-uninstall-cleanup').click()
     await waitForToast(page, '清理好了。')
     await dialog.waitFor({ state: 'detached' })
@@ -3069,7 +3075,7 @@ test('an install that finishes while signed out keeps the welcome page and leave
     await row.getByTestId('tool-grok-cancel').waitFor()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     const scansBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanSystem').length)
     await page.evaluate(() => window.v2Test.releaseInstall())
@@ -3301,7 +3307,7 @@ test('read-only account matches do not survive logout or a late config read when
     // 不是配对去取 Key，所以从退出以后再接着查。
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     const loggedOut = await page.evaluate(() => window.v2Test.calls.length)
     await page.getByTestId('welcome-steps').click()
@@ -3750,6 +3756,65 @@ test('saved-account switching leaves tools without an account key untouched', as
     await page.getByText('saved-user', { exact: true }).first().waitFor()
     await page.waitForTimeout(100)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 对话页发一张图，出图那一下压着不回（?chatImage），再去个人中心切换账号（D44）。
+async function startHeldChatImage(page) {
+  await page.getByTestId('tool-row-claude').waitFor()
+  await page.getByTestId('nav-chat').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+  await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
+  await page.getByTestId('chat-composer-input').fill('一只橘猫')
+  await page.getByTestId('chat-send').click()
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'generateAiImage'))
+}
+const chatImageSwitchWarning = '对话还在出图，换账号会停掉这张图，可能已经扣费。'
+async function switchCalls(page) { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchSavedAccount').length) }
+
+test('switching accounts while the chat page draws an image asks first; waiting keeps the account and a finished image no longer asks (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    const row = switcher.getByTestId('saved-account-row-saved-18')
+    await row.getByRole('button', { name: '切换', exact: true }).click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.waitFor()
+    assert.equal(await ask.getAttribute('data-testid'), 'saved-account-switch-image-busy')
+    assert.equal((await ask.locator('.xm-dialog-body').innerText()).trim(), chatImageSwitchWarning)
+    assert.deepEqual(await ask.locator('footer').getByRole('button').allTextContents(), ['等它出完', '仍然切换'])
+    // 默认停在不切的那个按钮上：手快按回车不会把图停掉。
+    assert.equal(await ask.getByRole('button', { name: '等它出完', exact: true }).evaluate((button) => button === document.activeElement), true)
+    await page.screenshot({ path: path.join(artifacts, 'account-switch-chat-image-busy.png') })
+    await ask.getByRole('button', { name: '等它出完', exact: true }).click()
+    await ask.waitFor({ state: 'hidden' })
+    assert.equal(await switchCalls(page), 0)
+    assert.equal(await switcher.isVisible(), true)
+    // 图出完了再点「切换」，直接切，不再问。
+    await page.evaluate(() => window.v2Test.releaseChatImage())
+    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat] .chat-generating') === null)
+    await row.getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    assert.equal(await switchCalls(page), 1)
+    assert.equal(await ask.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('choosing to switch anyway while the chat page draws an image switches the account (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('saved-account-row-saved-18').getByRole('button', { name: '切换', exact: true }).click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.getByRole('button', { name: '仍然切换', exact: true }).click()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    await ask.waitFor({ state: 'detached' })
+    assert.equal(await switchCalls(page), 1)
     await clean(page)
   } finally { await page.close() }
 })
@@ -4218,7 +4283,7 @@ test('turning the display switch off in settings asks for a relaunch, and later 
     await settings.getByRole('switch', { name: '用显卡加速显示' }).click()
     const hint = page.getByTestId('settings-display-relaunch')
     await hint.waitFor()
-    await hint.getByText('重启软件后生效。', { exact: true }).waitFor()
+    await hint.getByText('重开星芒后生效。', { exact: true }).waitFor()
     const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
     assert.deepEqual(saves.at(-1), { version: 2, hardwareAcceleration: false })
     await page.getByTestId('settings-display-relaunch-later').click()
@@ -4431,8 +4496,8 @@ test('relay route settings read nothing stored as auto and offer it first with t
     await expectRoute(route, 'auto')
     assert.deepEqual(await route.getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
     assert.deepEqual(await page.getByTestId('settings-relay-route-solov-api').getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
-    await page.getByText('自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
-    await page.getByText('自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('自动会先走线路2，连不上时改走线路1。重开星芒后生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('自动会先走线路1，线路1连不上时改走线路2。重开星芒后生效，不会切换账号。', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
     await chooseRoute(route, 'primary')
     await page.getByTestId('settings-relay-relaunch').waitFor()
@@ -5056,7 +5121,7 @@ test('the required-update gate stays up however many times Esc is pressed', asyn
     await pressEscape()
     assert.equal(await modal(), true)
 
-    // 门里点「联系客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
+    // 门里点「找客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
     await gate.getByTestId('required-update-support').click()
     const support = page.getByTestId('support-dialog')
     await support.waitFor()
@@ -5634,8 +5699,8 @@ test('running desktop offers a real restart and official quotas can be refreshed
   const page = await open('running=1&official=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('button', { name: '重启 Codex', exact: true }).click()
-    await page.getByRole('heading', { name: 'Codex 已在运行' }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: '重开 Codex', exact: true }).click()
+    await page.getByRole('heading', { name: 'Codex 桌面端还开着' }).waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'launchCodexDesktop').args), ['restart'])
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: 'ChatGPT 账号额度…', exact: true }).click()
@@ -6786,7 +6851,8 @@ test('logging out yourself does not warn that the login ended from either entry 
         await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
         await page.getByTestId('command-result-account:logout').click()
       }
-      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+      // 两个入口的确认框按钮都写「退出登录」，不写「退出」，免得当成退出星芒（W83）。
+      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
       await page.getByTestId('welcome-login').waitFor()
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 1)
@@ -7222,7 +7288,7 @@ test('explicit automatic key configuration shows the right group and adopts the 
     const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(before.slice(opened).includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
     await openConfigAdvanced(page)
-    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时自动准备/)
     // The automatic key has no models to list until it is written, so the one button saves and then lists them.
     assert.equal((await page.getByTestId('tool-save-config').innerText()).trim(), '保存并检测')
     await page.getByTestId('tool-save-config').click()
@@ -7360,7 +7426,7 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     assert.doesNotMatch(question, /调试端口/)
     assert.match(question, /关掉 Codex，通道也跟着关上。/)
     // 照实说同机别的程序和账户也连得上（#1067），共用电脑的劝先不用。
-    assert.match(question, /通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.match(question, /通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
     assert.doesNotMatch(question, /只有这台电脑自己能连/)
 
     await decline.click()
@@ -7565,7 +7631,7 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   const page = await open('localeLaunchWarning=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。', { exact: true }).waitFor()
+    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)

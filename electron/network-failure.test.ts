@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   classifyNetworkFailure,
   isHtmlContentType,
+  isProxyAuthFailure,
   isTlsHandshakeFailure,
   isJsonContentType,
   isServiceUnavailableResponse,
@@ -10,6 +11,9 @@ import {
   networkFailureMessages,
   networkFailureReasonForMessage,
   parsesAsJsonObject,
+  proxyAuthRequiredMessage,
+  proxyAuthRequiredStatus,
+  resolveNetworkFailureMessage,
   updateNetworkFailureMessages,
   type NetworkFailureReason,
 } from './network-failure'
@@ -273,6 +277,52 @@ describe('restricted network failure copy', () => {
     expect(matchNetworkFailureMessage('登录没有成功，输入已保留，请稍后重试')).toBeNull()
     expect(matchNetworkFailureMessage(undefined)).toBeNull()
     expect(matchNetworkFailureMessage(new Error(networkFailureMessages.dns))).toBe(networkFailureMessages.dns)
+  })
+})
+
+describe('a proxy that asks for a user name and password', () => {
+  // ERR_PROXY_AUTH_UNSUPPORTED is what Electron 45.1.0 rejects with when the
+  // proxy's 407 names a scheme Chromium cannot answer or names none at all.
+  const authCodes = ['net::ERR_PROXY_AUTH_UNSUPPORTED', 'net::ERR_PROXY_AUTH_REQUESTED', 'net::ERR_PROXY_AUTH_REQUESTED_WITH_NO_CONNECTION', 'net::ERR_UNEXPECTED_PROXY_AUTH']
+
+  it('recognizes Chromium\'s proxy-auth codes and keeps them in the proxy class', () => {
+    for (const code of authCodes) {
+      const error = new Error(code)
+      expect(classifyNetworkFailure(error)).toBe('proxy')
+      expect(isProxyAuthFailure(error)).toBe(true)
+      expect(resolveNetworkFailureMessage(error)).toBe(proxyAuthRequiredMessage)
+    }
+  })
+
+  it('leaves a proxy that is down or refused the tunnel on the old wording', () => {
+    // 407 走 https 时最后报的也是 ERR_TUNNEL_CONNECTION_FAILED，单看错误分不出来，要调用方看状态码。
+    for (const code of ['net::ERR_PROXY_CONNECTION_FAILED', 'net::ERR_TUNNEL_CONNECTION_FAILED']) {
+      expect(isProxyAuthFailure(new Error(code))).toBe(false)
+      expect(resolveNetworkFailureMessage(new Error(code))).toBe(networkFailureMessages.proxy)
+    }
+    expect(proxyAuthRequiredStatus).toBe(407)
+    expect(isProxyAuthFailure(new Error(networkFailureMessages.timeout))).toBe(false)
+    expect(isProxyAuthFailure(null)).toBe(false)
+    expect(isProxyAuthFailure('')).toBe(false)
+    expect(resolveNetworkFailureMessage(new Error('本地安全存储不可用'))).toBeNull()
+  })
+
+  it('trusts a sentence the main process already wrote over a code trailing behind it', () => {
+    expect(isProxyAuthFailure(new Error(`${networkFailureMessages.proxy}（net::ERR_PROXY_AUTH_UNSUPPORTED）`))).toBe(false)
+  })
+
+  it('round-trips the sentence across IPC as a proxy failure', () => {
+    const wrapped = `Error invoking remote method 'account:get-balance': NewApiNetworkError: ${proxyAuthRequiredMessage}（余额请求失败）`
+    expect(networkFailureReasonForMessage(wrapped)).toBe('proxy')
+    expect(classifyNetworkFailure(new Error(wrapped))).toBe('proxy')
+    expect(isProxyAuthFailure(new Error(wrapped))).toBe(true)
+    expect(matchNetworkFailureMessage(wrapped)).toBe(proxyAuthRequiredMessage)
+    expect(resolveNetworkFailureMessage(wrapped)).toBe(proxyAuthRequiredMessage)
+  })
+
+  it('does not send the user to a proxy app that is already running', () => {
+    expect(proxyAuthRequiredMessage).toBe('电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。')
+    expect(proxyAuthRequiredMessage).not.toMatch(/代理软件|加速|solov|sub2api|new-api|http|ERR_/i)
   })
 })
 

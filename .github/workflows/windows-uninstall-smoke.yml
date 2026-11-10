@@ -15,6 +15,9 @@
 # 被收紧成只有管理员能改；从老版本留下的宽松目录升级时同样收紧，目录里指向别处的联接不跟过去改；
 # 装在 Program Files 里的原样不动。步骤见 scripts/windows-install-directory-acl-smoke.ps1。
 #
+# 再查画布项目文件（.xingcanvas）的关联：装到带空格的文件夹里，「打开」命令的程序路径带着引号，
+# 右键显示系统自己的「打开」；升级以后照样，卸载以后关联删掉。步骤见 scripts/windows-file-association-smoke.ps1。
+#
 # 最后查升级时旧版本卸载程序挪不走旧文件的两种情况：安装清单里记着的文件已经没了（从现在发布的
 # 那一版升上来，跑的是它的卸载程序），以及旧文件被别的程序占着：安装程序用中文说清楚、能重试，
 # 取消时旧版本原样留着。步骤见 scripts/windows-upgrade-blocked-smoke.ps1。
@@ -37,6 +40,7 @@ on:
       - scripts/windows-uninstall-cleanup-smoke.ps1
       - scripts/windows-uninstall-shortcuts-smoke.ps1
       - scripts/windows-install-directory-acl-smoke.ps1
+      - scripts/windows-file-association-smoke.ps1
       - scripts/windows-upgrade-blocked-smoke.ps1
       - .github/workflows/windows-uninstall-smoke.yml
   workflow_dispatch:
@@ -91,6 +95,14 @@ jobs:
           $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1
           if ($null -eq $installer) { throw 'no installer was built' }
           ./scripts/windows-install-directory-acl-smoke.ps1 -Installer $installer.FullName
+      - name: Canvas project files open with a quoted program path, upgrades keep it, uninstall removes the association
+        # 一次安装、一次升级、一次卸载。
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path release -Filter '*Setup*.exe' | Select-Object -First 1
+          if ($null -eq $installer) { throw 'no installer was built' }
+          ./scripts/windows-file-association-smoke.ps1 -Installer $installer.FullName
       - name: Download the Windows installer of the latest release
         # 客户电脑上装着的就是它；从它升上来，跑的才是客户那边的旧卸载程序。只读，不碰发布。
         shell: pwsh

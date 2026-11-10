@@ -17,7 +17,7 @@
 
 ## 总述：先知道这几件事
 
-**进程入口不是 `main.ts`。** `package.json` 的 `main` 指向 `dist-electron/platform/entry.js`，所以入口是 `electron/platform/entry.ts`，它按顺序分流：Linux 上以 root 运行就拒绝（`linux-launch-guard.ts`）→ 卸载清理模式（`uninstall-cleanup-entry.ts`）→ 加速辅助进程模式（`acceleration-worker-entry.ts`）→ 都不是才进 `platform/desktop-entry.ts`，装好 renderer-v2 的平台层后 `require('../main')`。`main.ts` 是装配中心：建窗口、注册协议、把各个服务接起来。
+**进程入口不是 `main.ts`。** `package.json` 的 `main` 指向 `dist-electron/platform/entry.js`，所以入口是 `electron/platform/entry.ts`，它按顺序分流：Linux 和 Mac 上以 root 运行就拒绝（`linux-launch-guard.ts`、`macos-launch-guard.ts`）→ 卸载清理模式（`uninstall-cleanup-entry.ts`）→ 加速辅助进程模式（`acceleration-worker-entry.ts`）→ 都不是才进 `platform/desktop-entry.ts`，装好 renderer-v2 的平台层后 `require('../main')`。`main.ts` 是装配中心：建窗口、注册协议、把各个服务接起来。
 
 **跨进程通道有三套，各自一组「契约 + preload + 注册」**（AGENTS.md T1、I4、I7）：
 

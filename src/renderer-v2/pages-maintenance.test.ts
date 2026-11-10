@@ -50,13 +50,16 @@ describe('maintenance pages without the retired Gemini CLI', () => {
   it('lists the shortcuts the app actually answers, in the keys of this computer', () => {
     expect(shortcutRows('mac').map((row) => `${row.keys} ${row.label}`)).toEqual([
       '⌘ K 搜索或跳转',
+      '/ 在有搜索框的页面里直接搜索',
       '⌘ , 打开设置',
       '⌘ 1–4 打开工具',
       '⌘ + / ⌘ - 放大 / 缩小界面',
       '⌘ 0 恢复自动缩放',
+      '⌃ ⌘ F 全屏',
       'Esc 关闭弹窗或菜单',
     ])
     for (const os of ['win', 'linux'] as const) expect(shortcutRows(os).every((row) => !row.keys.includes('⌘'))).toBe(true)
+    for (const os of ['win', 'linux'] as const) expect(shortcutRows(os)).toContainEqual({ keys: 'F11', label: '全屏' })
   })
 })
 
@@ -480,7 +483,7 @@ describe('settings page before the settings arrive', () => {
   it('says it is still reading instead of claiming anything is unsupported', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
     expect(markup).toContain('正在读取设置…')
-    expect(markup).not.toContain('此版本暂不支持')
+    expect(markup).not.toContain('这台电脑上用不了')
     expect(markup).toContain('<span>版本更新</span></button>')
     expect(markup).not.toContain('<span>账号</span></button>')
     expect(markup).toContain('aria-label="搜索设置"')

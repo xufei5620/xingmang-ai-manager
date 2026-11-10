@@ -2677,7 +2677,7 @@ export function withCodexDesktopDarwinUpdate(status: DesktopAppStatus, latestVer
  * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
  * withCodexDesktopLocaleFailureReport）。这条路只在 Windows 上走，首页「打开」在 Codex 开着时会问要不要重启。
  */
-export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。'
+export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。'
 
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform

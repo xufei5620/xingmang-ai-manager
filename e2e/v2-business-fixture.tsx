@@ -334,6 +334,16 @@ const mcpAuthMethods = {
     return true
   },
 } satisfies Partial<V2Bridge>
+// customMarket：Codex 下有一个客户自己加的插件市场，用来看「移除市场」先问一句（D67）。
+let customMarkets = [{ name: 'my-market', root: '/Users/me/my-market' }]
+const customMarketMethods = {
+  listPlugins: async () => ({ plugins: [], marketplaces: customMarkets }),
+  removeMarketplace: async (name: string) => {
+    record('remove-marketplace', name)
+    customMarkets = customMarkets.filter((market) => market.name !== name)
+    return { plugins: [], marketplaces: customMarkets }
+  },
+} satisfies Partial<V2Bridge>
 const codexCatalogPlugin = {
   provider: 'codex' as const,
   kind: 'plugin' as const,
@@ -1206,6 +1216,7 @@ const apiMethods = {
     return []
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
+  ...(query.has('customMarket') ? customMarketMethods : {}),
   ...codexRemoteMethods,
   listBackups: async () => (empty ? [] : [backup]),
   createBackup: async (provider: Parameters<V2Bridge['createBackup']>[0]) => {
