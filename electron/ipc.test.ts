@@ -9234,6 +9234,7 @@ describe('IPC channel log and account policies', () => {
         'chat:list-groups',
         'chat:paste-image',
         'chat:pick-images',
+        'chat:pick-text-files',
         'chat:save-asset',
         'codex-remote:get-state',
         'codex-remote:start-pairing',

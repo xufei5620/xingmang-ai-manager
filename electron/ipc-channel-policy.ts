@@ -283,6 +283,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
+  'chat:pick-text-files': { label: '聊天选文字文件', log: 'quiet-success', account: 'scoped' },
   // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
   'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
   'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },

@@ -971,6 +971,50 @@ test('a model that reads images takes picked and pasted screenshots and sends th
   } finally { await page.close() }
 })
 
+test('text files picked in a text conversation go out with the message and stay on its card after a reload', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await page.evaluate(() => window.chatHarness.queueTextFiles([{ name: '报错日志.txt', size: 12_288, text: 'Error: boom', truncated: false }, { name: 'big.log', size: 9_000_000, text: 'x'.repeat(12_000), truncated: true }]))
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByTestId('chat-draft-files').waitFor()
+    assert.deepEqual((await calls(page, 'pick-text-files')).map((call) => call.input), [{ remainingFiles: 3, remainingChars: 30_000 }])
+    assert.deepEqual(await page.locator('[data-testid=chat-draft-files] .chat-file').evaluateAll((cards) => cards.map((card) => card.textContent)), ['报错日志.txt· 12 KB', 'big.log· 8.6 MB · 只读了前 12,000 字'])
+    await page.getByText('「big.log」太长，只读了前 12,000 个字。').waitFor()
+    // Removing the long one and picking again asks only for what is left.
+    await page.getByTestId('chat-draft-file-remove').nth(1).click()
+    await page.evaluate(() => window.chatHarness.queueTextFiles('Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。'))
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByText('这个文件读不出来，可能正被别的软件占着，关掉它再试。').waitFor()
+    assert.deepEqual((await calls(page, 'pick-text-files')).at(-1).input, { remainingFiles: 2, remainingChars: 30_000 - 'Error: boom'.length })
+    assert.equal(await page.locator('[data-testid=chat-draft-files] .chat-file').count(), 1)
+
+    // A file alone is enough to send, and goes ahead of nothing.
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    const request = (await calls(page, 'start')).at(-1).input
+    assert.deepEqual(request.messages.at(-1), { role: 'user', content: '<file name="报错日志.txt">\nError: boom\n</file>' })
+    assert.equal(await page.getByTestId('chat-draft-files').count(), 0)
+    await page.locator('[data-role="user"] [data-testid=chat-message-files] .chat-file').waitFor()
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages[0]?.files?.[0]?.name === '报错日志.txt')
+    await page.reload()
+    await page.locator('[data-role="user"] [data-testid=chat-message-files] .chat-file').waitFor()
+
+    // Generating an image takes no files: the button goes and a file left in the draft blocks sending.
+    await page.evaluate(() => window.chatHarness.queueTextFiles([{ name: 'a.txt', size: 3, text: 'abc', truncated: false }]))
+    await ready(page)
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByTestId('chat-draft-files').waitFor()
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    assert.equal(await page.getByTestId('chat-attach-file').count(), 0)
+    await page.getByTestId('chat-files-image-mode').waitFor()
+    await page.getByTestId('chat-composer-input').fill('一只猫')
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+  } finally { await page.close() }
+})
+
 // Excel and WPS copy cells as text plus a picture of the table. The composer
 // used to take every such paste as a screenshot and drop the text.
 test('pasting spreadsheet cells keeps the text instead of reading a screenshot', async () => {
