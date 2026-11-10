@@ -3107,6 +3107,26 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
   })
 
+  it('switches Claude Code commit attribution through its own channel with the same backup rule', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    service.setClaudeCommitAttribution = vi.fn(async (hidden: boolean, backup?: () => void) => {
+      backup?.()
+      return { enabled: hidden, applied: 'written' as const }
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:set-claude-commit-attribution')!
+
+    await expect(handler(trustedEvent(), true)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(create).toHaveBeenCalledWith('claude', 'pre-save', undefined, null)
+    await expect(handler(trustedEvent(), 1)).rejects.toThrow('开关格式错误')
+    expect(service.setClaudeCommitAttribution).toHaveBeenCalledTimes(1)
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+  })
+
   it('keeps a restorable backup before a reset save and refuses to reset without one', async () => {
     const service = serviceStub()
     const create = vi.fn(() => ({ id: 'backup-1' }))

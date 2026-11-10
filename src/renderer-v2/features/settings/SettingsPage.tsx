@@ -59,7 +59,7 @@ import { parseImportedConversations } from '../chat/storage'
 import type { Conversation } from '../chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
 import type { V2Bridge } from '../../types'
-import type { ClaudeWriteBoundaryResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
+import type { ClaudeToggleResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
 import { platformApi } from '../../platform-api'
 import type { BusinessActions } from '../../business-actions'
@@ -98,15 +98,25 @@ export function shortcutRows(os: WindowOs): Array<{ keys: string; label: string 
 /** 设置页顶上那句。找设置用左栏的「搜索设置」，这里不再教按 Ctrl K。 */
 export const settingsPageLead = '改动会立即保存。'
 
+type ClaudeToggleNotice = { text: string; tone: 'ok' | 'warn' }
+/** later：现在不是星芒在管 Claude Code 的配置（官方账号、没登录、自己填的密钥、还没配过），等下次星芒替它保存配置时一起写。 */
+const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
+
 /**
  * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
- * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下；later：现在不是星芒在管 Claude Code 的配置（官方账号、
- * 没登录、自己填的密钥、还没配过），等下次星芒替它保存配置时一起写。
+ * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
  */
-export function claudeWriteBoundaryNotice(result: ClaudeWriteBoundaryResult): { text: string; tone: 'ok' | 'warn' } {
+export function claudeWriteBoundaryNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
   if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' }
-  if (result.applied === 'later') return { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
+  if (result.applied === 'later') return claudeToggleLaterNotice
   return { text: result.enabled ? '已打开，新开的 Claude Code 会按这个来。' : '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' }
+}
+
+/** 「Claude Code 提交代码时不署名」拨完以后那句小提示（同类对比 备选 6），说法同上。 */
+export function claudeCommitAttributionNotice(result: ClaudeToggleResult): ClaudeToggleNotice {
+  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过署名这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'later') return claudeToggleLaterNotice
+  return { text: result.enabled ? '已打开，新开的 Claude Code 提交代码时不再署名。' : '已关掉，新开的 Claude Code 提交代码时照常署名。', tone: 'ok' }
 }
 
 /**
@@ -460,6 +470,29 @@ export function SettingsPage({
             }
           : null,
     )
+  // 设置里两个 Claude Code 开关不走 saveSettings：主进程先对齐 Claude Code 的配置（先做一份备份）再记开关，
+  // 改配置失败就不记、页顶出红条；做成了按主进程实际做了什么弹一句。
+  const switchClaudeToggle = (
+    name: string,
+    field: 'claudeWritesInsideProject' | 'claudeHidesCommitAttribution',
+    call: () => Promise<ClaudeToggleResult>,
+    notice: (result: ClaudeToggleResult) => ClaudeToggleNotice,
+  ) =>
+    void operation.execute(
+      name,
+      async () => {
+        const result = await call()
+        resource.setData((previous) =>
+          previous ? { ...previous, settings: { ...previous.settings, [field]: result.enabled } } : previous,
+        )
+        return result
+      },
+      (result) => {
+        const shown = notice(result)
+        showToast(shown.text, shown.tone)
+        return null
+      },
+    )
   const settings = resource.data?.settings
   // 行标题从注册表取（settingsItems），顶部搜索、页内搜索和这里说的是同一个名字。
   const row = (
@@ -802,7 +835,6 @@ export function SettingsPage({
           </Button>
         </div>,
       ),
-      // 不走 saveSettings：主进程先对齐 Claude Code 的配置（先做一份备份）再记开关，改配置失败就不记、页顶出红条。
       'claude-write-boundary': row(
         'claude-write-boundary',
         '开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。',
@@ -812,23 +844,20 @@ export function SettingsPage({
           testId="settings-claude-write-boundary"
           disabled={Boolean(operation.busy)}
           onChange={(enabled) =>
-            void operation.execute(
-              'claude-write-boundary',
-              async () => {
-                const result = await api.setClaudeWriteBoundary(enabled)
-                resource.setData((previous) =>
-                  previous
-                    ? { ...previous, settings: { ...previous.settings, claudeWritesInsideProject: result.enabled } }
-                    : previous,
-                )
-                return result
-              },
-              (result) => {
-                const notice = claudeWriteBoundaryNotice(result)
-                showToast(notice.text, notice.tone)
-                return null
-              },
-            )
+            switchClaudeToggle('claude-write-boundary', 'claudeWritesInsideProject', () => api.setClaudeWriteBoundary(enabled), claudeWriteBoundaryNotice)
+          }
+        />,
+      ),
+      'claude-commit-attribution': row(
+        'claude-commit-attribution',
+        '开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。',
+        <Switch
+          checked={settings.claudeHidesCommitAttribution === true}
+          aria-label="Claude Code 提交代码时不署名"
+          testId="settings-claude-commit-attribution"
+          disabled={Boolean(operation.busy)}
+          onChange={(hidden) =>
+            switchClaudeToggle('claude-commit-attribution', 'claudeHidesCommitAttribution', () => api.setClaudeCommitAttribution(hidden), claudeCommitAttributionNotice)
           }
         />,
       ),

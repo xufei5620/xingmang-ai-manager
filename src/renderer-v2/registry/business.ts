@@ -476,6 +476,8 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'workspace', group: 'tools', label: '工作文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
   // Claude Code 的写文件、改文件只在打开的那个文件夹里做（Fable 第二轮 Q6），默认关。
   { id: 'claude-write-boundary', group: 'tools', label: '只让 Claude Code 改项目文件夹里的文件', keywords: ['文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
+  // 提交代码、发 PR 时不带 Claude 的署名（同类对比 备选 6），默认关。
+  { id: 'claude-commit-attribution', group: 'tools', label: 'Claude Code 提交代码时不署名', keywords: ['署名', 'Co-Authored-By', 'commit', 'git', 'PR', '提交记录'] },
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },

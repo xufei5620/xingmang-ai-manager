@@ -618,6 +618,25 @@ test('the Claude Code write boundary switch starts off and goes through its own 
   } finally { await page.close() }
 })
 
+// 同类对比 备选 6：「不署名」开关默认关，走自己那条通道，跟上面那个开关互不影响。
+test('the Claude Code commit attribution switch starts off and goes through its own channel', async () => {
+  const page = await open()
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-commit-attribution').getByRole('switch', { name: 'Claude Code 提交代码时不署名', exact: true })
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    await settings.getByText('开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。', { exact: true }).waitFor()
+    await row.click()
+    await waitForToast(page, '已打开，新开的 Claude Code 提交代码时不再署名。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
+    await expect(settings.getByTestId('settings-claude-write-boundary').getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'setClaudeCommitAttribution').map((entry) => entry.args), [[true]])
+    assert.equal(calls.some((entry) => entry.method === 'setClaudeWriteBoundary' || entry.method === 'saveSettings'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the Claude Code write boundary switch says so when the customer\'s own Claude Code setting was left alone', async () => {
   const page = await open('writeBoundary=kept')
   try {

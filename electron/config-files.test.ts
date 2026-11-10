@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as TOML from '@iarna/toml'
 import {
-  applyClaudeWriteBoundary,
+  applyClaudeToggle,
   buildCodexApiKeyAuth,
   canLaunchManagedProvider,
   claudeModelPickerNeedsRefresh,
@@ -5599,18 +5599,18 @@ describe('Claude write boundary toggle', () => {
   it('turns the setting on in place, touching nothing else, and off again', () => {
     const { roots, read } = relayClaude()
     const before = read()
-    const on = applyClaudeWriteBoundary(roots, true)
+    const on = applyClaudeToggle(roots, 'writesInsideProject', true)
     expect(on.outcome).toBe('written')
     expect(on.result.files.length).toBeGreaterThan(0)
     const after = read()
     expect(after.permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
     delete after.permissions?.blockWritesOutsideWorkingDirectories
     expect(after).toEqual(before)
-    expect(applyClaudeWriteBoundary(roots, true).outcome).toBe('unchanged')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', true).outcome).toBe('unchanged')
 
-    expect(applyClaudeWriteBoundary(roots, false).outcome).toBe('written')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', false).outcome).toBe('written')
     expect(read()).toEqual(before)
-    expect(applyClaudeWriteBoundary(roots, false).outcome).toBe('unchanged')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', false).outcome).toBe('unchanged')
   })
 
   it('never takes away a block the customer wrote themselves', () => {
@@ -5618,10 +5618,10 @@ describe('Claude write boundary toggle', () => {
     const own = read()
     own.permissions = { ...own.permissions, blockWritesOutsideWorkingDirectories: true }
     write(own)
-    expect(applyClaudeWriteBoundary(roots, false).outcome).toBe('kept')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', false).outcome).toBe('kept')
     expect(read().permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
     // Turning it on records nothing, so a later official switch leaves it too.
-    expect(applyClaudeWriteBoundary(roots, true).outcome).toBe('unchanged')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', true).outcome).toBe('unchanged')
     switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
     expect(read().permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
   })
@@ -5631,27 +5631,27 @@ describe('Claude write boundary toggle', () => {
     const own = read()
     own.permissions = { ...own.permissions, blockWritesOutsideWorkingDirectories: false }
     write(own)
-    expect(applyClaudeWriteBoundary(roots, true).outcome).toBe('kept')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', true).outcome).toBe('kept')
     expect(read().permissions?.blockWritesOutsideWorkingDirectories).toBe(false)
   })
 
   it('does not rebuild a hand-broken permissions entry', () => {
     const { roots, read, write } = relayClaude()
     write({ ...read(), permissions: 'broken' })
-    expect(applyClaudeWriteBoundary(roots, true).outcome).toBe('kept')
+    expect(applyClaudeToggle(roots, 'writesInsideProject', true).outcome).toBe('kept')
     expect((read() as Record<string, unknown>).permissions).toBe('broken')
   })
 
   it('writes nothing when Claude Code has no settings file yet', () => {
     const home = temporaryHome()
     const roots = providerRoots(home)
-    expect(applyClaudeWriteBoundary(roots, true)).toEqual({ outcome: 'unchanged', result: { backups: [], files: [] } })
+    expect(applyClaudeToggle(roots, 'writesInsideProject', true)).toEqual({ outcome: 'unchanged', result: { backups: [], files: [] } })
     expect(fs.existsSync(providerConfigPaths('claude', roots)[0])).toBe(false)
   })
 
   it('removes the setting the toggle wrote when an account switch rewrites the config with the toggle off', () => {
     const { roots, read } = relayClaude()
-    applyClaudeWriteBoundary(roots, true)
+    applyClaudeToggle(roots, 'writesInsideProject', true)
     saveProviderConfig('claude', 'sk-relay-2', testModels.claude, 'merge', roots, {}, providerBaseUrls)
     expect(read().permissions).not.toHaveProperty('blockWritesOutsideWorkingDirectories')
   })
@@ -5669,11 +5669,81 @@ describe('Claude write boundary toggle', () => {
 
   it('takes back only the write boundary, not the confirmation defaults the customer kept', () => {
     const { roots, read, write } = relayClaude()
-    applyClaudeWriteBoundary(roots, true)
+    applyClaudeToggle(roots, 'writesInsideProject', true)
     const settings = read()
     settings.permissions = { ...settings.permissions, defaultMode: 'acceptEdits' }
     write(settings)
     switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
     expect(read().permissions).toEqual({ defaultMode: 'acceptEdits' })
+  })
+})
+
+// 同类对比 备选 6：设置里「Claude Code 提交代码时不署名」。写对象形式（旧版 Claude Code 见到 true / false 会报错，
+// 整份设置不读），只撤星芒原样写下的那一份。
+describe('Claude commit attribution toggle', () => {
+  function relayClaude(seeded: Parameters<typeof saveProviderConfig>[11] = {}) {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls, undefined, undefined, undefined, undefined, seeded)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const read = () => JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const write = (value: unknown) => fs.writeFileSync(configPath, JSON.stringify(value, null, 2))
+    return { roots, read, write }
+  }
+
+  it('leaves attribution to Claude Code while the toggle is off', () => {
+    expect(relayClaude().read()).not.toHaveProperty('attribution')
+  })
+
+  it('writes the object form into the relay template when the toggle is on and takes it back on the official switch', () => {
+    const { roots, read } = relayClaude({ claudeHidesCommitAttribution: true })
+    expect(read().attribution).toEqual({ commit: '', pr: '' })
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    expect(read()).not.toHaveProperty('attribution')
+  })
+
+  it('turns attribution off in place, touching nothing else, and back on', () => {
+    const { roots, read } = relayClaude()
+    const before = read()
+    expect(applyClaudeToggle(roots, 'hidesCommitAttribution', true).outcome).toBe('written')
+    const after = read()
+    expect(after.attribution).toEqual({ commit: '', pr: '' })
+    delete after.attribution
+    expect(after).toEqual(before)
+    expect(applyClaudeToggle(roots, 'hidesCommitAttribution', true).outcome).toBe('unchanged')
+    expect(applyClaudeToggle(roots, 'hidesCommitAttribution', false).outcome).toBe('written')
+    expect(read()).toEqual(before)
+  })
+
+  it('leaves attribution the customer wrote alone, whatever it says', () => {
+    for (const own of [false, { commit: 'Made with care' }, { commit: '', pr: '' }]) {
+      const { roots, read, write } = relayClaude()
+      write({ ...read(), attribution: own })
+      const enabled = applyClaudeToggle(roots, 'hidesCommitAttribution', true).outcome
+      expect(enabled).toBe(JSON.stringify(own) === JSON.stringify({ commit: '', pr: '' }) ? 'unchanged' : 'kept')
+      if (JSON.stringify(own) === JSON.stringify({ commit: '', pr: '' })) expect(applyClaudeToggle(roots, 'hidesCommitAttribution', false).outcome).toBe('kept')
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+      expect(read().attribution).toEqual(own)
+    }
+  })
+
+  it('stops counting the attribution as ours once the customer edits it', () => {
+    const { roots, read, write } = relayClaude()
+    applyClaudeToggle(roots, 'hidesCommitAttribution', true)
+    write({ ...read(), attribution: { commit: '', pr: '', sessionUrl: false } })
+    expect(applyClaudeToggle(roots, 'hidesCommitAttribution', false).outcome).toBe('unchanged')
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+    expect(read().attribution).toEqual({ commit: '', pr: '', sessionUrl: false })
+  })
+
+  it('follows the toggle through account switches and keeps the two toggles apart', () => {
+    const { roots, read } = relayClaude()
+    const both = { claudeHidesCommitAttribution: true, claudeWritesInsideProject: true }
+    saveProviderConfig('claude', 'sk-relay-2', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, undefined, undefined, both)
+    expect(read().attribution).toEqual({ commit: '', pr: '' })
+    expect((read().permissions as Record<string, unknown>).blockWritesOutsideWorkingDirectories).toBe(true)
+    saveProviderConfig('claude', 'sk-relay-3', testModels.claude, 'merge', roots, {}, providerBaseUrls, undefined, undefined, undefined, undefined, { claudeWritesInsideProject: true })
+    expect(read()).not.toHaveProperty('attribution')
+    expect((read().permissions as Record<string, unknown>).blockWritesOutsideWorkingDirectories).toBe(true)
   })
 })
