@@ -476,7 +476,6 @@ describe('canvas request parser', () => {
       ['image-edit', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图角色'],
       ['image-generate', { imageOutputIndex: 0 }, '图片处理'],
       ['frame-extract', { frameTimestampSeconds: 1.5 }, '视频抽帧'],
-      ['image-edit', { imageEditMask: { version: 1, strokes: [] } }, '蒙版局部修改'],
       ['image-generate', { commerceTask: { version: 1 } }, '电商创作'],
       ['image-generate', { interiorTask: { version: 1 } }, '室内创作'],
       ['image-generate', { exteriorTask: { version: 1 } }, '室外创作'],
@@ -524,6 +523,49 @@ describe('canvas request parser', () => {
     }
   })
 
+  it('hands an image-edit node its mask and refuses one anywhere else', () => {
+    const sourceAssetId = 'a'.repeat(43)
+    const mask = { version: 1, sourceAssetId, width: 64, height: 48, strokes: [{ tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }, { tool: 'erase', size: 0.05, points: [{ x: 0.5, y: 0.5 }, { x: 0.6, y: 0.5 }] }] }
+    const parsed = parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask: mask })).graph.nodes[0]
+    expect(parsed.desktopUnsupported).toBeUndefined()
+    expect(parsed.data).toEqual({ prompt: 'p', model: 'm', imageEditMask: mask })
+    // The kernel keeps masks on image-edit nodes only (parseNodeImageEditMask).
+    for (const kind of ['image', 'image-generate', 'video-generate']) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, { imageEditMask: mask }))).toThrow('蒙版局部修改配置只能保存在局部修改图像节点中')
+    }
+  })
+
+  it('refuses a mask outside the kernel limits before it reaches an executor', () => {
+    const stroke = { tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }
+    const mask = (patch: Record<string, unknown>) => ({ version: 1, width: 64, height: 48, strokes: [stroke], ...patch })
+    const malformed: Array<[unknown, string]> = [
+      ['mask', '局部修改蒙版包含无效或未知参数'],
+      [mask({ apiKey: 'secret' }), '画布蒙版格式错误'],
+      [mask({ url: 'https://evil.test' }), '局部修改蒙版包含无效或未知参数'],
+      [mask({ version: 2 }), '局部修改蒙版尺寸无效'],
+      [mask({ width: 4097 }), '局部修改蒙版尺寸无效'],
+      [mask({ width: 4096, height: 4097 }), '局部修改蒙版尺寸无效'],
+      [mask({ width: 0 }), '局部修改蒙版尺寸无效'],
+      [mask({ sourceAssetId: '../../etc/passwd' }), '局部修改蒙版绑定的原图编号无效'],
+      [mask({ strokes: Array.from({ length: 129 }, () => stroke) }), '局部修改蒙版最多保存 128 条笔画'],
+      [mask({ strokes: [{ ...stroke, points: Array.from({ length: 4097 }, () => ({ x: 0, y: 0 })) }] }), '画布蒙版格式错误'],
+      [mask({ strokes: [{ ...stroke, points: [] }] }), '局部修改蒙版笔画过于复杂'],
+      [mask({ strokes: [{ ...stroke, tool: 'fill' }] }), '局部修改蒙版画笔类型不正确'],
+      [mask({ strokes: [{ ...stroke, size: 0 }] }), '局部修改蒙版笔画坐标或大小不正确'],
+      [mask({ strokes: [{ ...stroke, points: [{ x: 1.5, y: 0 }] }] }), '局部修改蒙版笔画坐标或大小不正确'],
+      [mask({ strokes: [{ ...stroke, points: [{ x: 0, y: 0, z: 1 }] }] }), '局部修改蒙版包含无效或未知参数'],
+      [mask({ strokes: [{ ...stroke, accessToken: 'secret' }] }), '画布蒙版格式错误'],
+    ]
+    for (const [imageEditMask, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask })), JSON.stringify(imageEditMask).slice(0, 80)).toThrow(message)
+    }
+    // 4 096 points in all is the ceiling, spread over strokes; JSON over 64 KB is refused on its own.
+    const spread = Array.from({ length: 4 }, () => ({ ...stroke, points: Array.from({ length: 1024 }, (_, index) => ({ x: index / 1024, y: 0.5 })) }))
+    expect(() => parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask: mask({ strokes: [...spread, stroke] }) }))).toThrow('局部修改蒙版笔画过于复杂')
+    const long = Array.from({ length: 4 }, () => ({ ...stroke, points: Array.from({ length: 1024 }, () => ({ x: 0.123456789012345, y: 0.987654321098765 })) }))
+    expect(() => parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask: mask({ strokes: long }) }))).toThrow('局部修改蒙版数据超过 64 KB')
+  })
+
   it('rejects malformed kernel settings rather than marking them', () => {
     const deep: Record<string, unknown> = {}
     let cursor = deep
@@ -551,8 +593,6 @@ describe('canvas request parser', () => {
       [{ imageOutputIndex: -1 }, '画布图片输出序号格式错误'],
       [{ frameTimestampSeconds: Number.NaN }, '画布抽帧时间格式错误'],
       [{ frameTimestampSeconds: 86_401 }, '画布抽帧时间格式错误'],
-      [{ imageEditMask: 'mask' }, '画布蒙版格式错误'],
-      [{ imageEditMask: { strokes: [{ accessToken: 'secret' }] } }, '画布蒙版格式错误'],
       [{ commerceTask: { prompt: 'bad\0value' } }, '画布电商创作配置格式错误'],
       [{ commerceTask: { prompt: 'x'.repeat(10_001) } }, '画布电商创作配置格式错误'],
       [{ storyboardTask: deep }, '画布故事板配置格式错误'],

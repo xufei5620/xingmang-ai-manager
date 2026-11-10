@@ -1,7 +1,7 @@
 ## 用户
 
 - 有些开着安全管控的 Windows 电脑上，首页 Codex 桌面端一直显示「检测失败」，Claude Desktop、OpenCode、WorkBuddy
-  一直显示「命令执行失败」；现在能照常认出装没装、是哪一版。
+  一直显示「命令执行失败」；现在能照常认出装没装、是哪一版，Codex 桌面端还能认出是不是正在运行。
 
 ## 开发
 
@@ -11,5 +11,12 @@
   次次「检测失败」（2026-11-10 客户电脑）。现在改用哈希表出 JSON；开头设 UTF-8 输出那句只在 FullLanguage
   下执行，受限模式下 JSON 里 ASCII 以外的字符转成 `\uXXXX` 再输出（新叶子模块
   `electron/powershell-constrained-language.ts`）。Windows CI 上用 `__PSLockdownPolicy=4` 强制受限模式实测过，
-  PowerShell 冒烟检查新增一条在受限模式下跑这两段脚本。受限模式下查进程那段仍查不到（用到
-  WindowsIdentity），只少「正在运行」这一项；Claude Desktop、OpenCode、WorkBuddy 的盘点脚本和安装脚本另开 PR。
+  PowerShell 冒烟检查新增一条在受限模式下跑这两段脚本。Claude Desktop、OpenCode、WorkBuddy 的盘点脚本和安装脚本另开 PR。
+- 查进程那段（`codexDesktopProcessQuery`，首页合并查询和关窗前那条共用）在受限模式下也认得出正在运行的
+  Codex 桌面端。以前它用 `WindowsIdentity::GetCurrent()` 和 `Process::GetCurrentProcess()` 取自己的 SID 和会话，
+  受限模式不许调这两个 .NET 方法，整段失败，首页永远不显示「正在运行」；关窗前那条查不到会话号，查询本身
+  报错后照样按「一个也没有」退回。现在受限模式下改问 WMI 这个 PowerShell 进程自己的 `GetOwnerSid` 和
+  `SessionId`（跟比对每个候选进程用的是同一个调用），拿不到 SID 就整段报错，不拿空值去比；FullLanguage
+  照旧走原来那两句，输出跟以前一字不差（结果对象换成 `[ordered]@{}`，键的顺序不变）。Windows CI 上
+  `__PSLockdownPolicy=4` 实测：跑着一个假的 Codex 窗口，改前报 `Method invocation is supported only on core types`，
+  改后认出那个进程；冒烟检查新增一条，受限模式和 FullLanguage 下各跑一遍，要求查到的是同一条。

@@ -9,8 +9,10 @@ import {
 } from './canvas-contract'
 import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
+import { parseCanvasImageEditMask } from './canvas-image-mask'
 import {
   canvasRunKernelOnlyNodeLabels,
+  type CanvasImageEditMask,
   type CanvasRunGraph,
   type CanvasRunImageCandidateCount,
   type CanvasRunKernelOnlyNodeKind,
@@ -377,7 +379,6 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
     reasons.push('视频抽帧')
   }
   const structured: Array<[string, string, string]> = [
-    ['imageEditMask', '画布蒙版', '蒙版局部修改'],
     ['commerceTask', '画布电商创作配置', '电商创作'],
     ['interiorTask', '画布室内创作配置', '室内创作'],
     ['exteriorTask', '画布室外创作配置', '室外创作'],
@@ -395,6 +396,18 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
   if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
   if (reasons.length === 0) return undefined
   return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次没有提交任何付费请求`
+}
+
+/**
+ * The mask of a masked edit (画布完善第 5 条), image-edit nodes only, as the
+ * kernel stores it there (parseNodeImageEditMask). It is paid for and changes
+ * the request, so unlike the fields above it is parsed in full and passed on.
+ */
+function optionalImageEditMask(kind: CanvasRunNodeKind, value: unknown, budget: { remaining: number }): CanvasImageEditMask | undefined {
+  if (value === undefined) return undefined
+  if (kind !== 'image-edit') throw new Error('蒙版局部修改配置只能保存在局部修改图像节点中')
+  assertBoundedKernelValue(value, '画布蒙版', budget)
+  return parseCanvasImageEditMask(value)
 }
 
 function optionalCanvasString(value: unknown, label: string, maximum: number): string | undefined {
@@ -607,6 +620,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
     const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget)
+    const imageEditMask = optionalImageEditMask(kind, entry.data.imageEditMask, kernelFieldBudget)
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
     const prompt = canvasPrompt(entry.data.prompt, '画布节点提示词', 100_000)
@@ -658,6 +672,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
         ...(videoAspectRatio ? { videoAspectRatio: videoAspectRatio as CanvasRunGraph['nodes'][number]['data']['videoAspectRatio'] } : {}),
         ...(typeof promptOptimization === 'boolean' ? { promptOptimization } : {}),
         ...(imageCandidateCount ? { imageCandidateCount } : {}),
+        ...(imageEditMask ? { imageEditMask } : {}),
       },
     }
   })
