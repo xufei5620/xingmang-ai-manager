@@ -446,3 +446,8 @@ export function shouldPasteScreenshot(clipboard: { items: Iterable<{ kind: strin
   if (clipboard.getData('text/plain').trim()) return false
   return [...clipboard.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
 }
+
+// 空白页的示例，点了只填进输入框。不写代码的客户也要看得出还能干什么（Fable 第二轮 Y1）。
+export const chatExamples: readonly string[] = ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
+/** 带「……」的示例是半句话：填进去时去掉省略号，光标停在末尾，客户接着往下打，不用先删掉它。 */
+export function chatExampleDraft(example: string): string { return example.replace(/…+$/, '') }

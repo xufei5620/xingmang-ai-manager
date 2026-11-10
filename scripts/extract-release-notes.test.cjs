@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
+const { spawnSync } = require('node:child_process')
 const test = require('node:test')
-const { extractReleaseNotes, parseArguments } = require('./extract-release-notes.cjs')
+const { extractReleaseNotes, feedReleaseNotes, parseArguments } = require('./extract-release-notes.cjs')
+const { BUILD_MODE_ENVIRONMENT_NAMES } = require('./run-macos-free-build.cjs')
 
 const projectRoot = path.resolve(__dirname, '..')
 
@@ -50,6 +52,49 @@ test('the release notes shipped in the repository yield a non-empty section', ()
   const version = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).version
   const notes = extractReleaseNotes(fs.readFileSync(path.join(projectRoot, 'release-notes.md'), 'utf8'), version)
   assert.ok(notes.trim().startsWith('- '), notes.slice(0, 80))
+})
+
+test('the update feed carries only the section being released, without its version line', () => {
+  // 原来整份 release-notes.md 都进了 latest.yml，0.2.22、0.2.23 的版本页把它挤成一大段、还接着前几版
+  // （yoyo 2026-11-10「清单改」）。版本页标题已经写着版本号，这一节就不再带那一行。
+  assert.equal(feedReleaseNotes(sample, '0.2.7'), '- 新增了一件事。\n- 修了另一件事。')
+  assert.equal(feedReleaseNotes('0.2.7\r\n\r\n- 唯一一条。\r\n', '0.2.7'), '- 唯一一条。')
+})
+
+test('the update feed falls back to the whole file when the newest section is not this version', () => {
+  // 升级冒烟、出测试包会把版本号临时调到比所有已发版本都高，首节对不上是正常的，照原来整份写进去；
+  // 真发版首行必须等于版本号，由发布前置检查拦（P-14），走不到这里。
+  assert.equal(feedReleaseNotes(sample, '0.2.9'), null)
+  assert.equal(feedReleaseNotes(sample, '0.2.6'), null)
+  assert.equal(feedReleaseNotes('0.2.7\n\n0.2.6\n\n- 旧的。\n', '0.2.7'), null)
+  assert.equal(feedReleaseNotes('未发布\n\n- 还没汇总。\n', '0.2.7'), null)
+  assert.equal(feedReleaseNotes(sample, 'v0.2.7'), null)
+})
+
+test('the packaging config hands electron-builder only this version of the release notes', () => {
+  const version = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8')).version
+  const source = fs.readFileSync(path.join(projectRoot, 'release-notes.md'), 'utf8')
+  const environment = { ...process.env }
+  for (const name of BUILD_MODE_ENVIRONMENT_NAMES) delete environment[name]
+  delete environment.XINGMANG_UNSIGNED_RELEASE
+  for (const unsignedRelease of ['0', '1']) {
+    const result = spawnSync(process.execPath, ['-e', `
+      const config = require(${JSON.stringify(path.join(projectRoot, 'electron-builder.config.cjs'))})
+      process.stdout.write(JSON.stringify(config.releaseInfo))
+    `], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      env: { ...environment, XINGMANG_UNSIGNED_RELEASE: unsignedRelease, CSC_IDENTITY_AUTO_DISCOVERY: 'false' },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    const releaseInfo = JSON.parse(result.stdout)
+    // releaseNotesFile 还在的话 electron-builder 会照旧去读整份文件（app-builder-lib 的 getReleaseInfo）。
+    assert.equal(releaseInfo.releaseNotesFile, undefined)
+    assert.equal(releaseInfo.releaseNotes, feedReleaseNotes(source, version))
+    assert.ok(releaseInfo.releaseNotes.startsWith('- '), releaseInfo.releaseNotes.slice(0, 80))
+    assert.ok(!/^\d+\.\d+\.\d+$/m.test(releaseInfo.releaseNotes), 'the feed must not run on into an older version')
+    assert.ok(releaseInfo.releaseNotes.length < source.length / 4, `${releaseInfo.releaseNotes.length} of ${source.length}`)
+  }
 })
 
 test('the command line takes exactly one version and one destination', () => {

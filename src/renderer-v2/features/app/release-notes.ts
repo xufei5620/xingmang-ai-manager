@@ -27,9 +27,10 @@ function plainText(item: string): string {
 }
 
 /**
- * 更新清单带下来的说明拆成一条一行。electron-builder 把整份 release-notes.md 原样写进 latest.yml
- * （见 scripts/verify-release-environment.cjs），主进程只截前 20000 字：原来版本卡把这些整段塞进一个
- * <p>，换行被吃掉，要装的那一版后面还接着前几版的说明，「重启并安装」被挤到最底（11-10 客户截图）。
+ * 更新清单带下来的说明拆成一条一行。原来 electron-builder 把整份 release-notes.md 原样写进 latest.yml，
+ * 主进程只截前 20000 字：版本卡把这些整段塞进一个 <p>，换行被吃掉，要装的那一版后面还接着前几版的说明，
+ * 「重启并安装」被挤到最底（11-10 客户截图）。现在清单只带这一版、不带版本号那一行（scripts/extract-release-notes.cjs
+ * 的 feedReleaseNotes），测试包版本号对不上时才照旧整份。
  * 这里只取要装的那一版那一节；找不到这一版就取第一节，一行版本号都没有的当成就是这一版。
  * 一条「- 」开头的都没有时返回 null，照旧整段显示。
  */
