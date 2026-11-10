@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
 import { CodexRemoteCard, CodexRemotePanel, codexRemoteConfirmText } from './CodexRemoteCard'
+import { remoteChannelSections } from './channel-sections'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
   return { channel: 'feishu', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null, ...patch }
@@ -127,7 +128,9 @@ describe('codex remote card', () => {
     expect(codexRemoteConfirmText.unbind).toEqual({ title: '解绑？', body: '解绑后，这个人就不能再用手机遥控这台电脑了，要用得重新配对。', ok: '解绑' })
     expect(codexRemoteConfirmText.logout.title('飞书')).toBe('退出飞书登录？')
     expect(codexRemoteConfirmText.logout.title('微信')).toBe('退出微信登录？')
-    expect(codexRemoteConfirmText.logout.body).toBe('退出后要重新填机器人的凭据，才能再用手机遥控。')
+    // 退出以后怎么登回来，飞书和微信不一样：飞书重新填凭据，微信重新扫码。
+    expect(remoteChannelSections.feishu.logoutHint).toBe('退出后要重新填机器人的凭据，才能再用手机遥控。')
+    expect(remoteChannelSections.weixin.logoutHint).toBe('退出后要重新用微信扫码登录，才能再用手机遥控。')
     expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
   })
 
