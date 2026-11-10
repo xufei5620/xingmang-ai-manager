@@ -162,6 +162,18 @@ describe('update install prompt copy', () => {
   it('puts the safe answer first so it is the default and the cancel button', () => {
     expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false }).buttons[0]).toBe('稍后再说')
   })
+
+  it('asks about the suggested older version, in the settings page wording, when the install is a rollback', () => {
+    // D11：只换问的那句，其余照旧。
+    for (const platform of ['win32', 'darwin'] as const) {
+      expect(buildInstallPrompt('0.2.21', platform, { unattended: false, rollback: true })).toEqual({
+        ...buildInstallPrompt('0.2.21', platform, { unattended: false }),
+        message: '建议退回的 0.2.21 版已经下好，现在装上吗？',
+      })
+    }
+    expect(buildInstallPrompt('0.2.22', 'win32', { unattended: false, rollback: false }))
+      .toEqual(buildInstallPrompt('0.2.22', 'win32', { unattended: false }))
+  })
 })
 
 describe('resolveInstallPromptVersion', () => {
@@ -235,6 +247,18 @@ describe('decideIdleInstall', () => {
 })
 
 describe('createUpdateInstallPrompter', () => {
+  it('words the prompt as a rollback when the package waiting on disk is older than this version', async () => {
+    const test = harness()
+    test.state.snapshot = snapshot({ currentVersion: '0.2.22', availableVersion: '0.2.21', rollback: true })
+    const prompter = createUpdateInstallPrompter(test.options)
+    prompter.observe(test.state.snapshot)
+    test.state.idleMs = PROMPT_QUIET_INPUT_MS
+    await test.runTimers()
+    expect(test.asks).toHaveLength(1)
+    expect(test.asks[0].prompt.message).toBe('建议退回的 0.2.21 版已经下好，现在装上吗？')
+    prompter.dispose()
+  })
+
   it('waits for a pause in typing, asks once, and holds the idle install until well after "later"', async () => {
     const test = harness()
     const prompter = createUpdateInstallPrompter(test.options)

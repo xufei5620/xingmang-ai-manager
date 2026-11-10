@@ -47,7 +47,7 @@ import { createUpdateFeed } from './bootstrap/updates'
 import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
-import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
+import { buildUnfinishedRestartWorkPrompt, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
 import { createUpdateInstallPrompter } from './update-install-prompt'
 import { LAUNCH_INSTALL_NOTICE_MS, QUIT_INSTALL_NOTICE_MS, buildAutoInstallNotice, canInstallUnattended, createPendingUpdateStore, decideLaunchInstall, decideQuitInstall, isBackgroundInstallFailed, isRelaunchAfterBackgroundInstall, memoizeUnattendedInstall, quitInstallPrompt, resolveDownloadedVersionToRecord, resolveLaunchInstallMode, resolveRecordToWriteAtLaunch, shouldStillInstallAtLaunch, undoQuitInstallAttempt, type LaunchInstallMode, type QuitInstallAttempt } from './auto-update-install'
 import { createWindowResponsivenessGuard } from './window-responsiveness'
@@ -1693,7 +1693,7 @@ if (!hasSingleInstanceLock) {
       // 后台装的没人在看，不预告也不等。
       void pendingUpdateStore.write(pendingUpdateRecord).then(async () => {
         if (!background) {
-          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true)
+          const notice = buildAutoInstallNotice(version, 'launch', process.platform, windowsCliExecution.highIntegrity === true, isRollbackInstall(updaterService.getState(), version))
           desktopNotifications.announce(notice)
           // 系统通知在专注助手、关了通知的电脑上会被静默吞掉，窗口里同时摆一张同样说法的卡。
           updaterService.setLaunchInstallNotice({ version, ...notice, installAt: Date.now() + LAUNCH_INSTALL_NOTICE_MS })
@@ -2893,7 +2893,7 @@ if (!hasSingleInstanceLock) {
         }
         if (version && decision === 'install') {
           runtimeLog.log('info', 'window', 'quit.update-auto-install', `退出时自动安装更新：${version}`)
-          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true))
+          desktopNotifications.announce(buildAutoInstallNotice(version, 'quit', process.platform, windowsCliExecution.highIntegrity === true, update.rollback))
           // 给系统一点时间把通知摆出来，再让安装器接手退出。
           await new Promise((resolve) => { setTimeout(resolve, QUIT_INSTALL_NOTICE_MS).unref() })
           if (lifecycle.isSystemShuttingDown) {
@@ -2912,7 +2912,7 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('info', 'window', 'quit.update-downloaded', `退出前确认安装更新：${update.version ?? '版本未知'}`)
         if (!mainWindow.isVisible()) showMainWindow()
-        const prompt = quitInstallPrompt(update.version, installMethod, process.platform)
+        const prompt = quitInstallPrompt(update.version, installMethod, process.platform, update.rollback)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具',
           message: prompt.message,
