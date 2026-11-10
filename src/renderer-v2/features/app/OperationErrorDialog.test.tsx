@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
+import { configWriteBlockerMessage } from '../../../../electron/config-write-blocker'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { OperationErrorDialog, operationErrorActions, supportFailureOf } from './OperationErrorDialog'
 
@@ -95,14 +96,16 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).not.toContain('operation-error-copyPath')
     expect(markup).not.toContain('operation-error-path')
     // 按钮被过滤光了也不能只剩「返回」：目录的另一颗按钮仍在。
-    expect(markup).toContain('operation-error-log')
+    expect(markup).toContain('operation-error-support')
   })
 
   it('filters 复制路径 the same way it filters 重试', () => {
     const permission = 'Claude Code 安装失败：npm 官方源：EPERM: operation not permitted, rename'
-    expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['log'])
+    expect(operationErrorActions({ message: permission }).map((action) => action.id)).toEqual(['support'])
     expect(operationErrorActions({ message: permission }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
-      .toEqual(['copyPath', 'log'])
+      .toEqual(['copyPath', 'support'])
+    expect(operationErrorActions({ message: permission, retry: () => undefined }, '/tmp/npm/@anthropic-ai/claude-code').map((action) => action.id))
+      .toEqual(['retry', 'copyPath', 'support'])
   })
 
   it('offers to replace an outdated Node.js as the way out, and 找客服 where it cannot', () => {
@@ -155,6 +158,19 @@ describe('renderer-v2 operation error dialog', () => {
     expect(markup).toMatch(/operation-error-copySupport[\s\S]*operation-error-support"/)
     expect(renderToStaticMarkup(<OperationErrorDialog failure={{ message: 'x' }} onClose={() => undefined} onAction={() => undefined} />))
       .not.toContain('operation-error-copySupport')
+  })
+
+  it('offers the 复制给客服 button that the root-owned settings folder sentence points at (D15)', () => {
+    const support = { signedIn: true, account: { userId: 7, username: 'peaker' }, version: '0.2.24', os: 'mac' as const }
+    const failure = { message: `Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`, action: '改用当前账号', target: 'config' as const, tool: 'claude' as const, retry: () => undefined }
+    const markup = renderToStaticMarkup(
+      <OperationErrorDialog failure={failure} support={support} onClose={() => undefined} onAction={() => undefined} />,
+    )
+    expect(markup).toContain('写不进配置文件')
+    expect(markup).toContain('这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
+    expect(markup).not.toContain('常见是安全软件拦了')
+    expect(markup).toContain('operation-error-copySupport')
+    expect(operationErrorActions(failure).map((action) => action.label)).toEqual(['重试', '查看日志', '找客服'])
   })
 
   it('builds the support failure from the recognised heading', () => {

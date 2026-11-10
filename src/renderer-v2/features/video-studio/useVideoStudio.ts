@@ -642,6 +642,9 @@ export function useVideoStudio(bridge: VideoStudioBridge, scope: string, site: C
   const busy = Boolean(planning) || project.shots.some((shot) => isVideoStudioShotBusy(shot) || isVideoStudioShotDrawing(shot)) || composeState.phase !== 'idle'
   // 写分镜、出片、拼片都靠这一页接着往下走：做着的时候窗口缩到托盘也不关界面（electron/renderer-release.ts）。
   useBackgroundWork('video-studio', busy)
+  // 拼片也在这一页里跑，重启装更新会把它停下、重开以后要从头再拼：主进程要点名问一句（D10）。
+  // 出片交给服务端，重开以后接着取回来，不在这一样里。
+  useBackgroundWork('video-compose', composeState.phase !== 'idle', 'video-compose')
   return {
     site, project, groups, preparations, catalogLoading, catalogError, planning: Boolean(planning), composeState, error, notice, storageWarning, busy,
     catalogs: buildVideoStudioCatalogs(groups, preparations),
