@@ -6,6 +6,8 @@ import {
   appendSafeUtf8File,
   appendSafeUtf8FileSync,
   assertNoReparseComponents,
+  assertSafeDataFile,
+  assertSafeDataFiles,
   findReparseComponent,
   readSafeUtf8File,
   readSafeUtf8FileSync,
@@ -80,6 +82,44 @@ describe('safe local data files', () => {
       path.join(symbolicLink, 'config.toml'),
       '配置路径',
     )).toThrow('符号链接')
+  })
+
+  it('sizes many files of one directory with the same per-file checks as one at a time', () => {
+    const directory = temporaryDirectory()
+    fs.writeFileSync(path.join(directory, 'a.json'), 'abc')
+    fs.writeFileSync(path.join(directory, 'b.json'), '')
+    expect(assertSafeDataFiles(directory, ['a.json', 'missing.json', 'b.json'], '聊天记录')).toEqual([3, null, 0])
+    expect(assertSafeDataFiles(directory, [], '聊天记录')).toEqual([])
+    // Names are file names inside this one directory, never paths out of it.
+    for (const name of ['', '.', '..', '../a.json', 'sub/a.json', path.join('sub', 'a.json')]) {
+      expect(() => assertSafeDataFiles(directory, [name], '聊天记录')).toThrow('文件名无效')
+    }
+    // A hard link reaches a file somewhere else; refused like assertSafeDataFile does.
+    const victim = path.join(temporaryDirectory(), 'victim.txt')
+    fs.writeFileSync(victim, 'keep')
+    fs.linkSync(victim, path.join(directory, 'linked.json'))
+    expect(() => assertSafeDataFile(path.join(directory, 'linked.json'), '聊天记录')).toThrow('单链接普通文件')
+    expect(() => assertSafeDataFiles(directory, ['a.json', 'linked.json'], '聊天记录')).toThrow('单链接普通文件')
+  })
+
+  // Walking the directory once instead of once per file must not open a way
+  // around the check: a linked ancestor is refused by that walk, and a file
+  // that is itself a link by its own per-file check.
+  it.runIf(canCreateSymbolicLink)('refuses files reached through a linked directory or that are links themselves', () => {
+    const directory = temporaryDirectory()
+    const elsewhere = path.join(directory, 'elsewhere')
+    fs.mkdirSync(elsewhere)
+    fs.writeFileSync(path.join(elsewhere, 'a.json'), 'planted')
+    const linkedDirectory = path.join(directory, 'history')
+    fs.symlinkSync(elsewhere, linkedDirectory, process.platform === 'win32' ? 'junction' : 'dir')
+    expect(() => assertSafeDataFiles(linkedDirectory, ['a.json'], '聊天记录')).toThrow('符号链接')
+
+    const real = path.join(directory, 'real')
+    fs.mkdirSync(real)
+    fs.writeFileSync(path.join(real, 'ok.json'), 'ok')
+    fs.symlinkSync(path.join(elsewhere, 'a.json'), path.join(real, 'link.json'), 'file')
+    expect(() => assertSafeDataFiles(real, ['ok.json', 'link.json'], '聊天记录')).toThrow()
+    expect(() => assertSafeDataFile(path.join(real, 'link.json'), '聊天记录')).toThrow()
   })
 
   it('atomically creates and replaces a regular UTF-8 file', async () => {

@@ -17,13 +17,13 @@ describe('data transfer wording', () => {
 
   it('says how many conversations did not fit instead of claiming they are all here', () => {
     expect(dataTransferImportMessage({ fileConversations: 10, added: 4, skipped: 6, signedIn: true, settingsChanged: true }))
-      .toBe('导入了 4 个对话和你的设置。还有 6 个没导进来：这台电脑最多存 50 个对话，在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
+      .toBe('导入了 4 个对话和你的设置。还有 6 个没导进来：这台电脑最多存 200 个对话，在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
     expect(dataTransferImportMessage({ fileConversations: 10, added: 4, skipped: 6, signedIn: true, settingsChanged: false }))
-      .toBe('导入了 4 个对话。还有 6 个没导进来：这台电脑最多存 50 个对话，在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
+      .toBe('导入了 4 个对话。还有 6 个没导进来：这台电脑最多存 200 个对话，在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
     expect(dataTransferImportMessage({ fileConversations: 3, added: 0, skipped: 3, signedIn: true, settingsChanged: true }))
-      .toBe('设置已导入。这台电脑已经存满 50 个对话，文件里的 3 个对话没导进来。在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
+      .toBe('设置已导入。这台电脑已经存满 200 个对话，文件里的 3 个对话没导进来。在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
     expect(dataTransferImportMessage({ fileConversations: 3, added: 0, skipped: 2, signedIn: true, settingsChanged: false }))
-      .toBe('这台电脑已经存满 50 个对话，文件里的 2 个对话没导进来。在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
+      .toBe('这台电脑已经存满 200 个对话，文件里的 2 个对话没导进来。在「聊天」里删掉一些不要的，再点一次「导入」就能补上。')
   })
 
   it('merges settings updates and drops the version marker', () => {
