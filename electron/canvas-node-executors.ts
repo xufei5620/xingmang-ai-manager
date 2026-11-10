@@ -2,10 +2,11 @@ import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from '.
 import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-protocol'
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
 import type {
+  CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
   CanvasNodeExecutors,
 } from './canvas-run-engine'
-import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiOperationProgressObserver, AiOperationProgressUpdate, AiRelayBillingObserver } from './ai-operation-progress'
 import { parseDramaTablesJson } from './drama-parse'
 import { dramaParseSystemPrompt } from './drama-parse-prompt'
 
@@ -15,6 +16,8 @@ export interface CanvasTextCompletionInput {
   system: string
   user: string
   signal: AbortSignal
+  /** The attempt's 实扣 bookkeeping; hand it to the request. */
+  billing?: AiRelayBillingObserver
 }
 
 export interface CanvasTextCompletionService {
@@ -105,6 +108,27 @@ function imageResult(
   }
 }
 
+/**
+ * What a paid request reports back to the run: its stages when the run shows
+ * them, and the relay's request id for the run's 实扣. Undefined when the run
+ * wants neither, so the request goes out exactly as it did before.
+ */
+function requestObserver(
+  reportStage: CanvasNodeExecutionContext['reportStage'],
+  billing: AiRelayBillingObserver | undefined,
+  withProgress = false,
+): AiOperationProgressObserver | undefined {
+  if (!reportStage && !billing) return undefined
+  return {
+    onStage: reportStage ?? (() => undefined),
+    ...(reportStage && withProgress ? { onProgress: (update: AiOperationProgressUpdate) => reportStage('processing', update) } : {}),
+    ...(billing ? {
+      onRelayDispatch: (sent: boolean) => billing.onRelayDispatch?.(sent),
+      onRelayAnswer: (relayRequestId: string | null) => billing.onRelayAnswer?.(relayRequestId),
+    } : {}),
+  }
+}
+
 // addEventListener('abort') never fires for a signal that is already
 // aborted, so a stop that lands before an executor starts would otherwise
 // slip through and submit a paid generation request.
@@ -122,7 +146,7 @@ export function createCanvasNodeExecutors(options: {
   textGroup?: string
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
-  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
     const group = node.data.group || options.imageGroup || '图片模型'
@@ -147,15 +171,16 @@ export function createCanvasNodeExecutors(options: {
           ? { quality: node.data.quality }
           : {}),
       }
-      const assets = reportStage
-        ? await options.imageService.generate(ownerId, input, { onStage: reportStage })
+      const observer = requestObserver(reportStage, billing)
+      const assets = observer
+        ? await options.imageService.generate(ownerId, input, observer)
         : await options.imageService.generate(ownerId, input)
       return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
@@ -192,8 +217,9 @@ export function createCanvasNodeExecutors(options: {
           ? { quality: node.data.quality }
           : {}),
       }
-      const assets = reportStage
-        ? await options.imageService.edit(ownerId, input, { onStage: reportStage })
+      const observer = requestObserver(reportStage, billing)
+      const assets = observer
+        ? await options.imageService.edit(ownerId, input, observer)
         : await options.imageService.edit(ownerId, input)
       return imageResult(assets, group, node.data.model)
     } finally {
@@ -236,7 +262,7 @@ export function createCanvasNodeExecutors(options: {
     const owned = await options.assets.readOwned(userId, assetId, 'audio')
     return { assets: [{ kind: 'audio', ...owned.asset }] }
   }
-  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     if (!options.videoService) throw new Error('视频生成能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
@@ -280,11 +306,9 @@ export function createCanvasNodeExecutors(options: {
           ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
         }),
       }
-      const asset = reportStage
-        ? await options.videoService.generate(ownerId, input, {
-          onStage: reportStage,
-          onProgress: (update) => reportStage('processing', update),
-        })
+      const observer = requestObserver(reportStage, billing, true)
+      const asset = observer
+        ? await options.videoService.generate(ownerId, input, observer)
         : await options.videoService.generate(ownerId, input)
       return {
         assets: [{
@@ -303,7 +327,7 @@ export function createCanvasNodeExecutors(options: {
   const unsupported: CanvasNodeExecutors['image-edit'] = async () => {
     throw new Error('该节点能力尚未接入，当前不会提交付费请求')
   }
-  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal }) => {
+  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal, billing }) => {
     const script = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim()
     if (!script) throw new Error('请先连接或粘贴剧本文本')
     if (!options.completeText) throw new Error('剧本解析服务未就绪')
@@ -323,6 +347,7 @@ export function createCanvasNodeExecutors(options: {
           system: dramaParseSystemPrompt,
           user: script,
           signal,
+          ...(billing ? { billing } : {}),
         })
       } catch (error) {
         if (signal.aborted) throw error

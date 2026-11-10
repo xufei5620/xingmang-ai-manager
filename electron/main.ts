@@ -2050,6 +2050,8 @@ if (!hasSingleInstanceLock) {
       runtimeLog,
       sessionFetch,
       routedRelayFetch,
+      // 画布跑完对实扣要把扣费单位换成美元，用托盘那份余额里的换算比例，没有再读（canvas-run-charges.ts）。
+      cachedQuotaPerUnit: () => latestTrayBalance && latestTrayBalance.quotaPerUnit > 0 ? latestTrayBalance.quotaPerUnit : null,
     })
     // Construct each realm on first access. The initial realm is still the
     // account service's default until restoreActive completes below.

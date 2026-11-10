@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { executeCanvasRun } from './canvas-run-engine'
 import type { CanvasRunGraph } from './canvas-run-contract'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { dramaParseMaximumRequestCount } from '../canvas-v2/src/runtime/run-preflight'
 
 describe('createCanvasNodeExecutors', () => {
@@ -592,5 +593,55 @@ describe('createCanvasNodeExecutors', () => {
       signal: new AbortController().signal,
     })).rejects.toThrow('剧本解析没有返回有效 JSON')
     expect(completeOnce).toHaveBeenCalledTimes(dramaParseMaximumRequestCount)
+  })
+})
+
+describe('canvas node executors relay billing', () => {
+  const imageAsset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png' as const, fileName: 'image.png' }
+  function context(kind: 'image' | 'video' | 'drama-parse', billing?: AiRelayBillingObserver) {
+    return {
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: kind, kind, definitionVersion: 1, data: kind === 'video'
+        ? { prompt: '海浪', model: 'grok-imagine-video', group: '视频模型' }
+        : kind === 'image' ? { prompt: '一只猫', model: 'gpt-image-2', group: '图片模型' } : { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: kind === 'drama-parse' ? { text: '虞晚斜倚锦榻' } : {},
+      signal: new AbortController().signal,
+      ...(billing ? { billing } : {}),
+    }
+  }
+
+  it('hands the attempt billing to the image and video requests and forwards what they report', async () => {
+    const generate = vi.fn(async (_senderId: number, _input: unknown, progress?: { onRelayDispatch?(sent: boolean): void; onRelayAnswer?(id: string | null): void }) => {
+      progress?.onRelayDispatch?.(true)
+      progress?.onRelayAnswer?.('req-image')
+      return [imageAsset]
+    })
+    const generateVideo = vi.fn(async (_senderId: number, _input: unknown, progress?: { onRelayAnswer?(id: string | null): void }) => {
+      progress?.onRelayAnswer?.('req-video')
+      return { assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`, mimeType: 'video/mp4', taskId: 'task' }
+    })
+    const cancel = vi.fn(() => ({ canceled: false, mayStillComplete: false }))
+    const executors = createCanvasNodeExecutors({ imageService: { generate, cancel }, videoService: { generate: generateVideo as never, cancel } })
+    const billing = { onRelayDispatch: vi.fn<(sent: boolean) => void>(), onRelayAnswer: vi.fn<(id: string | null) => void>() }
+    await executors.image(context('image', billing))
+    await executors.video(context('video', billing))
+    expect(billing.onRelayDispatch).toHaveBeenCalledWith(true)
+    expect(billing.onRelayAnswer.mock.calls).toEqual([['req-image'], ['req-video']])
+    // No billing and no stage reporting: the request goes out with no observer, as before.
+    await executors.image(context('image'))
+    expect(generate.mock.calls.at(-1)).toHaveLength(2)
+  })
+
+  it('hands the attempt billing to each drama parse request', async () => {
+    const { danyinTwoShotFixture } = await import('./drama-parse')
+    const completeOnce = vi.fn().mockResolvedValueOnce('这不是表格').mockResolvedValueOnce(JSON.stringify(danyinTwoShotFixture))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const billing = { onRelayDispatch: vi.fn<(sent: boolean) => void>(), onRelayAnswer: vi.fn<(id: string | null) => void>() }
+    await executors['drama-parse']!(context('drama-parse', billing))
+    expect(completeOnce).toHaveBeenCalledTimes(2)
+    expect(completeOnce.mock.calls.every((call) => call[0].billing === billing)).toBe(true)
   })
 })

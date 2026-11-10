@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { parseCanvasStartRunInput } from './canvas-request-parser'
+import { canvasRunChargeFirstCheckMs, createCanvasRunChargeChecker } from './canvas-run-charges'
 import { createCanvasRunService } from './canvas-run-service'
 import { CanvasRunStore } from './canvas-run-store'
 import type { CanvasRunAsset, CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
@@ -547,5 +548,104 @@ describe('createCanvasRunService', () => {
     } finally {
       fetchSpy.mockRestore()
     }
+  })
+})
+
+describe('createCanvasRunService charges', () => {
+  it('schedules the 实扣 check once the terminal record is saved and publishes what it finds to subscribers', async () => {
+    const graph = workflow()
+    const store = memoryStore()
+    const schedule = vi.fn()
+    const clear = vi.fn()
+    let publishCharge!: Parameters<NonNullable<Parameters<typeof createCanvasRunService>[0]['charges']>>[0]
+    const service = createCanvasRunService({
+      store,
+      randomUUID: () => 'run-1',
+      charges: (publish) => {
+        publishCharge = publish
+        return { schedule, clear }
+      },
+      executors: { text: async () => ({ outputText: 'hello' }), image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
+    })
+    let savedWhenScheduled: string | undefined
+    schedule.mockImplementation(() => { savedWhenScheduled = store.runs[0]?.status })
+    const seen: unknown[] = []
+    service.subscribe(({ event, userId, ownerId }) => { if (event.type === 'run-charge') seen.push({ runId: event.runId, userId, ownerId, usd: event.charge.usd }) })
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await handle.promise
+    expect(schedule).toHaveBeenCalledOnce()
+    expect(schedule.mock.calls[0][0]).toMatchObject({ runId: 'run-1', userId: 7, status: 'succeeded' })
+    expect(schedule.mock.calls[0][1]).toBe(9)
+    expect(savedWhenScheduled).toBe('succeeded')
+    await publishCharge({
+      version: 1, type: 'run-charge', runId: 'run-1', graphRevision: handle.graphRevision, sequence: 99, at: new Date().toISOString(),
+      charge: { state: 'settled', usd: 0.06, unmatchedAttempts: 0, checkedAt: new Date().toISOString() }, attempts: [],
+    }, 7, 9)
+    expect(seen).toEqual([{ runId: 'run-1', userId: 7, ownerId: 9, usd: 0.06 }])
+    service.shutdown()
+    expect(clear).toHaveBeenCalledOnce()
+  })
+
+  it('still checks 实扣 for runs that end after a shutdown, as main shuts it down on every sign-in', async () => {
+    const graph: CanvasRunGraph = {
+      nodes: [{ id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: '一只猫', model: 'gpt-image-2', group: '生图分组' } }],
+      edges: [],
+    }
+    const store = memoryStore()
+    const timers: (() => void)[] = []
+    let clock = Date.now()
+    const readUsage = vi.fn(async () => ({ records: [{ requestId: 'req-1', quota: 30_000, type: 2 }], total: 1 }))
+    let checker!: ReturnType<typeof createCanvasRunChargeChecker>
+    const service = createCanvasRunService({
+      store,
+      charges: (publish) => {
+        checker = createCanvasRunChargeChecker({
+          current: () => ({ userId: 7, key: 'r1:7' }),
+          readUsage,
+          readQuotaPerUnit: async () => 500_000,
+          getRun: (userId, runId) => store.getRun(userId, runId),
+          saveRun: (userId, record) => store.saveRun(userId, record),
+          publish,
+          now: () => clock,
+          setTimer: (callback) => { timers.push(callback); return callback },
+          clearTimer: (timer) => { timers.splice(timers.indexOf(timer as () => void), 1) },
+        })
+        return checker
+      },
+      executors: {
+        text: async () => ({ outputText: '' }),
+        image: async ({ billing }) => {
+          billing?.onRelayDispatch?.(true)
+          billing?.onRelayAnswer?.('req-1')
+          const assetId = 'image1'.padEnd(43, 'x')
+          return { assets: [{ kind: 'image' as const, assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' }], model: 'gpt-image-2', group: '生图分组' }
+        },
+        video: async () => ({ assets: [] }),
+      },
+    })
+    const seen: number[] = []
+    service.subscribe(({ event }) => { if (event.type === 'run-charge') seen.push(event.charge.usd) })
+    // Signing in shuts the service down before the first run (main.ts onChanged).
+    service.shutdown()
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await handle.promise
+    expect(timers).toHaveLength(1)
+    clock += canvasRunChargeFirstCheckMs
+    timers.shift()!()
+    await checker.whenIdle()
+    expect(readUsage).toHaveBeenCalledOnce()
+    expect(seen).toEqual([0.06])
+    expect(store.runs[0].charge).toMatchObject({ state: 'settled', usd: 0.06 })
+  })
+
+  it('never fails a run because its 实扣 could not be scheduled', async () => {
+    const graph = workflow()
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      charges: () => ({ schedule: () => { throw new Error('boom') }, clear: () => undefined }),
+      executors: { text: async () => ({ outputText: 'hello' }), image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
+    })
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
   })
 })
