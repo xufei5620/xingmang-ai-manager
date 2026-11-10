@@ -4859,8 +4859,8 @@ test('the version card names the step that failed and offers that step again', a
 })
 
 // 首页气泡说「下载更新失败」却只给「查看更新」，客户得换页再找按钮。气泡上直接
-// 给那一步的重试，走的和版本更新卡同一套：下载失败先重新查再下，安装失败落到「设置 › 版本更新」
-// 那张卡的重启确认框，检查失败重新查。
+// 给那一步的重试，走的和版本更新卡同一套：下载失败先重新查再下，安装失败就地弹版本更新卡
+// 那个重启确认框（不再先跳到「设置 › 版本更新」，11-10），检查失败重新查。
 test('the update failure bubble retries the failed step without a detour', async () => {
   const page = await open('updateRetryAvailable=1')
   try {
@@ -4892,10 +4892,9 @@ test('the update failure bubble retries the failed step without a detour', async
     await emit('install', 'downloaded', 'UPDATE_ERROR', '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装')
     const install = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await install.getByRole('button', { name: '重新安装', exact: true }).click()
-    const settings = page.getByTestId('page-settings')
-    await settings.getByTestId('page-updates').waitFor()
-    await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
+    assert.equal(await page.getByTestId('page-settings').isVisible(), false)
+    await page.getByTestId('page-home').waitFor()
     assert.equal(await calls('installUpdate'), 0)
     await clean(page)
   } finally { await page.close() }
@@ -4925,6 +4924,34 @@ test('the version card asks about running installs before restarting and stays q
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
     await restart.waitFor()
     await assertNoToast(page, '安装请求已提交')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 更新清单里是整份 release-notes.md：版本卡只列要装的那一版，一条一行；说明再长也只占卡里一截、
+// 在那一截里自己滚，「重启并安装」不用滑到底去找（yoyo 2026-11-10）。
+test('the version card lists only the pending version one change per line and keeps the install button in view', async () => {
+  const page = await open('')
+  try {
+    const updates = await openVersionCard(page)
+    const changes = Array.from({ length: 40 }, (_, index) => `- 第 ${index + 1} 条改动，说得长一点，在源文件里\n  折了一行。`)
+    const releaseNotesText = ['0.1.32', '', ...changes, '', '0.1.31', '', '- 上一版的改动'].join('\n')
+    const restart = updates.getByRole('button', { name: '重启并安装', exact: true })
+    await expect.poll(async () => {
+      await page.evaluate((notes) => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: notes,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }), releaseNotesText)
+      return restart.count()
+    }).toBe(1)
+    await updates.getByText('v0.1.32 更新内容', { exact: true }).waitFor()
+    const list = updates.getByTestId('updates-new-notes')
+    assert.equal(await list.locator('li').count(), 40)
+    await list.getByText('第 1 条改动，说得长一点，在源文件里折了一行。', { exact: true }).waitFor()
+    assert.equal(await updates.getByText('上一版的改动', { exact: false }).count(), 0)
+    const body = updates.getByTestId('updates-notes-body')
+    assert.ok(await body.evaluate((element) => element.scrollHeight > element.clientHeight + 1), 'long notes scroll inside the card')
+    await expect(restart).toBeInViewport()
     await clean(page)
   } finally { await page.close() }
 })
@@ -5290,7 +5317,8 @@ test('a Windows account outside the administrators group is told an administrato
 })
 
 // 0.2.19 把侧栏「更多 › 更新」并进了「设置」最后一项，客户找不到在哪更新（yoyo 2026-10-27「侧栏改」）：下好了
-// 侧栏「设置」上面多一项金色的「重启并安装新版」，状态栏版本号、气泡上的「重启并安装」都直接弹确认框；
+// 侧栏「设置」上面多一项金色的「重启并安装新版」，状态栏版本号、气泡上的「重启并安装」都直接弹确认框，
+// 就在原地弹，不先跳到「设置 › 版本更新」（yoyo 2026-11-10：要跳转、更新说明又长）；
 // 侧栏那项关不掉，气泡关掉满一天再出一次；没开自动下载时气泡上直接给「下载更新」。
 test('a downloaded update is one click from the install confirmation in the sidebar, the status bar and the bubble', async () => {
   const closedAt = new Date('2026-10-27T05:00:00Z')
@@ -5312,13 +5340,15 @@ test('a downloaded update is one click from the install confirmation in the side
     })
     const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
     const settings = page.getByTestId('page-settings')
-    async function confirmOpensAndClose() {
+    async function confirmOpens() {
       await dialog.waitFor()
-      await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await page.getByTestId('page-home').waitFor()
+      assert.equal(await settings.isVisible(), false)
+    }
+    async function confirmOpensAndClose() {
+      await confirmOpens()
       await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
       await dialog.waitFor({ state: 'detached' })
-      await page.getByTestId('nav-home').click()
-      await page.getByTestId('page-home').waitFor()
     }
     await emit({})
     const entry = page.getByTestId('nav-update')
@@ -5340,7 +5370,12 @@ test('a downloaded update is one click from the install confirmation in the side
     await bubble.getByTestId('update-bubble-install').getByText('重启并安装', { exact: true }).waitFor()
     await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
     await bubble.getByTestId('update-bubble-install').click()
-    await confirmOpensAndClose()
+    await confirmOpens()
+    // 原地这个框装的是同一条：让主进程先看有没有工具在装（已知31），提交了说一句。
+    await dialog.getByRole('button', { name: '重启并安装', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args))).toEqual([[{ askIfInstalling: true }]])
+    await waitForToast(page, '安装请求已提交')
 
     // 气泡关掉一天之内不再出，满一天再出；侧栏那一项一直在。
     await bubble.getByRole('button', { name: '关闭', exact: true }).click()

@@ -391,6 +391,8 @@
 .v2-version-card-notes { display: flex; flex-direction: column; gap: 6px; }
 .v2-version-card-notes h3 { margin: 0; font-size: var(--font-body); font-weight: 600; }
 .v2-version-card-notes p { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; }
+/* 更新说明只占卡里一截，多了在这一截里自己滚：下面的「重启并安装」一直露着，不用滑到底去找（11-10）。 */
+.v2-version-card-notes-body { max-height: min(240px, 34vh); overflow-y: auto; overscroll-behavior: contain; }
 .v2-version-card-progress { display: flex; flex-direction: column; gap: 6px; }
 .v2-version-card-progress p { margin: 0; color: var(--text-2); font-size: var(--font-small); font-variant-numeric: tabular-nums; }
 .v2-version-card-line { display: flex; gap: 10px; margin: 0; color: var(--text-2); font-size: var(--font-small); }
