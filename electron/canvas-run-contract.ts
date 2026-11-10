@@ -7,6 +7,7 @@ export type CanvasRunNodeKind =
   | 'frame-extract' | 'router' | 'gallery' | 'output' | 'group' | 'note'
   | 'drama-bible' | 'drama-script' | 'drama-parse'
   | 'drama-character' | 'drama-scene' | 'drama-prop' | 'drama-shot'
+  | 'text-generate'
   | CanvasRunKernelOnlyNodeKind
 
 /**
@@ -16,7 +17,6 @@ export type CanvasRunNodeKind =
  * paid request (#1392). Each label is the kernel's own node title.
  */
 export const canvasRunKernelOnlyNodeLabels = {
-  'text-generate': '文字生成',
   'image-crop': '裁剪图片',
   'image-collage': '拼图',
   'image-grid-split': '宫格裁剪',

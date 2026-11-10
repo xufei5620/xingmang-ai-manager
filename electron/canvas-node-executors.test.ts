@@ -594,6 +594,68 @@ describe('createCanvasNodeExecutors', () => {
     expect(generateVideo).not.toHaveBeenCalled()
   })
 
+  it('sends a text node\'s upstream text and prompt as one user message, with its pictures, and keeps the answer', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('一只坐在窗台上的橘猫，午后阳光')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const picture = { kind: 'image' as const, assetId: 'p'.repeat(43), localUrl: 'xingmang-asset://p', mimeType: 'image/png' }
+    const billing = { onRelayDispatch: vi.fn(), onRelayAnswer: vi.fn() }
+    const result = await executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7, projectId: 'project-1',
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写成生图提示词', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: { text: '一只猫', image: picture, images: [picture, picture] },
+      signal: new AbortController().signal,
+      billing,
+    })
+    expect(result).toEqual({ outputText: '一只坐在窗台上的橘猫，午后阳光', group: 'GPT', model: 'gpt-5.5' })
+    expect(completeOnce).toHaveBeenCalledOnce()
+    const request = completeOnce.mock.calls[0][0]
+    expect(request).toMatchObject({ group: 'GPT', model: 'gpt-5.5', user: '一只猫\n写成生图提示词', images: { assetIds: [picture.assetId, picture.assetId], projectId: 'project-1' }, billing })
+    expect(request.system).toBeUndefined()
+  })
+
+  it('refuses a text node before any paid request when it has nothing to say, a picture its model cannot read, or too many pictures', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('好')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const picture = { kind: 'image' as const, assetId: 'p'.repeat(43), localUrl: 'xingmang-asset://p', mimeType: 'image/png' }
+    function run(data: { prompt: string; model: string; group?: string }, inputs: Record<string, unknown> = {}) {
+      return executors['text-generate']!({
+        runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+        node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { group: 'GPT', ...data } },
+        inputs,
+        signal: new AbortController().signal,
+      })
+    }
+    await expect(run({ prompt: '  ', model: 'gpt-5.5' }, { text: ' ' })).rejects.toThrow('请输入文字提示词或连接上游提示词节点')
+    await expect(run({ prompt: '描述', model: '' })).rejects.toThrow('请选择文字模型')
+    await expect(run({ prompt: '描述', model: 'gemini-3.7-flash' }, { image: picture, images: [picture] }))
+      .rejects.toThrow('当前模型尚未确认支持图片理解，请选择已支持的视觉文字模型或移除图片；不会忽略图片后继续生成')
+    await expect(run({ prompt: '描述', model: 'gpt-5.5' }, { image: picture, images: Array.from({ length: 5 }, () => picture) }))
+      .rejects.toThrow('文字视觉输入最多支持 4 张图片，请减少图片或改用单图输出')
+    expect(completeOnce).not.toHaveBeenCalled()
+    // Text alone needs no picture-reading model.
+    await expect(run({ prompt: '扩写', model: 'gemini-3.7-flash' })).resolves.toMatchObject({ outputText: '好' })
+  })
+
+  it('does not keep a text answer longer than a canvas project can hold', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('字'.repeat(32_001))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写长文', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: {},
+      signal: new AbortController().signal,
+    })).rejects.toThrow('文字结果超过 32000 字上限，请调整生成长度后再运行')
+  })
+
   it('parses drama tables through injected chat completion and retries once', async () => {
     const { danyinTwoShotFixture } = await import('./drama-parse')
     const completeOnce = vi.fn()

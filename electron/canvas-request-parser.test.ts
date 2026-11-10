@@ -516,8 +516,10 @@ describe('canvas request parser', () => {
       expect(node.kind).toBe(kind)
       expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
     }
+    // 画布完善第 6 条: text nodes run on the desktop now; web search still does not.
+    expect(parseCanvasStartRunInput(kernelNode('text-generate', {})).graph.nodes[0].desktopUnsupported).toBeUndefined()
     expect(parseCanvasStartRunInput(kernelNode('text-generate', { textWebSearch: true })).graph.nodes[0].desktopUnsupported)
-      .toBe(`「文字生成」节点${kernelRefusal}`)
+      .toBe(`「联网搜索」${kernelRefusal}`)
     for (const kind of ['image-upscale', 'constructor', '__proto__', 'toString']) {
       expect(() => parseCanvasStartRunInput(kernelNode(kind, {}))).toThrow('类型不受支持')
     }

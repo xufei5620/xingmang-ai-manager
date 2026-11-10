@@ -27,7 +27,7 @@ import {
   type PowerShellImportForm,
 } from './powershell-module-imports.test-support'
 import { splitConstrainedLanguageBranch } from './powershell-constrained-language.test-support'
-import { installedPythonInspectionScript, pythonInstallerSignatureScript } from './python-runtime'
+import { installedPythonInspectionModules, installedPythonInspectionScript, pythonInstallerSignatureScript } from './python-runtime'
 import {
   buildClearUserProxyScript,
   buildReadProxyScopesScript,
@@ -35,6 +35,7 @@ import {
   proxyScopesConstrainedModules,
   readProxyScopesModules,
 } from './stale-proxy-environment'
+import { buildWindowsExecutableProductVersionScript, windowsExecutableProductVersionModules } from './system-scan-service'
 import { nativeCliSignatureScript } from './trusted-native-cli'
 import { buildProtectedDirectoryAclScript, protectedDirectoryAclModules } from './trusted-temp'
 import { uninstallAccountProbeModules, uninstallAccountProbeScript } from './uninstall-cleanup'
@@ -100,8 +101,9 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['Node.js installer signature check', nodeInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['installed Node.js signature check', installedNodeSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['Python installer signature check', pythonInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
-  ['installed Python check', installedPythonInspectionScript, authenticodeSignatureModules, 'pinned'],
+  ['installed Python check', installedPythonInspectionScript, installedPythonInspectionModules, 'pinned'],
   ['native CLI signature check', nativeCliSignatureScript, authenticodeSignatureModules, 'by-name'],
+  ['executable product version read', buildWindowsExecutableProductVersionScript(), windowsExecutableProductVersionModules, 'by-name'],
   ['protected directory ACL read-back', buildProtectedDirectoryAclScript(), protectedDirectoryAclModules, 'by-name'],
   ['Program Files ACL probe', decodeEncodedCommand(buildProgramFilesAclProbe(
     'C:\\Program Files\\nodejs\\node.exe', 'C:\\Program Files', machinePaths,

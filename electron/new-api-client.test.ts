@@ -3618,7 +3618,7 @@ describe('provisionCliKey with a tool key stopped on the web', () => {
       .mockResolvedValueOnce(listing([{ ...enabled, ...change }]))
 
     await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
-    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到「个人中心 › 密钥管理」里重新启用或延长到期时间后再试。')
+    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试。')
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
   })
 
