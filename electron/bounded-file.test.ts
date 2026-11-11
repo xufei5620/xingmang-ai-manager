@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { copyBoundedFileExclusive, readBoundedFileDigest, readBoundedFileSync, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
+import { copyBoundedFileExclusive, readBoundedFileDigest, readBoundedFilePrefix, readBoundedFileSync, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 
 const temporaryDirectories: string[] = []
 
@@ -37,6 +37,30 @@ describe('readBoundedUtf8File', () => {
     fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
     await expect(readBoundedUtf8File(path.join(alias, 'input.txt'), 64, '异步测试文件'))
       .rejects.toThrow('符号链接或目录联接')
+  })
+})
+
+describe('readBoundedFilePrefix', () => {
+  it('reads a short file whole and only the start of a long one, telling the two apart', async () => {
+    const short = await readBoundedFilePrefix(temporaryFile('星芒'), 64, '前缀测试文件')
+    expect(short.bytes.toString('utf8')).toBe('星芒')
+    expect(short).toMatchObject({ size: 6, complete: true })
+
+    const long = await readBoundedFilePrefix(temporaryFile('0123456789'), 4, '前缀测试文件')
+    expect(long.bytes.toString('utf8')).toBe('0123')
+    expect(long).toMatchObject({ size: 10, complete: false })
+
+    const empty = await readBoundedFilePrefix(temporaryFile(''), 4, '前缀测试文件')
+    expect(empty).toMatchObject({ size: 0, complete: true })
+    expect(empty.bytes).toHaveLength(0)
+  })
+
+  it('refuses hard links and directories like readBoundedFile, and a bad limit', async () => {
+    const filePath = temporaryFile('linked')
+    fs.linkSync(filePath, path.join(path.dirname(filePath), 'hard-link.txt'))
+    await expect(readBoundedFilePrefix(filePath, 64, '前缀测试文件')).rejects.toThrow('单链接普通文件')
+    await expect(readBoundedFilePrefix(temporaryDirectory(), 64, '前缀测试文件')).rejects.toThrow('单链接普通文件')
+    await expect(readBoundedFilePrefix(temporaryFile('x'), 0, '前缀测试文件')).rejects.toThrow('读取上限无效')
   })
 })
 

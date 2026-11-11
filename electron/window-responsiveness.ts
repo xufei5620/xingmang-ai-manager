@@ -1,3 +1,5 @@
+import type { WebContents } from 'electron'
+
 export type UnresponsiveChoice = 'wait' | 'reload'
 export type UnresponsivePromptEvent = 'prompt.shown' | 'prompt.wait' | 'prompt.reload' | 'prompt.dismissed'
 
@@ -65,4 +67,23 @@ export function createWindowResponsivenessGuard(options: WindowResponsivenessOpt
       pending.abort()
     },
   }
+}
+
+type RendererProcessView = Pick<WebContents, 'isDestroyed' | 'getOSProcessId'>
+
+/**
+ * Whether `contents` can have its renderer process ended without taking another
+ * page down with it. A hung page cannot be reloaded in place: the stuck process
+ * would have to run the new page too, so Electron's way out of `unresponsive`
+ * is forcefullyCrashRenderer() followed by a load in a fresh process. Some
+ * pages share a process, and ending a shared one would kill them all.
+ */
+export function rendererProcessIsOwn(
+  contents: RendererProcessView & Pick<WebContents, 'isCrashed'>,
+  all: readonly RendererProcessView[],
+): boolean {
+  if (contents.isDestroyed() || contents.isCrashed()) return false
+  const pid = contents.getOSProcessId()
+  if (!(pid > 0)) return false
+  return !all.some((other) => other !== contents && !other.isDestroyed() && other.getOSProcessId() === pid)
 }

@@ -26,6 +26,8 @@ const valueImportable = [
   // 视频剪辑读回存着的工程时按片段编号重拼缩略图地址，缩略图一升版旧工程照样显示（#1406 P3-4）；文件本身什么都不 import。
   'electron/asset-thumbnail',
   'electron/ai-chat-protocol',
+  // 作品文件在外面被删了时三个作品库说的那几句，主进程抛、聊天和视频剪辑照它认出「文件没了」（D37）；文件本身什么都不 import。
+  'electron/ai-asset-missing',
   // 视频交出去却没拿到任务号时那句话，主进程报错、视频剪辑页照它认出「结果不明」共用一份（#1489 N2）；文件本身什么都不 import。
   'electron/ai-video-submission',
   'electron/catalog',

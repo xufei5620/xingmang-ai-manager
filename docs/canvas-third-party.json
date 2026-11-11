@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "updatedAt": "2026-10-28",
+  "updatedAt": "2026-11-11",
   "runtimeDependencies": [
     {
       "package": "@xyflow/react",
@@ -20,7 +20,7 @@
     },
     {
       "package": "react",
-      "version": "18.3.1",
+      "version": "19.2.8",
       "repository": "https://github.com/facebook/react",
       "license": "MIT",
       "usage": "画布渲染器",
@@ -28,7 +28,7 @@
     },
     {
       "package": "react-dom",
-      "version": "18.3.1",
+      "version": "19.2.8",
       "repository": "https://github.com/facebook/react",
       "license": "MIT",
       "usage": "React DOM 挂载",

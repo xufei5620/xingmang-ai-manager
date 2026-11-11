@@ -50,6 +50,7 @@ import { ensureManagedNpmLayout } from './managed-cli'
 import { installLeftoverMinimumAgeMs, sweepInstallLeftovers, type InstallLeftoverLocation } from './install-leftovers'
 import { LinuxTerminalLaunchError, linuxTerminalFailureMessages } from './linux-terminal'
 import { WindowsCliLaunchError } from './windows-elevation'
+import { MacosTerminalNotStartedError } from './macos-platform'
 import type { installMacGitRuntime as installMacGitRuntimeType } from './macos-git-install'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -373,6 +374,29 @@ afterEach(() => {
 })
 
 describe('createSystemService', () => {
+  // D45：首页和引导据此把第一句话换成让 AI 动手做点东西；放了别的东西进去就照旧。
+  it('tells the renderer when the remembered folder is the starter folder it made and nothing is in it yet', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-starter-summary-')))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const workspace = path.join(userHome, 'Documents', 'XingmangProjects', 'my-project')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# 项目说明')
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    await store.write({ ...defaultAppSettings(root), workspace })
+    const inspect = vi.fn((provider: ProviderId) => ({
+      baseUrl: providerBaseUrls[provider], actualBaseUrl: providerBaseUrls[provider], exists: false, apiKey: '', hasApiKey: false,
+      matchesRelay: false, model: '', dataDirectory: path.join(userHome, provider), dataDirectoryExists: false, files: [], updatedAt: null,
+    }))
+    const service = createSystemService(store, { providerRoots: { userHome, codexHome: path.join(userHome, '.codex') }, inspectProviderConfig: inspect })
+
+    expect(service.getConfig(false)).toMatchObject({ rememberedWorkspace: workspace, rememberedWorkspaceFresh: true })
+    fs.writeFileSync(path.join(workspace, 'index.html'), '<!doctype html>')
+    const touched = service.getConfig(false)
+    expect(touched.rememberedWorkspace).toBe(workspace)
+    expect(touched.rememberedWorkspaceFresh).toBeUndefined()
+  })
+
   it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rooted-system-service-'))
     temporaryDirectories.push(root)
@@ -7581,13 +7605,19 @@ describe('opening a CLI on macOS', () => {
     expect(failure instanceof Error && failure.cause).toBe(refused)
   })
 
-  function macosLaunch(prefix: string, account: Partial<NativeConfigInspection> = {}) {
+  function macosLaunch(
+    prefix: string,
+    account: Partial<NativeConfigInspection> = {},
+    open: NonNullable<SystemServiceOptions['launchMacosTerminal']> = async () => undefined,
+    runtimeLog?: SystemServiceOptions['runtimeLog'],
+  ) {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), prefix))
     temporaryDirectories.push(userHome)
     const workspace = path.join(userHome, 'project')
     fs.mkdirSync(workspace)
-    const launchMacosTerminal = vi.fn<NonNullable<SystemServiceOptions['launchMacosTerminal']>>(async () => undefined)
+    const launchMacosTerminal = vi.fn<NonNullable<SystemServiceOptions['launchMacosTerminal']>>(open)
     const service = createService({
+      ...(runtimeLog ? { runtimeLog } : {}),
       platform: 'darwin',
       providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
       inspectProviderConfig: vi.fn(() => ({
@@ -7638,6 +7668,24 @@ describe('opening a CLI on macOS', () => {
 
     expect(launchMacosTerminal).toHaveBeenCalledTimes(1)
     expect(launchMacosTerminal.mock.calls[0]?.[0]).not.toHaveProperty('clearedEnvironmentKeys')
+  })
+
+  // 深查 Shell差异 SH-3：「终端」开了窗口、启动脚本没跑，说那句 yoyo 定过的字，另记一条 terminal.failed。
+  it.runIf(process.platform !== 'win32')('says the Terminal window opened without the tool, and logs it', async () => {
+    const log = vi.fn()
+    const { launch } = macosLaunch('xingmang-macos-open-not-started-', {}, async () => {
+      throw new MacosTerminalNotStartedError(20_000)
+    }, { log })
+
+    const failure: unknown = await launch().catch((error: unknown) => error)
+    expect(failure instanceof Error && failure.message).toBe(
+      '未能打开 Claude Code：终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
+      + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。',
+    )
+    expect(failure instanceof Error && failure.cause).toBeInstanceOf(MacosTerminalNotStartedError)
+    const entry = log.mock.calls.find((call) => call[2] === 'terminal.failed')
+    expect(entry?.slice(0, 4)).toEqual(['warn', 'system', 'terminal.failed', 'Claude Code 的终端窗口开了，工具没有跟着起来'])
+    expect(entry?.[4]).toEqual({ provider: 'claude', waitedMs: 20_000 })
   })
 })
 

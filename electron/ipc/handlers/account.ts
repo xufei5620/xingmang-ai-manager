@@ -1,4 +1,4 @@
-// 主窗口业务通道的处理器：账号登录退出、会话、本机记着的账号、公告、注册与找回密码、改密码、记住密码、登录设备。
+// 主窗口业务通道的处理器：账号登录退出、会话、本机记着的账号、公告（含公告里的图片）、注册与找回密码、改密码、记住密码、登录设备。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
 import { savedAccountId } from '../../saved-accounts'
 import { parseLocalNoticeReadSync } from '../../announcement-read-store'
@@ -41,6 +41,13 @@ export function registerAccountHandlers(ctx: IpcHandlerContext): void {
     const notice = await accountService.getNotice?.(mode) ?? null
     options.onAccountNotice?.(notice)
     return notice
+  })
+  // 公告里官网自己的图（决定单 D89 a）：页面的安全设置不放网上图片，由这里下好换成 data: 地址交回去。
+  // 认哪个站的官网只由主进程按当前登录定，页面只给图片地址（announcement-image.ts 再校验一遍）。
+  registerTrustedHandler('account:get-notice-image', async (_event, url: unknown) => {
+    if (!options.announcementImages) throw new Error('公告图片暂时显示不了，请更新或重启软件')
+    const siteId = accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    return options.announcementImages.read(siteId, url)
   })
   registerTrustedHandler('account:mark-notice-read', (_event, id: unknown, entryId: unknown) => {
     const noticeId = requiredString(id, '公告 ID', 128)

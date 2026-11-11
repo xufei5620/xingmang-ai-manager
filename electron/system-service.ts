@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
-import type { NodeRuntimeInstallRequest } from './ipc-contract'
+import type { ClaudeToggleResult, NodeRuntimeInstallRequest } from './ipc-contract'
 import type { LoopbackProbe } from './stale-proxy-environment'
 import type { ProviderId } from './catalog'
 import {
@@ -95,6 +95,7 @@ import {
 } from './windows-elevation'
 import {
   type InstallLeftoverLocation,
+  type InstallLeftoverSweepOptions,
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
@@ -310,6 +311,8 @@ export interface CliLaunchResult {
    * 首页据此直接换按钮，不必为这一个字段再读一遍整份配置。缺省 = 没带，界面照旧。
    */
   rememberedWorkspace?: string | null
+  /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
+  rememberedWorkspaceFresh?: boolean
 }
 
 export type ToolUninstallResult =
@@ -401,6 +404,11 @@ export interface AppConfigSummary {
    * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
    */
   rememberedWorkspace?: string
+  /**
+   * rememberedWorkspace 是星芒替用户新建的项目文件夹，里面还没有用户自己的东西
+   * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
+   */
+  rememberedWorkspaceFresh?: boolean
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -450,6 +458,13 @@ export interface SystemService {
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
+  /**
+   * 设置里「只让 Claude Code 改项目文件夹里的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
+   * 再记下开关。可选 = 旧实现不提供。
+   */
+  setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult>
+  /** 设置里「Claude Code 提交代码时不署名」，同上。可选 = 旧实现不提供。 */
+  setClaudeCommitAttribution?(hidden: boolean, backup?: () => void): Promise<ClaudeToggleResult>
   /**
    * 开机后读配置前：本账号写的、指向旧位置的钩子与状态行不等客户点就改好，每家这次启动只试一次。
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
@@ -596,6 +611,10 @@ export interface SystemService {
    * 队列里，不会和正在进行的安装撞上；从不抛错。
    */
   cleanupInstallLeftovers(): Promise<InstallLeftoverSweepResult>
+  /** 「设置 › 备份迁移 › 星芒占用的空间」里「装工具时下载的文件」的大小：点「清理」能腾出来的那些。从不排队。 */
+  measureInstallLeftoversNow(): Promise<number>
+  /** 那一行的「清理」：排进安装队列，正在装就等它装完；年龄规则见 install-leftovers.ts 的 manualInstallLeftoverMinimumAgeMs。 */
+  cleanInstallLeftoversNow(): Promise<InstallLeftoverSweepResult>
   /**
    * 开机时在本机看一眼本软件写给 Codex 的型号名单还读不读得进，读不进就收回那一行；不看
    * 账号、不联网，登录状态下开机那轮按账号同步也共用这一次。从不抛错。可选 = 旧实现不提供。
@@ -846,7 +865,9 @@ export interface SystemServiceOptions {
    * 真正去删安装残留的那一步。缺省 = 不清（测试与旧行为），只有 main.ts 接真实现，
    * 免得单测装一次工具就去扫开发机的临时目录。
    */
-  sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[]) => Promise<InstallLeftoverSweepResult>
+  sweepInstallLeftovers?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<InstallLeftoverSweepResult>
+  /** 只量不删，「星芒占用的空间」那一行用。缺省 = 量出来是 0（测试与旧行为），同上只有 main.ts 接真实现。 */
+  measureInstallLeftovers?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<number>
   /**
    * Windows 上装、卸 Codex 之前让手机遥控放开它那份 Codex（codex-remote-service.ts 的 releaseCodex，#1407 P3-3）：
    * 闲着就停掉、等它退出，正在干活就抛给客户看的那句。缺省 = 没有遥控（测试与旧行为）。
@@ -1198,6 +1219,8 @@ export function createSystemService(
     revealApiKey,
     saveConfig,
     repairCliHooks,
+    setClaudeWriteBoundary,
+    setClaudeCommitAttribution,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     toolModelChecker,
@@ -1233,7 +1256,7 @@ export function createSystemService(
   })
 
   // 装和更新命令行工具那一整段在 cli-install-service.ts（#1070 第 2 步）。
-  const { installCli, cancelCliInstall, cleanupInstallLeftovers } = createCliInstallService(context, {
+  const { installCli, cancelCliInstall, cleanupInstallLeftovers, measureInstallLeftoversNow, cleanInstallLeftoversNow } = createCliInstallService(context, {
     inspectNetworkRegion,
     withToolCertificateHint,
     inspectCliTool,
@@ -1339,6 +1362,8 @@ export function createSystemService(
     saveConfig,
     serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
+    setClaudeWriteBoundary,
+    setClaudeCommitAttribution,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,
@@ -1402,5 +1427,7 @@ export function createSystemService(
     onInstallationQueueChange: (listener) => installationQueue.onChange(listener),
     enqueueCodexRemoteLaunch: (launch) => installationQueue.enqueue(codexRemoteLaunchQueueKey, launch),
     cleanupInstallLeftovers,
+    measureInstallLeftoversNow,
+    cleanInstallLeftoversNow,
   }
 }

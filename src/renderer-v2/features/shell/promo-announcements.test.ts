@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { activePromos, activeRechargePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, isRechargePromoTitle, promoPreviewLines, promoShortName, resolvePromoKind, stripSiteAddresses, localDayKey, nextPromoReminder, resolvePromoEndsAt, visiblePromo, type PromoAnnouncement, type PromoSource } from './promo-announcements'
 
-const published = new Date(2026, 8, 28, 10, 0).getTime()
+// 公告里的日期按北京时间（UTC+8）算，跟跑测试的机器设的时区无关；月份同 new Date 从 0 数。
+function beijing(year: number, month: number, day: number, hour = 0, minute = 0, second = 0): number {
+  return Date.UTC(year, month, day, hour - 8, minute, second)
+}
+
+const beijingOffset = 8 * 60
+const pacificOffset = -7 * 60
+const published = beijing(2026, 8, 28, 10, 0)
 
 function entry(title: string, text: string, extra = '', publishedAt = new Date(published).toISOString()): PromoSource {
   return { id: `newapi-${title.length}-${text.length}`, title, text, timeline: { type: 'ongoing', publishedAt, extra } }
@@ -27,26 +34,26 @@ describe('recharge promo announcements', () => {
     expect(resolvePromoKind('充值活动暂停通知')).toBeNull()
     expect(resolvePromoKind('充值优惠调整说明')).toBeNull()
     expect(resolvePromoKind('邀请码使用说明')).toBeNull()
-    const now = new Date(2026, 8, 29, 12, 0).getTime()
+    const now = beijing(2026, 8, 29, 12, 0)
     const entries = [entry('充值通道维护通知', '截止 10月7日'), entry('充值到账延迟说明', '部分订单到账会慢一些'), entry('国庆充值送 20%', '截止 10月7日')]
     expect(activePromos(entries, now).map((item) => item.title)).toEqual(['国庆充值送 20%'])
   })
 
-  it('reads the deadline from 截止 lines and from date ranges in local time', () => {
-    expect(resolvePromoEndsAt('活动截止：2026-10-07 23:00', published)).toBe(new Date(2026, 9, 7, 23, 0).getTime())
-    expect(resolvePromoEndsAt('截止 10月7日', published)).toBe(new Date(2026, 9, 7, 23, 59, 59).getTime())
-    expect(resolvePromoEndsAt('活动时间：10月1日-10月7日', published)).toBe(new Date(2026, 9, 7, 23, 59, 59).getTime())
-    expect(resolvePromoEndsAt('活动时间 2026年10月1日 至 2026年10月8日 12:00', published)).toBe(new Date(2026, 9, 8, 12, 0).getTime())
+  it('reads the deadline from 截止 lines and from date ranges in Beijing time', () => {
+    expect(resolvePromoEndsAt('活动截止：2026-10-07 23:00', published)).toBe(beijing(2026, 9, 7, 23, 0))
+    expect(resolvePromoEndsAt('截止 10月7日', published)).toBe(beijing(2026, 9, 7, 23, 59, 59))
+    expect(resolvePromoEndsAt('活动时间：10月1日-10月7日', published)).toBe(beijing(2026, 9, 7, 23, 59, 59))
+    expect(resolvePromoEndsAt('活动时间 2026年10月1日 至 2026年10月8日 12:00', published)).toBe(beijing(2026, 9, 8, 12, 0))
   })
 
   it('reads deadlines written as 即日起至, 有效期至, X日前 and same-month ranges', () => {
-    const october7 = new Date(2026, 9, 7, 23, 59, 59).getTime()
+    const october7 = beijing(2026, 9, 7, 23, 59, 59)
     expect(resolvePromoEndsAt('即日起至10月7日，充值满 100 送 20', published)).toBe(october7)
     expect(resolvePromoEndsAt('有效期至 2026年10月7日', published)).toBe(october7)
     expect(resolvePromoEndsAt('有效期：10月1日-10月7日', published)).toBe(october7)
     expect(resolvePromoEndsAt('有效期：10月1日-7日', published)).toBe(october7)
     expect(resolvePromoEndsAt('10月7日前充值，每笔多送 20%', published)).toBe(october7)
-    expect(resolvePromoEndsAt('10月7日 20:00 之前到账的都算', published)).toBe(new Date(2026, 9, 7, 20, 0).getTime())
+    expect(resolvePromoEndsAt('10月7日 20:00 之前到账的都算', published)).toBe(beijing(2026, 9, 7, 20, 0))
     expect(resolvePromoEndsAt('10月1日开始，10月7日结束', published)).toBe(october7)
     expect(resolvePromoEndsAt('活动时间：10月1日-7日', published)).toBe(october7)
     // 写明的区间优先于后面顺带提到的「X 日前」。
@@ -60,8 +67,8 @@ describe('recharge promo announcements', () => {
   })
 
   it('rolls a month-day deadline into next year only when it falls well before publishing', () => {
-    const december = new Date(2026, 11, 28).getTime()
-    expect(resolvePromoEndsAt('截止 1月3日', december)).toBe(new Date(2027, 0, 3, 23, 59, 59).getTime())
+    const december = beijing(2026, 11, 28)
+    expect(resolvePromoEndsAt('截止 1月3日', december)).toBe(beijing(2027, 0, 3, 23, 59, 59))
   })
 
   it('ignores deadlines that are missing, already before publishing or absurdly far away', () => {
@@ -72,12 +79,12 @@ describe('recharge promo announcements', () => {
   })
 
   it('keeps active promos newest first and drops expired or undated ones', () => {
-    const now = new Date(2026, 8, 29, 12, 0).getTime()
+    const now = beijing(2026, 8, 29, 12, 0)
     const entries: PromoSource[] = [
       entry('国庆充值活动', '截止 10月7日'),
-      entry('旧充值活动', '截止 9月28日 20:00', '', new Date(2026, 8, 20).toISOString()),
-      entry('中秋充值加赠', '满额送', '', new Date(2026, 8, 25).toISOString()),
-      entry('很久以前的充值活动', '满额送', '', new Date(2026, 7, 1).toISOString()),
+      entry('旧充值活动', '截止 9月28日 20:00', '', new Date(beijing(2026, 8, 20)).toISOString()),
+      entry('中秋充值加赠', '满额送', '', new Date(beijing(2026, 8, 25)).toISOString()),
+      entry('很久以前的充值活动', '满额送', '', new Date(beijing(2026, 7, 1)).toISOString()),
       { id: 'legacy', title: '系统公告 充值说明', text: '旧的系统公告没有发布时间' },
       entry('服务维护', '截止 10月7日'),
     ]
@@ -85,16 +92,38 @@ describe('recharge promo announcements', () => {
     expect(promos.map((item) => item.title)).toEqual(['国庆充值活动', '中秋充值加赠'])
     expect(promos[0].endsExplicitly).toBe(true)
     // 没写截止时间的按发布后 7 天算。
-    expect(promos[1]).toMatchObject({ endsExplicitly: false, endsAt: new Date(2026, 8, 25).getTime() + 7 * 86_400_000 })
-    expect(activeRechargePromos(entries, new Date(2026, 9, 8).getTime())).toEqual([])
+    expect(promos[1]).toMatchObject({ endsExplicitly: false, endsAt: beijing(2026, 8, 25) + 7 * 86_400_000 })
+    expect(activeRechargePromos(entries, beijing(2026, 9, 8))).toEqual([])
   })
 
   it('words the deadline for a person and says nothing when it was only estimated', () => {
-    const now = new Date(2026, 8, 29, 12, 0).getTime()
-    expect(formatPromoDeadline({ endsAt: new Date(2026, 8, 29, 23, 59, 59).getTime(), endsExplicitly: true }, now)).toBe('今天 23:59 结束')
-    expect(formatPromoDeadline({ endsAt: new Date(2026, 8, 30, 20, 0).getTime(), endsExplicitly: true }, now)).toBe('明天 20:00 结束')
-    expect(formatPromoDeadline({ endsAt: new Date(2026, 9, 7, 23, 59, 59).getTime(), endsExplicitly: true }, now)).toBe('10月7日 23:59 结束，还剩 8 天')
+    const now = beijing(2026, 8, 29, 12, 0)
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 8, 29, 23, 59, 59), endsExplicitly: true }, now, beijingOffset)).toBe('今天 23:59 结束')
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 8, 30, 20, 0), endsExplicitly: true }, now, beijingOffset)).toBe('明天 20:00 结束')
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 9, 7, 23, 59, 59), endsExplicitly: true }, now, beijingOffset)).toBe('10月7日 23:59 结束，还剩 8 天')
     expect(formatPromoDeadline({ endsAt: now + 86_400_000, endsExplicitly: false }, now)).toBeNull()
+  })
+
+  it('reads written deadlines as Beijing time whatever time zone the computer is set to', () => {
+    expect(resolvePromoEndsAt('截止 10月7日 23:59', published)).toBe(Date.UTC(2026, 9, 7, 15, 59))
+    expect(resolvePromoEndsAt('截止 10月7日', published)).toBe(Date.UTC(2026, 9, 7, 15, 59, 59))
+    expect(resolvePromoEndsAt('截止 2月30日', beijing(2027, 1, 1))).toBeNull()
+    // 北京已经过了截止，美国、欧洲的电脑上卡片也跟着收掉，不再多挂十几个小时。
+    const entries = [entry('国庆充值活动', '截止 10月7日 23:59')]
+    expect(activePromos(entries, Date.UTC(2026, 9, 7, 15, 58)).map((item) => item.title)).toEqual(['国庆充值活动'])
+    expect(activePromos(entries, Date.UTC(2026, 9, 7, 15, 59))).toEqual([])
+  })
+
+  it('writes the deadline in Beijing time with a note when the computer keeps another clock', () => {
+    const now = beijing(2026, 8, 29, 12, 0)
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 9, 7, 23, 59, 59), endsExplicitly: true }, now, pacificOffset)).toBe('10月7日 23:59（北京时间）结束，还剩 8 天')
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 8, 29, 23, 59, 59), endsExplicitly: true }, now, pacificOffset)).toBe('今天 23:59（北京时间）结束')
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 8, 30, 20, 0), endsExplicitly: true }, now, 9 * 60)).toBe('明天 20:00（北京时间）结束')
+    // 「今天」「还剩几天」按北京的日子数：北京已经是 9 月 30 日凌晨，美国那边还是 29 日。
+    expect(formatPromoDeadline({ endsAt: beijing(2026, 8, 30, 23, 59, 59), endsExplicitly: true }, beijing(2026, 8, 30, 1, 0), pacificOffset)).toBe('今天 23:59（北京时间）结束')
+    // 不传就看这台电脑自己的钟。
+    const deadline = { endsAt: beijing(2026, 9, 7, 23, 59, 59), endsExplicitly: true }
+    expect(formatPromoDeadline(deadline, now)).toBe(formatPromoDeadline(deadline, now, -new Date(deadline.endsAt).getTimezoneOffset()))
   })
 
   it('shows the newest promo that was neither acknowledged nor snoozed today', () => {
@@ -125,7 +154,7 @@ describe('activity announcements beyond recharge', () => {
     expect(resolvePromoKind('国庆礼遇｜充值满赠')).toBe('recharge')
     expect(resolvePromoKind('国庆礼遇｜邀请有礼')).toBe('invite')
     expect(resolvePromoKind('系统维护通知')).toBeNull()
-    const now = new Date(2026, 8, 29, 12, 0).getTime()
+    const now = beijing(2026, 8, 29, 12, 0)
     const entries = [entry('国庆礼遇｜充值满赠', '截止 10月8日'), { ...entry('国庆礼遇｜邀请有礼', '邀请好友'), id: 'invite' }]
     expect(activePromos(entries, now).map((item) => item.kind).sort()).toEqual(['invite', 'recharge'])
     expect(activeRechargePromos(entries, now).map((item) => item.kind)).toEqual(['recharge'])
@@ -139,12 +168,21 @@ describe('activity announcements beyond recharge', () => {
   })
 
   it('writes short deadlines for the activity bar and hides estimated ones', () => {
-    const now = new Date(2026, 8, 30, 10, 0).getTime()
-    const endsAt = new Date(2026, 9, 8, 23, 59, 59).getTime()
-    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, true)).toBe('10月8日截止，还剩 8 天')
-    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, false)).toBe('10月8日截止')
-    expect(formatPromoShortDeadline({ endsAt: new Date(2026, 8, 30, 23, 59).getTime(), endsExplicitly: true }, now, true)).toBe('今天 23:59 截止')
+    const now = beijing(2026, 8, 30, 10, 0)
+    const endsAt = beijing(2026, 9, 8, 23, 59, 59)
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, true, beijingOffset)).toBe('10月8日截止，还剩 8 天')
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, false, beijingOffset)).toBe('10月8日截止')
+    expect(formatPromoShortDeadline({ endsAt: beijing(2026, 8, 30, 23, 59), endsExplicitly: true }, now, true, beijingOffset)).toBe('今天 23:59 截止')
     expect(formatPromoShortDeadline({ endsAt, endsExplicitly: false }, now, true)).toBeNull()
+  })
+
+  it('marks short deadlines as Beijing time when the computer keeps another clock', () => {
+    const now = beijing(2026, 8, 30, 10, 0)
+    const endsAt = beijing(2026, 9, 8, 23, 59, 59)
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, true, pacificOffset)).toBe('10月8日（北京时间）截止，还剩 8 天')
+    expect(formatPromoShortDeadline({ endsAt, endsExplicitly: true }, now, false, pacificOffset)).toBe('10月8日（北京时间）截止')
+    expect(formatPromoShortDeadline({ endsAt: beijing(2026, 8, 30, 23, 59), endsExplicitly: true }, now, true, pacificOffset)).toBe('今天 23:59（北京时间）截止')
+    expect(formatPromoShortDeadline({ endsAt: beijing(2026, 9, 1, 20, 0), endsExplicitly: true }, now, true, 0)).toBe('明天 20:00（北京时间）截止')
   })
 
   it('shortens titles to the part after the vertical bar', () => {

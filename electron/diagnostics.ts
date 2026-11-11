@@ -20,12 +20,16 @@ import {
   buildProxyChecks,
   certificateProbeTarget,
   certificateTrustOutcome,
+  claudeSettingsProxyOutcome,
+  claudeSettingsProxyVariables,
   clockSkewMs,
+  clockSkewSummary,
   clockSyncGuidance,
   describeRelayRouteChange,
   parseClashTunConfig,
   proxySettingsOutcome,
   reconcileCertificateTrustWithNetwork,
+  reconcileProxySettingsWithDesktop,
   relayNetworkPassSummary,
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
@@ -374,12 +378,16 @@ export {
 export {
   certificateProbeTarget,
   certificateTrustOutcome,
+  claudeSettingsProxyOutcome,
+  claudeSettingsProxyVariables,
   clockSkewMs,
+  clockSkewSummary,
   clockSyncGuidance,
   describeRelayRouteChange,
   parseClashTunConfig,
   proxySettingsOutcome,
   reconcileCertificateTrustWithNetwork,
+  reconcileProxySettingsWithDesktop,
   relayNetworkPassSummary,
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
@@ -489,10 +497,10 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     ...buildOverrideChecks(context),
   ]
 
-  const items = reconcileNodeRuntimeWithClis(reconcileCertificateTrustWithNetwork(
+  const items = reconcileProxySettingsWithDesktop(reconcileNodeRuntimeWithClis(reconcileCertificateTrustWithNetwork(
     (await Promise.all(checks.map((check) => runIsolatedCheck(check, timeoutMs, sanitize))))
       .filter((item): item is DiagnosticItem => item !== null),
-  ))
+  )))
   return {
     version: 1,
     generatedAt: now().toISOString(),

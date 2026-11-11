@@ -65,6 +65,20 @@ describe('tray update entry', () => {
       .toEqual({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })
   })
 
+  it('marks every entry as a rollback when the version on offer is the older one the publisher rolled back to', () => {
+    const rollback = { ...base, availableVersion: '0.2.22', rollback: true } as const
+    const error = { code: 'install', message: '没装上' }
+    expect(resolveTrayUpdateEntry({ ...rollback, phase: 'available' })).toEqual({ kind: 'available', version: '0.2.22', waitingForDisk: false, rollback: true })
+    expect(resolveTrayUpdateEntry({ ...rollback, phase: 'downloading' })).toEqual({ kind: 'downloading', version: '0.2.22', rollback: true })
+    expect(resolveTrayUpdateEntry({ ...rollback, phase: 'downloaded' })).toEqual({ kind: 'downloaded', version: '0.2.22', rollback: true })
+    expect(resolveTrayUpdateEntry({ ...rollback, phase: 'downloaded', installMethod: 'system-installer' }))
+      .toEqual({ kind: 'downloaded', version: '0.2.22', systemInstaller: true, rollback: true })
+    expect(resolveTrayUpdateEntry({ ...rollback, phase: 'downloaded', error, failedStep: 'install' })).toEqual({ kind: 'failed', version: '0.2.22', rollback: true })
+    expect(resolveTrayUpdateEntry({ ...rollback, phase: 'error', error, failedStep: 'download' })).toEqual({ kind: 'failed', version: '0.2.22', rollback: true })
+    // 平时的更新不带这个标记。
+    expect(resolveTrayUpdateEntry({ ...base, phase: 'downloading', rollback: false })).toEqual({ kind: 'downloading', version: '0.2.12' })
+  })
+
   it('does not offer a restart once the installer already failed or a download broke', () => {
     const error = { code: 'install', message: '没装上' }
     expect(resolveTrayUpdateEntry({ ...base, phase: 'downloaded', error, failedStep: 'install' })).toEqual({ kind: 'failed', version: '0.2.12' })
@@ -95,6 +109,41 @@ describe('tray update entry', () => {
     expect(label({ kind: 'downloaded', version: '0.2.12', systemInstaller: true })).toBe('安装新版本 0.2.12')
     expect(label({ kind: 'downloaded', version: '0.2.12' }, false)).toBe('版本更新：新版本 0.2.12 已下载好')
     expect(label({ kind: 'failed', version: '0.2.12' })).toBe('版本更新：新版本 0.2.12 没更新成功，点开看看')
+  })
+
+  it('says the suggested older version instead of a new one when the update is a rollback', () => {
+    // D11：退回旧版时那一项跟设置页一样说「建议退回」，读不到版本号时照旧用平时那几句。
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
+    const label = (update: ApplicationTraySnapshot['update'], withInstall = true) => {
+      const menu = buildApplicationTrayMenu({ installedTools: [], update }, withInstall ? actions : { ...actions, onInstallUpdate: undefined }, (action) => { void action() })
+      return menu.map((entry) => entry.label).find((text) => typeof text === 'string' && /更新|安装新版本|退回/.test(text))
+    }
+    expect(label({ kind: 'available', version: '0.2.22', waitingForDisk: false, rollback: true })).toBe('版本更新：建议退回 0.2.22 版')
+    expect(label({ kind: 'available', version: '0.2.22', waitingForDisk: true, rollback: true })).toBe('版本更新：建议退回的 0.2.22 版等电脑腾出空间再下载')
+    expect(label({ kind: 'downloading', version: '0.2.22', rollback: true })).toBe('版本更新：正在下载建议退回的 0.2.22 版')
+    expect(label({ kind: 'downloaded', version: '0.2.22', rollback: true })).toBe('重启并退回 0.2.22 版')
+    expect(label({ kind: 'downloaded', version: '0.2.22', systemInstaller: true, rollback: true })).toBe('退回 0.2.22 版')
+    expect(label({ kind: 'downloaded', version: '0.2.22', rollback: true }, false)).toBe('版本更新：建议退回的 0.2.22 版已下载好')
+    expect(label({ kind: 'failed', version: '0.2.22', rollback: true })).toBe('版本更新：退回 0.2.22 版没成功，点开看看')
+    // 没有版本号时说不出「X 版」，跟平时一样。
+    expect(label({ kind: 'downloading', version: null, rollback: true })).toBe('版本更新：正在下载新版本')
+    expect(label({ kind: 'downloaded', version: '\n', rollback: true })).toBe('重启并安装新版本')
+    expect(label({ kind: 'failed', version: null, rollback: true })).toBe('版本更新：新版本没更新成功，点开看看')
+  })
+
+  it('installs the rollback through the same action as a normal update', async () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onInstallUpdate: vi.fn() }
+    const pending: Promise<unknown>[] = []
+    const run = (action: () => unknown) => { pending.push(Promise.resolve(action())) }
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'downloaded', version: '0.2.22', rollback: true } }, actions, run), '重启并退回 0.2.22 版')
+    await Promise.all(pending)
+    expect(actions.onInstallUpdate).toHaveBeenCalledOnce()
+    expect(actions.onNavigate).not.toHaveBeenCalled()
+
+    click(buildApplicationTrayMenu({ installedTools: [], update: { kind: 'failed', version: '0.2.22', rollback: true } }, actions, run), '版本更新：退回 0.2.22 版没成功，点开看看')
+    await Promise.all(pending)
+    expect(actions.onNavigate).toHaveBeenCalledExactlyOnceWith('updates')
+    expect(actions.onInstallUpdate).toHaveBeenCalledOnce()
   })
 
   it('routes the downloaded entry to install and every other entry to the updates page', async () => {
@@ -439,6 +488,12 @@ describe('application tray subscription line', () => {
     expect(traySubscriptionLabel({ ...self, billingPreference: 'wallet_only' }, 500_000, now)).toBeNull()
   })
 
+  it('tells when a daily plan comes back, on the tray clock rather than whenever the menu is read', () => {
+    const evening = new Date(2026, 8, 25, 20, 0).getTime()
+    const daily = { ...self, activeSubscriptions: self.activeSubscriptions.map((plan) => ({ ...plan, nextResetAt: new Date(2026, 8, 26, 0, 0).toISOString() })) }
+    expect(traySubscriptionLabel(daily, 500_000, evening)).toBe('剩余 USD 9.00 · 明天 00:00 恢复 · 10月3日到期')
+  })
+
   it('adds the subscription row under the balance only when there is one', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
@@ -503,6 +558,30 @@ describe('application tray remote-control switch', () => {
     expect(labels({ installedTools: [] }, true)).not.toContain('关掉手机遥控')
     expect(labels({ installedTools: [], remoteControlOn: false }, true)).not.toContain('关掉手机遥控')
     expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关掉手机遥控')
+  })
+
+  // YF-8：都关着、文件夹和配对过的人都齐了时，托盘里能直接打开，不用进设置翻到最底下。
+  it('offers to switch phone remote control on in the same place once everything is set up and nothing is on', () => {
+    const on = vi.fn()
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn(), onRemoteControlOn: on }
+    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlReady: true }, actions, (action) => { void action() })
+    expect(menu.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '打开手机遥控', 'separator'])
+    expect(menu[1].enabled).not.toBe(false)
+    expect(menu.map((entry) => entry.label)).not.toContain('关掉手机遥控')
+    click(menu, '打开手机遥控')
+    expect(on).toHaveBeenCalledOnce()
+    // 开着时只给关的那一项，齐不齐都一样。
+    const running = buildApplicationTrayMenu({ installedTools: [], remoteControlOn: true, remoteControlReady: true }, actions, () => undefined).map((entry) => entry.label)
+    expect(running).toContain('关掉手机遥控')
+    expect(running).not.toContain('打开手机遥控')
+  })
+
+  it('leaves the switch-on item out until everything is set up, or when nothing is wired to it', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
+    const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOn: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
+    expect(labels({ installedTools: [] }, true)).not.toContain('打开手机遥控')
+    expect(labels({ installedTools: [], remoteControlReady: false }, true)).not.toContain('打开手机遥控')
+    expect(labels({ installedTools: [], remoteControlReady: true }, false)).not.toContain('打开手机遥控')
   })
 
   it('reports a failed switch-off through the tray error path and drops the item once the tray snapshot says it is off', async () => {

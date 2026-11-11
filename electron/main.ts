@@ -17,6 +17,7 @@ import {
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
+import { createAnnouncementImageReader } from './announcement-image'
 import type { AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import type { AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
@@ -26,6 +27,8 @@ import { createAccelerationPreferenceStore } from './acceleration-preference-sto
 import { hasAccelerationProxyRecoveryRecords, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
+import { chatTextFileExtensions, createChatTextFileService } from './ai-chat-text-files'
+import { readBoundedFilePrefix } from './bounded-file'
 import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
@@ -44,7 +47,9 @@ import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/networ
 import { startCodexPayloadWatch } from './bootstrap/codex-payload-watch'
 import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
-import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
+import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
+import { resolveRealmDataRoots } from './realm-data-roots'
+import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
@@ -58,7 +63,7 @@ import { createBalanceAlerts, createSpendSpikeRecordStore, readSpendBaseline } f
 import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
-import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, trayRemoteControlOpenFailedTitle, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createWindowsTaskbarThemeReader, WINDOWS_SETTING_CHANGE_MESSAGE } from './windows-taskbar-theme'
 import { readWindowsTextScaleFactor } from './windows-text-scale'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
@@ -129,6 +134,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { syncXingmangImageMcpConfigs } from './config-files'
+import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -137,6 +143,7 @@ import {
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createManualRedirectFetch } from './manual-redirect-fetch'
 import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './payment-window'
+import { createInvoicePortalWindowController, type InvoicePortalIdentity } from './invoice-portal-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
@@ -188,6 +195,7 @@ import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './l
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
+  closeDecisionDialogText,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
   resolveWindowPalette,
@@ -200,7 +208,8 @@ import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
-import type { CodexRemoteReleaseAction } from './codex-remote-service'
+import { remoteChannelsReadyToEnable, type CodexRemoteReleaseAction } from './codex-remote-service'
+import type { CodexRemoteSnapshot } from './codex-remote-channel'
 
 guardProcessOutputStreams()
 
@@ -895,7 +904,7 @@ if (!hasSingleInstanceLock) {
     // 客服要先分清是哪个发行版（linux-os-release.ts），检查页之外的「复制给客服」也带上。
     const linuxSystemNameRead = linuxTrayHost ? readLinuxSystemName() : null
     let linuxSystemLabel: string | null = null
-    // Mac 菜单要在建主窗口之前设上，「设置...」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
+    // Mac 菜单要在建主窗口之前设上，「设置…」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
     let navigateFromAppMenu: ((target: RendererNavigationTarget) => void) | null = null
     if (process.platform === 'win32') {
       app.setAppUserModelId(windowsAppUserModelId)
@@ -1034,6 +1043,11 @@ if (!hasSingleInstanceLock) {
     // so their audit entries buffer in the bridge until it is handed over.
     attachPlatformAuditLog((level, source, event, message, detail) => {
       runtimeLog.log(level, source, event, message, detail)
+    })
+    // D78：只记日志，不提示客户。写回前就读出原文不是 UTF-8，写成以后才记，没写成的不算。
+    attachNotUtf8ConfigRewriteLog(({ file, backup }) => {
+      runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten',
+        '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，原样在备份里', { file, backup })
     })
     if (loginItemMigration === true) {
       runtimeLog.log('info', 'main', 'login-item.migrated', '旧版开机启动项已改成开机后留在托盘')
@@ -1303,6 +1317,7 @@ if (!hasSingleInstanceLock) {
       windowsProcessElevated: windowsCliExecution.highIntegrity === true,
       runtimeLog,
       sweepInstallLeftovers,
+      measureInstallLeftovers,
       ...(process.platform === 'win32'
         ? {
             ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory),
@@ -1310,7 +1325,16 @@ if (!hasSingleInstanceLock) {
           }
         : {}),
       ...(process.platform === 'darwin'
-        ? { ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({ reason }) }
+        ? {
+            ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({
+              reason,
+              // 登录 shell 是 zsh、bash 时顺带给 fish 的那份没写上：主的那份照旧算数，这里只留一笔。
+              skipped: (file, error) => runtimeLog.log('warn', 'system', 'cli.shell-profile.fish-skipped', '顺带给 fish 的终端启动设置没写上', {
+                file,
+                error: redactHomeDirectory(error instanceof Error ? error.message : String(error), os.homedir()),
+              }),
+            }),
+          }
         : {}),
       ...(process.platform !== 'win32' && process.platform !== 'darwin'
         ? { syncLinuxTerminalCommands: (reason: LinuxTerminalCommandsReason) => syncLinuxTerminalCommands({ reason }) }
@@ -1862,6 +1886,7 @@ if (!hasSingleInstanceLock) {
         previous?.chatVideoService.cancelAll()
         previous?.canvasRuns.shutdown()
         paymentWindow.destroy()
+        invoicePortalWindow.destroy()
         // 补设置那次还在本机看工具开没开的，不陪它等 PowerShell 跑完；叫停管到下面这段等完，
         // 晚一步才开始的那次也不等（system-service.ts 的 stopTemplateFillWaits）。
         const resumeTemplateFill = systemService.stopTemplateFillWaits?.()
@@ -1881,6 +1906,8 @@ if (!hasSingleInstanceLock) {
         if (state.restoring) relayRouteController.ensureWatching(state.restoring.account.siteId)
         const identity = buildAccountIdentity(siteId, state.account?.userId, accounts.client.getSessionRevision!())
         sendToMainWindow('onAccountSessionChanged', state)
+        // 换了人或退出：开票窗口关掉，上一个人的开票登录清掉；续期这类同一个人的变化它自己会略过。
+        invoicePortalWindow.setAccount(invoicePortalIdentity(siteId, state))
         if (!accountIdentity.advance(identity)) return
         // 只在换了人时才让加速作废在路上的请求：续期换凭据、付款后刷新也会走到这里，
         // 那时推进加速的代数会让正在查的状态报「账号已变更」，查询途中还会把正在跑的加速停掉。
@@ -2076,6 +2103,18 @@ if (!hasSingleInstanceLock) {
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
     const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)
     const chatAttachments = createRealmServiceDispatch(() => currentBusiness().chatAttachments)
+    // 文字类文件不进资产库、不分账号：读完只把字交给聊天窗口，所以不跟着账号切。
+    const chatTextFiles = createChatTextFileService({
+      pickFiles: async () => {
+        const result = await dialog.showOpenDialog({
+          title: '选择要发给 AI 的文件',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: '文字类文件', extensions: [...chatTextFileExtensions] }],
+        })
+        return result.canceled ? [] : result.filePaths
+      },
+      readPrefix: (filePath, maximumBytes) => readBoundedFilePrefix(filePath, maximumBytes, '聊天文件'),
+    })
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
@@ -2205,6 +2244,41 @@ if (!hasSingleInstanceLock) {
         }
       },
     })
+    function invoicePortalIdentity(
+      siteId: string,
+      state: { authenticated: boolean; account?: { userId: number } | null },
+    ): InvoicePortalIdentity | null {
+      return state.authenticated && state.account ? { siteId, userId: state.account.userId } : null
+    }
+    // 「我的订单」的「开发票」开的窗口（invoice-portal-window.ts）。开票中心的登录按账号各记一份。
+    const invoicePortalWindow = createInvoicePortalWindowController({
+      iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
+      temporaryDirectory: () => path.join(managerDataDirectory, 'invoice-downloads'),
+      downloadsDirectory: () => app.getPath('downloads'),
+      onBlockedNavigation: (targetUrl) => {
+        let origin = 'invalid-url'
+        try {
+          origin = new URL(targetUrl).origin
+        } catch {
+          // Keep malformed URLs out of logs; the policy has already blocked it.
+        }
+        runtimeLog.log('warn', 'invoice', 'navigation.blocked', '已阻止开票窗口跳转到开票中心以外的地址', { origin })
+      },
+      // 只记类别和错误码：发票文件名带申请编号，地址带登录态，都不进日志（I13）。
+      onEvent: (event) => {
+        if (event.kind === 'download.saved') {
+          runtimeLog.log('info', 'invoice', 'download.saved', '发票已另存', { type: event.type, bytes: event.bytes })
+        } else if (event.kind === 'download.rejected') {
+          runtimeLog.log('warn', 'invoice', 'download.rejected', '开票窗口里的下载不是发票文件，已拦下')
+        } else if (event.kind === 'download.failed') {
+          runtimeLog.log('warn', 'invoice', 'download.failed', '发票没能另存', { code: event.code })
+        } else {
+          runtimeLog.log('warn', 'invoice', 'storage.clear-failed', '上一个账号的开票登录没清干净', { code: event.code })
+        }
+      },
+    })
+    // 开机恢复登录可能已经在这之前完成了，先把当前是谁告诉它，第一次真换人才清得对。
+    invoicePortalWindow.setAccount(invoicePortalIdentity(accounts.getSiteId(), accountService.getSessionState()))
 
     // Normalize the effective record (file, .bak, or defaults) through the same
     // serialized queue as every other settings write, but only touch the disk
@@ -2375,9 +2449,18 @@ if (!hasSingleInstanceLock) {
       updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && !remoteFeatures.isOff('mac-idle-install')
         && installUnattended(updaterService.getState().installMethod))
     }
-    // 托盘那一项「关掉手机遥控」跟着有没有渠道开着走。状态快照来得勤（每条消息、每次连上断开都有一份），
-    // 只在开关真变了时重建托盘菜单。
+    // 托盘那一项「关掉手机遥控」跟着有没有渠道开着走，「打开手机遥控」跟着都关着时齐没齐走（YF-8）。
+    // 状态快照来得勤（每条消息、每次连上断开都有一份），只在这两样真变了时重建托盘菜单。
     let trayRemoteControlOn = false
+    let trayRemoteControlReady = false
+    const followRemoteForTray = (snapshot: CodexRemoteSnapshot) => {
+      const on = codexRemote.hasEnabledChannel()
+      const ready = remoteChannelsReadyToEnable(snapshot).length > 0
+      if (on === trayRemoteControlOn && ready === trayRemoteControlReady) return
+      trayRemoteControlOn = on
+      trayRemoteControlReady = ready
+      applicationTray?.updateSnapshot()
+    }
     const codexRemote = createCodexRemote({
       managerDataDirectory,
       runtimeLog,
@@ -2392,13 +2475,14 @@ if (!hasSingleInstanceLock) {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
         refreshIdleInstall()
-        if (codexRemote.hasEnabledChannel() !== trayRemoteControlOn) {
-          trayRemoteControlOn = !trayRemoteControlOn
-          applicationTray?.updateSnapshot()
-        }
+        followRemoteForTray(snapshot)
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
     })
+    // 开机时遥控一个都没开、也还没推过快照：先读一份，托盘才知道该不该出「打开手机遥控」。
+    void codexRemote.snapshot().then(followRemoteForTray).catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.tray-state.failed', cause))
+    // 客户自己打开了「打开星芒时自动打开遥控」（YF-9，默认关）才替他连配对过人的渠道；没打开时什么都不做。
+    void codexRemote.startOnLaunch().catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.auto-start.failed', cause))
     releaseCodexRemote = (action) => codexRemote.releaseCodex(action)
     // 状态文件关掉、放开了哪样：开着的遥控当场停（设置页跟着换那句话），「下好了」那句和托盘加速那一行跟着改。
     const unsubscribeRemoteFeatureFollowers = remoteFeatures.subscribe(() => {
@@ -2408,7 +2492,23 @@ if (!hasSingleInstanceLock) {
     })
     // 复制密钥、新密码用：60 秒自动清，退出前（prepareToQuit）再清一次。
     const sensitiveClipboard = createSensitiveClipboard({ clipboard })
+    // 「设置 › 备份迁移 › 星芒占用的空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
+    const storageUsage = createStorageUsageService({
+      worksDirectory: () => currentBusiness().aiOutputPlacement.root,
+      thumbnailDirectories: () => (['xm-account', 'api-account'] as const)
+        .map((realm) => resolveRealmDataRoots(managerDataDirectory, realm).assetThumbnailsDirectory),
+      chatHistoryDirectory: path.join(managerDataDirectory, 'chat-history'),
+      logDirectory: runtimeLog.directory,
+      backups: backupStore,
+      downloads: {
+        measure: () => systemService.measureInstallLeftoversNow(),
+        clean: () => systemService.cleanInstallLeftoversNow(),
+        installing: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+      },
+      log: runtimeLog,
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
+      storageUsage,
       acceleration: userAcceleration,
       sensitiveClipboard,
       codexRemote,
@@ -2423,9 +2523,11 @@ if (!hasSingleInstanceLock) {
       downloadsDirectory: () => app.getPath('downloads'),
       accountService,
       paymentWindow,
+      invoicePortalWindow,
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
+      announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
@@ -2440,6 +2542,7 @@ if (!hasSingleInstanceLock) {
       imageService,
       aiAssets: assetStore,
       chatAttachments,
+      chatTextFiles,
       videoService: chatVideoService,
       videoAssets,
       audioAssets,
@@ -2644,6 +2747,7 @@ if (!hasSingleInstanceLock) {
     quitCleanup.add('asset-protocol-and-windows', () => {
       protocol.unhandle('xingmang-asset')
       paymentWindow.destroy()
+      invoicePortalWindow.destroy()
       canvasController.dispose()
     })
     quitCleanup.add('updater', () => updaterService.dispose())
@@ -2906,10 +3010,10 @@ if (!hasSingleInstanceLock) {
       trayAvailable: () => applicationTray?.available ?? false,
       requestCloseDecision: async () => {
         const trayReady = applicationTray?.available ?? false
+        const { detail, buttons } = closeDecisionDialogText(process.platform, trayReady)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具', message: '关闭窗口后如何处理？',
-          detail: trayReady ? '缩到托盘会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。' : '系统托盘不可用。强制退出不等待任务完成，未保存的输入不会保留。',
-          buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
+          detail, buttons,
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
           checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 › 启动关闭」里改）',
@@ -3027,6 +3131,7 @@ if (!hasSingleInstanceLock) {
         // 一样先放掉画布、支付窗口，不然安装器发起的退出会被它们拦住。
         try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
         try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+        try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
@@ -3061,6 +3166,7 @@ if (!hasSingleInstanceLock) {
         forceExitTimer.unref()
         try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
         try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+        try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
         }
@@ -3162,7 +3268,8 @@ if (!hasSingleInstanceLock) {
     // 运行中没人接住的异常：不让 Electron 弹那个英文框、带着坏状态接着跑，而是记一笔、
     // 收拾好加速和聊天记录后退出，10 分钟内头一次就自动重开（见 unexpected-exit.ts）。
     // 注册了自己的 uncaughtException 监听，Electron 自带的那个弹框就不再出现。
-    const simulateUnexpectedExit = process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
+    // 模拟开关只在开发态认：它走的是真的未捕获异常那条路，打包版认了会混进崩溃上报的统计（D101）。
+    const simulateUnexpectedExit = !app.isPackaged && process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
     let unexpectedExitStarted = false
     let appWillQuit = false
     quitCleanup.add('unexpected-exit-flag', () => { appWillQuit = true })
@@ -3205,7 +3312,7 @@ if (!hasSingleInstanceLock) {
     }
     process.on('uncaughtException', onUnexpectedException)
     quitCleanup.add('unexpected-exit-handler', () => { process.off('uncaughtException', onUnexpectedException) })
-    // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
+    // 演「意外退出」用（开发态，打包版不认）：设了它启动 30 秒后主进程抛一次没人接的异常。
     // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
     if (simulateUnexpectedExit) {
       runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')
@@ -3247,6 +3354,7 @@ if (!hasSingleInstanceLock) {
           forceExitTimer.unref()
           try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
           try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+          try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
           }
@@ -3269,6 +3377,7 @@ if (!hasSingleInstanceLock) {
           // 退出（Mac 上是先关所有窗口）会被它挡住。
           try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
           try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+          try { invoicePortalWindow.destroy() } catch (cause) { runtimeLog.exception('invoice', 'shutdown.failed', cause) }
           for (const window of BrowserWindow.getAllWindows()) {
             if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
           }
@@ -3308,6 +3417,7 @@ if (!hasSingleInstanceLock) {
             downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
           }),
           remoteControlOn: codexRemote.hasEnabledChannel(),
+          remoteControlReady: trayRemoteControlReady,
         }
       },
       onOpen: showMainWindow,
@@ -3321,6 +3431,15 @@ if (!hasSingleInstanceLock) {
       onRemoteControlOff: () => {
         runtimeLog.log('info', 'codex-remote', 'remote.tray-off', '托盘里点了关掉手机遥控')
         return codexRemote.disableAllChannels()
+      },
+      // 打不开时窗口多半缩在托盘里、没人看设置页：弹一条系统通知说原因；通知被关掉时 Windows 退到托盘气泡。
+      onRemoteControlOn: async () => {
+        runtimeLog.log('info', 'codex-remote', 'remote.tray-on', '托盘里点了打开手机遥控')
+        const { failure } = await codexRemote.enableReadyChannels()
+        if (!failure) return
+        if (desktopNotifications.announce({ title: trayRemoteControlOpenFailedTitle, body: failure }) !== 'requested') {
+          applicationTray?.showBalloon(trayRemoteControlOpenFailedTitle, failure)
+        }
       },
       // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
       onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },
@@ -3350,6 +3469,7 @@ if (!hasSingleInstanceLock) {
     // since window-all-closed only quits when every window is gone).
     mainWindow.on('closed', () => {
       paymentWindow.destroy()
+      invoicePortalWindow.destroy()
       canvasController.dispose()
     })
     // 客户回到星芒窗口：等着外部客户端退出再换线路的，看一眼退了没有（xm 三线路 C11）。

@@ -76,6 +76,6 @@ export function registerDataTransferHandlers(ctx: IpcHandlerContext): void {
       throw new Error(dataTransferInvalidMessage)
     }
     const parsed = parseDataTransferFile(raw)
-    return { conversations: parsed.conversations, ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings) }
+    return { conversations: parsed.conversations, phrases: parsed.phrases, ...planPortableSettingsImport(service.readStoredConfig(), parsed.settings) }
   })
 }

@@ -19,7 +19,9 @@ import type {
   ConfigRestoreResult,
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
-import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
+import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
+export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
+import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
@@ -29,6 +31,7 @@ export type {
   RemoteChannelId,
   RemoteChannelState,
   RemoteChannelStatus,
+  RemoteIdleCloseHours,
 } from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
@@ -390,6 +393,16 @@ export type PluginItem = PluginDto
 export type MarketplaceItem = MarketplaceDto
 export type PluginCatalog = PluginCatalogDto
 export type ExtensionMutation = ProviderExtensionMutation
+
+/**
+ * 外接工具页「也装到别的工具」：把 from 里「我的（全局）」那份的这一条连接，原样装进 to 的「我的（全局）」。
+ * 只带名字：连接里的环境变量、请求头由主进程自己读、自己转交，值不过 IPC（I3）。
+ */
+export interface McpCopyInput {
+  from: ProviderId
+  to: ProviderId
+  name: string
+}
 export type ExtensionSnapshot = ProviderExtensionsSnapshot
 export type McpHealthReport = ProviderMcpHealthReport
 export type CodexSetupStatus = MainCodexSetupStatus
@@ -490,6 +503,20 @@ export type AccountManagedCliConfigurationResult = ManagedCliConfigurationOutcom
 export type LegalDocumentKind = NewApiLegalDocumentKind
 export type LegalDocument = NewApiLegalDocument
 export type AccountUsableGroup = NewApiUsableGroup
+/**
+ * One line of the 用量账单 price table, already at this account's ratio for the group.
+ * token: US dollars per million input and output tokens; call: US dollars per call;
+ * tiered: priced in tiers (shown on each call's details), so no single number.
+ */
+export interface AccountPriceRow {
+  model: string
+  group: string
+  kind: 'token' | 'call' | 'tiered'
+  input?: number
+  output?: number
+  perCall?: number
+}
+export interface AccountPriceList { rows: AccountPriceRow[] }
 export type AccountResetPasswordInput = NewApiResetPasswordInput
 export type AccountResetPasswordResult = NewApiResetPasswordResult
 export type AccountProfileDetail = NewApiAccountProfileDetail
@@ -626,6 +653,17 @@ export interface AiChatAsset {
   revisedPrompt?: string
 }
 
+/**
+ * 聊天里加的一个文字类文件（Fable 第二轮 Q2）：主进程从系统选文件框拿到路径、按上限读出来的字。
+ * 路径不回渲染层；size 是文件在磁盘上的大小，truncated = 只读了开头一截。
+ */
+export interface AiChatTextFile {
+  name: string
+  size: number
+  text: string
+  truncated: boolean
+}
+
 export type AiChatErrorCode = MainAiChatStreamErrorCode
 
 export type AiChatStreamEvent =
@@ -672,6 +710,8 @@ export interface AiChatHistoryFlushRequest {
  */
 export interface DataTransferExportInput {
   conversations: unknown[]
+  /** 聊天页「常用的话」（Fable 第二轮 Q7）。旧版本不带，当作没存过。 */
+  phrases?: string[]
 }
 
 export interface DataTransferExportResult {
@@ -686,10 +726,22 @@ export interface DataTransferExportResult {
  */
 export interface DataTransferImportPreview {
   conversations: unknown[]
+  /** 文件里的「常用的话」，聊天页合并时再筛一遍。旧文件没有这一项。 */
+  phrases?: string[]
   settings: AppSettingsUpdate
   conflictingSettings: AppSettingsUpdate
   /** conflictingSettings 对应的设置名，给询问框用。 */
   conflictLabels: string[]
+}
+
+/**
+ * 设置里两个 Claude Code 开关（「只让 Claude Code 改项目文件夹里的文件」「Claude Code 提交代码时不署名」）切完的结果。
+ * applied：written = 当场改了 Claude Code 的配置；unchanged = 配置本来就是这样；kept = 客户自己在配置里写过这一项，
+ * 星芒没动；later = Claude Code 现在不是接着当前账号（官方账号、自己填的密钥、还没配过），只记了开关，以后接当前账号时补上。
+ */
+export interface ClaudeToggleResult {
+  enabled: boolean
+  applied: 'written' | 'unchanged' | 'kept' | 'later'
 }
 
 /** 聊天页「导出这段对话」：渲染层排好的纯文本。 */
@@ -921,6 +973,17 @@ export interface XingmangInvokeContract {
    */
   repairCliHooks: IpcInvokeDefinition<'config:repair-cli-hooks', [provider: ProviderId], ConfigSaveResult>
   /**
+   * 设置 › 工具管理「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）。Claude Code 接着当前账号时
+   * 当场改它 settings.json 里 permissions.blockWritesOutsideWorkingDirectories 这一项（只动星芒自己写的），
+   * 再记下开关；别的情况只记开关，以后接当前账号写配置时补上。改配置失败就抛，开关不变。
+   */
+  setClaudeWriteBoundary: IpcInvokeDefinition<'config:set-claude-write-boundary', [enabled: boolean], ClaudeToggleResult>
+  /**
+   * 设置 › 工具管理「Claude Code 提交代码时不署名」（同类对比 备选 6）。同上：接着当前账号时当场在 settings.json 写
+   * attribution = { commit: '', pr: '' }（关掉只撤星芒写的），再记下开关；别的情况只记开关。
+   */
+  setClaudeCommitAttribution: IpcInvokeDefinition<'config:set-claude-commit-attribution', [hidden: boolean], ClaudeToggleResult>
+  /**
    * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
    * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
    */
@@ -1107,6 +1170,13 @@ export interface XingmangInvokeContract {
   restoreBackup: IpcInvokeDefinition<'backups:restore', [id: string], ConfigRestoreResult>
   deleteBackup: IpcInvokeDefinition<'backups:delete', [id: string], void>
   /**
+   * 「设置 › 备份迁移 › 星芒占用的空间」的一行有多大。入参只是哪一行，要量的文件夹由主进程自己定，
+   * 渲染层给不了路径（I5）。没算出来时 bytes 是 null，不抛错。
+   */
+  inspectStorageUsage: IpcInvokeDefinition<'storage:inspect', [part: StorageUsagePart], StorageUsagePartReport>
+  /** 那张卡上的三个「清理」。同上，只认是哪一样，删什么、留什么由主进程按认得的文件名定（I8）。 */
+  cleanStorage: IpcInvokeDefinition<'storage:clean', [target: StorageCleanTarget], StorageCleanResult>
+  /**
    * 手机遥控 Codex 的微信扫码登录。二维码由主进程画成图片给过来，登录链接和机器人令牌都不过
    * IPC（I3）；令牌直接进底座的加密凭据存储。poll 等一轮长轮询（最多四十来秒）。
    */
@@ -1172,8 +1242,15 @@ export interface XingmangInvokeContract {
     [provider: ProviderId],
     ProviderMcpHealthReport
   >
+  /** 外接工具页「也装到别的工具」（同类对比 备选 5），一次装一个工具。只认 Claude Code、Codex 全局那份里的连接。 */
+  copyMcpToTool: IpcInvokeDefinition<'extensions:copy-mcp', [input: McpCopyInput], void>
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [mode?: import('./relay-backend').RelayNoticeReadMode], import('./relay-backend').RelayNotice | null>
+  /**
+   * 公告里官网自己的图：主进程下好换成 data: 地址交回（决定单 D89 a），页面的安全设置不放网上图片。只认当前账号
+   * 那个站官网的 https 地址，下不下来就抛错，页面照旧显示「[图片：说明]」。
+   */
+  getAccountNoticeImage: IpcInvokeDefinition<'account:get-notice-image', [url: string], string>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
   syncLocalNoticeReads: IpcInvokeDefinition<'account:sync-local-notice-reads', [scope: string, ids: string[]], string[]>
   getAccelerationState: IpcInvokeDefinition<'acceleration:get-state', [scope: string], import('./acceleration-contract').AccelerationState>
@@ -1206,6 +1283,8 @@ export interface XingmangInvokeContract {
     AccountTopupPaymentResult
   >
   closeAccountPaymentWindow: IpcInvokeDefinition<'account:close-payment-window', [], void>
+  // 「我的订单」的「开发票」：主进程按当前账号打开开票窗口（invoice-portal-window.ts），入参为空，地址和账号都不经渲染层。
+  openAccountInvoicePortal: IpcInvokeDefinition<'account:open-invoice-portal', [], void>
   getAccountTopupOrders: IpcInvokeDefinition<
     'account:list-topup-orders',
     [input: AccountTopupOrdersQuery],
@@ -1283,6 +1362,8 @@ export interface XingmangInvokeContract {
   >
   getAccountKeys: IpcInvokeDefinition<'account:list-keys', [input: AccountKeysQuery], AccountKeysPage>
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
+  /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
+  getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
@@ -1330,6 +1411,8 @@ export interface XingmangInvokeContract {
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
   pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
+  /** 系统选文件框选文字类文件，读出来的字交回去；remainingChars 是这条消息还能放多少字。 */
+  pickAiChatTextFiles: IpcInvokeDefinition<'chat:pick-text-files', [remainingFiles: number, remainingChars: number], AiChatTextFile[]>
   /** 视频剪辑「一句话出片」：文字型号把想法拆成几个镜头。停下用 video:cancel，同一个请求标识。 */
   planVideoStudio: IpcInvokeDefinition<'video-studio:plan', [input: VideoStudioPlanInput], VideoStudioPlan>
   /** 出一段视频，等到存进作品库才回；途中的进度走 onAiVideoProgress。 */
@@ -1417,6 +1500,12 @@ export interface XingmangInvokeContract {
   /** 手机遥控 Codex：飞书、微信这些渠道的开关、配对、绑定的人，和 Codex 在哪个文件夹里干活。 */
   getCodexRemoteState: IpcInvokeDefinition<'codex-remote:get-state', [], CodexRemoteSnapshot>
   setCodexRemoteChannelEnabled: IpcInvokeDefinition<'codex-remote:set-channel-enabled', [channel: RemoteChannelId, enabled: boolean], CodexRemoteSnapshot>
+  /** 卡片上的「重新连接」：开着的渠道断开重连一次，凭据和绑定的人不动；没开着就原样交回现在的状态。 */
+  reconnectCodexRemoteChannel: IpcInvokeDefinition<'codex-remote:reconnect', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  /** 「打开星芒时自动打开遥控」（YF-9，默认关）：只记下来，不当场开关渠道。 */
+  setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
+  /** 「多久没消息就自动关」（YF-10）：4 / 12 小时，null = 不自动关（缺省）。开着的渠道当场按新时长重新起算。 */
+  setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
   /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1518,6 +1607,8 @@ export const ipcInvokeChannels = {
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
   repairCliHooks: 'config:repair-cli-hooks',
+  setClaudeWriteBoundary: 'config:set-claude-write-boundary',
+  setClaudeCommitAttribution: 'config:set-claude-commit-attribution',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
   getCliModelHints: 'tools:cli-model-hints',
@@ -1591,6 +1682,8 @@ export const ipcInvokeChannels = {
   inspectBackup: 'backups:inspect',
   restoreBackup: 'backups:restore',
   deleteBackup: 'backups:delete',
+  inspectStorageUsage: 'storage:inspect',
+  cleanStorage: 'storage:clean',
   startWeixinRemoteLogin: 'codex-remote:weixin-login-start',
   pollWeixinRemoteLogin: 'codex-remote:weixin-login-poll',
   cancelWeixinRemoteLogin: 'codex-remote:weixin-login-cancel',
@@ -1616,8 +1709,10 @@ export const ipcInvokeChannels = {
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
+  copyMcpToTool: 'extensions:copy-mcp',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
+  getAccountNoticeImage: 'account:get-notice-image',
   markAccountNoticeRead: 'account:mark-notice-read',
   syncLocalNoticeReads: 'account:sync-local-notice-reads',
   getAccelerationState: 'acceleration:get-state',
@@ -1642,6 +1737,7 @@ export const ipcInvokeChannels = {
   quoteAccountTopupAmount: 'account:quote-topup',
   createAccountTopupPayment: 'account:create-topup-payment',
   closeAccountPaymentWindow: 'account:close-payment-window',
+  openAccountInvoicePortal: 'account:open-invoice-portal',
   getAccountTopupOrders: 'account:list-topup-orders',
   redeemAccountTopupCode: 'account:redeem-topup-code',
   transferAccountAffiliateQuota: 'account:transfer-affiliate-quota',
@@ -1663,6 +1759,7 @@ export const ipcInvokeChannels = {
   getAccountTasks: 'account:get-tasks',
   getAccountKeys: 'account:list-keys',
   getAccountUsableGroups: 'account:list-groups',
+  getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',
@@ -1689,6 +1786,7 @@ export const ipcInvokeChannels = {
   showAiChatAssetMenu: 'chat:asset-menu',
   pickAiChatImages: 'chat:pick-images',
   pasteAiChatImage: 'chat:paste-image',
+  pickAiChatTextFiles: 'chat:pick-text-files',
   planVideoStudio: 'video-studio:plan',
   generateAiVideo: 'video:generate',
   resumeAiVideo: 'video:resume',
@@ -1715,6 +1813,9 @@ export const ipcInvokeChannels = {
   chooseExtensionDirectory: 'extensions:choose-directory',
   getCodexRemoteState: 'codex-remote:get-state',
   setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
+  reconnectCodexRemoteChannel: 'codex-remote:reconnect',
+  setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
+  setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',

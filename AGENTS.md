@@ -39,7 +39,7 @@
 
 - **跨进程通道有三套，各自一组「契约 + preload + 注册」**：主窗口业务通道 `ipc-contract.ts` + `preload.ts` + `ipc.ts`；主窗口系统设置与通知 `platform/contract.ts` + `platform/preload.ts` + `platform/ipc.ts`（`xingmang-platform:*`）；画布窗口 `canvas-contract.ts` + `canvas-preload.ts` + `canvas-window.ts`（`canvas-host:*`）。三个 preload 里的通道表都是 sandbox 约束下的有意重复（见 I7、T1）。
 - **本项目的复杂度不在业务，在提权、可信路径与原子写入这套边界上**——`command-runner.ts` / `windows-elevation.ts` / `windows-machine-paths.ts` / `trusted-temp.ts` / `config-files.ts` / `config-files-context.ts`（见第 4 节）。
-- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另一个加载外部网页的是充值的支付窗口 `payment-window.ts`，它不挂 preload（见 I15）。
+- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另外两个加载外部网页的是充值的支付窗口 `payment-window.ts` 和「开发票」的开票窗口 `invoice-portal-window.ts`，都不挂 preload（见 I15）。
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
@@ -55,6 +55,7 @@ npm test            # test:vitest + test:scripts + test:browser；test:vitest �
 npm run test:scripts    # 单跑 scripts/*.test.cjs（构建、CI、发布脚本）
 npm run test:browser    # 单跑 e2e 里随 npm test 走的那几个浏览器套件（串行起 Chromium）
 npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 拆开跑：单测那半已含在 test:vitest 里，浏览器那半分片跑
+npm run selfcheck   # 提 PR 前的四道自查一条跑完：typecheck、test、check:v2、test:v2 依次跑，结尾打印贴进 PR 的汇总
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
 npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
@@ -64,11 +65,19 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 npm run build:linux     # Linux 本地测试 deb（x64 + arm64，更新器关着；只能在 Linux 上跑）
 ```
 
-**提交前必须两条都过**：`npm run typecheck` 和 `npm test`。动了 renderer-v2 的再加 `npm run check:v2` 和 `npm run test:v2`。
+**提交前必须两条都过**：`npm run typecheck` 和 `npm test`。动了 renderer-v2 的再加 `npm run check:v2` 和 `npm run test:v2`。提 PR 前四道都跑（PR 模板「自查」一节），`npm run selfcheck` 一条命令跑完：哪道红了也接着跑后面的，结尾那段汇总原样贴进 PR。
 
 **测试基线**：三平台都应为 **0 失败**（#40）。Windows 上需要 `SeCreateSymbolicLinkPrivilege` 的 12 条用例，在没有该特权的机器（非管理员且未开开发人员模式）上会**自动跳过**——跳过不算失败，CI 的 runner 有该特权、照常执行。红了就是回归，不要再按「环境相关」放过。各平台明细与复核命令见 `docs/TEST-BASELINE.md`。
 
-**云端容器跑浏览器用例**：容器预装的 Chromium 往往跟 `@playwright/test` 要的版本对不上，直接跑 `npm test` / `npm run test:v2`，浏览器套件会报 `Executable doesn't exist`。这是环境问题不是回归，**但也不算跑过**：设 `XINGMANG_E2E_CHROMIUM` 指向容器里那份 Chromium 重跑，门槛不变，同样要 0 失败。Claude Code 云端容器里的写法：
+**云端容器开工**：新开的容器里没有装好的依赖，先装再跑自查，一共三条（容器里别的坑见 `docs/CLOUD-SANDBOX.md`）：
+
+```bash
+npm ci --registry=https://registry.npmjs.org/
+node scripts/ci-ensure-electron-binary.cjs
+npm run selfcheck
+```
+
+**云端容器跑浏览器用例**：容器预装的 Chromium 往往跟 `@playwright/test` 要的版本对不上，直接跑 `npm test` / `npm run test:v2`，浏览器套件会报 `Executable doesn't exist`。这是环境问题不是回归，**但也不算跑过**：设 `XINGMANG_E2E_CHROMIUM` 指向容器里那份 Chromium 重跑，门槛不变，同样要 0 失败。`npm run selfcheck` 会自己替这一次运行设上；单跑某一道时自己设，Claude Code 云端容器里的写法：
 
 ```bash
 XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test
@@ -144,6 +153,8 @@ renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
 
 支付窗口（`payment-window.ts`）是另一个加载外部网页的窗口，付款页来自支付商、不归我们控制。它守的是更严的一条：**不挂 preload**（页面拿不到任何宿主桥）、`sandbox` 加每次随机的 `partition`、权限请求与下载一律拒绝、导航和新窗口只放行白名单 origin。给它加 preload 或放宽导航前，先回答同一个问题：付款页被换掉以后，这个能力能干什么？
+
+开票窗口（`invoice-portal-window.ts`，「我的订单」的「开发票」）显示开票中心，那是 xingmang-console 仓库的客户门户，不归本仓。它同样不挂 preload、`sandbox`、权限请求一律拒绝、导航只放行开票中心那一个 origin、新窗口一律拒绝。跟支付窗口不同的两处是有意的：分区按账号持久（开票中心的登录要记着），换人、退出时关窗并清掉上一个人的分区；下载只收开票中心页面自己的 `blob:` 发票文件，先落临时文件、按开头字节认过类型，再经保存框原子写（I8），Chromium 不直接写客户选的位置。开哪个账号的开票中心只由主进程按当前登录定，渲染层那条通道不带参数。
 
 ---
 
@@ -289,13 +300,15 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 **改动前**：读第 4、5 节（不变量与陷阱）；从最新 `main` 拉分支。多人并行时在对应 Issue 上留言认领。
 
-**改动中**：一个 PR 只做一件事；涉及安全边界的改动，先在测试里写出"为什么安全"。
+**改动中**：一个 PR 只做一件事；涉及安全边界的改动，先在测试里写出"为什么安全"。修缺陷先写一条在旧代码上会红的用例，再改到它变绿；确实写不出用例的（只在真机上才现形的那类），在 PR 里写明为什么。
 
-**提交前**：`npm run typecheck` + `npm test` 两条都要过（见第 3 节）。
+**提交前**：`npm run typecheck` + `npm test` 两条都要过（见第 3 节）。提 PR 前四道自查用 `npm run selfcheck` 一条跑完。
 
 **写变更日志**：在 `changes/unreleased/` 下放一个分片文件（`## 用户` 进 `release-notes.md`，`## 开发` 进 `CHANGELOG.md`，写法见该目录 README），发版时 `npm run changelog:collect` 汇总。**不要直接改两份文件的「未发布」段**——并行 PR 都往那一段加行必冲突，而带冲突的 PR GitHub 不触发 CI，CI 会拒绝这种改动。
 
 **提交**：分支命名与 PR 规范见 `docs/COLLABORATION.md`。要借 GitHub Actions 临时跑一次探测（容器里做不到的核对），边界见同一份文档 §3 的「一次性探测工作流」：只读、不挂 environment、不读 secret、用完删分支。
+
+**收尾**：这次踩到、下一个人也会踩的坑（环境怎么配、哪条用例会假红、哪个命令别这么用），随这个 PR 写回仓库文档：云端容器的进 `docs/CLOUD-SANDBOX.md`，测试基线的进 `docs/TEST-BASELINE.md`，改代码的陷阱进第 5 节或 `.claude/rules/` 里对应的那份。只记在云端项目的记忆里不算数：别的线程开工读不到，Claude·win 和本地会话更读不到（见 `docs/COLLABORATION.md` §7.4）。
 
 ---
 
@@ -313,6 +326,7 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 | 改 macOS 相关 | `.claude/rules/macos-platform.md`（自动加载）、`docs/MACOS_DEVELOPMENT.md`、`docs/MACOS_FREE_DISTRIBUTION.md` |
 | 改 Linux 相关 | `docs/LINUX.md` |
 | 发版 | `docs/RELEASING.md` |
+| 在云端容器里干活 | `docs/CLOUD-SANDBOX.md` |
 | 排查测试基线 | `docs/TEST-BASELINE.md` |
 | 了解产品背景与优先级 | `docs/ROADMAP.md`、`README.md` |
 | 已确认问题与修复计划 | `docs/IMPROVEMENT-PLAN.md` |

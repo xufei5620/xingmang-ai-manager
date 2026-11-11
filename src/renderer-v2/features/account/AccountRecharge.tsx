@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, CreditCard, Gift, HelpCircle, Info, RefreshCw, TriangleAlert, Wallet, X, XCircle, Zap } from 'lucide-react'
+import { Check, CreditCard, Gift, HelpCircle, Info, ReceiptText, RefreshCw, TriangleAlert, Wallet, X, XCircle, Zap } from 'lucide-react'
 import {
   BrandIcon,
   Button,
@@ -54,6 +54,8 @@ import {
   balancePurchaseLine,
   billingPreferenceNote,
   buildSubscriptionPaymentInput,
+  invoicePortalOpenedText,
+  invoicePortalOpenFailed,
   orderPaidText,
   ordersSearchEmpty,
   orderStateFor,
@@ -70,6 +72,7 @@ import {
   redeemSuccessText,
   resetTopupQuoteForMethod,
   subscriptionPaymentMethods,
+  subscriptionResetSuffix,
   subscriptionStateFor,
   subscriptionToolsNotice,
   topupAmountError,
@@ -846,10 +849,10 @@ export function AccountRecharge({
                   {{ daily: '日额度', weekly: '周额度', monthly: '月额度' }[period.period]}：
                   已用 {quotaMoney(period.used, balance)} · {period.limitState === 'unlimited' ? '不限额'
                     : period.limitState === 'unknown' ? '限额暂未提供'
-                    : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
+                    : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}${subscriptionResetSuffix(subscription, period)}`}
                 </span>)}
                 <span>{subscriptionExpiry(subscription.endsAt)}</span>
-              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · ${subscriptionExpiry(subscription.endsAt)}`}
+              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)}${subscriptionResetSuffix(subscription, null)} · ${subscriptionExpiry(subscription.endsAt)}`}
             />
           ))
         ) : (
@@ -1022,8 +1025,21 @@ function subscriptionExpiry(endsAt: string): string {
 }
 
 /**
+ * 「开发票」：主进程按当前账号开一个开票窗口（electron/invoice-portal-window.ts），这里不给地址也不带任何凭据。
+ * 打不开时不管原因都只说一句批过的话（原因进不了客户能做的事里）。
+ */
+async function openInvoicePortal(api: V2Bridge): Promise<void> {
+  try {
+    await api.openAccountInvoicePortal()
+  } catch {
+    throw new Error(invoicePortalOpenFailed)
+  }
+}
+
+/**
  * 「我的订单」：充值订阅这一页最下面一节，两行一条（v4）。支付窗口开着的那一单尾巴上写
  * 「支付窗口开着」；付款回跳、充值页「查看我的订单」都按订单号重新查（paymentReturn 每次加一）。
+ * 标题行的「开发票」在新窗口打开这个账号的开票中心，在那边按到账订单申请。
  */
 export function AccountOrders({
   api,
@@ -1031,6 +1047,7 @@ export function AccountOrders({
   refreshRequest,
   openTradeNo,
   multiplierAccount,
+  invoicePortal,
 }: {
   api: V2Bridge
   paymentReturn?: { sequence: number; order: string | null }
@@ -1039,7 +1056,10 @@ export function AccountOrders({
   openTradeNo?: string | null
   /** 历史账号：订单上记的是人民币那一档。 */
   multiplierAccount?: boolean
+  /** 这个账号有没有开票中心；缺省 = 没有，不出「开发票」。 */
+  invoicePortal?: boolean
 }) {
+  const operation = useOperation()
   const [page, setPage] = useState(1)
   const [keyword, setKeyword] = useState(paymentReturn?.order ?? '')
   const load = useCallback(
@@ -1073,6 +1093,22 @@ export function AccountOrders({
     <section className="v2-acct-section" data-anchor="orders" data-testid="account-orders-section">
       <div className="v2-acct-section-head">
         <h2>我的订单</h2>
+        {invoicePortal && (
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={ReceiptText}
+            disabled={Boolean(operation.busy)}
+            onClick={() => void operation.execute(
+              '打开开票中心',
+              () => openInvoicePortal(api),
+              invoicePortalOpenedText(Boolean(multiplierAccount)),
+            )}
+            testId="account-orders-invoice"
+          >
+            开发票
+          </Button>
+        )}
         <SearchInput
           value={keyword}
           onChange={(value) => {
@@ -1082,6 +1118,7 @@ export function AccountOrders({
           placeholder="搜索订单号"
         />
       </div>
+      <ResultNotice error={operation.error} detail={operation.detail} />
       <Card padding="none">
         {failed ? (
           <ListReadFailure

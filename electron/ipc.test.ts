@@ -131,6 +131,8 @@ function serviceStub(): SystemService {
     onInstallationQueueChange: vi.fn(() => () => undefined),
     enqueueCodexRemoteLaunch: vi.fn() as never,
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
+    measureInstallLeftoversNow: vi.fn(async () => 0),
+    cleanInstallLeftoversNow: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
     launchExternalClient: vi.fn(async () => undefined),
@@ -309,6 +311,7 @@ function register(
     list: vi.fn(),
     listAll: vi.fn(),
     mutate: vi.fn(),
+    readUserMcpConnection: vi.fn(),
   }
   const sessionsService = {
     list: vi.fn(),
@@ -1588,10 +1591,11 @@ describe('registerIpcHandlers', () => {
       await expect(importData(trustedEvent())).rejects.toThrow('不是星芒导出的')
 
       const good = path.join(directory, 'good.json')
-      fs.writeFileSync(good, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'light', desktopNotifications: false }, conversations: [{ id: 'c1' }] }))
+      fs.writeFileSync(good, JSON.stringify({ format: 'xingmang-data-transfer', version: 1, settings: { theme: 'light', desktopNotifications: false }, conversations: [{ id: 'c1' }], phrases: ['回答尽量简短'] }))
       electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [good] })
       await expect(importData(trustedEvent())).resolves.toEqual({
         conversations: [{ id: 'c1' }],
+        phrases: ['回答尽量简短'],
         settings: { version: 2, desktopNotifications: false },
         conflictingSettings: { version: 2, theme: 'light' },
         conflictLabels: ['主题'],
@@ -3083,6 +3087,47 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-test')
 
     expect(() => handler(trustedEvent(), { provider: 'unknown' })).toThrow('未知的 CLI 类型')
+  })
+
+  it('switches the Claude Code write boundary with a backup taken only when the config is about to change', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    service.setClaudeWriteBoundary = vi.fn(async (enabled: boolean, backup?: () => void) => {
+      backup?.()
+      return { enabled, applied: 'written' as const }
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:set-claude-write-boundary')!
+
+    await expect(handler(trustedEvent(), true)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(create).toHaveBeenCalledWith('claude', 'pre-save', undefined, null)
+    await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('开关格式错误')
+    expect(service.setClaudeWriteBoundary).toHaveBeenCalledTimes(1)
+
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+  })
+
+  it('switches Claude Code commit attribution through its own channel with the same backup rule', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    service.setClaudeCommitAttribution = vi.fn(async (hidden: boolean, backup?: () => void) => {
+      backup?.()
+      return { enabled: hidden, applied: 'written' as const }
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:set-claude-commit-attribution')!
+
+    await expect(handler(trustedEvent(), true)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(create).toHaveBeenCalledWith('claude', 'pre-save', undefined, null)
+    await expect(handler(trustedEvent(), 1)).rejects.toThrow('开关格式错误')
+    expect(service.setClaudeCommitAttribution).toHaveBeenCalledTimes(1)
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
   })
 
   it('keeps a restorable backup before a reset save and refuses to reset without one', async () => {
@@ -5252,6 +5297,42 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  // 同类对比 备选 5：「也装到别的工具」。界面只给名字，连接原样由主进程读出来，再走跟手填添加同一条路。
+  describe('extensions:copy-mcp', () => {
+    it('hands the connection read in the main process to Codex through the same add path, secrets included', async () => {
+      const { extensionService, providerExtensionService } = register()
+      providerExtensionService.readUserMcpConnection.mockResolvedValue({ type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'codex', name: 'acme' })).resolves.toBeUndefined()
+      expect(providerExtensionService.readUserMcpConnection).toHaveBeenCalledWith('claude', 'acme')
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith({ type: 'stdio', name: 'acme', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+      expect(providerExtensionService.mutate).not.toHaveBeenCalled()
+    })
+
+    it('installs into the global layer of Claude Code or Grok through the native add command', async () => {
+      const { providerExtensionService } = register()
+      providerExtensionService.readUserMcpConnection.mockResolvedValue({ type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } })
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await handler(trustedEvent(), { from: 'codex', to: 'grok', name: 'remote' })
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith({
+        provider: 'grok', kind: 'mcp', action: 'install', id: 'remote', source: undefined, scope: 'user',
+        mcp: { type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } },
+      })
+    })
+
+    it('refuses an unknown tool, the same tool on both ends and a missing name before reading anything', async () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'gemini', name: 'acme' })).rejects.toThrow('外接工具格式错误')
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'claude', name: 'acme' })).rejects.toThrow('外接工具格式错误')
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'codex' })).rejects.toThrow('MCP 名称')
+      expect(providerExtensionService.readUserMcpConnection).not.toHaveBeenCalled()
+    })
+  })
+
   describe('parseProviderExtensionMutation (extensions:mutate)', () => {
     it('accepts a minimal valid mutation without an mcp payload', () => {
       const { providerExtensionService } = register()
@@ -6717,6 +6798,37 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('storage:inspect and storage:clean', () => {
+    // 「星芒占用的空间」那张卡只能说是哪一行、清哪一样，给不了路径（I5）。
+    it('turns away anything but a known row or target before measuring or deleting', async () => {
+      const storageUsage = {
+        inspect: vi.fn(async () => ({ bytes: 1024 })),
+        clean: vi.fn(async () => ({ freedBytes: 2048, kept: 0 })),
+      }
+      register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { storageUsage })
+      const inspect = electronMocks.handlers.get('storage:inspect')!
+      const clean = electronMocks.handlers.get('storage:clean')!
+      for (const value of ['../../Windows', 'C:\\Users', 'chat', null, { part: 'works' }]) {
+        await expect(inspect(trustedEvent(), value)).rejects.toThrow('不认识要算的是哪一样')
+      }
+      // 作品、聊天记录、日志只列大小，不给删。
+      for (const value of ['works', 'chat-history', 'logs', '../backups', null]) {
+        await expect(clean(trustedEvent(), value)).rejects.toThrow('不认识要清理的是哪一样')
+      }
+      expect(storageUsage.inspect).not.toHaveBeenCalled()
+      expect(storageUsage.clean).not.toHaveBeenCalled()
+
+      await expect(inspect(trustedEvent(), 'works')).resolves.toEqual({ bytes: 1024 })
+      await expect(clean(trustedEvent(), 'thumbnails')).resolves.toEqual({ freedBytes: 2048, kept: 0 })
+      expect(storageUsage.clean).toHaveBeenCalledExactlyOnceWith('thumbnails')
+    })
+
+    it('says this version cannot do it yet when the host gave no service', async () => {
+      register(serviceStub())
+      await expect(electronMocks.handlers.get('storage:inspect')!(trustedEvent(), 'logs')).rejects.toThrow('这个版本还不能算占用的空间')
+    })
+  })
+
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
@@ -7689,6 +7801,53 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(paymentWindow.destroy).not.toHaveBeenCalled()
     })
 
+    it('opens the invoice window for the signed-in account only, never for a site or account the renderer names', async () => {
+      const accountService = accountServiceStub()
+      const invoicePortalWindow = { open: vi.fn(async () => undefined) }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { invoicePortalWindow })
+      const openInvoicePortal = electronMocks.handlers.get('account:open-invoice-portal')!
+
+      await expect(openInvoicePortal(trustedEvent())).rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
+      expect(invoicePortalWindow.open).not.toHaveBeenCalled()
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
+      accountService.getActiveSiteId = vi.fn(() => 'solov-api' as const)
+      // Anything the renderer passes is ignored: the main process picks the portal and the login.
+      await expect(openInvoicePortal(trustedEvent(), { siteId: 'solov', userId: 1 })).resolves.toBeUndefined()
+      expect(invoicePortalWindow.open).toHaveBeenCalledWith({ siteId: 'solov-api', userId: 42 })
+    })
+
+    it('downloads announcement images for the signed-in account site only, never a site the renderer names', async () => {
+      const accountService = accountServiceStub()
+      const announcementImages = { read: vi.fn(async () => 'data:image/png;base64,AAAA') }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { announcementImages })
+      const readImage = electronMocks.handlers.get('account:get-notice-image')!
+
+      await expect(readImage(trustedEvent(), 'https://xm.solov.cc/qr.png')).resolves.toBe('data:image/png;base64,AAAA')
+      expect(announcementImages.read).toHaveBeenLastCalledWith('solov', 'https://xm.solov.cc/qr.png')
+
+      accountService.getActiveSiteId = vi.fn(() => 'solov-api' as const)
+      // A second argument from the renderer is ignored: the main process picks the site.
+      await readImage(trustedEvent(), 'https://api.solov.cc/qr.png', 'solov')
+      expect(announcementImages.read).toHaveBeenLastCalledWith('solov-api', 'https://api.solov.cc/qr.png')
+    })
+
+    it('fails the announcement image read when this host cannot download them', async () => {
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+
+      await expect(electronMocks.handlers.get('account:get-notice-image')!(trustedEvent(), 'https://xm.solov.cc/qr.png'))
+        .rejects.toThrow('公告图片暂时显示不了，请更新或重启软件')
+    })
+
+    it('says the approved line when this host has no invoice window', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:open-invoice-portal')!(trustedEvent()))
+        .rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
+    })
+
     it('validates the backend payment form before opening the window or returning its trade number', async () => {
       const accountService = accountServiceStub()
       const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
@@ -8115,6 +8274,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       await expect(handler(trustedEvent())).resolves.toEqual(groups)
       expect(accountService.listUsableGroups).toHaveBeenCalledWith()
+    })
+  })
+
+  describe('account:get-price-list', () => {
+    it('turns the account price list into rows at each group ratio, and answers null where the backend has none', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getModelPricing!).mockResolvedValue({
+        models: [{ model: 'gpt-test', quotaType: 0, modelPrice: 0, expressionPriced: false, modelRatio: 1.25, completionRatio: 8, groups: ['GPT'] }],
+        groupRatios: { GPT: 0.5 },
+      })
+      const handler = electronMocks.handlers.get('account:get-price-list')!
+      await expect(handler(trustedEvent())).resolves.toEqual({ rows: [{ model: 'gpt-test', group: 'GPT', kind: 'token', input: 1.25, output: 10 }] })
+
+      const legacy = register()
+      Reflect.deleteProperty(legacy.accountService, 'getModelPricing')
+      await expect(electronMocks.handlers.get('account:get-price-list')!(trustedEvent())).resolves.toBeNull()
     })
   })
 
@@ -9137,6 +9312,8 @@ describe('IPC channel log and account policies', () => {
         'account:get-dashboard',
         'account:get-key-options',
         'account:get-legal-document',
+        'account:get-notice-image',
+        'account:get-price-list',
         'account:get-profile',
         'account:get-remembered-login',
         'account:get-session',
@@ -9159,6 +9336,7 @@ describe('IPC channel log and account policies', () => {
         'chat:list-groups',
         'chat:paste-image',
         'chat:pick-images',
+        'chat:pick-text-files',
         'chat:save-asset',
         'codex-remote:get-state',
         'codex-remote:start-pairing',
@@ -9175,6 +9353,7 @@ describe('IPC channel log and account policies', () => {
         'settings:get',
         'setup:codex-status',
         'startup:codex-readiness',
+        'storage:inspect',
         'system:refresh-network-location',
         'system:scan',
         'update:get-state',

@@ -206,6 +206,34 @@ describe('external client system-service integration', () => {
     expect(f.relayFetch).toHaveBeenCalledOnce()
   })
 
+  it('stops only OpenCode on a relative XDG_CONFIG_HOME and tells the customer how to fix it', async () => {
+    // 决定单 D62 第 4 条的原字。WorkBuddy 的配置在主目录下的 .workbuddy 里，不看这个设置，照常能连。
+    const message = '你电脑上的 XDG_CONFIG_HOME 设置不是完整路径，OpenCode 的配置位置找不到。把它改成以 / 开头的完整路径，或者删掉这个设置再试。'
+    const f = fixture()
+    vi.spyOn(os, 'homedir').mockReturnValue(f.userHome)
+    vi.stubEnv('XDG_CONFIG_HOME', 'relative-config')
+    try {
+      const statuses = await f.service.scanExternalClients()
+      expect(statuses.find((status) => status.tool === 'opencode')).toMatchObject({ configured: false, configurationSource: 'unknown', configurationError: message })
+      expect(statuses.find((status) => status.tool === 'workbuddy')).toMatchObject({ configurationSource: 'missing', configurationError: null })
+      await expect(f.service.configureExternalTool('opencode', { apiKey: selectedKey, model: selectedModel })).rejects.toThrow(message)
+      await f.service.configureExternalTool('workbuddy', { apiKey: selectedKey, model: selectedModel })
+      expect((await f.service.scanExternalClients()).find((status) => status.tool === 'workbuddy')).toMatchObject({ configured: true, configurationSource: 'xingmang' })
+    } finally {
+      vi.unstubAllEnvs()
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('tells the customer what to do next after connecting OpenCode or Claude Desktop, without a contradicting not-verified line', async () => {
+    // 决定单 D62 第 1、2 条的原字：Claude Desktop 那句下面紧跟着「连接自检」，不再说「尚未验证」。
+    const f = fixture()
+    const opencode = await f.service.configureExternalTool('opencode', { apiKey: selectedKey, model: selectedModel })
+    expect(opencode.message).toBe('已经连好了。关掉 OpenCode 再打开就能用；要是你在某个项目里单独给 OpenCode 配过模型，那个项目里以你自己配的为准。')
+    const desktop = await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
+    expect(desktop.message).toBe('已经写进 Claude Desktop。把它完全退出，再从这里点「打开」就生效。')
+  })
+
   it('self-checks an installed client with the key read back off its own config file', async () => {
     const f = fixture()
     await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })

@@ -76,7 +76,7 @@ export function registerRuntimeLogHandlers(ctx: IpcHandlerContext): () => void {
   registerTrustedHandler('runtime-logs:export-feedback', async (event, reportId?: unknown) => {
     const captured = reportId !== undefined ? await resolveFeedbackPreview(event.sender.id, reportId) : undefined
     const result = await dialog.showSaveDialog({
-      title: '导出反馈与诊断',
+      title: '导出反馈报告',
       defaultPath: `xingmang-feedback-${new Date().toISOString().slice(0, 10)}.txt`,
       filters: [{ name: '文本文件', extensions: ['txt'] }],
     })

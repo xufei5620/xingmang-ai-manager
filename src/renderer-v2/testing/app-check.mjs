@@ -46,8 +46,9 @@ async function pickOption(page, testId, value) {
   await page.getByTestId(testId).click()
   await page.getByTestId(`${testId}-option-${value}`).click()
 }
-async function open(query = '', clock = false, initScript = null) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+// timezoneId pins the page to a time zone; omitted, it follows the machine the test runs on.
+async function open(query = '', clock = false, initScript = null, timezoneId = null) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, ...(timezoneId ? { timezoneId } : {}) })
   await page.addInitScript(recordToasts)
   if (initScript) await page.addInitScript(initScript)
   // The host outlives a renderer reload and does not share the page's localStorage.
@@ -284,8 +285,14 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         if (tool === 'opencode') await page.getByTestId('external-client-protocol').selectOption('chat-completions')
         await page.getByTestId('external-client-save').click()
         await page.getByTestId('external-client-result').getByText('配置已保存', { exact: true }).waitFor()
+        // 配置文件位置客户用不上，收进「查看详情」，默认不展开（决定单 D62 第 3 条）。
+        const savedPath = page.getByTestId('external-client-path')
+        await expect(savedPath.locator('summary')).toHaveText('查看详情')
+        await expect(savedPath.locator('p')).toBeHidden()
         if (tool === 'claudeDesktop') {
-          await expect(page.getByTestId('external-client-result')).toContainText('configLibrary')
+          await savedPath.locator('summary').click()
+          await expect(savedPath.locator('p')).toBeVisible()
+          await expect(savedPath.locator('p')).toContainText('configLibrary')
           await expect(dialog).not.toContainText('HKEY_CURRENT_USER')
           await expect(dialog).not.toContainText('等待导入')
           await expect(dialog).toContainText('完全退出再重新打开 Claude Desktop')
@@ -585,6 +592,59 @@ test('acceleration state is read once when idle, and again when the game acceler
     const settings = await openSettingsGroup(page, '网络连接')
     await settings.getByTestId('acceleration-page').waitFor()
     await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'getAccelerationState').length > count, initial)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// Fable 第二轮 Q6：「设置 › 工具管理」里的开关默认关；拨它走专门那条通道（主进程先对齐 Claude Code 的配置再记开关），
+// 不混进 saveSettings；小提示按主进程实际做了什么说。
+test('the Claude Code write boundary switch starts off and goes through its own channel', async () => {
+  const page = await open()
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch', { name: '只让 Claude Code 改项目文件夹里的文件', exact: true })
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    await settings.getByText('开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。', { exact: true }).waitFor()
+    await row.click()
+    await waitForToast(page, '已打开，新开的 Claude Code 会按这个来。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
+    await row.click()
+    await waitForToast(page, '已关掉，新开的 Claude Code 不再拦。')
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'setClaudeWriteBoundary').map((entry) => entry.args), [[true], [false]])
+    assert.equal(calls.some((entry) => entry.method === 'saveSettings'), false, '这个开关不走 saveSettings')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 同类对比 备选 6：「不署名」开关默认关，走自己那条通道，跟上面那个开关互不影响。
+test('the Claude Code commit attribution switch starts off and goes through its own channel', async () => {
+  const page = await open()
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-commit-attribution').getByRole('switch', { name: 'Claude Code 提交代码时不署名', exact: true })
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    await settings.getByText('开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。', { exact: true }).waitFor()
+    await row.click()
+    await waitForToast(page, '已打开，新开的 Claude Code 提交代码时不再署名。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
+    await expect(settings.getByTestId('settings-claude-write-boundary').getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'setClaudeCommitAttribution').map((entry) => entry.args), [[true]])
+    assert.equal(calls.some((entry) => entry.method === 'setClaudeWriteBoundary' || entry.method === 'saveSettings'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the Claude Code write boundary switch says so when the customer\'s own Claude Code setting was left alone', async () => {
+  const page = await open('writeBoundary=kept')
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch')
+    await row.click()
+    await waitForToast(page, '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
     await clean(page)
   } finally { await page.close() }
 })
@@ -2505,6 +2565,115 @@ test('a folder picked for one CLI opens the others there without asking again', 
   } finally { await page.close() }
 })
 
+// D45（新手流程 N4）：新建的项目文件夹是空的，问「介绍一下这个项目」只会换来「这里什么都没有」。
+// 「打开」会替他新建、或者记着的正是那个还空着的文件夹时，「试试第一条命令」那句换成让它动手做点东西。
+test('the first-run card asks for a small web page while the folder is the empty one the app made (D45)', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    const card = page.getByTestId('home-first-run')
+    const prompt = page.getByTestId('home-first-run-steps-prompt')
+    await prompt.waitFor()
+    assert.equal(await card.getByText('Claude Code', { exact: true }).count(), 1)
+    assert.equal(await prompt.innerText(), '帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。')
+    // 在替他新建的文件夹里打开过一次：记着的就是它、还空着，这句不跳回「介绍一下这个项目」。
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction((folder) => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === `在 ${folder} 打开`, starterFolder)
+    assert.equal(await prompt.innerText(), '帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the first-run card keeps the usual sentence for a folder the user picked (D45)', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-choose-workspace').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\Selected Project 打开')
+    assert.equal(await page.getByTestId('home-first-run-steps-prompt').innerText(), '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// D46（新手流程 N2、N5）：引导最后一步那颗「打开」以前一律弹选择窗口，首页第一次「打开」早就替他新建了。
+// 现在跟首页同一套；「打开」「进入首页」在底栏，「选择其他文件夹…」给想自己挑的人。
+async function guideReadyFor(page, route) {
+  await page.getByTestId('home-guide').click()
+  await page.getByTestId(`guide-route-${route}`).check()
+  while (await page.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await page.getByTestId('guide-next').click()
+}
+
+test('the guide opens a never-used CLI in a folder the app creates, like the home card (D46)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await recentRead(page)
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool-choose-folder').waitFor()
+    assert.equal(await page.getByTestId('guide-open-tool-choose-folder').innerText(), '选择其他文件夹…')
+    assert.equal(await page.getByTestId('guide-folder-hint').count(), 0)
+    assert.equal(await page.getByTestId('guide-first-run-command').count(), 0)
+    assert.equal(await page.getByTestId('guide-connected-note').count(), 0)
+    assert.equal(await page.getByTestId('guide-result').getAttribute('data-collapsed'), 'true')
+    // 底栏不随内容滚走：「打开」在对话框正文外面，不用往下翻就看得到。
+    assert.equal(await page.locator('.xm-modal-content > footer [data-testid="guide-open-tool"]').count(), 1)
+    assert.equal(await page.locator('.xm-dialog-body [data-testid="guide-open-tool"]').count(), 0)
+    assert.equal(await page.getByTestId('guide-open-tool').isVisible(), true)
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, firstOpen: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', starterFolder]])
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the guide opens a used CLI in the folder its home card shows, and can still pick another (D46)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\work\\my-app 打开')
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool-choose-folder').waitFor()
+    // 在这里用过：那句话照旧是「介绍一下这个项目」。
+    assert.equal(await page.getByTestId('guide-first-run-prompt').innerText(), '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。')
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    let calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app']])
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
+    // 想用别的文件夹：「选择其他文件夹…」弹的是原来的选择窗口。
+    await guideReadyFor(page, 'codex')
+    await page.getByTestId('guide-open-tool-choose-folder').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').at(-1).args, ['codex', 'C:\\Selected Project'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the guide falls back to the folder picker when the folder its home card shows is gone (D46)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&workspaceGone=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\work\\my-app 打开')
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool-choose-folder').waitFor()
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app'], ['claude', 'C:\\Selected Project']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第四十批 A：托盘「已安装的工具」和 Ctrl+数字以前什么文件夹都不带，每次都弹选择框；
 // 现在和首页那颗「打开 xx」挑同一个文件夹，都没有才弹。
 test('the tray and Ctrl+number shortcuts open a CLI in the folder its home button shows', async () => {
@@ -3213,6 +3382,46 @@ test('login synchronizes account Keys, configures installed tools, and route sel
   } finally { await page.close() }
 })
 
+// Y3：「做图、做视频」跟聊天一样什么都不装；没登录先登录，登好了引导按新账号重开也不再弹，直接进视频剪辑页。
+test('the images-and-videos guide choice signs in and lands on the video page without installing anything', async () => {
+  const page = await open('guest=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-create').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="nav-video"]')?.getAttribute('aria-current') === 'page')
+    assert.equal(await page.getByTestId('start-guide').count(), 0)
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(methods.some((method) => ['installCli', 'installNodeRuntime', 'installCodexDesktop', 'launchCodexDesktop'].includes(method)), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('closing the login box from the images-and-videos choice does not send a later login to the video page', async () => {
+  const page = await open('guest=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-create').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('login-cancel').click()
+    assert.equal(await page.getByTestId('guide-route-create').isChecked(), true)
+    await page.getByTestId('guide-pause').click()
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    // 这次是从欢迎页登录的：照旧弹出新账号的引导，不当成刚才那一下。
+    await page.getByTestId('start-guide').waitFor()
+    assert.notEqual(await page.getByTestId('nav-video').getAttribute('aria-current'), 'page')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('restored login repairs missing tool configs without overwriting official or third-party sources', async () => {
   const page = await open('missingConfig=1&allInstalled=1&official=1&unknownClaude=1')
   try {
@@ -3469,6 +3678,29 @@ test('an unreachable startup restore keeps the login on the home page and waits 
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 } }))
     await row.getByText('配置被改过').waitFor()
     assert.equal(await page.getByText('暂时连不上，登录还在').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// Q4：聊天里做过的图在画布窗口项目中心的素材库里，聊天页右上角一颗图标按钮直接叫出来；画布那半管窗口和素材库。
+test('the chat page opens the canvas asset library from the top bar and reports a failure', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-chat').click()
+    const button = page.getByTestId('chat-assets-open')
+    await button.waitFor()
+    assert.equal(await button.getAttribute('aria-label'), '看做过的图')
+    assert.equal(await button.getAttribute('title'), '看做过的图：在画布窗口的项目中心打开素材库，聊天里做的图和发过的图都在里面')
+    // 在「参数设置」左边。
+    const order = await page.locator('.chat-bar-actions [data-testid]').evaluateAll((items) => items.map((item) => item.getAttribute('data-testid')))
+    assert.equal(order.indexOf('chat-assets-open') + 1, order.indexOf('chat-parameters-open'))
+    await button.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasAssetLibrary'))
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = 'openCanvasAssetLibrary'; window.v2Test.failMessage = '画布窗口没能打开' })
+    await button.click()
+    await page.getByTestId('operation-error').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
     await clean(page)
   } finally { await page.close() }
 })
@@ -5731,6 +5963,33 @@ test('Markdown announcements render headings, lists, emphasis and links', async 
   } finally { await page.close() }
 })
 
+// D89 a：页面的安全设置不放网上图片，官网的图由主进程下好交回 data: 地址；页面自己一次网都不连。
+for (const [label, query] of [['Markdown', 'noticeImage=1'], ['rich HTML', 'noticeImage=1&noticeImageHtml=1']]) {
+  test(`${label} announcement images come from the host as data URLs, and the rest show their caption`, async () => {
+    const page = await open(query)
+    const outside = []
+    page.on('request', (request) => {
+      if (!request.url().startsWith(origin + '/') && !request.url().startsWith('data:')) outside.push(request.url())
+    })
+    try {
+      await page.getByTestId('page-home').waitFor()
+      await page.getByRole('button', { name: /^公告/ }).click()
+      const dialog = page.getByRole('dialog', { name: '公告' })
+      const image = dialog.getByRole('img', { name: '官方二维码' })
+      await image.waitFor()
+      assert.match(await image.getAttribute('src'), /^data:image\/png;base64,/)
+      await expect.poll(() => image.evaluate((element) => element.complete && element.naturalWidth)).toBe(1)
+      await dialog.getByText('[图片：下不下来]', { exact: true }).waitFor()
+      await dialog.getByText('[图片：外部图片]', { exact: true }).waitFor()
+      await expect(dialog.locator('img')).toHaveCount(1)
+      const asked = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountNoticeImage').map((call) => call.args[0]))
+      assert.deepEqual([...new Set(asked)].sort(), ['https://xm.solov.cc/missing.png', 'https://xm.solov.cc/qr.png'])
+      assert.deepEqual(outside, [])
+      await clean(page)
+    } finally { await page.close() }
+  })
+}
+
 test('a blocked announcement link is copied for the browser instead of failing', async () => {
   const page = await open('noticeMarkdown=1&externalBlocked=1')
   try {
@@ -6257,7 +6516,8 @@ test('the announcement timeline shows title, type, date and note, and only recen
     await list.locator('.v2-announcement-row').first().click()
     const detail = dialog.getByTestId('announcement-detail')
     await detail.getByRole('heading', { name: '图片模型上线' }).waitFor()
-    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^上新\d{4}-\d{2}-\d{2} \d{2}:\d{2} · 2 小时前$/)
+    // 跟全软件一样写「今天 14:05」，不写横杠日期（D60）；跑在凌晨两点前时那条是昨天的。
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^上新(今天|昨天) \d{2}:\d{2} · 2 小时前$/)
     // 单个换行也要换行：三步说明逐行显示，不挤成一行。
     assert.equal(await detail.locator('.v2-announcement-content').first().locator('li').count(), 3)
     await detail.getByTestId('announcement-detail-extra').getByText(/勿发送 API 密钥/).waitFor()
@@ -6321,7 +6581,8 @@ test('a new timeline entry shows up with the next balance refresh without anothe
 })
 
 test('recharge activity card lists bonus tiers and an activity bar stays on top after it is dismissed', async () => {
-  const page = await open('', true, () => { document.hasFocus = () => true })
+  // 公告里的截止按北京时间算（时间数字格式 N-5）。钉在洛杉矶，看不是北京时间的电脑上补不补「（北京时间）」。
+  const page = await open('', true, () => { document.hasFocus = () => true }, 'America/Los_Angeles')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.evaluate(() => {
@@ -6337,13 +6598,14 @@ test('recharge activity card lists bonus tiers and an activity bar stays on top 
     assert.equal(await card.getByTestId('announcement-promo-tier-10').count(), 0)
     assert.equal((await card.textContent()).includes('solov'), false)
     await card.getByTestId('announcement-promo-others').getByText('邀请有礼', { exact: false }).waitFor()
+    assert.equal(await card.getByTestId('announcement-promo-deadline').textContent(), ' · 9月20日 23:59（北京时间）结束，还剩 8 天')
     // 大卡片在说活动时，首页不挂活动条，也不再出灰条。
     assert.equal(await page.getByTestId('announcement-promo-bar').count(), 0)
     assert.equal(await page.getByTestId('announcement-banner').count(), 0)
     await card.getByTestId('announcement-promo-dismiss').click()
     const bar = page.getByTestId('announcement-promo-bar')
     await bar.waitFor()
-    assert.deepEqual(await bar.locator('.v2-promo-bar-item').allTextContents(), ['充值满赠9月20日截止，还剩 8 天', '邀请有礼'])
+    assert.deepEqual(await bar.locator('.v2-promo-bar-item').allTextContents(), ['充值满赠9月20日（北京时间）截止，还剩 8 天', '邀请有礼'])
     await page.getByTestId('announcement-promo-bar-close').click()
     await bar.waitFor({ state: 'hidden' })
     assert.equal(await card.count(), 0)
@@ -6428,7 +6690,8 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     const detail = dialog.getByTestId('announcement-detail')
     await detail.getByRole('heading', { name: '服务通知', level: 2, exact: true }).waitFor()
     // 历史账号的公告没有类型标签，详情里只写发布时间。
-    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^2026-09-28 \d{2}:\d{2} · \d+ (天|个月|年)前$/)
+    // 30 天以上只写日期、不写「N 个月前」（D60）；跨了年带上年份。
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^(2026年)?9月28日 \d{2}:\d{2}( · \d+ 天前)?$/)
     assert.equal(await detail.locator('strong').innerText(), '系统升级完成')
     assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead'))
@@ -10228,6 +10491,11 @@ test('a chat page opened while an import is still saving waits for it and keeps 
     await page.evaluate(() => window.v2Test.releaseChatHistoryRead())
     await waitForToast(page, '导入了 1 个对话。')
     await page.getByTestId('chat-conversation-from-old-computer').waitFor()
+    // 「常用的话」跟聊天记录一起搬过来（Fable 第二轮 Q7）。
+    await page.getByTestId('chat-phrases-open').click()
+    assert.deepEqual(await page.getByTestId('chat-phrases-dialog').locator('.chat-phrase-text').allTextContents(), ['旧电脑上存的一句'])
+    await page.getByTestId('chat-phrases-close').click()
+    await page.getByTestId('chat-phrases-dialog').waitFor({ state: 'detached' })
     await page.getByTestId('chat-composer-input').fill('接着聊')
     await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('接着聊')
     assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
@@ -10254,6 +10522,34 @@ test('the chat page on screen when an import lands reads it again instead of sav
     await input.fill('导入后接着打')
     await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('导入后接着打')
     assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复的那条被掐断，页面上什么也不说。
+test('importing while the chat is still replying waits for the reply instead of cutting it off', async () => {
+  const page = await open('chatImport')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-composer-input').fill('还在回复的这一条')
+    await page.getByTestId('chat-send').click()
+    await page.getByTestId('chat-stop').waitFor()
+    let settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    const notice = settings.locator('.v2-business-notice.is-error')
+    await expect(notice).toContainText('聊天正在回复，等它说完再导入。')
+    // 原话上屏，不被目录认成别的类别换掉。
+    assert.equal(await notice.locator('strong').count(), 0)
+    assert.equal(await chatHistoryCalls(page, 'importAppData'), 0)
+    assert.equal(await chatHistoryCalls(page, 'cancelAiChat'), 0)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-stop').click()
+    await page.getByTestId('chat-send').waitFor()
+    settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了 1 个对话。')
+    await expect(notice).toHaveCount(0)
     await clean(page)
   } finally { await page.close() }
 })

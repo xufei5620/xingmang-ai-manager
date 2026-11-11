@@ -137,8 +137,11 @@ export function buildExternalClientProbe(input: ExternalClientProbeInput): Conne
   if (input.configurationSource === 'other') {
     // 不回显它现在指向哪：那可能是用户自己的另一家服务，本软件没有理由替他
     // 把那个地址念出来，更不会拿那把密钥去发请求。
-    return blocked('config', `${name} 当前的配置不是由当前账号写入的`,
-      '自检只会用当前账号的密钥向星芒服务发请求。请先在首页给这个客户端重新配置一次', model)
+    const nextStep = '自检只会用当前账号的密钥向星芒服务发请求。请先在首页给这个客户端重新配置一次'
+    // WorkBuddy、OpenCode 本来就能接别家：客户自己配的不算问题，跟没配一样是灰的、不是黄的
+    // （0.2.24 深查决定单 D63）。Claude Desktop 不在那条决定里，照旧。
+    if (input.tool !== 'claudeDesktop') return blocked('unconfigured', '用的是你自己的配置', nextStep, model)
+    return blocked('config', `${name} 当前的配置不是由当前账号写入的`, nextStep, model)
   }
   if (!input.apiKey || !model) {
     return blocked('config', `${name} 的配置里读不到可用的密钥或模型`,

@@ -19,9 +19,11 @@ import {
   requiredCanvasString,
   requiredCanvasText,
 } from './canvas-request-parser'
-import { canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
+import { canvasRunImageToolNodeLabels, canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
 
 const kernelRefusal = '桌面版暂不支持，本次没有提交任何付费请求'
+// What the desktop parsed before picture roles and video reference orders ran (画布完善第 8 条).
+const referenceOrderOff = { frameExtract: true, imageTools: true, referenceOrder: false }
 
 function kernelNode(kind: string, extra: Record<string, unknown>) {
   return structuredClone({
@@ -472,6 +474,8 @@ describe('canvas request parser', () => {
       ['router', { routerStrategy: { version: 1, strategy: 'all' } }, '路由策略'],
       ['video-generate', { videoProtocol: 'xai-native' }, '这个视频接口'],
       ['video-generate', { videoProtocol: 'ark-seedance' }, '这个视频接口'],
+      // With reference orders running these two are parsed in full instead
+      // (see the picture-role test below); off, they are refused as before.
       ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ kind: 'image', sourceNodeId: 'a' }] } }, '视频参考顺序'],
       ['image-edit', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图角色'],
       ['image-generate', { imageOutputIndex: 0 }, '图片处理'],
@@ -485,7 +489,7 @@ describe('canvas request parser', () => {
       ['image-generate', { tileInput: { columns: 2 } }, '图片处理'],
     ]
     for (const [kind, extra, reason] of cases) {
-      const node = parseCanvasStartRunInput(kernelNode(kind, extra)).graph.nodes[0]
+      const node = parseCanvasStartRunInput(kernelNode(kind, extra), referenceOrderOff).graph.nodes[0]
       expect(node.desktopUnsupported, JSON.stringify(extra)).toBe(`「${reason}」${kernelRefusal}`)
       expect(node.data).toEqual({ prompt: 'p', model: 'm' })
     }
@@ -511,11 +515,9 @@ describe('canvas request parser', () => {
   })
 
   it('marks every kernel-only node kind by its name and still refuses unknown kinds', () => {
-    for (const [kind, label] of Object.entries(canvasRunKernelOnlyNodeLabels)) {
-      const node = parseCanvasStartRunInput(kernelNode(kind, {})).graph.nodes[0]
-      expect(node.kind).toBe(kind)
-      expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
-    }
+    // None left since the grid split joined the image tools. The next kernel
+    // kind the desktop lacks goes on that list and is refused by name there.
+    expect(Object.keys(canvasRunKernelOnlyNodeLabels)).toEqual([])
     // 画布完善第 6 条: text nodes run on the desktop now; web search still does not.
     expect(parseCanvasStartRunInput(kernelNode('text-generate', {})).graph.nodes[0].desktopUnsupported).toBeUndefined()
     expect(parseCanvasStartRunInput(kernelNode('text-generate', { textWebSearch: true })).graph.nodes[0].desktopUnsupported)
@@ -551,6 +553,191 @@ describe('canvas request parser', () => {
       .toBe(`「视频抽帧」${kernelRefusal}`)
     for (const bad of [-1, Number.NaN, 86_401, '1']) {
       expect(() => parseCanvasStartRunInput(kernelNode('frame-extract', { frameTimestampSeconds: bad }), on)).toThrow('画布抽帧时间格式错误')
+    }
+  })
+
+  it('refuses image-tool nodes by name while image tools are switched off', () => {
+    for (const [kind, label] of Object.entries(canvasRunImageToolNodeLabels)) {
+      for (const options of [{ frameExtract: false, imageTools: false }, { frameExtract: true, imageTools: false }]) {
+        const node = parseCanvasStartRunInput(kernelNode(kind, {}), options).graph.nodes[0]
+        expect(node.kind).toBe(kind)
+        expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
+      }
+    }
+    const crop = { kind: 'crop', outputWidth: 64, outputHeight: 32 }
+    const off = parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: crop }), { frameExtract: true, imageTools: false }).graph.nodes[0]
+    expect(off.data).toEqual({ prompt: 'p', model: 'm' })
+    // 画布完善第 7 条第三步: the canvas window parses with the desktop's own
+    // switch, which is on now that the kernel makes the pictures.
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: crop })).graph.nodes[0])
+      .toMatchObject({ data: { prompt: 'p', model: 'm', imageTransform: crop } })
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: crop })).graph.nodes[0].desktopUnsupported).toBeUndefined()
+  })
+
+  // 画布完善第 7 条第三步: switched on, the four page-made kinds keep their
+  // recipe as it came, and only the numbers the pictures are checked against
+  // are read out of it.
+  it('hands image-tool nodes their recipe, collage order and tile choice once image tools are switched on', () => {
+    const on = { frameExtract: true, imageTools: true }
+    const recipe = { kind: 'layer', outputWidth: 1024, outputHeight: 768, background: '#ffffff', layers: [{ id: 'l1', sourceIndex: 0, edits: { version: 1, operations: [{ points: [[[1, 2]]] }] } }] }
+    const layer = parseCanvasStartRunInput(kernelNode('image-layer', { imageTransform: recipe, imageOutputIndex: 0 }), on).graph.nodes[0]
+    expect(layer.desktopUnsupported).toBeUndefined()
+    expect(layer.data).toEqual({ prompt: 'p', model: 'm', imageTransform: recipe })
+    const order = { version: 1, slots: [{ edgeId: 'e2', outputIndex: 0 }, { edgeId: 'e1', outputIndex: 0 }] }
+    const collage = parseCanvasStartRunInput(kernelNode('image-collage', { imageTransform: { kind: 'collage', outputWidth: 800, outputHeight: 600, layout: 'grid' }, imageCollageInputOrder: order }), on).graph.nodes[0]
+    expect(collage.data).toMatchObject({ imageCollageInputOrder: order })
+    const tile = parseCanvasStartRunInput(kernelNode('image-tile', { imageTransform: { kind: 'tile', outputWidth: 512, outputHeight: 512 }, tileInput: { edgeId: 'e1' } }), on).graph.nodes[0]
+    expect(tile.data).toMatchObject({ tileInput: { edgeId: 'e1', outputIndex: 0 } })
+    expect(parseCanvasStartRunInput(kernelNode('image-tile', { imageTransform: { kind: 'tile', outputWidth: 512, outputHeight: 512 }, tileInput: { missing: true } }), on).graph.nodes[0].data)
+      .toMatchObject({ tileInput: { missing: true } })
+    for (const kind of ['image-compare', 'image-panorama']) {
+      expect(parseCanvasStartRunInput(kernelNode(kind, {}), on).graph.nodes[0]).toMatchObject({ kind, data: { prompt: 'p', model: 'm' } })
+      expect(parseCanvasStartRunInput(kernelNode(kind, {}), on).graph.nodes[0].desktopUnsupported).toBeUndefined()
+    }
+    // Other kernel settings on an image tool are still refused by name, and image-tool fields elsewhere too.
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 }, textWebSearch: true }), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「联网搜索」${kernelRefusal}`)
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', { imageTransform: { kind: 'crop' } }), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「图片处理」${kernelRefusal}`)
+  })
+
+  // A grid split is the one image tool that makes several pictures, so it is
+  // the one that keeps which slice the canvas shows, clamped as the web host
+  // does (xingmang-canvas lib/canvas-runs.ts): one past the grid means the first.
+  it('hands a grid split its recipe and the slice the canvas shows', () => {
+    const on = { frameExtract: true, imageTools: true }
+    const recipe = { kind: 'grid-split', rows: 2, columns: 3, gap: 0, padding: 0 }
+    const split = parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: 4 }), on).graph.nodes[0]
+    expect(split.desktopUnsupported).toBeUndefined()
+    expect(split.data).toEqual({ prompt: 'p', model: 'm', imageTransform: recipe, imageOutputIndex: 4 })
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: 6 }), on).graph.nodes[0].data.imageOutputIndex).toBe(0)
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageOutputIndex: 3 }), on).graph.nodes[0].data).toEqual({ prompt: 'p', model: 'm', imageOutputIndex: 0 })
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe }), on).graph.nodes[0].data).toEqual({ prompt: 'p', model: 'm', imageTransform: recipe })
+    // Every other image tool makes one picture: the index is checked, never passed on.
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 }, imageOutputIndex: 3 }), on).graph.nodes[0].data)
+      .toEqual({ prompt: 'p', model: 'm', imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 } })
+    for (const bad of [16, -1, 1.5, '1']) {
+      expect(() => parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: bad }), on)).toThrow('图片批次选中序号无效')
+    }
+    expect(() => parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: { ...recipe, rows: 5 } }), on)).toThrow('画布图片处理行数格式错误')
+    // Switched off it is refused by name like the other image tools.
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: 1 }), { frameExtract: true, imageTools: false }).graph.nodes[0])
+      .toMatchObject({ desktopUnsupported: `「宫格裁剪」节点${kernelRefusal}`, data: { prompt: 'p', model: 'm' } })
+  })
+
+  it('hands picture roles and a video reference order on once reference orders are switched on', () => {
+    const roles = { version: 1, slots: [{ role: 'source', edgeId: 'e1', outputIndex: 0 }, { role: 'reference', edgeId: 'e2', outputIndex: 3 }, { role: 'reference', missing: true }] }
+    for (const kind of ['image', 'image-generate', 'image-edit', 'text-generate']) {
+      // The default options follow desktopCanvasCapabilities, which runs them now.
+      const node = parseCanvasStartRunInput(kernelNode(kind, { imageReferenceOrder: roles })).graph.nodes[0]
+      expect(node.desktopUnsupported, kind).toBeUndefined()
+      expect(node.data).toEqual({ prompt: 'p', model: 'm', imageReferenceOrder: roles })
+    }
+    const order = { version: 1, slots: [{ edgeId: 'last', outputIndex: 0 }, { edgeId: 'first', outputIndex: 0 }] }
+    for (const kind of ['video', 'video-generate']) {
+      const node = parseCanvasStartRunInput(kernelNode(kind, { videoReferenceOrder: order })).graph.nodes[0]
+      expect(node.desktopUnsupported, kind).toBeUndefined()
+      expect(node.data).toEqual({ prompt: 'p', model: 'm', videoReferenceOrder: order })
+      // Empty is connection order, what the desktop already does: dropped, so the key stays.
+      expect(parseCanvasStartRunInput(kernelNode(kind, { videoReferenceOrder: { version: 1, slots: [] } })).graph.nodes[0].data).toEqual({ prompt: 'p', model: 'm' })
+    }
+    // On a kind that does not use them they are still refused by name.
+    expect(parseCanvasStartRunInput(kernelNode('video-generate', { imageReferenceOrder: roles })).graph.nodes[0].desktopUnsupported).toBe(`「参考图角色」${kernelRefusal}`)
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', { videoReferenceOrder: order })).graph.nodes[0].desktopUnsupported).toBe(`「视频参考顺序」${kernelRefusal}`)
+    // The kernel's own words for an order it would not have saved.
+    const malformed: Array<[string, Record<string, unknown>, string]> = [
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图片角色需要 1 到 4 个位置，且版本须为 1'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: Array.from({ length: 5 }, (_, index) => ({ role: index ? 'reference' : 'source', edgeId: `e${index}`, outputIndex: 0 })) } }, '参考图片角色需要 1 到 4 个位置，且版本须为 1'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'reference', edgeId: 'e', outputIndex: 0 }] } }, '第一个参考位置必须是原图，其余位置必须是参考图'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', edgeId: 'e', outputIndex: 20 }] } }, '参考图片连线或批次位置无效'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', missing: true, edgeId: 'e' }] } }, '缺失的参考图片位置不能携带旧连线或资产身份'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', edgeId: 'e', outputIndex: 0 }, { role: 'reference', edgeId: 'e', outputIndex: 0 }] } }, '参考图片不能重复使用同一连线位置'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', edgeId: 'e', outputIndex: 0, apiKey: 'sk-x' }] } }, '画布参考图角色格式错误'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: Array.from({ length: 13 }, (_, index) => ({ edgeId: `e${index}`, outputIndex: 0 })) } }, '视频参考顺序最多保存 12 个素材位置'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ edgeId: 'e', outputIndex: 0 }, { edgeId: 'e', outputIndex: 0 }] } }, '视频参考顺序不能包含重复位置'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ edgeId: '', outputIndex: 0 }] } }, '视频参考的连线或批次位置无效'],
+    ]
+    for (const [kind, extra, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, extra)), JSON.stringify(extra)).toThrow(message)
+    }
+  })
+
+  it('hands the four scene tasks on once scene tasks are switched on, and keeps refusing them by name otherwise', () => {
+    const one = { version: 1, slots: [{ role: 'source', edgeId: 'e1', outputIndex: 0 }] }
+    const two = { version: 1, slots: [{ role: 'source', edgeId: 'e1', outputIndex: 0 }, { role: 'reference', edgeId: 'e2', outputIndex: 0 }] }
+    const tasks: Array<[Record<string, unknown>, string]> = [
+      [{ commerceTask: { version: 1, kind: 'material-b', preserve: ['shape', 'logo'], strength: 0.35, upscale: 1.5 }, imageReferenceOrder: one, size: 'auto' }, '电商创作'],
+      [{ commerceTask: { version: 1, kind: 'style-reference', preserve: [] }, imageReferenceOrder: two }, '电商创作'],
+      [{ interiorTask: { version: 1, kind: 'interior-render', addDecor: true, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'rainy', time: 'night', exterior: 'sea', filter: 'film' }, imageReferenceOrder: one }, '室内创作'],
+      [{ exteriorTask: { version: 1, kind: 'landscape-redesign', automaticPrompt: true }, imageReferenceOrder: two }, '室外创作'],
+      [{ storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'stick-figure', panels: 9 }, imageReferenceOrder: two }, '故事板'],
+    ]
+    for (const [extra, reason] of tasks) {
+      for (const kind of ['image', 'image-generate', 'image-edit']) {
+        // The default options follow desktopCanvasCapabilities, which runs them now.
+        const node = parseCanvasStartRunInput(kernelNode(kind, extra)).graph.nodes[0]
+        expect(node.desktopUnsupported, `${kind} ${reason}`).toBeUndefined()
+        expect(node.data, `${kind} ${reason}`).toEqual({ prompt: 'p', model: 'm', ...extra })
+      }
+      // Off, or without picture roles to go with them: refused by name, as before.
+      for (const options of [{ ...referenceOrderOff, scenarioTemplates: true }, { frameExtract: true, imageTools: true, referenceOrder: true, scenarioTemplates: false }]) {
+        const refusal = parseCanvasStartRunInput(kernelNode('image-edit', extra), options).graph.nodes[0].desktopUnsupported
+        expect(refusal, JSON.stringify(options)).toContain(reason)
+        expect(refusal, JSON.stringify(options)).toContain(kernelRefusal)
+      }
+    }
+    // The kernel's own words, as the web host answers: a task on a node that cannot carry
+    // one, a broken task, two tasks, or a task without the roles it needs.
+    const malformed: Array<[string, Record<string, unknown>, string]> = [
+      ['text-generate', { commerceTask: { version: 1, kind: 'style-reference', preserve: [] }, imageReferenceOrder: two }, '此节点不支持商品与参考图创作任务'],
+      ['video-generate', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 4 } }, '此节点不支持故事板任务'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'material-a', preserve: [], strength: 1.5 }, imageReferenceOrder: one }, '优化强度必须在 0 到 1 之间'],
+      ['image-edit', { interiorTask: { version: 1, kind: 'interior-render' }, imageReferenceOrder: one }, '室内创作包含未知或缺少必要配置，请重新读取'],
+      ['image-edit', { exteriorTask: { version: 1, kind: 'exterior-redraw', useToneReference: 'yes' }, imageReferenceOrder: one }, '色调参考开关必须为明确的开启或关闭'],
+      ['image-edit', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 5 }, imageReferenceOrder: one }, '故事板剧情开关、画风或宫格数不受支持'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'style-reference', preserve: [], prompt: 'x' }, imageReferenceOrder: two }, '创作任务含未知或缺少必要的配置'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'style-reference', preserve: [] } }, '创作任务需要明确原图和参考图角色，请打开创作配置重新绑定'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'style-reference', preserve: [] }, imageReferenceOrder: one }, '参考风格迁移需要唯一原图和一张参考图'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'material-b', preserve: [], strength: 0.3, upscale: 2 }, imageReferenceOrder: one, size: '1024x1024' }, '材质优化 B 的尺寸由原图和倍率唯一决定，请保留自动尺寸与 1K 清晰度'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'product-view', preserve: [], view: 'top' }, interiorTask: { version: 1, kind: 'interior-render', addDecor: false, addPeople: false, enclosedSpace: false, interiorLighting: false, weather: 'none', time: 'none', exterior: 'none', filter: 'none' }, imageReferenceOrder: one }, '室内创作与商品创作不能同时配置在同一节点'],
+      ['image-edit', { exteriorTask: { version: 1, kind: 'facade-renovation', automaticPrompt: false }, imageReferenceOrder: one }, '室外任务需要明确绑定对应的原图和参考图角色'],
+      ['image-edit', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'cinematic', panels: 4 } }, '故事板需要 1–4 张有序输入图片'],
+      ['image-edit', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'cinematic', panels: 4, apiKey: 'sk-x' }, imageReferenceOrder: one }, '画布故事板配置格式错误'],
+    ]
+    for (const [kind, extra, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, extra)), JSON.stringify(extra)).toThrow(message)
+    }
+  })
+
+  it('refuses an image-tool recipe, order or choice it cannot bound or that names another tool', () => {
+    const on = { frameExtract: true, imageTools: true }
+    const crop = { kind: 'crop', outputWidth: 64, outputHeight: 32 }
+    function deep(depth: number): unknown {
+      return depth === 0 ? 1 : { next: deep(depth - 1) }
+    }
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['image-crop', { imageTransform: { ...crop, kind: 'collage' } }, '图片处理参数与节点类型不匹配'],
+      ['image-crop', { imageTransform: [crop] }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, outputWidth: 4097 } }, '画布图片处理输出宽度格式错误'],
+      ['image-crop', { imageTransform: { ...crop, outputHeight: 0 } }, '画布图片处理输出高度格式错误'],
+      ['image-crop', { imageTransform: { ...crop, scale: Number.POSITIVE_INFINITY } }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, apiKey: 'sk-x' } }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, extra: deep(41) } }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, text: 'x\u0000' } }, '画布图片处理配置格式错误'],
+      ['image-layer', { imageTransform: { kind: 'layer', outputWidth: 8, outputHeight: 8, layers: Array.from({ length: 40 }, () => ({ text: 'x'.repeat(9_000) })) } }, '图片处理参数超过 256 KB'],
+      ['image-compare', { imageTransform: crop }, '图片处理参数只能保存在图片工具节点中'],
+      ['image-crop', { imageTransform: crop, imageCollageInputOrder: { version: 1, slots: [] } }, '拼图输入顺序只能保存在拼图节点中'],
+      ['image-collage', { imageCollageInputOrder: { version: 2, slots: [] } }, '拼图输入顺序最多保存 20 张图片'],
+      ['image-collage', { imageCollageInputOrder: { version: 1, slots: [{ edgeId: 'e1', outputIndex: 0 }, { edgeId: 'e1', outputIndex: 0 }] } }, '拼图输入顺序不能包含重复位置'],
+      ['image-collage', { imageCollageInputOrder: { version: 1, slots: [{ edgeId: '', outputIndex: 0 }] } }, '拼图输入的连线或批次位置无效'],
+      ['image-crop', { imageTransform: crop, tileInput: { edgeId: 'e1' } }, '只有平铺图片节点可以选择贴图输入'],
+      ['image-tile', { tileInput: { edgeId: 'e1', outputIndex: 20 } }, '平铺贴图的连线或批次位置无效'],
+      ['image-tile', { tileInput: { edgeId: 'e1', columns: 2 } }, '平铺贴图的连线或批次位置无效'],
+      ['image-crop', { imageTransform: crop, imageOutputIndex: 16 }, '图片批次选中序号无效'],
+      ['image-compare', { imageOutputIndex: 0 }, '图片批次选中序号无效'],
+    ]
+    for (const [kind, extra, message] of cases) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, extra), on), `${kind} ${message}`).toThrow(message)
     }
   })
 
@@ -631,18 +818,19 @@ describe('canvas request parser', () => {
       [{ imageTransform: { scale: Number.POSITIVE_INFINITY } }, '画布图片处理配置格式错误'],
     ]
     for (const [extra, message] of malformed) {
-      expect(() => parseCanvasStartRunInput(kernelNode('image-generate', extra)), JSON.stringify(extra)).toThrow(message)
+      expect(() => parseCanvasStartRunInput(kernelNode('image-generate', extra), referenceOrderOff), JSON.stringify(extra)).toThrow(message)
     }
   })
 
   it('bounds the kernel settings one run may carry as a whole', () => {
-    // Each node is within every per-value limit; together they are not.
+    // Each node is within every per-value limit; together they are not. A
+    // tile choice on a picture node is only bounded, never read.
     const chunk = Array.from({ length: 256 }, () => 'x'.repeat(10_000))
     const node = (index: number) => ({
-      id: `n-${index}`, kind: 'image-generate', definitionVersion: 1, data: { prompt: '', model: 'm', commerceTask: { chunk } },
+      id: `n-${index}`, kind: 'image-generate', definitionVersion: 1, data: { prompt: '', model: 'm', tileInput: { chunk } },
     })
     expect(parseCanvasStartRunInput({ graph: { nodes: [node(0)], edges: [] }, scope: { kind: 'all' } }).graph.nodes[0].desktopUnsupported)
-      .toBe(`「电商创作」${kernelRefusal}`)
+      .toBe(`「图片处理」${kernelRefusal}`)
     expect(() => parseCanvasStartRunInput({
       graph: { nodes: Array.from({ length: 9 }, (_, index) => node(index)), edges: [] }, scope: { kind: 'all' },
     })).toThrow('工作流规模超过安全上限')

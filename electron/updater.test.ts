@@ -2729,15 +2729,15 @@ describe('plain-language install failures', () => {
 
   it('stops a version that failed to auto-install last time at the install step', () => {
     const client = new FakeUpdater()
-    const asked: string[] = []
+    const asked: [string, boolean][] = []
     const service = createUpdaterService(client, {
       currentVersion: '1.0.0',
       isPackaged: true,
       platform: 'win32',
-      previousAutoInstallFailure: (version) => { asked.push(version); return '新版本上次没装上' },
+      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '新版本上次没装上' },
     })
     client.emit('update-downloaded', updateInfo())
-    expect(asked).toEqual(['1.1.0'])
+    expect(asked).toEqual([['1.1.0', false]])
     expect(service.getState()).toMatchObject({
       phase: 'downloaded',
       failedStep: 'install',
@@ -2746,6 +2746,22 @@ describe('plain-language install failures', () => {
     // 「重新安装」照样能用：点一下就清掉错误、拉起安装器。
     expect(service.install()).toEqual({ accepted: true })
     expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+    service.dispose()
+  })
+
+  it('tells the previous-failure check when the version that failed is the older one the publisher rolled back to', () => {
+    // D11：退回旧版时那句要说「建议退回的 X 版上次没装上」，跟快照的 rollback 同一个算法。
+    const client = new FakeUpdater()
+    const asked: [string, boolean][] = []
+    const service = createUpdaterService(client, {
+      currentVersion: '1.2.0',
+      isPackaged: true,
+      platform: 'win32',
+      previousAutoInstallFailure: (version, rollback) => { asked.push([version, rollback]); return '建议退回的 1.1.0 版上次没装上' },
+    })
+    client.emit('update-downloaded', updateInfo('1.1.0'))
+    expect(asked).toEqual([['1.1.0', true]])
+    expect(service.getState()).toMatchObject({ phase: 'downloaded', rollback: true, failedStep: 'install' })
     service.dispose()
   })
 

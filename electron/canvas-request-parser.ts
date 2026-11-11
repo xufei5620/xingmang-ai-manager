@@ -12,13 +12,44 @@ import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
 import { parseCanvasImageEditMask } from './canvas-image-mask'
 import {
+  canvasImageTransformKindForNode,
+  parseCanvasImageCollageInputOrder,
+  parseCanvasImageTransformRecipe,
+  parseCanvasTileInput,
+} from './canvas-image-tools'
+import {
+  canvasImageReferenceNodeKind,
+  canvasVideoReferenceNodeKind,
+  parseCanvasNodeImageReferenceOrder,
+  parseCanvasVideoReferenceOrder,
+} from './canvas-reference-order'
+import {
+  assertCanvasSceneTaskConfiguration,
+  parseCanvasNodeCommerceTask,
+  parseCanvasNodeExteriorTask,
+  parseCanvasNodeInteriorTask,
+  parseCanvasNodeStoryboardTask,
+} from './canvas-scene-tasks'
+import {
+  canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
+  type CanvasCommerceTask,
+  type CanvasExteriorTask,
+  type CanvasImageCollageInputOrder,
   type CanvasImageEditMask,
+  type CanvasImageReferenceOrder,
+  type CanvasImageTransformRecipe,
+  type CanvasInteriorTask,
   type CanvasRunGraph,
+  type CanvasRunGraphNode,
   type CanvasRunImageCandidateCount,
+  type CanvasRunImageToolNodeKind,
   type CanvasRunKernelOnlyNodeKind,
   type CanvasRunNodeKind,
   type CanvasRunScope,
+  type CanvasStoryboardTask,
+  type CanvasTileInputSelection,
+  type CanvasVideoReferenceOrder,
 } from './canvas-run-contract'
 import type { AiImageGenerateInput } from './ipc-contract'
 import { isRecord } from './input-guards'
@@ -252,6 +283,7 @@ const canvasNodeKinds = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
   'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot', 'text-generate',
+  ...Object.keys(canvasRunImageToolNodeLabels) as CanvasRunNodeKind[],
   ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
 
@@ -308,6 +340,57 @@ function isKernelOnlyNodeKind(kind: CanvasRunNodeKind): kind is CanvasRunKernelO
   return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
 }
 
+function isImageToolNodeKind(kind: CanvasRunNodeKind): kind is CanvasRunImageToolNodeKind {
+  return Object.prototype.hasOwnProperty.call(canvasRunImageToolNodeLabels, kind)
+}
+
+/** What an image-tool node carries once the desktop runs it (画布完善第 7 条第三步). */
+interface ParsedImageToolFields {
+  imageTransform?: CanvasImageTransformRecipe
+  imageCollageInputOrder?: CanvasImageCollageInputOrder
+  tileInput?: CanvasTileInputSelection
+  imageOutputIndex?: number
+}
+
+/**
+ * The image-tool fields of a node the desktop runs: the recipe on the four
+ * kinds the page processes, the arranged order on a collage, the chosen
+ * picture on a tile. On any other node they stay what kernelFieldsUnsupported
+ * says. imageOutputIndex picks one picture of a batch, as on the web host
+ * (xingmang-canvas lib/canvas-runs.ts): any index the kernel accepts (0-15),
+ * and one past what the node makes means the first. Only a grid split makes
+ * more than one, so only it passes the index on.
+ */
+function imageToolFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedImageToolFields | undefined {
+  if (!options.imageTools || !isImageToolNodeKind(kind)) return undefined
+  const transformKind = canvasImageTransformKindForNode(kind)
+  const fields: ParsedImageToolFields = {}
+  let outputCount = 1
+  if (data.imageTransform !== undefined) {
+    if (!transformKind) throw new Error('图片处理参数只能保存在图片工具节点中')
+    const parsed = parseCanvasImageTransformRecipe(kind, data.imageTransform, budget)
+    fields.imageTransform = parsed.recipe
+    outputCount = parsed.expectation.count
+  }
+  if (data.imageCollageInputOrder !== undefined) {
+    if (transformKind !== 'collage') throw new Error('拼图输入顺序只能保存在拼图节点中')
+    assertBoundedKernelValue(data.imageCollageInputOrder, '画布拼图顺序', budget)
+    fields.imageCollageInputOrder = parseCanvasImageCollageInputOrder(data.imageCollageInputOrder)
+  }
+  if (data.tileInput !== undefined) {
+    if (transformKind !== 'tile') throw new Error('只有平铺图片节点可以选择贴图输入')
+    assertBoundedKernelValue(data.tileInput, '画布平铺输入', budget)
+    fields.tileInput = parseCanvasTileInput(data.tileInput)
+  }
+  if (data.imageOutputIndex !== undefined) {
+    if (!transformKind || !Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) >= 16) {
+      throw new Error('图片批次选中序号无效')
+    }
+    if (transformKind === 'grid-split') fields.imageOutputIndex = (data.imageOutputIndex as number) < outputCount ? data.imageOutputIndex as number : 0
+  }
+  return fields
+}
+
 function optionalCandidateCount(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 4) throw new Error(`${label}格式错误`)
@@ -333,12 +416,86 @@ function referenceSlotCount(value: unknown, label: string, maximum: number, budg
   return value.slots.length
 }
 
+/** What a node carries once the desktop runs reference orders (画布完善第 8 条). */
+interface ParsedReferenceOrderFields {
+  imageReferenceOrder?: CanvasImageReferenceOrder
+  videoReferenceOrder?: CanvasVideoReferenceOrder
+}
+
+/**
+ * The picture roles of an image, image-generate, image-edit or text-generate
+ * node and the reference order of a video node, parsed in full with the
+ * kernel's rules (canvas-reference-order.ts) because they change the request.
+ * An empty video order is what the desktop already does, so it is dropped and
+ * the node keeps its fingerprint.
+ */
+function referenceOrderFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedReferenceOrderFields {
+  if (!options.referenceOrder) return {}
+  const fields: ParsedReferenceOrderFields = {}
+  if (data.imageReferenceOrder !== undefined && canvasImageReferenceNodeKind(kind)) {
+    assertBoundedKernelValue(data.imageReferenceOrder, '画布参考图角色', budget)
+    fields.imageReferenceOrder = parseCanvasNodeImageReferenceOrder(kind, data.imageReferenceOrder)
+  }
+  if (data.videoReferenceOrder !== undefined && canvasVideoReferenceNodeKind(kind)) {
+    assertBoundedKernelValue(data.videoReferenceOrder, '画布视频参考顺序', budget)
+    const order = parseCanvasVideoReferenceOrder(data.videoReferenceOrder)
+    if (order.slots.length > 0) fields.videoReferenceOrder = order
+  }
+  return fields
+}
+
+function sceneTasksRun(options: CanvasStartRunParseOptions): boolean {
+  return options.scenarioTemplates === true && options.referenceOrder === true
+}
+
+/** What a node carries once the desktop runs scene tasks (画布完善第 8 条第二步). */
+interface ParsedSceneTaskFields {
+  commerceTask?: CanvasCommerceTask
+  interiorTask?: CanvasInteriorTask
+  exteriorTask?: CanvasExteriorTask
+  storyboardTask?: CanvasStoryboardTask
+}
+
+/**
+ * The four scene tasks, parsed in full with the kernel's rules
+ * (canvas-scene-tasks.ts) because they write the prompt. As on the web host,
+ * a task on a node that cannot carry one fails the whole request.
+ */
+function sceneTaskFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedSceneTaskFields {
+  if (!sceneTasksRun(options)) return {}
+  const fields: ParsedSceneTaskFields = {}
+  if (data.interiorTask !== undefined) {
+    assertBoundedKernelValue(data.interiorTask, '画布室内创作配置', budget)
+    fields.interiorTask = parseCanvasNodeInteriorTask(kind, data.interiorTask)
+  }
+  if (data.exteriorTask !== undefined) {
+    assertBoundedKernelValue(data.exteriorTask, '画布室外创作配置', budget)
+    fields.exteriorTask = parseCanvasNodeExteriorTask(kind, data.exteriorTask)
+  }
+  if (data.storyboardTask !== undefined) {
+    assertBoundedKernelValue(data.storyboardTask, '画布故事板配置', budget)
+    fields.storyboardTask = parseCanvasNodeStoryboardTask(kind, data.storyboardTask)
+  }
+  if (data.commerceTask !== undefined) {
+    assertBoundedKernelValue(data.commerceTask, '画布电商创作配置', budget)
+    fields.commerceTask = parseCanvasNodeCommerceTask(kind, data.commerceTask)
+  }
+  return fields
+}
+
 /**
  * Returns why the desktop cannot run this node as the kernel asked, or
  * undefined when every kernel field is absent or equal to what the desktop
  * already does. The wording names what the user switched on, never a field.
  */
-function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): string | undefined {
+function kernelFieldsUnsupported(
+  kind: CanvasRunNodeKind,
+  data: Record<string, unknown>,
+  budget: { remaining: number },
+  options: CanvasStartRunParseOptions,
+  /** imageToolFields already parsed this node's image-tool fields: they are run, not refused. */
+  imageToolsRun = false,
+): string | undefined {
   const reasons: string[] = []
   // Image kinds run 2-4 independent requests (canvas-run-engine.ts); the
   // kernel never sends a count for any other kind.
@@ -365,11 +522,17 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
     // The desktop always submits through the relay's /v1/videos.
     if (data.videoProtocol !== 'relay-videos') reasons.push('这个视频接口')
   }
-  const videoSlots = referenceSlotCount(data.videoReferenceOrder, '画布视频参考顺序', 12, budget)
-  if (videoSlots !== undefined && videoSlots > 0) reasons.push('视频参考顺序')
-  const imageSlots = referenceSlotCount(data.imageReferenceOrder, '画布参考图角色', 4, budget)
-  if (imageSlots !== undefined) reasons.push('参考图角色')
-  if (data.imageOutputIndex !== undefined) {
+  // referenceOrderFields parses both orders on the kinds that use them while
+  // the desktop runs them (画布完善第 8 条); anywhere else they stay refused.
+  if (!(options.referenceOrder && canvasVideoReferenceNodeKind(kind))) {
+    const videoSlots = referenceSlotCount(data.videoReferenceOrder, '画布视频参考顺序', 12, budget)
+    if (videoSlots !== undefined && videoSlots > 0) reasons.push('视频参考顺序')
+  }
+  if (!(options.referenceOrder && canvasImageReferenceNodeKind(kind))) {
+    const imageSlots = referenceSlotCount(data.imageReferenceOrder, '画布参考图角色', 4, budget)
+    if (imageSlots !== undefined) reasons.push('参考图角色')
+  }
+  if (data.imageOutputIndex !== undefined && !imageToolsRun) {
     if (!Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) > 10_000) throw new Error('画布图片输出序号格式错误')
     reasons.push('图片处理')
   }
@@ -394,11 +557,15 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
   ]
   for (const [field, label, reason] of structured) {
     if (data[field] === undefined) continue
+    if (imageToolsRun && (field === 'imageTransform' || field === 'imageCollageInputOrder' || field === 'tileInput')) continue
+    // sceneTaskFields parsed these, or refused the node outright.
+    if (sceneTasksRun(options) && (field === 'commerceTask' || field === 'interiorTask' || field === 'exteriorTask' || field === 'storyboardTask')) continue
     if (!isRecord(data[field]) && !Array.isArray(data[field])) throw new Error(`${label}格式错误`)
     assertBoundedKernelValue(data[field], label, budget)
     reasons.push(reason)
   }
   if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
+  if (isImageToolNodeKind(kind) && !imageToolsRun) return `「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
   if (reasons.length === 0) return undefined
   return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次没有提交任何付费请求`
 }
@@ -603,11 +770,26 @@ function parseRunScope(value: unknown): CanvasRunScope {
 export interface CanvasStartRunParseOptions {
   /** Whether frame-extract nodes run; the canvas window passes desktopCanvasCapabilities.features.frameExtract. */
   frameExtract: boolean
+  /** Whether image-tool nodes run (画布完善第 7 条第三步); defaults to desktopCanvasCapabilities.features.imageTools. */
+  imageTools?: boolean
+  /** Whether picture roles and video reference orders run (第 8 条); defaults to desktopCanvasCapabilities.features.referenceOrder. */
+  referenceOrder?: boolean
+  /**
+   * Whether the four scene tasks run (第 8 条第二步); defaults to
+   * desktopCanvasCapabilities.features.scenarioTemplates. Every task needs
+   * picture roles, so they run only with referenceOrder too.
+   */
+  scenarioTemplates?: boolean
 }
 
 export function parseCanvasStartRunInput(
   value: unknown,
-  options: CanvasStartRunParseOptions = { frameExtract: desktopCanvasCapabilities.features.frameExtract },
+  options: CanvasStartRunParseOptions = {
+    frameExtract: desktopCanvasCapabilities.features.frameExtract,
+    imageTools: desktopCanvasCapabilities.features.imageTools,
+    referenceOrder: desktopCanvasCapabilities.features.referenceOrder,
+    scenarioTemplates: desktopCanvasCapabilities.features.scenarioTemplates,
+  },
 ): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
   // The kernel's agent panel starts runs on the user's behalf from a cloud
@@ -632,7 +814,11 @@ export function parseCanvasStartRunInput(
     ], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
-    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options)
+    const imageTools = imageToolFields(kind, entry.data, kernelFieldBudget, options)
+    // Tasks before roles, in the web host's order, so a broken pair reads the same there and here.
+    const sceneTasks = sceneTaskFields(kind, entry.data, kernelFieldBudget, options)
+    const referenceOrders = referenceOrderFields(kind, entry.data, kernelFieldBudget, options)
+    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options, imageTools !== undefined)
     // Range-checked by kernelFieldsUnsupported above; kept only where it runs.
     const frameTimestampSeconds = kind === 'frame-extract' && options.frameExtract
       ? (typeof entry.data.frameTimestampSeconds === 'number' ? entry.data.frameTimestampSeconds : 0)
@@ -669,7 +855,7 @@ export function parseCanvasStartRunInput(
     const imageCandidateCount = runsImageCandidates(kind) && typeof entry.data.imageCandidateCount === 'number' && entry.data.imageCandidateCount > 1
       ? entry.data.imageCandidateCount as CanvasRunImageCandidateCount
       : undefined
-    return {
+    const node: CanvasRunGraphNode = {
       id: requiredCanvasString(entry.id, '画布节点标识', 256),
       kind,
       definitionVersion: entry.definitionVersion as number,
@@ -691,8 +877,19 @@ export function parseCanvasStartRunInput(
         ...(imageCandidateCount ? { imageCandidateCount } : {}),
         ...(imageEditMask ? { imageEditMask } : {}),
         ...(frameTimestampSeconds !== undefined ? { frameTimestampSeconds: Object.is(frameTimestampSeconds, -0) ? 0 : frameTimestampSeconds } : {}),
+        ...(imageTools?.imageTransform ? { imageTransform: imageTools.imageTransform } : {}),
+        ...(imageTools?.imageCollageInputOrder ? { imageCollageInputOrder: imageTools.imageCollageInputOrder } : {}),
+        ...(imageTools?.tileInput ? { tileInput: imageTools.tileInput } : {}),
+        ...(imageTools?.imageOutputIndex !== undefined ? { imageOutputIndex: imageTools.imageOutputIndex } : {}),
+        ...(referenceOrders.imageReferenceOrder ? { imageReferenceOrder: referenceOrders.imageReferenceOrder } : {}),
+        ...(referenceOrders.videoReferenceOrder ? { videoReferenceOrder: referenceOrders.videoReferenceOrder } : {}),
+        ...sceneTasks,
       },
     }
+    // As on the web host: a task without the picture roles it needs, two tasks
+    // on one node, or material B with a size of its own fails the request.
+    assertCanvasSceneTaskConfiguration(node.data)
+    return node
   })
   const edges: CanvasRunGraph['edges'] = value.graph.edges.map((entry) => {
     if (!isRecord(entry)) throw new Error('画布运行连线格式错误')

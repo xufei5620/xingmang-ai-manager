@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ChevronDown, FileText, RefreshCw, Trash2 } from 'lucide-react'
 import { BrandIcon, Button, Card, Dialog, ListRow, Menu, Notice, Pill, Segment, type MenuItem } from '../../ui'
 import { ListState, ResultNotice, displayDate, errorMessage, useOperation, useReloadWhenShown, useResource } from '../../business-common'
@@ -98,7 +98,7 @@ function BackupKeyPill({ backup }: { backup: Backup }) {
  * 设置 › 备份迁移最上面的「工具配置备份」（v4 批09，原来是单独的备份页）。每次露面都重读一次：
  * 改配置、改用账号前都会自动留一份，改用失败的错误框还叫人到这里恢复改用之前的那一份。
  */
-export function BackupCard({ api, active, onRestored, navigate, installedProviders }: {
+export function BackupCard({ api, active, onRestored, navigate, installedProviders, reloadSignal }: {
   api: V2Bridge
   /** 设置页正在眼前；从别的页回来时重读一次。缺省 = 只在挂上时读。 */
   active?: boolean
@@ -111,10 +111,16 @@ export function BackupCard({ api, active, onRestored, navigate, installedProvide
    * （只装了 Codex 桌面端的也要能备份 Codex 那份配置），和原来的备份页一样。缺省 = 全部工具就是每一家。
    */
   installedProviders?: readonly string[]
+  /** 别处删了备份（「星芒占用的空间」的「清理旧备份」）就加一：变了就重读一次列表。缺省 = 不重读。 */
+  reloadSignal?: number
 }) {
   const load = useCallback(() => api.listBackups(), [api])
   const resource = useResource(load)
   useReloadWhenShown(active, () => void resource.reload())
+  const reloadResource = resource.reload
+  useEffect(() => {
+    if (reloadSignal) void reloadResource()
+  }, [reloadSignal, reloadResource])
   const operation = useOperation()
   // 恢复写的是工具的配置文件，没权限时说「写不进配置文件」（已知29）；建备份、删备份写的是星芒自己的备份文件夹，照旧。
   const restoreFailureTarget = operation.failed === 'restore' ? 'config' : undefined

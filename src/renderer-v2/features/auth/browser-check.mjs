@@ -407,8 +407,8 @@ test('recovery on an account with two-step verification asks for the code before
 test('chat guide keeps all four steps and never installs a runtime or tool', async () => {
   const page = await open('scenario=guide&loggedOut=1')
   try {
-    // 四个工具（Gemini CLI 已下线，不再列）加「先在星芒里聊天」。
-    assert.equal(await page.locator('input[type=radio]').count(), 5)
+    // 四个工具（Gemini CLI 已下线，不再列）加「先在星芒里聊天」「做图、做视频」。
+    assert.equal(await page.locator('input[type=radio]').count(), 6)
     assert.equal(await page.getByTestId('guide-route-gemini').count(), 0)
     assert.equal(await page.getByText('Gemini').count(), 0)
     // 第十一批 1：默认选中推荐的 Codex 桌面端并排在第一位，「下一步」一开始就能点。
@@ -428,6 +428,37 @@ test('chat guide keeps all four steps and never installs a runtime or tool', asy
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['guide-login', 'launch', 'complete'])
   } finally { await page.close() }
+})
+
+test('the images-and-videos choice installs nothing and finishes on the video page once signed in', async () => {
+  const page = await open('scenario=guide&loggedOut=1')
+  try {
+    // 排在「先在星芒里聊天」后面，是最后一项。
+    assert.equal(await page.locator('input[type=radio]').last().getAttribute('value'), 'create')
+    const choice = page.locator('.auth-guide-choice').filter({ has: page.getByTestId('guide-route-create') })
+    assert.equal(await choice.locator('strong').innerText(), '做图、做视频')
+    assert.match(await choice.innerText(), /什么都不用装，用画布和视频剪辑/)
+    await page.getByTestId('guide-route-create').check()
+    await page.getByTestId('guide-next').click()
+    // 没登录先去登录；登好了不再停在哪一步，直接走完、进视频剪辑页。
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+    assert.deepEqual(await calls(page), [{ method: 'guide-login' }, { method: 'complete', input: 'create' }])
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.guideLanding), 'video')
+  } finally { await page.close() }
+  const signedIn = await open('scenario=guide')
+  try {
+    await signedIn.getByTestId('guide-route-create').check()
+    await signedIn.getByTestId('guide-next').click()
+    await signedIn.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
+    assert.deepEqual(await calls(signedIn), [{ method: 'complete', input: 'create' }])
+    assert.equal(await signedIn.evaluate(() => document.documentElement.dataset.guideLanding), 'video')
+  } finally { await signedIn.close() }
+  // 用不了视频剪辑的账号（历史账号）不给这一项。
+  const unavailable = await open('scenario=guide&noCreate=1')
+  try {
+    assert.equal(await unavailable.locator('input[type=radio]').count(), 5)
+    assert.equal(await unavailable.getByTestId('guide-route-create').count(), 0)
+  } finally { await unavailable.close() }
 })
 
 test('a signed-out guide asks for the login where the connection waits and offers sign-up at the end', async () => {
@@ -663,7 +694,7 @@ test('canceling CLI workspace selection keeps the guide on its ready step', asyn
     // 第十一批 3：Key 已经写好、连上了，「确认连接」这一步直接跳过。
     await page.getByTestId('guide-next').click()
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
-    await page.getByTestId('guide-connected-note').waitFor()
+    await page.getByTestId('guide-first-run').waitFor()
     await page.getByTestId('guide-open-tool').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('launch'))
     await page.getByTestId('guide-open-tool').waitFor()
@@ -1284,6 +1315,17 @@ test('welcome renders the final star orbit and real brand assets in the dark/lig
       await page.screenshot({ path: path.join(output, `welcome-${theme}-${os}.png`) })
     } finally { await page.close() }
   }
+})
+
+// 冲着做图、做视频来的客户在欢迎页上也看得到：第三张小卡片说的是画布和视频剪辑，不再是对账（Y3）。
+test('welcome tells people it does more than code in the third card', async () => {
+  const page = await open('scenario=welcome')
+  try {
+    const cards = page.locator('.auth-welcome-feature strong')
+    assert.deepEqual(await cards.allInnerTexts(), ['不用敲命令', '一个账号就够', '不止写代码'])
+    assert.equal(await page.locator('.auth-welcome-feature').nth(2).locator('p').innerText(), '聊天、出图、画布、视频剪辑，用的是同一个账号。')
+    assert.equal(await page.getByText('用量随时能对账').count(), 0)
+  } finally { await page.close() }
 })
 
 // 品牌和侧栏同一套（标志加「星芒 AI」字样），标志下面不再有一排和星轨重复的工具。

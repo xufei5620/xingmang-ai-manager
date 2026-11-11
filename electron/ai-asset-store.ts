@@ -16,6 +16,7 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 import { OwnedAssetLocator } from './ai-asset-locator'
+import { missingAiAssetMessages } from './ai-asset-missing'
 import { readBoundedResponseBytes } from './bounded-response'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
 
@@ -28,7 +29,7 @@ const MAXIMUM_REVISED_PROMPT_LENGTH = 40_000
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const FILE_LABEL = 'AI 图片资产'
-const MISSING_ASSET_MESSAGE = 'AI 图片资产不存在或无权访问'
+const MISSING_ASSET_MESSAGE = missingAiAssetMessages.image
 // 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
 // 下的结果给 0o644，不用原子写默认的 0o600。
 const SAVED_COPY_FILE_MODE = 0o644

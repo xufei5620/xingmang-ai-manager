@@ -437,9 +437,10 @@ export interface UpdaterRuntime {
    * 下载好（或命中本地缓存）一个版本时问一句：上次运行是不是已经自动装过它、却没装上
    * （见 auto-update-install.ts 的 resolvePreviousAutoInstallFailure）。返回给用户看的
    * 那句话时，这个版本停在「安装失败」，只留「重新安装」按钮，不再自动装；返回 null
-   * 照常。不传＝旧行为。
+   * 照常。不传＝旧行为。`rollback` 跟快照里的 `rollback` 同一个算法：这一版比本机旧，
+   * 那句话要说「建议退回的 X 版」（D11）。
    */
-  previousAutoInstallFailure?: (version: string) => string | null
+  previousAutoInstallFailure?: (version: string, rollback: boolean) => string | null
   /**
    * 下载前读更新包落地那块盘的剩余字节数。读不到返回 null，照常下载（宁可让一次下载
    * 自己失败，也不因一个查不到的数字把更新拦死）。不传＝旧行为，不做预检。
@@ -1572,7 +1573,7 @@ export function createUpdaterService(
       return
     }
     let previousFailure: string | null = null
-    try { previousFailure = runtime.previousAutoInstallFailure?.(info.version) ?? null } catch { previousFailure = null }
+    try { previousFailure = runtime.previousAutoInstallFailure?.(info.version, isOlderVersion(info.version, runtime.currentVersion)) ?? null } catch { previousFailure = null }
     applyInfo('downloaded', info, previousFailure
       ? { error: { code: 'UPDATE_PREVIOUS_AUTO_INSTALL_FAILED', message: previousFailure }, failedStep: 'install' }
       : {})

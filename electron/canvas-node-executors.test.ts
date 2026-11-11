@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { executeCanvasRun } from './canvas-run-engine'
-import type { CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
+import type { CanvasImageTransformRecipe, CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { dramaParseMaximumRequestCount } from '../canvas-v2/src/runtime/run-preflight'
-import { CanvasRunPreparationBroker, createCanvasFrameExtraction, type CanvasFrameExtraction } from './canvas-run-preparations'
+import {
+  CanvasRunPreparationBroker, createCanvasFrameExtraction, createCanvasImageToolProcessing,
+  type CanvasFrameExtraction, type CanvasImageToolProcessing,
+} from './canvas-run-preparations'
 
 describe('createCanvasNodeExecutors', () => {
   it('delegates image generation through the injected main-process service', async () => {
@@ -617,6 +620,114 @@ describe('createCanvasNodeExecutors', () => {
     expect(request.system).toBeUndefined()
   })
 
+  it('names each picture role ahead of the prompt once a node sets roles, and leaves other prompts alone', async () => {
+    const edit = vi.fn(async () => [{ assetId: 'e'.repeat(43), localUrl: 'xingmang-asset://e', mimeType: 'image/png' as const, fileName: 'edited.png' }])
+    const completeOnce = vi.fn().mockResolvedValue('分析')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const sourceB = { kind: 'image' as const, assetId: 'b'.repeat(43), localUrl: 'xingmang-asset://b' }
+    const sourceA = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: 'xingmang-asset://a' }
+    const imageReferenceOrder = { version: 1 as const, slots: [{ role: 'source' as const, edgeId: 'b', outputIndex: 0 }, { role: 'reference' as const, edgeId: 'a', outputIndex: 0 }] }
+    const roles = '第 1 张图片：原始主体图。\n第 2 张图片：辅助参考图。\n'
+    // The engine has already put the pictures in role order.
+    const inputs = { text: '保持主体', image: sourceB, images: [sourceB, sourceA] }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 42, inputs, signal: new AbortController().signal }
+    for (const kind of ['image-edit', 'image-generate'] as const) {
+      edit.mockClear()
+      await executors[kind]!({ ...base, node: { id: 'n', kind, definitionVersion: 1, data: { prompt: '夜景', model: 'gpt-image-2', group: '生图', imageReferenceOrder } } })
+      expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({ prompt: `${roles}保持主体\n夜景`, sourceAssetIds: [sourceB.assetId, sourceA.assetId] }))
+      edit.mockClear()
+      await executors[kind]!({ ...base, node: { id: 'n', kind, definitionVersion: 1, data: { prompt: '夜景', model: 'gpt-image-2', group: '生图' } } })
+      expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({ prompt: '保持主体\n夜景' }))
+    }
+    await executors['text-generate']!({ ...base, node: { id: 't', kind: 'text-generate', definitionVersion: 1, data: { prompt: '比较两张图', model: 'gpt-5.5', group: 'GPT', imageReferenceOrder } } })
+    expect(completeOnce.mock.calls[0][0]).toMatchObject({ user: `${roles}保持主体\n比较两张图`, images: { assetIds: [sourceB.assetId, sourceA.assetId] } })
+    // Roles never stand in for a prompt: an empty one is refused as before.
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [sourceB, sourceA] }, node: { id: 'n', kind: 'image-edit', definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '生图', imageReferenceOrder } } }))
+      .rejects.toThrow('请输入图片编辑指令或连接上游文本节点')
+  })
+
+  it('writes a scene task prompt around the user words, sends material B at the source size times the upscale, and fails a picture of another size', async () => {
+    const edited = (width: number, height: number) => ({ assetId: 'e'.repeat(43), localUrl: 'xingmang-asset://e', mimeType: 'image/png' as const, fileName: 'edited.png', width, height })
+    const edit = vi.fn(async () => [edited(1536, 1152)])
+    const executors = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) } })
+    const source = { kind: 'image' as const, assetId: 's'.repeat(43), localUrl: 'xingmang-asset://s', width: 1024, height: 768 }
+    const one = { version: 1 as const, slots: [{ role: 'source' as const, edgeId: 's', outputIndex: 0 }] }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 42, signal: new AbortController().signal }
+    const materialB = { version: 1 as const, kind: 'material-b' as const, preserve: ['shape' as const], strength: 0.35, upscale: 1.5 }
+    function node(data: Record<string, unknown>) {
+      return { id: 'n', kind: 'image-edit' as const, definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '生图', size: 'auto', imageReferenceOrder: one, ...data } }
+    }
+    // No typed prompt is needed: the task writes it.
+    await executors['image-edit']!({ ...base, inputs: { image: source, images: [source] }, node: node({ commerceTask: materialB }) })
+    expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({
+      prompt: '【材质优化 B】\n第 1 张参考图是原始商品或主体图片。\n优化表面材质、细节与光影。改变幅度意图为 35%；这是文字指令，不是模型原生重绘参数。\n优先保持：商品形状。',
+      size: '1536x1152', sourceAssetIds: [source.assetId],
+    }))
+    // Paid for, but not the size asked for: the node fails and says not to simply rerun.
+    edit.mockResolvedValueOnce([edited(1024, 768)])
+    await expect(executors['image-edit']!({ ...base, inputs: { image: source, images: [source] }, node: node({ commerceTask: materialB }) }))
+      .rejects.toThrow('模型已返回图片，但实际尺寸不是请求的 1536x1152；本次不能标记为倍率处理成功，请核对原尝试，不要直接重复生成')
+    edit.mockResolvedValueOnce([edited(1536, 1152), edited(1536, 1152)])
+    await expect(executors['image-edit']!({ ...base, inputs: { image: source, images: [source] }, node: node({ commerceTask: materialB }) }))
+      .rejects.toThrow('创作任务每次请求应返回唯一图片，实际返回数量不符；请核对原尝试，不会自动重发')
+    // A size the desktop would not send exactly, or a source without its pixel size, costs nothing.
+    edit.mockClear()
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [{ ...source, width: 1000, height: 1000 }] }, node: node({ commerceTask: { ...materialB, upscale: 1 } }) }))
+      .rejects.toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [{ kind: 'image', assetId: source.assetId, localUrl: source.localUrl }] }, node: node({ commerceTask: materialB }) }))
+      .rejects.toThrow('材质优化 B 需要核对原图的实际像素尺寸')
+    expect(edit).not.toHaveBeenCalled()
+    // Other tasks keep the node's own size; the typed words become 补充要求, upstream text first.
+    edit.mockResolvedValue([edited(64, 64)])
+    await executors['image-edit']!({ ...base, inputs: { text: '白色背景', images: [source] }, node: node({ prompt: '保留 logo', size: '1024x1024', interiorTask: { version: 1, kind: 'interior-render', addDecor: false, addPeople: true, enclosedSpace: false, interiorLighting: false, weather: 'none', time: 'night', exterior: 'none', filter: 'none' } }) })
+    expect(edit).toHaveBeenLastCalledWith(9, expect.objectContaining({
+      size: '1024x1024',
+      prompt: '【室内渲染】\n第 1 张参考图是唯一室内原图。保留原图的空间结构、门窗位置、透视和主要构图，完成室内视觉渲染。\n加入尺度和透视合理的自然人物，不遮挡空间主体。\n以深夜的窗外亮度和室内外光照关系呈现。\n以上选项通过文字指令表达，不是模型原生灯光、天气或本地像素滤镜参数。关闭或未指定的选项不要求删除原有场景内容。\n补充要求：\n白色背景\n保留 logo',
+    }))
+    // Without automatic writing an exterior or storyboard task needs the user's own words.
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [source] }, node: node({ storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'cinematic', panels: 4 } }) }))
+      .rejects.toThrow('关闭自动剧情后，请填写明确的故事剧情')
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [source] }, node: node({ exteriorTask: { version: 1, kind: 'exterior-redraw', useToneReference: false } }) }))
+      .resolves.toBeDefined()
+  })
+
+  it('compares the pictures of an exterior task over two pictures, a storyboard and their prompt-writing text node before the paid request', async () => {
+    const edit = vi.fn(async () => [{ assetId: 'e'.repeat(43), localUrl: 'xingmang-asset://e', mimeType: 'image/png' as const, fileName: 'edited.png' }])
+    const completeOnce = vi.fn().mockResolvedValue('改成石材铺地')
+    const bytes = new Map([['a'.repeat(43), Buffer.from('red')], ['b'.repeat(43), Buffer.from('blue')], ['c'.repeat(43), Buffer.from('red')]])
+    const sceneSources = vi.fn(async (_userId: number, assetId: string) => ({ bytes: bytes.get(assetId)! }))
+    const executors = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) }, completeText: { completeOnce }, sceneSources })
+    const picture = (letter: string) => ({ kind: 'image' as const, assetId: letter.repeat(43), localUrl: `xingmang-asset://${letter}` })
+    const two = { version: 1 as const, slots: [{ role: 'source' as const, edgeId: 'x', outputIndex: 0 }, { role: 'reference' as const, edgeId: 'y', outputIndex: 0 }] }
+    const exteriorTask = { version: 1 as const, kind: 'landscape-redesign' as const, automaticPrompt: false }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 42, projectId: 'project-1', signal: new AbortController().signal }
+    const exterior = { id: 'n', kind: 'image-edit' as const, definitionVersion: 1, data: { prompt: '铺地换成石材', model: 'gpt-image-2', group: '生图', imageReferenceOrder: two, exteriorTask } }
+    await executors['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: exterior })
+    expect(sceneSources).toHaveBeenCalledWith(42, 'a'.repeat(43), 'project-1')
+    expect(edit).toHaveBeenCalledTimes(1)
+    // The same picture under another id is refused before anything is paid.
+    await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: exterior }))
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+    const storyboard = { ...exterior, data: { ...exterior.data, exteriorTask: undefined, storyboardTask: { version: 1 as const, kind: 'storyboard' as const, automaticPlot: true, style: 'cinematic' as const, panels: 4 as const } } }
+    await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['storyboard'], inputs: { images: [picture('c'), picture('a')] }, node: storyboard }))
+      .rejects.toThrow('故事板输入图片内容相同，请选择内容不同的图片；当前没有提交生成请求')
+    const analysis = { id: 't', kind: 'text-generate' as const, definitionVersion: 1, data: { prompt: '分析', model: 'gpt-5.5', group: 'GPT', imageReferenceOrder: two } }
+    await expect(executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: analysis }))
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+    expect(edit).toHaveBeenCalledTimes(1)
+    expect(completeOnce).not.toHaveBeenCalled()
+    await executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: analysis })
+    expect(completeOnce).toHaveBeenCalledTimes(1)
+    // Without a reader those nodes are refused, never run unchecked.
+    const unchecked = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) } })
+    await expect(unchecked['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: exterior }))
+      .rejects.toThrow('室外参考图内容核对服务暂时不可用，当前没有提交生成请求')
+    expect(edit).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses a text node before any paid request when it has nothing to say, a picture its model cannot read, or too many pictures', async () => {
     const completeOnce = vi.fn().mockResolvedValue('好')
     const executors = createCanvasNodeExecutors({
@@ -879,5 +990,171 @@ describe('canvas frame-extract executor', () => {
     expect(generateVideo).not.toHaveBeenCalled()
     expect(broker.size()).toBe(0)
     expect(record).not.toHaveProperty('framePreparations')
+  })
+})
+
+// 画布完善第 7 条第三步: the main process does not make the pictures of an image tool; the page does.
+describe('canvas image-tool executors', () => {
+  const imageService = { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) }
+  const projectId = '11111111-1111-4111-8111-111111111111'
+  const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7, projectId }
+  function picture(letter: string): CanvasRunAsset {
+    return { kind: 'image', assetId: letter.repeat(43), localUrl: `xingmang-asset://image/${letter.repeat(43)}`, mimeType: 'image/png', width: 8, height: 8 }
+  }
+  function sources(...letters: string[]) {
+    return letters.map((letter) => ({ edgeId: `edge-${letter}`, outputIndex: 0, asset: picture(letter) }))
+  }
+  function toolNode(kind: 'image-crop' | 'image-collage' | 'image-tile' | 'image-layer', imageTransform: CanvasImageTransformRecipe, extra: Record<string, unknown> = {}) {
+    return { id: kind, kind, definitionVersion: 1, data: { prompt: '', model: '', imageTransform: { outputWidth: 64, outputHeight: 32, ...imageTransform }, ...extra } } as CanvasRunGraph['nodes'][number]
+  }
+  function inputs(...letters: string[]) {
+    const list = sources(...letters)
+    return list.length ? { image: list[0].asset, images: list.map((entry) => entry.asset), imageSources: list } : {}
+  }
+  function processing(): CanvasImageToolProcessing & { answer(assets: CanvasRunAsset[]): void } {
+    let answer: (assets: CanvasRunAsset[]) => void = () => {}
+    return {
+      assertSources: vi.fn(async () => undefined),
+      waitForImages: vi.fn(() => new Promise<CanvasRunAsset[]>((resolve) => { answer = resolve })),
+      answer: (assets) => answer(assets),
+    }
+  }
+
+  it('is left out without image-tool processing, so the engine refuses those nodes by name', () => {
+    const executors = createCanvasNodeExecutors({ imageService })
+    for (const kind of ['image-crop', 'image-collage', 'image-tile', 'image-layer', 'image-compare', 'image-panorama'] as const) {
+      expect(executors[kind]).toBeUndefined()
+    }
+  })
+
+  it('asks the page for the pictures of a crop, after checking its one source, and clears the request either way', async () => {
+    const tools = processing()
+    const report = vi.fn(async () => undefined)
+    const executor = createCanvasNodeExecutors({ imageService, imageTools: tools })['image-crop']!
+    const node = toolNode('image-crop', { kind: 'crop' })
+    await expect(executor({ ...base, node, inputs: inputs('A'), signal: new AbortController().signal })).rejects.toThrow('「裁剪图片」节点桌面版暂不支持')
+    await expect(executor({ ...base, projectId: undefined, node, inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('画布项目尚未选择')
+    await expect(executor({ ...base, node, inputs: inputs('A', 'B'), signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('裁剪只能使用一个图片来源')
+    await expect(executor({ ...base, node, inputs: {}, signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('裁剪只能使用一个图片来源')
+    await expect(executor({ ...base, node: { ...node, data: { prompt: '', model: '' } }, inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('请先设置图像工具参数')
+    expect(report).not.toHaveBeenCalled()
+
+    const running = executor({ ...base, node, inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report })
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(1))
+    const preparation = {
+      operationId: 'attempt', attemptId: 'attempt', runId: 'run', projectId, nodeId: 'image-crop',
+      sourceAssetIds: ['A'.repeat(43)], recipe: { kind: 'crop', outputWidth: 64, outputHeight: 32 }, processorRevision: 'browser-image-v1',
+    }
+    expect(tools.assertSources).toHaveBeenCalledWith(7, projectId, ['A'.repeat(43)])
+    expect(tools.waitForImages).toHaveBeenCalledWith({ runId: 'run', userId: 7, projectId, preparation, expectation: { count: 1, size: { width: 64, height: 32 } }, signal: expect.any(AbortSignal) })
+    tools.answer([picture('C')])
+    await expect(running).resolves.toEqual({ assets: [picture('C')] })
+    expect(report.mock.calls).toEqual([[preparation, true], [preparation, false]])
+    expect(imageService.generate).not.toHaveBeenCalled()
+  })
+
+  it('asks the page for one slice per grid cell of a grid split, after checking its one source', async () => {
+    const tools = processing()
+    const report = vi.fn(async () => undefined)
+    const executor = createCanvasNodeExecutors({ imageService, imageTools: tools })['image-grid-split']!
+    const node = { id: 'grid', kind: 'image-grid-split', definitionVersion: 1, data: { prompt: '', model: '', imageTransform: { kind: 'grid-split', rows: 2, columns: 3 } } } as CanvasRunGraph['nodes'][number]
+    await expect(executor({ ...base, node, inputs: inputs('A', 'B'), signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('宫格裁剪只能使用一个图片来源')
+    await expect(executor({ ...base, node, inputs: {}, signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('宫格裁剪只能使用一个图片来源')
+    expect(report).not.toHaveBeenCalled()
+
+    const running = executor({ ...base, node, inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report })
+    await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(1))
+    // Six slices, and no size: the slices are as big as the cells of the picture they came from.
+    expect(vi.mocked(tools.waitForImages).mock.calls[0][0]).toMatchObject({ preparation: { nodeId: 'grid', sourceAssetIds: ['A'.repeat(43)], recipe: { kind: 'grid-split', rows: 2, columns: 3 } }, expectation: { count: 6 } })
+    expect(vi.mocked(tools.waitForImages).mock.calls[0][0].expectation).not.toHaveProperty('size')
+    const slices = ['C', 'D', 'E', 'F', 'G', 'H'].map(picture)
+    tools.answer(slices)
+    await expect(running).resolves.toEqual({ assets: slices })
+    expect(report).toHaveBeenCalledTimes(2)
+    expect(imageService.generate).not.toHaveBeenCalled()
+  })
+
+  it('orders a collage the way the user arranged it, picks the chosen tile, and marks layer groups', async () => {
+    const tools = processing()
+    const report = vi.fn(async () => undefined)
+    const executors = createCanvasNodeExecutors({ imageService, imageTools: tools })
+    const order = { version: 1, slots: [{ edgeId: 'edge-C', outputIndex: 0 }, { edgeId: 'edge-A', outputIndex: 0 }] }
+    void executors['image-collage']!({ ...base, node: toolNode('image-collage', { kind: 'collage', layout: 'horizontal', autoSize: true }, { imageCollageInputOrder: order }), inputs: inputs('A', 'B', 'C'), signal: new AbortController().signal, reportImagePreparation: report })
+    await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(1))
+    expect(vi.mocked(tools.waitForImages).mock.calls[0][0]).toMatchObject({ preparation: { sourceAssetIds: ['C'.repeat(43), 'A'.repeat(43), 'B'.repeat(43)] }, expectation: { count: 1 } })
+    expect(vi.mocked(tools.waitForImages).mock.calls[0][0].expectation).not.toHaveProperty('size')
+
+    void executors['image-tile']!({ ...base, node: toolNode('image-tile', { kind: 'tile' }, { tileInput: { edgeId: 'edge-B', outputIndex: 0 } }), inputs: inputs('A', 'B'), signal: new AbortController().signal, reportImagePreparation: report })
+    await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(tools.waitForImages).mock.calls[1][0].preparation.sourceAssetIds).toEqual(['B'.repeat(43)])
+    await expect(executors['image-tile']!({ ...base, node: toolNode('image-tile', { kind: 'tile' }, { tileInput: { edgeId: 'edge-Z', outputIndex: 0 } }), inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report }))
+      .rejects.toThrow('已选平铺贴图的连线已移除')
+    await expect(executors['image-tile']!({ ...base, node: toolNode('image-tile', { kind: 'tile' }, { tileInput: { missing: true } }), inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report }))
+      .rejects.toThrow('已选平铺贴图已移除')
+
+    // A layer of only text and shapes needs no picture; groups need layerGroupsVersion.
+    void executors['image-layer']!({ ...base, node: toolNode('image-layer', { kind: 'layer', layers: [{ content: { kind: 'text' } }], layerGroups: { version: 1, groups: [] } }), inputs: {}, signal: new AbortController().signal, reportImagePreparation: report })
+    await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(3))
+    expect(vi.mocked(tools.waitForImages).mock.calls[2][0].preparation).toMatchObject({ sourceAssetIds: [], layerGroupsVersion: 1 })
+
+    vi.mocked(tools.assertSources).mockRejectedValueOnce(new Error('图片处理的来源图片超过 20 MB，请换一张小一点的图'))
+    await expect(executors['image-crop']!({ ...base, node: toolNode('image-crop', { kind: 'crop' }), inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report }))
+      .rejects.toThrow('图片处理的来源图片超过 20 MB')
+    expect(tools.waitForImages).toHaveBeenCalledTimes(3)
+  })
+
+  it('passes the pictures of a compare or panorama node on as they are', async () => {
+    const executors = createCanvasNodeExecutors({ imageService, imageTools: processing() })
+    for (const kind of ['image-compare', 'image-panorama'] as const) {
+      const node = { id: kind, kind, definitionVersion: 1, data: { prompt: '', model: '' } }
+      await expect(executors[kind]!({ ...base, node, inputs: inputs('A', 'B'), signal: new AbortController().signal })).resolves.toEqual({ assets: [picture('A'), picture('B')] })
+      await expect(executors[kind]!({ ...base, node, inputs: {}, signal: new AbortController().signal })).rejects.toThrow('请连接可读取的图片来源')
+    }
+  })
+
+  it('runs a picture through a crop end to end with the PNG the page hands back, without a paid request', async () => {
+    const broker = new CanvasRunPreparationBroker()
+    const stored = picture('S')
+    const storeLocalBytes = vi.fn(async () => ({ assetId: stored.assetId, localUrl: stored.localUrl, mimeType: 'image/png' as const, width: 64, height: 32, fileName: 'crop.png' }))
+    const tools = createCanvasImageToolProcessing({
+      broker,
+      assets: {
+        readImageOwned: vi.fn(async () => ({ bytes: Buffer.alloc(1024) })),
+        forProject: vi.fn(async () => ({ images: { storeLocalBytes }, media: { setSource: vi.fn(async () => undefined) } })),
+      },
+    })
+    const source = picture('A')
+    const executors = createCanvasNodeExecutors({ imageService, assets: { readOwned: vi.fn(async () => ({ asset: source })) }, imageTools: tools })
+    const header = Buffer.alloc(33)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0)
+    header.writeUInt32BE(13, 8)
+    header.write('IHDR', 12, 'ascii')
+    header.writeUInt32BE(64, 16)
+    header.writeUInt32BE(32, 20)
+    header[24] = 8
+    header[25] = 6
+    const graph: CanvasRunGraph = {
+      nodes: [
+        { id: 'photo', kind: 'image-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: source.assetId } },
+        toolNode('image-crop', { kind: 'crop' }),
+      ],
+      edges: [{ id: 'e', source: 'photo', sourceHandle: 'out:image', target: 'image-crop', targetHandle: 'in:image' }],
+    }
+    const asked: string[][] = []
+    const record = await executeCanvasRun({
+      userId: 7, ownerId: 9, projectId, runId: 'run-crop', graphRevision: 'revision', graph, scope: { kind: 'all' },
+      executors, signal: new AbortController().signal,
+      onEvent: async (event) => {
+        if (event.type !== 'run-waiting' || !event.imagePreparations?.length) return
+        const [preparation] = event.imagePreparations
+        asked.push(preparation.sourceAssetIds)
+        await broker.complete(7, { runId: 'run-crop', operationId: preparation.operationId, kind: 'image', outcome: 'completed', pngs: [Buffer.concat([header, Buffer.alloc(16)])] })
+      },
+    })
+    expect(record.status).toBe('succeeded')
+    expect(asked).toEqual([[source.assetId]])
+    expect(record.nodes.find((entry) => entry.nodeId === 'image-crop')?.attempts.at(-1)?.candidates.map((candidate) => candidate.asset.assetId)).toEqual([stored.assetId])
+    expect(imageService.generate).not.toHaveBeenCalled()
+    expect(broker.size()).toBe(0)
   })
 })

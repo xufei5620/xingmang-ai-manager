@@ -4,8 +4,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls } from './catalog'
+import { resolveGrokWindowsShell } from './cli-hooks'
 import { providerConfigPaths, saveProviderConfig } from './config-files'
-import { createConfigSaveService } from './config-save-service'
+import { createConfigSaveService, grokShellEnvironment } from './config-save-service'
 import { resolveEditorSettingsLocations } from './editor-claude-login-prompt'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
@@ -234,5 +235,118 @@ describe('the reply-in-Chinese AGENTS.md Xingmang places for Codex', () => {
 
     expect(fs.readFileSync(agents, 'utf8')).toBe('# 我自己的规矩\n')
     expect(store.read().seededToolDefaults ?? []).not.toContain('codex:response-language')
+  })
+})
+
+// SH-10：以管理员身份运行时，从星芒打开的 Grok 拿的是 trustedCommandEnvironment 收窄过的 PATH，推 shell 也得照它推。
+describe('the environment the Windows Grok shell is worked out from', () => {
+  const storePwsh = 'C:\\Users\\tester\\AppData\\Local\\Microsoft\\WindowsApps'
+  const env: NodeJS.ProcessEnv = {
+    Path: `C:\\Windows\\System32;${storePwsh}`,
+    ProgramFiles: 'C:\\Program Files',
+    LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+  }
+  const exists = (candidate: string) => candidate === `${storePwsh}\\pwsh.exe`
+    || candidate === 'C:\\Program Files\\Git\\bin\\bash.exe'
+  // Stands in for trustedCommandEnvironment on Windows: only machine directories survive in PATH.
+  function machineOnly(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return { ...base, Path: undefined, PATH: 'C:\\Windows\\System32;C:\\Program Files\\PowerShell\\7' }
+  }
+
+  it('keeps the snapshot and appends the live PATH when the app runs as the same user', () => {
+    const result = grokShellEnvironment('same-user', env, 'C:\\Tools', machineOnly)
+    expect(result.PATH).toBe(`C:\\Windows\\System32;${storePwsh};C:\\Tools`)
+    expect(resolveGrokWindowsShell(result, exists)).toBe('powershell')
+  })
+
+  it('works from the narrowed PATH the elevated Grok window gets, ignoring the live PATH', () => {
+    const builder = vi.fn(machineOnly)
+    const result = grokShellEnvironment('trusted-only', env, 'C:\\Tools', builder)
+    expect(builder).toHaveBeenCalledWith(env)
+    expect(result.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\PowerShell\\7')
+    // The Store pwsh is out of reach there, so Grok falls through to Git Bash, and so must the guess.
+    expect(resolveGrokWindowsShell(result, exists)).toBe('bash')
+  })
+})
+
+// Fable 第二轮 Q6：设置里「只让 Claude Code 改项目文件夹里的文件」。
+describe('the Claude Code write boundary toggle', () => {
+  const settingsOf = (userHome: string) => JSON.parse(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')) as { permissions?: Record<string, unknown> }
+  const saveForAccount = (service: ReturnType<typeof createService>['service'], apiKey = 'sk-fixture') => service.saveConfig(
+    { provider: 'claude', apiKey, model: 'claude-fixture', mode: 'merge' }, false, undefined, { source: 'account', automatic: false },
+  )
+
+  it('changes the account config in place after a backup and keeps the choice through later saves', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    const backup = vi.fn()
+
+    await expect(service.setClaudeWriteBoundary(true, backup)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(backup).toHaveBeenCalledTimes(1)
+    expect(settingsOf(userHome).permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
+    expect(store.read().claudeWritesInsideProject).toBe(true)
+
+    await saveForAccount(service, 'sk-fixture-2')
+    expect(settingsOf(userHome).permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
+
+    await expect(service.setClaudeWriteBoundary(false, backup)).resolves.toEqual({ enabled: false, applied: 'written' })
+    expect(settingsOf(userHome).permissions).not.toHaveProperty('blockWritesOutsideWorkingDirectories')
+    expect(store.read().claudeWritesInsideProject).toBeUndefined()
+  })
+
+  it('only remembers the choice while Claude Code is not on the current account, and applies it at the next account save', async () => {
+    let owner: string | null = null
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => owner })
+    const backup = vi.fn()
+
+    await expect(service.setClaudeWriteBoundary(true, backup)).resolves.toEqual({ enabled: true, applied: 'later' })
+    expect(backup).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(userHome, '.claude', 'settings.json'))).toBe(false)
+    expect(store.read().claudeWritesInsideProject).toBe(true)
+
+    owner = 'user-1'
+    await saveForAccount(service)
+    expect(settingsOf(userHome).permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
+  })
+
+  it('changes neither the config nor the choice when the backup before the change fails', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    const before = fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')
+
+    await expect(service.setClaudeWriteBoundary(true, () => { throw new Error('没能先备份 Claude Code 的配置，这次没有改') }))
+      .rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
+    expect(store.read().claudeWritesInsideProject).toBeUndefined()
+  })
+
+  // 同类对比 备选 6：「不署名」走同一条路，记的是自己那个开关，两个开关互不影响。
+  it('switches commit attribution the same way and keeps it apart from the write boundary', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    const backup = vi.fn()
+
+    await expect(service.setClaudeCommitAttribution(true, backup)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(backup).toHaveBeenCalledTimes(1)
+    expect((settingsOf(userHome) as Record<string, unknown>).attribution).toEqual({ commit: '', pr: '' })
+    expect(store.read().claudeHidesCommitAttribution).toBe(true)
+    expect(store.read().claudeWritesInsideProject).toBeUndefined()
+    expect(settingsOf(userHome).permissions).not.toHaveProperty('blockWritesOutsideWorkingDirectories')
+
+    await saveForAccount(service, 'sk-fixture-2')
+    expect((settingsOf(userHome) as Record<string, unknown>).attribution).toEqual({ commit: '', pr: '' })
+    await expect(service.setClaudeCommitAttribution(false, backup)).resolves.toEqual({ enabled: false, applied: 'written' })
+    expect(settingsOf(userHome)).not.toHaveProperty('attribution')
+    expect(store.read().claudeHidesCommitAttribution).toBeUndefined()
+  })
+
+  it('leaves an official-account Claude Code alone', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    await store.setOfficialProvider('claude', true)
+    const before = fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')
+
+    await expect(service.setClaudeWriteBoundary(true)).resolves.toEqual({ enabled: true, applied: 'later' })
+    expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
   })
 })

@@ -4,12 +4,10 @@ import { Button, Card, Dialog, Empty, Notice, Pill, Segment, Select, Table } fro
 import {
   ClockTime,
   displayDate,
-  dollars,
   FailureReason,
   ListReadFailure,
   Pagination,
   PlaceholderBar,
-  quotaMoney,
   ResultNotice,
   useOperation,
   useRefreshRequest,
@@ -31,13 +29,17 @@ import {
   mergeDashboards,
   modelShares,
   modelShareTitle,
+  priceListCells,
   quickFilterQuery,
   sub2ApiFilterId,
   sub2ApiUsageFilterFields,
   usageCalendarNote,
   usageChartScale,
+  usageCost,
+  usageDailyAverageText,
   usageEmptyText,
   usageHourBlocks,
+  usageQuotaCost,
   usageRangeStart,
   usageRanges,
   usageSegments,
@@ -47,7 +49,7 @@ import {
   type UsageRange,
 } from './usage'
 
-export type UsageView = 'calls' | 'tasks'
+export type UsageView = 'calls' | 'tasks' | 'prices'
 
 const pageSizes = [10, 20, 50, 100]
 /**
@@ -125,16 +127,16 @@ function SpendChart({ bars, balance }: { bars: NonNullable<DashboardView['bars']
   const scale = usageChartScale(amounts)
   const last = bars.length - 1
   return (
-    <div className="v2-usage-chart" role="img" aria-label={bars.map((bar, index) => `${bar.title}：${dollars(amounts[index])}`).join('；')}>
+    <div className="v2-usage-chart" role="img" aria-label={bars.map((bar, index) => `${bar.title}：${usageCost(amounts[index])}`).join('；')}>
       {scale.ticks.map((tick) => (
         <div key={tick} className="v2-usage-chart-line" style={{ bottom: `calc((100% - 8px) * ${scale.top > 0 ? tick / scale.top : 0})` }}>
           <span>{usageTickText(tick, scale.ticks)}</span>
         </div>
       ))}
       {bars.map((bar, index) => (
-        <div key={bar.start} className={`v2-usage-chart-col${index === last ? ' is-current' : ''}`} title={`${bar.title}：${dollars(amounts[index])}`}>
+        <div key={bar.start} className={`v2-usage-chart-col${index === last ? ' is-current' : ''}`} title={`${bar.title}：${usageCost(amounts[index])}`}>
           <div className="v2-usage-chart-bar" style={{ height: `${scale.top > 0 ? amounts[index] / scale.top * 100 : 0}%` }}>
-            <span>{dollars(amounts[index])}</span>
+            <span>{usageCost(amounts[index])}</span>
           </div>
           <small>{bar.label}</small>
         </div>
@@ -200,7 +202,7 @@ function UsageDashboard({
         />
       )}
       <div className="v2-usage-stats" data-testid="usage-stats">
-        {stat('总花费', data ? quotaMoney(data.totals.quota, balance) : undefined, trends && !summaryOnly && costUsd !== null ? `日均 ${dollars(costUsd / days)}` : undefined, true)}
+        {stat('总花费', data ? usageQuotaCost(data.totals.quota, balance) : undefined, trends && !summaryOnly ? usageDailyAverageText(costUsd, days) : undefined, true)}
         {stat('请求次数', data?.totals.count.toLocaleString())}
         {stat('处理字数', data?.totals.tokens.toLocaleString())}
       </div>
@@ -230,7 +232,7 @@ function UsageDashboard({
                 <div className="v2-acct-kv">
                   <span className="v2-usage-model-name">{model.model}</span>
                   <span className="v2-acct-muted">{model.percent}%</span>
-                  <b>{quotaMoney(model.quota, balance)}</b>
+                  <b>{usageQuotaCost(model.quota, balance)}</b>
                 </div>
                 <span className="v2-acct-bar"><i style={{ width: `${model.percent}%` }} /></span>
               </div>
@@ -244,19 +246,69 @@ function UsageDashboard({
   )
 }
 
-/** 「调用明细 | 生成任务」两段切换（只有两样都有的账号才出），和收起来时读屏用的那个标题。 */
-function ViewSwitch({ view, both, onChange }: { view: UsageView; both: boolean; onChange: (view: UsageView) => void }) {
-  if (!both) return <h2>{view === 'tasks' ? '生成任务' : '调用明细'}</h2>
+const usageViewLabels: Record<UsageView, string> = { calls: '调用明细', tasks: '生成任务', prices: '价格表' }
+
+/** 「调用明细 | 生成任务 | 价格表」几段切换（账号有两样以上才出），和收起来时读屏用的那个标题。 */
+function ViewSwitch({ view, views, onChange }: { view: UsageView; views: readonly UsageView[]; onChange: (view: UsageView) => void }) {
+  if (views.length < 2) return <h2>{usageViewLabels[view]}</h2>
   return (
     <>
-      <h2 className="xm-visually-hidden">{view === 'tasks' ? '生成任务' : '调用明细'}</h2>
+      <h2 className="xm-visually-hidden">{usageViewLabels[view]}</h2>
       <div data-usage-view-switch="true">
         <Segment
-          options={[{ value: 'calls', label: '调用明细' }, { value: 'tasks', label: '生成任务' }]}
+          options={views.map((value) => ({ value, label: usageViewLabels[value] }))}
           value={view}
-          onChange={(value) => onChange(value === 'tasks' ? 'tasks' : 'calls')}
+          onChange={(value) => { const next = views.find((item) => item === value); if (next) onChange(next) }}
         />
       </div>
+    </>
+  )
+}
+
+const priceListUnreadable = '价格表暂时读不到，稍后再试。不影响使用。'
+
+/**
+ * 价格表（Fable 第二轮 Q3）：这个账号能用的模型在各分组的价，已经乘上分组倍率。头一回切到这一段才去读，
+ * 平时打开用量账单不多问一次。读不到不影响别的，照样能聊、能用工具。
+ */
+function AccountPrices({ api, refreshRequest, switcher }: { api: V2Bridge; refreshRequest?: number; switcher: ReactNode }) {
+  const load = useCallback(() => api.getAccountPriceList(), [api])
+  const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
+  const rows = resource.data?.rows ?? []
+  const unreadable = !resource.loading && (Boolean(resource.error) || !rows.length)
+  return (
+    <>
+      <div className="v2-usage-toolbar">
+        {switcher}
+        <span className="v2-usage-toolbar-gap" />
+        <span className="v2-usage-price-caption">价格表 · 美元 / 每百万 Token</span>
+      </div>
+      <Card padding="none">
+        {unreadable ? (
+          <Empty icon={ListX} title={priceListUnreadable} description="" action={<Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()} testId="account-prices-retry">重试</Button>} />
+        ) : (
+          <Table
+            columns={[
+              { key: 'model', label: '模型' },
+              { key: 'group', label: '分组' },
+              { key: 'input', label: '输入' },
+              { key: 'output', label: '输出' },
+            ]}
+            rows={rows.map((row) => ({ id: `${row.group}\u0000${row.model}`, model: <span className="v2-usage-mono">{row.model}</span>, group: row.group, ...priceListCells(row) }))}
+            rowKey={(row) => String(row.id)}
+            empty="正在读取价格表…"
+            label="价格表 · 美元 / 每百万 Token"
+            testId="account-prices-table"
+          />
+        )}
+      </Card>
+      {!unreadable && rows.length > 0 && (
+        <p className="v2-usage-price-note" data-testid="account-prices-note">
+          已经算上分组的倍数。实际扣多少以用量账单为准。
+          {rows.some((row) => row.kind === 'tiered') && '分档计价的，用过以后在调用明细里点开那一次，能看到每一档的价格。'}
+        </p>
+      )}
     </>
   )
 }
@@ -406,7 +458,7 @@ function AccountCalls({
                 model: <span className="v2-usage-mono">{row.modelName}</span>,
                 key: row.tokenName || '—',
                 tokens: <span className="v2-usage-nowrap">{`${row.promptTokens.toLocaleString('en-US')} / ${row.completionTokens.toLocaleString('en-US')}`}</span>,
-                amount: <span className="v2-usage-nowrap">{row.type === 5 && row.quota <= 0 ? '—' : quotaMoney(row.quota, balance)}</span>,
+                amount: <span className="v2-usage-nowrap">{row.type === 5 && row.quota <= 0 ? '—' : usageQuotaCost(row.quota, balance)}</span>,
                 status: <Pill tone={status.tone}>{status.label}</Pill>,
               }
             })}
@@ -532,7 +584,7 @@ function AccountTasks({
                   {state(task).label} {task.progress}
                 </Pill>
               ),
-              cost: quotaMoney(task.quota, balance),
+              cost: usageQuotaCost(task.quota, balance),
             }))}
             rowKey={(row) => String(row.id)}
             rowLabel={(row) => String(row.label)}
@@ -594,7 +646,7 @@ function AccountTasks({
               <div><dt>完成时间</dt><dd>{displayDate(selected.finishAt)}</dd></div>
               <div><dt>操作</dt><dd>{selected.action}</dd></div>
               <div><dt>状态</dt><dd>{state(selected).label}</dd></div>
-              <div><dt>消耗（美元）</dt><dd>{quotaMoney(selected.quota, balance)}</dd></div>
+              <div><dt>消耗（美元）</dt><dd>{usageQuotaCost(selected.quota, balance)}</dd></div>
               <div><dt>失败原因</dt><dd>{selected.failReason || '无'}</dd></div>
               <div><dt>结果链接</dt><dd className="v2-usage-detail-mono">{selected.resultUrl || '无'}</dd></div>
             </dl>
@@ -621,6 +673,7 @@ export function AccountUsagePage({
   trends,
   calls: callsOn,
   tasks: tasksOn,
+  prices: pricesOn = false,
   view,
   onViewChange,
   refreshRequest,
@@ -636,14 +689,19 @@ export function AccountUsagePage({
   trends: boolean
   calls: boolean
   tasks: boolean
+  /** 这个账号的后端有没有按型号的价目（星芒账号有，历史账号没有）。 */
+  prices?: boolean
   view: UsageView
   onViewChange: (view: UsageView) => void
   refreshRequest?: number
 }) {
   const [range, setRange] = useState<UsageRange>('7')
   const dashboard = useUsageDashboard(api, dashboardOn, trends, range, refreshRequest)
-  const shown: UsageView = !tasksOn ? 'calls' : !callsOn ? 'tasks' : view
-  const both = callsOn && tasksOn
+  const views = (['calls', 'tasks', 'prices'] as const).filter((item) => item === 'calls' ? callsOn : item === 'tasks' ? tasksOn : pricesOn)
+  const shown: UsageView = views.includes(view) ? view : views[0] ?? 'calls'
+  // 价格表头一回切过去才挂上去读，之后来回切不再重读。
+  const [pricesOpened, setPricesOpened] = useState(false)
+  useEffect(() => { if (shown === 'prices') setPricesOpened(true) }, [shown])
   // 点了切换：点的那颗按钮跟着那一段一起藏起来了，焦点交给新露出来那一段里同一组按钮。
   const section = useRef<HTMLElement>(null)
   const moveFocus = useRef(false)
@@ -661,7 +719,7 @@ export function AccountUsagePage({
   return (
     <>
       {dashboardOn && <UsageDashboard dashboard={dashboard} balance={balance} trends={trends} range={range} onRange={setRange} />}
-      {(callsOn || tasksOn) && (
+      {views.length > 0 && (
         <section ref={section} className="v2-acct-section v2-usage-details">
           {callsOn && (
             <div hidden={shown !== 'calls'} data-testid="account-usage-section">
@@ -673,7 +731,7 @@ export function AccountUsagePage({
                 range={range}
                 models={dashboard.data?.totals.models ?? []}
                 refreshRequest={refreshRequest}
-                switcher={<ViewSwitch view="calls" both={both} onChange={switchView} />}
+                switcher={<ViewSwitch view="calls" views={views} onChange={switchView} />}
               />
             </div>
           )}
@@ -684,8 +742,13 @@ export function AccountUsagePage({
                 balance={balance}
                 accountScope={accountScope}
                 refreshRequest={refreshRequest}
-                switcher={<ViewSwitch view="tasks" both={both} onChange={switchView} />}
+                switcher={<ViewSwitch view="tasks" views={views} onChange={switchView} />}
               />
+            </div>
+          )}
+          {pricesOn && (
+            <div hidden={shown !== 'prices'} data-anchor="prices" data-testid="account-prices-section">
+              {pricesOpened && <AccountPrices api={api} refreshRequest={refreshRequest} switcher={<ViewSwitch view="prices" views={views} onChange={switchView} />} />}
             </div>
           )}
         </section>

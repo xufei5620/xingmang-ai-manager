@@ -156,6 +156,51 @@ export async function readBoundedFile(
   }
 }
 
+/**
+ * The first maximumBytes of a file, with the same checks as readBoundedFile, for a file that may be
+ * far larger than what the caller needs (a chat attachment reads only the start of a long log).
+ */
+export async function readBoundedFilePrefix(
+  requestedPath: string,
+  maximumBytes: number,
+  label: string,
+): Promise<{ bytes: Buffer; size: number; complete: boolean }> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+    throw new Error(`${label}读取上限无效`)
+  }
+  const filePath = resolveRelocatedPath(requestedPath)
+  const pathBeforeOpen = await pathSnapshot(filePath, label)
+  const handle = await fs.promises.open(
+    filePath,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+  )
+  try {
+    const before = await handle.stat({ bigint: true })
+    assertSingleLinkRegularFile(before, label)
+    if (!sameFileSnapshot(pathBeforeOpen, before)) throw new Error(`${label}在打开期间发生变化`)
+    const size = Number(before.size)
+    const buffer = Buffer.allocUnsafe(Math.min(size, maximumBytes))
+    let offset = 0
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    const after = await handle.stat({ bigint: true })
+    const pathAfterRead = await pathSnapshot(filePath, label)
+    if (
+      offset !== buffer.length
+      || !sameFileSnapshot(before, after)
+      || !sameFileSnapshot(after, pathAfterRead)
+    ) {
+      throw new Error(`${label}在读取过程中发生变化`)
+    }
+    return { bytes: buffer, size, complete: buffer.length === size }
+  } finally {
+    await handle.close()
+  }
+}
+
 export interface BoundedFileDigest {
   sha256: string
   size: number

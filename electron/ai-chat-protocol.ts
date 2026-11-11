@@ -1,5 +1,16 @@
 // @renderer-importable: bundled into the renderer, so no Node or Electron here or in what it value-imports (I6).
 
+/**
+ * 聊天里附带的文字类文件（Fable 第二轮 Q2）：一条消息最多几个，所有文件合起来最多读多少字。
+ * 字数上限留出余量，文件加上客户自己打的字，整条消息不超过 AI_CHAT_LIMITS.messageLength。
+ */
+export const AI_CHAT_TEXT_FILE_LIMITS = {
+  filesPerMessage: 3,
+  charsPerMessage: 30_000,
+} as const
+// 选文件前聊天页先按同一笔账算过，满了就当场说这句、不开选择框；主进程收到的字数不对时也说这句。
+export const chatTextFileFullMessage = '这条消息的字已经满了，加不了文件。先删掉一些字或文件再加。'
+
 export const AI_CHAT_ENDPOINTS = {
   chatCompletions: '/v1/chat/completions',
   imageGenerations: '/v1/images/generations',
@@ -21,6 +32,15 @@ export const AI_CHAT_LIMITS = {
   // 控制在二十来 MB；更早消息里的图片超出部分改成一句说明，不再重复发送。
   imagesPerMessage: 4,
   imagesPerRequest: 8,
+} as const
+
+/**
+ * 聊天页「常用的话」（Fable 第二轮 Q7）：最多存几条、一条最长多少字。聊天页存的时候按它截，
+ * 「搬到新电脑」导出、导入时主进程按它挡住不成样的文件。
+ */
+export const AI_CHAT_PHRASE_LIMITS = {
+  count: 30,
+  length: 2_000,
 } as const
 
 export type AiChatGroup = {

@@ -172,10 +172,11 @@ describe('renderer-v2 settings rows registry', () => {
       ['下载与连接', ['mirror', 'proxy', 'network-check', 'certificate']],
     ]);
     expect(shape('notifications').map(([label]) => label)).toEqual([null, '提醒哪些事']);
-    expect(shape('tools')).toEqual([[null, ['workspace', 'latest-cli', 'install-location', 'terminal']], [null, ['codex-remote']]]);
+    expect(shape('tools')).toEqual([[null, ['workspace', 'claude-write-boundary', 'claude-commit-attribution', 'latest-cli', 'install-location', 'terminal']], [null, ['codex-remote']]]);
     expect(shape('backup')).toEqual([
       [null, ['backups']],
       ['搬到新电脑', ['transfer', 'transfer-import']],
+      [null, ['storage']],
     ]);
     expect(shape('about')).toEqual([
       [null, ['version']],
@@ -187,6 +188,26 @@ describe('renderer-v2 settings rows registry', () => {
     const items = settingsItems.filter(item => item.group === 'about');
     const blocks = buildSettingsBlocks('about', [items[1], items[0], items[2]]);
     expect(blocks.map(block => block.items.map(item => item.id))).toEqual([['update-check'], ['version'], ['auto-update']]);
+  });
+
+  // Fable 第二轮 Q6：开关在「工具管理」里、紧跟工作文件夹；搜「Claude Code」或怕它改到外面的说法都找得到。
+  it('lists the Claude Code write boundary switch under tools and finds it by the words a customer would use', () => {
+    expect(settingsItems.find(item => item.id === 'claude-write-boundary')?.group).toBe('tools');
+    expect(settingsItemLabel('claude-write-boundary')).toBe('只让 Claude Code 改项目文件夹里的文件');
+    const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
+    expect(ids('claude code')).toContain('claude-write-boundary');
+    expect(ids('乱改文件')).toEqual(['claude-write-boundary']);
+    expect(ids('文件夹外面')).toEqual(['claude-write-boundary']);
+  });
+
+  // 同类对比 备选 6：「不署名」开关紧跟在上面那个开关后面，搜「署名」或那行英文都找得到。
+  it('lists the Claude Code commit attribution switch under tools and finds it by signature words', () => {
+    expect(settingsItems.find(item => item.id === 'claude-commit-attribution')?.group).toBe('tools');
+    expect(settingsItemLabel('claude-commit-attribution')).toBe('Claude Code 提交代码时不署名');
+    const ids = (query: string) => searchSettingsItems(query).map(item => item.id);
+    expect(ids('署名')).toEqual(['claude-commit-attribution']);
+    expect(ids('co-authored-by')).toEqual(['claude-commit-attribution']);
+    expect(ids('claude code')).toEqual(expect.arrayContaining(['claude-write-boundary', 'claude-commit-attribution']));
   });
 
   // 原来的三个页面挪进来以后，顶部搜索按原来的说法还要找得到它们（v4 批09）。

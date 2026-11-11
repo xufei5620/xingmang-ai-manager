@@ -3,6 +3,8 @@ import type { AccountDashboardData } from '../../../../electron/ipc-contract'
 import { spendSegmentQuery } from './account-center'
 import {
   frequentModels,
+  priceListCells,
+  priceListMoney,
   mergeDashboards,
   modelShares,
   modelShareTitle,
@@ -10,9 +12,12 @@ import {
   sub2ApiFilterId,
   usageCalendarNote,
   usageChartScale,
+  usageCost,
+  usageDailyAverageText,
   usageEmptyText,
   usageFailedFree,
   usageHourBlocks,
+  usageQuotaCost,
   usageRangeStart,
   usageSegments,
   usageStatus,
@@ -112,6 +117,41 @@ describe('usage', () => {
     expect(usageTickText(4, [0, 2, 4])).toBe('$4')
   })
 
+  it('leaves out the daily average for the 24-hour range, where it would just repeat the total', () => {
+    // D60：「24 小时」那一档 days = 1，日均就等于总花费。
+    expect(usageDailyAverageText(3.5, 1)).toBeUndefined()
+    expect(usageDailyAverageText(14, 7)).toBe('日均 $2.00')
+    expect(usageDailyAverageText(0.09, 30)).toBe('日均 $0.0030')
+    expect(usageDailyAverageText(null, 7)).toBeUndefined()
+  })
+
+  it('writes sub-cent usage costs out like the call details instead of rounding them to $0.00', () => {
+    // D53：几厘钱的调用以前一整页都是「$0.00」，点进详情又是「$0.0032」。
+    expect(usageCost(0.0032)).toBe('$0.0032')
+    expect(usageCost(0.003215)).toBe('$0.003215')
+    expect(usageCost(0.000002)).toBe('$0.000002')
+    expect(usageCost(0.009998)).toBe('$0.009998')
+    expect(usageCost(-0.0032)).toBe('-$0.0032')
+    // 一分以上、正好是 0、读不到的照旧：两位小数带千分位，读不到写「—」。
+    expect(usageCost(0.01)).toBe('$0.01')
+    expect(usageCost(0.0156)).toBe('$0.02')
+    expect(usageCost(23456.784)).toBe('$23,456.78')
+    expect(usageCost(0)).toBe('$0.00')
+    expect(usageCost(null)).toBe('—')
+    expect(usageCost(Number.NaN)).toBe('—')
+    expect(usageCost(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+
+  it('converts backend quota to the same usage cost and shows a dash without a conversion rate', () => {
+    expect(usageQuotaCost(1600, { quotaPerUnit: 500_000 })).toBe('$0.0032')
+    expect(usageQuotaCost(1, { quotaPerUnit: 500_000 })).toBe('$0.000002')
+    expect(usageQuotaCost(2_500_000, { quotaPerUnit: 500_000 })).toBe('$5.00')
+    expect(usageQuotaCost(0, { quotaPerUnit: 500_000 })).toBe('$0.00')
+    expect(usageQuotaCost(1600, { quotaPerUnit: 0 })).toBe('—')
+    expect(usageQuotaCost(1600, null)).toBe('—')
+    expect(usageQuotaCost(null, { quotaPerUnit: 500_000 })).toBe('—')
+  })
+
   it('lists the five costliest models with their share of the spend', () => {
     const models = dashboard(0, [['a', 1, 50], ['b', 9, 30], ['c', 1, 10], ['d', 1, 5], ['e', 1, 3], ['f', 1, 2]]).models
     const shares = modelShares(models)
@@ -161,5 +201,21 @@ describe('usage', () => {
     expect(usageCalendarNote('UTC', instant)).toBe(`${plain}按这台电脑的时间算。`)
     expect(usageCalendarNote('Not/A_Zone', instant)).toBe(`${plain}按这台电脑的时间算。`)
     for (const note of [usageCalendarNote('Asia/Tokyo', instant), usageCalendarNote('Asia/Shanghai', instant)]) expect(note).not.toMatch(/[A-Za-z]/)
+  })
+})
+
+describe('usage price table cells', () => {
+  it('shows at least two decimals, more for cheap models, and never rounds a tiny price down to zero', () => {
+    expect(priceListMoney(10)).toBe('$10.00')
+    expect(priceListMoney(1.25)).toBe('$1.25')
+    expect(priceListMoney(0.075)).toBe('$0.075')
+    expect(priceListMoney(0)).toBe('$0.00')
+    expect(priceListMoney(0.0000001)).toBe('< $0.000001')
+  })
+
+  it('puts a per-call price in the input cell and gives tiered pricing words instead of a number', () => {
+    expect(priceListCells({ model: 'm', group: 'g', kind: 'token', input: 1.25, output: 10 })).toEqual({ input: '$1.25', output: '$10.00' })
+    expect(priceListCells({ model: 'm', group: 'g', kind: 'call', perCall: 0.04 })).toEqual({ input: '$0.04 / 次', output: '—' })
+    expect(priceListCells({ model: 'm', group: 'g', kind: 'tiered' })).toEqual({ input: '分档计价', output: '—' })
   })
 })

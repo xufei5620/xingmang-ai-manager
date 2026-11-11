@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatAsset } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -139,6 +140,18 @@ describe('v2 chat request transitions', () => {
     expect(settleChatModel(settings({ mode: 'image' }), images, { pending: new Set(), groups: [...groups, { name: '图片模型' }] })).toEqual({ group: '图片模型', model: 'gpt-image-2' })
   })
 
+  it('says how long a draft past the single message limit is and lets one at the limit through, counting what is sent', () => {
+    expect(draftLengthError('')).toBe('')
+    expect(draftLengthError('a'.repeat(chatLimits.messageLength))).toBe('')
+    // Surrounding blank lines are trimmed before sending, so they do not count against the limit.
+    expect(draftLengthError(`\n${'a'.repeat(chatLimits.messageLength)}\n  `)).toBe('')
+    expect(draftLengthError('a'.repeat(45011))).toBe('最多 40000 字，现在 45011 字，删掉一些再发。')
+    expect(draftLengthError(` ${'a'.repeat(chatLimits.messageLength + 1)} `)).toBe('最多 40000 字，现在 40001 字，删掉一些再发。')
+    // The sentence and the check behind the send button agree on what is too long.
+    const tooLong = 'a'.repeat(chatLimits.messageLength + 1)
+    expect(() => planTurn(readyConversation(), { prompt: tooLong, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow()
+    expect(() => planTurn(readyConversation(), { prompt: tooLong.slice(1), requestId: 'r', assistantId: 'a', userMessageId: 'u' })).not.toThrow()
+  })
   it('tells the user to start a new conversation once one reply is longer than a single message may be', () => {
     const first = turn()
     const long = 'a'.repeat(chatLimits.messageLength + 1)
@@ -223,6 +236,16 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${blocked}`))).toBe(blocked)
     const tooLarge = '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'
     expect(chatErrorMessage(new Error(tooLarge))).toBe(tooLarge)
+  })
+  it('says a picture removed outside the app is gone instead of asking for a retry that cannot work (D37)', () => {
+    const gone = missingAiAssetMessages.image
+    expect(gone).toBe('这张图已经不在电脑上了，可能被移走或删掉了。')
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:copy-asset': Error: ${gone}`))).toBe(gone)
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:asset-menu': Error: ${gone}`))).toBe(gone)
+    expect(chatAssetSaveErrorMessage(new Error(`Error invoking remote method 'chat:save-asset': Error: ${gone}`))).toBe(gone)
+    // Anything else still reads as a save that can be tried again.
+    expect(chatAssetSaveErrorMessage(new Error("Error invoking remote method 'chat:save-asset': Error: 图片另存失败，请检查目标目录写入权限"))).toBe('图片没有保存成功，可以重试')
+    expect(chatAssetSaveErrorMessage(undefined)).toBe('图片没有保存成功，可以重试')
   })
   it('keeps the partial reply and shows the main-process cut-off note when a stream times out', () => {
     const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
@@ -329,6 +352,33 @@ describe('v2 chat request transitions', () => {
     expect(grouped.map((group) => [group.day, group.conversations.map((item) => item.id)])).toEqual([['今天', ['a', 'c']], ['昨天', ['d']], ['更早', ['b']]])
     expect(groupConversationsByDay([conversation('e', at(2, 9))], now).map((group) => group.day)).toEqual(['更早'])
   })
+  it('lists pinned conversations first under their own heading and the rest by day', () => {
+    const now = new Date(2026, 9, 15, 12).getTime()
+    const at = (day: number) => new Date(2026, 9, day, 9).getTime()
+    const conversation = (id: string, updatedAt: number, pinned = false) => ({ ...createConversation(undefined, id), updatedAt, ...(pinned ? { pinned: true } : {}) })
+    const grouped = groupConversationList([conversation('a', at(15)), conversation('b', at(1), true), conversation('c', at(14)), conversation('d', at(15), true)], now)
+    expect(grouped.map((group) => [group.label, group.conversations.map((item) => item.id)])).toEqual([['置顶', ['b', 'd']], ['今天', ['a']], ['昨天', ['c']]])
+    expect(groupConversationList([conversation('e', at(15))], now).map((group) => group.label)).toEqual(['今天'])
+  })
+  it('renames a conversation without moving it to today and keeps the name when its messages are cleared out', () => {
+    const conversation = { ...readyConversation(), title: '帮我写一个批量重命名文件的脚本', updatedAt: 5 }
+    const renamed = renameConversation(conversation, '  重命名脚本  ')
+    expect(renamed).toMatchObject({ title: '重命名脚本', renamed: true, updatedAt: 5 })
+    expect(renameConversation(conversation, '   ')).toBe(conversation)
+    expect(renameConversation(renamed, '重命名脚本')).toBe(renamed)
+    expect(renameConversation(conversation, '长'.repeat(60)).title).toHaveLength(MAX_CONVERSATION_TITLE_LENGTH)
+    // 消息删光了再发，自己起的名字不被第一句话盖掉；没改过名的照旧按第一句起名。
+    expect(planTurn({ ...renamed, messages: [] }, { prompt: '新的问题', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title).toBe('重命名脚本')
+    expect(planTurn({ ...conversation, messages: [] }, { prompt: '新的问题', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title).toBe('新的问题')
+  })
+  it('pins and unpins without touching anything else', () => {
+    const conversation = readyConversation()
+    const pinned = setConversationPinned(conversation, true)
+    expect(pinned).toEqual({ ...conversation, pinned: true })
+    expect(setConversationPinned(pinned, true)).toBe(pinned)
+    expect(setConversationPinned(pinned, false)).toEqual(conversation)
+    expect('pinned' in setConversationPinned(pinned, false)).toBe(false)
+  })
   it('uses the authoritative model protocol for media capabilities and validation', () => {
     expect(inspectModel('gpt-image-1.5')).toMatchObject({ available: false, hidden: true })
     expect(inspectModel('gpt-image-2')).toMatchObject({ kind: 'image', resolutions: ['1K', '2K', '4K'] })
@@ -347,6 +397,26 @@ describe('v2 chat image in flight', () => {
     for (const status of ['complete', 'canceled', 'error'] as const)
       expect(isGeneratingImage({ ...pending, messages: pending.messages.map((message) => message.role === 'assistant' ? { ...message, status } : message) })).toBe(false)
     expect(isGeneratingImage(createConversation(undefined, 'empty'))).toBe(false)
+  })
+})
+
+describe('v2 chat reply while offline', () => {
+  it('says the network dropped only under a text reply that is still coming in (D43)', () => {
+    expect(offlineReplyNotice).toBe('网络断了，这条回复可能接不上，可以先停止。')
+    const pending = turn().conversation
+    const reply = pending.messages.find((message) => message.role === 'assistant')!
+    const question = pending.messages.find((message) => message.role === 'user')!
+    expect(reply.status).toBe('pending')
+    expect(shouldShowOfflineReplyNotice(reply, true)).toBe(true)
+    expect(shouldShowOfflineReplyNotice({ ...reply, status: 'streaming' }, true)).toBe(true)
+    expect(shouldShowOfflineReplyNotice({ ...reply, status: 'streaming' }, false)).toBe(false)
+    for (const status of ['complete', 'canceled', 'error'] as const) expect(shouldShowOfflineReplyNotice({ ...reply, status }, true)).toBe(false)
+    expect(shouldShowOfflineReplyNotice(question, true)).toBe(false)
+    // 出图停下也可能照样计费，停之前另有一问，这里不催人去停。
+    const image = readyConversation()
+    image.settings = { ...image.settings, mode: 'image', model: 'gpt-image-2' }
+    const drawing = planTurn(image, { prompt: 'an orange cat', requestId: 'request-image', assistantId: 'assistant-image', userMessageId: 'user-image' }).conversation
+    expect(shouldShowOfflineReplyNotice(drawing.messages.find((message) => message.role === 'assistant')!, true)).toBe(false)
   })
 })
 
@@ -558,5 +628,129 @@ describe('v2 chat empty-page examples', () => {
     expect(chatExampleDraft('这个 Excel 公式怎么写：我想……')).toBe('这个 Excel 公式怎么写：我想')
     expect(chatExampleDraft('这段报错是什么意思')).toBe('这段报错是什么意思')
     expect(chatExampleDraft('……中间的省略号……不动……')).toBe('……中间的省略号……不动')
+  })
+})
+
+describe('v2 chat attached text files', () => {
+  const file = (name: string, text: string, truncated = false): AiChatTextFile => ({ name, size: text.length, text, truncated })
+
+  it('sends the files ahead of what the customer wrote, marked so the AI tells them apart, and clears them from the draft', () => {
+    const conversation = { ...readyConversation(), draftFiles: [file('notes.md', '# 会议记录'), file('big.log', 'start', true)] }
+    const plan = planTurn(conversation, { prompt: '帮我总结', files: conversation.draftFiles, requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages).toEqual([{ role: 'user', content: '<file name="notes.md">\n# 会议记录\n</file>\n\n<file name="big.log" truncated="true">\nstart\n</file>\n\n帮我总结' }])
+    expect(plan.conversation.messages[0]).toMatchObject({ content: '帮我总结', files: conversation.draftFiles })
+    expect(plan.conversation.draftFiles).toBeUndefined()
+    expect(plan.prompt).toBe('帮我总结')
+  })
+
+  it('sends a file without any words and names the conversation after it', () => {
+    const conversation = readyConversation()
+    const plan = planTurn(conversation, { prompt: '', files: [file('报错日志.txt', 'Error: boom')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages).toEqual([{ role: 'user', content: '<file name="报错日志.txt">\nError: boom\n</file>' }])
+    expect(plan.conversation.title).toBe('报错日志.txt')
+  })
+
+  it('keeps the files of earlier messages in what every later turn sends, and in retries and edits', () => {
+    const conversation = readyConversation()
+    conversation.messages = [
+      { id: 'u1', role: 'user', content: '看看', reasoning: '', status: 'complete', createdAt: 1, files: [file('a.csv', 'x,y')] },
+      { id: 'a1', role: 'assistant', content: 'ok', reasoning: '', status: 'complete', createdAt: 1 },
+    ]
+    const withFile = '<file name="a.csv">\nx,y\n</file>\n\n看看'
+    expect(planTurn(conversation, { prompt: '接着说', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages[0]).toEqual({ role: 'user', content: withFile })
+    expect(planTurn(conversation, { prompt: '', retryId: 'a1', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages).toEqual([{ role: 'user', content: withFile }])
+    expect(planTurn(conversation, { prompt: '改成这样', editId: 'u1', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages).toEqual([{ role: 'user', content: '<file name="a.csv">\nx,y\n</file>\n\n改成这样' }])
+    expect(conversationContextShare(conversation)).toBeCloseTo(Math.max(2 / chatLimits.messageCount, (withFile.length + 2) / chatLimits.totalMessageLength))
+  })
+
+  it('refuses files when generating an image, and says so in words the banner shows as they are', () => {
+    const drawing = readyConversation(); drawing.settings.mode = 'image'; drawing.settings.model = 'gpt-image-2'
+    expect(() => planTurn(drawing, { prompt: '一只猫', files: [file('a.txt', 'x')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(imageModeFilesMessage)
+    expect(chatErrorMessage(new Error(imageModeFilesMessage))).toBe(imageModeFilesMessage)
+  })
+
+  it('counts the files toward the single-message limit', () => {
+    const files = [file('a.txt', 'x'.repeat(30_000))]
+    // The file blocks and the blank line before the typed text come off the 40000 first.
+    const room = chatLimits.messageLength - messageWithFiles('', files).length - 2
+    expect(messageWithFiles('y'.repeat(room), files)).toHaveLength(chatLimits.messageLength)
+    expect(draftLengthError('y'.repeat(room), files)).toBe('')
+    expect(() => planTurn(readyConversation(), { prompt: 'y'.repeat(room), files, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).not.toThrow()
+    expect(draftLengthError('y'.repeat(room + 1), files)).toBe('最多 40000 字，现在 40001 字，删掉一些再发。')
+    expect(() => planTurn(readyConversation(), { prompt: 'y'.repeat(room + 1), files, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(`单条消息最多 ${chatLimits.messageLength} 个字符`)
+    expect(draftLengthError('y'.repeat(room + 1))).toBe('')
+    expect(draftLengthError('', files)).toBe('')
+  })
+
+  it('works out how many more files and characters the draft has room for', () => {
+    expect(draftFileRoom({ draft: '' })).toEqual({ files: 3, characters: 30_000 })
+    expect(draftFileRoom({ draft: '', draftFiles: [file('a.txt', 'x'.repeat(10_000))] })).toEqual({ files: 2, characters: 20_000 })
+    // A long draft leaves less room for files, so the whole message still fits.
+    const long = draftFileRoom({ draft: 'y'.repeat(30_000) })
+    expect(long.files).toBe(3)
+    expect(long.characters).toBe(chatLimits.messageLength - 30_002 - 3 * 300)
+    expect(draftFileRoom({ draft: '', draftFiles: [file('a', '1'), file('b', '2'), file('c', '3')] })).toEqual({ files: 0, characters: 0 })
+    expect(draftFileRoom({ draft: 'y'.repeat(chatLimits.messageLength) }).characters).toBe(0)
+  })
+
+  it('adds and removes draft files by position, and moves them along with the draft to a new conversation', () => {
+    const first = addDraftFiles(readyConversation(), [file('same.txt', 'one'), file('same.txt', 'two')])
+    expect(first.draftFiles?.map((item) => item.text)).toEqual(['one', 'two'])
+    expect(removeDraftFile(first, 0).draftFiles?.map((item) => item.text)).toEqual(['two'])
+    expect(removeDraftFile(removeDraftFile(first, 0), 0)).not.toHaveProperty('draftFiles')
+    expect(addDraftFiles(first, [file('c', '3'), file('d', '4')]).draftFiles).toHaveLength(3)
+    const state = createWorkspace('owner')
+    state.conversations = [{ ...first, draft: 'carry me' }]
+    const moved = continueInNewConversation(state, first.id, 'carry me', true)
+    expect(moved.conversations[0].draftFiles).toEqual(first.draftFiles)
+    expect(moved.conversations[1]).not.toHaveProperty('draftFiles')
+  })
+
+  it('tells the customer which files were read only in part', () => {
+    expect(fileTruncationNotice([file('a.txt', 'x')])).toBe('')
+    expect(fileTruncationNotice([file('big.log', 'x'.repeat(12_000), true)])).toBe('「big.log」太长，只读了前 12,000 个字。')
+  })
+
+  it('shows the main process words for a failed pick and a fallback for English ones', () => {
+    expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。"))).toBe('这个文件读不出来，可能正被别的软件占着，关掉它再试。')
+    expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录，再加文件')
+    expect(fileAttachmentErrorMessage(new Error('EPERM: operation not permitted'))).toBe('文件没有加上，请再试一次')
+  })
+
+  it('finds a conversation by the name of a file sent in it', () => {
+    const conversation = readyConversation()
+    conversation.messages = [{ id: 'u1', role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 1, files: [file('季度报表.csv', 'x')] }]
+    expect(filterConversations([conversation], '季度报表')).toEqual([conversation])
+  })
+})
+
+describe('v2 chat saved phrases', () => {
+  it('saves a trimmed phrase first and moves an existing one to the front instead of storing it twice', () => {
+    expect(addChatPhrase(undefined, '  回答尽量简短  ')).toEqual(['回答尽量简短'])
+    expect(addChatPhrase(['甲', '乙', '丙'], '丙')).toEqual(['丙', '甲', '乙'])
+    expect(addChatPhrase(['甲'], '   ')).toEqual(['甲'])
+  })
+
+  it('stops adding new phrases once the list is full but still lets an existing one move up', () => {
+    const full = Array.from({ length: MAX_CHAT_PHRASES }, (_, index) => `第 ${index} 句`)
+    expect(addChatPhrase(full, '再来一句')).toEqual(full)
+    expect(addChatPhrase(full, '第 29 句')[0]).toBe('第 29 句')
+    expect(addChatPhrase(full, '第 29 句')).toHaveLength(MAX_CHAT_PHRASES)
+  })
+
+  it('cuts an overlong phrase to the limit', () => {
+    expect(addChatPhrase([], 'x'.repeat(MAX_CHAT_PHRASE_LENGTH + 10))[0]).toHaveLength(MAX_CHAT_PHRASE_LENGTH)
+  })
+
+  it('removes only the phrase at the given position', () => {
+    expect(removeChatPhrase(['甲', '乙', '丙'], 1)).toEqual(['甲', '丙'])
+    expect(removeChatPhrase(undefined, 0)).toEqual([])
+  })
+
+  it('fills an empty draft with the phrase and appends to a written draft on a new line', () => {
+    expect(draftWithPhrase('', '回答尽量简短')).toBe('回答尽量简短')
+    expect(draftWithPhrase('  \n', '回答尽量简短')).toBe('回答尽量简短')
+    expect(draftWithPhrase('帮我看看这段话\n\n', '回答尽量简短')).toBe('帮我看看这段话\n回答尽量简短')
+    expect(draftWithPhrase('x'.repeat(chatLimits.messageLength), '再来')).toHaveLength(chatLimits.messageLength)
   })
 })

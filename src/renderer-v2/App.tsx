@@ -11,7 +11,7 @@ import { answerHistoryFlushRequests } from './features/chat/storage'
 import { OnlineStatusContext } from './features/shell/useOnlineStatus'
 import { buildEnvironmentStatus, environmentJobsFinished, markDiagnosticsStale, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
-import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
+import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideFolderFields, guideOfficialLoginRequired, isGuideToolRoute, type AuthMode, type GuideLanding, type GuideRoute, type GuideToolState, type LoginTarget, useGuideLaunch } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
@@ -195,6 +195,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 装完工具同步 Key 要对的是「现在」的账号，安装闭包里那份会话还停在点安装那一刻（#1097）。
   const latestScope = useRef(scope)
   latestScope.current = scope
+  // 引导里选「做图、做视频」时还没登录：先去登录。登好了引导会按新账号重开，所以记在这里，
+  // 登好了直接算走完、进视频剪辑页；登录框关掉没登就作罢。
+  const guideCreateAfterLogin = useRef(false)
   // 开机账号恢复超过了启动画面的等待上限：先进首页，按正在恢复的账号显示，
   // 恢复结束再补读一次配置（见 useAccountSessionSync）。
   const restoring = sessionRestoring(session)
@@ -278,6 +281,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     chineseSuspended: featuresOff.includes('codex-desktop-chinese') })
   const closeAccountDialogs = useCallback(() => { setConfigTool(null); setExternalClient(null) }, [])
   const leaveWorkspace = useCallback(() => { setGuide(false); setPage('home'); setWorkspaceEntered(false) }, [setPage])
+  const finishGuide = (id: GuideRoute, landing: GuideLanding) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }
+  // 等会话换成登好的那个账号再走完：登录回调里那一刻的 navigate 还当没登录，会再弹一次登录框。
+  useEffect(() => {
+    if (!guideCreateAfterLogin.current || !session.authenticated) return
+    guideCreateAfterLogin.current = false
+    finishGuide('create', 'video')
+  }, [session.authenticated, scope])
   const { accountReadError, setAccountReadError, reloadAccount, logoutVoluntarily } = useAccountSessionSync({
     native, app, toolsApi, toolbox, toast, balanceStore, session, setSession, scope, restoring, sessionEvents, accountEpoch, mounted,
     cancelPendingLaunchDialogs, followSessionChange, refreshRecent, noteStartupCheck, closeAccountDialogs, leaveWorkspace, setUnread, setPaymentReturn,
@@ -314,6 +324,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     document.documentElement.dataset.rendererReady = 'true'
     return () => { delete document.documentElement.dataset.rendererReady }
   }, [])
+  // 引导最后一步那颗「打开」跟首页同一套（D46）：落在哪个文件夹按会话记录定，引导开着时读一份。
+  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace)
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -325,6 +337,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // Mac 上 Codex 桌面端的更新要先看开没开着、换完再帮它打开，引导里那颗「更新」走不了这一套：只在首页卡片上给。
     update: tool.id === 'codexDesktop' && toolbox.snapshot!.platform.isMac ? null : toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
+    // 「打开」落在哪、旁边给不给「选择其他文件夹…」，那句话（D45）也跟着它挑：跟首页这个工具的卡片同一套。
+    ...guideFolderFields(guideLaunchTarget(tool.provider), toolbox.snapshot!.config),
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
@@ -423,7 +437,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
           updatableCount={toolUpdates.length}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
-          banner={<>{page !== 'home' && <RestartReminder restart={toolsApi.restartWindows} />}{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
+          banner={<>{page !== 'home' && <RestartReminder restart={toolsApi.restartWindows} />}{session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} refreshTick={balanceState.updatedAt} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} readImage={app.announcementImage} noticeUrl={relaySite.websiteUrl} notify={notifyAnnouncement}
             promoVisible={page === 'home'} noticeSlot={page === 'home' ? homeNoticeSlot : null} noticeRoom={homeNoticeRoom} onTopUp={accountSupports(session, 'supportsBilling') ? (amount) => navigate('account', 'recharge', amount) : undefined}
             readTopupOffers={accountSupports(session, 'supportsBilling') ? () => native.getAccountTopupInfo() : undefined} />}</>}
           notification={update && showUpdate && <Notice tone={update.error ? updateFailureTone(update) : updateDiskText ? 'warn' : 'accent'} title={update.error ? updateFailureLabel(update.failedStep).title : updateBubbleTitle(update)}
@@ -465,7 +479,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             logout: () => setConfirmation({ title: '退出登录？', body: `已配好的工具会保留。${logoutJobsNote(toolbox.jobs, jobToolName)}${logoutChatImageNote()}`, label: '退出登录', work: async () => { await logoutVoluntarily(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} /></Suspense></div>}
+            {renderedChatScope === scope && <div key={chatMount} className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} openParameters={chatParametersPending} onParametersOpened={() => setChatParametersPending(false)} onOpenAccount={(tab) => navigate('account', visibleAccountTab(tab, session) ? tab : 'overview')} onOpenAssets={() => void perform('打开素材库', app.openCanvasAssets)} /></Suspense></div>}
             {page === 'home' ? <Home api={toolsApi} accountScope={scope} supportsUsage={accountSupports(session, 'supportsUsage')} supportsUsageTrend={accountSupports(session, 'supportsDashboardTrends')} supportsBilling={accountSupports(session, 'supportsBilling')} supportsKeys={session.authenticated && visibleAccountTab('keys', session)} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} accountRestoring={restoring} balance={balance} subscription={subscription} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={visibleExternalClients(os, toolbox.externalClients)} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError} recentRevision={recentRevision}
               toolRouteStatus={session.authenticated && siteId === 'solov' ? settings?.relayToolRouteStatus : undefined}
@@ -540,15 +554,22 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         return Boolean(outcome?.result?.configured.includes(provider))
       }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       walletEmpty={session.authenticated && homeWalletEmpty(balanceAmount, subscription, accountSupports(session, 'supportsBilling'))}
-      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
-      onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
-    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
+      onLaunch={async (id, chooseFolder) => {
+        if (!isGuideToolRoute(id)) return true
+        // 跟首页那颗「打开」同一套（D46）：没用过的替他新建项目文件夹，用过的在上次的文件夹里开（不在了提示一句再弹选择窗口）；
+        // 「选择其他文件夹…」弹选择窗口。Codex 桌面端自己管工作区。
+        const target = guideLaunchTarget(providerFor(id))
+        return chooseFolder || id === 'codexDesktop' ? launch(id, 'open', undefined, 'choose') : launch(id, 'open', target.workspace, target.startsFresh ? 'firstOpen' : 'choose')
+      }}
+      createAvailable={signedInSiteId(session) !== 'solov-api'} onCreateLogin={() => { guideCreateAfterLogin.current = true; setAuth('login') }}
+      onComplete={finishGuide} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
+    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { guideCreateAfterLogin.current = false; setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
       onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })}
       connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
       suppressRestore(authenticatedScope)
-      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
+      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!guideCreateAfterLogin.current && !readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
       void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
       if (options?.notice) toast.show(options.notice, 'ok')
       if (options?.rememberError) toast.show(options.rememberError, 'warn')

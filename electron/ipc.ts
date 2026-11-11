@@ -4,7 +4,9 @@ import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
+import type { StorageUsageService } from './storage-usage-service'
 import type { AnnouncementReadStore } from './announcement-read-store'
+import type { AnnouncementImageReader } from './announcement-image'
 import { accelerationFailureReason, type AccelerationApi, type AccelerationPreferenceApi } from './acceleration-contract'
 import type { ProviderId } from './catalog'
 import type { ManagedKeyReplacementStore } from './managed-key-replacement-store'
@@ -49,11 +51,13 @@ import type { SensitiveClipboard } from './sensitive-clipboard'
 import type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
+import type { InvoicePortalWindowController } from './invoice-portal-window'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
 import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
+import type { ChatTextFileService } from './ai-chat-text-files'
 import { isRecord } from './input-guards'
 import {
   accelerationStateLogKey,
@@ -76,6 +80,7 @@ import { registerSettingsHandlers } from './ipc/handlers/settings'
 import { registerDiagnosticsHandlers } from './ipc/handlers/diagnostics'
 import { registerRuntimeLogHandlers } from './ipc/handlers/runtime-logs'
 import { registerBackupHandlers } from './ipc/handlers/backups'
+import { registerStorageHandlers } from './ipc/handlers/storage'
 import { registerExtensionHandlers } from './ipc/handlers/extensions'
 import { registerAccountHandlers } from './ipc/handlers/account'
 import { registerAccelerationHandlers } from './ipc/handlers/acceleration'
@@ -117,6 +122,8 @@ export interface IpcRegistrationOptions {
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
+  /** 「设置 › 备份迁移 › 星芒占用的空间」（storage-usage-service.ts）；省略 = 那两条通道报「还不能算」。 */
+  storageUsage?: StorageUsageService
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
@@ -140,6 +147,8 @@ export interface IpcRegistrationOptions {
   // type -- this module never needs to know which relay backend is active.
   accountService?: RelayBackendClient
   announcementReads?: Pick<AnnouncementReadStore, 'sync'>
+  /** 公告里官网自己的图由主进程下好再交给页面（announcement-image.ts）；省略 = 这条通道报显示不了，页面照旧显示「[图片：说明]」。 */
+  announcementImages?: AnnouncementImageReader
   acceleration?: AccelerationApi & Partial<AccelerationPreferenceApi>
   /** 手机遥控 Codex（bootstrap/codex-remote.ts）；省略 = 那几条通道报「暂未准备好」。 */
   codexRemote?: import('./codex-remote-service').CodexRemoteService
@@ -147,6 +156,8 @@ export interface IpcRegistrationOptions {
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
   paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'close' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
+  /** 「开发票」打开的开票窗口；省略 = 这条通道报打不开。 */
+  invoicePortalWindow?: Pick<InvoicePortalWindowController, 'open'>
   // Resolves once main.ts's startup session-restore attempt (see
   // realm-account-service.ts's restoreActive) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
@@ -273,6 +284,8 @@ export interface IpcRegistrationOptions {
   // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
   chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
+  /** Text files a chat message carries: the picker and the read happen here, the renderer only gets the text. */
+  chatTextFiles?: ChatTextFileService
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
@@ -415,6 +428,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerDiagnosticsHandlers(ctx)
   const disposeRuntimeLog = registerRuntimeLogHandlers(ctx)
   registerBackupHandlers(ctx)
+  registerStorageHandlers(ctx)
   registerExtensionHandlers(ctx)
   registerAccountHandlers(ctx)
   registerAccelerationHandlers(ctx)

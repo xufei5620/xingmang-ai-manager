@@ -93,6 +93,7 @@
 - `sensitive-clipboard.ts` — 复制出去的密钥、找回密码后拿到的新密码，60 秒后从剪贴板清掉。只清自己放进去的那段，软件退出前（`prepareToQuit` 里的 `flush()`）立刻清：剪贴板读回比对是异步的，will-quit 里来不及。`ipc.ts` 在用
 
 ## 计费、充值、订阅、公告
+- `invoice-portal-window.ts` — 「我的订单」的「开发票」开的开票窗口，显示当前账号的开票中心（xingmang-console 的客户门户）。不挂 preload，导航只放行开票中心那一个 origin，登录按账号存持久分区、换人退出时清掉；下载只收那个页面自己的 `blob:` 发票文件（PDF、PNG、JPEG，8MB 内），认过类型再经保存框原子写
 - `payment-window.ts` — 充值和订阅付款用的独立窗口。后端给的付款表单、URL、二维码都先校验；页面导航只放行白名单 origin 和回调域 `api.solov.cc`（I12）；只有后端查到的订单状态才算付款成功。关了窗口还会在后台继续问 15 分钟
 - `payment-methods-off.ts` — 充值方式开关（`service-status.ts` 的 `paymentMethodsOff`）：从充值信息里去掉这台电脑该藏的付款方式，页面开着时才被藏掉的、点付款时拦下。只藏软件里的，站上不动
 - `payment-status-reader.ts` — 查订单状态前，先把订单绑到下单时的站点、用户和会话代数上；任何一样变了就报 STALE，不再问

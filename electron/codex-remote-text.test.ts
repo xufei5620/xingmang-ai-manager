@@ -4,10 +4,12 @@ import {
   classifyRemoteTurnFailure,
   formatApprovalText,
   formatFileChangeLine,
+  idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
   redactRemoteText,
   remoteMessages,
+  remoteOpenedMessage,
   remoteTurnFailureMessages,
   splitRemoteText,
   staleMessageNotice,
@@ -21,6 +23,19 @@ describe('codex-remote-text', () => {
     expect(parseRemoteCommand(' /停止 ', false)).toEqual({ kind: 'stop' })
     expect(parseRemoteCommand('／状态', false)).toEqual({ kind: 'status' })
     expect(parseRemoteCommand('帮助', true)).toEqual({ kind: 'help' })
+    expect(parseRemoteCommand('关闭遥控', false)).toEqual({ kind: 'close' })
+    expect(parseRemoteCommand('/关闭遥控', true)).toEqual({ kind: 'close' })
+  })
+
+  // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
+  it('lists closing the remote among the commands and does not read it out of a sentence', () => {
+    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、关闭遥控、帮助。')
+    expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
+  })
+
+  it('tells the phone the remote was switched on, with the folder written like the status reply', () => {
+    expect(remoteOpenedMessage('~/projects/demo')).toBe('电脑上的手机遥控打开了，可以发消息了。工作文件夹：~/projects/demo')
   })
 
   it('treats a sentence that merely contains a command word as a prompt', () => {
@@ -121,6 +136,9 @@ describe('codex-remote-text', () => {
     expect(remoteMessages.threadReset).toBe('这是新对话，前面的记不得了。')
     expect(remoteMessages.unbound).toBe('电脑上已经把你解绑了，之后发的消息不会再执行。')
     expect(remoteMessages.idleClosingSoon).toBe('手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。')
+    // YF-10：自动关那句的时长跟着设置走。
+    expect(idleClosedMessage(4)).toBe('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(idleClosedMessage(12)).toBe('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
     expect(staleMessageNotice(25)).toBe('这条是 25 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。')
     expect(remoteTurnFailureMessages).toEqual({
       balance: '余额不够了，充值后再发一次。',

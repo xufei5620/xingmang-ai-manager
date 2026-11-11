@@ -95,13 +95,13 @@
 - `codex-remote-text.ts` — 发到手机上的每一句话（帮助、配对成功、审批、断开）和脱敏：主目录换成 `~`、密钥和 Codex 自己的 Key 打码（I13）
 - `codex-remote-app-server.ts` — 驱动 `codex app-server` 的 JSON-RPC 客户端（stdio，一行一条）：握手、开对话、发一轮、中断，Codex 反过来问的审批交给底座；退出时 stderr 只留尾巴
 - `codex-remote-process.ts` — 起 `codex app-server`：可执行文件由 `resolveCodexCommand` 认过、argv 数组不经 shell（I1）；Windows 上停的时候用 System32 的 `taskkill /T` 连 Codex 跑起来的命令一起停（I14）
-- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的
-- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置 4 小时断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来
+- `codex-remote-store.ts` — 遥控的设置（干活的文件夹、每个渠道绑定的人、上一条审批的编号）和渠道凭据（`safeStorage` 加密，Linux 没有密钥环时只记在内存）；「打开遥控」开关故意不落盘，每次打开星芒都是关的，只有客户自己打开了「打开星芒时自动打开遥控」（`autoStart`，默认关，YF-9）才由 `startOnLaunch` 替他连配对过人的渠道
+- `codex-remote-service.ts` — **底座**：配对码（10 分钟、错 20 次作废）、只认绑定的那个人的私聊、一次只跑一轮、审批转到手机（10 分钟没回自动拒绝；编号重开星芒也接着数，卡片按钮另带只对这一条有效的随机串，旧卡片点了只回「已失效」）、发回的内容脱敏、闲置到设置里选的时长（4 / 12 小时，缺省不自动关，YF-10）断开、退出时全部收掉；开对话固定 `untrusted` + 工作区可写，不给完全权限，也不带客户自己接的 MCP 服务、插件和 ChatGPT 应用（开对话前用 `config/read` 逐层查出名字逐个停用，电脑上照旧）。Windows 上在星芒里更新、卸载 Codex 之前（安装队列里，`system-service-context.ts` 的 `releaseRemoteCodex`）调它的 `releaseCodex`：遥控那份 Codex 闲着就停掉、等它真退出，正在干活就挡下来
 - `codex-remote-keep-awake.ts` — 有渠道开着（在连、已连上、连不上正在重试）就挡住系统自动睡眠，全关了、要重新登录了、闲置断开了就放开（关屏、合盖照旧）；跟着底座推给界面的快照走，按 `revision` 只认新的那份。Codex 自己的防睡开关只管它跑一轮，两轮之间等手机那段靠这里
 - `codex-remote-channels.ts` — 按渠道建适配器（无 default 的 switch，加渠道漏了是编译错）
 - `codex-remote-feishu.ts` / `codex-remote-feishu-frame.ts` — 飞书渠道：长连接（开放平台的 WebSocket，帧格式照官方 SDK 逐字节对过）收私聊和卡片点击，开放接口发文字和带「同意 / 拒绝」按钮的卡片；App ID / App Secret 填错报「要重新登录」，不无限重试
 - `codex-remote-weixin.ts` / `codex-remote-weixin-api.ts` — 微信渠道（实验功能）：腾讯 iLink 长轮询收消息、发文字，写法照 `@tencent-weixin/openclaw-weixin` 2.4.10 核对；只认 https 的 `*.weixin.qq.com`（跳转主机和登录给的地址都过这道），64 位消息编号保精度解析，只交回扫码人的消息、也只往他那里发；登录过期（-14、401/403）报「要重新登录」不再重试
-- `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；拿到的令牌直接进底座的加密凭据存储，不过 IPC。`-login-state.ts` 只有类型，界面 `import type` 它
+- `codex-remote-weixin-login.ts` / `codex-remote-weixin-credential.ts` / `codex-remote-weixin-login-state.ts` — 微信扫码登录：二维码在主进程画成图（登录链接不出主进程），5 分钟一张、最多换 3 张、整体 8 分钟；手机上要输数字时停下来等；拿到的令牌直接进底座的加密凭据存储，不过 IPC；服务端认出是本机原来那份令牌（「已经连着这台电脑了」）时不存，只让停在「需要重新登录」的渠道重连一次（YKS-6）。`-login-state.ts` 只有类型，界面 `import type` 它
 - `bootstrap/codex-remote.ts` — 主进程接线：存储放 `<userData>/codex-remote`、渠道走主进程会话 fetch、用客户装好的 Codex 命令行工具；Windows 上星芒以管理员身份或高完整性运行时不许开（手机上点一下就是管理员级操作）
 - 通道在 `ipc/handlers/codex-remote.ts` + `ipc/parsers/codex-remote.ts`（`codex-remote:*`，存飞书凭据那条记为密钥入参），状态变化经 `codex-remote:state-changed` 推给界面；微信扫码的三条（`codex-remote:weixin-login-start` / `-poll` / `-cancel`）在 `ipc/handlers/codex-remote-weixin.ts` + `ipc/parsers/codex-remote-weixin.ts`，成功不记日志
 

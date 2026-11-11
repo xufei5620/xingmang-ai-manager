@@ -44,6 +44,35 @@ export type MacosTerminalCleanupScheduler = (
 ) => void
 
 const terminalLauncherCleanupDelayMs = 5 * 60_000
+// 点「打开」后等启动脚本跑起来的上限。比 Linux 的 15 秒宽一点：「终端」冷启动，再加上 ~/.zshrc 里
+// oh-my-zsh、nvm、conda 那一串，慢的电脑上要好几秒。正常打开时脚本一跑起来就不再等。
+const terminalLauncherWaitMs = 20_000
+const terminalLauncherPollIntervalMs = 100
+
+/**
+ * 「终端」开了窗口，启动脚本却一直没跑（深查 Shell差异 SH-3）：「终端」是把脚本路径当一行命令交给客户的登录
+ * shell 去执行的，前面卡住（oh-my-zsh 问要不要更新，会吃掉这行的第一个字）、或者 ~/.zshrc 里 `exec tmux`，
+ * 这行就没了。字是 yoyo 2026-11-11 回「SH-3 改」定的；外面由 toolLaunchFailureMessage 接上「未能打开 X：」。
+ */
+export const macosTerminalNotStartedMessage = '终端窗口打开了，但工具没有跟着起来。先看一眼终端窗口里是不是在问什么（比如要不要更新），'
+  + '处理完把这个窗口关掉，再点一次「打开」；还不行就点「找客服」，把这句话发给客服。'
+
+export class MacosTerminalNotStartedError extends Error {
+  /** How long the launcher was waited for, for the log. */
+  readonly waitedMs: number
+
+  constructor(waitedMs: number) {
+    super(macosTerminalNotStartedMessage)
+    this.name = 'MacosTerminalNotStartedError'
+    this.waitedMs = waitedMs
+  }
+}
+
+export interface MacosTerminalLaunchOptions {
+  /** 只给测试缩短等待；缺省 20 秒、每 0.1 秒看一次。 */
+  waitMs?: number
+  pollIntervalMs?: number
+}
 // `open -a Terminal` hands the name to LaunchServices, whose per-user registry decides
 // which bundle answers to it, so a same-named app could stand in (I14 on macOS, #57).
 // The minimum is macOS 13, where Terminal always lives here on the sealed system
@@ -222,9 +251,10 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
   }
   const environmentEntries = Object.entries(plan.env)
   for (const [key, value] of environmentEntries) {
-    if (!environmentKeyPattern.test(key)) {
-      throw new TypeError(`invalid environment key: ${key}`)
-    }
+    // 只查真要写进脚本的那几个，同 Linux（linux-terminal.ts 的 exportedEnvironment）：名单外的名字
+    // 不会写进去，从终端里起星芒时带进来的 `BASH_FUNC_x%%`、别的软件 launchctl setenv 塞的怪名字
+    // 留在「终端」自己的环境里，不该挡住打开（深查 Shell差异 SH-11）。名单上的名字都是合规的变量名。
+    if (!persistedTerminalEnvironmentKeys.has(key)) continue
     if (value?.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
   }
   const clearedEnvironmentKeys = plan.clearedEnvironmentKeys ?? []
@@ -287,16 +317,47 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
   ].join('\n')
 }
 
+async function launcherConsumed(launcherPath: string): Promise<boolean> {
+  try {
+    await fs.promises.lstat(launcherPath)
+    return false
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT'
+  }
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+/** 启动脚本第一行就把自己删掉（buildMacosTerminalScript）：它不见了，就是真跑起来了，同 Linux 的 waitForLauncher。 */
+async function waitForLauncher(launcherPath: string, waitMs: number, pollIntervalMs: number): Promise<boolean> {
+  const deadline = Date.now() + waitMs
+  for (;;) {
+    if (await launcherConsumed(launcherPath)) return true
+    if (Date.now() >= deadline) return false
+    await delay(pollIntervalMs)
+  }
+}
+
 async function defaultCommandRunner(spec: CommandSpec, options: RunCommandOptions): Promise<unknown> {
   const { runCommand } = await import('./command-runner')
   return runCommand(spec, options)
 }
 
-/** Creates an app-owned launcher and opens it in Terminal through runCommand. */
+/**
+ * Creates an app-owned launcher, opens it in Terminal through runCommand, and waits
+ * for the launcher to delete itself, its first line. `open` returning only says
+ * Terminal took the file: the login shell may still swallow the line that runs it
+ * (SH-3). A launcher that never ran is removed before reporting, so a window that
+ * gets there late finds nothing to run rather than starting the tool after the app
+ * has said it did not, as on Linux.
+ */
 export async function launchMacosTerminal(
   plan: MacosTerminalLaunchPlan,
   commandRunner: MacosCommandRunner = defaultCommandRunner,
   scheduleCleanup: MacosTerminalCleanupScheduler = scheduleLauncherCleanup,
+  options: MacosTerminalLaunchOptions = {},
 ): Promise<void> {
   if (!isAbsolutePath(plan.executable)) throw new TypeError('executable must be an absolute path')
   if (!isAbsolutePath(plan.workspace)) throw new TypeError('workspace must be an absolute path')
@@ -318,6 +379,11 @@ export async function launchMacosTerminal(
     }, {
       cwd: plan.workspace,
     })
+    const waitMs = options.waitMs ?? terminalLauncherWaitMs
+    if (!await waitForLauncher(launcherPath, waitMs, options.pollIntervalMs ?? terminalLauncherPollIntervalMs)) {
+      // The catch below removes the launcher, only if it is still the file written here.
+      throw new MacosTerminalNotStartedError(waitMs)
+    }
     const cleanupIdentity = launcherIdentity
     scheduleCleanup(
       () => removeLauncherIfUnchanged(directory, launcherPath, cleanupIdentity),

@@ -136,6 +136,16 @@ export interface AppSettings {
    */
   alwaysInstallLatestCli?: boolean
   /**
+   * 设置里「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）。缺省 = 关，不改老客户的习惯。
+   * 只经 config:set-claude-write-boundary 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
+   */
+  claudeWritesInsideProject?: boolean
+  /**
+   * 设置里「Claude Code 提交代码时不署名」（同类对比 备选 6）。缺省 = 关，Claude Code 照官方原样署名。
+   * 只经 config:set-claude-commit-attribution 改（它同时对齐 Claude Code 的配置），settings:save 不收这一项。
+   */
+  claudeHidesCommitAttribution?: boolean
+  /**
    * 崩溃与未捕获异常自动上报。缺省 = 开启——和 alwaysInstallLatestCli 一样,
    * 这是有意的默认行为选择而不是「缺省 = 旧行为」的漏写:一个没人报的崩溃
    * 等于没修。只有显式关闭才落盘,所以文件里出现这个字段就代表用户亲手关过。
@@ -249,6 +259,8 @@ export interface AppSettingsUpdate {
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
+  claudeWritesInsideProject?: boolean
+  claudeHidesCommitAttribution?: boolean
   crashReporting?: boolean
   /** true is sticky and false is ignored, like trayHintShown. */
   crashReportingNoticeShown?: boolean
@@ -473,6 +485,8 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
+    ...(optionalBoolean(value.claudeWritesInsideProject, false) ? { claudeWritesInsideProject: true as const } : {}),
+    ...(optionalBoolean(value.claudeHidesCommitAttribution, false) ? { claudeHidesCommitAttribution: true as const } : {}),
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
@@ -648,6 +662,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const alwaysInstallLatestCli = update.alwaysInstallLatestCli === undefined
     ? base.alwaysInstallLatestCli
     : update.alwaysInstallLatestCli
+  const claudeWritesInsideProject = update.claudeWritesInsideProject ?? base.claudeWritesInsideProject
+  const claudeHidesCommitAttribution = update.claudeHidesCommitAttribution ?? base.claudeHidesCommitAttribution
   const crashReporting = update.crashReporting ?? base.crashReporting
   // Both sides are re-parsed, unlike the fields above which trust the base:
   // this one decides whether Codex starts with a local debugging port, so an
@@ -684,6 +700,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
+    ...(claudeWritesInsideProject === true ? { claudeWritesInsideProject: true as const } : {}),
+    ...(claudeHidesCommitAttribution === true ? { claudeHidesCommitAttribution: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
     ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(update.usageStatsNoticeShown === true || base.usageStatsNoticeShown === true ? { usageStatsNoticeShown: true as const } : {}),

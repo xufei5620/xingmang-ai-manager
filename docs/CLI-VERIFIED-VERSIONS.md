@@ -175,10 +175,12 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Claude 的选模型菜单 | `modelPicker` 与 `env.ANTHROPIC_DEFAULT_MODEL` | 官方阵容（Default = Opus 5 · 1M）并标官方美元价 | 当前 Key 可用的 Claude 型号，Default 指向选定的型号（用户自己写过菜单就不动；切回官方收回） | 选到分组里没有的型号只会报「无可用渠道」，价格也不是当前账号的计费 |
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
+| Claude 不许写到项目文件夹外面 | `~/.claude/settings.json` 的 `permissions.blockWritesOutsideWorkingDirectories`（2.1.314 起有） | 不开 | **默认不写**；客户在「设置 › 工具管理」打开「只让 Claude Code 改项目文件夹里的文件」才写 `true`（客户自己写过任何值都不动）。跟命令确认那两项一样记成星芒填的：关掉开关、开关关着时接当前账号、切回官方账号都只撤记下的而且值还是 `true` 的 | `bypassPermissions` 下 AI 改哪儿都不问，这一项只拦写文件、改文件，不拦终端命令和读（Fable 第二轮 Q6，2.1.319 沙箱试过） |
+| Claude 提交代码时的署名 | `~/.claude/settings.json` 的 `attribution` | 提交和 PR 末尾加 Claude 的署名（`Co-Authored-By`、`Generated with`） | **默认不写**；客户在「设置 › 工具管理」打开「Claude Code 提交代码时不署名」才写 `{ "commit": "", "pr": "" }`（不写 `false`：旧版本见到会报错，整份设置不读；客户自己写过任何 `attribution` 都不动）。同上记成星芒填的，只撤原样没改过的那一份 | 往公司仓库提交的客户不想带 AI 署名（同类对比 备选 6，2.1.319 沙箱看过请求里不再有那两段） |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Codex、Grok 的回复语言 | `~/.codex/AGENTS.md`、`~/.grok/AGENTS.md`（两家的全局说明，拼在项目说明前面交给模型） | 没有（跟着项目说明和对话语言走） | 一份写着「始终用简体中文回复」的 `AGENTS.md`（配置目录里已有任何一份全局说明就不放：Codex 的 `AGENTS.override.md` / `AGENTS.md`，Grok 认的 `AGENTS.md` / `AGENT.md` / `CLAUDE.md` / `CLAUDE.local.md`，大小写不论、链接也算；切回官方不收回） | 同上，两家又没有 `language` 这样的设置 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
-| VS Code、Cursor 里 Claude Code 插件的登录页 | 编辑器用户设置（`Code/User/settings.json`、`Cursor/User/settings.json`）的 `claudeCode.disableLoginPrompt` | `false`（一打开先要登录 Anthropic 账号） | `true`（编辑器打开过才补，客户写过的不动；切回官方不收回，认不出是不是我们补的） | 官方文档「使用第三方提供商」第一步；在编辑器终端里跑一次 Claude Code 插件就自己装上，客户没有那种账号 |
+| VS Code、Cursor 里 Claude Code 插件的登录页 | 编辑器用户设置（`Code/User/settings.json`、`Cursor/User/settings.json`）的 `claudeCode.disableLoginPrompt` | `false`（一打开先要登录 Anthropic 账号） | `true`（编辑器打开过才补，客户写过的不动；切回官方不收回，认不出是不是我们补的） | 官方文档「使用第三方提供商」第一步，客户没有那种账号。插件 2.1.318 起不再在编辑器终端里自己装（要去插件市场装或用 `/ide`），教程「在 VS Code 或 Cursor 里用 Claude Code」教怎么装 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
@@ -612,7 +614,7 @@ npm `latest` 是 2.1.316（2.1.313 没发到 npm）；2.1.311、2.1.312、2.1.31
 
 没碰我们写的配置：没有一条改 `permissions.defaultMode`、`permissions.deny`、`skipWebFetchPreflight`、`modelPicker`、
 `effortLevel`、`statusLine`、`DISABLE_AUTOUPDATER`、`fallbackModel`；2.1.314 新加的 `permissions.blockWritesOutsideWorkingDirectories`
-默认不开，我们也不写。
+默认不开，我们也不写（2026-11-10 起设置里有了开关，默认关，客户打开才写，见上面「本软件替用户改了哪些 CLI 默认值」那张表）。
 
 沙箱（做法同上，2.1.310 一起重跑当对照）：`claude -p "hi"` 两版都拿到回复、只带 `Authorization`、请求体字段一样，beta 头只是
 顺序换了；主请求照旧带工具搜索（12 个工具，1 个延迟加载占位）。假接口对工具搜索一律回 400 时，2.1.316 带它试三次（第一次后

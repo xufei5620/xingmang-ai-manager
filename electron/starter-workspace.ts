@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { GENERATED_PROJECT_INSTRUCTION_FILENAME } from './project-instructions'
 import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
 import { classifyWorkspace, isOneDriveContainer, type WorkspaceGuardContext } from './workspace-guard'
 
@@ -137,6 +138,63 @@ export function createStarterWorkspace(parentDirectory: string, context: Workspa
     throw error
   }
   throw new Error(`「${starterWorkspaceContainerName}」里的同名文件夹太多了`)
+}
+
+// 空着的新项目里除了星芒放的说明文件，还会有系统和工具自己留下的东西：访达一打开就落下
+// .DS_Store，资源管理器会写 desktop.ini、Thumbs.db，Claude Code 的 .claude、git 的 .git
+// 也都是点开头的。这些都不算客户自己放进去的。
+const starterWorkspaceSystemLeftovers = new Set(['desktop.ini', 'thumbs.db'])
+// 真空着的新项目里只有寥寥几样；翻了这么多还没翻完，就不当它是空的。
+const maxStarterWorkspaceEntries = 16
+
+/**
+ * 这个文件夹是不是星芒替用户建的那种、里面还没有用户自己的东西（D45，新手流程 N4）。
+ * 引导和首页让新手粘进去的第一句话是「介绍一下这个项目」，可新建的项目文件夹是空的，
+ * AI 只能回「这里什么都没有」；界面据此换一句让它动手做点东西的话。
+ *
+ * 只认星芒自己起的名字（容器 XingmangProjects 下的 my-project、my-project-2……）。
+ * 判不准（读不了、是链接、东西太多）一律算不是：判错的代价只是照旧那一句。
+ * 只列这一层的名字，不读任何文件内容，也不跟随链接。
+ */
+export function isUntouchedStarterWorkspace(directory: string, platform: NodeJS.Platform): boolean {
+  const impl = platform === 'win32' ? path.win32 : path.posix
+  if (typeof directory !== 'string' || !impl.isAbsolute(directory)) return false
+  const foldCase = platform === 'win32' || platform === 'darwin'
+  const normalized = impl.normalize(directory).replace(/[\\/]+$/, '')
+  if (!isStarterWorkspaceName(impl.basename(normalized), foldCase)) return false
+  if (!sameName(impl.basename(impl.dirname(normalized)), starterWorkspaceContainerName, foldCase)) return false
+  let handle: fs.Dir | null = null
+  try {
+    const stats = fs.lstatSync(normalized)
+    if (!stats.isDirectory() || stats.isSymbolicLink()) return false
+    handle = fs.opendirSync(normalized)
+    for (let seen = 0; ; seen += 1) {
+      const entry = handle.readSync()
+      if (entry === null) return true
+      if (seen >= maxStarterWorkspaceEntries || !isStarterWorkspaceLeftover(entry.name, foldCase)) return false
+    }
+  } catch {
+    return false
+  } finally {
+    handle?.closeSync()
+  }
+}
+
+function isStarterWorkspaceName(name: string, foldCase: boolean): boolean {
+  for (let index = 1; index <= maxStarterWorkspaceIndex; index += 1) {
+    if (sameName(name, buildStarterWorkspaceName(index), foldCase)) return true
+  }
+  return false
+}
+
+function isStarterWorkspaceLeftover(name: string, foldCase: boolean): boolean {
+  if (name.startsWith('.')) return true
+  if (starterWorkspaceSystemLeftovers.has(name.toLowerCase())) return true
+  return sameName(name, GENERATED_PROJECT_INSTRUCTION_FILENAME, foldCase)
+}
+
+function sameName(left: string, right: string, foldCase: boolean): boolean {
+  return foldCase ? left.toLowerCase() === right.toLowerCase() : left === right
 }
 
 function isExistingDirectory(directory: string): boolean {

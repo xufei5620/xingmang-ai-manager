@@ -1,6 +1,8 @@
-import type { AccountDashboardData, AccountUsageRecord } from '../../../../electron/ipc-contract'
+import type { AccountDashboardData, AccountPriceRow, AccountUsageRecord } from '../../../../electron/ipc-contract'
 import type { AccountFilterField } from '../../AccountFilters'
+import { dollars } from '../../business-common'
 import { localSpendDays, spendDayTitle } from './account-center'
+import { usageMoney } from './usage-detail-view'
 
 /**
  * 用量账单这一页（v4 第 07 批）上由数据算出来的东西：时间范围、花费趋势每根柱子管哪一段、
@@ -109,6 +111,26 @@ export function mergeDashboards(parts: readonly AccountDashboardData[]): Pick<Ac
     }
   }
   return { quota, count, tokens, models: [...models.values()] }
+}
+
+/**
+ * 用量账单这一页上的花费（明细、柱子、日均、总花费、按模型、生成任务）只有这一种写法（D53）。
+ * 一次调用常常只花几厘钱，固定两位小数会把一整页写成「$0.00」，状态却是「成功」，点进详情
+ * 又是「$0.0032」，客户以为没扣钱或者软件算错了。不到一分的照详情的写法写全，一分以上和
+ * 正好是 0 的照旧两位小数。余额、充值这些照旧走 dollars，不经过这里。
+ */
+export function usageCost(amount: number | null | undefined): string {
+  return typeof amount === 'number' && amount !== 0 && Math.abs(amount) < 0.01 ? usageMoney(amount) : dollars(amount)
+}
+
+/** 「总花费」下面那行小字。「24 小时」那一档只有一天，日均就是总花费本身，不写这行（D60）。 */
+export function usageDailyAverageText(costUsd: number | null, days: number): string | undefined {
+  return costUsd !== null && days > 1 ? `日均 ${usageCost(costUsd / days)}` : undefined
+}
+
+/** 后台记的额度（quota）换成用量花费；换算比例没读到时写「—」，跟 quotaMoney 一样。 */
+export function usageQuotaCost(quota: number | null | undefined, balance: { quotaPerUnit: number } | null): string {
+  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number' ? usageCost(quota / balance.quotaPerUnit) : '—'
 }
 
 /** 柱子高度（百分比，按刻度顶算）和左边那几条刻度：顶取一个整齐的数，最多四格。 */
@@ -229,4 +251,17 @@ export function sub2ApiFilterId(value: string | undefined): number | undefined {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error('密钥编号和分组编号要填正整数。')
   return parsed
+}
+
+/** 价格表里的钱：至少两位小数；便宜的小模型多给几位，不会显示成 $0.00。 */
+export function priceListMoney(value: number): string {
+  if (value > 0 && value < 0.000001) return '< $0.000001'
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`
+}
+
+/** 价格表一行的输入、输出两格。按次的写在输入那格；分档的没有一个数，写「分档计价」。 */
+export function priceListCells(row: AccountPriceRow): { input: string; output: string } {
+  if (row.kind === 'token') return { input: priceListMoney(row.input ?? 0), output: priceListMoney(row.output ?? 0) }
+  if (row.kind === 'call') return { input: `${priceListMoney(row.perCall ?? 0)} / 次`, output: '—' }
+  return { input: '分档计价', output: '—' }
 }

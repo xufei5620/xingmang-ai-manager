@@ -2,6 +2,7 @@ import path from 'node:path'
 import type { AppSettings, AppSettingsUpdate } from './app-settings'
 import type { ChatConversationExportInput, DataTransferExportInput, DataTransferImportPreview } from './ipc-contract'
 import { MAX_CHAT_HISTORY_CONVERSATIONS } from './ai-chat-history-store'
+import { AI_CHAT_PHRASE_LIMITS } from './ai-chat-protocol'
 import { isRecord } from './input-guards'
 
 // 「搬到新电脑」的文件：当前账号的聊天对话 + 几项跟着人走的软件设置。刻意不放任何
@@ -116,9 +117,20 @@ function parseConversations(value: unknown, message: string): Record<string, unk
   })
 }
 
+// 聊天页「常用的话」：没有这一项的旧文件、旧请求当作没存过；有就必须是一串不超长的字，
+// 条数不超过聊天页能存的上限。空白的那几条由聊天页合并时丢掉。
+function parsePhrases(value: unknown, message: string): string[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > AI_CHAT_PHRASE_LIMITS.count) throw new Error(message)
+  return value.map((entry) => {
+    if (typeof entry !== 'string' || entry.length > AI_CHAT_PHRASE_LIMITS.length) throw new Error(message)
+    return entry
+  })
+}
+
 export function parseDataTransferExportInput(value: unknown): DataTransferExportInput {
   if (!isRecord(value)) throw new Error('导出请求格式无效')
-  return { conversations: parseConversations(value.conversations, '导出的聊天对话格式无效') }
+  return { conversations: parseConversations(value.conversations, '导出的聊天对话格式无效'), phrases: parsePhrases(value.phrases, '导出的常用的话格式无效') }
 }
 
 export function buildDataTransferFile(settings: AppSettings, input: DataTransferExportInput, exportedAt: Date): string {
@@ -128,6 +140,7 @@ export function buildDataTransferFile(settings: AppSettings, input: DataTransfer
     exportedAt: exportedAt.toISOString(),
     settings: buildPortableSettings(settings),
     conversations: input.conversations,
+    ...(input.phrases?.length ? { phrases: input.phrases } : {}),
   })
   if (Buffer.byteLength(content, 'utf8') > MAX_DATA_TRANSFER_BYTES) throw new Error(dataTransferTooLargeMessage)
   return content
@@ -137,7 +150,7 @@ export function buildDataTransferFile(settings: AppSettings, input: DataTransfer
 // (I5): every setting is checked against its allowed values, and anything off
 // rejects the whole file rather than importing the part that looked fine.
 // Unknown keys are ignored so a newer same-version file still imports.
-export function parseDataTransferFile(raw: string): { settings: Partial<PortableSettings>; conversations: Record<string, unknown>[] } {
+export function parseDataTransferFile(raw: string): { settings: Partial<PortableSettings>; conversations: Record<string, unknown>[]; phrases: string[] } {
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { throw new Error(dataTransferInvalidMessage) }
   if (!isRecord(parsed) || parsed.format !== DATA_TRANSFER_FORMAT || typeof parsed.version !== 'number' || !Number.isInteger(parsed.version) || parsed.version < 1) {
@@ -152,7 +165,7 @@ export function parseDataTransferFile(raw: string): { settings: Partial<Portable
     if (!(allowed[key] as readonly unknown[]).includes(value)) throw new Error(dataTransferInvalidMessage)
     Object.assign(settings, { [key]: value })
   }
-  return { settings, conversations: parseConversations(parsed.conversations, dataTransferInvalidMessage) }
+  return { settings, conversations: parseConversations(parsed.conversations, dataTransferInvalidMessage), phrases: parsePhrases(parsed.phrases, dataTransferInvalidMessage) }
 }
 
 /**
