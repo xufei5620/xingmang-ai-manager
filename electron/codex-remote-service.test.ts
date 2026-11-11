@@ -1472,6 +1472,8 @@ describe('codex-remote-service turns', () => {
     const codex = await prompted(s, channel)
     codex.emit('exit', 1, null)
     await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('意外退出'))
+    // 卡片「最近一次」跟着说没做完，不会一直停在「正在处理」（YF-13）。
+    expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '电脑上的 Codex 意外退出了，再发一次试试。' })
     channel.handlers?.onInbound(text(alice, '再试一次'))
     await vi.waitFor(() => expect(s.codex).toHaveLength(2))
   })
