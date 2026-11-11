@@ -19,6 +19,8 @@ import type {
   ConfigRestoreResult,
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
+import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
+export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
@@ -650,6 +652,17 @@ export interface AiChatAsset {
   revisedPrompt?: string
 }
 
+/**
+ * 聊天里加的一个文字类文件（Fable 第二轮 Q2）：主进程从系统选文件框拿到路径、按上限读出来的字。
+ * 路径不回渲染层；size 是文件在磁盘上的大小，truncated = 只读了开头一截。
+ */
+export interface AiChatTextFile {
+  name: string
+  size: number
+  text: string
+  truncated: boolean
+}
+
 export type AiChatErrorCode = MainAiChatStreamErrorCode
 
 export type AiChatStreamEvent =
@@ -1147,6 +1160,13 @@ export interface XingmangInvokeContract {
   restoreBackup: IpcInvokeDefinition<'backups:restore', [id: string], ConfigRestoreResult>
   deleteBackup: IpcInvokeDefinition<'backups:delete', [id: string], void>
   /**
+   * 「设置 › 备份迁移 › 星芒占用的空间」的一行有多大。入参只是哪一行，要量的文件夹由主进程自己定，
+   * 渲染层给不了路径（I5）。没算出来时 bytes 是 null，不抛错。
+   */
+  inspectStorageUsage: IpcInvokeDefinition<'storage:inspect', [part: StorageUsagePart], StorageUsagePartReport>
+  /** 那张卡上的三个「清理」。同上，只认是哪一样，删什么、留什么由主进程按认得的文件名定（I8）。 */
+  cleanStorage: IpcInvokeDefinition<'storage:clean', [target: StorageCleanTarget], StorageCleanResult>
+  /**
    * 手机遥控 Codex 的微信扫码登录。二维码由主进程画成图片给过来，登录链接和机器人令牌都不过
    * IPC（I3）；令牌直接进底座的加密凭据存储。poll 等一轮长轮询（最多四十来秒）。
    */
@@ -1376,6 +1396,8 @@ export interface XingmangInvokeContract {
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
   pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
+  /** 系统选文件框选文字类文件，读出来的字交回去；remainingChars 是这条消息还能放多少字。 */
+  pickAiChatTextFiles: IpcInvokeDefinition<'chat:pick-text-files', [remainingFiles: number, remainingChars: number], AiChatTextFile[]>
   /** 视频剪辑「一句话出片」：文字型号把想法拆成几个镜头。停下用 video:cancel，同一个请求标识。 */
   planVideoStudio: IpcInvokeDefinition<'video-studio:plan', [input: VideoStudioPlanInput], VideoStudioPlan>
   /** 出一段视频，等到存进作品库才回；途中的进度走 onAiVideoProgress。 */
@@ -1640,6 +1662,8 @@ export const ipcInvokeChannels = {
   inspectBackup: 'backups:inspect',
   restoreBackup: 'backups:restore',
   deleteBackup: 'backups:delete',
+  inspectStorageUsage: 'storage:inspect',
+  cleanStorage: 'storage:clean',
   startWeixinRemoteLogin: 'codex-remote:weixin-login-start',
   pollWeixinRemoteLogin: 'codex-remote:weixin-login-poll',
   cancelWeixinRemoteLogin: 'codex-remote:weixin-login-cancel',
@@ -1741,6 +1765,7 @@ export const ipcInvokeChannels = {
   showAiChatAssetMenu: 'chat:asset-menu',
   pickAiChatImages: 'chat:pick-images',
   pasteAiChatImage: 'chat:paste-image',
+  pickAiChatTextFiles: 'chat:pick-text-files',
   planVideoStudio: 'video-studio:plan',
   generateAiVideo: 'video:generate',
   resumeAiVideo: 'video:resume',

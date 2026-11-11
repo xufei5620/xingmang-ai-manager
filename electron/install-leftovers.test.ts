@@ -8,6 +8,8 @@ import {
   isInstallLeftoverName,
   managedNpmTransactionLeftoverPrefixes,
   managedNpmTransactionPreservedEntries,
+  manualInstallLeftoverMinimumAgeMs,
+  measureInstallLeftovers,
   sweepInstallLeftovers,
   trustedCacheLeftoverPrefixes,
   userTemporaryLeftoverPrefixes,
@@ -241,5 +243,37 @@ describe('sweeping the managed npm cache', () => {
     expect(fs.existsSync(recent)).toBe(true)
     expect(fs.existsSync(npmOwnCache)).toBe(true)
     expect(result).toEqual({ removed: 3, freedBytes: 700, failed: 0 })
+  })
+})
+
+describe('measuring what a manual clean would free', () => {
+  it('adds up exactly the leftovers a sweep with the same age would remove', async () => {
+    makeDirectory('xingmang-npm-transaction-Ab12Cd', old, { 'attempt-0/cache/blob': 4096, 'pkg.tgz': 1024 })
+    makeDirectory('xingmang-node-runtime-Qw12Er', 60_000, { 'node.zip': 2048 })
+    makeDirectory('customer-files', old, { 'a.txt': 10 })
+    const locations = [{ directory: root, prefixes: userTemporaryLeftoverPrefixes }]
+
+    await expect(measureInstallLeftovers(locations)).resolves.toBe(5120)
+    await expect(measureInstallLeftovers(locations, { minimumAgeMs: 0 })).resolves.toBe(7168)
+    // Measuring removes nothing.
+    expect(fs.readdirSync(root).sort()).toEqual(['customer-files', 'xingmang-node-runtime-Qw12Er', 'xingmang-npm-transaction-Ab12Cd'])
+
+    await expect(sweepInstallLeftovers(locations, { minimumAgeMs: 0 })).resolves.toEqual({ removed: 2, freedBytes: 7168, failed: 0 })
+    expect(fs.readdirSync(root)).toEqual(['customer-files'])
+  })
+
+  it('still keeps a transaction the next install needs to recover from', async () => {
+    makeDirectory('npm-transaction-Ab12Cd', 0, { 'previous-prefix/lib/cli.js': 100 })
+    const location = { directory: root, prefixes: managedNpmTransactionLeftoverPrefixes, preserveIfContains: managedNpmTransactionPreservedEntries }
+
+    await expect(measureInstallLeftovers([location], { minimumAgeMs: 0 })).resolves.toBe(0)
+    await expect(sweepInstallLeftovers([location], { minimumAgeMs: 0 })).resolves.toEqual({ removed: 0, freedBytes: 0, failed: 0 })
+  })
+
+  it('only waits the six hours on a manual clean when Windows runs as administrator', () => {
+    expect(manualInstallLeftoverMinimumAgeMs('win32', 'trusted-only')).toBe(installLeftoverMinimumAgeMs)
+    expect(manualInstallLeftoverMinimumAgeMs('win32', 'same-user')).toBe(0)
+    expect(manualInstallLeftoverMinimumAgeMs('darwin', 'same-user')).toBe(0)
+    expect(manualInstallLeftoverMinimumAgeMs('linux', 'same-user')).toBe(0)
   })
 })

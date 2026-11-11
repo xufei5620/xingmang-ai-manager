@@ -1144,3 +1144,43 @@ describe('reading an unreadable record again', () => {
     expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
   })
 })
+
+describe('chat text files in history', () => {
+  const file = (name: string, text: string, truncated = false) => ({ name, size: text.length + 1, text, truncated })
+
+  it('keeps the files of sent messages and of the draft across a reload', async () => {
+    const state = workspace()
+    state.conversations[0].messages = [message(0, { files: [file('notes.md', '# 会议记录'), file('big.log', 'start', true)] })]
+    state.conversations[0].draftFiles = [file('next.csv', 'a,b')]
+    const restored = await saveAndReopen(state)
+    expect(restored.state).toEqual(state)
+  })
+
+  it('takes keys out of file names and text before saving', async () => {
+    const files = memoryFiles()
+    const state = workspace()
+    state.conversations[0].messages = [message(0, { files: [file('key sk-live-0123456789abcdef.txt', 'token=sk-live-0123456789abcdef')] })]
+    state.conversations[0].draftFiles = [file('draft.txt', 'Bearer abcdef0123456789')]
+    await createHistoryWriter(files.api, null).save(state)
+    expect(files.raw()).not.toContain('sk-live-0123456789abcdef')
+    expect(files.raw()).not.toContain('abcdef0123456789')
+  })
+
+  it('treats a file entry it does not recognize as an unreadable conversation, not a crash', () => {
+    for (const bad of [{ name: '', text: 'x' }, { name: 'a.txt', text: 1 }, { name: 'a.txt', text: 'x'.repeat(40_001) }, 'a.txt']) {
+      const state = workspace()
+      Object.assign(state.conversations[0].messages[0], { files: [bad] })
+      expect(parseHistorySnapshot(snapshotOf(state), scope).unreadable).toHaveLength(1)
+    }
+    const tooMany = workspace()
+    Object.assign(tooMany.conversations[0], { draftFiles: [file('a', '1'), file('b', '2'), file('c', '3'), file('d', '4')] })
+    expect(parseHistorySnapshot(snapshotOf(tooMany), scope).unreadable).toHaveLength(1)
+  })
+
+  it('names each attached file in the exported text without pasting its content', () => {
+    const conversation = { ...createConversation(), title: '看文件', messages: [message(0, { content: '帮我看看', createdAt: 0, files: [file('报错日志.txt', 'secret content')] })] }
+    const text = conversationPlainText(conversation)
+    expect(text).toContain('帮我看看\n附件：报错日志.txt')
+    expect(text).not.toContain('secret content')
+  })
+})

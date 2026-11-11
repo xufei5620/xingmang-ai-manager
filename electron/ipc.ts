@@ -4,6 +4,7 @@ import { classifyNetworkFailure } from './network-failure'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
+import type { StorageUsageService } from './storage-usage-service'
 import type { AnnouncementReadStore } from './announcement-read-store'
 import { accelerationFailureReason, type AccelerationApi, type AccelerationPreferenceApi } from './acceleration-contract'
 import type { ProviderId } from './catalog'
@@ -55,6 +56,7 @@ import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
 import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
+import type { ChatTextFileService } from './ai-chat-text-files'
 import { isRecord } from './input-guards'
 import {
   accelerationStateLogKey,
@@ -77,6 +79,7 @@ import { registerSettingsHandlers } from './ipc/handlers/settings'
 import { registerDiagnosticsHandlers } from './ipc/handlers/diagnostics'
 import { registerRuntimeLogHandlers } from './ipc/handlers/runtime-logs'
 import { registerBackupHandlers } from './ipc/handlers/backups'
+import { registerStorageHandlers } from './ipc/handlers/storage'
 import { registerExtensionHandlers } from './ipc/handlers/extensions'
 import { registerAccountHandlers } from './ipc/handlers/account'
 import { registerAccelerationHandlers } from './ipc/handlers/acceleration'
@@ -118,6 +121,8 @@ export interface IpcRegistrationOptions {
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
+  /** 「设置 › 备份迁移 › 星芒占用的空间」（storage-usage-service.ts）；省略 = 那两条通道报「还不能算」。 */
+  storageUsage?: StorageUsageService
   diagnosticsService: {
     run(options?: DiagnosticsRunOptions): Promise<DiagnosticsReport>
     checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
@@ -276,6 +281,8 @@ export interface IpcRegistrationOptions {
   // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
   chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
+  /** Text files a chat message carries: the picker and the read happen here, the renderer only gets the text. */
+  chatTextFiles?: ChatTextFileService
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
@@ -418,6 +425,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerDiagnosticsHandlers(ctx)
   const disposeRuntimeLog = registerRuntimeLogHandlers(ctx)
   registerBackupHandlers(ctx)
+  registerStorageHandlers(ctx)
   registerExtensionHandlers(ctx)
   registerAccountHandlers(ctx)
   registerAccelerationHandlers(ctx)

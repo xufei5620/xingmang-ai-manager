@@ -145,6 +145,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'backups:inspect': { label: '配置备份详情读取', log: 'normal', account: 'none' },
   'backups:restore': { label: '配置备份恢复', log: 'normal', account: 'none' },
   'backups:delete': { label: '配置备份删除', log: 'normal', account: 'none' },
+  // 打开「备份迁移」那一组就问六次，每次成功都记一条只会刷屏；没算出来的那一行由 storage-usage-service.ts 自己记。
+  'storage:inspect': { label: '星芒占用的空间计算', log: 'quiet-success', account: 'none' },
+  'storage:clean': { label: '星芒占用的空间清理', log: 'normal', account: 'none' },
   // 结果里是登录二维码的图片，扫了它就能把别人的微信连到这台：成功不记（I13）。poll 每四十秒一次，
   // 记了也只会刷屏。失败照记，失败那一行不带入参。
   'codex-remote:weixin-login-start': { label: '手机遥控微信扫码', log: 'quiet-success', account: 'none' },
@@ -284,6 +287,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
+  'chat:pick-text-files': { label: '聊天选文字文件', log: 'quiet-success', account: 'scoped' },
   // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
   'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
   'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },

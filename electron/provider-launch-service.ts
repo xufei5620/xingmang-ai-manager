@@ -62,6 +62,7 @@ import {
   launchOverrideNotice,
 } from './workspace-config-overrides'
 import { assertWorkspaceDirectory } from './workspace-access'
+import { isUntouchedStarterWorkspace } from './starter-workspace'
 import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 
 /**
@@ -727,9 +728,13 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     accountWork?: QueuedAccountWork,
   ): Promise<CliLaunchResult> {
     async function launch(): Promise<CliLaunchResult> {
+      const result = await launchProviderOperation(provider, workspace, mode, resumeSessionId)
+      const rememberedWorkspace = rememberedWorkspaceFor(store.read().workspace)
       return {
-        ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
-        rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
+        ...result,
+        rememberedWorkspace,
+        // 记着的文件夹换了，首页「试试第一条命令」那句话跟着它挑，不等下一轮读配置（D45）。
+        ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
       }
     }
     return installationQueue.enqueue(
