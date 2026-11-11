@@ -143,7 +143,7 @@ describe('acceleration reminders sent by the main process', () => {
     })
     expect(h.controller.notifyHost('hiddenToTray', 'first')).toBe('duplicate')
     expect(h.controller.notifyHost('hiddenToMenuBar', 'first')).toBe('requested')
-    expect(h.runtime.create).toHaveBeenLastCalledWith(expect.objectContaining({ body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标就能打开。' }))
+    expect(h.runtime.create).toHaveBeenLastCalledWith(expect.objectContaining({ body: '窗口已收起，点屏幕顶部菜单栏里的星芒图标，或者程序坞里的星芒图标，就能打开。' }))
     h.enable(false)
     expect(h.controller.notifyHost('hiddenToTray', 'second')).toBe('disabled')
     expect(hostNotificationMessage('hiddenToTray')).toEqual({

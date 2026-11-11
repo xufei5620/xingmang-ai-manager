@@ -153,6 +153,27 @@ describe('platform system preferences', () => {
       '系统没有保存',
     )
   })
+  // 决定单 D26：Windows 上写开机项多半是被 360、火绒拦了，叫客户去它的提示里放行；别的系统照旧。
+  it('points a Windows login item the OS did not keep at the security software prompt', async () => {
+    const windows = setup()
+    windows.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
+    await expect(windows.service.setStartup(true)).rejects.toThrow(
+      '系统没有保存开机启动设置。装了 360、火绒这类安全软件的话，在它弹出的提示里点「允许」，再打开一次这个开关。',
+    )
+    const mac = setup('darwin')
+    mac.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
+    await expect(mac.service.setStartup(true)).rejects.toThrow(
+      '系统没有保存开机启动设置，请在系统设置中检查。',
+    )
+  })
+  // 决定单 D30：Mac 上没有「托盘」，同一个图标在屏幕顶部的菜单栏里。
+  it('describes login starts in the menu bar on macOS', async () => {
+    const state = setup('darwin')
+    expect(state.service.getState().startup.note).toBe('打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。')
+    await state.service.setStartup(true)
+    expect(state.service.getState().startup.note).toBe('开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。')
+    expect(state.service.getState().startup.note).not.toContain('托盘')
+  })
   it('still reports a login item registered by an older version without the login argument', async () => {
     const state = setup()
     state.registerWindowsLoginItem([])
@@ -283,10 +304,13 @@ describe('platform system preferences', () => {
     const devService = new PlatformSystemService({ ...development.dependencies, linuxAutostart })
     expect(devService.getState().startup).toMatchObject({ supported: false, note: '开发模式不设置开机自动启动。' })
     await expect(devService.setStartup(true)).rejects.toThrow('不能设置')
-    for (const platform of ['win32', 'darwin']) {
+    for (const [platform, note] of [
+      ['win32', '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'],
+      ['darwin', '打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'],
+    ] as const) {
       const state = setup(platform)
       const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart, trayAvailable: () => false })
-      expect(service.getState().startup.note).toBe('打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。')
+      expect(service.getState().startup.note).toBe(note)
       await service.setStartup(true)
       expect(state.app.setLoginItemSettings).toHaveBeenCalled()
     }
