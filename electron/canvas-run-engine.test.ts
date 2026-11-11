@@ -1497,10 +1497,6 @@ describe('executeCanvasRun image preparations', () => {
     expect(record.nodes.find((entry) => entry.nodeId === 'tile')).toMatchObject({ state: 'failed', errorMessage: '「平铺图片」节点桌面版暂不支持，本次没有提交任何付费请求' })
   })
 
-  // 宫格裁剪: one node, several slices. A single-picture connection hands on
-  // the slice the canvas shows; out:images hands on all of them, each named by
-  // its place, as on the web host. Choosing another slice reuses the cached
-  // grid and leaves a batch connection's work cached too.
   it('keeps caching only the first picture of a node that is not a grid split', async () => {
     const pictures = [asset('a'.repeat(43)), asset('b'.repeat(43))]
     const compare = vi.fn<CanvasNodeExecutor>(async () => ({ assets: pictures.map((picture) => structuredClone(picture)) }))
@@ -1518,6 +1514,10 @@ describe('executeCanvasRun image preparations', () => {
     expect(stored[0]).not.toHaveProperty('candidates')
   })
 
+  // 宫格裁剪: one node, several slices. A single-picture connection hands on
+  // the slice the canvas shows; out:images hands on all of them, each named by
+  // its place, as on the web host. Choosing another slice reuses the cached
+  // grid and leaves a batch connection's work cached too.
   it('hands on the shown slice over a single connection and every slice over the batch one', async () => {
     const slices = ['0', '1', '2', '3'].map((index) => asset(`${'s'.repeat(42)}${index}`))
     const split = vi.fn<CanvasNodeExecutor>(async () => ({ assets: slices.map((slice) => structuredClone(slice)) }))
