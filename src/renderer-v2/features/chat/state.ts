@@ -1,4 +1,5 @@
 import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
+import { resolveMissingAiAssetMessage } from '../../../../electron/ai-asset-missing'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile } from '../../../../electron/ipc-contract'
@@ -437,6 +438,9 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
   if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable
   if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
+  // 图片文件在外面被删掉、挪走了：复制、拿去改、带着它发都不会再成，原话上屏，别叫客户重试（D37）。
+  const missing = resolveMissingAiAssetMessage(message)
+  if (missing) return missing
   // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
   // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
   const unwritable = message.indexOf('保存位置写不进去')
@@ -470,6 +474,11 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (/可能仍|结果不明确/.test(message)) return '请求提交结果不明确，服务端可能仍在处理，请勿立即重复提交'
   if (/cannot read images/.test(message)) return noImageModelMessage
   return '本次请求没有完成，已保留内容，请稍后重试'
+}
+
+/** 另存图片没成：图片文件不在了就照实说（D37），别的原因照旧可以重试。 */
+export function chatAssetSaveErrorMessage(error: unknown): string {
+  return resolveMissingAiAssetMessage(rawErrorMessage(error)) ?? '图片没有保存成功，可以重试'
 }
 
 /**

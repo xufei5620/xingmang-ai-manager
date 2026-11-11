@@ -420,6 +420,32 @@ test('image controls use real model capabilities and asset actions use opaque id
   } finally { await page.close() }
 })
 
+// 图片文件在外面被删了（D37）：预览、复制、另存都照实说图不在电脑上了，不再叫客户重试——怎么重试都不会成。
+test('says the picture is gone from the computer, instead of asking to retry, when its file was removed outside the app', async () => {
+  const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
+  const page = await open('assetGone=1')
+  try {
+    await ready(page)
+    await allPrepared(page)
+    await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片' }).click()
+    const request = await send(page, 'A test scene')
+    await page.evaluate((id) => window.chatHarness.completeImage(id), request.requestId)
+    const preview = page.locator('.chat-asset-preview img[data-failed="true"]')
+    await preview.waitFor()
+    assert.equal(await preview.getAttribute('alt'), gone)
+    const shown = page.locator('.chat-banner[data-tone="bad"] > span')
+    await page.getByTestId('chat-asset-copy').click()
+    await shown.waitFor()
+    assert.equal(await shown.innerText(), gone)
+    await page.getByRole('button', { name: '关闭提示' }).click()
+    await shown.waitFor({ state: 'detached' })
+    await page.getByTestId('chat-asset-save').click()
+    await shown.waitFor()
+    assert.equal(await shown.innerText(), gone)
+    assert.equal(await page.getByText(/可以重试|请稍后重试/).count(), 0)
+  } finally { await page.close() }
+})
+
 test('canceling paid image work requires acknowledgement and ignores a late asset result', async () => {
   const page = await open('cancelReject=1')
   try {

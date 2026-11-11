@@ -4,6 +4,7 @@ import type { AiAudioAssetStore, AiAudioOwnedAssetRead, AiStoredAudioAssetListIt
 import type { AiAssetLogicalMetadata, AiAssetMetadataStore, AiAssetSource } from './ai-asset-metadata-store'
 import { MAXIMUM_INDEXED_ASSETS, type AiAssetIndexEntry } from './ai-asset-index'
 import { assetThumbnailUrl } from './asset-thumbnail'
+import { missingAiAssetMessages, resolveMissingAiAssetMessage } from './ai-asset-missing'
 
 export type AiMediaAssetView = 'all' | 'favorites' | 'recent' | 'trash'
 /**
@@ -125,25 +126,26 @@ export function createAiMediaAssetService(options: {
   }
 
   async function readAnyKind(userId: number, assetId: string): Promise<{ kind: AiMediaAssetKind; owned: AiMediaOwnedRead }> {
-    const key = kindHintKey(userId, assetId)
-    const hinted = kindHints.get(key)
-    const order = searchOrder(hinted)
-    let lastError: unknown
-    for (const kind of order) {
-      if (kind === 'audio' && !options.audios) {
-        lastError = new Error('AI 素材不存在或无权访问')
-        continue
-      }
+    const hinted = kindHints.get(kindHintKey(userId, assetId))
+    const failures: unknown[] = []
+    for (const kind of searchOrder(hinted)) {
+      if (kind === 'audio' && !options.audios) continue
       try {
         const owned = await readOfKind(userId, assetId, kind)
         rememberKind(userId, assetId, kind)
         return { kind, owned }
       } catch (error) {
-        lastError = error
+        failures.push(error)
       }
     }
-    if (hinted) kindHints.delete(key)
-    throw lastError
+    // 一个编号只在一个库里，别的库都只会说「没有」。哪个库说了别的（文件在、但没过检查），
+    // 那就是它真正的库和原因。以前最后问的那个库胜出，一张图找不到也说「音频」（D37）。
+    const found = failures.find((error) => !(error instanceof Error && resolveMissingAiAssetMessage(error.message)))
+    if (found !== undefined) throw found
+    // 三个库都说没有，就是文件在外面被删了或挪走了：按作品库列出来时的类型说。类型记着不丢，
+    // 客户再点一次说的还是同一句；编号不会换库，记着也不会把下一次问错地方。
+    if (hinted) throw new Error(missingAiAssetMessages[hinted])
+    throw new Error('AI 素材不存在或无权访问')
   }
 
   async function readOwned(userId: number, assetId: string, kind?: AiMediaAssetKind): Promise<AiMediaOwnedRead> {
