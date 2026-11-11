@@ -390,6 +390,16 @@ export type PluginItem = PluginDto
 export type MarketplaceItem = MarketplaceDto
 export type PluginCatalog = PluginCatalogDto
 export type ExtensionMutation = ProviderExtensionMutation
+
+/**
+ * 外接工具页「也装到别的工具」：把 from 里「我的（全局）」那份的这一条连接，原样装进 to 的「我的（全局）」。
+ * 只带名字：连接里的环境变量、请求头由主进程自己读、自己转交，值不过 IPC（I3）。
+ */
+export interface McpCopyInput {
+  from: ProviderId
+  to: ProviderId
+  name: string
+}
 export type ExtensionSnapshot = ProviderExtensionsSnapshot
 export type McpHealthReport = ProviderMcpHealthReport
 export type CodexSetupStatus = MainCodexSetupStatus
@@ -1186,6 +1196,8 @@ export interface XingmangInvokeContract {
     [provider: ProviderId],
     ProviderMcpHealthReport
   >
+  /** 外接工具页「也装到别的工具」（同类对比 备选 5），一次装一个工具。只认 Claude Code、Codex 全局那份里的连接。 */
+  copyMcpToTool: IpcInvokeDefinition<'extensions:copy-mcp', [input: McpCopyInput], void>
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [mode?: import('./relay-backend').RelayNoticeReadMode], import('./relay-backend').RelayNotice | null>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
@@ -1632,6 +1644,7 @@ export const ipcInvokeChannels = {
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
+  copyMcpToTool: 'extensions:copy-mcp',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
   markAccountNoticeRead: 'account:mark-notice-read',

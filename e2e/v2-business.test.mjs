@@ -2229,6 +2229,72 @@ test('a custom connection leaves alone a same-named one another picked tool alre
   }
 })
 
+// 同类对比 备选 5：Claude Code 全局里的一条连接「也装到别的工具」。界面只把名字交给主进程，已经有同名的不给勾。
+test('a Claude Code connection is copied to the other tools that do not have it yet', async () => {
+  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&codexMcp=docs')
+  try {
+    const row = page.getByTestId('mcp-row-docs')
+    await row.getByRole('button', { name: 'docs 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
+    const dialog = page.getByTestId('mcp-copy')
+    await dialog.getByText('把「docs」也装到别的工具', { exact: true }).waitFor()
+    const codex = dialog.getByTestId('mcp-copy-tools-codex')
+    const grok = dialog.getByTestId('mcp-copy-tools-grok')
+    await codex.getByText('已添加', { exact: true }).waitFor()
+    assert.equal(await grok.getAttribute('aria-pressed'), 'true', '查回来以后能装的先勾上')
+    assert.equal(await codex.isDisabled(), true)
+    assert.equal(await dialog.getByTestId('mcp-copy-tools-claude').count(), 0, '不列来源那个工具')
+    await dialog.getByTestId('mcp-copy-confirm').click()
+    await waitForToast(page, '已添加「docs」，给 Grok CLI 使用，下次打开工具时生效')
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args), [{ from: 'claude', to: 'grok', name: 'docs' }])
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a copy that fails for one tool keeps the ones already done and retries only the rest', async () => {
+  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&copyMcpFail=grok')
+  try {
+    await page.getByTestId('mcp-row-docs').getByRole('button', { name: 'docs 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
+    const dialog = page.getByTestId('mcp-copy')
+    await dialog.locator('[data-testid="mcp-copy-tools-grok"][aria-pressed="true"]').waitFor()
+    assert.equal(await dialog.getByTestId('mcp-copy-tools-codex').getAttribute('aria-pressed'), 'true')
+    await dialog.getByTestId('mcp-copy-confirm').click()
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    await dialog.getByTestId('mcp-copy-tools-codex').getByText('已添加', { exact: true }).waitFor()
+    await dialog.getByTestId('mcp-copy-confirm').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-mcp').length === 3)
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args.to), ['codex', 'grok', 'grok'])
+  } finally {
+    await page.close()
+  }
+})
+
+// 测试扩展在三个工具里都有：没有能装的，「装上」点不了；Grok 的连接不给这一项（读不全）。
+test('copying is offered only where every other tool can still take the connection', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
+    const dialog = page.getByTestId('mcp-copy')
+    await dialog.getByTestId('mcp-copy-tools-grok').getByText('已添加', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('mcp-copy-confirm').isDisabled(), true)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
+    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Grok CLI 移除…', exact: true }).waitFor()
+    assert.equal(await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('a tool that is not installed offers its own install in place of the list', async () => {
   const page = await fixture('page=skills&installedProviders=codex')
   try {

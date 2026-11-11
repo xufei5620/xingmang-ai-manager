@@ -171,6 +171,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'extensions:mutate': { label: 'AI 工具扩展操作', log: 'normal', account: 'none' },
   'extensions:ensure-marketplace': { label: '官方插件市场添加', log: 'normal', account: 'none' },
   'extensions:check-mcp-health': { label: 'MCP 连接状态检测', log: 'normal', account: 'none' },
+  'extensions:copy-mcp': { label: '把外接工具也装到别的工具', log: 'normal', account: 'none' },
   // Frequent read-style checks stay quiet, while managed CLI configuration
   // handles secrets internally and account:reveal-key deliberately returns a
   // short-lived plaintext secret to the renderer. Logging any of those

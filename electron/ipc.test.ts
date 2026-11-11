@@ -309,6 +309,7 @@ function register(
     list: vi.fn(),
     listAll: vi.fn(),
     mutate: vi.fn(),
+    readUserMcpConnection: vi.fn(),
   }
   const sessionsService = {
     list: vi.fn(),
@@ -5249,6 +5250,42 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('skills:import')!
 
       expect(() => handler(trustedEvent(), { sourcePath: 'C:\\'.padEnd(32_768, 'a') })).toThrow('Skill 路径格式错误')
+    })
+  })
+
+  // 同类对比 备选 5：「也装到别的工具」。界面只给名字，连接原样由主进程读出来，再走跟手填添加同一条路。
+  describe('extensions:copy-mcp', () => {
+    it('hands the connection read in the main process to Codex through the same add path, secrets included', async () => {
+      const { extensionService, providerExtensionService } = register()
+      providerExtensionService.readUserMcpConnection.mockResolvedValue({ type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'codex', name: 'acme' })).resolves.toBeUndefined()
+      expect(providerExtensionService.readUserMcpConnection).toHaveBeenCalledWith('claude', 'acme')
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith({ type: 'stdio', name: 'acme', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+      expect(providerExtensionService.mutate).not.toHaveBeenCalled()
+    })
+
+    it('installs into the global layer of Claude Code or Grok through the native add command', async () => {
+      const { providerExtensionService } = register()
+      providerExtensionService.readUserMcpConnection.mockResolvedValue({ type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } })
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await handler(trustedEvent(), { from: 'codex', to: 'grok', name: 'remote' })
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith({
+        provider: 'grok', kind: 'mcp', action: 'install', id: 'remote', source: undefined, scope: 'user',
+        mcp: { type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } },
+      })
+    })
+
+    it('refuses an unknown tool, the same tool on both ends and a missing name before reading anything', async () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'gemini', name: 'acme' })).rejects.toThrow('外接工具格式错误')
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'claude', name: 'acme' })).rejects.toThrow('外接工具格式错误')
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'codex' })).rejects.toThrow('MCP 名称')
+      expect(providerExtensionService.readUserMcpConnection).not.toHaveBeenCalled()
     })
   })
 
