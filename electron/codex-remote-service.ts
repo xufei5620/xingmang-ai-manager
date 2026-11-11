@@ -45,11 +45,13 @@ import {
   remoteMessages,
   remoteOpenedMessage,
   remoteTurnFailureMessages,
+  retryMessage,
   splitRemoteText,
   staleMessageNotice,
   statusMessage,
   truncateRemoteText,
   turnFailedMessage,
+  turnSummaryLine,
   unknownApprovalMessage,
   whichApprovalMessage,
   type RemoteFileChangeLine,
@@ -173,8 +175,16 @@ export interface CodexRemoteServiceOptions {
   inspectAvailability(): string | null
   /** 打开渠道前看一眼 Codex 命令行工具在不在；不在就给上屏的原因。缺省 = 不看，等真用到时再报。 */
   checkCodexReady?(): Promise<string | null>
+  /**
+   * 手机上发「状态」时报的余额（美元，YF-18）；没登录、读不到回 null。缺省 = 不报。
+   * 读得慢也只等 statusBalanceTimeoutMs，过了就不带这一行，「状态」不能因为余额卡住。
+   */
+  readBalanceUsd?(): Promise<number | null>
   onStateChanged?(snapshot: CodexRemoteSnapshot): void
 }
+
+/** 「状态」等余额最多等这么久（YF-18）。 */
+const statusBalanceTimeoutMs = 3_000
 
 export function generatePairingCode(randomInt: (maxExclusive: number) => number): string {
   return String(randomInt(1_000_000)).padStart(6, '0')
@@ -498,6 +508,33 @@ export function readFileChange(change: unknown): RemoteFileChangeLine | null {
 }
 
 /**
+ * Codex 计划里正在做的那一步（YF-18）。turn/plan/updated 每次送整张计划（rust-v0.167.0 v2
+ * TurnPlanUpdatedNotification：plan 是 { step, status } 的数组，status 是 pending / inProgress / completed），
+ * 取第一条 inProgress 的；一条都没有（还没开始、都做完了、送来的不认得）是 null，「状态」里就不写「做到…」。
+ */
+export function currentPlanStep(plan: unknown): string | null {
+  if (!Array.isArray(plan)) return null
+  for (const entry of plan) {
+    if (isRecord(entry) && entry.status === 'inProgress' && typeof entry.step === 'string' && entry.step.trim()) return entry.step.trim()
+  }
+  return null
+}
+
+/** 记下这一轮真改成了的文件（YF-16）：同一个文件改几次只算一个。 */
+export function noteChangedFiles(turn: { changedFiles: string[] }, files: readonly RemoteFileChangeLine[]): void {
+  for (const file of files) {
+    const path = file.movePath ?? file.path
+    if (!turn.changedFiles.includes(path)) turn.changedFiles.push(path)
+  }
+}
+
+/** 做完小结只写文件名（YF-16）：Codex 给的路径 Windows、Mac 两种分隔符都可能有。 */
+export function remoteFileName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  return parts[parts.length - 1] ?? path
+}
+
+/**
  * 改文件卡片的正文（#1407）。以前整段拼好再截到上限，路径一长，截掉的正是最后的「另外还有」和「可写范围」，
  * 客户看到半截路径，以为要改的就这些。现在只列整条放得下的文件，其余都算进「另外还有」，「可写范围」整行留在最后。
  * 「可写范围」那一行自己都放不下就返回 null，由调用方不问直接拒，跟显示不全的权限申请一样。
@@ -585,6 +622,12 @@ function readTurnFailure(error: unknown): TurnFailure | null {
 
 interface TurnState {
   id: string | null
+  /** 收到这一句的时间：「状态」里的「已经多久」、做完小结里的「用时」都从这里算（YF-18、YF-16）。 */
+  startedAt: number
+  /** Codex 计划里正在做的那一步（turn/plan/updated 里 inProgress 的那条），没报过计划是 null。 */
+  step: string | null
+  /** 这一轮真改成了的文件（fileChange 条目 completed），原样路径、去重、按先后。 */
+  changedFiles: string[]
   finalAnswer: string | null
   lastMessage: string | null
   error: TurnFailure | null
@@ -634,6 +677,11 @@ interface ChannelRuntime {
   turn: TurnState | null
   /** 最近结束的几轮的编号（retireTurn）。 */
   retiredTurnIds: string[]
+  /**
+   * 这次打开以后最后一句交给 Codex 的话，手机上发「重试」时再发一次（YF-22）。只在内存里，关了遥控、换了人就不要了：
+   * 下次打开时发「重试」，不该把上次开着时的话翻出来执行。
+   */
+  lastPrompt: string | null
 }
 
 export type RemoteInboundSeen = 'none' | 'group' | 'direct'
@@ -668,6 +716,7 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     staleNoticeAt: 0,
     turn: null,
     retiredTurnIds: [],
+    lastPrompt: null,
   }
 }
 
@@ -1220,6 +1269,7 @@ export class CodexRemoteService {
     runtime.startedAt = this.now()
     runtime.seen.clear()
     runtime.staleNoticeAt = 0
+    runtime.lastPrompt = null
     runtime.inboundSeen = 'none'
     runtime.status = { state: 'connecting' }
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
@@ -1315,6 +1365,7 @@ export class CodexRemoteService {
     runtime.peer = null
     runtime.replyContext = undefined
     runtime.threadId = null
+    runtime.lastPrompt = null
     // 换了人就是新的人，没有「前面的」可言。
     runtime.threadLost = false
   }
@@ -1557,15 +1608,16 @@ export class CodexRemoteService {
       case 'help':
         await this.sendText(runtime, remoteMessages.help)
         return
-      case 'status': {
-        const workspace = (await this.options.store.readSettings()).workspaceDirectory
-        await this.sendText(runtime, statusMessage({
-          workspace: workspace ? remoteDisplayPath(workspace, this.options.homeDirectory, this.platform) : '',
-          running: runtime.turn !== null,
-          pendingApprovals: this.pendingFor(runtime.id).length,
-        }))
+      case 'status':
+        await this.sendText(runtime, await this.statusReply(runtime))
         return
-      }
+      case 'retry':
+        if (!runtime.lastPrompt) {
+          await this.sendText(runtime, remoteMessages.nothingToRetry)
+          return
+        }
+        await this.runPrompt(runtime, runtime.lastPrompt, retryMessage(runtime.lastPrompt))
+        return
       case 'stop':
         if (!runtime.turn) {
           await this.sendText(runtime, remoteMessages.nothingToStop)
@@ -1750,7 +1802,40 @@ export class CodexRemoteService {
     this.emitSoon()
   }
 
-  private async runPrompt(runtime: ChannelRuntime, text: string): Promise<void> {
+  /** 手机上发「状态」回的那几行（YF-18）。 */
+  private async statusReply(runtime: ChannelRuntime): Promise<string> {
+    const [settings, balanceUsd] = await Promise.all([this.options.store.readSettings(), this.statusBalance()])
+    const workspace = settings.workspaceDirectory
+    const turn = runtime.turn
+    return statusMessage({
+      workspace: workspace ? remoteDisplayPath(workspace, this.options.homeDirectory, this.platform) : '',
+      running: turn !== null,
+      pendingApprovals: this.pendingFor(runtime.id).length,
+      ...(turn ? { runningForMs: this.now() - turn.startedAt, step: turn.step } : {}),
+      balanceUsd,
+      idleCloseHours: this.idleCloseHours,
+    })
+  }
+
+  /** 「状态」里的余额：读不到、出错、超过 statusBalanceTimeoutMs 都当没有，不写那一行。 */
+  private async statusBalance(): Promise<number | null> {
+    const read = this.options.readBalanceUsd
+    if (!read) return null
+    let timer: NodeJS.Timeout | undefined
+    const timeout = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), statusBalanceTimeoutMs)
+      timer.unref?.()
+    })
+    try {
+      const value = await Promise.race([read().catch(() => null), timeout])
+      return typeof value === 'number' && Number.isFinite(value) ? value : null
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
+  /** lead 是「收到」前面先说的那句，「重试」时说重发的是哪一句（YF-22）。 */
+  private async runPrompt(runtime: ChannelRuntime, text: string, lead?: string): Promise<void> {
     if (runtime.turn) {
       await this.sendText(runtime, remoteMessages.busy)
       return
@@ -1760,14 +1845,27 @@ export class CodexRemoteService {
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       return
     }
-    const turn: TurnState = { id: null, finalAnswer: null, lastMessage: null, error: null, stoppedByUser: false, stallTimer: null }
+    const turn: TurnState = {
+      id: null,
+      startedAt: this.now(),
+      step: null,
+      changedFiles: [],
+      finalAnswer: null,
+      lastMessage: null,
+      error: null,
+      stoppedByUser: false,
+      stallTimer: null,
+    }
     runtime.turn = turn
+    runtime.lastPrompt = text
     this.noteTurnProgress(runtime)
     this.emitSoon()
     // 原来的对话丢了（不是他自己发的「新对话」），这一条会从新对话开始：收到那句前面先说一声（D66 / YKS-16）。
-    const received = runtime.threadId === null && runtime.threadLost
-      ? `${remoteMessages.threadReset}\n${remoteMessages.received}`
-      : remoteMessages.received
+    const received = [
+      ...(lead ? [lead] : []),
+      ...(runtime.threadId === null && runtime.threadLost ? [remoteMessages.threadReset] : []),
+      remoteMessages.received,
+    ].join('\n')
     await this.sendText(runtime, received)
     // 起 Codex、开对话不在收件队列里等（D66 / YKS-3）：起 Codex 排在全局的安装队列里，别的工具在装时能等好几分钟，
     // 这期间手机发的「停止」「状态」得有人理，「停止」靠 turnStillWanted 拦住还没交给 Codex 的这一句。
@@ -1962,6 +2060,8 @@ export class CodexRemoteService {
         })
         if (method === 'item/started') this.fileChanges.set(itemId, files)
         else this.fileChanges.delete(itemId)
+        // 做完小结只算真改成了的（YF-16）：被拒绝、没改成的不算。
+        if (method === 'item/completed' && item.status === 'completed' && runtime?.turn) noteChangedFiles(runtime.turn, files)
       }
       if (method === 'item/completed' && item.type === 'agentMessage' && runtime?.turn) {
         const text = typeof item.text === 'string' ? item.text.trim() : ''
@@ -1972,6 +2072,10 @@ export class CodexRemoteService {
       return
     }
     if (!runtime?.turn) return
+    if (method === 'turn/plan/updated') {
+      runtime.turn.step = currentPlanStep(params.plan)
+      return
+    }
     if (method === 'error' && params.willRetry !== true && isRecord(params.error)) {
       runtime.turn.error = readTurnFailure(params.error)
       return
@@ -1988,9 +2092,12 @@ export class CodexRemoteService {
     if (turn.id) this.retireTurn(runtime, turn.id)
     for (const entry of this.pendingFor(runtime.id)) entry.settle('decline')
     let reply: string | null
-    if (turnPayload.status === 'completed') reply = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
-    else if (turnPayload.status === 'interrupted') reply = turn.stoppedByUser ? null : remoteMessages.interrupted
-    else {
+    if (turnPayload.status === 'completed') {
+      const answer = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
+      reply = `${answer}\n\n${turnSummaryLine(this.now() - turn.startedAt, turn.changedFiles.map(remoteFileName))}`
+    } else if (turnPayload.status === 'interrupted') {
+      reply = turn.stoppedByUser ? null : remoteMessages.interrupted
+    } else {
       // 回执里带着报错就以它为准，没带用这一轮前面那条 error 通知。
       const failure = readTurnFailure(turnPayload.error)
       reply = this.turnFailureReply(runtime, 'remote.turn-failed', failure?.message ? failure : turn.error ?? failure)

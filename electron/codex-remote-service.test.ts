@@ -223,6 +223,8 @@ async function setup(options: {
   failSpawns?: { remaining: number }
   /** 设置里「多久没消息就自动关」选的时长；缺省 = 不自动关（YF-10）。 */
   idleCloseHours?: 4 | 12
+  /** 「状态」里报的余额（YF-18）；缺省 = 不报。 */
+  readBalanceUsd?: () => Promise<number | null>
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -274,6 +276,7 @@ async function setup(options: {
     inspectAvailability: () => unavailable.reason,
     checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
+    ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
   })
   return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable }
 }
@@ -1123,7 +1126,8 @@ describe('codex-remote-service clock running fast', () => {
 
 describe('codex-remote-service turns', () => {
   it('runs a prompt in the workspace and replies with the redacted final answer', async () => {
-    const s = await setup()
+    // 钟停着，做完小结（YF-16）里的用时总是 1 秒。
+    const s = await setup({ now: () => Date.UTC(2026, 10, 11, 6, 0, 0) })
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
@@ -1144,7 +1148,7 @@ describe('codex-remote-service turns', () => {
     codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a2', text: `测试都过了，密钥是 ${apiKey}`, phase: 'final_answer' } })
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed', error: null } })
     await vi.waitFor(() => expect(channel.texts()).toHaveLength(2))
-    expect(channel.texts()[1]).toBe('测试都过了，密钥是 [已隐去]')
+    expect(channel.texts()[1]).toBe('测试都过了，密钥是 [已隐去]\n\n用时 1 秒。')
     expect(channel.sent[1].replyContext).toMatch(/^ctx-/)
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
   })
@@ -1187,13 +1191,13 @@ describe('codex-remote-service turns', () => {
   })
 
   it('keeps one turn at a time and reuses the thread', async () => {
-    const s = await setup()
+    const s = await setup({ now: () => Date.UTC(2026, 10, 11, 6, 0, 0) })
     const channel = await enabledAndPaired(s)
     const codex = await prompted(s, channel)
     channel.handlers?.onInbound(text(alice, '再来一个'))
     await vi.waitFor(() => expect(channel.texts()).toContain('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
-    await vi.waitFor(() => expect(channel.texts()).toContain('这一轮做完了，Codex 没有留下文字回复。'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('这一轮做完了，Codex 没有留下文字回复。\n\n用时 1 秒。'))
     channel.handlers?.onInbound(text(alice, '再来一个'))
     await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
     expect(codex.requests('thread/start')).toHaveLength(1)
@@ -1293,6 +1297,88 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(4))
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-4', status: 'failed', error: { message: 'stream disconnected before completion: error sending request', codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } } } })
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('电脑这会儿连不上星芒的线路，过一会儿再发。'))
+  })
+
+  // YF-18（「状态重试」那批）：「状态」带上跑了多久、做到哪一步、余额、还有多久自动关。
+  it('reports how long the turn has run, the plan step, the balance and when it closes by itself', async () => {
+    let now = Date.UTC(2026, 10, 11, 6, 0, 0)
+    const s = await setup({ now: () => now, idleCloseHours: 4, readBalanceUsd: async () => 12.4 })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    codex.notify('turn/plan/updated', {
+      threadId: 'th-1',
+      turnId: 'tu-1',
+      explanation: null,
+      plan: [{ step: '读代码', status: 'completed' }, { step: '运行测试', status: 'inProgress' }, { step: '写总结', status: 'pending' }],
+    })
+    now += 6 * 60_000 + 30_000
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：正在处理，已经 6 分钟，做到「运行测试」\n余额：$12.40\n再过 4 小时没新消息就自动关`))
+    // 计划里一条正在做的都没有了（都做完了），就不写「做到…」。
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', explanation: null, plan: [{ step: '读代码', status: 'completed' }] })
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：正在处理，已经 6 分钟\n余额：$12.40\n再过 4 小时没新消息就自动关`))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲\n余额：$12.40\n再过 4 小时没新消息就自动关`))
+  })
+
+  it('leaves the balance and idle close lines out when the balance cannot be read and the remote never closes by itself', async () => {
+    const s = await setup({ readBalanceUsd: async () => { throw new Error('network down') } })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲`))
+  })
+
+  // YF-16：做完以后在回答后面接一行，用了多久、真改成了哪些文件；停下、没做完的不接。
+  it('sums up the time taken and the files actually changed after the answer', async () => {
+    let now = Date.UTC(2026, 10, 11, 6, 0, 0)
+    const s = await setup({ now: () => now })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const fileChange = (id: string, status: string, paths: string[]) => ({
+      threadId: 'th-1',
+      turnId: 'tu-1',
+      item: { type: 'fileChange', id, status, changes: paths.map((entry) => ({ path: entry, kind: { type: 'update', move_path: null }, diff: '' })) },
+    })
+    codex.notify('item/completed', fileChange('f1', 'completed', [`${s.workspace}/src/a.ts`, `${s.workspace}/styles/b.css`]))
+    codex.notify('item/completed', fileChange('f2', 'declined', [`${s.workspace}/src/secret.ts`]))
+    codex.notify('item/completed', fileChange('f3', 'completed', [`${s.workspace}/src/a.ts`]))
+    codex.notify('item/completed', { threadId: 'th-1', turnId: 'tu-1', item: { type: 'agentMessage', id: 'a1', text: '改好了。', phase: 'final_answer' } })
+    now += 200_000
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('改好了。\n\n用时 3 分 20 秒，改了 2 个文件：a.ts、b.css。'))
+
+    channel.handlers?.onInbound(text(alice, '再来一个'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    now += 45_000
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: 'boom' } } })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('这一轮没做完：boom'))
+  })
+
+  // YF-22：「重试」把这次打开以后最后一句交给 Codex 的话再发一次；关了再开就没有「上一条」了。
+  it('sends the last prompt again on retry, says which one, and forgets it once the remote is switched off', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '重试'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('还没有可以重发的上一条。直接发要做的事就行。'))
+    const prompt = '把登录页的表单校验全部改成新的写法，再补上测试'
+    const codex = await prompted(s, channel, prompt)
+    channel.handlers?.onInbound(text(alice, '重试'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条。等它做完再发，或者发「停止」中断它。'))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: 'boom' } } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(text(alice, '重试'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    expect(channel.texts()).toContain('再发一次上一条：「把登录页的表单校验全部改成新的写法，再补…」\n收到，Codex 开始处理。')
+    expect(codex.requests('turn/start')[1].params).toEqual({ threadId: 'th-1', input: [{ type: 'text', text: prompt, text_elements: [] }] })
+
+    await s.service.setChannelEnabled('feishu', false)
+    await s.service.setChannelEnabled('feishu', true)
+    const reopened = s.channels.at(-1) as FakeChannel
+    reopened.handlers?.onInbound(text(alice, '重试'))
+    await vi.waitFor(() => expect(reopened.texts()).toContain('还没有可以重发的上一条。直接发要做的事就行。'))
   })
 
   it('tells the phone when Codex dies mid-turn', async () => {

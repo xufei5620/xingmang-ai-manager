@@ -16,7 +16,7 @@ export const remoteMessages = {
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   unsupported: '暂时只支持文字消息。',
-  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、关闭遥控、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
+  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、关闭遥控、重试、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
   closedFromPhone: '手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。',
@@ -33,7 +33,18 @@ export const remoteMessages = {
   threadReset: '这是新对话，前面的记不得了。',
   unbound: '电脑上已经把你解绑了，之后发的消息不会再执行。',
   idleClosingSoon: '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。',
+  // 手机上发「重试」、这次打开以后还没交给 Codex 过一句时（Fable 手机遥控 YF-22，yoyo 2026-11-11「状态重试改」）。
+  nothingToRetry: '还没有可以重发的上一条。直接发要做的事就行。',
 } as const
+
+const retryPreviewLength = 20
+
+/** 「重试」时先说重发的是哪一句（YF-22）：只带前 20 个字，免得一大段又刷一遍屏。 */
+export function retryMessage(text: string): string {
+  const characters = [...text.trim().replace(/\s+/g, ' ')]
+  const head = characters.slice(0, retryPreviewLength).join('')
+  return `再发一次上一条：「${characters.length > retryPreviewLength ? `${head}…` : head}」`
+}
 
 /** 闲着自动关时手机上收到的那句（YF-10）：时长跟着设置里选的走；选了「不自动关」时根本不会关，也就不发。 */
 export function idleClosedMessage(hours: number): string {
@@ -151,6 +162,14 @@ export interface RemoteStatusSummary {
   workspace: string
   running: boolean
   pendingApprovals: number
+  /** 这一轮从收到那一刻起过了多久；不在处理时不看（YF-18）。 */
+  runningForMs?: number
+  /** Codex 计划里正在做的那一步（turn/plan/updated）；没报过计划时不填，就不写「做到…」。 */
+  step?: string | null
+  /** 账号余额（美元）；没登录、读不到时不填，就没有这一行。 */
+  balanceUsd?: number | null
+  /** 设置里选的「多久没消息就自动关」；选了「不自动关」（null）就没有这一行。 */
+  idleCloseHours?: number | null
 }
 
 /**
@@ -161,11 +180,62 @@ export function remoteOpenedMessage(workspace: string): string {
   return `电脑上的手机遥控打开了，可以发消息了。工作文件夹：${workspace}`
 }
 
+/** 「状态」里「已经多久」那种写法（YF-18）：已经不到 1 分钟、已经 6 分钟、已经 1 小时 5 分钟。 */
+export function remoteRunningForText(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000)
+  if (minutes < 1) return '已经不到 1 分钟'
+  if (minutes < 60) return `已经 ${minutes} 分钟`
+  const rest = minutes % 60
+  return rest ? `已经 ${Math.floor(minutes / 60)} 小时 ${rest} 分钟` : `已经 ${Math.floor(minutes / 60)} 小时`
+}
+
+/** 美元金额跟电脑上同一种写法：带千分位、两位小数（renderer-v2 的 dollars()）。 */
+export function remoteDollars(amount: number): string {
+  return `$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+const maxStatusStepLength = 30
+
+/**
+ * 「状态」的回复（YF-18，yoyo 2026-11-11「状态重试改」）：以前只有工作文件夹和「现在」两行，
+ * 现在「现在」带上跑了多久、做到哪一步，再加余额和还有多久自动关，最多四行。读不到的那一样不写。
+ * 「状态」这一句本身就让自动关的计时重新起算，所以剩下的总是设置里那个整时长。
+ */
 export function statusMessage(status: RemoteStatusSummary): string {
-  const now = status.pendingApprovals > 0
-    ? `等你同意 ${status.pendingApprovals} 条`
-    : status.running ? '正在处理' : '空闲'
-  return `工作文件夹：${status.workspace}\n现在：${now}`
+  let now = '空闲'
+  if (status.pendingApprovals > 0) now = `等你同意 ${status.pendingApprovals} 条`
+  else if (status.running) {
+    const step = status.step ? status.step.replace(/\s+/g, ' ').trim() : ''
+    now = `正在处理，${remoteRunningForText(status.runningForMs ?? 0)}`
+    if (step) now += `，做到「${truncateRemoteText(step, maxStatusStepLength)}」`
+  }
+  const lines = [`工作文件夹：${status.workspace}`, `现在：${now}`]
+  if (typeof status.balanceUsd === 'number' && Number.isFinite(status.balanceUsd)) lines.push(`余额：${remoteDollars(status.balanceUsd)}`)
+  if (status.idleCloseHours) lines.push(`再过 ${status.idleCloseHours} 小时没新消息就自动关`)
+  return lines.join('\n')
+}
+
+/** 做完小结里「用时」那种写法（YF-16）：45 秒、3 分 20 秒、1 小时 5 分。 */
+export function remoteTookText(ms: number): string {
+  const seconds = Math.max(1, Math.round(ms / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return seconds % 60 ? `${minutes} 分 ${seconds % 60} 秒` : `${minutes} 分`
+  return minutes % 60 ? `${Math.floor(minutes / 60)} 小时 ${minutes % 60} 分` : `${Math.floor(minutes / 60)} 小时`
+}
+
+const maxSummaryFileNames = 3
+
+/**
+ * 做完以后接在 Codex 回答后面的那一行（YF-16，yoyo 2026-11-11「状态重试改」）：用了多久、改了哪些文件。
+ * fileNames 是这一轮真改成了的文件，只写文件名不写路径，最多列 3 个，其余说「另外 N 个」。
+ */
+export function turnSummaryLine(tookMs: number, fileNames: readonly string[]): string {
+  const took = `用时 ${remoteTookText(tookMs)}`
+  if (!fileNames.length) return `${took}。`
+  const shown = fileNames.slice(0, maxSummaryFileNames).join('、')
+  const more = fileNames.length > maxSummaryFileNames ? `，另外 ${fileNames.length - maxSummaryFileNames} 个` : ''
+  return `${took}，改了 ${fileNames.length} 个文件：${shown}${more}。`
 }
 
 const approvalTitles: Record<RemoteApprovalKind, string> = {
@@ -221,6 +291,7 @@ export type RemoteCommand =
   | { kind: 'status' }
   | { kind: 'help' }
   | { kind: 'close' }
+  | { kind: 'retry' }
   | { kind: 'approval'; decision: 'accept' | 'decline'; approvalId?: string }
 
 const plainCommands: Record<string, RemoteCommand['kind']> = {
@@ -229,6 +300,7 @@ const plainCommands: Record<string, RemoteCommand['kind']> = {
   状态: 'status',
   帮助: 'help',
   关闭遥控: 'close',
+  重试: 'retry',
 }
 
 /**
@@ -239,7 +311,7 @@ export function parseRemoteCommand(text: string, hasPendingApprovals: boolean): 
   const trimmed = text.trim()
   const bare = trimmed.replace(/^[/／]\s*/, '')
   const plain = plainCommands[bare]
-  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close') return { kind: plain }
+  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close' || plain === 'retry') return { kind: plain }
   if (hasPendingApprovals) {
     const match = /^(同意|拒绝)(?:\s*(?:第\s*)?(\d{1,4})\s*条?)?$/.exec(bare)
     if (match) {
