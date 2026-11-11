@@ -16,6 +16,12 @@ const {
   parseLatestMetadata,
 } = require('./update-release-utils.cjs')
 const { ARCHITECTURES, releaseArtifactNames } = require('./macos-artifact-names.cjs')
+const {
+  CHROMIUM_LICENSE_FILE_NAME,
+  ELECTRON_LICENSE_FILE_NAME,
+  NOTICES_FILE_NAME,
+  assertPackagedThirdPartyNotices,
+} = require('./third-party-notices.cjs')
 
 const runFile = promisify(execFile)
 const APP_IDENTIFIER = 'com.xingmang.ai.manager'
@@ -687,6 +693,22 @@ function verifyPackagedUpdateConfig(appPath, expectedUpdateUrl) {
   return { configPath, configIdentity }
 }
 
+// D97：第三方许可清单，和 electron-builder 出 Mac 包时删掉、由 afterExtract 补回来的 Electron 与
+// Chromium 许可文件（LC-2），三份都在 Contents/Resources。这几份在签名封住的资源里，签名核过以后
+// 才读，读的时候整个包不许被换。
+function verifyPackagedThirdPartyNotices(appPath, asarPath) {
+  const resourcesDirectory = safeBundleDirectory(appPath, path.join('Contents', 'Resources'), 'Contents/Resources')
+  for (const name of [NOTICES_FILE_NAME, ELECTRON_LICENSE_FILE_NAME, CHROMIUM_LICENSE_FILE_NAME]) {
+    safeRegularFile(appPath, path.join('Contents', 'Resources', name), name)
+  }
+  return assertPackagedThirdPartyNotices({
+    resourcesDirectory,
+    electronLicenseDirectory: resourcesDirectory,
+    asarPath,
+    asarModule: asar,
+  })
+}
+
 function parseDesignatedRequirement(text) {
   if (typeof text !== 'string') throw new Error('指定要求必须使用固定 grammar')
   const designatedRequirement = text.trim()
@@ -844,12 +866,15 @@ async function inspectPackagedApplication(
       throw new Error(`packaged package.json version 必须精确匹配预期版本 ${expectedVersion}`)
     }
     if (packagedPackage.xingmangLocalBuild !== false) throw new Error('packaged package.json 必须显式设置 xingmangLocalBuild 为 false')
+    const notices = verifyPackagedThirdPartyNotices(appPath, asarPath)
+    assertBundleIdentity()
     return {
       architecture,
       certificateSha256,
       certificateSha1,
       fuseCount,
       teamIdentifier,
+      thirdPartyNoticeCount: notices.listedCount,
       entitlementKeys: mainEntitlements,
       helperEntitlements,
       ...requirement,

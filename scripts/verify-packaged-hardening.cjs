@@ -1,7 +1,10 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const { extractFile, statFile } = require('@electron/asar')
+const asarModule = require('@electron/asar')
 const { EXPECTED_FUSES, assertElectronFuseHardening } = require('./electron-fuse-hardening.cjs')
+const { assertPackagedThirdPartyNotices } = require('./third-party-notices.cjs')
+
+const { extractFile, statFile } = asarModule
 
 // #1070 第 2、3 步把整份 system-service.js 拆成了门面、共用上下文、九个业务簇和三个共用的叶子模块。
 // 拆之前下面那两条「旧启动链不许回来」读的是整份 system-service.js，所以拆出来的每一份都要查（#1333）。
@@ -170,10 +173,18 @@ async function main() {
   assertNoDefaultAppFallback(resourcesDirectory)
   inspectPackagedLaunchBoundary(asar)
   const releaseNotes = inspectPackagedReleaseNotes(asar)
+  // Windows、Linux 的 Electron 与 Chromium 许可文件由 electron-builder 留在安装目录根上，
+  // 第三方许可清单在 resources 里（D97）。
+  const notices = assertPackagedThirdPartyNotices({
+    resourcesDirectory,
+    electronLicenseDirectory: unpackedDirectory,
+    asarPath: asar,
+    asarModule,
+  })
 
   const fuseCount = await assertElectronFuseHardening(executable, '打包主程序')
 
-  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar、无默认应用回落与普通用户 CLI 启动边界均符合要求；随包更新说明 ${releaseNotes.version}（${releaseNotes.count} 条）`)
+  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar、无默认应用回落与普通用户 CLI 启动边界均符合要求；随包更新说明 ${releaseNotes.version}（${releaseNotes.count} 条）；第三方许可清单 ${notices.listedCount} 项`)
 }
 
 if (require.main === module) {
