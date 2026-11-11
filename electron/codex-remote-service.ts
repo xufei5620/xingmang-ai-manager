@@ -34,7 +34,7 @@ import {
   type RemoteProgressCard,
   type RemoteProgressStep,
 } from './codex-remote-channel'
-import { emptyChannelSettings, type CodexRemoteStore } from './codex-remote-store'
+import { emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
 import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
@@ -63,6 +63,11 @@ import {
   turnSummaryLine,
   unknownApprovalMessage,
   whichApprovalMessage,
+  workspaceAlreadyInUseMessage,
+  workspaceListMessage,
+  workspaceMissingMessage,
+  workspaceSwitchedMessage,
+  workspaceUnusableMessage,
   type RemoteFileChangeLine,
 } from './codex-remote-text'
 import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
@@ -149,6 +154,8 @@ const progressTextEveryMs = 5 * 60_000
 /** 进度卡最多列这么多步、每步最多这么多个字：卡片有大小上限，手机上也看不过来。 */
 const maxProgressSteps = 15
 const maxProgressStepLength = 80
+/** 单子满了还要加（YF-19）：界面上满了「添加一个」就灰着，这句只在别的路子绕过来时出现。 */
+const workspaceListFullMessage = `最多加 ${maxRemoteWorkspaces} 个文件夹，先移除一个再添加。`
 /** 每个渠道记住最近结束的这么多轮的编号，它们迟到的审批和通知都不认（belongsToOtherTurn）。 */
 const maxRetiredTurns = 16
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
@@ -976,6 +983,9 @@ export class CodexRemoteService {
       workspaceDirectory: settings.workspaceDirectory
         ? remoteDisplayPath(settings.workspaceDirectory, this.options.homeDirectory, this.platform)
         : null,
+      ...(settings.workspaceDirectories && settings.workspaceDirectories.length > 1
+        ? { workspaces: settings.workspaceDirectories.map((folder) => remoteDisplayPath(folder, this.options.homeDirectory, this.platform)) }
+        : {}),
       task,
       pendingApprovals,
       ...(settings.autoStart ? { autoStart: true } : {}),
@@ -986,17 +996,71 @@ export class CodexRemoteService {
     }
   }
 
-  async setWorkspace(directory: string): Promise<CodexRemoteSnapshot> {
+  /**
+   * 电脑上「选择文件夹」「添加一个」（YF-19）：加进单子，最多 maxRemoteWorkspaces 个；还没有正在用的就用它。
+   * 路径来自系统对话框（I5），能不能用由 validateRemoteWorkspace 判断；加过的再加一次不动。
+   */
+  async addWorkspace(directory: string): Promise<CodexRemoteSnapshot> {
     const workspace = validateRemoteWorkspace(directory, this.options.homeDirectory, this.platform)
+    const before = await this.options.store.readSettings()
+    if (!before.workspaceDirectory) this.assertNoTurnForWorkspace()
+    const settings = await this.options.store.updateSettings((settings) => {
+      const list = remoteWorkspaceList(settings)
+      if (!list.includes(workspace)) {
+        if (list.length >= maxRemoteWorkspaces) throw new Error(workspaceListFullMessage)
+        settings.workspaceDirectories = [...list, workspace]
+      }
+      if (!settings.workspaceDirectory) settings.workspaceDirectory = workspace
+    })
+    if (settings.workspaceDirectory !== before.workspaceDirectory) this.workspaceChanged()
+    return this.emit()
+  }
+
+  /** 电脑上「用这个」（YF-19）。folder 是界面上显示的样子（主目录写 ~），只认单子上有的那几个。 */
+  async useWorkspace(folder: string): Promise<CodexRemoteSnapshot> {
+    const settings = await this.options.store.readSettings()
+    const target = this.findWorkspace(settings, folder)
+    if (target === settings.workspaceDirectory) return this.emit()
+    this.assertNoTurnForWorkspace()
+    validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
+    await this.switchWorkspace(target)
+    return this.emit()
+  }
+
+  /** 电脑上「移除」（YF-19）：正在用的那个不能移除，先换到别的。 */
+  async removeWorkspace(folder: string): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      const target = this.findWorkspace(settings, folder)
+      if (target === settings.workspaceDirectory) throw new Error('正在用的文件夹不能移除，先换到别的再移除。')
+      settings.workspaceDirectories = remoteWorkspaceList(settings).filter((entry) => entry !== target)
+    })
+    return this.emit()
+  }
+
+  private findWorkspace(settings: Parameters<typeof remoteWorkspaceList>[0], folder: string): string {
+    const target = remoteWorkspaceList(settings).find((entry) => remoteDisplayPath(entry, this.options.homeDirectory, this.platform) === folder)
+    if (!target) throw new Error('这个文件夹已经不在单子上了。')
+    return target
+  }
+
+  private assertNoTurnForWorkspace(): void {
     if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
       throw new Error('Codex 正在处理手机上发来的任务，等它做完再换文件夹。')
     }
+  }
+
+  private async switchWorkspace(target: string): Promise<void> {
     await this.options.store.updateSettings((settings) => {
-      settings.workspaceDirectory = workspace
+      if (!remoteWorkspaceList(settings).includes(target)) throw new Error('这个文件夹已经不在单子上了。')
+      settings.workspaceDirectories = remoteWorkspaceList(settings)
+      settings.workspaceDirectory = target
     })
-    // 新文件夹从新对话开始：旧对话的工作目录还是原来那个。
+    this.workspaceChanged()
+  }
+
+  /** 新文件夹从新对话开始：旧对话的工作目录还是原来那个。 */
+  private workspaceChanged(): void {
     for (const id of remoteChannelIds) this.dropThread(this.runtimes[id])
-    return this.emit()
   }
 
   async setChannelEnabled(channel: RemoteChannelId, enabled: boolean): Promise<CodexRemoteSnapshot> {
@@ -1782,6 +1846,12 @@ export class CodexRemoteService {
       case 'status':
         await this.sendText(runtime, await this.statusReply(runtime))
         return
+      case 'folders':
+        await this.sendText(runtime, await this.workspaceListReply())
+        return
+      case 'use-folder':
+        await this.useWorkspaceFromPhone(runtime, command.index)
+        return
       case 'retry':
         if (!runtime.lastPrompt) {
           await this.sendText(runtime, remoteMessages.nothingToRetry)
@@ -1970,6 +2040,49 @@ export class CodexRemoteService {
     target.settle(decision)
     this.options.log('info', 'remote.approval-answered', { channel: runtime.id, decision, from })
     await this.sendText(runtime, decision === 'accept' ? approvalAcceptedMessage(target.id) : approvalDeclinedMessage(target.id))
+    this.emitSoon()
+  }
+
+  /** 手机上发「文件夹」（YF-19）。 */
+  private async workspaceListReply(): Promise<string> {
+    const settings = await this.options.store.readSettings()
+    const shown = (folder: string) => remoteDisplayPath(folder, this.options.homeDirectory, this.platform)
+    return workspaceListMessage(remoteWorkspaceList(settings).map(shown), settings.workspaceDirectory ? shown(settings.workspaceDirectory) : null)
+  }
+
+  /**
+   * 手机上发「文件夹 N」（YF-19）：只能切到电脑上亲手加过的那几个，跟电脑上「用这个」一样从新对话开始。
+   * 这一轮还没做完（含等你同意）时不换。
+   */
+  private async useWorkspaceFromPhone(runtime: ChannelRuntime, index: number): Promise<void> {
+    const settings = await this.options.store.readSettings()
+    const list = remoteWorkspaceList(settings)
+    const target = list[index - 1]
+    if (index < 1 || !target) {
+      await this.sendText(runtime, workspaceMissingMessage(index))
+      return
+    }
+    const shown = remoteDisplayPath(target, this.options.homeDirectory, this.platform)
+    if (target === settings.workspaceDirectory) {
+      await this.sendText(runtime, workspaceAlreadyInUseMessage(shown))
+      return
+    }
+    if (remoteChannelIds.some((id) => this.runtimes[id].turn)) {
+      await this.sendText(runtime, remoteMessages.workspaceBusy)
+      return
+    }
+    try {
+      validateRemoteWorkspace(target, this.options.homeDirectory, this.platform)
+      await this.switchWorkspace(target)
+    } catch {
+      this.options.log('warn', 'remote.workspace-unusable', { channel: runtime.id })
+      await this.sendText(runtime, workspaceUnusableMessage(shown))
+      return
+    }
+    // 手机上已经说了「从新对话开始」，下一句不用再提醒「前面的记不得了」。
+    runtime.threadLost = false
+    this.options.log('info', 'remote.workspace-switched', { channel: runtime.id, from: 'phone' })
+    await this.sendText(runtime, workspaceSwitchedMessage(shown))
     this.emitSoon()
   }
 

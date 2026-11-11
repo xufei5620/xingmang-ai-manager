@@ -76,9 +76,28 @@ describe('codex remote card', () => {
     const markup = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
     expect(markup).toContain('App ID：cli_a1b2c3d4')
     expect(markup).not.toContain('data-testid="settings-remote-feishu-form"')
-    expect(markup).toContain('换一个')
+    expect(buttonMarkup(markup, 'settings-remote-workspace')).toBeTruthy()
+    expect(markup).toContain('<span>添加一个</span></button>')
+    // Only one folder: no list, no 「正在用」 tag, just the path as before.
+    expect(markup).not.toContain('data-testid="settings-remote-workspace-list"')
     expect(switchMarkup(markup)).not.toContain('disabled=""')
     expect(markup).toContain('还没配对。打开遥控后才能配对。')
+  })
+
+  // YF-19：不止一个文件夹时一个一行，正在用的标出来，别的能换过去、能移除；满 5 个不让再加。
+  it('lists several folders with the one in use marked and the others switchable, and stops adding at five', () => {
+    const three = render(snapshot({ workspaceDirectory: '~/projects/blog', workspaces: ['~/projects/demo', '~/projects/blog', '~/projects/shop'] }))
+    expect(three).toContain('data-testid="settings-remote-workspace-list"')
+    expect(three.match(/data-testid="settings-remote-workspace-in-use"/g)).toHaveLength(1)
+    expect(three).toContain('~/projects/blog</span><span class="xm-pill xm-tone-accent" data-testid="settings-remote-workspace-in-use">正在用</span>')
+    expect(three.match(/>用这个</g)).toHaveLength(2)
+    expect(three.match(/>移除</g)).toHaveLength(2)
+    expect(three).toContain('手机上发「文件夹」也能换。')
+    expect(buttonMarkup(three, 'settings-remote-workspace')).not.toContain('disabled=""')
+    const five = render(snapshot({ workspaceDirectory: '~/a', workspaces: ['~/a', '~/b', '~/c', '~/d', '~/e'] }))
+    expect(five).toContain('最多 5 个，先移除一个再添加。')
+    expect(five).not.toContain('手机上发「文件夹」也能换。')
+    expect(buttonMarkup(five, 'settings-remote-workspace')).toContain('disabled=""')
   })
 
   // YF-1：飞书后两步要在保存、打开遥控以后才做，保存以后不能把说明一起收走。

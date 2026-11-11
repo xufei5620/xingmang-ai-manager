@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { CodexRemoteStore, credentialRemoveFailedMessage, parseCodexRemoteSettings } from './codex-remote-store'
+import { CodexRemoteStore, credentialRemoveFailedMessage, parseCodexRemoteSettings, remoteWorkspaceList } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 
 const roots: string[] = []
@@ -60,6 +60,23 @@ describe('codex-remote-store', () => {
     for (const value of [0, 1, 24, '4', null, Number.NaN]) {
       expect(parseCodexRemoteSettings({ version: 1, idleCloseHours: value })).not.toHaveProperty('idleCloseHours')
     }
+  })
+
+  // YF-19：电脑上加过的几个文件夹。正在用的那个一定在单子上，单子最多 5 个、不重复、只要绝对路径。
+  it('keeps at most five distinct absolute folders and always the one in use', () => {
+    const a = path.resolve('/w/a')
+    const b = path.resolve('/w/b')
+    const folders = ['a', 'b', 'c', 'd', 'e', 'f'].map((name) => path.resolve('/w', name))
+    expect(parseCodexRemoteSettings({ version: 1, workspaceDirectory: a, workspaceDirectories: [a, b, b, 'relative', 42] }).workspaceDirectories).toEqual([a, b])
+    expect(parseCodexRemoteSettings({ version: 1, workspaceDirectory: a, workspaceDirectories: folders }).workspaceDirectories).toEqual(folders.slice(0, 5))
+    const current = path.resolve('/w/current')
+    expect(parseCodexRemoteSettings({ version: 1, workspaceDirectory: current, workspaceDirectories: folders }).workspaceDirectories)
+      .toEqual([...folders.slice(0, 4), current])
+    expect(parseCodexRemoteSettings({ version: 1, workspaceDirectory: current, workspaceDirectories: [a] }).workspaceDirectories).toEqual([a, current])
+    // One folder, or the list an older version never wrote, reads as just the folder in use.
+    expect(parseCodexRemoteSettings({ version: 1, workspaceDirectory: a, workspaceDirectories: [a] })).not.toHaveProperty('workspaceDirectories')
+    expect(remoteWorkspaceList(parseCodexRemoteSettings({ version: 1, workspaceDirectory: a }))).toEqual([a])
+    expect(remoteWorkspaceList(parseCodexRemoteSettings({ version: 1 }))).toEqual([])
   })
 
   it('reads the launch switch as on only when it was stored as true', () => {

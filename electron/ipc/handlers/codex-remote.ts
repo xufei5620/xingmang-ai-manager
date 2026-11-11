@@ -6,7 +6,7 @@ import {
   validateFeishuCredentialInput,
   verifyFeishuCredential,
 } from '../../codex-remote-feishu'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose } from '../parsers/codex-remote'
+import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose, parseRemoteWorkspaceChoice } from '../parsers/codex-remote'
 import type { IpcHandlerContext } from './context'
 
 export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
@@ -30,8 +30,12 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
     const result = parentWindow ? await dialog.showOpenDialog(parentWindow, dialogOptions) : await dialog.showOpenDialog(dialogOptions)
     if (result.canceled || !result.filePaths[0]) return service.snapshot()
     // 路径来自系统对话框，不来自渲染层（I5）；能不能用由 validateRemoteWorkspace 判断。
-    return service.setWorkspace(result.filePaths[0])
+    return service.addWorkspace(result.filePaths[0])
   })
+  // 「用这个」「移除」（YF-19）：渲染层只交回界面上显示的那串字，主进程只在电脑上加过的单子里找，
+  // 找不到就报错，渲染层没法借这两条让 Codex 去别的文件夹。
+  registerTrustedHandler('codex-remote:use-workspace', (_event, folder: unknown) => codexRemote().useWorkspace(parseRemoteWorkspaceChoice(folder)))
+  registerTrustedHandler('codex-remote:remove-workspace', (_event, folder: unknown) => codexRemote().removeWorkspace(parseRemoteWorkspaceChoice(folder)))
   registerTrustedHandler('codex-remote:start-pairing', (_event, channel: unknown) => codexRemote().startPairing(parseRemoteChannel(channel)))
   registerTrustedHandler('codex-remote:cancel-pairing', (_event, channel: unknown) => codexRemote().cancelPairing(parseRemoteChannel(channel)))
   registerTrustedHandler('codex-remote:unbind', (_event, channel: unknown) => codexRemote().unbind(parseRemoteChannel(channel)))
