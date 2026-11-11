@@ -115,6 +115,27 @@ describe('createWeixinLoginController', () => {
     await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'scanned' })
   })
 
+  it('asks for the phone number when WeChat confirms but still wants it, and only saves after the plain confirm', async () => {
+    const { dependencies, requests, saved } = harness([
+      qr('q1'),
+      jsonResponse({ status: 'scaned' }),
+      jsonResponse({ status: 'confirmed_but_need_verifycode', bot_token: 'early', ilink_bot_id: 'b1@im.bot' }),
+      jsonResponse({ status: 'confirmed_but_need_verifycode' }),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+    ])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'scanned' })
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'need-verify-code' })
+    expect(saved).toHaveLength(0)
+    await expect(login.poll(started.loginId, '1111')).resolves.toMatchObject({ phase: 'verify-code-wrong' })
+    expect(requests[3]).toContain('verify_code=1111')
+    await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'confirmed' })
+    expect(requests[4]).toContain('verify_code=2222')
+    expect(saved).toHaveLength(1)
+    expect(decodeWeixinCredential(saved[0].value)).toMatchObject({ token: 'tok', ownerUserId: 'owner@im.wechat' })
+  })
+
   it('swaps in a new QR code when one expires, up to three in total', async () => {
     const { dependencies } = harness([
       qr('q1'),
