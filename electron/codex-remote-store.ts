@@ -8,7 +8,7 @@ import {
 import type { SafeStorageLike } from './account-session-store'
 import { inspectSafeStorageBackend, resolveCredentialPersistence } from './safe-storage-backend'
 import { isRecord } from './input-guards'
-import { isRemoteChannelId, type RemoteChannelId } from './codex-remote-channel'
+import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type RemoteIdleCloseHours } from './codex-remote-channel'
 
 // 手机遥控的两份本地数据：设置（开没开、绑定了谁、工作文件夹，不含密钥）和每个渠道的凭据
 // （飞书 App Secret、微信机器人令牌，safeStorage 加密）。凭据是本程序自己连平台用的登录凭据，
@@ -34,7 +34,8 @@ export interface CodexRemoteBoundPeer {
 
 /**
  * 「开没开」不落盘：每次打开星芒遥控都从关着开始，要客户在电脑上点一次才连，
- * 免得开机自启的星芒在没人看着时就把这台电脑交给手机。
+ * 免得开机自启的星芒在没人看着时就把这台电脑交给手机。客户自己打开了「打开星芒时自动打开遥控」
+ * （设置里的 autoStart，默认关，YF-9）才替他连，连的也只是配对过人的渠道。
  */
 export interface CodexRemoteChannelSettings {
   /** 界面上认账号用的非机密字样（飞书 App ID、微信昵称）。 */
@@ -51,6 +52,17 @@ export interface CodexRemoteSettings {
    * 不能落到这次新的第 1 条头上。
    */
   lastApprovalNumber: number
+  /**
+   * 「打开星芒时自动打开遥控」（YF-9，yoyo 2026-11-11 亲手打字「遥控自动开，做」）。缺省 = 关：
+   * 只有客户在设置里自己打开了才存 true，读回来也只认 true。
+   */
+  autoStart?: boolean
+  /**
+   * 「多久没消息就自动关」（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省 = 不自动关：
+   * 只有客户选了 4 小时或 12 小时才存，读回来也只认这两个数。以前的版本固定 4 小时，升上来也是不自动关
+   * （yoyo 同日亲手回「老客户也不关」，知道遥控开着电脑不自动睡）。
+   */
+  idleCloseHours?: RemoteIdleCloseHours
 }
 
 export function emptyCodexRemoteSettings(): CodexRemoteSettings {
@@ -83,6 +95,8 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (typeof lastApprovalNumber === 'number' && Number.isSafeInteger(lastApprovalNumber) && lastApprovalNumber > 0) {
     settings.lastApprovalNumber = lastApprovalNumber
   }
+  if (value.autoStart === true) settings.autoStart = true
+  if (isRemoteIdleCloseHours(value.idleCloseHours)) settings.idleCloseHours = value.idleCloseHours
   if (isRecord(value.channels)) {
     for (const [id, raw] of Object.entries(value.channels)) {
       if (!isRemoteChannelId(id) || !isRecord(raw)) continue

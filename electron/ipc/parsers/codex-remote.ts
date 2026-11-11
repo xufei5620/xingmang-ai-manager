@@ -1,5 +1,6 @@
-// 手机遥控那几条通道的入参（I5）：渠道只认 remoteChannelIds 里的，开关只认布尔，飞书凭据只认两个限长字符串。
-import { isRemoteChannelId, type RemoteChannelId } from '../../codex-remote-channel'
+// 手机遥控那几条通道的入参（I5）：渠道只认 remoteChannelIds 里的，开关只认布尔，自动关时长只认 remoteIdleCloseHours 里的数或 null，
+// 飞书凭据只认两个限长字符串。
+import { isRemoteChannelId, isRemoteIdleCloseHours, type RemoteChannelId, type RemoteIdleCloseHours } from '../../codex-remote-channel'
 import { isRecord } from '../../input-guards'
 import type { CodexRemoteFeishuCredentialRequest } from '../../ipc-contract'
 
@@ -10,6 +11,13 @@ export function parseRemoteChannel(value: unknown): RemoteChannelId {
 
 export function parseRemoteEnabled(value: unknown): boolean {
   if (typeof value !== 'boolean') throw new Error('遥控开关参数无效')
+  return value
+}
+
+/** null = 不自动关。 */
+export function parseRemoteIdleClose(value: unknown): RemoteIdleCloseHours | null {
+  if (value === null) return null
+  if (!isRemoteIdleCloseHours(value)) throw new Error('遥控自动关时长参数无效')
   return value
 }
 
