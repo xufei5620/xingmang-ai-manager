@@ -15,6 +15,7 @@ import {
   serializeFeishuCredential,
   transientFeishuRequestFailure,
   validateFeishuCredentialInput,
+  verifyFeishuCredential,
   type FeishuChannelOptions,
   type FeishuSocket,
 } from './codex-remote-feishu'
@@ -189,6 +190,29 @@ describe('codex-remote-feishu credentials', () => {
     await expect(requestFeishuTenantToken(bad, { appId, appSecret }, 0)).rejects.toBeInstanceOf(FeishuAuthError)
     // Saving the credential shows this on the card too (D23): one fixed sentence, never Feishu's own words.
     await expect(requestFeishuTenantToken(bad, { appId, appSecret }, 0)).rejects.toThrow(feishuProblemMessages.credential)
+  })
+
+  // 「飞书保存改」：保存时飞书回的不是正常应答，红条只说批过的那句，HTTP 状态只进日志。
+  it('keeps the HTTP status of an odd token answer out of the save failure and logs it instead', async () => {
+    const logged: Array<{ event: string; detail?: Record<string, unknown> }> = []
+    const deps = (respond: () => Response) => ({
+      fetch: vi.fn(async () => respond()),
+      now: () => 0,
+      log: (_level: string, event: string, detail?: Record<string, string | number | boolean | null>) => { logged.push({ event, detail }) },
+    })
+    const page = deps(() => new Response('<html>401 Unauthorized</html>', { status: 401, headers: { 'Content-Type': 'text/html' } }))
+    const failure = await verifyFeishuCredential(page, { appId, appSecret }).then(() => null, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
+    expect((failure as Error).message).not.toMatch(/HTTP|401/)
+    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401 } }])
+
+    // A wrong secret and a good one keep their own outcome.
+    await expect(verifyFeishuCredential(deps(() => json({ code: 10014, msg: 'app secret invalid' })), { appId, appSecret }))
+      .rejects.toThrow(feishuProblemMessages.credential)
+    await expect(verifyFeishuCredential(deps(() => json({ code: 0, tenant_access_token: 'tok', expire: 7200 })), { appId, appSecret }))
+      .resolves.toBeUndefined()
+    expect(logged).toHaveLength(1)
   })
 
   it('refuses to follow a redirect with the secret', async () => {

@@ -2,9 +2,9 @@
 // 微信那几条（扫码登录）在 codex-remote-weixin.ts，同用 ctx.codexRemote()。
 import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
 import {
-  requestFeishuTenantToken,
   serializeFeishuCredential,
   validateFeishuCredentialInput,
+  verifyFeishuCredential,
 } from '../../codex-remote-feishu'
 import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled } from '../parsers/codex-remote'
 import type { IpcHandlerContext } from './context'
@@ -38,9 +38,7 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
     const service = codexRemote()
     const request = parseFeishuCredentialRequest(rawRequest)
     const credential = validateFeishuCredentialInput(request.appId, request.appSecret)
-    // 先拿去飞书换一次访问凭证：填错了当场说，不等打开遥控才发现连不上。
-    const deps = service.channelDependencies('feishu')
-    await requestFeishuTenantToken(deps.fetch, credential, deps.now())
+    await verifyFeishuCredential(service.channelDependencies('feishu'), credential)
     return service.saveChannelCredential('feishu', serializeFeishuCredential(credential), credential.appId)
   })
 }

@@ -80,6 +80,9 @@ export const feishuProblemMessages = {
 
 const needsLoginMessage = feishuProblemMessages.credential
 
+/** 保存凭据时飞书回的不是正常应答，红条上那句（D23 之后单批的「飞书保存改」）。 */
+export const feishuSaveFailedMessage = '飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。'
+
 export interface FeishuCredential {
   appId: string
   appSecret: string
@@ -89,6 +92,14 @@ export class FeishuAuthError extends Error {
   constructor(message = needsLoginMessage) {
     super(message)
     this.name = 'FeishuAuthError'
+  }
+}
+
+/** 换访问凭证时飞书回的应答里没有 code（多半是代理或网关的页面），带着 HTTP 状态好进日志。 */
+export class FeishuTokenResponseError extends Error {
+  constructor(readonly status: number) {
+    super(`飞书没有给出访问凭证（HTTP ${status}）`)
+    this.name = 'FeishuTokenResponseError'
   }
 }
 
@@ -165,7 +176,24 @@ export async function requestFeishuTenantToken(
     return { token, expiresAt: now + Math.max(60, expire - 300) * 1000 }
   }
   if (code !== null && code !== 0) throw new FeishuAuthError()
-  throw new Error(`飞书没有给出访问凭证（HTTP ${response.status}）`)
+  throw new FeishuTokenResponseError(response.status)
+}
+
+/**
+ * 保存凭据前拿去飞书换一次访问凭证：填错了当场说，不等打开遥控才发现连不上。飞书回的不是正常应答时，
+ * HTTP 状态只进日志，红条上只说 feishuSaveFailedMessage；凭据不对、连不上照旧是各自那句。
+ */
+export async function verifyFeishuCredential(
+  deps: Pick<RemoteChannelDependencies, 'fetch' | 'now' | 'log'>,
+  credential: FeishuCredential,
+): Promise<void> {
+  try {
+    await requestFeishuTenantToken(deps.fetch, credential, deps.now())
+  } catch (error) {
+    if (!(error instanceof FeishuTokenResponseError)) throw error
+    deps.log('warn', 'feishu.save-token-unexpected', { status: error.status })
+    throw new Error(feishuSaveFailedMessage)
+  }
 }
 
 export type FeishuEndpointResult =

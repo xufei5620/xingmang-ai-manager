@@ -7,3 +7,7 @@
   读不出存好的凭据时飞书渠道不再往外抛，由它自己报「其余」那句。「重新连接」是新通道 `codex-remote:reconnect`
   （`CodexRemoteService.reconnectChannel`）：开着的渠道走跟换凭据重启同一条路断开重连一次，凭据、绑定的人、
   配对码都不动，手机上不收「电脑上关了」；没开着就原样交回状态。用户行并进 `codex-remote-fixes-0224.md` 那一条。
+- 「飞书保存改」（产品负责人 2026-11-11 批字）：保存飞书凭据时换访问凭证，飞书回的应答里没有 code，
+  红条原来写「飞书没有给出访问凭证（HTTP n）」，现在只说 `feishuSaveFailedMessage`，HTTP 状态记进日志
+  `feishu.save-token-unexpected`。`requestFeishuTenantToken` 改抛 `FeishuTokenResponseError`（带 status），
+  保存那一步走新的 `verifyFeishuCredential` 换字、记日志；凭据不对、连不上照旧是各自那句。
