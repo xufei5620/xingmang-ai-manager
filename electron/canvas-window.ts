@@ -145,6 +145,7 @@ export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
 export const canvasHostAppearanceChangedChannel = canvasHostChannels.appearanceChanged
+export const canvasHostShowAccountAssetsChannel = canvasHostChannels.showAccountAssets
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
@@ -251,6 +252,12 @@ export interface CanvasWindowControllerOptions {
   inspectRendererSandbox?: () => Promise<LinuxRendererSandboxVerdict>
 }
 
+/** What the first load of the canvas page opens on; a crash reload drops it and returns to the home page. */
+interface CanvasLaunchRoute {
+  projectId?: string
+  assetLibrary?: boolean
+}
+
 export interface CanvasWindowController {
   /** Opens the canvas window, or focuses it if already open. Idempotent under rapid repeat calls (in-flight creation is reused, never doubled). */
   open(): Promise<void>
@@ -262,6 +269,13 @@ export interface CanvasWindowController {
    * it, and rejects when the file cannot be opened. Calls run one at a time.
    */
   openProjectFile(filePath: string): Promise<boolean>
+  /**
+   * Shows the read-only account library on the canvas home page (the main
+   * window's 「看全部作品」). A closed canvas opens with `?view=assets`; an open
+   * one is focused and asked to show it, which the page ignores while a
+   * project is open.
+   */
+  openAssetLibrary(): Promise<void>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
@@ -540,6 +554,25 @@ export function createCanvasWindowController(
   async function activeAssetContext(ownerId: number, userId: number) {
     const projectId = activeProjectId(ownerId, userId)
     return projectId ? options.projectAssets?.forProject(userId, projectId) : undefined
+  }
+
+  // 项目中心（没打开项目）的素材库，yoyo 2026-11-10 亲手打的「素材库放开」：没开项目时只读聊天那个共享库里的
+  // 图片，能列出、能看、能另存，不能改名、收藏、回收、删除。所以这里只放开列出和另存两件，而且只认图片、
+  // 只看没进回收站的、不按运行或节点去找；别的素材操作照旧要先打开项目。打开着项目（哪怕是换号前那个
+  // 账号的）不算项目中心，照旧走 activeProjectId 的拒绝。
+  function projectCenterAssetLibrary(ownerId: number): boolean {
+    return Boolean(options.projects) && !activeProjects.has(ownerId)
+  }
+
+  function assertProjectCenterAssetQuery(query: ReturnType<typeof parseCanvasAssetQuery>): void {
+    if (query.mediaType !== 'image' || (query.view !== undefined && query.view !== 'all') || query.runId || query.nodeId || query.prompt) {
+      throw new Error('没打开项目时只能查看素材库里的图片')
+    }
+  }
+
+  async function assertProjectCenterImage(userId: number, assetId: string): Promise<void> {
+    const asset = await options.mediaAssets.readOwnedDetail(userId, assetId)
+    if (asset.mediaType !== 'image' || asset.deletedAt) throw new Error('没打开项目时只能另存素材库里的图片')
   }
 
   protocol.registerFileProtocol(canvasProtocolScheme, (request, callback) => {
@@ -991,6 +1024,13 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostSaveAssetChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
+    if (projectCenterAssetLibrary(event.sender.id)) {
+      const assetId = parseCanvasAssetId(assetIdInput)
+      await assertProjectCenterImage(userId, assetId)
+      assertCanvasUserUnchanged(userId)
+      const saved = await options.mediaAssets.saveAs(userId, assetId, () => assertCanvasUserUnchanged(userId))
+      return { saved }
+    }
     const context = await activeAssetContext(event.sender.id, userId)
     const saved = await (context?.media ?? options.mediaAssets).saveAs(
       userId,
@@ -1011,6 +1051,15 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostListAssetsChannel, async (event, queryInput) => {
     const userId = authenticatedCanvasUserId()
+    if (projectCenterAssetLibrary(event.sender.id)) {
+      const query = parseCanvasAssetQuery(queryInput)
+      assertProjectCenterAssetQuery(query)
+      // No lineage here: which run or node made a picture is canvas project
+      // history, and the home page library only shows and saves pictures.
+      const assets = await options.mediaAssets.listOwnedPage(userId, { ...query, mediaType: 'image', view: 'all' })
+      assertCanvasUserUnchanged(userId)
+      return assets
+    }
     const context = await activeAssetContext(event.sender.id, userId)
     const { runId, nodeId, ...query } = parseCanvasAssetQuery(queryInput)
     // "Same run" and "same source node" are facts the run store owns, so they
@@ -1481,7 +1530,7 @@ export function createCanvasWindowController(
       await open()
       return true
     }
-    pendingOpen = createWindow(imported.projectId).finally(() => {
+    pendingOpen = createWindow({ projectId: imported.projectId }).finally(() => {
       pendingOpen = null
     })
     await pendingOpen
@@ -1514,7 +1563,7 @@ export function createCanvasWindowController(
     }
   }
 
-  function canvasEntryUrl(projectId?: string): string {
+  function canvasEntryUrl(launch: CanvasLaunchRoute = {}): string {
     // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
     // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
     // path 404s in its router; the protocol handler's catch-all still serves
@@ -1524,11 +1573,13 @@ export function createCanvasWindowController(
     if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
     if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
     // 内核开机时读 ?project= 直接打开这个项目（canvas-v2 App.tsx 的 initialRoute），双击项目文件就靠它。
-    if (projectId) canvasUrl.searchParams.set('project', projectId)
+    if (launch.projectId) canvasUrl.searchParams.set('project', launch.projectId)
+    // 内核在项目中心直接弹出只读素材库（主窗口「看全部作品」）；带了项目时内核按项目开，不看它。
+    else if (launch.assetLibrary) canvasUrl.searchParams.set('view', 'assets')
     return canvasUrl.href
   }
 
-  async function createWindow(launchProjectId?: string): Promise<void> {
+  async function createWindow(launch: CanvasLaunchRoute = {}): Promise<void> {
     assertCanvasDistPresent()
     const sandbox = await inspectRendererSandbox()
     if (sandbox.kind !== 'sandboxed') {
@@ -1710,7 +1761,7 @@ export function createCanvasWindowController(
 
     try {
       // Only the first load opens the project; a crash reload above rebuilds the URL without it.
-      await window.loadURL(canvasEntryUrl(launchProjectId))
+      await window.loadURL(canvasEntryUrl(launch))
     } catch (error) {
       rendererReady = false
       markRendererUnavailable('画布主页面加载失败', error)
@@ -1736,9 +1787,24 @@ export function createCanvasWindowController(
     await pendingOpen
   }
 
+  async function openAssetLibrary(): Promise<void> {
+    if (disposed) throw new Error('画布宿主已关闭')
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      await open()
+      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.webContents.send(canvasHostShowAccountAssetsChannel)
+      return
+    }
+    pendingOpen = createWindow({ assetLibrary: true }).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+  }
+
   return {
     open,
     openProjectFile,
+    openAssetLibrary,
     setTheme(theme) {
       currentTheme = theme
       currentAppearance = { ...currentAppearance, theme }

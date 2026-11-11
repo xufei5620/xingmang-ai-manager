@@ -1315,6 +1315,7 @@ export interface XingmangInvokeContract {
     AccountRevokeOtherLoginSessionsResult
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
+  openCanvasAssetLibrary: IpcInvokeDefinition<'canvas:open-asset-library', [], void>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
@@ -1673,6 +1674,7 @@ export const ipcInvokeChannels = {
   revokeAccountLoginSession: 'account:revoke-login-session',
   revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
+  openCanvasAssetLibrary: 'canvas:open-asset-library',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',

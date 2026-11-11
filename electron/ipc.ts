@@ -231,6 +231,8 @@ export interface IpcRegistrationOptions {
   // has to depend on canvas-window.ts's full surface just to delegate one
   // button click.
   openCanvasWindow(): Promise<void>
+  // Same delegation for the canvas home page's read-only library (「看全部作品」).
+  openCanvasAssetLibrary(): Promise<void>
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the

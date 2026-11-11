@@ -863,6 +863,12 @@ export interface CanvasHostBridge {
   onAppearanceChange(listener: (appearance: CanvasAppearance) => void): () => void
   onCloseRequested(listener: (request: { requestId: string }) => void): () => void
   onCloseCancelled(listener: (request: { requestId: string }) => void): () => void
+  /**
+   * The host asks for the read-only account library while the page is already
+   * open, the same as loading it with `?view=assets`. Carries nothing; the
+   * kernel ignores it while a project is open or opening.
+   */
+  onShowAccountAssets?(listener: () => void): () => void
   finishClose(requestId: string, allowed: boolean): Promise<boolean>
   cancelCloseTasks(requestId: string): Promise<boolean>
 }

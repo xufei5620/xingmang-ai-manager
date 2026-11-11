@@ -400,6 +400,93 @@ describe('createCanvasWindowController', () => {
     expect(electronMocks.registerFileProtocol).toHaveBeenCalledWith('xingmang-canvas', expect.any(Function))
   })
 
+  // yoyo 2026-11-10「素材库放开」：没开项目时只读聊天那个共享库里的图片，能列、能看、能另存，别的照旧拒。
+  it('lets the home page list and save pictures from the shared library without an open project, and nothing more', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const picture = { assetId: 'A'.repeat(43), mediaType: 'image', localUrl: `xingmang-asset://image/${'A'.repeat(43)}`, displayName: '聊天出的图', source: 'generated' }
+    const page = { items: [picture], offset: 0, limit: 24, total: 1, hasMore: false, facets: { tags: [] } }
+    const details: Record<string, unknown> = {
+      ['A'.repeat(43)]: picture,
+      ['B'.repeat(43)]: { ...picture, assetId: 'B'.repeat(43), mediaType: 'video' },
+      ['C'.repeat(43)]: { ...picture, assetId: 'C'.repeat(43), deletedAt: '2026-11-10T01:00:00.000Z' },
+    }
+    const mediaAssets = {
+      listOwnedPage: vi.fn(async () => page),
+      readOwnedDetail: vi.fn(async (_userId: number, assetId: string) => details[assetId]),
+      saveAs: vi.fn(async () => true),
+      rename: vi.fn(), updateMetadata: vi.fn(), markUsed: vi.fn(), softDelete: vi.fn(), copy: vi.fn(), contextMenu: vi.fn(),
+    }
+    const folderMedia = { listOwnedPage: vi.fn(async () => ({ ...page, items: [] })), saveAs: vi.fn(async () => true), readOwnedDetail: vi.fn() }
+    const getAssetLineage = vi.fn(async () => ({}))
+    const listAssetIdsByLineage = vi.fn(async () => [])
+    const controller = createCanvasWindowController(controllerOptions({
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => ({ media: folderMedia })), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+      canvasRuns: { ...controllerOptions().canvasRuns, getAssetLineage, listAssetIdsByLineage } as never,
+    }))
+    await controller.open()
+    const list = electronMocks.handlers.get(canvasHostListAssetsChannel)!
+    const save = electronMocks.handlers.get(canvasHostSaveAssetChannel)!
+    const query = { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', search: '猫', offset: 0, limit: 24 }
+
+    await expect(list(trustedEvent(), query)).resolves.toEqual(page)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledWith(7, { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', search: '猫', offset: 0, limit: 24 })
+    // Which run or node made a picture is project history; the home page does not get it.
+    expect(getAssetLineage).not.toHaveBeenCalled()
+    for (const wrong of [
+      { ...query, mediaType: 'all' }, { ...query, mediaType: 'video' }, { ...query, mediaType: undefined },
+      { ...query, view: 'trash' }, { ...query, view: 'favorites' }, { ...query, view: 'recent' },
+      { ...query, runId: 'run-1' }, { ...query, nodeId: 'node-1' }, { ...query, prompt: '一只猫' },
+    ]) {
+      await expect(list(trustedEvent(), wrong), JSON.stringify(wrong)).rejects.toThrow('没打开项目时只能查看素材库里的图片')
+    }
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(listAssetIdsByLineage).not.toHaveBeenCalled()
+
+    await expect(save(trustedEvent(), 'A'.repeat(43))).resolves.toEqual({ saved: true })
+    expect(mediaAssets.saveAs).toHaveBeenCalledWith(7, 'A'.repeat(43), expect.any(Function))
+    await expect(save(trustedEvent(), 'B'.repeat(43))).rejects.toThrow('没打开项目时只能另存素材库里的图片')
+    await expect(save(trustedEvent(), 'C'.repeat(43))).rejects.toThrow('没打开项目时只能另存素材库里的图片')
+    expect(mediaAssets.saveAs).toHaveBeenCalledTimes(1)
+
+    // Everything that changes or reaches further than looking and saving still needs a project.
+    for (const [channel, args] of [
+      [canvasHostRenameAssetChannel, [{ assetId: 'A'.repeat(43), displayName: '新名字' }]],
+      [canvasHostUpdateAssetMetadataChannel, [{ assetId: 'A'.repeat(43), favorite: true }]],
+      [canvasHostMarkAssetUsedChannel, ['A'.repeat(43)]],
+      [canvasHostDeleteAssetChannel, ['A'.repeat(43)]],
+      [canvasHostCopyAssetChannel, ['A'.repeat(43)]],
+      [canvasHostShowAssetMenuChannel, ['A'.repeat(43)]],
+      [canvasHostGetAssetDetailChannel, ['A'.repeat(43)]],
+    ] as const) {
+      await expect(Promise.resolve().then(() => electronMocks.handlers.get(channel)!(trustedEvent(), ...args)), channel).rejects.toThrow('请先选择或新建一个画布项目')
+    }
+    for (const method of ['rename', 'updateMetadata', 'markUsed', 'softDelete', 'copy', 'contextMenu'] as const) expect(mediaAssets[method], method).not.toHaveBeenCalled()
+
+    // With a project open the library is the project's own again, and the same query reads the folder.
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), { ...query, mediaType: 'video' })
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the canvas on the home page library, or asks an open canvas to show it', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+
+    await controller.openAssetLibrary()
+    expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=dark&view=assets')
+    expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.showAccountAssets)
+
+    await controller.openAssetLibrary()
+    expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    expect(electronMocks.latestBrowserWindow?.focus).toHaveBeenCalled()
+    expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.showAccountAssets)
+    expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledTimes(1)
+  })
+
   it('defines the dark canvas color used before the renderer becomes visible', () => {
     expect(canvasWindowBackgroundColor).toBe('#0b0c10')
   })
@@ -1435,7 +1522,7 @@ describe('createCanvasWindowController', () => {
     await controller.open()
     const detail = electronMocks.handlers.get(canvasHostGetAssetDetailChannel)!
 
-    // Like listAssets: no open project, no library to read from.
+    // No open project: only the home page library's picture listing and save read without one.
     await expect(detail(trustedEvent(), 'L'.repeat(43))).rejects.toThrow('请先选择或新建一个画布项目')
 
     await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
