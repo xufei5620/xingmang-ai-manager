@@ -209,7 +209,7 @@ import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failur
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { remoteChannelsReadyToEnable, type CodexRemoteReleaseAction } from './codex-remote-service'
-import type { CodexRemoteSnapshot } from './codex-remote-channel'
+import { feishuDeveloperConsoleUrl, type CodexRemoteSnapshot } from './codex-remote-channel'
 
 guardProcessOutputStreams()
 
@@ -233,6 +233,9 @@ const nonSiteExternalUrlAllowlist = [
   claudeDesktopOfflinePackagesUrl,
   // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
   appReleaseDownloadUrl,
+  // 手机遥控卡飞书那块的「打开飞书开放平台」（YF-4，yoyo 2026-11-11 北京 20:47 亲手打字「飞书网址加」）：
+  // 只这一条，带别的路径、参数的照样拦下。
+  feishuDeveloperConsoleUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived

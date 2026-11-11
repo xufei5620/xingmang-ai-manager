@@ -20,6 +20,8 @@ export const desktopInstallTutorialTopic = 'install'
 export const updatesTutorialTopic = 'safety'
 /** 同理：「进阶：安装与使用命令行工具」那一章；设置里「用哪个终端打开工具」跳到这里。 */
 export const cliTutorialTopic = 'cli'
+/** 同理：「用手机遥控 Codex」那一章；手机遥控卡飞书那块的「看教程」跳到这里（YF-4）。 */
+export const phoneRemoteTutorialTopic = 'phone-remote'
 // keywords 是顶部搜索用的常用说法：小白搜「余额」「Key」「开机」时也要能找到对应的分页，
 // 界面上不显示。次序就是个人中心顶上那排页签从左到右的次序。
 // v4 把原来的九个分页并成这六个：「我的订单」「异步任务」「登录设备」成了页签里的一节，
