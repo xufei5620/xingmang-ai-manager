@@ -662,6 +662,53 @@ describe('canvas request parser', () => {
     }
   })
 
+  it('hands the four scene tasks on once scene tasks are switched on, and keeps refusing them by name otherwise', () => {
+    const one = { version: 1, slots: [{ role: 'source', edgeId: 'e1', outputIndex: 0 }] }
+    const two = { version: 1, slots: [{ role: 'source', edgeId: 'e1', outputIndex: 0 }, { role: 'reference', edgeId: 'e2', outputIndex: 0 }] }
+    const tasks: Array<[Record<string, unknown>, string]> = [
+      [{ commerceTask: { version: 1, kind: 'material-b', preserve: ['shape', 'logo'], strength: 0.35, upscale: 1.5 }, imageReferenceOrder: one, size: 'auto' }, '电商创作'],
+      [{ commerceTask: { version: 1, kind: 'style-reference', preserve: [] }, imageReferenceOrder: two }, '电商创作'],
+      [{ interiorTask: { version: 1, kind: 'interior-render', addDecor: true, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'rainy', time: 'night', exterior: 'sea', filter: 'film' }, imageReferenceOrder: one }, '室内创作'],
+      [{ exteriorTask: { version: 1, kind: 'landscape-redesign', automaticPrompt: true }, imageReferenceOrder: two }, '室外创作'],
+      [{ storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'stick-figure', panels: 9 }, imageReferenceOrder: two }, '故事板'],
+    ]
+    for (const [extra, reason] of tasks) {
+      for (const kind of ['image', 'image-generate', 'image-edit']) {
+        // The default options follow desktopCanvasCapabilities, which runs them now.
+        const node = parseCanvasStartRunInput(kernelNode(kind, extra)).graph.nodes[0]
+        expect(node.desktopUnsupported, `${kind} ${reason}`).toBeUndefined()
+        expect(node.data, `${kind} ${reason}`).toEqual({ prompt: 'p', model: 'm', ...extra })
+      }
+      // Off, or without picture roles to go with them: refused by name, as before.
+      for (const options of [{ ...referenceOrderOff, scenarioTemplates: true }, { frameExtract: true, imageTools: true, referenceOrder: true, scenarioTemplates: false }]) {
+        const refusal = parseCanvasStartRunInput(kernelNode('image-edit', extra), options).graph.nodes[0].desktopUnsupported
+        expect(refusal, JSON.stringify(options)).toContain(reason)
+        expect(refusal, JSON.stringify(options)).toContain(kernelRefusal)
+      }
+    }
+    // The kernel's own words, as the web host answers: a task on a node that cannot carry
+    // one, a broken task, two tasks, or a task without the roles it needs.
+    const malformed: Array<[string, Record<string, unknown>, string]> = [
+      ['text-generate', { commerceTask: { version: 1, kind: 'style-reference', preserve: [] }, imageReferenceOrder: two }, '此节点不支持商品与参考图创作任务'],
+      ['video-generate', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 4 } }, '此节点不支持故事板任务'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'material-a', preserve: [], strength: 1.5 }, imageReferenceOrder: one }, '优化强度必须在 0 到 1 之间'],
+      ['image-edit', { interiorTask: { version: 1, kind: 'interior-render' }, imageReferenceOrder: one }, '室内创作包含未知或缺少必要配置，请重新读取'],
+      ['image-edit', { exteriorTask: { version: 1, kind: 'exterior-redraw', useToneReference: 'yes' }, imageReferenceOrder: one }, '色调参考开关必须为明确的开启或关闭'],
+      ['image-edit', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 5 }, imageReferenceOrder: one }, '故事板剧情开关、画风或宫格数不受支持'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'style-reference', preserve: [], prompt: 'x' }, imageReferenceOrder: two }, '创作任务含未知或缺少必要的配置'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'style-reference', preserve: [] } }, '创作任务需要明确原图和参考图角色，请打开创作配置重新绑定'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'style-reference', preserve: [] }, imageReferenceOrder: one }, '参考风格迁移需要唯一原图和一张参考图'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'material-b', preserve: [], strength: 0.3, upscale: 2 }, imageReferenceOrder: one, size: '1024x1024' }, '材质优化 B 的尺寸由原图和倍率唯一决定，请保留自动尺寸与 1K 清晰度'],
+      ['image-edit', { commerceTask: { version: 1, kind: 'product-view', preserve: [], view: 'top' }, interiorTask: { version: 1, kind: 'interior-render', addDecor: false, addPeople: false, enclosedSpace: false, interiorLighting: false, weather: 'none', time: 'none', exterior: 'none', filter: 'none' }, imageReferenceOrder: one }, '室内创作与商品创作不能同时配置在同一节点'],
+      ['image-edit', { exteriorTask: { version: 1, kind: 'facade-renovation', automaticPrompt: false }, imageReferenceOrder: one }, '室外任务需要明确绑定对应的原图和参考图角色'],
+      ['image-edit', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'cinematic', panels: 4 } }, '故事板需要 1–4 张有序输入图片'],
+      ['image-edit', { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'cinematic', panels: 4, apiKey: 'sk-x' }, imageReferenceOrder: one }, '画布故事板配置格式错误'],
+    ]
+    for (const [kind, extra, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, extra)), JSON.stringify(extra)).toThrow(message)
+    }
+  })
+
   it('refuses an image-tool recipe, order or choice it cannot bound or that names another tool', () => {
     const on = { frameExtract: true, imageTools: true }
     const crop = { kind: 'crop', outputWidth: 64, outputHeight: 32 }
@@ -776,13 +823,14 @@ describe('canvas request parser', () => {
   })
 
   it('bounds the kernel settings one run may carry as a whole', () => {
-    // Each node is within every per-value limit; together they are not.
+    // Each node is within every per-value limit; together they are not. A
+    // tile choice on a picture node is only bounded, never read.
     const chunk = Array.from({ length: 256 }, () => 'x'.repeat(10_000))
     const node = (index: number) => ({
-      id: `n-${index}`, kind: 'image-generate', definitionVersion: 1, data: { prompt: '', model: 'm', commerceTask: { chunk } },
+      id: `n-${index}`, kind: 'image-generate', definitionVersion: 1, data: { prompt: '', model: 'm', tileInput: { chunk } },
     })
     expect(parseCanvasStartRunInput({ graph: { nodes: [node(0)], edges: [] }, scope: { kind: 'all' } }).graph.nodes[0].desktopUnsupported)
-      .toBe(`「电商创作」${kernelRefusal}`)
+      .toBe(`「图片处理」${kernelRefusal}`)
     expect(() => parseCanvasStartRunInput({
       graph: { nodes: Array.from({ length: 9 }, (_, index) => node(index)), edges: [] }, scope: { kind: 'all' },
     })).toThrow('工作流规模超过安全上限')

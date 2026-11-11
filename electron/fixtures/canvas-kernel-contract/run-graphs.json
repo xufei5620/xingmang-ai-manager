@@ -689,6 +689,282 @@
       }
     },
     {
+      "name": "commerce task on an edit",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "换成夜景",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            },
+            {
+              "id": "target",
+              "kind": "image-edit",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageReferenceOrder": {
+                  "version": 1,
+                  "slots": [
+                    {
+                      "role": "source",
+                      "edgeId": "edge-2",
+                      "outputIndex": 0
+                    }
+                  ]
+                },
+                "commerceTask": {
+                  "version": 1,
+                  "kind": "material-a",
+                  "preserve": [
+                    "shape",
+                    "logo"
+                  ],
+                  "strength": 0.5
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            },
+            {
+              "id": "edge-2",
+              "source": "image-1",
+              "sourceHandle": "out:image",
+              "target": "target",
+              "targetHandle": "in:images"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
+      "name": "interior task without its source",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "换成夜景",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            },
+            {
+              "id": "target",
+              "kind": "image-edit",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "interiorTask": {
+                  "version": 1,
+                  "kind": "interior-render",
+                  "addDecor": true,
+                  "addPeople": false,
+                  "enclosedSpace": false,
+                  "interiorLighting": true,
+                  "weather": "sunny",
+                  "time": "evening",
+                  "exterior": "garden",
+                  "filter": "film"
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            },
+            {
+              "id": "edge-2",
+              "source": "image-1",
+              "sourceHandle": "out:image",
+              "target": "target",
+              "targetHandle": "in:images"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "parseError": "室内渲染需要明确绑定唯一原图，请打开室内配置核对"
+      }
+    },
+    {
+      "name": "storyboard with an automatic plot but no plot node",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "换成夜景",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            },
+            {
+              "id": "target",
+              "kind": "image-edit",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageReferenceOrder": {
+                  "version": 1,
+                  "slots": [
+                    {
+                      "role": "source",
+                      "edgeId": "edge-2",
+                      "outputIndex": 0
+                    }
+                  ]
+                },
+                "storyboardTask": {
+                  "version": 1,
+                  "kind": "storyboard",
+                  "automaticPlot": true,
+                  "style": "hand-drawn",
+                  "panels": 9
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            },
+            {
+              "id": "edge-2",
+              "source": "image-1",
+              "sourceHandle": "out:image",
+              "target": "target",
+              "targetHandle": "in:images"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "自动剧情需要唯一、可用且与当前剧情一致的显式图片分析节点，请重新配置故事板"
+      }
+    },
+    {
+      "name": "exterior task on a text node",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "text-generate",
+              "data": {
+                "prompt": "",
+                "model": "gpt-5.5",
+                "group": "Gemini",
+                "exteriorTask": {
+                  "version": 1,
+                  "kind": "exterior-redraw",
+                  "useToneReference": false
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "parseError": "此节点不支持室外创作任务"
+      }
+    },
+    {
       "name": "1080p video",
       "input": {
         "graph": {

@@ -82,12 +82,13 @@ function graphWith(extra) {
 }
 const refused = '桌面版暂不支持，本次没有提交任何付费请求'
 // 画布完善第 8 条: one picture into an edit node over in:images, with or without its role.
-function pictureGraph(imageReferenceOrder) {
+// A scene task rides on the same node (第 8 条 PR B).
+function pictureGraph(imageReferenceOrder, task = {}) {
   return {
     nodes: [
       { id: 'prompt-1', kind: 'prompt', definitionVersion: 1, data: { prompt: '换成夜景', model: '' } },
       { id: 'image-1', kind: 'image-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: assetId } },
-      { id: 'target', kind: 'image-edit', definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '图片模型', ...(imageReferenceOrder ? { imageReferenceOrder } : {}) } },
+      { id: 'target', kind: 'image-edit', definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '图片模型', ...(imageReferenceOrder ? { imageReferenceOrder } : {}), ...task } },
     ],
     edges: [
       { id: 'edge-1', source: 'prompt-1', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' },
@@ -115,6 +116,10 @@ const runGraphs = {
     { name: 'picture roles on an edit', input: { graph: pictureGraph({ version: 1, slots: [{ role: 'source', edgeId: 'edge-2', outputIndex: 0 }] }), scope: { kind: 'all' } }, expect: { refusal: null } },
     { name: 'picture role whose connection is gone', input: { graph: pictureGraph({ version: 1, slots: [{ role: 'source', edgeId: 'edge-2', outputIndex: 0 }, { role: 'reference', missing: true }] }), scope: { kind: 'all' } }, expect: { refusal: '原图或参考图位置已失联，请重新绑定；不会使用其他图片' } },
     { name: 'video reference order', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'grok-imagine-video', group: '视频模型', seconds: '5', videoReferenceOrder: { version: 1, slots: [{ edgeId: 'edge-1', outputIndex: 0 }] } } }), scope: { kind: 'all' } }, expect: { refusal: null } },
+    { name: 'commerce task on an edit', input: { graph: pictureGraph({ version: 1, slots: [{ role: 'source', edgeId: 'edge-2', outputIndex: 0 }] }, { commerceTask: { version: 1, kind: 'material-a', preserve: ['shape', 'logo'], strength: 0.5 } }), scope: { kind: 'all' } }, expect: { refusal: null } },
+    { name: 'interior task without its source', input: { graph: pictureGraph(undefined, { interiorTask: { version: 1, kind: 'interior-render', addDecor: true, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'sunny', time: 'evening', exterior: 'garden', filter: 'film' } }), scope: { kind: 'all' } }, expect: { parseError: '室内渲染需要明确绑定唯一原图，请打开室内配置核对' } },
+    { name: 'storyboard with an automatic plot but no plot node', input: { graph: pictureGraph({ version: 1, slots: [{ role: 'source', edgeId: 'edge-2', outputIndex: 0 }] }, { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'hand-drawn', panels: 9 } }), scope: { kind: 'all' } }, expect: { refusal: '自动剧情需要唯一、可用且与当前剧情一致的显式图片分析节点，请重新配置故事板' } },
+    { name: 'exterior task on a text node', input: { graph: graphWith({ kind: 'text-generate', data: { prompt: '', model: 'gpt-5.5', group: 'Gemini', exteriorTask: { version: 1, kind: 'exterior-redraw', useToneReference: false } } }), scope: { kind: 'all' } }, expect: { parseError: '此节点不支持室外创作任务' } },
     { name: '1080p video', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'minimax-h3-fast', group: '视频模型', seconds: '6', videoResolution: '1080p' } }), scope: { kind: 'all' } }, expect: { parseError: '画布 MiniMax 分辨率不受支持' } },
     { name: '3:2 video', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'minimax-h3-fast', group: '视频模型', seconds: '6', videoAspectRatio: '3:2' } }), scope: { kind: 'all' } }, expect: { parseError: '画布 MiniMax 视频比例不受支持' } },
     { name: 'agent execution', input: { graph: twoNodes, scope: { kind: 'all' }, agentExecution: { sessionId: 's', turnId: 't' } }, expect: { parseError: '桌面版不支持由 Agent 发起运行' } },
