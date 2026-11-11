@@ -164,7 +164,8 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
     { value: 'manual', label: '自己填写密钥', description: '粘贴星芒创建的密钥' },
   ]
   // 保存完主进程会把刚写下去的配置回读一遍再核对一次当前账号，结论跟在同一张
-  // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。
+  // Notice 里：0.2.8 之前这里只能说一句「未验证实际模型调用」。配置文件的位置客户用不上，
+  // 收进「查看详情」，客服要时再点开（0.2.24 深查决定单 D62 第 3 条）。
   const connectionView = result?.connection ? connectionCheckView(result.connection) : null
   return <Dialog open title={ready ? `${definition.name} 配置` : `连接 ${definition.name}`} width={640}
     onClose={onClose} busy={Boolean(busy)} dirty={dirty} testId="external-client-dialog"
@@ -193,6 +194,6 @@ export function ExternalClientDialog({ api, tool, signedIn, ready = false, versi
       {connectionView
         ? <><p data-testid="external-client-connection">连接自检：{connectionView.statusLabel} · {connectionView.title}</p><p>{connectionView.body}</p></>
         : <p data-testid="external-client-connection">连接自检：这次没测成。配置已经写好了，可以到「检查」页点一次「测试连接」。</p>}
-      <p className="v2-client-config-path">{result.path}</p>{result.backups.length > 0 && <p>已保留 {result.backups.length} 份备份。</p>}</>} testId="external-client-result" />}
+      <details className="v2-client-config-path" data-testid="external-client-path"><summary>查看详情</summary><p>{result.path}</p></details>{result.backups.length > 0 && <p>已保留 {result.backups.length} 份备份。</p>}</>} testId="external-client-result" />}
   </Dialog>
 }

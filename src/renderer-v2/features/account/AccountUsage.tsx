@@ -4,12 +4,10 @@ import { Button, Card, Dialog, Empty, Notice, Pill, Segment, Select, Table } fro
 import {
   ClockTime,
   displayDate,
-  dollars,
   FailureReason,
   ListReadFailure,
   Pagination,
   PlaceholderBar,
-  quotaMoney,
   ResultNotice,
   useOperation,
   useRefreshRequest,
@@ -36,8 +34,10 @@ import {
   sub2ApiUsageFilterFields,
   usageCalendarNote,
   usageChartScale,
+  usageCost,
   usageEmptyText,
   usageHourBlocks,
+  usageQuotaCost,
   usageRangeStart,
   usageRanges,
   usageSegments,
@@ -125,16 +125,16 @@ function SpendChart({ bars, balance }: { bars: NonNullable<DashboardView['bars']
   const scale = usageChartScale(amounts)
   const last = bars.length - 1
   return (
-    <div className="v2-usage-chart" role="img" aria-label={bars.map((bar, index) => `${bar.title}：${dollars(amounts[index])}`).join('；')}>
+    <div className="v2-usage-chart" role="img" aria-label={bars.map((bar, index) => `${bar.title}：${usageCost(amounts[index])}`).join('；')}>
       {scale.ticks.map((tick) => (
         <div key={tick} className="v2-usage-chart-line" style={{ bottom: `calc((100% - 8px) * ${scale.top > 0 ? tick / scale.top : 0})` }}>
           <span>{usageTickText(tick, scale.ticks)}</span>
         </div>
       ))}
       {bars.map((bar, index) => (
-        <div key={bar.start} className={`v2-usage-chart-col${index === last ? ' is-current' : ''}`} title={`${bar.title}：${dollars(amounts[index])}`}>
+        <div key={bar.start} className={`v2-usage-chart-col${index === last ? ' is-current' : ''}`} title={`${bar.title}：${usageCost(amounts[index])}`}>
           <div className="v2-usage-chart-bar" style={{ height: `${scale.top > 0 ? amounts[index] / scale.top * 100 : 0}%` }}>
-            <span>{dollars(amounts[index])}</span>
+            <span>{usageCost(amounts[index])}</span>
           </div>
           <small>{bar.label}</small>
         </div>
@@ -200,7 +200,7 @@ function UsageDashboard({
         />
       )}
       <div className="v2-usage-stats" data-testid="usage-stats">
-        {stat('总花费', data ? quotaMoney(data.totals.quota, balance) : undefined, trends && !summaryOnly && costUsd !== null ? `日均 ${dollars(costUsd / days)}` : undefined, true)}
+        {stat('总花费', data ? usageQuotaCost(data.totals.quota, balance) : undefined, trends && !summaryOnly && costUsd !== null ? `日均 ${usageCost(costUsd / days)}` : undefined, true)}
         {stat('请求次数', data?.totals.count.toLocaleString())}
         {stat('处理字数', data?.totals.tokens.toLocaleString())}
       </div>
@@ -230,7 +230,7 @@ function UsageDashboard({
                 <div className="v2-acct-kv">
                   <span className="v2-usage-model-name">{model.model}</span>
                   <span className="v2-acct-muted">{model.percent}%</span>
-                  <b>{quotaMoney(model.quota, balance)}</b>
+                  <b>{usageQuotaCost(model.quota, balance)}</b>
                 </div>
                 <span className="v2-acct-bar"><i style={{ width: `${model.percent}%` }} /></span>
               </div>
@@ -406,7 +406,7 @@ function AccountCalls({
                 model: <span className="v2-usage-mono">{row.modelName}</span>,
                 key: row.tokenName || '—',
                 tokens: <span className="v2-usage-nowrap">{`${row.promptTokens.toLocaleString('en-US')} / ${row.completionTokens.toLocaleString('en-US')}`}</span>,
-                amount: <span className="v2-usage-nowrap">{row.type === 5 && row.quota <= 0 ? '—' : quotaMoney(row.quota, balance)}</span>,
+                amount: <span className="v2-usage-nowrap">{row.type === 5 && row.quota <= 0 ? '—' : usageQuotaCost(row.quota, balance)}</span>,
                 status: <Pill tone={status.tone}>{status.label}</Pill>,
               }
             })}
@@ -532,7 +532,7 @@ function AccountTasks({
                   {state(task).label} {task.progress}
                 </Pill>
               ),
-              cost: quotaMoney(task.quota, balance),
+              cost: usageQuotaCost(task.quota, balance),
             }))}
             rowKey={(row) => String(row.id)}
             rowLabel={(row) => String(row.label)}
@@ -594,7 +594,7 @@ function AccountTasks({
               <div><dt>完成时间</dt><dd>{displayDate(selected.finishAt)}</dd></div>
               <div><dt>操作</dt><dd>{selected.action}</dd></div>
               <div><dt>状态</dt><dd>{state(selected).label}</dd></div>
-              <div><dt>消耗（美元）</dt><dd>{quotaMoney(selected.quota, balance)}</dd></div>
+              <div><dt>消耗（美元）</dt><dd>{usageQuotaCost(selected.quota, balance)}</dd></div>
               <div><dt>失败原因</dt><dd>{selected.failReason || '无'}</dd></div>
               <div><dt>结果链接</dt><dd className="v2-usage-detail-mono">{selected.resultUrl || '无'}</dd></div>
             </dl>
