@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { ChevronDown, ChevronRight, FolderOpen, Headset, Home, RefreshCw, Zap } from 'lucide-react'
+import { ChevronDown, ChevronRight, FolderOpen, FolderPlus, Headset, Home, RefreshCw, Zap } from 'lucide-react'
 import { Button, Card, Confirm, Notice, Pill, Segment, SettingRow, Switch, useBalanceTier } from '../../../ui'
 import { dollars, ResultNotice, useOperation, useResource } from '../../../business-common'
 import { useSharedAccountBalance } from '../../app/balance-context'
@@ -20,6 +20,8 @@ import {
   remoteChannelStateLabel,
   remoteChannelStateTone,
   remoteSwitchHint,
+  remoteWorkspaceFolders,
+  remoteWorkspaceMax,
 } from './remote-view'
 
 /**
@@ -42,6 +44,22 @@ export const codexStartFailedNotice = {
   title: 'Codex 没能启动',
   body: '手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。',
   action: '去首页看 Codex',
+} as const
+
+/**
+ * 「干活的文件夹」那一行（YF-19）：电脑上能加几个，手机上发「文件夹」看、发「文件夹 2」换。只加了一个时跟以前一样
+ * 只写路径；不止一个时一个一行，正在用的标出来，别的能「用这个」「移除」。
+ */
+export const codexRemoteWorkspaceText = {
+  title: '干活的文件夹',
+  empty: '还没选。Codex 只在这个文件夹里干活，选一个具体的项目文件夹。',
+  choose: '选择文件夹',
+  add: '添加一个',
+  inUse: '正在用',
+  use: '用这个',
+  remove: '移除',
+  phoneHint: '手机上发「文件夹」也能换。',
+  full: (max: number) => `最多 ${max} 个，先移除一个再添加。`,
 } as const
 
 /**
@@ -380,25 +398,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
         {error}
       </div>
       {anyEnabled && <LastRequestRow snapshot={snapshot} api={api} busy={busy} run={run} navigate={navigate} now={now} />}
-      <SettingRow
-        title="干活的文件夹"
-        description={snapshot.workspaceDirectory
-          ? <span className="xm-mono">{snapshot.workspaceDirectory}</span>
-          : '还没选。Codex 只在这个文件夹里干活，选一个具体的项目文件夹。'}
-        control={
-          <Button
-            size="sm"
-            icon={FolderOpen}
-            disabled={!snapshot.available || Boolean(busy)}
-            loading={busy === 'workspace'}
-            onClick={() => void run('workspace', () => api.chooseCodexRemoteWorkspace())}
-            testId="settings-remote-workspace"
-          >
-            {snapshot.workspaceDirectory ? '换一个' : '选择文件夹'}
-          </Button>
-        }
-        testId="settings-remote-workspace-row"
-      />
+      <WorkspaceRow snapshot={snapshot} api={api} busy={busy} run={run} />
       {remoteChannelIds.map((id) => (
         <ChannelBlock
           key={id}
@@ -446,6 +446,53 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
         testId="settings-remote-idle-close"
       />
     </Card>
+  )
+}
+
+function WorkspaceRow({ snapshot, api, busy, run }: { snapshot: CodexRemoteSnapshot } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
+  const folders = remoteWorkspaceFolders(snapshot)
+  const full = folders.length >= remoteWorkspaceMax
+  const text = codexRemoteWorkspaceText
+  const description = folders.length === 0
+    ? text.empty
+    : folders.length === 1
+      ? <span className="xm-mono">{folders[0]}</span>
+      : (
+          <span className="v2-remote-folders" data-testid="settings-remote-workspace-list">
+            {folders.map((folder) => (
+              <span className="v2-remote-folder" key={folder}>
+                <span className="xm-mono">{folder}</span>
+                {folder === snapshot.workspaceDirectory
+                  ? <Pill tone="accent" testId="settings-remote-workspace-in-use">{text.inUse}</Pill>
+                  : (
+                      <span className="v2-remote-folder-actions">
+                        <Button size="sm" variant="ghost" disabled={!snapshot.available || Boolean(busy)} loading={busy === `workspace-use:${folder}`} onClick={() => void run(`workspace-use:${folder}`, () => api.useCodexRemoteWorkspace(folder))} testId="settings-remote-workspace-use">{text.use}</Button>
+                        <Button size="sm" variant="ghost" disabled={Boolean(busy)} loading={busy === `workspace-remove:${folder}`} onClick={() => void run(`workspace-remove:${folder}`, () => api.removeCodexRemoteWorkspace(folder))} testId="settings-remote-workspace-remove">{text.remove}</Button>
+                      </span>
+                    )}
+              </span>
+            ))}
+            <span className="v2-remote-folders-note">{full ? text.full(remoteWorkspaceMax) : text.phoneHint}</span>
+          </span>
+        )
+  return (
+    <SettingRow
+      title={text.title}
+      description={description}
+      control={
+        <Button
+          size="sm"
+          icon={folders.length ? FolderPlus : FolderOpen}
+          disabled={!snapshot.available || Boolean(busy) || full}
+          loading={busy === 'workspace'}
+          onClick={() => void run('workspace', () => api.chooseCodexRemoteWorkspace())}
+          testId="settings-remote-workspace"
+        >
+          {folders.length ? text.add : text.choose}
+        </Button>
+      }
+      testId="settings-remote-workspace-row"
+    />
   )
 }
 

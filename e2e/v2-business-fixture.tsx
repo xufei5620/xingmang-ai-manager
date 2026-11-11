@@ -170,11 +170,13 @@ function codexMcpServers(authStatus: string) {
   ]
 }
 // 手机遥控 Codex：一份可变的状态，操作改它、回整份快照（revision 每次加一），和主进程一个样子。
-// remoteReady：已经选好文件夹、填好飞书应用；remoteElevated：星芒以管理员身份在跑。
+// remoteReady：已经选好文件夹、填好飞书应用；remoteElevated：星芒以管理员身份在跑；
+// remoteFolders：电脑上已经加了三个干活的文件夹（YF-19）。
 type RemoteSnapshot = Awaited<ReturnType<V2Bridge['getCodexRemoteState']>>
 const remoteReady = query.has('remoteReady')
 const remoteState: {
   workspaceDirectory: string | null
+  workspaces: string[]
   accountLabel: string | null
   enabled: boolean
   pairing: RemoteSnapshot['channels']['feishu']['pairing']
@@ -187,6 +189,7 @@ const remoteState: {
   pendingApprovals: number
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
+  workspaces: query.has('remoteFolders') ? ['~/projects/demo', '~/projects/blog', '~/projects/shop'] : remoteReady ? ['~/projects/demo'] : [],
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
   enabled: false,
   pairing: null,
@@ -226,6 +229,7 @@ function remoteSnapshot(): RemoteSnapshot {
     ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
     workspaceDirectory: remoteState.workspaceDirectory,
+    ...(remoteState.workspaces.length > 1 ? { workspaces: [...remoteState.workspaces] } : {}),
     task: remoteState.pendingApprovals > 0 ? 'waiting-approval' : remoteState.lastRequest?.state === 'running' ? 'running' : 'idle',
     pendingApprovals: remoteState.pendingApprovals,
     ...(remoteState.lastRequest ? { lastRequest: remoteState.lastRequest } : {}),
@@ -318,7 +322,22 @@ const codexRemoteMethods = {
   },
   chooseCodexRemoteWorkspace: async () => {
     record('remote-workspace')
-    remoteState.workspaceDirectory = '~/projects/demo'
+    // 头一个选的就用它；之后每次加一个新的（YF-19），跟主进程一样不换正在用的。
+    const next = remoteState.workspaces.length === 0 ? '~/projects/demo' : `~/projects/new-${remoteState.workspaces.length}`
+    remoteState.workspaces.push(next)
+    remoteState.workspaceDirectory ??= next
+    return remoteSnapshot()
+  },
+  useCodexRemoteWorkspace: async (folder: string) => {
+    record('remote-workspace-use', folder)
+    if (!remoteState.workspaces.includes(folder)) throw new Error('这个文件夹已经不在单子上了。')
+    remoteState.workspaceDirectory = folder
+    return remoteSnapshot()
+  },
+  removeCodexRemoteWorkspace: async (folder: string) => {
+    record('remote-workspace-remove', folder)
+    if (folder === remoteState.workspaceDirectory) throw new Error('正在用的文件夹不能移除，先换到别的再移除。')
+    remoteState.workspaces = remoteState.workspaces.filter((entry) => entry !== folder)
     return remoteSnapshot()
   },
   saveCodexRemoteFeishuCredentials: async (request: Parameters<V2Bridge['saveCodexRemoteFeishuCredentials']>[0]) => {

@@ -16,7 +16,7 @@ export const remoteMessages = {
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   unsupported: '暂时只支持文字消息。',
-  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、关闭遥控、重试、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
+  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
   closedFromPhone: '手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。',
@@ -37,6 +37,8 @@ export const remoteMessages = {
   nothingToRetry: '还没有可以重发的上一条。直接发要做的事就行。',
   // 点的是上一轮留下的进度卡上的「停止」（YF-15，yoyo 2026-11-11「进度改」）：这一轮不停。
   staleProgressCard: '这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。',
+  // 手机上换文件夹（YF-19）：这一轮还没做完（含等你同意）时不换，免得改到一半换了地方。
+  workspaceBusy: 'Codex 还在处理上一条，等它做完再换文件夹。',
 } as const
 
 /** 飞书进度卡的标题（YF-15，yoyo 2026-11-11「进度改」）：做着的时候、做完、停了、没做完。 */
@@ -245,6 +247,38 @@ export function progressTextMessage(runningForMs: number, step: string | null): 
   return shown ? `${head}现在这一步：${truncateRemoteText(shown, maxStatusStepLength)}` : head
 }
 
+/**
+ * 手机上发「文件夹」的回复（YF-19）：电脑上加过的一个一行，正在用的标出来；不止一个时说怎么切，
+ * 举的例子是第一个没在用的。只有一个时说去电脑上加。
+ */
+export function workspaceListMessage(folders: readonly string[], current: string | null): string {
+  const lines = folders.map((folder, index) => `${index + 1}. ${folder}${folder === current ? '（正在用）' : ''}`)
+  const other = folders.findIndex((folder) => folder !== current)
+  if (folders.length > 1 && other >= 0) lines.push(`回「文件夹 ${other + 1}」切过去。`)
+  else lines.push('要换别的，先在电脑上「干活的文件夹」那里添加。')
+  return lines.join('\n')
+}
+
+/** 手机上切好了文件夹（YF-19）：新文件夹从新对话开始，前面说的 Codex 不记得。 */
+export function workspaceSwitchedMessage(folder: string): string {
+  return `已切到 ${folder}，从新对话开始。`
+}
+
+/** 切的就是正在用的那个（YF-19）。 */
+export function workspaceAlreadyInUseMessage(folder: string): string {
+  return `现在用的就是 ${folder}。`
+}
+
+/** 「文件夹 N」没有第 N 个（YF-19）。 */
+export function workspaceMissingMessage(index: number): string {
+  return `没有第 ${index} 个文件夹。发「文件夹」看有哪些。`
+}
+
+/** 要切过去的文件夹被移走、删掉了（YF-19）：手机上没法重新选，让他回电脑上看。 */
+export function workspaceUnusableMessage(folder: string): string {
+  return `${folder} 现在打不开了，可能被移走或删掉了。先在电脑上看一下。`
+}
+
 /** 做完小结里「用时」那种写法（YF-16）：45 秒、3 分 20 秒、1 小时 5 分。 */
 export function remoteTookText(ms: number): string {
   const seconds = Math.max(1, Math.round(ms / 1000))
@@ -333,6 +367,9 @@ export type RemoteCommand =
   | { kind: 'help' }
   | { kind: 'close' }
   | { kind: 'retry' }
+  /** 「文件夹」列出电脑上加过的，「文件夹 2」切到第 2 个（YF-19）；index 从 1 数。 */
+  | { kind: 'folders' }
+  | { kind: 'use-folder'; index: number }
   | { kind: 'approval'; decision: 'accept' | 'decline'; approvalId?: string }
 
 const plainCommands: Record<string, RemoteCommand['kind']> = {
@@ -342,6 +379,7 @@ const plainCommands: Record<string, RemoteCommand['kind']> = {
   帮助: 'help',
   关闭遥控: 'close',
   重试: 'retry',
+  文件夹: 'folders',
 }
 
 /**
@@ -352,7 +390,9 @@ export function parseRemoteCommand(text: string, hasPendingApprovals: boolean): 
   const trimmed = text.trim()
   const bare = trimmed.replace(/^[/／]\s*/, '')
   const plain = plainCommands[bare]
-  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close' || plain === 'retry') return { kind: plain }
+  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close' || plain === 'retry' || plain === 'folders') return { kind: plain }
+  const folder = /^文件夹\s*(\d{1,2})$/.exec(bare)
+  if (folder) return { kind: 'use-folder', index: Number(folder[1]) }
   if (hasPendingApprovals) {
     const match = /^(同意|拒绝)(?:\s*(?:第\s*)?(\d{1,4})\s*条?)?$/.exec(bare)
     if (match) {
