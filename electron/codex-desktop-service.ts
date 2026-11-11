@@ -195,7 +195,7 @@ const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
 const codexDesktopInstallKey = 'desktop:codex:install'
 /** Mac 上工具箱以 root 身份运行时不装：装出来的应用归 root，客户自己的账号更新不了它。 */
-const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。'
+const codexDesktopMacRootMessage = '请用你平时登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。'
 /** Mac 上检测没做完，说不准装没装：点「打开」和点「安装」时都照这句说。 */
 const codexDesktopDetectionUnfinishedMessage = 'Codex 桌面端检测未完成，请重新检测后再试'
 // 下载可以随时丢掉，Add-AppxPackage 不行：它中途被杀会留下一个装了一半的包，

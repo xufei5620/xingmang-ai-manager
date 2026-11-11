@@ -1,8 +1,9 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AiChatHistorySnapshot, AiChatHistoryWrite } from '../../../../electron/ipc-contract'
+import { markBackgroundWork } from '../../background-work'
 import { createConversation, createWorkspace, type ChatWorkspace } from './state'
 import { createHistoryWriter, loadChatHistory, type LoadedChatHistory } from './storage'
-import { createChatTransfer } from './transfer'
+import { chatReplyingImportMessage, createChatTransfer } from './transfer'
 
 const scope = 'xm-account:7'
 function memoryStorage() {
@@ -86,5 +87,48 @@ describe('moving to a new computer with one broken conversation file', () => {
     expect(exported).toHaveLength(1)
     expect(exported[0]).toMatchObject({ id: 'fine' })
     expect(reportRendererError).toHaveBeenCalledWith({ message: expect.stringContaining('c-broken.json 读不出来'), context: 'chat-history', level: 'warn' })
+  })
+})
+
+// D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复、出图的那条被掐断，出图那条可能照样扣了费。
+describe('importing conversations while the chat is replying', () => {
+  const tokens: symbol[] = []
+  function busy(label: string, restartWork?: 'chat' | 'video-compose') {
+    const token = Symbol(label)
+    tokens.push(token)
+    markBackgroundWork(token, true, restartWork)
+    return token
+  }
+  afterEach(() => {
+    for (const token of tokens.splice(0)) markBackgroundWork(token, false)
+  })
+
+  it('refuses before anything moves, and leaves the chat page and the saved history alone', async () => {
+    const files = memoryFiles()
+    const unmountChat = vi.fn()
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, unmountChat)
+    const reply = busy('chat', 'chat')
+    expect(() => transfer.assertChatIdle()).toThrow(chatReplyingImportMessage)
+    await expect(transfer.importConversations([conversation('from-old-computer')])).rejects.toThrow(chatReplyingImportMessage)
+    expect(unmountChat).not.toHaveBeenCalled()
+    expect(files.bridge.readAiChatHistory).not.toHaveBeenCalled()
+    expect(files.bridge.writeAiChatHistory).not.toHaveBeenCalled()
+    markBackgroundWork(reply, false)
+    expect(() => transfer.assertChatIdle()).not.toThrow()
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+    expect(unmountChat).toHaveBeenCalledOnce()
+  })
+
+  it('is not held up by other work that the chat page does not do', async () => {
+    const files = memoryFiles()
+    const transfer = createChatTransfer(files.bridge, memoryStorage(), scope, () => undefined)
+    busy('tool-jobs')
+    busy('video-compose', 'video-compose')
+    expect(() => transfer.assertChatIdle()).not.toThrow()
+    expect(await transfer.importConversations([conversation('from-old-computer')])).toEqual({ added: 1, skipped: 0 })
+  })
+
+  it('says it in the exact words the decision sheet gave', () => {
+    expect(chatReplyingImportMessage).toBe('聊天正在回复，等它说完再导入。')
   })
 })

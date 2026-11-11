@@ -3,7 +3,7 @@ export type ExternalDeepLink =
   | { kind: 'invite'; code: string }
   | { kind: 'invalid'; message: string }
 
-const invalidLink: ExternalDeepLink = { kind: 'invalid', message: '链接无效或暂不支持，请从工具箱内打开对应页面。' }
+const invalidLink: ExternalDeepLink = { kind: 'invalid', message: '链接无效或暂不支持，请从星芒里打开对应页面。' }
 
 export function parseExternalDeepLink(raw: string): ExternalDeepLink {
   if (raw.length > 2048 || /[\s\\\u0000-\u001f\u007f]/.test(raw)) return invalidLink

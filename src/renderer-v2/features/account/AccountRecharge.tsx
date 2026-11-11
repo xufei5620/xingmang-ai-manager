@@ -70,6 +70,7 @@ import {
   redeemSuccessText,
   resetTopupQuoteForMethod,
   subscriptionPaymentMethods,
+  subscriptionResetSuffix,
   subscriptionStateFor,
   subscriptionToolsNotice,
   topupAmountError,
@@ -846,10 +847,10 @@ export function AccountRecharge({
                   {{ daily: '日额度', weekly: '周额度', monthly: '月额度' }[period.period]}：
                   已用 {quotaMoney(period.used, balance)} · {period.limitState === 'unlimited' ? '不限额'
                     : period.limitState === 'unknown' ? '限额暂未提供'
-                    : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
+                    : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}${subscriptionResetSuffix(subscription, period)}`}
                 </span>)}
                 <span>{subscriptionExpiry(subscription.endsAt)}</span>
-              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · ${subscriptionExpiry(subscription.endsAt)}`}
+              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)}${subscriptionResetSuffix(subscription, null)} · ${subscriptionExpiry(subscription.endsAt)}`}
             />
           ))
         ) : (
