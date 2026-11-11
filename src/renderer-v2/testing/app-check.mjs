@@ -284,8 +284,14 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         if (tool === 'opencode') await page.getByTestId('external-client-protocol').selectOption('chat-completions')
         await page.getByTestId('external-client-save').click()
         await page.getByTestId('external-client-result').getByText('配置已保存', { exact: true }).waitFor()
+        // 配置文件位置客户用不上，收进「查看详情」，默认不展开（决定单 D62 第 3 条）。
+        const savedPath = page.getByTestId('external-client-path')
+        await expect(savedPath.locator('summary')).toHaveText('查看详情')
+        await expect(savedPath.locator('p')).toBeHidden()
         if (tool === 'claudeDesktop') {
-          await expect(page.getByTestId('external-client-result')).toContainText('configLibrary')
+          await savedPath.locator('summary').click()
+          await expect(savedPath.locator('p')).toBeVisible()
+          await expect(savedPath.locator('p')).toContainText('configLibrary')
           await expect(dialog).not.toContainText('HKEY_CURRENT_USER')
           await expect(dialog).not.toContainText('等待导入')
           await expect(dialog).toContainText('完全退出再重新打开 Claude Desktop')
@@ -10254,6 +10260,34 @@ test('the chat page on screen when an import lands reads it again instead of sav
     await input.fill('导入后接着打')
     await expect.poll(() => page.evaluate(() => window.v2Test.chatHistory().index)).toContain('导入后接着打')
     assert.deepEqual(await page.evaluate(() => window.v2Test.chatHistory().ids), ['from-old-computer'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// D41：聊天页藏在设置页后面照样收回复。以前「导入」一点就把聊天页卸下，正在回复的那条被掐断，页面上什么也不说。
+test('importing while the chat is still replying waits for the reply instead of cutting it off', async () => {
+  const page = await open('chatImport')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-composer-input').fill('还在回复的这一条')
+    await page.getByTestId('chat-send').click()
+    await page.getByTestId('chat-stop').waitFor()
+    let settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    const notice = settings.locator('.v2-business-notice.is-error')
+    await expect(notice).toContainText('聊天正在回复，等它说完再导入。')
+    // 原话上屏，不被目录认成别的类别换掉。
+    assert.equal(await notice.locator('strong').count(), 0)
+    assert.equal(await chatHistoryCalls(page, 'importAppData'), 0)
+    assert.equal(await chatHistoryCalls(page, 'cancelAiChat'), 0)
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-stop').click()
+    await page.getByTestId('chat-send').waitFor()
+    settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-import').click()
+    await waitForToast(page, '导入了 1 个对话。')
+    await expect(notice).toHaveCount(0)
     await clean(page)
   } finally { await page.close() }
 })

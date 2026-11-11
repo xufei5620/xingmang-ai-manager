@@ -24,6 +24,8 @@ const electronMocks = vi.hoisted(() => ({
   latestWebContents: null as null | Record<string, unknown>,
   // The canvas window uses the default session, which the main window shares.
   sessionListeners: new Map<string, Set<(...args: unknown[]) => void>>(),
+  // Every page's renderer process; null means only the latest canvas, which then has its process to itself.
+  allWebContents: null as null | Record<string, unknown>[],
 }))
 
 vi.mock('electron', () => ({
@@ -37,6 +39,8 @@ vi.mock('electron', () => ({
       getURL: () => mainFrame.url,
       isDestroyed: () => false,
       isCrashed: vi.fn(() => false),
+      getOSProcessId: vi.fn(() => 4242),
+      forcefullyCrashRenderer: vi.fn(),
       send: vi.fn(),
       executeJavaScript: vi.fn(async () => true),
       setWindowOpenHandler: vi.fn(),
@@ -104,6 +108,7 @@ vi.mock('electron', () => ({
   },
   protocol: { registerFileProtocol: electronMocks.registerFileProtocol },
   shell: { openExternal: vi.fn(), openPath: vi.fn() },
+  webContents: { getAllWebContents: () => electronMocks.allWebContents ?? [electronMocks.latestWebContents] },
 }))
 
 import { buildCanvasProjectPackage } from './canvas-project-package'
@@ -320,6 +325,7 @@ beforeEach(() => {
   electronMocks.latestBrowserWindow = null
   electronMocks.latestWebContents = null
   electronMocks.sessionListeners.clear()
+  electronMocks.allWebContents = null
 })
 
 afterEach(() => {
@@ -2325,6 +2331,150 @@ describe('createCanvasWindowController', () => {
     })) {
       expect(electronMocks.removeHandler).toHaveBeenCalledWith(channel)
     }
+  })
+})
+
+function canvasWindowListener(name: string): (...args: unknown[]) => void {
+  const on = electronMocks.latestBrowserWindow!.on as ReturnType<typeof vi.fn>
+  return on.mock.calls.find(([event]) => event === name)![1]
+}
+
+function canvasRendererGone(details: { reason: string; exitCode: number }): void {
+  const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+  on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, details)
+}
+
+describe('a canvas that stops responding', () => {
+  it('asks with the main window wording, with the canvas as its subject', async () => {
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    canvasWindowListener('unresponsive')()
+
+    await vi.waitFor(() => expect(runtimeLog.log).toHaveBeenCalledWith('info', 'canvas', 'window.unresponsive.wait', '用户选择继续等待画布'))
+    expect(electronMocks.showMessageBox).toHaveBeenCalledOnce()
+    expect(electronMocks.showMessageBox).toHaveBeenCalledWith(window, {
+      type: 'warning',
+      title: '界面没有响应',
+      message: '无限画布暂时没有响应。',
+      detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+      buttons: ['继续等待', '重新加载'],
+      defaultId: 0,
+      cancelId: 0,
+      signal: expect.any(AbortSignal),
+    })
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'window.unresponsive', '画布窗口暂时无响应')
+    expect(electronMocks.latestWebContents!.forcefullyCrashRenderer).not.toHaveBeenCalled()
+    expect(window.loadURL).toHaveBeenCalledOnce()
+  })
+
+  it('shows one dialog however often Electron reports the same hang', async () => {
+    let answer!: (value: { response: number; checkboxChecked: boolean }) => void
+    electronMocks.showMessageBox.mockImplementationOnce(() => new Promise((resolve) => { answer = resolve }))
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const unresponsive = canvasWindowListener('unresponsive')
+    unresponsive()
+    unresponsive()
+    await vi.waitFor(() => expect(electronMocks.showMessageBox).toHaveBeenCalledOnce())
+    unresponsive()
+    await Promise.resolve()
+    expect(electronMocks.showMessageBox).toHaveBeenCalledOnce()
+    answer({ response: 0, checkboxChecked: false })
+  })
+
+  it('ends the stuck renderer and reloads the canvas home page in a fresh process, not as a crash', async () => {
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const loadURL = window.loadURL as ReturnType<typeof vi.fn>
+    controller.setTheme('light')
+    canvasWindowListener('unresponsive')()
+
+    await vi.waitFor(() => expect(electronMocks.latestWebContents!.forcefullyCrashRenderer).toHaveBeenCalledOnce())
+    // The load waits for the old process to be gone, so it cannot land in it.
+    expect(loadURL).toHaveBeenCalledOnce()
+    canvasRendererGone({ reason: 'killed', exitCode: 2 })
+
+    expect(loadURL).toHaveBeenCalledTimes(2)
+    const reloaded = new URL(loadURL.mock.calls[1]![0] as string)
+    expect(reloaded.pathname).toBe('/')
+    expect(reloaded.searchParams.get('theme')).toBe('light')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'window.unresponsive.reload', '用户选择重新加载画布')
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'process.ended-for-reload', '已结束卡住的画布界面进程，重新加载', { reason: 'killed', exitCode: 2 })
+    expect(runtimeLog.log).not.toHaveBeenCalledWith('error', 'canvas', 'process.gone', expect.anything(), expect.anything())
+    expect(runtimeLog.log).not.toHaveBeenCalledWith('warn', 'canvas', 'process.gone.reload', expect.anything())
+
+    // Only the user's reload was spent: two real crashes in the same minute still reload by themselves.
+    canvasRendererGone({ reason: 'crashed', exitCode: 1 })
+    canvasRendererGone({ reason: 'crashed', exitCode: 1 })
+    expect(loadURL).toHaveBeenCalledTimes(4)
+    expect(runtimeLog.log).not.toHaveBeenCalledWith('warn', 'canvas', 'process.gone.reload-limit', expect.anything())
+  })
+
+  it('gives up a pending close confirmation when the stuck renderer is ended', async () => {
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const closing = controller.requestClose()
+    canvasWindowListener('unresponsive')()
+    await vi.waitFor(() => expect(electronMocks.latestWebContents!.forcefullyCrashRenderer).toHaveBeenCalledOnce())
+    canvasRendererGone({ reason: 'killed', exitCode: 2 })
+    expect(await closing).toBe(false)
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledTimes(2)
+  })
+
+  it('only reloads, without ending the process, when another page shares the renderer', async () => {
+    electronMocks.showMessageBox.mockResolvedValueOnce({ response: 1, checkboxChecked: false })
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const contents = electronMocks.latestWebContents!
+    electronMocks.allWebContents = [contents, { isDestroyed: () => false, getOSProcessId: () => 4242 }]
+    canvasWindowListener('unresponsive')()
+
+    await vi.waitFor(() => expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledTimes(2))
+    expect(contents.forcefullyCrashRenderer).not.toHaveBeenCalled()
+  })
+
+  it('takes the dialog away when the canvas recovers or closes, and never reloads for it', async () => {
+    const signals: AbortSignal[] = []
+    electronMocks.showMessageBox.mockImplementation((...args: unknown[]) => {
+      const signal = (args[1] as { signal: AbortSignal }).signal
+      signals.push(signal)
+      // Electron settles an aborted box as if cancelled; answering 重新加载 proves that is ignored.
+      return new Promise((resolve) => signal.addEventListener('abort', () => resolve({ response: 1, checkboxChecked: false })))
+    })
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    canvasWindowListener('unresponsive')()
+    await vi.waitFor(() => expect(signals).toHaveLength(1))
+    canvasWindowListener('responsive')()
+    await vi.waitFor(() => expect(runtimeLog.log).toHaveBeenCalledWith('info', 'canvas', 'window.unresponsive.dismissed', '画布已恢复，提示自动关闭'))
+    expect(signals[0]!.aborted).toBe(true)
+
+    canvasWindowListener('unresponsive')()
+    await vi.waitFor(() => expect(signals).toHaveLength(2))
+    ;(window.destroy as () => void)()
+    expect(signals[1]!.aborted).toBe(true)
+    await vi.waitFor(() => expect(runtimeLog.log.mock.calls.filter(([, , event]) => event === 'window.unresponsive.dismissed')).toHaveLength(2))
+    expect(electronMocks.latestWebContents!.forcefullyCrashRenderer).not.toHaveBeenCalled()
+    expect(window.loadURL).toHaveBeenCalledOnce()
+  })
+
+  it('does not ask once the app is shutting the canvas down', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const unresponsive = canvasWindowListener('unresponsive')
+    controller.dispose()
+    unresponsive()
+    await Promise.resolve()
+    expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
   })
 })
 

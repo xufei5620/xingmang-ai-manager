@@ -8,6 +8,7 @@ import {
   ipcMain,
   Notification,
   protocol,
+  webContents,
   type IpcMainInvokeEvent,
   type MessageBoxOptions,
   type OpenDialogOptions,
@@ -31,6 +32,7 @@ import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
+import { createWindowResponsivenessGuard, rendererProcessIsOwn } from './window-responsiveness'
 import { canvasHostChannels, type CanvasAccountSummary, type CanvasAppearance, type CanvasPriceSnapshot, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
@@ -1629,6 +1631,53 @@ export function createCanvasWindowController(
       onError: (cause) => { options.runtimeLog.exception('canvas', 'process.gone.recover-failed', cause) },
     })
     canvasCrashRecovery = crashRecovery
+    // 画布卡死（页面死循环、长任务）不会崩，render-process-gone 不来，窗口只是不动，点 × 也只是白等关闭确认。
+    // 跟主窗口一样弹「界面没有响应」，字是 yoyo 2026-11-11 照决定单第六节批的（崩溃恢复.md KR-2）。
+    // 选「重新加载」先结束卡住的进程：只换地址的话，新页面还得那个卡住的进程来接（Electron 文档
+    // forcefullyCrashRenderer 一节）。进程没了走下面的 render-process-gone，在那里重新加载，
+    // 不记成画布崩了一次，也不占自动重载的次数。
+    let endedForHangReload = false
+    const responsiveness = createWindowResponsivenessGuard({
+      prompt: async (signal) => {
+        const result = await dialog.showMessageBox(window, {
+          type: 'warning', title: '界面没有响应', message: '无限画布暂时没有响应。',
+          detail: '可以再等一会儿，画布通常会自己恢复。重新加载只会重启画布，正在进行的安装、下载和已保存的设置都不受影响，但画布上还没保存的改动会丢失。',
+          buttons: ['继续等待', '重新加载'], defaultId: 0, cancelId: 0, signal,
+        })
+        return result.response === 1 ? 'reload' : 'wait'
+      },
+      reload: () => {
+        if (window.isDestroyed()) return
+        const contents = window.webContents
+        if (rendererProcessIsOwn(contents, webContents.getAllWebContents())) {
+          // Set first: the process may be reported gone before the call returns.
+          endedForHangReload = true
+          try {
+            contents.forcefullyCrashRenderer()
+            return
+          } catch (error) {
+            endedForHangReload = false
+            options.runtimeLog.exception('canvas', 'window.unresponsive.end-failed', error)
+          }
+        }
+        // 结束不了（进程已经没了，或者跟别的页面共用）就只换地址重新加载。
+        void window.loadURL(canvasEntryUrl()).catch((error) => {
+          options.runtimeLog.exception('canvas', 'window.unresponsive.reload-failed', error)
+        })
+      },
+      log: (event) => {
+        if (event === 'prompt.shown') { options.runtimeLog.log('warn', 'canvas', 'window.unresponsive.prompted', '已提示用户画布无响应'); return }
+        if (event === 'prompt.reload') { options.runtimeLog.log('warn', 'canvas', 'window.unresponsive.reload', '用户选择重新加载画布'); return }
+        if (event === 'prompt.wait') { options.runtimeLog.log('info', 'canvas', 'window.unresponsive.wait', '用户选择继续等待画布'); return }
+        options.runtimeLog.log('info', 'canvas', 'window.unresponsive.dismissed', '画布已恢复，提示自动关闭')
+      },
+      onError: (cause) => { options.runtimeLog.exception('canvas', 'window.unresponsive.failed', cause) },
+    })
+    window.on('unresponsive', () => {
+      options.runtimeLog.log('warn', 'canvas', 'window.unresponsive', '画布窗口暂时无响应')
+      if (!disposed) responsiveness.handleUnresponsive()
+    })
+    window.on('responsive', () => { responsiveness.handleResponsive() })
     // The canvas shares the default session with the main window. A download
     // started by the canvas page opens the system Save As dialog and writes
     // wherever it is pointed, bypassing the native-dialog-plus-atomic-write
@@ -1666,6 +1715,7 @@ export function createCanvasWindowController(
       pendingProjects.delete(senderId)
       activeProjects.delete(senderId)
       crashRecovery.dispose()
+      responsiveness.dispose()
       if (canvasCrashRecovery === crashRecovery) canvasCrashRecovery = null
       if (canvasWindow === window) canvasWindow = null
     })
@@ -1742,6 +1792,19 @@ export function createCanvasWindowController(
       rendererReady = false
       rendererUnavailable = true
       if (pendingClose?.window === window) finishPendingClose(false, '画布渲染进程已退出，无法确认项目保存')
+      if (endedForHangReload) {
+        // 用户在「界面没有响应」里点了重新加载，进程是这边结束的，不是崩溃。
+        endedForHangReload = false
+        options.runtimeLog.log('warn', 'canvas', 'process.ended-for-reload', '已结束卡住的画布界面进程，重新加载', {
+          reason: details.reason,
+          exitCode: details.exitCode,
+        })
+        if (disposed || window.isDestroyed()) return
+        void window.loadURL(canvasEntryUrl()).catch((error) => {
+          options.runtimeLog.exception('canvas', 'window.unresponsive.reload-failed', error)
+        })
+        return
+      }
       options.runtimeLog.log('error', 'canvas', 'process.gone', '画布渲染进程异常退出', {
         reason: details.reason,
         exitCode: details.exitCode,
