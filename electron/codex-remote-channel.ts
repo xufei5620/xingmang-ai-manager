@@ -123,10 +123,17 @@ export type RemoteChannelState =
   | 'needs-login'
   | 'error'
 
+/**
+ * 渠道停在哪一类毛病上（0.2.24 D23），电脑卡片按它在那句话旁边配按钮：credential = 凭据不对，要重新填；
+ * connection-limit = 同一个应用在别处连着；other = 别的原因没连上。现在只有飞书填它，缺省 = 只摆那句话。
+ */
+export type RemoteChannelProblem = 'credential' | 'connection-limit' | 'other'
+
 export interface RemoteChannelStatus {
   state: RemoteChannelState
   /** 能上屏的中文原因，不带平台原文里的令牌和消息内容。 */
   message?: string
+  problem?: RemoteChannelProblem
 }
 
 export interface RemoteChannelCapabilities {

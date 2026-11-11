@@ -3447,7 +3447,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
     await card.getByTestId('settings-remote-feishu-save').click()
-    await card.getByRole('alert').getByText('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。').waitFor()
+    await card.getByRole('alert').getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。').waitFor()
     // 填错了框里的字留着，改一下再存就行。
     assert.equal(await card.getByTestId('settings-remote-feishu-app-secret').inputValue(), 'wrong-secret')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('rightSecret123')
@@ -3506,6 +3506,44 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
       ],
     )
     assert.equal(JSON.stringify(recorded).includes('rightSecret123'), false)
+  } finally {
+    await page.close()
+  }
+})
+
+// D23：飞书停下来时只说三种固定的话，各配按钮：重新填写、重新连接、找客服。
+test('the Feishu block says one of three fixed sentences when it stops and gives each its buttons', async () => {
+  const page = await fixture('page=settings&remoteReady=1&help=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    const status = card.getByTestId('settings-remote-feishu-status')
+
+    await page.evaluate(() => window.remoteHarness.feishuProblem('other'))
+    await status.getByText('没连上，点「重新连接」再试；还不行点「找客服」。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-support').click()
+    assert.equal((await callsNamed(page, 'open-help')).length, 1)
+    await card.getByTestId('settings-remote-feishu-reconnect').click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-status-actions').count(), 0)
+
+    await page.evaluate(() => window.remoteHarness.feishuProblem('connection-limit'))
+    await status.getByText('这个飞书应用在别处也连着，先关掉别处再试。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-reconnect').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-support').count(), 0)
+    await card.getByTestId('settings-remote-feishu-reconnect').click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+
+    // 凭据不对：不另摆按钮，下面那颗「重新填写」就是它的，点了打开填写框。
+    await page.evaluate(() => window.remoteHarness.feishuProblem('credential'))
+    await status.getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-reconnect').count(), 0)
+    await card.getByTestId('settings-remote-feishu-edit').click()
+    await card.getByTestId('settings-remote-feishu-form').waitFor()
+
+    assert.deepEqual((await callsNamed(page, 'remote-reconnect')).map((call) => call.args), ['feishu', 'feishu'])
   } finally {
     await page.close()
   }

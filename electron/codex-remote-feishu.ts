@@ -12,6 +12,7 @@ import type {
   RemoteChannelAdapter,
   RemoteChannelDependencies,
   RemoteChannelHandlers,
+  RemoteChannelProblem,
   RemoteChannelStatus,
   RemoteInbound,
   RemoteOutbound,
@@ -67,7 +68,17 @@ const sendRetryCodes = new Set([99991400, 230020, 1500, 230049])
 /** 发消息遇到一时的失败，第 N 次重发前等多久；两次都不行就照原样报错。 */
 const sendRetryDelaysMs = [1_000, 4_000] as const
 
-const needsLoginMessage = 'App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。'
+/**
+ * 渠道停下来时电脑卡片上的三句（0.2.24 D23）。原来把飞书的原话、HTTP 状态码和「长连接」这类词照搬上屏，
+ * 客户不知道该重填、该关别处还是找客服；现在只说这三种，卡片按 problem 配「重新填写」「重新连接」「找客服」。
+ */
+export const feishuProblemMessages = {
+  credential: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。',
+  'connection-limit': '这个飞书应用在别处也连着，先关掉别处再试。',
+  other: '没连上，点「重新连接」再试；还不行点「找客服」。',
+} as const satisfies Record<RemoteChannelProblem, string>
+
+const needsLoginMessage = feishuProblemMessages.credential
 
 export interface FeishuCredential {
   appId: string
@@ -494,7 +505,18 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     await this.stop()
     this.handlers = handlers
     this.running = true
-    this.credential = parseFeishuCredential(await this.deps.readCredential())
+    let stored: string | null
+    try {
+      stored = await this.deps.readCredential()
+    } catch {
+      // 不往外抛：抛出去底座会把读凭据的原话（系统钥匙串的英文报错这类）摆上卡片。这里只说「其余」那句。
+      if (!this.running) return
+      this.running = false
+      this.deps.log('warn', 'feishu.credential-read-failed')
+      this.setStatus({ state: 'error', message: feishuProblemMessages.other, problem: 'other' })
+      return
+    }
+    this.credential = parseFeishuCredential(stored)
     if (!this.running) return
     if (!this.credential) {
       this.running = false
@@ -590,7 +612,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   }
 
   private setStatus(status: RemoteChannelStatus): void {
-    if (status.state === this.lastStatus.state && status.message === this.lastStatus.message) return
+    if (status.state === this.lastStatus.state && status.message === this.lastStatus.message && status.problem === this.lastStatus.problem) return
     this.lastStatus = status
     this.handlers?.onStatus(status)
   }
@@ -619,7 +641,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
 
   private failAuth(): void {
     this.deps.log('warn', 'feishu.auth-failed')
-    void this.stop().then(() => this.setStatus({ state: 'needs-login', message: needsLoginMessage }))
+    void this.stop().then(() => this.setStatus({ state: 'needs-login', message: needsLoginMessage, problem: 'credential' }))
   }
 
   private clearTimers(): void {
@@ -672,7 +694,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
     if (result.kind === 'connection-limit') {
       this.deps.log('warn', 'feishu.connection-limit')
       await this.stop()
-      this.setStatus({ state: 'error', message: '这个飞书应用连着的地方太多了，请关掉别处用同一个应用的长连接再试。' })
+      this.setStatus({ state: 'error', message: feishuProblemMessages['connection-limit'], problem: 'connection-limit' })
       return
     }
     if (result.kind === 'retry') {

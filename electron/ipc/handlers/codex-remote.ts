@@ -15,6 +15,7 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('codex-remote:set-channel-enabled', (_event, channel: unknown, enabled: unknown) => (
     codexRemote().setChannelEnabled(parseRemoteChannel(channel), parseRemoteEnabled(enabled))
   ))
+  registerTrustedHandler('codex-remote:reconnect', (_event, channel: unknown) => codexRemote().reconnectChannel(parseRemoteChannel(channel)))
   registerTrustedHandler('codex-remote:choose-workspace', async (event) => {
     const service = codexRemote()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
