@@ -195,6 +195,7 @@ import { syncLinuxTerminalCommands, type LinuxTerminalCommandsReason } from './l
 import {
   applyWindowTheme,
   buildMacApplicationMenuTemplate,
+  closeDecisionDialogText,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
   resolveWindowPalette,
@@ -903,7 +904,7 @@ if (!hasSingleInstanceLock) {
     // 客服要先分清是哪个发行版（linux-os-release.ts），检查页之外的「复制给客服」也带上。
     const linuxSystemNameRead = linuxTrayHost ? readLinuxSystemName() : null
     let linuxSystemLabel: string | null = null
-    // Mac 菜单要在建主窗口之前设上，「设置...」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
+    // Mac 菜单要在建主窗口之前设上，「设置…」（⌘,）点下去时才去找主窗口；主窗口建好之前点了不做事。
     let navigateFromAppMenu: ((target: RendererNavigationTarget) => void) | null = null
     if (process.platform === 'win32') {
       app.setAppUserModelId(windowsAppUserModelId)
@@ -3009,10 +3010,10 @@ if (!hasSingleInstanceLock) {
       trayAvailable: () => applicationTray?.available ?? false,
       requestCloseDecision: async () => {
         const trayReady = applicationTray?.available ?? false
+        const { detail, buttons } = closeDecisionDialogText(process.platform, trayReady)
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具', message: '关闭窗口后如何处理？',
-          detail: trayReady ? '缩到托盘会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。' : '系统托盘不可用。强制退出不等待任务完成，未保存的输入不会保留。',
-          buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
+          detail, buttons,
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
           // 默认不勾：不勾就和以前一样每次都问。选「返回」时勾了也不记。
           checkboxLabel: '记住我的选择，以后不再询问（可以在「设置 › 启动关闭」里改）',

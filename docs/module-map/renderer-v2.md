@@ -172,6 +172,7 @@
 - `features/auth/api.ts` — 认证相关 IPC 的封装；找回密码给的临时密码经主进程写剪贴板，主进程 60 秒后清掉（渲染层做不到）。
 - `features/auth/StartGuide.tsx` — 新手引导：选工具 → 准备环境 → 连接账号 → 完成；没有默认选择，按 Node → Python → CLI 解锁，步骤是否完成以父级回读的数据为准，来源不明必须用户明确处理。
 - `features/auth/guide-progress.ts` / `features/auth/guide-result.ts` — 引导进度按账号作用域存 localStorage（停在下线 Gemini 的当读不出），以及最后一步「接好了」那张结果卡的说法。
+- `features/auth/useGuideLaunch.ts` — 引导最后一步那颗「打开」落在哪：引导开着时读一份会话记录，跟首页这个工具的「打开」同一套（没用过的替他新建项目文件夹、用过的在上次的文件夹里开，D46）。
 - `features/auth/Welcome.tsx` / `features/auth/WelcomeStarfield.tsx` / `features/auth/welcome-starfield.ts` — 欢迎页与满屏星空：星点位置只算一次交给 SVG 画死，闪烁改成几层整体变透明度，由合成器做；低配电脑与窗口在后台时动画停住。
 - `features/auth/Splash.tsx` / `features/auth/AuthWindow.tsx` — 启动画面（显示父级真实阶段、进度与失败）和登录前几屏共用的可拖动窗口条。
 - `features/auth/LegalDocument.tsx` — 用户协议与隐私政策弹窗：Markdown 里的链接走外链兜底，图片只显示替代文字。

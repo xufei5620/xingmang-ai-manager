@@ -51,6 +51,11 @@ const startupTrayEnabledNote =
   '开机后在托盘里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点托盘图标。'
 const startupTrayDisabledNote =
   '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
+// Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里（深查 TR-5、决定单 D30）。
+const startupMenuBarEnabledNote =
+  '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
+const startupMenuBarDisabledNote =
+  '打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'
 
 const proxyScopeNote =
   '这里只查看应用窗口如何连接。账号、AI 请求和工具安装继续使用各自原有的连接方式；此处不会更改电脑或工具的网络设置。'
@@ -205,8 +210,8 @@ export class PlatformSystemService {
         : requested && !enabled
           ? '启动项已登记，但系统尚未允许自动运行。'
           : enabled
-            ? startupTrayEnabledNote
-            : startupTrayDisabledNote,
+            ? platform === 'darwin' ? startupMenuBarEnabledNote : startupTrayEnabledNote
+            : platform === 'darwin' ? startupMenuBarDisabledNote : startupTrayDisabledNote,
     }
   }
 
@@ -308,8 +313,12 @@ export class PlatformSystemService {
           ...(platform === 'win32' ? windowsLoginItem(executablePath) : {}),
         })
       const state = this.getState()
+      // Windows 上写开机项常被 360、火绒这类安全软件拦下，客户该去它弹的提示里放行，不是去翻系统设置
+      // （深查 AV-09 第 1 条、决定单 D26）。
       if (state.startup.requested !== enabled)
-        throw new Error('系统没有保存开机启动设置，请在系统设置中检查。')
+        throw new Error(platform === 'win32'
+          ? '系统没有保存开机启动设置。装了 360、火绒这类安全软件的话，在它弹出的提示里点「允许」，再打开一次这个开关。'
+          : '系统没有保存开机启动设置，请在系统设置中检查。')
       this.emit()
       return state
     })

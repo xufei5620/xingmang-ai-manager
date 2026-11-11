@@ -101,6 +101,20 @@ export function rendererCrashRecoveryDetail(platform: NodeJS.Platform): string {
   return `可以再试一次重新加载。如果还是空白，请${restart}，并在「反馈与客服」页把问题发给我们。正在进行的安装、下载和已保存的设置都不受影响。`
 }
 
+export interface CloseDecisionDialogText {
+  detail: string
+  /** 有托盘时是「收起、强制退出、返回」三颗，没有时是「强制退出、返回」两颗；main.ts 按这个顺序认按钮。 */
+  buttons: string[]
+}
+
+// Mac 上没有「托盘」这个说法，同一个图标在屏幕顶部的菜单栏里（深查 TR-5、决定单 D30）；Windows、Linux 照旧。
+export function closeDecisionDialogText(platform: NodeJS.Platform, trayReady: boolean): CloseDecisionDialogText {
+  if (!trayReady) return { detail: '系统托盘不可用。强制退出不等待任务完成，未保存的输入不会保留。', buttons: ['强制退出程序', '返回'] }
+  return platform === 'darwin'
+    ? { detail: '收到菜单栏会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。', buttons: ['收到菜单栏', '强制退出程序', '返回'] }
+    : { detail: '缩到托盘会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。', buttons: ['缩到托盘', '强制退出程序', '返回'] }
+}
+
 export function platformWindowOptions(
   platform: NodeJS.Platform,
   palette: WindowThemePalette,
@@ -154,9 +168,11 @@ export function buildMacApplicationMenuTemplate(
       label: appName,
       submenu: [
         { role: 'about', label: `关于${appName}` },
+        // Mac 用户习惯在应用名菜单里找检查更新（深查 TR-14、决定单 D31）：跳到设置里的版本更新，跟托盘那一项去同一处。
+        { label: '检查更新…', click: () => onNavigate('updates') },
         { type: 'separator' },
         {
-          label: '设置...',
+          label: '设置…',
           accelerator: 'CmdOrCtrl+,',
           click: () => onNavigate('settings'),
         },

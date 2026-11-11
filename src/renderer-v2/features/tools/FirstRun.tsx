@@ -18,8 +18,11 @@ import type { ToolFirstRun } from '../../registry/tools'
  *
  * freshFolder：「打开」会落在星芒刚建、还空着的项目文件夹里（opensUntouchedStarterWorkspace），
  * 那句话换成让它动手做点东西（D45）。缺省 = 不是，照旧。
+ *
+ * withCommand：给不给「新开一个终端，敲这一条」和「复制命令」。引导最后一步不给（D46，新手流程 N5）：
+ * 新手看了会以为还要自己开终端，点「打开」星芒就替他敲了；想自己敲的去首页那份。缺省 = 给。
  */
-export function FirstRunSteps({ name, firstRun, testId, gitHint, freshFolder }: { name: string; firstRun: ToolFirstRun; testId: string; gitHint?: string; freshFolder?: boolean }) {
+export function FirstRunSteps({ name, firstRun, testId, gitHint, freshFolder, withCommand = true }: { name: string; firstRun: ToolFirstRun; testId: string; gitHint?: string; freshFolder?: boolean; withCommand?: boolean }) {
   const prompt = freshFolder ? firstRun.freshFolderPrompt : firstRun.prompt
   const [copied, setCopied] = useState<'' | 'command' | 'prompt'>('')
   const [failed, setFailed] = useState(false)
@@ -29,11 +32,13 @@ export function FirstRunSteps({ name, firstRun, testId, gitHint, freshFolder }: 
       .catch(() => { setCopied(''); setFailed(true) })
   }
   return <div className="v2-first-run" data-testid={testId}>
-    <p>在你要写代码的那个文件夹里新开一个终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
-    <div className="v2-first-run-line">
-      <code className="v2-business-code" data-testid={`${testId}-command`}>{firstRun.command}</code>
-      <Button size="sm" icon={Copy} testId={`${testId}-copy-command`} onClick={() => copy('command', firstRun.command)}>复制命令</Button>
-    </div>
+    {withCommand && <>
+      <p>在你要写代码的那个文件夹里新开一个终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
+      <div className="v2-first-run-line">
+        <code className="v2-business-code" data-testid={`${testId}-command`}>{firstRun.command}</code>
+        <Button size="sm" icon={Copy} testId={`${testId}-copy-command`} onClick={() => copy('command', firstRun.command)}>复制命令</Button>
+      </div>
+    </>}
     <p>{name} 起来之后，把下面这句话粘进去，看看它能做什么：</p>
     <div className="v2-first-run-line">
       <code className="v2-business-code" data-testid={`${testId}-prompt`} data-fresh-folder={freshFolder ? 'true' : undefined}>{prompt}</code>

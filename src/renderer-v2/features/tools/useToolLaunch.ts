@@ -208,11 +208,16 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   /**
    * mode 走的是 toolsApi.launch 那套「两侧各取自己认得的那个」:codexDesktop 认
    * 'open' | 'restart',各家 CLI 认 'new' | 'resumeLast'(#292),Codex 接着聊另带记录 id。
+   * remembered：在这个文件夹里开（引导最后一步，D46）；它已经不在了，跟首页一样提示一句再弹选择窗口（launchRemembered）。
    */
   async function launch(id: ToolId, mode: 'open' | 'restart' | CliLaunchChoice = 'open', remembered?: string, folder: LaunchFolder = 'choose', epoch = accountEpoch.capture()): Promise<boolean> {
     const outcome = { opened: false }
     try {
-      const started = await holdLaunch(id, async () => { outcome.opened = await openTool(id, mode, remembered, folder, epoch) })
+      const started = await holdLaunch(id, async () => {
+        outcome.opened = remembered && id !== 'codexDesktop'
+          ? await launchRemembered(id, remembered, mode === 'open' || mode === 'restart' ? 'new' : mode, epoch)
+          : await openTool(id, mode, undefined, folder, epoch)
+      })
       return launchIsCurrent(epoch) && started && outcome.opened
     } catch (cause) {
       if (!launchIsCurrent(epoch)) return false
@@ -319,7 +324,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
   }
   /**
    * 记住的目录随时可能被删掉或改名。那种情况下退回目录选择器，用户点一次
-   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。只在 requestLaunch 挂着的那次任务里调。
+   * 「打开」仍然能走到底，而不是只收到一条错误（N7）。只在 requestLaunch、launch 挂着的那次任务里调。
    */
   async function launchRemembered(id: ToolId, remembered: string, mode: CliLaunchChoice = 'new', epoch = accountEpoch.capture()): Promise<boolean> {
     try { return await openTool(id, mode, remembered, 'choose', epoch) }

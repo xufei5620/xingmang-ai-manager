@@ -273,12 +273,6 @@ export function messageWithFiles(content: string, files: readonly AiChatTextFile
 const FILE_MARKUP_ALLOWANCE = 300
 function fileCharacters(files: readonly AiChatTextFile[] | undefined): number { return files?.reduce((total, file) => total + file.text.length, 0) ?? 0 }
 
-/** 输入框里最多还能写几个字：文件和标记占掉的从单条上限里扣，拼起来的整条不超过主进程认的单条上限。 */
-export function draftTextRoom(files: readonly AiChatTextFile[] | undefined): number {
-  if (!files?.length) return chatLimits.messageLength
-  return Math.max(0, chatLimits.messageLength - messageWithFiles('', files).length - 2)
-}
-
 /** 再选文件时还能加几个、能放多少字：文件合计不超过 3 万字，跟已经写的字拼起来也不超过单条上限。 */
 export function draftFileRoom(conversation: Pick<Conversation, 'draft' | 'draftFiles'>): { files: number; characters: number } {
   const present = conversation.draftFiles ?? []
@@ -366,6 +360,15 @@ export function continueInNewConversation(state: ChatWorkspace, sourceId: string
   const next = { ...createConversation(source.settings), draft: text, ...(images.length ? { draftImages: images } : {}), ...(files.length ? { draftFiles: files } : {}) }
   const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => { const { draftImages: _moved, draftFiles: _movedFiles, ...rest } = item; return { ...rest, draft: '' } }) : state
   return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
+}
+
+// 输入框不再靠 maxLength 截字：浏览器截掉的是尾巴，客户贴的报错日志最要紧的偏偏是最后几行，
+// 截了 AI 照样回答，客户不知道它没看到（D42）。超长时输入框下面说这一句、发送灰掉。
+// 跟 planTurn 一样按去掉首尾空白、连同带的文件一起算，灰着的按钮和真发出去时的检查口径一致；
+// 带了文件时「现在 N 字」也含文件，删字或拿掉文件都能降下来。
+export function draftLengthError(text: string, files?: readonly AiChatTextFile[]): string {
+  const length = messageWithFiles(text.trim(), files).length
+  return length > chatLimits.messageLength ? `最多 ${chatLimits.messageLength} 字，现在 ${length} 字，删掉一些再发。` : ''
 }
 
 export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[]; files?: AiChatTextFile[] }): TurnPlan {

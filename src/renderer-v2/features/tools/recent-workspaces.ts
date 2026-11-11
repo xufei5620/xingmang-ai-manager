@@ -91,6 +91,22 @@ export function launchWorkspaces(
 }
 
 /**
+ * 这个工具没聊过、也从没选过文件夹（已知40）：「打开」不弹选择框，直接替他建好
+ * 「文档\XingmangProjects\my-project」在里面打开，新手不会再选到桌面被拦。记录还没读到时
+ * 说不准聊没聊过，照旧弹选择框。聊没聊过看整份记录里它有几条（stats），不只看首页取的那
+ * 60 条：用得少的工具挤不进最近 60 条，不等于没用过。
+ * 首页卡片和引导最后一步那颗「打开」都按这一条判（D46），两处第一次打开的样子才一样。
+ * workspaces 是 launchWorkspaces 给的那份。
+ */
+export function startsInNewFolder(
+  recent: Pick<MultiProviderSessionPage, 'stats'> | null,
+  provider: ProviderId,
+  workspaces: readonly RecentWorkspace[],
+): boolean {
+  return workspaces.length === 0 && recent !== null && recent.stats.byProvider[provider] === 0
+}
+
+/**
  * 「打开」会不会落在星芒刚建、还空着的项目文件夹里（D45，新手流程 N4）。两种情况：这一下
  * 要替他新建一个（createsFolder），或者要打开的正是主进程说还空着的那个记着的文件夹。
  * 别的文件夹里有没有东西界面不知道，一律算不是，第一句话照旧。

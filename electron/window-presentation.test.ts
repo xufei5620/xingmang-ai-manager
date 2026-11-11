@@ -7,6 +7,7 @@ import {
   applyWindowTheme,
   assetMenuFailureDialog,
   buildMacApplicationMenuTemplate,
+  closeDecisionDialogText,
   legacyWindowChrome,
   platformWindowOptions,
   rendererCrashRecoveryDetail,
@@ -176,13 +177,55 @@ describe('macOS application menu', () => {
     )
     const appMenu = template[0].submenu
     const settings = Array.isArray(appMenu)
-      ? appMenu.find((item) => item.label === '设置...')
+      ? appMenu.find((item) => item.label === '设置…')
       : undefined
 
     expect(settings?.accelerator).toBe('CmdOrCtrl+,')
     expect(settings?.click).toBeTypeOf('function')
     ;(settings?.click as (() => void))()
     expect(send).toHaveBeenCalledWith('navigation:open-page', 'settings')
+  })
+
+  // 决定单 D31：应用名菜单里加「检查更新…」，跳到设置里的版本更新；省略号用 Mac 惯用的「…」。
+  it('offers Check for Updates right under About and opens the update card in settings', () => {
+    const navigate = vi.fn()
+    const appMenu = buildMacApplicationMenuTemplate('星芒AI管理工具', navigate)[0].submenu
+    const items = Array.isArray(appMenu) ? appMenu : []
+    expect(items.map((item) => item.label ?? item.type)).toEqual([
+      '关于星芒AI管理工具', '检查更新…', 'separator', '设置…', 'separator', '服务', 'separator',
+      '隐藏星芒AI管理工具', '隐藏其他', '全部显示', 'separator', '退出星芒AI管理工具',
+    ])
+    const check = items.find((item) => item.label === '检查更新…')
+    expect(check?.role).toBeUndefined()
+    expect(check?.accelerator).toBeUndefined()
+    ;(check?.click as (() => void))()
+    expect(navigate).toHaveBeenCalledWith('updates')
+    expect(items.some((item) => item.label?.includes('...'))).toBe(false)
+  })
+})
+
+describe('close decision dialog', () => {
+  // 决定单 D30：Mac 上把「托盘」说成菜单栏，Windows、Linux 不变。
+  it('calls hiding the window "收到菜单栏" on macOS and keeps the tray wording elsewhere', () => {
+    expect(closeDecisionDialogText('darwin', true)).toEqual({
+      detail: '收到菜单栏会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。',
+      buttons: ['收到菜单栏', '强制退出程序', '返回'],
+    })
+    for (const platform of ['win32', 'linux'] as const) {
+      expect(closeDecisionDialogText(platform, true)).toEqual({
+        detail: '缩到托盘会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。',
+        buttons: ['缩到托盘', '强制退出程序', '返回'],
+      })
+    }
+  })
+
+  it('offers only quit and back when there is nowhere to hide the window', () => {
+    for (const platform of ['win32', 'darwin', 'linux'] as const) {
+      expect(closeDecisionDialogText(platform, false)).toEqual({
+        detail: '系统托盘不可用。强制退出不等待任务完成，未保存的输入不会保留。',
+        buttons: ['强制退出程序', '返回'],
+      })
+    }
   })
 })
 
