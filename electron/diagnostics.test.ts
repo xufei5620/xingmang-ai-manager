@@ -8,6 +8,8 @@ import { inspectHomeFolderTrust, type NativeConfigInspection, type ProviderAccou
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, relaySites, requireRelaySite } from './relay-sites'
 import {
+  claudeSettingsProxyOutcome,
+  claudeSettingsProxyVariables,
   clockSkewMs,
   clockSkewSummary,
   buildWindowsArmSummary,
@@ -3589,6 +3591,123 @@ describe('proxySettingsOutcome', () => {
     it('leaves Linux alone, which has no Codex desktop app', async () => {
       const input = { ...windowsInput(null), platform: 'linux' as const }
       expect(proxyItem(await runDiagnostics(input))?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+    })
+  })
+})
+
+// D35（代理.md PX-4）：照教程写在 ~/.claude/settings.json env 段里的代理，Claude Code 启动时盖过进程环境，
+// 星芒打开工具前去掉没开的代理那一步管不到它。只提示、不给按钮。
+describe('the Claude Code settings proxy check', () => {
+  const summary = 'Claude Code 自己的设置里写了一个代理，它现在没开，Claude Code 会连不上。'
+  const closedOnly = async () => false
+  const openOnly = async () => true
+
+  it('keeps only the proxy variables of the env block, whatever their case', () => {
+    expect(claudeSettingsProxyVariables(JSON.stringify({
+      env: {
+        https_proxy: 'http://127.0.0.1:7890',
+        ALL_PROXY: 'socks5://127.0.0.1:7891',
+        NO_PROXY: 'localhost',
+        ANTHROPIC_AUTH_TOKEN: 'sk-must-not-travel',
+        HTTP_PROXY: 7890,
+      },
+    }))).toEqual({ https_proxy: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7891' })
+    expect(claudeSettingsProxyVariables(JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }))).toEqual({})
+    expect(claudeSettingsProxyVariables(JSON.stringify({ env: ['HTTPS_PROXY=http://127.0.0.1:7890'] }))).toEqual({})
+    expect(claudeSettingsProxyVariables('[]')).toEqual({})
+    expect(() => claudeSettingsProxyVariables('{ env: ')).toThrow()
+  })
+
+  it('warns about a proxy that points at a closed local port, without echoing its value', async () => {
+    const outcome = await claudeSettingsProxyOutcome(
+      JSON.stringify({ env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890', ANTHROPIC_BASE_URL: 'https://xm.solov.cc' } }),
+      closedOnly,
+    )
+    expect(outcome).toEqual({ state: 'warn', summary, details: { HTTPS_PROXY: '本机 7890 端口（没开）' } })
+    // The value may carry proxy credentials and is never copied into the report.
+    expect(JSON.stringify(outcome)).not.toContain('secret')
+    // No button: the setting is the customer's own (D35 without the button).
+    expect(outcome.details).not.toHaveProperty('fix')
+  })
+
+  it('lists every proxy it found once one of them is closed', async () => {
+    const probe = async (target: { port: number }) => target.port === 7891
+    const outcome = await claudeSettingsProxyOutcome(
+      JSON.stringify({ env: { HTTPS_PROXY: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7891' } }),
+      probe,
+    )
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary,
+      details: { HTTPS_PROXY: '本机 7890 端口（没开）', ALL_PROXY: '本机 7891 端口（开着）' },
+    })
+  })
+
+  it('stays out of the list when there is nothing to warn about', async () => {
+    const omitted = { state: 'pass', summary: '', omit: true }
+    // 没有这份文件、没写代理、代理开着、代理在别的机器上：决定单只给了发现时那一句。
+    expect(await claudeSettingsProxyOutcome(null, closedOnly)).toEqual(omitted)
+    expect(await claudeSettingsProxyOutcome(JSON.stringify({ env: { NO_PROXY: 'localhost' } }), closedOnly)).toEqual(omitted)
+    expect(await claudeSettingsProxyOutcome(JSON.stringify({ env: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }), openOnly)).toEqual(omitted)
+    expect(await claudeSettingsProxyOutcome(JSON.stringify({ env: { HTTPS_PROXY: 'http://proxy.corp.example:8080' } }), closedOnly)).toEqual(omitted)
+  })
+
+  describe('in the full check', () => {
+    function claudeHome(settings?: string): string {
+      // macOS 的临时目录在 /var 下，而 /var 是指向 /private/var 的链接，readSafeUtf8File 不读穿过链接的路径。
+      const home = fs.realpathSync.native(temporaryHome())
+      if (settings !== undefined) {
+        fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+        fs.writeFileSync(path.join(home, '.claude', 'settings.json'), settings)
+      }
+      return home
+    }
+    function input(home: string, platform: NodeJS.Platform = 'win32') {
+      const log = vi.fn()
+      return {
+        log,
+        // 要读文件，给足时间，免得机器忙时这一项报「检查超时」。
+        input: { ...dependencies(home), platform, timeoutMs: 2000, probeLoopbackProxy: async () => false, log },
+      }
+    }
+    const codes = (report: DiagnosticsReport) => report.items.map((item) => item.code)
+
+    it.each(['win32', 'darwin', 'linux'] as const)('adds a yellow row right after the computer proxy settings on %s', async (platform) => {
+      const home = claudeHome(JSON.stringify({ env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' } }))
+      const report = await runDiagnostics(input(home, platform).input)
+      const item = report.items.find((entry) => entry.code === 'CLAUDE_SETTINGS_PROXY')
+      expect(item).toMatchObject({
+        title: 'Claude Code 自己设置里的代理',
+        state: 'warn',
+        summary,
+        details: { HTTPS_PROXY: '本机 7890 端口（没开）' },
+      })
+      expect(item?.details).not.toHaveProperty('fix')
+      expect(JSON.stringify(item)).not.toContain('secret')
+      const order = codes(report)
+      expect(order.indexOf('CLAUDE_SETTINGS_PROXY')).toBe(order.indexOf('PROXY_ENVIRONMENT') + 1)
+      // 跟「电脑里的代理设置」是两行：电脑里没设代理时那一行照旧是绿的。
+      expect(report.items.find((entry) => entry.code === 'PROXY_ENVIRONMENT')?.state).toBe('pass')
+    })
+
+    it('reads the settings where Xingmang writes them for Claude Code', async () => {
+      const home = claudeHome()
+      const elsewhere = fs.realpathSync.native(temporaryHome())
+      fs.mkdirSync(path.join(elsewhere, '.claude'), { recursive: true })
+      fs.writeFileSync(path.join(elsewhere, '.claude', 'settings.json'), JSON.stringify({ env: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }))
+      const { input: checked } = input(home)
+      const report = await runDiagnostics({ ...checked, providerRoots: { userHome: elsewhere, codexHome: path.join(elsewhere, '.codex') } })
+      expect(codes(report)).toContain('CLAUDE_SETTINGS_PROXY')
+      expect(codes(await runDiagnostics(checked))).not.toContain('CLAUDE_SETTINGS_PROXY')
+    })
+
+    it('leaves broken settings to the bypass row and only logs why it skipped', async () => {
+      const home = claudeHome('{ "env": { "HTTPS_PROXY": "http://127.0.0.1:7890" ')
+      const { input: broken, log } = input(home)
+      const report = await runDiagnostics(broken)
+      expect(codes(report)).not.toContain('CLAUDE_SETTINGS_PROXY')
+      expect(report.items.find((entry) => entry.code === 'CLAUDE_BYPASS_PERMISSIONS')?.state).toBe('error')
+      expect(log).toHaveBeenCalledWith('info', 'diagnostics.claude-settings-proxy.skipped', expect.any(String), expect.objectContaining({ raw: expect.any(String) }))
     })
   })
 })

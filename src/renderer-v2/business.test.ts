@@ -360,6 +360,8 @@ describe('v2 business boundaries', () => {
       'CLASH_VERGE_TUN',
       'CODEX_DOTENV',
       'CLAUDE_BYPASS_PERMISSIONS',
+      // D35：Claude Code 自己设置里的代理是客户自己设的值，只提示、不给按钮。
+      'CLAUDE_SETTINGS_PROXY',
       // 能挪的那份说明在行里直接给「挪开这份说明」；信任只说一声，没有能处理它的页。
       'HOME_FOLDER_LEFTOVERS',
       'DISK_SPACE',
