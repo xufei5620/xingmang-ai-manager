@@ -96,7 +96,10 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     } else apiKey = parsed.credential.apiKey
     assertCurrent()
     // 记下这把是从哪来的：Claude Code 换 Key 时，客户自己填的那把不跟着换（#1113）。
-    return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind)
+    // automatic 是装好或登录以后星芒自动连的那一次（D7）：主进程写之前再核一遍「从没配置过、没开着」。
+    return parsed.automatic
+      ? service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind, { automatic: true })
+      : service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent, parsed.credential.kind)
   })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')

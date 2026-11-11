@@ -11,6 +11,7 @@ import {
   mergeExternalToolConfig,
   saveExternalToolConfig,
   inspectExternalToolConnection,
+  openCodeAuthPath,
   resolveExternalToolProbeCredential,
   type ExternalToolConfigOptions,
   type ExternalToolId,
@@ -116,6 +117,46 @@ describe('external tool configuration', () => {
     expect(fs.readdirSync(path.dirname(file))).toEqual([path.basename(file)])
   })
 
+  it('treats WorkBuddy as never configured only while it has no models.json at all', async () => {
+    const home = temporaryHome()
+    const inspect = () => inspectExternalToolConnection('workbuddy', platform, { userHome: home }, 'https://xm.solov.cc/v1')
+    expect(inspect()).toMatchObject({ configurationSource: 'missing', pristine: true })
+    // 文件在、一条都没有：多半是客户删过星芒那条，不再算从没配置过（D7 只自动连一次）。
+    const file = externalToolConfigPath('workbuddy', platform, { userHome: home })
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '[]', 'utf8')
+    expect(inspect()).toMatchObject({ configurationSource: 'missing' })
+    expect(inspect()).not.toHaveProperty('pristine')
+    await saveExternalToolConfig('workbuddy', platform, { userHome: home }, { model: 'claude-test', apiKey: 'sk-private-test' })
+    expect(inspect()).not.toHaveProperty('pristine')
+  })
+
+  it('treats OpenCode as never configured only with no global config and no sign-in to another provider', () => {
+    const home = temporaryHome()
+    const dataHome = path.join(home, 'xdg-data')
+    const inspect = (roots: { userHome: string; dataHome?: string } = { userHome: home }) => inspectExternalToolConnection('opencode', platform, roots, 'https://xm.solov.cc/v1')
+    expect(inspect()).toMatchObject({ configurationSource: 'missing', pristine: true })
+    // 客户在 OpenCode 里接过别家：凭据在 auth.json，配置文件一个都没有也不算从没配置过。
+    const auth = openCodeAuthPath({ userHome: home })
+    expect(auth).toBe(path.join(home, '.local', 'share', 'opencode', 'auth.json'))
+    fs.mkdirSync(path.dirname(auth), { recursive: true })
+    fs.writeFileSync(auth, '{}', 'utf8')
+    expect(inspect()).not.toHaveProperty('pristine')
+    // XDG_DATA_HOME 另指了位置时看那里的 auth.json。
+    expect(inspect({ userHome: home, dataHome })).toMatchObject({ pristine: true })
+    fs.mkdirSync(path.join(dataHome, 'opencode'), { recursive: true })
+    fs.writeFileSync(path.join(dataHome, 'opencode', 'auth.json'), '{}', 'utf8')
+    expect(inspect({ userHome: home, dataHome })).not.toHaveProperty('pristine')
+    fs.rmSync(auth)
+    // 配置文件在、只是没写默认型号的也不算：写进星芒的默认型号就换掉了客户自己在用的。
+    const file = externalToolConfigPath('opencode', platform, { userHome: home })
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, '{"theme":"dark"}', 'utf8')
+    expect(inspect()).toMatchObject({ configurationSource: 'missing' })
+    expect(inspect()).not.toHaveProperty('pristine')
+    expect(fs.readFileSync(file, 'utf8')).toBe('{"theme":"dark"}')
+  })
+
   it('resolves the actual global paths on Windows, macOS, and Linux', () => {
     expect(externalToolConfigPath('opencode', 'win32', roots)).toBe('C:\\Users\\test\\.config\\opencode\\opencode.json')
     expect(externalToolConfigPath('workbuddy', 'win32', roots)).toBe('C:\\Users\\test\\.workbuddy\\models.json')
@@ -197,7 +238,8 @@ describe('external tool configuration', () => {
     fs.mkdirSync(path.dirname(legacyPath), { recursive: true })
     fs.writeFileSync(legacyPath, original, 'utf8')
     const readFile = vi.spyOn(fs, 'readFileSync')
-    expect(inspectExternalToolConnection('workbuddy', platform, { userHome: home }, 'https://xm.solov.cc/v1')).toEqual({ configured: false, model: null, configurationSource: 'missing', configurationError: null })
+    // 旁边那份 .codebuddy 不是 WorkBuddy 桌面版的配置，它照样算从没配置过（D7）。
+    expect(inspectExternalToolConnection('workbuddy', platform, { userHome: home }, 'https://xm.solov.cc/v1')).toEqual({ configured: false, model: null, configurationSource: 'missing', configurationError: null, pristine: true })
     const saved = await saveExternalToolConfig('workbuddy', platform, { userHome: home }, { model: 'desktop-only', apiKey: 'sk-desktop-test' })
     expect(saved.path).toBe(path.join(home, '.workbuddy', 'models.json'))
     expect(saved.backups).toEqual([])

@@ -76,6 +76,22 @@ afterEach(() => {
 })
 
 describe('Claude Desktop in-app third-party configuration', () => {
+  it('reports never configured only while neither its official nor its third-party data folder exists', async () => {
+    const f = fixture()
+    expect(await f.service.inspectConnection(input.baseUrl)).toMatchObject({ configurationSource: 'missing', pristine: true })
+    // 打开过一次就有官方那个目录：它开在官方登录页，看不出客户有没有用自己的 Claude 账号登上，不再算（D7）。
+    fs.mkdirSync(f.developerDirectory, { recursive: true })
+    const opened = await f.service.inspectConnection(input.baseUrl)
+    expect(opened).toMatchObject({ configurationSource: 'missing' })
+    expect(opened).not.toHaveProperty('pristine')
+    fs.rmSync(f.developerDirectory, { recursive: true })
+    fs.mkdirSync(f.profileDirectory, { recursive: true })
+    expect(await f.service.inspectConnection(input.baseUrl)).not.toHaveProperty('pristine')
+    fs.rmSync(f.profileDirectory, { recursive: true })
+    await f.service.saveGateway(input)
+    expect(await f.service.inspectConnection(input.baseUrl)).not.toHaveProperty('pristine')
+  })
+
   it('saves the native library, deployment mode and developer settings without exposing credentials', async () => {
     const f = fixture()
     expect(await f.service.inspectConnection(input.baseUrl)).toMatchObject({ configured: false, configurationReady: false, configurationSource: 'missing' })

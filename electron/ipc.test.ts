@@ -3813,6 +3813,22 @@ describe('registerIpcHandlers', () => {
     expect(service.configureExternalTool).toHaveBeenCalledOnce()
   })
 
+  it('passes the automatic connection after install or login down so the main process can recheck it before writing', async () => {
+    const service = serviceStub()
+    const safeResult = { tool: 'workbuddy' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: false, connectionVerified: true, connection: null }
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: true } } } as never)
+    vi.mocked(service.configureExternalTool).mockResolvedValue(safeResult)
+    register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    await handler(trustedEvent(), 'workbuddy', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true })
+    expect(service.configureExternalTool).toHaveBeenCalledWith('workbuddy', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: undefined }, expect.any(Function), 'configured', { automatic: true })
+    // 只认 true：别的值一律当参数不对，什么都不写。
+    for (const automatic of [false, 'yes', 1]) {
+      await expect(handler(trustedEvent(), 'workbuddy', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic })).rejects.toThrow('客户端配置参数无效')
+    }
+    expect(service.configureExternalTool).toHaveBeenCalledOnce()
+  })
+
   it('rejects invalid external-client requests before revealing credentials or writing', async () => {
     const service = serviceStub()
     register(service)

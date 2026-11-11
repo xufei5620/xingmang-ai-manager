@@ -293,6 +293,28 @@ describe('external client system-service integration', () => {
     expect(JSON.stringify(f.service.getLastExternalClients())).not.toContain(selectedKey)
   })
 
+  it.each(externalToolIds)('writes the automatic %s connection only while it is still never configured and closed', async (tool) => {
+    const f = fixture()
+    for (const status of f.runtimeStatuses) status.installed = true
+    const runtimeStatus = f.runtimeStatuses.find((status) => status.tool === tool)!
+    const automatic = () => f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel }, undefined, 'configured', { automatic: true })
+    expect((await f.service.scanExternalClients()).find((status) => status.tool === tool)).toMatchObject({ configurationSource: 'missing', pristine: true })
+    // 开着：等它退出再说，这次一个字不写（D7）。
+    runtimeStatus.running = true
+    await expect(automatic()).rejects.toThrow('这次没有自动连接')
+    expect(targetFiles(f.userHome)).toEqual([])
+    runtimeStatus.running = false
+    await expect(automatic()).resolves.toMatchObject({ tool, model: selectedModel, outcome: 'configured' })
+    const written = targetFiles(f.userHome)
+    expect(written.length).toBeGreaterThan(0)
+    const before = new Map(written.map((file) => [file, fs.readFileSync(file, 'utf8')]))
+    // 已经有配置了：自动那一次不再写，哪怕又排到了一次。
+    await expect(automatic()).rejects.toThrow('这次没有自动连接')
+    for (const [file, content] of before) expect(fs.readFileSync(file, 'utf8'), file).toBe(content)
+    // 客户自己在配置窗口里点的保存照旧能写。
+    await expect(f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel })).resolves.toMatchObject({ tool, outcome: 'configured' })
+  })
+
   it('shows the next start the last whole detection until that start has scanned, never as running and without the key', async () => {
     const f = fixture({ snapshotCache: true })
     const cacheFile = path.join(f.managerDataDirectory, 'external-client-snapshot.json')
@@ -311,7 +333,9 @@ describe('external client system-service integration', () => {
     vi.mocked(f.runtime.scan).mockClear()
     f.relayFetch.mockClear()
     const cached = await restarted.cachedExternalClients()
-    expect(cached).toEqual(scanned.map((status) => ({ ...status, running: false, cachedAt: expect.any(String) })))
+    // 「从没配置过」只给这一刻现看的自动连用（D7），不落盘。
+    expect(scanned.some((status) => status.pristine)).toBe(true)
+    expect(cached).toEqual(scanned.map(({ pristine: _pristine, ...status }) => ({ ...status, running: false, cachedAt: expect.any(String) })))
     expect(cached[0]).toMatchObject({ tool: 'workbuddy', configured: true, configurationSource: 'xingmang', model: selectedModel })
     // Reading it probes nothing and asks the relay nothing.
     expect(f.runtime.scan).not.toHaveBeenCalled()

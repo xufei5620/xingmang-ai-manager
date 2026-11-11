@@ -85,6 +85,13 @@ export interface ExternalClientConnectionStatus {
    * （旧行为）。只有 Claude Desktop 会有。
    */
   officialAccount?: boolean
+  /**
+   * 这个客户端从没配置过：星芒和客户都没给它写过配置，也没登过别家（决定单 D7）。装好或登录以后只有这样的
+   * 才替客户自动连一次。WorkBuddy 是没有 models.json；OpenCode 是全局配置文件一个都没有、也没在它里面登过
+   * 别家（auth.json）；Claude Desktop 是官方和第三方两个数据目录都还不在（一次都没打开过，自己的 Claude 账号
+   * 也就没登过）。缺省 = 不是，或者说不准（旧行为：不自动连）。
+   */
+  pristine?: boolean
 }
 
 export interface ExternalClientStatus extends ExternalClientRuntimeStatus, ExternalClientConnectionStatus {
@@ -137,6 +144,12 @@ export interface ExternalClientConfigRequest {
   credential: ExternalClientCredential
   model: string
   protocol?: 'responses' | 'chat-completions'
+  /**
+   * 装好或登录以后星芒替客户自动连的那一次（决定单 D7），不是客户在配置窗口里点的。主进程在写之前、
+   * 排在同一个写配置的队里再看一眼：这个客户端还是从没配置过（pristine）、也没开着，才写；不是就一个字
+   * 不写、报错，免得盖掉客户这几秒里自己刚保存的那份。缺省 = 客户自己点的保存（旧行为）。
+   */
+  automatic?: true
 }
 
 export interface ExternalClientConfigResult {
@@ -196,5 +209,7 @@ export function parseExternalClientConfigRequest(input: unknown): ExternalClient
     credential = { kind: 'manual', apiKey: text(source.apiKey, '访问密钥', 4096) }
   } else throw new Error('请选择密钥来源')
   if (value.protocol !== undefined && value.protocol !== 'responses' && value.protocol !== 'chat-completions') throw new Error('客户端接口类型无效')
-  return { credential, model: text(value.model, '模型名称', 256), ...(value.protocol ? { protocol: value.protocol } : {}) }
+  if (value.automatic !== undefined && value.automatic !== true) throw new Error('客户端配置参数无效')
+  return { credential, model: text(value.model, '模型名称', 256), ...(value.protocol ? { protocol: value.protocol } : {}),
+    ...(value.automatic === true ? { automatic: true as const } : {}) }
 }

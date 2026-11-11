@@ -562,7 +562,8 @@ export interface SystemService {
   disposeToolRoutes?(): void
   /** routed：星芒自己用的（AI 工作区），「自动」时直连没走通当场改走默认线路；缺省查的是工具会用的那条线路。 */
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean; routed?: boolean }): Promise<string[]>
-  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void, keySource?: ExternalClientKeySource): Promise<ExternalClientConfigResult>
+  /** writeOptions.automatic：装好或登录以后自动连的那一次（D7），客户端不再是从没配置过、或开着时一个字不写。 */
+  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void, keySource?: ExternalClientKeySource, writeOptions?: { automatic?: boolean }): Promise<ExternalClientConfigResult>
   scanExternalClients(force?: boolean): Promise<ExternalClientStatus[]>
   /**
    * 本次启动还没真检测过客户端时，给出上次落盘的结果（每条带 `cachedAt`）；检测过了、或没有可用的

@@ -9,6 +9,7 @@ import {
   assertSafeDataFile,
   assertSafeDataFiles,
   findReparseComponent,
+  localPathPresentSync,
   readSafeUtf8File,
   readSafeUtf8FileSync,
   renameWithTransientRetry,
@@ -308,6 +309,19 @@ describe('safe local data files', () => {
 
     expect(() => appendSafeUtf8FileSync(filePath, 'new\n', '操作日志')).toThrow('单链接普通文件')
     expect(fs.readFileSync(victim, 'utf8')).toBe('victim\n')
+  })
+})
+
+describe('local path presence', () => {
+  it('only answers absent for a path that truly does not exist', () => {
+    const directory = temporaryDirectory()
+    expect(localPathPresentSync(path.join(directory, 'missing'))).toBe(false)
+    expect(localPathPresentSync(path.join(directory, 'missing', 'child'))).toBe(false)
+    fs.writeFileSync(path.join(directory, 'file'), 'x')
+    expect(localPathPresentSync(path.join(directory, 'file'))).toBe(true)
+    expect(localPathPresentSync(directory)).toBe(true)
+    // 上级是个文件：看不准，当有。
+    expect(localPathPresentSync(path.join(directory, 'file', 'child'))).toBe(true)
   })
 })
 

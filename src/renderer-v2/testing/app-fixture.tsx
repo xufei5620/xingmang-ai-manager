@@ -100,6 +100,8 @@ const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop',
   configurationSource: query.get('externalOther') === tool ? 'other' : query.get('externalReady') === tool ? 'xingmang' : 'missing',
   ...(tool === 'claudeDesktop' ? { configurationReady: query.get('externalReady') === tool || query.get('externalLocalReady') === tool } : {}),
   configurationError: query.get('externalConfigError') === tool ? '当前配置读取失败，可在客户端中检查' : null,
+  // ?externalPristine=workbuddy：主进程现看这一家从没配置过（决定单 D7 的自动连只认它）。
+  ...(query.get('externalPristine') === tool ? { pristine: true } : {}),
 }))
 const externalOwnerSite = session.siteId ?? 'solov'
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
@@ -830,7 +832,11 @@ const methods = {
   },
   configureExternalTool: async (tool, input) => {
     if (query.has('clientSaveFailure')) throw new Error('配置保存失败，原配置已保留')
-    Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
+    const saving = externalStatuses.find((entry) => entry.tool === tool)!
+    // 同主进程：自动连的那一次只写从没配置过的。
+    if (input.automatic && !saving.pristine) throw new Error(`${tool} 已经有配置了或者正开着，这次没有自动连接`)
+    delete saving.pristine
+    Object.assign(saving, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
     return { tool, model: input.model, path: tool === 'claudeDesktop' ? 'C:\\Fixture\\Claude-3p\\configLibrary\\fixture.json' : `C:\\Fixture\\${tool}\\config.json`,
       files: [], backups: ['C:\\Fixture\\config.bak'], outcome: 'configured' as const,
       message: '配置已保存，请重新打开客户端。', restartRequired: true,

@@ -7,6 +7,7 @@ import {
   type CliUninstallOptions,
   type CodexDesktopLaunchMode,
   type DesktopAppUpdateRequest,
+  type ExternalClientStatus,
   type ExternalToolId,
   type InstallCancelResult,
   type ProviderConfigSummary,
@@ -16,6 +17,7 @@ import {
 } from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
+import { autoConnectExternalClient, describeExternalAutoConnect, type ExternalAutoConnectTrigger } from './external-client-auto-connect'
 import { errorMessage } from '../../business-common'
 import { createTtlCache } from './ttl-cache'
 import { createWeekSpendLoader } from './week-spend'
@@ -196,6 +198,13 @@ export function createToolsApi(bridge: XingmangApi) {
     cancelExternalInstall: (id: ExternalToolId): Promise<InstallCancelResult> => bridge.cancelExternalClientInstall(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     switchExternalSource: (id: ExternalToolId, target: AccountSourceTarget) => bridge.switchExternalClientSource(id, target),
+    /** 装好或登录以后替从没配置过的客户端自动连一次（决定单 D7）。连没连都只记进运行日志，界面上说不说由调用方定。 */
+    autoConnectExternal: async (status: ExternalClientStatus, trigger: ExternalAutoConnectTrigger, stillCurrent: () => boolean) => {
+      const outcome = await autoConnectExternalClient(bridge, status, stillCurrent)
+      const line = describeExternalAutoConnect(status.tool, trigger, outcome)
+      void bridge.reportRendererError({ message: line.message, context: 'external-client-auto-connect', level: line.level }).catch(() => undefined)
+      return outcome
+    },
     // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
     // 只有「回到推荐版本」会点名版本。
     install: async (id: ToolId, version?: string) => {

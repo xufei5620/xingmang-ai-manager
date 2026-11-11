@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
-import { readSafeUtf8FileSync } from './safe-local-data'
+import { localPathPresentSync, readSafeUtf8FileSync } from './safe-local-data'
 import { commitClaudeDesktopFiles } from './claude-desktop-local-transaction'
 import { claudeDesktopStartupCheckModel } from './claude-desktop-models'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
@@ -336,7 +336,12 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const official = officialLogin ? { officialAccount: true } : {}
       const metadata = parseMetadata(read(metadataPath))
       const owner = parseOwner(read(markerPath), profileDirectory)
-      if (!metadata.appliedId) return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }
+      if (!metadata.appliedId) {
+        // 官方、第三方两个数据目录都还不在：Claude Desktop 一次都没打开过，自己的 Claude 账号也就没登过，才算从没
+        // 配置过（D7）。打开过一次的不算：它开在官方登录页，客户可能已经用自己的 Claude 账号登上了，看不出来。
+        const pristine = developerDirectories.every((directory) => !localPathPresentSync(directory)) ? { pristine: true } : {}
+        return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official, ...pristine }
+      }
       const config = parseObject(read(path.join(libraryDirectory, `${metadata.appliedId}.json`)))
       if (!Object.keys(config).length && !metadata.hybridPointer) {
         return { configured: false, configurationReady: false, model: null, configurationSource: 'missing', configurationError: null, apiKey: null, ...official }

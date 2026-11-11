@@ -335,6 +335,39 @@ test('external client install shows progress and finishes at configuration witho
   } finally { await page.close() }
 })
 
+// 决定单 D7：装好的这一家从没配置过、默认密钥和型号也定得下来，就在同一个任务里替他连一次，角落说配置窗口保存成功时那句。
+test('a never-configured client installed while signed in connects itself once with the dialog defaults', async () => {
+  const page = await open('externalInstallPending=1&externalPristine=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await waitForToast(page, '已连好 WorkBuddy，在它的模型列表里选「fixture-model」')
+    await row.getByRole('button', { name: '打开', exact: true }).waitFor()
+    assert.equal(await page.getByTestId('tool-workbuddy-source').innerText(), '当前账号')
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').map((entry) => entry.args))
+    assert.deepEqual(saves, [['workbuddy', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true }]])
+    assert.equal(await page.getByTestId('external-client-dialog').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 定不下型号（Claude Desktop 借的那把没有 Claude 型号）就不替他连，照旧停在「确认连接」。
+test('a never-configured client without a confident model still stops at 确认连接 after install', async () => {
+  const page = await open('externalInstallPending=1&externalPristine=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByRole('button', { name: '确认连接', exact: true }).waitFor()
+    await waitForToast(page, 'Claude Desktop 已装好，点「确认连接」用上当前账号')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client install can be cancelled while downloading and returns to 安装 without an error', async () => {
   const page = await open('externalInstallPending=1')
   try {
@@ -3694,6 +3727,28 @@ test('partial Key configuration keeps successful tools and retries recoverably',
     await page.getByRole('button', { name: '重新同步' }).click()
     await connectedBadge(page, 'claude').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length), 2)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 决定单 D7：登录那一轮账号密钥写完，再把装着、从没配置过的客户端替他连一次；界面上不另说。
+test('logging in connects an installed never-configured client once after the account keys are written', async () => {
+  const page = await open('guest=1&externalInstalled=1&externalPristine=opencode')
+  try {
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('guide-pause').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool'))
+    const calls = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.ok(calls.lastIndexOf('configureManagedCliKeys') < calls.indexOf('configureExternalTool'), calls.join(','))
+    const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').map((entry) => entry.args))
+    assert.deepEqual(saves, [['opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', automatic: true, protocol: 'responses' }]])
+    await expect(page.getByTestId('tool-opencode-source')).toHaveText('当前账号')
+    // 别的两家不是从没配置过：不碰。
+    assert.equal(saves.some(([tool]) => tool !== 'opencode'), false)
     await clean(page)
   } finally { await page.close() }
 })

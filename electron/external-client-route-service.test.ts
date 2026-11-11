@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import type { ClaudeDesktopLaunchContext } from './claude-desktop-acceleration'
-import { createExternalClientRouteService } from './external-client-route-service'
+import { createExternalClientRouteService, openCodeConfiguredByEnvironment } from './external-client-route-service'
 import type { SystemServiceOptions } from './system-service'
 import { createServiceContext } from './system-service-context'
 
@@ -98,5 +98,15 @@ describe('external client route service', () => {
     await expect(service.launchExternalClient('claudeDesktop')).rejects.toThrow('尚未检测到客户端')
     await expect(prepareClaudeDesktopLaunch.mock.calls[1][0].isDesktopRunning()).resolves.toBe(false)
     expect(runtime.stillRunning).not.toHaveBeenCalled()
+  })
+
+  it('counts OpenCode as configured by the customer when environment variables point its config elsewhere', () => {
+    expect(openCodeConfiguredByEnvironment({})).toBe(false)
+    expect(openCodeConfiguredByEnvironment({ XDG_DATA_HOME: path.join(os.tmpdir(), 'xdg-data') })).toBe(false)
+    for (const env of [{ OPENCODE_CONFIG: '/custom/opencode.json' }, { OPENCODE_CONFIG_DIR: '/custom' }, { OPENCODE_CONFIG_CONTENT: '{}' }]) {
+      expect(openCodeConfiguredByEnvironment(env), JSON.stringify(env)).toBe(true)
+    }
+    // XDG_DATA_HOME 不是完整路径：看不准它把登录凭据放在哪，当客户自己配过（D7）。
+    expect(openCodeConfiguredByEnvironment({ XDG_DATA_HOME: 'relative/data' })).toBe(true)
   })
 })

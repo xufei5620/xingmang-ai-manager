@@ -1,5 +1,5 @@
 import { useRef, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import type { AccountSessionState, AccountSourceTarget, ExternalToolId, PlatformCapabilities } from '../../../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceTarget, ExternalClientStatus, ExternalToolId, PlatformCapabilities } from '../../../../electron/ipc-contract'
 import { isRemoteFeatureOffMessage } from '../../../../electron/remote-features'
 import type { LatestRequest } from '../../latest-request'
 import { operationFailureFrom } from '../../business-common'
@@ -24,6 +24,8 @@ import { jobToolName, withoutTool } from './tool-jobs'
 import { rememberRevertedToolUpdate } from './update-notice'
 import { uninstallHandOffNotice } from './uninstall-handoff'
 import { clientLaunchWaitLabel } from './launch-notice'
+import { externalAutoConnectEligible, type ExternalAutoConnectOutcome } from './external-client-auto-connect'
+import { externalClientConnectedText } from './external-client-notice'
 import { installedToolSyncLabel } from './useToolbox'
 
 interface ToolInstallOptions {
@@ -271,13 +273,47 @@ export function useToolInstall(options: ToolInstallOptions) {
   }
   async function installExternal(id: ExternalToolId) {
     const epoch = accountEpoch.capture()
+    const connect: { outcome?: ExternalAutoConnectOutcome } = {}
+    let connecting = false
     try {
-      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id), { cancel: () => toolsApi.cancelExternalInstall(id), notice: {} })
+      // 装好以后从没配置过的，在同一个任务里替他连一次（决定单 D7），进度那一行用命令行工具装完时那句。
+      // 没登录、换了账号、配过别家或开着的，照旧停在「确认连接」。
+      const completed = await toolbox.run(id, '正在安装', async (report) => {
+        const status = await toolsApi.installExternal(id)
+        if (!session.authenticated || !session.account || scope !== latestScope.current || !epoch() || !externalAutoConnectEligible(status)) return
+        connecting = true
+        report(installedToolSyncLabel)
+        connect.outcome = await toolsApi.autoConnectExternal(status, 'install', epoch)
+      }, { cancel: async () => connecting ? { cancelled: false, reason: '这一步已经不能取消了。' } : toolsApi.cancelExternalInstall(id), notice: {} })
       if (!completed || !mounted.current || !epoch()) return
       await toolbox.refreshExternal()
-      if (mounted.current && epoch()) toast.show(`${spacedName(jobToolName(id) ?? id)}已装好，点「确认连接」用上当前账号`, 'ok')
+      if (!mounted.current || !epoch()) return
+      const outcome = connect.outcome
+      const name = spacedName(jobToolName(id) ?? id)
+      // 连好了用配置窗口保存成功时那句；写进去了但自检没过，同命令行工具装完没配好时只说装好了；没连就照旧。
+      if (outcome?.kind === 'connected') toast.show(outcome.verified ? externalClientConnectedText(id, outcome.model) : `${name}已装好`, 'ok')
+      else toast.show(`${name}已装好，点「确认连接」用上当前账号`, 'ok')
     } catch (cause) { if (mounted.current && epoch()) throw cause }
   }
+  /**
+   * 登录以后（不含开机恢复、切换账号）把已经装着、从没配置过的客户端替他连一次（决定单 D7）。登录那一轮账号密钥
+   * 写完才叫，这样借得到 Claude Code、Codex 刚写好的那把。界面上不说，只记运行日志；首页卡片重新检测后自己会变。
+   */
+  async function connectExternalAfterLogin() {
+    if (!session.authenticated || !session.account || scope !== latestScope.current || offlineNow.current) return
+    const epoch = accountEpoch.capture()
+    const statuses = await toolsApi.readExternal().catch((): ExternalClientStatus[] => [])
+    let connected = false
+    // 一家一家来：主进程写配置本来就排一个队，同时发只是一起等。
+    for (const status of statuses.filter(externalAutoConnectEligible)) {
+      if (!mounted.current || !epoch()) return
+      if ((await toolsApi.autoConnectExternal(status, 'login', epoch)).kind === 'connected') connected = true
+    }
+    if (connected && mounted.current && epoch()) await toolbox.refreshExternal().catch(() => undefined)
+  }
+  // 登录那一轮跑完时手上的是登录前那次渲染的闭包（还没登录、旧的检测作用域），只认最新这一份。
+  const latestConnectAfterLogin = useRef(connectExternalAfterLogin)
+  latestConnectAfterLogin.current = connectExternalAfterLogin
   async function launchExternal(id: ExternalToolId) {
     const epoch = accountEpoch.capture()
     try {
@@ -425,5 +461,6 @@ export function useToolInstall(options: ToolInstallOptions) {
     installIntents, installFailures, storeNewerVersion, setStoreNewerVersion, manualUninstall, setManualUninstall, runtimeRestart, setRuntimeRestart, managedSwitch,
     install, cancelInstall, installRuntime, replaceNode, installExternal, launchExternal, switchExternalSource, finishExternalConfigSave,
     requestUninstall, requestRevert, installFromHome, cancelHomeInstall,
+    connectExternalAfterLogin: () => latestConnectAfterLogin.current(),
   }
 }

@@ -99,6 +99,16 @@ function sameRouteUrl(left: string, right: string): boolean {
   return left.replace(/\/+$/, '') === right.replace(/\/+$/, '')
 }
 
+/**
+ * OpenCode 的配置被客户用环境变量另指过（D7 认「从没配置过」时用）：OPENCODE_CONFIG、OPENCODE_CONFIG_DIR、
+ * OPENCODE_CONFIG_CONTENT 任何一个设了，星芒看的那几个全局文件就不是它全部的配置；XDG_DATA_HOME 设了却不是
+ * 完整路径时，又看不准它把登录凭据放在哪。这几种都当客户自己配过，不替他自动连。
+ */
+export function openCodeConfiguredByEnvironment(env: NodeJS.ProcessEnv): boolean {
+  if (env.OPENCODE_CONFIG || env.OPENCODE_CONFIG_DIR || env.OPENCODE_CONFIG_CONTENT) return true
+  return Boolean(env.XDG_DATA_HOME) && !path.isAbsolute(env.XDG_DATA_HOME ?? '')
+}
+
 // 保存 Claude Desktop 配置时试一个型号最多等多久。试的那几个不通只是菜单里少一个，不值得照自检默认的 20 秒等。
 const claudeDesktopModelProbeTimeoutMs = 8_000
 
@@ -213,13 +223,17 @@ export function createExternalClientRouteService(context: ServiceContext, depend
           configurationError: 'Claude Desktop 本地配置目录无法确认，请重新检测。' }
       }
     }
-    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
+    const env = providerRoots.userHome === os.homedir() ? process.env : {}
+    const xdgConfig = env.XDG_CONFIG_HOME
     if (status.tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) return { ...status, configured: false, model: null,
       configurationSource: 'unknown', configurationError: relativeXdgConfigHomeMessage }
     const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
-    return { ...status, ...inspectExternalToolConnection(status.tool, externalPlatform, {
-      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
-    }, baseUrl, belongsToCurrentAccount) }
+    const dataHome = env.XDG_DATA_HOME && path.isAbsolute(env.XDG_DATA_HOME) ? { dataHome: env.XDG_DATA_HOME } : {}
+    const { pristine, ...connection } = inspectExternalToolConnection(status.tool, externalPlatform, {
+      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'), ...dataHome,
+    }, baseUrl, belongsToCurrentAccount)
+    const fresh = pristine && !(status.tool === 'opencode' && openCodeConfiguredByEnvironment(env)) ? { pristine: true } : {}
+    return { ...status, ...connection, ...fresh }
   }
   /**
    * 客户端配置里那把密钥。**只在主进程内部用**：它要被拿去发一次真实请求，
@@ -352,11 +366,20 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       return null
     }
   }
+  /**
+   * 装好或登录以后自动连的那一次（D7），排到队里、真要写之前再看一眼：还是从没配置过、也没开着才写。渲染层
+   * 挑型号那几秒里客户可能自己在配置窗口保存过，或者把客户端打开了；这时一个字不写，原因只进运行日志。
+   */
+  async function assertAutomaticTarget(tool: ExternalToolId, status: ExternalClientRuntimeStatus | undefined): Promise<void> {
+    const described = status?.installed && !status.running && !status.detectionError ? await describeExternalClient(status) : null
+    if (!described?.pristine) throw new Error(`${externalClientNames[tool]} 已经有配置了或者正开着，这次没有自动连接`)
+  }
   function configureExternalTool(
     tool: ExternalToolId,
     requested: ExternalToolConfigOptions,
     assertBeforeWrite?: () => void,
     keySource?: ExternalClientKeySource,
+    options: { automatic?: boolean } = {},
   ): Promise<ExternalClientConfigResult> {
     const work = async (): Promise<ExternalClientConfigResult> => {
       assertBeforeWrite?.()
@@ -390,6 +413,10 @@ export function createExternalClientRouteService(context: ServiceContext, depend
           models: selection.models.length, rejected: selection.rejected,
         })
         const gateway = await claudeDesktopConfig(status, assertContext)
+        if (options.automatic) {
+          await assertAutomaticTarget(tool, status)
+          assertContext()
+        }
         const input = { baseUrl, apiKey, authScheme: 'bearer' as const, models: selection.models }
         const result = await gateway.saveGateway(input)
         assertContext()
@@ -403,6 +430,10 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       const externalPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux' ? platform : 'linux'
       const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
       if (tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
+      if (options.automatic) {
+        await assertAutomaticTarget(tool, (await externalClientRuntime.scan()).find((entry) => entry.tool === tool))
+        assertContext()
+      }
       const result = await saveExternalToolConfig(tool, externalPlatform, {
         userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
       }, { apiKey, model, baseUrl: activeSite.providerBaseUrls.codex,

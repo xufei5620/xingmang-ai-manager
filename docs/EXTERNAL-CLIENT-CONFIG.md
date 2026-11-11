@@ -8,6 +8,8 @@
 
 首次使用未安装的客户端时，先点击“安装”；安装完成并重新检测后，再从同一行点击“配置”。保存配置会刷新工具状态；完成后返回工具行点击“打开”。已有其他来源配置的客户端保留可打开状态，连接星芒使用该行“配置”按钮。
 
+自动连一次（决定单 D7，0.2.24 起）：登录着账号装好这三家之一，或者登录（含注册后登录）以后，客户端要是从没配置过、没开着，默认密钥和型号也定得下来，就照配置窗口打开时默认的那套（`external-client-defaults.ts`）替客户保存一次，省掉「确认连接」→「保存并检测」。挑不准的不连：只剩要客户自己填的密钥、这把密钥里挑不出拿得准的型号（Claude Desktop 只认 Claude 型号），OpenCode 只在借 Codex 那把时连（「模型类型」只有那时拿得准）。「从没配置过」由主进程每次检测现看（`ExternalClientConnectionStatus.pristine`，不进开机快照）：WorkBuddy 没有 `models.json`；OpenCode 全局配置一个都没有、没有它自己的 `auth.json`、也没用 `OPENCODE_CONFIG*` 另指配置；Claude Desktop 官方和第三方两个数据目录都不在（打开过的一律不碰，看不出客户是不是用自己的 Claude 账号登着）。写配置请求带 `automatic: true`，主进程排在写配置的队里、真要写之前再核一遍，不是从没配置过或者开着就整笔拒掉，不会盖掉客户这几秒里自己保存的那份。装好那次结果写在角落的提示里（只用配置窗口原有的那句），登录那次不提示、只进运行日志（`external-client-auto-connect`）；开机、切换账号都不做。
+
 外部客户端配置步骤：
 
 1. 选择密钥来源：已有工具当前站点的星芒密钥、已登录账号中的启用密钥，或“自己填写星芒密钥”。
@@ -149,6 +151,8 @@ Claude Desktop 为什么不查清单：它每次启动、每次点「Check again
 ## OpenCode
 
 默认全局目录为 `~/.config/opencode`；Windows 为 `%USERPROFILE%\.config\opencode`。本机设置了有效的绝对路径 `XDG_CONFIG_HOME` 时，使用其下的 `opencode` 目录。OpenCode CLI 和桌面端使用同一配置体系，本轮真实验收对象为 CLI。
+
+OpenCode 在它里面接过别家（`/connect`、`opencode auth login`）时把登录凭据记在 `~/.local/share/opencode/auth.json`，设了绝对路径的 `XDG_DATA_HOME` 时在其下。星芒不读也不写它，只在认「从没配置过」时看它在不在（D7，`openCodeAuthPath`）。Windows 上按与配置目录同一套规则取 `%USERPROFILE%\.local\share\opencode`，这是推断，还没真机核过。
 
 写入器按 `config.json` → `opencode.json` → `opencode.jsonc` 顺序合并有效全局配置，写入最高优先级的现有文件；全不存在时新建 `opencode.json`。JSONC 注释和未修改字段的格式保留，其他低优先级文件不改写。非法格式、重复字段和错误字段类型拒绝写入。
 
