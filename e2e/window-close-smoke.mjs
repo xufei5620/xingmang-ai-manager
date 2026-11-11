@@ -301,9 +301,11 @@ async function runScenario(blockQuit) {
     await chooseClose('返回')
     await waitUntil(readState, (state) => state?.dialogs.length === 1, 'Cancel dialog missing')
     assert.equal(await visible(), true)
+    // macOS names the same choice after the menu bar (decision D30).
+    const hideChoice = process.platform === 'darwin' ? '收到菜单栏' : '缩到托盘'
     if (capabilities.tray) {
       progress(`${scenario}: hiding to the tray and restoring`)
-      await chooseClose('缩到托盘')
+      await chooseClose(hideChoice)
       await waitUntil(visible, (shown) => shown === false, 'Unresponsive close reporting prevented tray hiding')
       await scheduleWindowAction('activate')
       await waitUntil(visible, Boolean, 'Activation did not restore the hidden main window')
@@ -336,7 +338,7 @@ async function runScenario(blockQuit) {
     const state = JSON.parse(await fs.readFile(evidence, 'utf8'))
     assert.ok(rendererDialogs.every((type) => type === 'beforeunload'))
     assert.deepEqual(state.dialogs.map((entry) => entry.choice), capabilities.tray
-      ? ['返回', '缩到托盘', '强制退出程序'] : ['返回', '强制退出程序'])
+      ? ['返回', hideChoice, '强制退出程序'] : ['返回', '强制退出程序'])
     assert.ok(state.dialogs.every((entry) => !entry.unexpected && entry.buttons.includes('强制退出程序')))
     if (blockQuit) {
       assert.ok(state.blockedQuits > 0, 'The stalled quit hook was not exercised')

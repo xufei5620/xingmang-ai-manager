@@ -104,6 +104,29 @@ type ClaudeToggleNotice = { text: string; tone: 'ok' | 'warn' }
 const claudeToggleLaterNotice: ClaudeToggleNotice = { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
 
 /**
+ * 「点关闭按钮时」里藏起窗口那一项。Mac 上没有「托盘」这个说法，星芒的图标在屏幕顶部的菜单栏里
+ * （深查 TR-5、决定单 D30）；Windows、Linux 照旧。主进程关窗询问框那颗按钮是同一句（window-presentation.ts）。
+ */
+export function closeToTrayLabel(isMac: boolean): string {
+  return isMac ? '收到菜单栏' : '缩到托盘'
+}
+/** 「点关闭按钮时」下面那句说明（有地方放星芒图标时）。 */
+export function closeToTrayNote(isMac: boolean, accelerationAvailable: boolean): string {
+  if (isMac) return '收到菜单栏后，正在进行的安装会继续在后台运行'
+  return accelerationAvailable
+    ? '缩到托盘后，加速和正在进行的安装会继续在后台运行'
+    : '缩到托盘后，正在进行的安装会继续在后台运行'
+}
+/**
+ * 「开机自动启动」那句说明，系统状态读回来之前先摆的。读回来以后用主进程给的那句
+ * （electron/platform/system-service.ts），Mac 上同样说菜单栏。
+ */
+export function launchAtLoginFallbackNote(isMac: boolean): string {
+  return isMac
+    ? '开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。'
+    : '开机后在托盘里待命，不弹窗口'
+}
+/**
  * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
  * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
  */
@@ -756,7 +779,7 @@ export function SettingsPage({
       ),
       'launch-at-login': row(
         'launch-at-login',
-        systemState?.startup.note ?? '开机后在托盘里待命，不弹窗口',
+        systemState?.startup.note ?? launchAtLoginFallbackNote(isMac),
         systemApi && systemState?.startup.supported ? (
           <Switch
             aria-label="开机自动启动"
@@ -783,15 +806,13 @@ export function SettingsPage({
         // 没有游戏加速的电脑（Linux）不说加速。
         isLinux && resource.data && !resource.data.capabilities.tray
           ? '这台电脑的任务栏上没有放星芒图标的地方，点关闭会直接退出软件'
-          : accelerationAvailable
-            ? '缩到托盘后，加速和正在进行的安装会继续在后台运行'
-            : '缩到托盘后，正在进行的安装会继续在后台运行',
+          : closeToTrayNote(isMac, accelerationAvailable),
         <Segment
           options={[
             { value: 'ask', label: '每次询问' },
             {
               value: 'tray',
-              label: '缩到托盘',
+              label: closeToTrayLabel(isMac),
               disabled: !resource.data?.capabilities.tray,
             },
             { value: 'quit', label: '直接退出' },
