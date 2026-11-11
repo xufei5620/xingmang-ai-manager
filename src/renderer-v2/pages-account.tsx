@@ -462,6 +462,7 @@ export function AccountPage({
   const [openTradeNo, setOpenTradeNo] = useState<string | null>(null)
   useRowFocus('account', pageRef, true, (anchor) => {
     if (anchor === 'tasks') setUsageView('tasks')
+    if (anchor === 'prices') setUsageView('prices')
     if (anchor !== accountProfileAnchor) return anchor
     setProfileOpen(true)
     return null
@@ -539,6 +540,7 @@ export function AccountPage({
             trends={accountSupports(session, 'supportsDashboardTrends')}
             calls={accountSupports(session, 'supportsUsage')}
             tasks={visibleAccountTab('tasks', session)}
+            prices={accountSupports(session, 'supportsPriceList')}
             view={usageView}
             onViewChange={setUsageView}
             refreshRequest={refresh}

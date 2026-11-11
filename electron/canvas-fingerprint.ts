@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { resolveAiModelCapability, type AiModelCapability } from './ai-chat-protocol'
+import { canvasImageTransformKindForNode, canvasImageTransformProcessorRevision } from './canvas-image-tools'
 import type {
   CanvasRunAsset,
   CanvasRunGraph,
@@ -114,6 +115,12 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       imageEditMask: input.node.data.imageEditMask,
       // Only frame-extract nodes carry it: another second is another frame.
       frameTimestampSeconds: input.node.data.frameTimestampSeconds,
+      // Only image-tool nodes carry these (画布完善第 7 条第三步): another crop
+      // box, order or tile is another picture, and so is another processor.
+      imageTransform: input.node.data.imageTransform,
+      imageTransformProcessor: canvasImageTransformKindForNode(input.node.kind) ? canvasImageTransformProcessorRevision : undefined,
+      imageCollageInputOrder: input.node.data.imageCollageInputOrder,
+      tileInput: input.node.data.tileInput,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -164,6 +171,9 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         imageCandidateCount: node.data.imageCandidateCount,
         imageEditMask: node.data.imageEditMask,
         frameTimestampSeconds: node.data.frameTimestampSeconds,
+        imageTransform: node.data.imageTransform,
+        imageCollageInputOrder: node.data.imageCollageInputOrder,
+        tileInput: node.data.tileInput,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges

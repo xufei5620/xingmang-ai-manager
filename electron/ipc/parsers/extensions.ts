@@ -4,6 +4,7 @@ import type { AddMarketplaceInput, AddMcpInput, ImportSkillInput } from '../../c
 import { isRecord } from '../../input-guards'
 import { mcpHttpHeaderEntries } from '../../mcp-http-headers'
 import type { ProviderExtensionMutation } from '../../provider-extensions'
+import type { McpCopyInput } from '../../ipc-contract'
 import { optionalString, requiredString, stringArray } from './common'
 
 export function parseMcpInput(value: unknown): AddMcpInput {
@@ -64,6 +65,12 @@ export function parseSkillInput(value: unknown): ImportSkillInput {
     sourcePath: requiredString(value.sourcePath, 'Skill 路径', 32_767),
     scope: value.scope,
   }
+}
+
+export function parseMcpCopyInput(value: unknown): McpCopyInput {
+  if (!isRecord(value) || !isActiveProviderId(value.from) || !isActiveProviderId(value.to)) throw new Error('外接工具格式错误')
+  if (value.from === value.to) throw new Error('外接工具格式错误')
+  return { from: value.from, to: value.to, name: requiredString(value.name, 'MCP 名称', 128) }
 }
 
 export function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutation {

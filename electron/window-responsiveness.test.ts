@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, type Mock } from 'vitest'
 import {
   createWindowResponsivenessGuard,
+  rendererProcessIsOwn,
   type UnresponsiveChoice,
   type UnresponsivePromptEvent,
   type WindowResponsivenessOptions,
@@ -117,5 +118,28 @@ describe('unresponsive window prompt', () => {
     expect(onError).toHaveBeenCalledOnce()
     expect(reload).not.toHaveBeenCalled()
     expect(guard.prompting).toBe(false)
+  })
+})
+
+describe('rendererProcessIsOwn', () => {
+  function page(pid: number, state: { destroyed?: boolean; crashed?: boolean } = {}) {
+    return { isDestroyed: () => state.destroyed === true, isCrashed: () => state.crashed === true, getOSProcessId: () => pid }
+  }
+
+  it('lets a page end a renderer process nobody else uses', () => {
+    const own = page(10)
+    expect(rendererProcessIsOwn(own, [own, page(11), page(12)])).toBe(true)
+  })
+
+  it('refuses a process another live page shares', () => {
+    const own = page(10)
+    expect(rendererProcessIsOwn(own, [own, page(10)])).toBe(false)
+    expect(rendererProcessIsOwn(own, [own, page(10, { destroyed: true })])).toBe(true)
+  })
+
+  it('refuses a page whose process is already gone or not started', () => {
+    expect(rendererProcessIsOwn(page(10, { crashed: true }), [])).toBe(false)
+    expect(rendererProcessIsOwn(page(10, { destroyed: true }), [])).toBe(false)
+    expect(rendererProcessIsOwn(page(0), [])).toBe(false)
   })
 })

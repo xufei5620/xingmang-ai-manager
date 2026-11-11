@@ -68,6 +68,7 @@ export function visibleAccountTab(value: string, session: Pick<AccountContext, '
   if (value === 'usage') return accountSupports(session, 'supportsUsage') || accountSupports(session, 'supportsDashboard')
   if (value === 'dashboard') return accountSupports(session, 'supportsDashboard')
   if (value === 'tasks') return accountSupports(session, 'supportsTasks')
+  if (value === 'prices') return accountSupports(session, 'supportsPriceList')
   if (['orders', 'invite', 'recharge'].includes(value)) return accountSupports(session, 'supportsBilling')
   if (value === 'devices') return accountSupports(session, 'supportsSessionManagement')
   return ['overview', 'security', 'switch-account', 'edit-profile', 'change-password', 'remember-password'].includes(value)

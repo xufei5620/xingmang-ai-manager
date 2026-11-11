@@ -55,6 +55,11 @@ export interface AiOutputPlacement {
    * 缺省 = 没有这种情况。
    */
   earlierWorksLeftInSyncedDocuments?: 'onedrive' | 'icloud'
+  /**
+   * 以前「文档」不让写（或被云盘同步）时作品存到了用户主目录下，这次「文档」又能写了：
+   * 主目录那份的位置（已按账号那一套换过），启动后由主进程挪回 root。缺省 = 没有要挪的。
+   */
+  worksToMoveBackFrom?: string
 }
 
 export interface ChooseAiOutputRootOptions extends ResolveAiOutputRootOptions {
@@ -73,6 +78,12 @@ export interface ChooseAiOutputRootOptions extends ResolveAiOutputRootOptions {
  * 中途换会让刚存的作品在别的 store 里找不到。生成前那次试写（AiAssetStore.assertWritable）
  * 照旧在扣费前拦下，所以运行中途才被拦的也不会白扣费，下次启动就换过来了。
  * 别的原因写不进（磁盘满、只读盘）不换地方，照原来的提示。
+ *
+ * 换回「文档」时主目录下还有账号文件夹（上次「文档」不让写、或者被云盘同步时存的），
+ * 在 worksToMoveBackFrom 里交出主目录那份，由主进程挪回来：不挪的话那段时间出的作品
+ * 在作品库、聊天、画布里都找不到（0.2.24 深查 L-1，决定单 D107）。只在「文档」这次试写
+ * 通过时才交，写不进的「文档」不往里挪；反过来（作品在「文档」、这次放主目录）不挪，
+ * 理由见 earlierWorksInSyncedDocuments。
  */
 export function chooseAiOutputRoot(options: ChooseAiOutputRootOptions): AiOutputPlacement {
   const scope = options.scope ?? ((root: string) => root)
@@ -85,7 +96,7 @@ export function chooseAiOutputRoot(options: ChooseAiOutputRootOptions): AiOutput
   if (fallback === preferred) return unchanged
   try {
     (options.probe ?? probeAiOutputDirectory)(preferred)
-    return unchanged
+    return hasAccountFolders(fallback) ? { ...unchanged, worksToMoveBackFrom: fallback } : unchanged
   } catch (error) {
     if (!isWritePermissionError(error)) return unchanged
   }

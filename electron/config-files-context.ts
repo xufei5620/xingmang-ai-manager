@@ -3,12 +3,13 @@
 // providerConfigPaths，以及几家配置都用的 JSON 小工具。config-files.ts 和从它拆出去的文件都拿这一份。
 //
 // 这里只 import config-files.ts 的类型：值要是也从那边拿，两个文件就互相 require 了。
+import { isUtf8 } from 'node:buffer'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import type { ProviderId } from './catalog'
-import { readBoundedUtf8FileSync } from './bounded-file'
+import { readBoundedFileSync, readBoundedUtf8FileSync } from './bounded-file'
 import {
   defaultProviderConfigRoots,
   providerConfigRoot,
@@ -268,6 +269,53 @@ type PreparedFilePlan = FilePlan & {
   backupPath: string | null
   existed: boolean
   temporaryPath: string
+  /** 写回前那份原文不是合法 UTF-8（见 NotUtf8ConfigRewrite）。 */
+  notUtf8: boolean
+}
+
+/**
+ * 一份原来不是合法 UTF-8 的配置刚被星芒写回了一次（D78）。多半是客户用老记事本手改过：中文 Windows 上它
+ * 默认存成 GBK。星芒按 UTF-8 读、改、写回，那几个中文就成了「�」，原样只留在 backup 那份 .bak 里。
+ * Claude Code、Gemini CLI 自己读这份文件时也是「�」（cli-config-health.ts），功能上没有变坏，所以定的是
+ * 不提示客户、写回的内容照旧，只在运行日志里记下是哪份、原样在哪，客服好解释。
+ */
+export interface NotUtf8ConfigRewrite {
+  file: string
+  /** 写回前那份原样；换线路那种写成就删备份的（backupRetention 是 discard）是 null。 */
+  backup: string | null
+}
+
+export type NotUtf8ConfigRewriteLog = (rewrite: NotUtf8ConfigRewrite) => void
+
+// 写配置的地方有二十来处，都经 executeFilePlans，记在这里一处才不会漏。main.ts 在运行日志建好后接上；
+// 没接上（测试、运行日志建好之前）就不记，写回本身照旧。
+let notUtf8RewriteLog: NotUtf8ConfigRewriteLog | null = null
+
+export function attachNotUtf8ConfigRewriteLog(log: NotUtf8ConfigRewriteLog | null): void {
+  notUtf8RewriteLog = log
+}
+
+// 要看原始字节：解码会把坏字节悄悄换成 U+FFFD。
+function existingConfigNotUtf8(filePath: string): boolean {
+  try {
+    return !isUtf8(readBoundedFileSync(filePath, MAX_NATIVE_CONFIG_BYTES, '配置文件'))
+  } catch {
+    // 读不了、超过上限（~/.claude.json 这种 Claude Code 自己写的大文件）就不判：这里只为记一笔，不能挡住写回。
+    return false
+  }
+}
+
+function logNotUtf8Rewrites(prepared: PreparedFilePlan[], backupKept: boolean): void {
+  const log = notUtf8RewriteLog
+  if (!log) return
+  for (const plan of prepared) {
+    if (!plan.notUtf8) continue
+    try {
+      log({ file: plan.path, backup: backupKept ? plan.backupPath : null })
+    } catch {
+      // 记不下来也不能让一次已经写成的保存报失败。
+    }
+  }
 }
 
 // 清理失败只静默跳过，绝不影响已成功的保存。
@@ -431,6 +479,8 @@ function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFile
       existed,
       backupPath: existed ? uniqueConfigBackupPath(plan.path, suffix) : null,
       temporaryPath: `${plan.path}.xingmang-${randomUUID()}.tmp`,
+      // 拿掉的那份整个挪走、不经解码，不用看。
+      notUtf8: existed && !isRemovePlan(plan) && existingConfigNotUtf8(plan.path),
     }
   }).filter((plan) => plan.existed || !isRemovePlan(plan))
 }
@@ -569,9 +619,11 @@ export function executeFilePlans(
         // 删不掉只是多留一份备份，不影响已经写成的配置。
       }
     }
+    logNotUtf8Rewrites(prepared, false)
     return { backups: [], files: prepared.map((plan) => plan.path) }
   }
   for (const plan of prepared) pruneBackups(plan.path, providerRoot)
+  logNotUtf8Rewrites(prepared, true)
 
   return {
     backups: prepared.flatMap((plan) => plan.backupPath ? [plan.backupPath] : []),

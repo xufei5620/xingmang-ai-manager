@@ -199,7 +199,7 @@ describe('buildFeedbackMessage', () => {
   })
 
   it('says at the end that the report could not be made, so support does not take it for an unticked box', () => {
-    expect(buildFeedbackMessage({ type: '遇到问题', description: '打不开', contact: '', reportMissing: true })).toBe('留言反馈 · 遇到问题\n打不开\n诊断报告：这次没生成出来')
+    expect(buildFeedbackMessage({ type: '遇到问题', description: '打不开', contact: '', reportMissing: true })).toBe('留言反馈 · 遇到问题\n打不开\n反馈报告：这次没生成出来')
   })
 
   it('masks a key the customer pasted into the description', () => {
@@ -483,6 +483,22 @@ describe('settings page lead', () => {
   // 找设置改用左栏的「搜索设置」，顶上只说会自己保存（字表批08）。
   it('only says changes save themselves now that the page has its own search', () => {
     expect(settingsPageLead).toBe('改动会立即保存。')
+  })
+})
+
+// Fable 第二轮 Q6：拨完开关那句小提示按主进程实际做了什么说，没改 Claude Code 配置的两种不说「已打开」。
+describe('Claude Code write boundary notice', () => {
+  it('says the switch took effect only when the config was written or already matched', () => {
+    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'written' })).toEqual({ text: '已打开，新开的 Claude Code 会按这个来。', tone: 'ok' })
+    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'unchanged' })).toEqual({ text: '已打开，新开的 Claude Code 会按这个来。', tone: 'ok' })
+    expect(settingsPage.claudeWriteBoundaryNotice({ enabled: false, applied: 'written' })).toEqual({ text: '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' })
+  })
+
+  it('tells the customer when their own Claude Code setting was left alone or the write waits for the next save', () => {
+    for (const enabled of [true, false]) {
+      expect(settingsPage.claudeWriteBoundaryNotice({ enabled, applied: 'kept' })).toEqual({ text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' })
+      expect(settingsPage.claudeWriteBoundaryNotice({ enabled, applied: 'later' })).toEqual({ text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' })
+    }
   })
 })
 
