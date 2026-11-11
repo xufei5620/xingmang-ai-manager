@@ -239,12 +239,37 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     if (blob.size > 32 * 1024 * 1024) throw new Error('视频超过 32 MB，画布抽不了这一帧')
     return blob.type === 'video/mp4' ? blob : new Blob([blob], { type: 'video/mp4' })
   },
-  // The frame the kernel decoded for a frame-extract node. Only the PNG bytes
-  // and the ids the main process handed out cross; a failure carries no text.
+  // 画布完善第 7 条第三步：图片工具要处理的来源图。画布本来就能按这个地址读自己账号的图片（画布上显示图片
+  // 就是这么读的），这里不开新通道，只是替内核读出来、限 20 MB（网页版图片处理每张的上限）。
+  readImageForRunPreparation: async (assetId: string) => {
+    if (typeof assetId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(assetId)) throw new Error('图片素材标识格式错误')
+    const response = await fetch(`xingmang-asset://image/${assetId}`, { cache: 'no-store', redirect: 'error' })
+    if (!response.ok) throw new Error('图片读不出来，请确认素材还在')
+    const declared = Number(response.headers.get('content-length'))
+    if (Number.isFinite(declared) && declared > 20 * 1024 * 1024) throw new Error('图片超过 20 MB，画布处理不了')
+    const blob = await response.blob()
+    if (blob.size > 20 * 1024 * 1024) throw new Error('图片超过 20 MB，画布处理不了')
+    return blob
+  },
+  // What the kernel made for a frame-extract or image-tool node. Only the PNG
+  // bytes and the ids the main process handed out cross; a failure carries no text.
   completeRunPreparation: async (input: unknown) => {
     if (!input || typeof input !== 'object') throw new Error('画布运行准备回执格式错误')
-    const { runId, operationId, kind, outcome, png, decodedTimestampSeconds } = input as Record<string, unknown>
+    const { runId, operationId, kind, outcome, png, pngs, decodedTimestampSeconds } = input as Record<string, unknown>
     if (outcome === 'failed') return invoke(channels.completeRunPreparation, { runId, operationId, kind, outcome })
+    if (kind === 'image') {
+      if (!Array.isArray(pngs) || pngs.length < 1 || pngs.length > 16 || !pngs.every((picture) => picture instanceof Blob)) throw new Error('图片处理结果内容格式错误')
+      const pictures = pngs as Blob[]
+      if (pictures.some((picture) => picture.size > 20 * 1024 * 1024)) throw new Error('图片处理结果超过 20 MB，没有保存')
+      if (pictures.reduce((total, picture) => total + picture.size, 0) > 64 * 1024 * 1024) throw new Error('图片处理结果合计超过 64 MB，没有保存')
+      return invoke(channels.completeRunPreparation, {
+        runId,
+        operationId,
+        kind,
+        outcome,
+        pngs: await Promise.all(pictures.map(async (picture) => new Uint8Array(await picture.arrayBuffer()))),
+      })
+    }
     if (!(png instanceof Blob)) throw new Error('视频帧图片内容格式错误')
     if (png.size > 20 * 1024 * 1024) throw new Error('视频帧图片超过 20 MB，没有保存')
     return invoke(channels.completeRunPreparation, {

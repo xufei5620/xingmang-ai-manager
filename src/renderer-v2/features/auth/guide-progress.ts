@@ -3,7 +3,8 @@ import type { GuideRoute, GuideStep } from './StartGuide'
 export interface GuideProgress { route: GuideRoute; step: GuideStep }
 export interface GuideProgressStorage { getItem: (key: string) => string | null; setItem: (key: string, value: string) => void; removeItem: (key: string) => void }
 // 上次停在已下线的 Gemini CLI 那一条（存着 'gemini'）的不在这里，按读不出处理：引导从推荐的那一项重新开始。
-const routes: readonly GuideRoute[] = ['claude', 'codex', 'codexDesktop', 'grok', 'chat']
+// 「做图、做视频」只停得在第一步（选了、点「下一步」就走完），别的步骤上出现它按读不出处理。
+const routes: readonly GuideRoute[] = ['claude', 'codex', 'codexDesktop', 'grok', 'chat', 'create']
 const steps: readonly GuideStep[] = ['choose', 'prepare', 'connect', 'ready']
 
 export function guideProgressKey(scope: string): string { return `xingmang-ui-v2:guide:${encodeURIComponent(scope)}` }
@@ -17,7 +18,7 @@ export function readGuideProgress(storage: GuideProgressStorage | null, scope: s
     const value = JSON.parse(raw) as unknown
     if (!value || typeof value !== 'object') return null
     const entry = value as Record<string, unknown>
-    if (entry.version !== 1 || entry.owner !== scope || !routes.includes(entry.route as GuideRoute) || !steps.includes(entry.step as GuideStep) || (platform === 'linux' && entry.route === 'codexDesktop')) return null
+    if (entry.version !== 1 || entry.owner !== scope || !routes.includes(entry.route as GuideRoute) || !steps.includes(entry.step as GuideStep) || (platform === 'linux' && entry.route === 'codexDesktop') || (entry.route === 'create' && entry.step !== 'choose')) return null
     return { route: entry.route as GuideRoute, step: entry.step as GuideStep }
   } catch { return null }
 }

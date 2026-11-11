@@ -33,7 +33,8 @@ export interface ChatMessage {
   settings?: ChatSettings
 }
 // draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。
-export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean }
+// pinned：客户置顶的，列表里排在最上面「置顶」那一段。renamed：客户自己改过名字，消息删光了再发也不按第一句话重新起名。
+export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean; pinned?: boolean; renamed?: boolean }
 export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
 export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[]; images: AiChatAsset[] }
 
@@ -221,6 +222,28 @@ export function groupConversationsByDay(conversations: readonly Conversation[], 
   const days: ConversationDay[] = ['今天', '昨天', '更早']
   return days.map((day) => ({ day, conversations: conversations.filter((conversation) => conversationDay(conversation.updatedAt, now) === day) })).filter((group) => group.conversations.length > 0)
 }
+// 列表上的分段：置顶的单独一段排最上面（按原来的先后），其余照旧按今天 / 昨天 / 更早分（Fable 第二轮 Y2）。
+export type ConversationListLabel = '置顶' | ConversationDay
+export function groupConversationList(conversations: readonly Conversation[], now = Date.now()): Array<{ label: ConversationListLabel; conversations: Conversation[] }> {
+  const pinned = conversations.filter((conversation) => conversation.pinned)
+  const days = groupConversationsByDay(conversations.filter((conversation) => !conversation.pinned), now).map(({ day, conversations: items }) => ({ label: day, conversations: items }))
+  return pinned.length ? [{ label: '置顶', conversations: pinned }, ...days] : days
+}
+
+// 自动取的名字是第一句话的前 32 个字；自己起的名字放宽一点，再长列表里也显示不下。
+export const MAX_CONVERSATION_TITLE_LENGTH = 40
+/** 空名字不改；改名不动 updatedAt，免得一段旧对话改个名就跑到「今天」里去。 */
+export function renameConversation(conversation: Conversation, title: string): Conversation {
+  const next = title.trim().slice(0, MAX_CONVERSATION_TITLE_LENGTH)
+  if (!next || (next === conversation.title && conversation.renamed)) return conversation
+  return { ...conversation, title: next, renamed: true }
+}
+export function setConversationPinned(conversation: Conversation, pinned: boolean): Conversation {
+  if (Boolean(conversation.pinned) === pinned) return conversation
+  if (pinned) return { ...conversation, pinned: true }
+  const { pinned: _pinned, ...rest } = conversation
+  return rest
+}
 
 export const noImageModelMessage = '当前模型看不了图片，请换一个能看图的模型，或者先把图片去掉'
 // 聊天里发不出去时说的：草稿还在输入框里，横幅上给「重试」，网回来了点一下就发。
@@ -329,7 +352,7 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
   const fresh = !input.retryId && !input.editId
-  const title = conversation.messages.length ? conversation.title : prompt.slice(0, 32) || '图片提问'
+  const title = conversation.messages.length || conversation.renamed ? conversation.title : prompt.slice(0, 32) || '图片提问'
   const { draftImages: _sent, ...rest } = conversation
   return { conversation: { ...(fresh ? rest : conversation), title, updatedAt: Date.now(), draft: fresh ? '' : conversation.draft, messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages, images }
 }
