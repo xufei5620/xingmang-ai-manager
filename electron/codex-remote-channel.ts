@@ -295,8 +295,13 @@ export interface CodexRemoteSnapshot {
   unavailableReason?: string
   /** 凭据能不能存到下次打开（Linux 没有密钥环时只到这次关掉）。 */
   credentialPersistence: 'durable' | 'session-only' | 'unavailable'
-  /** 主目录已换成 ~ 的工作文件夹；没选是 null。 */
+  /** 主目录已换成 ~ 的工作文件夹（正在用的那个）；没选是 null。 */
   workspaceDirectory: string | null
+  /**
+   * 电脑上加过的全部文件夹（YF-19），主目录已换成 ~，按加的先后，含正在用的那个；手机上「文件夹 2」认的就是这个次序。
+   * 缺省 = 只有 workspaceDirectory 那一个。
+   */
+  workspaces?: string[]
   task: CodexRemoteTaskState
   pendingApprovals: number
   /** 「打开星芒时自动打开遥控」开着（YF-9）；缺省 = 关。 */

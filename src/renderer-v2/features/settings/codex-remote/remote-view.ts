@@ -149,3 +149,12 @@ export function remoteChannelCollapsed(snapshot: Pick<CodexRemoteSnapshot, 'chan
   if (channel.hasCredential || channel.enabled) return false
   return Object.values(snapshot.channels).some((other) => other.channel !== channel.channel && other.hasCredential)
 }
+
+/** 电脑上最多加几个干活的文件夹（YF-19）；跟主进程 codex-remote-store.ts 的 maxRemoteWorkspaces 一样，那边不进渲染层。 */
+export const remoteWorkspaceMax = 5
+
+/** 「干活的文件夹」那行列的几个（YF-19）：快照只在不止一个时带 workspaces，一个时就是 workspaceDirectory。 */
+export function remoteWorkspaceFolders(snapshot: Pick<CodexRemoteSnapshot, 'workspaceDirectory' | 'workspaces'>): string[] {
+  if (snapshot.workspaces?.length) return snapshot.workspaces
+  return snapshot.workspaceDirectory ? [snapshot.workspaceDirectory] : []
+}

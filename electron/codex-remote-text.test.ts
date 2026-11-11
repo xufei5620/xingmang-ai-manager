@@ -19,6 +19,11 @@ import {
   remoteRunningForText,
   remoteTookText,
   remoteTurnFailureMessages,
+  workspaceAlreadyInUseMessage,
+  workspaceListMessage,
+  workspaceMissingMessage,
+  workspaceSwitchedMessage,
+  workspaceUnusableMessage,
   retryMessage,
   splitRemoteText,
   staleMessageNotice,
@@ -39,9 +44,35 @@ describe('codex-remote-text', () => {
 
   // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
   it('lists closing the remote among the commands and does not read it out of a sentence', () => {
-    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、关闭遥控、重试、帮助。')
+    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。')
     expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。')
     expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
+  })
+
+  // YF-19：手机上看、换电脑上加过的文件夹。只认整条就是「文件夹」或「文件夹 N」。
+  it('reads the folder commands only as whole messages', () => {
+    expect(parseRemoteCommand('文件夹', false)).toEqual({ kind: 'folders' })
+    expect(parseRemoteCommand('/文件夹', true)).toEqual({ kind: 'folders' })
+    expect(parseRemoteCommand('文件夹 2', false)).toEqual({ kind: 'use-folder', index: 2 })
+    expect(parseRemoteCommand('文件夹2', false)).toEqual({ kind: 'use-folder', index: 2 })
+    expect(parseRemoteCommand('文件夹 12', false)).toEqual({ kind: 'use-folder', index: 12 })
+    for (const body of ['文件夹 123', '看看文件夹', '文件夹 2 里有什么', '文件夹 -1']) {
+      expect(parseRemoteCommand(body, false)).toEqual({ kind: 'prompt', text: body })
+    }
+  })
+
+  it('lists the folders with the one in use marked, and says how to switch or where to add one', () => {
+    expect(workspaceListMessage(['~/projects/shop', '~/projects/blog'], '~/projects/shop'))
+      .toBe('1. ~/projects/shop（正在用）\n2. ~/projects/blog\n回「文件夹 2」切过去。')
+    expect(workspaceListMessage(['~/a', '~/b', '~/c'], '~/a')).toBe('1. ~/a（正在用）\n2. ~/b\n3. ~/c\n回「文件夹 2」切过去。')
+    expect(workspaceListMessage(['~/a', '~/b'], '~/b')).toBe('1. ~/a\n2. ~/b（正在用）\n回「文件夹 1」切过去。')
+    expect(workspaceListMessage(['~/projects/shop'], '~/projects/shop'))
+      .toBe('1. ~/projects/shop（正在用）\n要换别的，先在电脑上「干活的文件夹」那里添加。')
+    expect(workspaceSwitchedMessage('~/projects/blog')).toBe('已切到 ~/projects/blog，从新对话开始。')
+    expect(workspaceAlreadyInUseMessage('~/projects/shop')).toBe('现在用的就是 ~/projects/shop。')
+    expect(workspaceMissingMessage(6)).toBe('没有第 6 个文件夹。发「文件夹」看有哪些。')
+    expect(workspaceUnusableMessage('~/projects/blog')).toBe('~/projects/blog 现在打不开了，可能被移走或删掉了。先在电脑上看一下。')
+    expect(remoteMessages.workspaceBusy).toBe('Codex 还在处理上一条，等它做完再换文件夹。')
   })
 
   it('tells the phone the remote was switched on, with the folder written like the status reply', () => {

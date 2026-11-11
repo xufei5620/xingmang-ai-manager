@@ -3671,6 +3671,43 @@ test('the Feishu setup steps open the developer console in the browser and the p
   }
 })
 
+// YF-19：电脑上加几个干活的文件夹，正在用的标出来，别的能换过去、能移除；满 5 个「添加一个」灰掉。
+test('the phone remote card lists several working folders, switches between them and stops adding at five', async () => {
+  const page = await fixture('page=settings&remoteReady&remoteFolders')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const list = card.getByTestId('settings-remote-workspace-list')
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-remote-folder > .xm-mono').allInnerTexts(), ['~/projects/demo', '~/projects/blog', '~/projects/shop'])
+    const rowOf = (folder) => list.locator('.v2-remote-folder').filter({ hasText: folder })
+    await rowOf('~/projects/demo').getByTestId('settings-remote-workspace-in-use').getByText('正在用', { exact: true }).waitFor()
+    await list.getByText('手机上发「文件夹」也能换。', { exact: true }).waitFor()
+    await rowOf('~/projects/blog').getByRole('button', { name: '用这个', exact: true }).click()
+    await rowOf('~/projects/blog').getByTestId('settings-remote-workspace-in-use').waitFor()
+    assert.equal(await rowOf('~/projects/demo').getByRole('button', { name: '移除', exact: true }).count(), 1)
+    await rowOf('~/projects/shop').getByRole('button', { name: '移除', exact: true }).click()
+    await rowOf('~/projects/shop').waitFor({ state: 'detached' })
+    const add = card.getByTestId('settings-remote-workspace')
+    assert.equal(await add.innerText(), '添加一个')
+    for (let count = 2; count < 5; count += 1) {
+      await add.click()
+      await list.locator('.v2-remote-folder').nth(count).waitFor()
+    }
+    await list.getByText('最多 5 个，先移除一个再添加。', { exact: true }).waitFor()
+    assert.equal(await add.isDisabled(), true)
+    assert.deepEqual((await calls(page)).filter((call) => call.name.startsWith('remote-workspace')).map((call) => [call.name, call.args ?? null]), [
+      ['remote-workspace-use', '~/projects/blog'],
+      ['remote-workspace-remove', '~/projects/shop'],
+      ['remote-workspace', null],
+      ['remote-workspace', null],
+      ['remote-workspace', null],
+    ])
+  } finally {
+    await page.close()
+  }
+})
+
 // 手机遥控 Codex：先选文件夹、填飞书应用，打开遥控，再配对；App Secret 不进记录，填错了当场说。
 test('the phone remote card walks through folder, Feishu app, switch and pairing, and never records the app secret', async () => {
   const page = await fixture('page=settings')
@@ -3683,7 +3720,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByText('先在上面填好飞书应用。', { exact: true }).waitFor()
     await card.getByTestId('settings-remote-workspace').click()
     await card.getByText('~/projects/demo', { exact: true }).waitFor()
-    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '换一个')
+    assert.equal(await card.getByTestId('settings-remote-workspace').innerText(), '添加一个')
     await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
     await card.getByTestId('settings-remote-feishu-save').click()

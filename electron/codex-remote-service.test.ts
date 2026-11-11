@@ -1615,7 +1615,8 @@ describe('codex-remote-service turns', () => {
     // The folder changed on the computer: the old conversation is gone.
     const other = path.join(path.dirname(s.workspace), 'other')
     fs.mkdirSync(other)
-    await s.service.setWorkspace(other)
+    await s.service.addWorkspace(other)
+    await s.service.useWorkspace('~/projects/other')
     channel.sent.length = 0
     channel.handlers?.onInbound(text(alice, '再改一下'))
     await vi.waitFor(() => expect(codex.requests('thread/start')).toHaveLength(2))
@@ -1756,6 +1757,89 @@ describe('codex-remote-service turns', () => {
 })
 
 // YF-15（yoyo 2026-11-11「进度改」）：长任务中途给进度。飞书一张原地更新的卡，微信每满 5 分钟一句。
+describe('codex-remote-service folders', () => {
+  function folder(s: Setup, name: string): string {
+    const directory = path.join(path.dirname(s.workspace), name)
+    fs.mkdirSync(directory, { recursive: true })
+    return directory
+  }
+
+  it('adds folders on the computer, switches between them and removes all but the one in use', async () => {
+    const s = await setup()
+    await s.service.addWorkspace(folder(s, 'blog'))
+    let snapshot = await s.service.snapshot()
+    expect(snapshot.workspaceDirectory).toBe('~/projects/demo')
+    expect(snapshot.workspaces).toEqual(['~/projects/demo', '~/projects/blog'])
+    // Adding the same folder again changes nothing.
+    await s.service.addWorkspace(folder(s, 'blog'))
+    expect((await s.service.snapshot()).workspaces).toEqual(['~/projects/demo', '~/projects/blog'])
+    snapshot = await s.service.useWorkspace('~/projects/blog')
+    expect(snapshot.workspaceDirectory).toBe('~/projects/blog')
+    await expect(s.service.removeWorkspace('~/projects/blog')).rejects.toThrow('正在用的文件夹不能移除，先换到别的再移除。')
+    snapshot = await s.service.removeWorkspace('~/projects/demo')
+    expect(snapshot.workspaceDirectory).toBe('~/projects/blog')
+    expect(snapshot).not.toHaveProperty('workspaces')
+    // Only folders on the list: the renderer cannot name another one.
+    await expect(s.service.useWorkspace('~/projects/demo')).rejects.toThrow('这个文件夹已经不在单子上了。')
+    await expect(s.service.useWorkspace('/etc')).rejects.toThrow('这个文件夹已经不在单子上了。')
+  })
+
+  it('keeps at most five folders and still refuses a folder too broad to work in', async () => {
+    const s = await setup()
+    for (const name of ['b', 'c', 'd', 'e']) await s.service.addWorkspace(folder(s, name))
+    expect((await s.service.snapshot()).workspaces).toHaveLength(5)
+    await expect(s.service.addWorkspace(folder(s, 'f'))).rejects.toThrow('最多加 5 个文件夹，先移除一个再添加。')
+    await s.service.removeWorkspace('~/projects/e')
+    await expect(s.service.addWorkspace(path.dirname(path.dirname(s.workspace)))).rejects.toThrow('手机遥控不能在这里用')
+    expect((await s.service.snapshot()).workspaces).toHaveLength(4)
+  })
+
+  it('makes the first folder the one in use when none was chosen yet', async () => {
+    const s = await setup({ workspace: false })
+    const snapshot = await s.service.addWorkspace(s.workspace)
+    expect(snapshot.workspaceDirectory).toBe('~/projects/demo')
+    expect(snapshot).not.toHaveProperty('workspaces')
+  })
+
+  it('lists and switches folders from the phone, starting a new conversation in the new one', async () => {
+    const s = await setup()
+    await s.service.addWorkspace(folder(s, 'blog'))
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '文件夹'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('1. ~/projects/demo（正在用）\n2. ~/projects/blog\n回「文件夹 2」切过去。'))
+    channel.handlers?.onInbound(text(alice, '文件夹 1'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('现在用的就是 ~/projects/demo。'))
+    channel.handlers?.onInbound(text(alice, '文件夹 3'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('没有第 3 个文件夹。发「文件夹」看有哪些。'))
+    channel.handlers?.onInbound(text(alice, '文件夹 2'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('已切到 ~/projects/blog，从新对话开始。'))
+    expect((await s.service.snapshot()).workspaceDirectory).toBe('~/projects/blog')
+    expect(s.logs).toContain('remote.workspace-switched')
+    channel.sent.length = 0
+    const codex = await prompted(s, channel)
+    expect(codex.requests('thread/start')[0]).toMatchObject({ params: { cwd: path.join(path.dirname(s.workspace), 'blog') } })
+    // The phone already heard it starts afresh: no second warning.
+    expect(channel.texts()[0]).toBe('收到，Codex 开始处理。')
+  })
+
+  it('does not switch folders while a turn is still going, and says so when the folder is gone', async () => {
+    const s = await setup()
+    const blog = folder(s, 'blog')
+    await s.service.addWorkspace(blog)
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    channel.handlers?.onInbound(text(alice, '文件夹 2'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('Codex 还在处理上一条，等它做完再换文件夹。'))
+    await expect(s.service.useWorkspace('~/projects/blog')).rejects.toThrow('Codex 正在处理手机上发来的任务，等它做完再换文件夹。')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    fs.rmSync(blog, { recursive: true })
+    channel.handlers?.onInbound(text(alice, '文件夹 2'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('~/projects/blog 现在打不开了，可能被移走或删掉了。先在电脑上看一下。'))
+    expect((await s.service.snapshot()).workspaceDirectory).toBe('~/projects/demo')
+  })
+})
+
 describe('codex-remote-service answered approval cards', () => {
   async function cardSetup(): Promise<{ s: Setup; channel: FakeApprovalCardChannel; codex: FakeCodex }> {
     const s = await setup({ approvalCards: true })

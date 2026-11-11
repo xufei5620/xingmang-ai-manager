@@ -1538,8 +1538,12 @@ export interface XingmangInvokeContract {
   stopCodexRemoteTurn: IpcInvokeDefinition<'codex-remote:stop-turn', [], CodexRemoteSnapshot>
   /** 卡片「最近一次」的「都拒绝」（YF-13）：等着同意的一条条拒绝，跟手机上点「拒绝」一样；这一轮不停。 */
   declineCodexRemoteApprovals: IpcInvokeDefinition<'codex-remote:decline-approvals', [], CodexRemoteSnapshot>
-  /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
+  /** 弹系统的选文件夹窗口，选的加进单子（YF-19，最多 5 个；还没有正在用的就用它）；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
+  /** 「用这个」（YF-19）：folder 是快照 workspaces 里的那串字，主进程只认单子上有的。 */
+  useCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:use-workspace', [folder: string], CodexRemoteSnapshot>
+  /** 「移除」（YF-19）：同上，正在用的那个不能移除。 */
+  removeCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:remove-workspace', [folder: string], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
   cancelCodexRemotePairing: IpcInvokeDefinition<'codex-remote:cancel-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
   unbindCodexRemotePeer: IpcInvokeDefinition<'codex-remote:unbind', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1852,6 +1856,8 @@ export const ipcInvokeChannels = {
   stopCodexRemoteTurn: 'codex-remote:stop-turn',
   declineCodexRemoteApprovals: 'codex-remote:decline-approvals',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
+  useCodexRemoteWorkspace: 'codex-remote:use-workspace',
+  removeCodexRemoteWorkspace: 'codex-remote:remove-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',
   unbindCodexRemotePeer: 'codex-remote:unbind',
