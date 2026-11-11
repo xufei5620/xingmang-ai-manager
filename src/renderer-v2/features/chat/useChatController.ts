@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { platformApi } from '../../platform-api'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, saveConversation, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -379,6 +379,8 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     if (item && isGenerating(item)) { setError('请先停止这个对话的请求，再删除记录'); return }
     commit((workspace) => ({ ...workspace, conversations: workspace.conversations.filter((candidate) => candidate.id !== id), activeId: workspace.activeId === id ? null : workspace.activeId }))
   }
+  const renameSavedConversation = (id: string, title: string) => commit((workspace) => changeConversation(workspace, id, (item) => renameConversation(item, title)))
+  const pinConversation = (id: string, pinned: boolean) => commit((workspace) => changeConversation(workspace, id, (item) => setConversationPinned(item, pinned)))
   const retryOfflineSend = () => {
     const pending = offlineRetry.current
     return send(pending && pending.conversationId === activeConversation(stateRef.current).id ? pending.options : {})
@@ -390,11 +392,11 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     commit((workspace) => ({ ...workspace, conversations: [], activeId: null, draftConversation: createConversation(workspace.draftConversation.settings) }))
     return true
   }
-  const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话' })) }
+  const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话', renamed: undefined })) }
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
   // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
   const historyUnreadable = Boolean(initial.warning)
-  return { site, attaching, pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  return { site, attaching, pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {

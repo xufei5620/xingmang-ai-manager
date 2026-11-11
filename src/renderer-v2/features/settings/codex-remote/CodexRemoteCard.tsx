@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { FolderOpen } from 'lucide-react'
+import { FolderOpen, Home } from 'lucide-react'
 import { Button, Card, Confirm, Notice, Pill, SettingRow, Switch } from '../../../ui'
 import { ResultNotice, useOperation, useResource } from '../../../business-common'
 import { remoteChannelIds } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
-import type { V2Bridge } from '../../../types'
+import type { V2Bridge, V2Page } from '../../../types'
 import { remoteChannelSections, type RemoteChannelSectionDefinition, type RemoteChannelSectionProps } from './channel-sections'
 import {
   boundPeerText,
@@ -26,6 +26,16 @@ export const codexRemoteIntro = '在手机上私聊你自己的机器人，就�
 export const codexRemotePersistenceNotices = {
   'session-only': { tone: 'neutral', title: '凭据只记到这次关掉星芒', body: '这台电脑没有系统钥匙串，下次打开星芒要重新填。' },
   unavailable: { tone: 'warn', title: '凭据存不下', body: '这台电脑没法安全保存凭据，手机遥控暂时用不了。' },
+} as const
+
+/**
+ * 手机上那条因为电脑上的 Codex 起不来没做时卡上那条黄条（YK-5）。手机上只收到一句「请在电脑上的星芒里看一下」，
+ * 坐回电脑前得一眼看出是哪儿坏了、去哪儿修。Codex 下次起来了、或者遥控全关了就收起（主进程清掉 codexStartFailed）。
+ */
+export const codexStartFailedNotice = {
+  title: 'Codex 没能启动',
+  body: '手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。',
+  action: '去首页看 Codex',
 } as const
 
 /**
@@ -167,10 +177,11 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
 /**
  * 卡片本身：拿到快照以后怎么摆。和取数分开，好用 renderToStaticMarkup 按各种快照直接测。
  */
-export function CodexRemotePanel({ snapshot, api, busy, run, error }: {
+export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: {
   snapshot: CodexRemoteSnapshot
   /** 卡上那条红条；没有失败时是空的。 */
   error: ReactNode
+  navigate?: (page: V2Page, section?: string) => void
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const persistenceNotice = snapshot.credentialPersistence === 'durable' ? null : codexRemotePersistenceNotices[snapshot.credentialPersistence]
   return (
@@ -179,6 +190,15 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error }: {
       <div className="v2-remote-notices">
         {!snapshot.available && snapshot.unavailableReason && (
           <Notice tone="warn" title="这台电脑现在不能打开手机遥控" body={snapshot.unavailableReason} testId="settings-remote-unavailable" />
+        )}
+        {snapshot.codexStartFailed && (
+          <Notice
+            tone="warn"
+            title={codexStartFailedNotice.title}
+            body={codexStartFailedNotice.body}
+            actions={navigate && <Button size="sm" icon={Home} onClick={() => navigate('home')} testId="settings-remote-codex-failed-home">{codexStartFailedNotice.action}</Button>}
+            testId="settings-remote-codex-failed"
+          />
         )}
         {persistenceNotice && <Notice tone={persistenceNotice.tone} title={persistenceNotice.title} body={persistenceNotice.body} testId="settings-remote-persistence" />}
         {error}
@@ -223,7 +243,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error }: {
  * 卡头、说明、干活的文件夹，再一个渠道一块（填凭据、打开遥控、配对）。
  * 操作的返回值和 state-changed 事件都是整份快照，按 revision 只收新的那份（newerRemoteSnapshot）。
  */
-export function CodexRemoteCard({ api }: { api: V2Bridge }) {
+export function CodexRemoteCard({ api, navigate }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void }) {
   const load = useCallback(() => api.getCodexRemoteState(), [api])
   const resource = useResource(load)
   const { setData } = resource
@@ -257,6 +277,7 @@ export function CodexRemoteCard({ api }: { api: V2Bridge }) {
       busy={operation.busy}
       run={run}
       error={<ResultNotice error={operation.error} detail={operation.detail} />}
+      navigate={navigate}
     />
   )
 }

@@ -298,6 +298,21 @@ export async function fetchWeixinLoginQrCode(context: WeixinIlinkContext, knownT
   return { qrcode, content }
 }
 
+/**
+ * 扫码结果要不要客户输手机微信上显示的那串数字。腾讯 openclaw-weixin 3.0.0-beta-0 多了一种
+ * confirmed_but_need_verifycode（手机上点了确认，但还要输数字），并改成状态名里含 need_verifycode 的
+ * 一律要输（它的 statusNeedsVerifyCode）；腾讯说明里还写了以后绑定都会要这串数字。只认 need_verifycode
+ * 这一个名字的话，新状态会被当成看不懂，客户就只看到「微信扫码登录失败」。
+ *
+ * A "confirmed_but_…" answer is deliberately not treated as confirmed, even if
+ * it already carries a bot_token: the credential is only taken from a plain
+ * "confirmed" that follows the accepted code, the same as the reference plugin,
+ * so the phone PIN check WeChat asked for cannot be skipped.
+ */
+export function weixinStatusNeedsVerifyCode(status: string): boolean {
+  return status.includes('need_verifycode')
+}
+
 export async function pollWeixinLoginStatus(
   context: WeixinIlinkContext,
   qrcode: string,
@@ -324,13 +339,12 @@ export async function pollWeixinLoginStatus(
     throw error
   }
   const payload = payloadRecord(response, '查询扫码结果')
+  if (typeof payload.status === 'string' && weixinStatusNeedsVerifyCode(payload.status)) return { status: 'need-verify-code' }
   switch (payload.status) {
     case 'wait':
       return { status: 'wait' }
     case 'scaned':
       return { status: 'scanned' }
-    case 'need_verifycode':
-      return { status: 'need-verify-code' }
     case 'verify_code_blocked':
       return { status: 'verify-code-blocked' }
     case 'expired':

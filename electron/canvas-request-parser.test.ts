@@ -19,7 +19,7 @@ import {
   requiredCanvasString,
   requiredCanvasText,
 } from './canvas-request-parser'
-import { canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
+import { canvasRunImageToolNodeLabels, canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
 
 const kernelRefusal = '桌面版暂不支持，本次没有提交任何付费请求'
 
@@ -551,6 +551,79 @@ describe('canvas request parser', () => {
       .toBe(`「视频抽帧」${kernelRefusal}`)
     for (const bad of [-1, Number.NaN, 86_401, '1']) {
       expect(() => parseCanvasStartRunInput(kernelNode('frame-extract', { frameTimestampSeconds: bad }), on)).toThrow('画布抽帧时间格式错误')
+    }
+  })
+
+  it('refuses image-tool nodes by name while image tools are switched off', () => {
+    for (const [kind, label] of Object.entries(canvasRunImageToolNodeLabels)) {
+      for (const options of [undefined, { frameExtract: true }, { frameExtract: true, imageTools: false }]) {
+        const node = parseCanvasStartRunInput(kernelNode(kind, {}), options).graph.nodes[0]
+        expect(node.kind).toBe(kind)
+        expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
+      }
+    }
+    const off = parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: { kind: 'crop', outputWidth: 64, outputHeight: 32 } })).graph.nodes[0]
+    expect(off.data).toEqual({ prompt: 'p', model: 'm' })
+  })
+
+  // 画布完善第 7 条第三步: switched on, the four page-made kinds keep their
+  // recipe as it came, and only the numbers the pictures are checked against
+  // are read out of it.
+  it('hands image-tool nodes their recipe, collage order and tile choice once image tools are switched on', () => {
+    const on = { frameExtract: true, imageTools: true }
+    const recipe = { kind: 'layer', outputWidth: 1024, outputHeight: 768, background: '#ffffff', layers: [{ id: 'l1', sourceIndex: 0, edits: { version: 1, operations: [{ points: [[[1, 2]]] }] } }] }
+    const layer = parseCanvasStartRunInput(kernelNode('image-layer', { imageTransform: recipe, imageOutputIndex: 0 }), on).graph.nodes[0]
+    expect(layer.desktopUnsupported).toBeUndefined()
+    expect(layer.data).toEqual({ prompt: 'p', model: 'm', imageTransform: recipe })
+    const order = { version: 1, slots: [{ edgeId: 'e2', outputIndex: 0 }, { edgeId: 'e1', outputIndex: 0 }] }
+    const collage = parseCanvasStartRunInput(kernelNode('image-collage', { imageTransform: { kind: 'collage', outputWidth: 800, outputHeight: 600, layout: 'grid' }, imageCollageInputOrder: order }), on).graph.nodes[0]
+    expect(collage.data).toMatchObject({ imageCollageInputOrder: order })
+    const tile = parseCanvasStartRunInput(kernelNode('image-tile', { imageTransform: { kind: 'tile', outputWidth: 512, outputHeight: 512 }, tileInput: { edgeId: 'e1' } }), on).graph.nodes[0]
+    expect(tile.data).toMatchObject({ tileInput: { edgeId: 'e1', outputIndex: 0 } })
+    expect(parseCanvasStartRunInput(kernelNode('image-tile', { imageTransform: { kind: 'tile', outputWidth: 512, outputHeight: 512 }, tileInput: { missing: true } }), on).graph.nodes[0].data)
+      .toMatchObject({ tileInput: { missing: true } })
+    for (const kind of ['image-compare', 'image-panorama']) {
+      expect(parseCanvasStartRunInput(kernelNode(kind, {}), on).graph.nodes[0]).toMatchObject({ kind, data: { prompt: 'p', model: 'm' } })
+      expect(parseCanvasStartRunInput(kernelNode(kind, {}), on).graph.nodes[0].desktopUnsupported).toBeUndefined()
+    }
+    // Other kernel settings on an image tool are still refused by name, and image-tool fields elsewhere too.
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 }, textWebSearch: true }), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「联网搜索」${kernelRefusal}`)
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', { imageTransform: { kind: 'crop' } }), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「图片处理」${kernelRefusal}`)
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', {}), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「宫格裁剪」节点${kernelRefusal}`)
+  })
+
+  it('refuses an image-tool recipe, order or choice it cannot bound or that names another tool', () => {
+    const on = { frameExtract: true, imageTools: true }
+    const crop = { kind: 'crop', outputWidth: 64, outputHeight: 32 }
+    function deep(depth: number): unknown {
+      return depth === 0 ? 1 : { next: deep(depth - 1) }
+    }
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['image-crop', { imageTransform: { ...crop, kind: 'collage' } }, '图片处理参数与节点类型不匹配'],
+      ['image-crop', { imageTransform: [crop] }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, outputWidth: 4097 } }, '画布图片处理输出宽度格式错误'],
+      ['image-crop', { imageTransform: { ...crop, outputHeight: 0 } }, '画布图片处理输出高度格式错误'],
+      ['image-crop', { imageTransform: { ...crop, scale: Number.POSITIVE_INFINITY } }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, apiKey: 'sk-x' } }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, extra: deep(41) } }, '画布图片处理配置格式错误'],
+      ['image-crop', { imageTransform: { ...crop, text: 'x\u0000' } }, '画布图片处理配置格式错误'],
+      ['image-layer', { imageTransform: { kind: 'layer', outputWidth: 8, outputHeight: 8, layers: Array.from({ length: 40 }, () => ({ text: 'x'.repeat(9_000) })) } }, '图片处理参数超过 256 KB'],
+      ['image-compare', { imageTransform: crop }, '图片处理参数只能保存在图片工具节点中'],
+      ['image-crop', { imageTransform: crop, imageCollageInputOrder: { version: 1, slots: [] } }, '拼图输入顺序只能保存在拼图节点中'],
+      ['image-collage', { imageCollageInputOrder: { version: 2, slots: [] } }, '拼图输入顺序最多保存 20 张图片'],
+      ['image-collage', { imageCollageInputOrder: { version: 1, slots: [{ edgeId: 'e1', outputIndex: 0 }, { edgeId: 'e1', outputIndex: 0 }] } }, '拼图输入顺序不能包含重复位置'],
+      ['image-collage', { imageCollageInputOrder: { version: 1, slots: [{ edgeId: '', outputIndex: 0 }] } }, '拼图输入的连线或批次位置无效'],
+      ['image-crop', { imageTransform: crop, tileInput: { edgeId: 'e1' } }, '只有平铺图片节点可以选择贴图输入'],
+      ['image-tile', { tileInput: { edgeId: 'e1', outputIndex: 20 } }, '平铺贴图的连线或批次位置无效'],
+      ['image-tile', { tileInput: { edgeId: 'e1', columns: 2 } }, '平铺贴图的连线或批次位置无效'],
+      ['image-crop', { imageTransform: crop, imageOutputIndex: 16 }, '图片批次选中序号无效'],
+      ['image-compare', { imageOutputIndex: 0 }, '图片批次选中序号无效'],
+    ]
+    for (const [kind, extra, message] of cases) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, extra), on), `${kind} ${message}`).toThrow(message)
     }
   })
 

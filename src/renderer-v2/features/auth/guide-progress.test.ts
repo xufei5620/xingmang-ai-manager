@@ -34,6 +34,14 @@ describe('v2 guide resume ownership', () => {
     expect(readGuideProgress(storage, 'site:7', 'win')).toBeNull()
     expect(storage.getItem(guideProgressKey('site:7'))).toBe(raw)
   })
+  // 「做图、做视频」点了「下一步」就走完，只可能停在第一步。
+  it('resumes the images-and-videos choice only on the first step', () => {
+    const storage = memoryStorage()
+    writeGuideProgress(storage, 'site:7', { route: 'create', step: 'choose' })
+    expect(readGuideProgress(storage, 'site:7', 'linux')).toEqual({ route: 'create', step: 'choose' })
+    writeGuideProgress(storage, 'site:7', { route: 'create', step: 'ready' })
+    expect(readGuideProgress(storage, 'site:7', 'win')).toBeNull()
+  })
   // Gemini CLI 下线（yoyo 2026-10-14）：上次停在它那一条的，引导不能再把它选上，回到推荐项重新开始。
   it('treats progress saved on the retired Gemini route as unreadable on every platform', () => {
     const storage = memoryStorage()
