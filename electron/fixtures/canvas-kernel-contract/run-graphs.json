@@ -492,6 +492,203 @@
       }
     },
     {
+      "name": "picture roles on an edit",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "换成夜景",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            },
+            {
+              "id": "target",
+              "kind": "image-edit",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageReferenceOrder": {
+                  "version": 1,
+                  "slots": [
+                    {
+                      "role": "source",
+                      "edgeId": "edge-2",
+                      "outputIndex": 0
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            },
+            {
+              "id": "edge-2",
+              "source": "image-1",
+              "sourceHandle": "out:image",
+              "target": "target",
+              "targetHandle": "in:images"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
+      "name": "picture role whose connection is gone",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "换成夜景",
+                "model": ""
+              }
+            },
+            {
+              "id": "image-1",
+              "kind": "image-input",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "",
+                "adoptedAssetId": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              }
+            },
+            {
+              "id": "target",
+              "kind": "image-edit",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageReferenceOrder": {
+                  "version": 1,
+                  "slots": [
+                    {
+                      "role": "source",
+                      "edgeId": "edge-2",
+                      "outputIndex": 0
+                    },
+                    {
+                      "role": "reference",
+                      "missing": true
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            },
+            {
+              "id": "edge-2",
+              "source": "image-1",
+              "sourceHandle": "out:image",
+              "target": "target",
+              "targetHandle": "in:images"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": "原图或参考图位置已失联，请重新绑定；不会使用其他图片"
+      }
+    },
+    {
+      "name": "video reference order",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "video-generate",
+              "data": {
+                "prompt": "",
+                "model": "grok-imagine-video",
+                "group": "视频模型",
+                "seconds": "5",
+                "videoReferenceOrder": {
+                  "version": 1,
+                  "slots": [
+                    {
+                      "edgeId": "edge-1",
+                      "outputIndex": 0
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
       "name": "1080p video",
       "input": {
         "graph": {

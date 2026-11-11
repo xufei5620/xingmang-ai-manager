@@ -87,7 +87,7 @@ const capabilities = deepFreeze({
     scenarioTemplates: false,
     routerStrategy: false,
     generateAudio: false,
-    referenceOrder: false,
+    referenceOrder: true,
     cloud: false,
     agentExecution: false,
     byteUpload: true,

@@ -26,6 +26,13 @@ import {
 } from './canvas-run-contract'
 import { canvasImageCandidateCacheKey, computeCanvasNodeFingerprint } from './canvas-fingerprint'
 import { canvasImageTransformKindForNode, type CanvasImageToolSource } from './canvas-image-tools'
+import {
+  assertCanvasImageReferenceRunConfiguration,
+  assertCanvasVideoReferenceSlots,
+  canvasVideoReferenceNodeKind,
+  orderCanvasImageReferenceInputs,
+  orderCanvasVideoReferences,
+} from './canvas-reference-order'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { createCanvasRelayBillingRecorder, type CanvasRelayBillingRecorder } from './canvas-run-charges'
 
@@ -549,7 +556,9 @@ export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope
  * the desktop. Disabled nodes and everything downstream of them are skipped
  * without calling an executor, so they do not block the run; nodes outside
  * the scope are never touched. Callers refuse the whole run on a reason,
- * before a single paid request goes out.
+ * before a single paid request goes out. Picture roles that no longer match
+ * the connections are such a reason too, as the web host refuses them when a
+ * run starts (画布完善第 8 条).
  */
 export function canvasRunDesktopUnsupportedReason(graph: CanvasRunGraph, scope: CanvasRunScope): string | undefined {
   const index = validateGraph(graph)
@@ -565,6 +574,11 @@ export function canvasRunDesktopUnsupportedReason(graph: CanvasRunGraph, scope: 
       continue
     }
     if (node.desktopUnsupported) return node.desktopUnsupported
+    try {
+      assertCanvasImageReferenceRunConfiguration(node, graph.edges, index.nodesById)
+    } catch (error) {
+      return sanitizeRunError(error)
+    }
   }
   return undefined
 }
@@ -602,10 +616,13 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
     asset?: CanvasRunAsset
     assets?: CanvasRunAsset[]
   }>
+  /** Every picture, video and sound in connection order, each named the way a reference order names it. */
+  mediaSources: CanvasImageToolSource<CanvasRunAsset>[]
 } {
   const inputs: CanvasNodeInputs = {}
   const images: CanvasRunAsset[] = []
   const imageSources: CanvasImageToolSource<CanvasRunAsset>[] = []
+  const mediaSources: CanvasImageToolSource<CanvasRunAsset>[] = []
   const videos: CanvasRunAsset[] = []
   const audios: CanvasRunAsset[] = []
   const fingerprintInputs = []
@@ -624,14 +641,17 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
       inputs.image ??= asset
       images.push(asset)
       imageSources.push({ edgeId: edge.id, outputIndex, asset })
+      mediaSources.push({ edgeId: edge.id, outputIndex, asset })
     }
     if (!batch && output.asset?.kind === 'video') {
       inputs.video ??= output.asset
       videos.push(output.asset)
+      mediaSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
     }
     if (!batch && output.asset?.kind === 'audio') {
       inputs.audio ??= output.asset
       audios.push(output.asset)
+      mediaSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
     }
     fingerprintInputs.push({
       sourceNodeId: edge.source,
@@ -651,7 +671,44 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
   }
   if (videos.length > 0) inputs.videos = videos
   if (audios.length > 0) inputs.audios = audios
-  return { inputs, fingerprintInputs }
+  return { inputs, fingerprintInputs, mediaSources }
+}
+
+/**
+ * The inputs in the order the node's reference order asks for (画布完善第 8
+ * 条), as the web host orders them before it builds the request: pictures by
+ * role, exactly the slots and nothing else; a video's references by the saved
+ * order with the rest after them. A slot that is gone, a connection without a
+ * role or one picture used twice throws, and nothing is paid for.
+ */
+function orderReferenceInputs(node: CanvasRunGraphNode, collected: ReturnType<typeof collectInputs>, index: GraphIndex): CanvasNodeInputs {
+  const { inputs, mediaSources } = collected
+  const imageOrder = node.data.imageReferenceOrder
+  if (imageOrder) {
+    const incoming = (index.incoming.get(node.id) ?? []).filter((edge) => edge.targetHandle === 'in:images').map((edge) => edge.id)
+    const ordered = orderCanvasImageReferenceInputs(
+      (inputs.imageSources ?? []).map((source) => ({ ...source, assetId: source.asset.assetId })),
+      imageOrder,
+      incoming,
+    ).map(({ edgeId, outputIndex, asset }) => ({ edgeId, outputIndex, asset }))
+    return { ...inputs, image: ordered[0].asset, images: ordered.map((source) => source.asset), imageSources: ordered }
+  }
+  const videoOrder = node.data.videoReferenceOrder
+  if (videoOrder && canvasVideoReferenceNodeKind(node.kind)) {
+    assertCanvasVideoReferenceSlots(mediaSources, videoOrder)
+    const ordered = orderCanvasVideoReferences(mediaSources, videoOrder)
+    const of = (kind: CanvasRunAsset['kind']) => ordered.filter((source) => source.asset.kind === kind)
+    const images = of('image')
+    const videos = of('video').map((source) => source.asset)
+    const audios = of('audio').map((source) => source.asset)
+    return {
+      ...(inputs.text !== undefined ? { text: inputs.text } : {}),
+      ...(images.length > 0 ? { image: images[0].asset, images: images.map((source) => source.asset), imageSources: images } : {}),
+      ...(videos.length > 0 ? { video: videos[0], videos } : {}),
+      ...(audios.length > 0 ? { audio: audios[0], audios } : {}),
+    }
+  }
+  return inputs
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -1194,6 +1251,12 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
 
       const collected = collectInputs(nodeId, index, outputs)
+      try {
+        collected.inputs = orderReferenceInputs(node, collected, index)
+      } catch (error) {
+        await updateNode(nodeId, 'failed', { errorMessage: sanitizeRunError(error) })
+        return
+      }
       const inputAssetIds = collectedInputAssetIds(collected.inputs)
       const fingerprint = computeCanvasNodeFingerprint({ projectId: options.projectId, node, upstream: collected.fingerprintInputs })
       await updateStage(nodeId, 'resolving-cache')

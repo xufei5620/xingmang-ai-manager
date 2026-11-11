@@ -281,6 +281,26 @@ describe('canvas fingerprints', () => {
       .toBe(computeCanvasNodeFingerprint({ node: imageNode(), upstream: [single] }))
   })
 
+  it('keys picture roles and a video reference order only on the nodes that set them', () => {
+    const base = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    const baseRevision = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
+    // Nodes from before 画布完善第 8 条 keep their keys.
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageReferenceOrder: undefined, videoReferenceOrder: undefined }), upstream: [] })).toBe(base)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageReferenceOrder: undefined, videoReferenceOrder: undefined })], edges: [] })).toBe(baseRevision)
+    const roles = (first: string, second: string): CanvasRunGraphNode['data']['imageReferenceOrder'] => ({
+      version: 1, slots: [{ role: 'source', edgeId: first, outputIndex: 0 }, { role: 'reference', edgeId: second, outputIndex: 0 }],
+    })
+    const keyed = computeCanvasNodeFingerprint({ node: imageNode({ imageReferenceOrder: roles('a', 'b') }), upstream: [] })
+    expect(keyed).not.toBe(base)
+    // Swapping source and reference sends other pictures first: another request.
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageReferenceOrder: roles('b', 'a') }), upstream: [] })).not.toBe(keyed)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageReferenceOrder: roles('a', 'b') })], edges: [] })).not.toBe(baseRevision)
+    const order = (...edgeIds: string[]): CanvasRunGraphNode['data']['videoReferenceOrder'] => ({ version: 1, slots: edgeIds.map((edgeId) => ({ edgeId, outputIndex: 0 })) })
+    const video = computeCanvasNodeFingerprint({ node: imageNode({ videoReferenceOrder: order('first', 'last') }), upstream: [] })
+    expect(video).not.toBe(base)
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ videoReferenceOrder: order('last', 'first') }), upstream: [] })).not.toBe(video)
+  })
+
   it('changes the graph revision with the image count but keeps it for one image', () => {
     const base = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
     expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageCandidateCount: 2 })], edges: [] })).not.toBe(base)

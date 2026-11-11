@@ -81,6 +81,20 @@ function graphWith(extra) {
   }
 }
 const refused = '桌面版暂不支持，本次没有提交任何付费请求'
+// 画布完善第 8 条: one picture into an edit node over in:images, with or without its role.
+function pictureGraph(imageReferenceOrder) {
+  return {
+    nodes: [
+      { id: 'prompt-1', kind: 'prompt', definitionVersion: 1, data: { prompt: '换成夜景', model: '' } },
+      { id: 'image-1', kind: 'image-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: assetId } },
+      { id: 'target', kind: 'image-edit', definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '图片模型', ...(imageReferenceOrder ? { imageReferenceOrder } : {}) } },
+    ],
+    edges: [
+      { id: 'edge-1', source: 'prompt-1', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' },
+      { id: 'edge-2', source: 'image-1', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
+    ],
+  }
+}
 const runGraphs = {
   kernelUndefinedKeys,
   cases: [
@@ -98,6 +112,9 @@ const runGraphs = {
     { name: 'unsupported setting in scope', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'grok-imagine-video', group: '视频模型', seconds: '5', generateAudio: false } }), scope: { kind: 'all' } }, expect: { refusal: `「生成音频设置」${refused}` } },
     { name: 'unsupported setting outside the scope', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'grok-imagine-video', group: '视频模型', seconds: '5', generateAudio: false } }), scope: { kind: 'to-node', nodeId: 'prompt-1' } }, expect: { refusal: null } },
     { name: 'grid split with the slice it shows', input: { graph: graphWith({ kind: 'image-grid-split', data: { prompt: '', model: '', imageTransform: { kind: 'grid-split', rows: 3, columns: 3, gap: 0, padding: 0 }, imageOutputIndex: 4 } }), scope: { kind: 'all' } }, expect: { refusal: null } },
+    { name: 'picture roles on an edit', input: { graph: pictureGraph({ version: 1, slots: [{ role: 'source', edgeId: 'edge-2', outputIndex: 0 }] }), scope: { kind: 'all' } }, expect: { refusal: null } },
+    { name: 'picture role whose connection is gone', input: { graph: pictureGraph({ version: 1, slots: [{ role: 'source', edgeId: 'edge-2', outputIndex: 0 }, { role: 'reference', missing: true }] }), scope: { kind: 'all' } }, expect: { refusal: '原图或参考图位置已失联，请重新绑定；不会使用其他图片' } },
+    { name: 'video reference order', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'grok-imagine-video', group: '视频模型', seconds: '5', videoReferenceOrder: { version: 1, slots: [{ edgeId: 'edge-1', outputIndex: 0 }] } } }), scope: { kind: 'all' } }, expect: { refusal: null } },
     { name: '1080p video', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'minimax-h3-fast', group: '视频模型', seconds: '6', videoResolution: '1080p' } }), scope: { kind: 'all' } }, expect: { parseError: '画布 MiniMax 分辨率不受支持' } },
     { name: '3:2 video', input: { graph: graphWith({ kind: 'video-generate', data: { prompt: '', model: 'minimax-h3-fast', group: '视频模型', seconds: '6', videoAspectRatio: '3:2' } }), scope: { kind: 'all' } }, expect: { parseError: '画布 MiniMax 视频比例不受支持' } },
     { name: 'agent execution', input: { graph: twoNodes, scope: { kind: 'all' }, agentExecution: { sessionId: 's', turnId: 't' } }, expect: { parseError: '桌面版不支持由 Agent 发起运行' } },

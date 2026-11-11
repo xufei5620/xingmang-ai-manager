@@ -1571,3 +1571,76 @@ describe('executeCanvasRun image preparations', () => {
     expect(shownIds(second)).toEqual(replayed.attempts[0].candidates.map((candidate) => candidate.candidateId))
   })
 })
+
+describe('executeCanvasRun reference orders', () => {
+  const pictureA = asset('a'.repeat(43))
+  const pictureB = asset('b'.repeat(43))
+  function pictures(id: string, assetId: string) {
+    return { ...node(id, 'image-input'), data: { prompt: '', model: '', adoptedAssetId: assetId } }
+  }
+  function into(source: string, target: string) {
+    return { id: `${source}->${target}`, source, sourceHandle: 'out:image', target, targetHandle: 'in:images' }
+  }
+  const inputPictures: CanvasNodeExecutor = async ({ node: current }) => ({ assets: [asset(current.data.adoptedAssetId)] })
+
+  it('hands an edit its pictures by role and refuses roles that no longer match, before anything is paid', async () => {
+    const edit = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+    function workflow(slots: NonNullable<CanvasRunGraphNode['data']['imageReferenceOrder']>['slots'], extra: CanvasRunGraphNode[] = [], extraEdges: CanvasRunGraph['edges'] = []) {
+      const target: CanvasRunGraphNode = { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成夜景', model: 'gpt-image-2', imageReferenceOrder: { version: 1, slots } } }
+      return graph([pictures('a', pictureA.assetId), pictures('b', pictureB.assetId), ...extra, target], [into('a', 'edit'), into('b', 'edit'), ...extraEdges])
+    }
+    const run = (value: CanvasRunGraph) => executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': inputPictures, 'image-edit': edit }) }))
+
+    const ordered = workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'a->edit', outputIndex: 0 }])
+    expect(canvasRunDesktopUnsupportedReason(ordered, { kind: 'all' })).toBeUndefined()
+    const record = await run(ordered)
+    expect(record.status).toBe('succeeded')
+    // The second connection is the source the user picked: it goes first.
+    expect(edit.mock.calls[0][0].inputs.images).toEqual([pictureB, pictureA])
+    expect(edit.mock.calls[0][0].inputs.image).toEqual(pictureB)
+    expect(edit.mock.calls[0][0].inputs.imageSources).toEqual([
+      { edgeId: 'b->edit', outputIndex: 0, asset: pictureB },
+      { edgeId: 'a->edit', outputIndex: 0, asset: pictureA },
+    ])
+
+    const refused: Array<[CanvasRunGraph, string, string]> = [
+      // A picture connected after the roles were set has no role.
+      [workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }]), '新连接的图片尚未分配角色，请打开创作配置核对', '有新接入的参考图片尚未分配角色，请打开创作配置核对；不会自动加入模型请求'],
+      // A slot whose connection is gone is never filled with another picture.
+      [workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'a->edit', outputIndex: 0 }, { role: 'reference', missing: true }]), '原图或参考图位置已失联，请重新绑定；不会使用其他图片', '参考图位置已失联或尚未就绪，请重新绑定；不会改用其他图片'],
+      // The same picture cannot be the source and a reference.
+      [workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'a->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'c->edit', outputIndex: 0 }], [pictures('c', pictureA.assetId)], [into('c', 'edit')]), '原图和参考图必须是不同的实际图片，请检查重复素材', '原图和参考图必须是不同的实际图片，请检查重复素材'],
+    ]
+    for (const [value, atStart, atNode] of refused) {
+      // The run service refuses the run up front (canvas-run-service.ts) ...
+      expect(canvasRunDesktopUnsupportedReason(value, { kind: 'all' })).toBe(atStart)
+      // ... and the node fails the same way if a caller skipped that check.
+      const failed = await run(value)
+      expect(failed.nodes.find((entry) => entry.nodeId === 'edit')).toMatchObject({ state: 'failed', errorMessage: atNode })
+    }
+    expect(edit).toHaveBeenCalledOnce()
+  })
+
+  it('hands a video its references in the saved order and refuses a saved slot that is gone', async () => {
+    const video = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [{ kind: 'video', assetId: 'v'.repeat(43), localUrl: 'xingmang-asset://video/v' }] }))
+    function workflow(videoReferenceOrder?: CanvasRunGraphNode['data']['videoReferenceOrder']) {
+      const target: CanvasRunGraphNode = { id: 'video', kind: 'video-generate', definitionVersion: 1, data: { prompt: '镜头推进', model: 'minimax-h3-fast', seconds: '6', ...(videoReferenceOrder ? { videoReferenceOrder } : {}) } }
+      return graph([pictures('first', pictureA.assetId), pictures('last', pictureB.assetId), target], [into('first', 'video'), into('last', 'video')])
+    }
+    const run = (value: CanvasRunGraph) => executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': inputPictures, video, 'video-generate': video }) }))
+
+    await run(workflow())
+    expect(video.mock.calls[0][0].inputs.images).toEqual([pictureA, pictureB])
+    await run(workflow({ version: 1, slots: [{ edgeId: 'last->video', outputIndex: 0 }, { edgeId: 'first->video', outputIndex: 0 }] }))
+    // The user swapped first and last frame.
+    expect(video.mock.calls[1][0].inputs.images).toEqual([pictureB, pictureA])
+    expect(video.mock.calls[1][0].inputs.image).toEqual(pictureB)
+    // A partial order puts the saved slots first and keeps the rest after them.
+    await run(workflow({ version: 1, slots: [{ edgeId: 'last->video', outputIndex: 0 }] }))
+    expect(video.mock.calls[2][0].inputs.images).toEqual([pictureB, pictureA])
+
+    const gone = await run(workflow({ version: 1, slots: [{ edgeId: 'removed->video', outputIndex: 0 }, { edgeId: 'first->video', outputIndex: 0 }] }))
+    expect(gone.nodes.find((entry) => entry.nodeId === 'video')).toMatchObject({ state: 'failed', errorMessage: '已保存的视频参考位置缺失，请核对首尾帧并重新确认参考顺序；当前不会提交生成' })
+    expect(video).toHaveBeenCalledTimes(3)
+  })
+})
