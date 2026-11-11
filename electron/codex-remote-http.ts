@@ -1,4 +1,4 @@
-import { raceAbort, readBoundedResponseText } from './bounded-response'
+import { raceAbort, readBoundedResponseBytes } from './bounded-response'
 
 // 遥控渠道（飞书、微信）对平台发的每一个请求都走这里：只去点名的 https origin、超时、
 // 响应体上限、不跟重定向（I10）。平台接口从不重定向，拿到 3xx 说明被门户或劫持页截了，
@@ -65,7 +65,64 @@ export function parseHttpDate(value: string | null | undefined): number | undefi
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
+/**
+ * 取一份二进制（YF-14 取图）：跟 requestRemoteJson 同样的四件（只去点名的 origin、超时、上限、不跟重定向），
+ * 只是不解析，原样交回字节和 Content-Type。超过 maxResponseBytes 抛 RemoteHttpError('oversize')。
+ */
+export interface RemoteBytesRequest extends Omit<RemoteJsonRequest, 'body' | 'parseJson' | 'method'> {
+  method: 'GET'
+  /** Accept 头，缺省什么类型都收。 */
+  accept?: string
+}
+
+export interface RemoteBytesResponse {
+  status: number
+  ok: boolean
+  /** Content-Type 头，小写、去掉参数；没有是空串。 */
+  contentType: string
+  bytes: Buffer
+  serverTime?: number
+}
+
 export async function requestRemoteJson(request: RemoteJsonRequest): Promise<RemoteJsonResponse> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...(request.body !== undefined ? { 'Content-Type': 'application/json; charset=utf-8' } : {}),
+    ...request.headers,
+  }
+  const body = request.body !== undefined ? JSON.stringify(request.body) : undefined
+  return await performRemoteRequest(request, headers, body, (response, bytes) => {
+    const text = bytes.toString('utf8')
+    let payload: unknown = null
+    if (text) {
+      try {
+        payload = (request.parseJson ?? JSON.parse)(text)
+      } catch {
+        payload = null
+      }
+    }
+    const serverTime = parseHttpDate(response.headers.get('date'))
+    return { status: response.status, ok: response.ok, payload, ...(serverTime !== undefined ? { serverTime } : {}) }
+  })
+}
+
+export async function requestRemoteBytes(request: RemoteBytesRequest): Promise<RemoteBytesResponse> {
+  const headers: Record<string, string> = { Accept: request.accept ?? '*/*', ...request.headers }
+  return await performRemoteRequest(request, headers, undefined, (response, bytes) => {
+    const contentType = (response.headers.get('content-type') ?? '').split(';')[0].trim().toLowerCase()
+    const serverTime = parseHttpDate(response.headers.get('date'))
+    return { status: response.status, ok: response.ok, contentType, bytes, ...(serverTime !== undefined ? { serverTime } : {}) }
+  })
+}
+
+type RemoteRequestShape = Pick<RemoteJsonRequest, 'fetch' | 'url' | 'allowedOrigins' | 'method' | 'timeoutMs' | 'maxResponseBytes' | 'label' | 'signal'>
+
+async function performRemoteRequest<T>(
+  request: RemoteRequestShape,
+  headers: Record<string, string>,
+  body: string | undefined,
+  finish: (response: Response, bytes: Buffer) => T,
+): Promise<T> {
   const url = assertAllowedRemoteUrl(request.url, request.allowedOrigins, request.label)
   const controller = new AbortController()
   let timedOut = false
@@ -80,12 +137,8 @@ export async function requestRemoteJson(request: RemoteJsonRequest): Promise<Rem
   try {
     const response = await raceAbort(request.fetch(url, {
       method: request.method,
-      headers: {
-        Accept: 'application/json',
-        ...(request.body !== undefined ? { 'Content-Type': 'application/json; charset=utf-8' } : {}),
-        ...request.headers,
-      },
-      body: request.body !== undefined ? JSON.stringify(request.body) : undefined,
+      headers,
+      body,
       credentials: 'omit',
       redirect: 'manual',
       signal: controller.signal,
@@ -97,25 +150,16 @@ export async function requestRemoteJson(request: RemoteJsonRequest): Promise<Rem
       await response.body?.cancel().catch(() => undefined)
       throw new RemoteHttpError(`${request.label}请求被重定向，已拒绝`, 'redirected')
     }
-    let text: string
+    let bytes: Buffer
     try {
-      text = await readBoundedResponseText(response, request.maxResponseBytes, request.label, {
+      bytes = await readBoundedResponseBytes(response, request.maxResponseBytes, request.label, {
         guard: { signal: controller.signal },
       })
     } catch (error) {
       if (controller.signal.aborted) throw error
       throw new RemoteHttpError(error instanceof Error ? error.message : `${request.label}响应读取失败`, 'oversize')
     }
-    let payload: unknown = null
-    if (text) {
-      try {
-        payload = (request.parseJson ?? JSON.parse)(text)
-      } catch {
-        payload = null
-      }
-    }
-    const serverTime = parseHttpDate(response.headers.get('date'))
-    return { status: response.status, ok: response.ok, payload, ...(serverTime !== undefined ? { serverTime } : {}) }
+    return finish(response, bytes)
   } catch (error) {
     if (error instanceof RemoteHttpError) throw error
     if (timedOut) throw new RemoteHttpError(`${request.label}请求超时`, 'timeout')

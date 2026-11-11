@@ -9,6 +9,7 @@ import type {
   RemoteApprovalRequest,
   RemoteChannelAdapter,
   RemoteChannelHandlers,
+  RemoteImageFetchResult,
   RemoteInbound,
   RemoteApprovalOutcome,
   RemoteOutbound,
@@ -16,6 +17,7 @@ import type {
   RemotePeer,
   RemoteProgressCard,
 } from './codex-remote-channel'
+import { createRemoteImageStore } from './codex-remote-images'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { encodeWeixinCredential } from './codex-remote-weixin-credential'
 import { CodexRemoteStore, credentialRemoveFailedMessage } from './codex-remote-store'
@@ -221,6 +223,20 @@ class FakeApprovalCardChannel extends FakeChannel {
   }
 }
 
+/** 能取图的渠道（YF-14）：images 里放好每个句柄取回来什么，取过哪些记在 fetched。 */
+class FakeImageChannel extends FakeChannel {
+  readonly images = new Map<string, RemoteImageFetchResult>()
+  readonly fetched: string[] = []
+
+  async fetchImage(ref: string, maxBytes: number): Promise<RemoteImageFetchResult> {
+    this.fetched.push(ref)
+    expect(maxBytes).toBe(10 * 1024 * 1024)
+    return this.images.get(ref) ?? { ok: false, reason: 'failed' }
+  }
+}
+
+const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
+
 let messageCounter = 0
 const commandRequest = { threadId: 'th-1', turnId: 'tu-1', itemId: 'i1', startedAtMs: 0, environmentId: null, kind: 'command', command: 'npm test', cwd: '/tmp/x' }
 
@@ -240,6 +256,7 @@ interface Setup {
   logs: string[]
   logDetails: Array<{ event: string; detail?: Record<string, unknown> }>
   unavailable: { reason: string | null }
+  imageDirectory: string
 }
 
 async function setup(options: {
@@ -267,12 +284,16 @@ async function setup(options: {
   progressCards?: boolean
   /** 渠道能把审批卡改成处理过的样子（像飞书，YK-8）。 */
   approvalCards?: boolean
+  /** 渠道能取图（YF-14）；imageStore 缺省跟着它，设成 false 就是有渠道能取、底座没处存。 */
+  images?: boolean
+  imageStore?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
   const workspace = path.join(home, 'projects', 'demo')
   fs.mkdirSync(workspace, { recursive: true })
   const store = new CodexRemoteStore(path.join(root, 'data', 'codex-remote'), fakeStorage(), 'darwin')
+  const imageDirectory = path.join(root, 'data', 'codex-remote', 'images')
   if (options.workspace !== false) await store.updateSettings((settings) => { settings.workspaceDirectory = workspace })
   if (options.idleCloseHours) await store.updateSettings((settings) => { settings.idleCloseHours = options.idleCloseHours })
   if (options.credential !== false) await store.writeCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'feishu-secret-value' }))
@@ -285,7 +306,9 @@ async function setup(options: {
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
-      const channel = options.approvalCards ? new FakeApprovalCardChannel() : options.progressCards ? new FakeCardChannel() : new FakeChannel()
+      const channel = options.images
+        ? new FakeImageChannel()
+        : options.approvalCards ? new FakeApprovalCardChannel() : options.progressCards ? new FakeCardChannel() : new FakeChannel()
       channels.push(channel)
       return channel
     },
@@ -319,8 +342,9 @@ async function setup(options: {
     checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
     ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
+    ...(options.images && options.imageStore !== false ? { imageStore: createRemoteImageStore(imageDirectory) } : {}),
   })
-  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable }
+  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory }
 }
 
 async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
@@ -1757,6 +1781,157 @@ describe('codex-remote-service turns', () => {
 })
 
 // YF-15（yoyo 2026-11-11「进度改」）：长任务中途给进度。飞书一张原地更新的卡，微信每满 5 分钟一句。
+function imageMessage(peer: RemotePeer, images: string[], body?: string): RemoteInbound {
+  messageCounter += 1
+  return { kind: 'image', peer, direct: true, messageId: `m-${messageCounter}`, images, replyContext: `ctx-${messageCounter}`, ...(body ? { text: body } : {}) }
+}
+
+function storedImages(directory: string): string[] {
+  return fs.existsSync(directory) ? fs.readdirSync(directory).sort() : []
+}
+
+describe('codex-remote-service images', () => {
+  const receivedImage = '收到图片。再发一句要 Codex 做什么，会跟图片一起交给它。'
+
+  // YF-14：只发图时先攒着、回一句；下一句话交给 Codex 时带上，「收到」那句说几张。
+  it('holds images until the next prompt, then hands them to Codex as local images', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.images.set('img-b', { ok: true, bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]) })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([receivedImage]))
+    channel.handlers?.onInbound(imageMessage(alice, ['img-b']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['img-a', 'img-b']))
+    const stored = storedImages(s.imageDirectory)
+    expect(stored).toHaveLength(2)
+    expect(stored.some((name) => name.endsWith('.png')) && stored.some((name) => name.endsWith('.jpg'))).toBe(true)
+
+    const codex = await prompted(s, channel, '这两张图里的报错是什么')
+    expect(channel.texts()).toEqual([receivedImage, '收到，带着 2 张图片，Codex 开始处理。'])
+    const input = (codex.requests('turn/start')[0].params as { input: Array<Record<string, unknown>> }).input
+    expect(input[0]).toEqual({ type: 'text', text: '这两张图里的报错是什么', text_elements: [] })
+    expect(input.slice(1).map((entry) => entry.type)).toEqual(['localImage', 'localImage'])
+    for (const entry of input.slice(1)) expect(path.dirname(String(entry.path))).toBe(s.imageDirectory)
+    expect(fs.readFileSync(String(input[1].path))).toEqual(Buffer.from(pngBytes))
+  })
+
+  it('never fetches images from someone who is not paired', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(mallory, ['img-a']))
+    channel.handlers?.onInbound(text(alice, '帮助'))
+    await vi.waitFor(() => expect(channel.texts()).toHaveLength(1))
+    expect(channel.fetched).toEqual([])
+    expect(storedImages(s.imageDirectory)).toEqual([])
+  })
+
+  it('takes the words sent with the images as the prompt', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a'], '照这张图改按钮颜色'))
+    await vi.waitFor(() => expect(s.codex[0]?.requests('turn/start').length ?? 0).toBe(1))
+    expect(channel.texts()).toEqual(['收到，带着 1 张图片，Codex 开始处理。'])
+    const input = (s.codex[0].requests('turn/start')[0].params as { input: Array<Record<string, unknown>> }).input
+    expect(input.map((entry) => entry.type)).toEqual(['text', 'localImage'])
+  })
+
+  it('says why an image was not taken, once per reason', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('big', { ok: false, reason: 'too-large' })
+    channel.images.set('denied', { ok: false, reason: 'permission' })
+    channel.images.set('broken', { ok: false, reason: 'failed' })
+    channel.images.set('not-image', { ok: true, bytes: new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]) })
+    channel.handlers?.onInbound(imageMessage(alice, ['big', 'denied', 'broken', 'not-image', 'big']))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([
+      '这张图片太大了，电脑没收。请发小一点的，或者截一部分。',
+      '这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。',
+      '这张图片电脑没取到，请再发一次。',
+    ]))
+    expect(storedImages(s.imageDirectory)).toEqual([])
+    expect(s.logs).toContain('remote.image-not-recognized')
+  })
+
+  it('keeps at most five images waiting for the next prompt', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    const refs = ['i1', 'i2', 'i3', 'i4', 'i5', 'i6', 'i7']
+    for (const ref of refs) channel.images.set(ref, { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, refs.slice(0, 4)))
+    channel.handlers?.onInbound(imageMessage(alice, refs.slice(4)))
+    await vi.waitFor(() => expect(channel.texts()).toEqual([receivedImage, '一次最多带 5 张图片，这张没收。']))
+    expect(channel.fetched).toEqual(refs.slice(0, 5))
+    expect(storedImages(s.imageDirectory)).toHaveLength(5)
+  })
+
+  it('drops waiting images on a new conversation but keeps the last prompt\'s for retry', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.images.set('img-b', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    const codex = await prompted(s, channel, '看看这张')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: 'boom' } } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+    channel.handlers?.onInbound(imageMessage(alice, ['img-b']))
+    await vi.waitFor(() => expect(channel.fetched).toEqual(['img-a', 'img-b']))
+    channel.handlers?.onInbound(text(alice, '新对话'))
+    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toHaveLength(1))
+
+    channel.handlers?.onInbound(text(alice, '重试'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    expect(channel.texts().at(-1)).toBe('再发一次上一条：「看看这张」\n收到，带着 1 张图片，Codex 开始处理。')
+    const first = (codex.requests('turn/start')[0].params as { input: unknown[] }).input
+    const again = (codex.requests('turn/start')[1].params as { input: unknown[] }).input
+    expect(again).toEqual(first)
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
+
+    // 下一句不带图：上一句的图不再要了。
+    channel.handlers?.onInbound(text(alice, '接着做'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(3))
+    expect((codex.requests('turn/start')[2].params as { input: unknown[] }).input).toHaveLength(1)
+    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toEqual([]))
+  })
+
+  it('deletes every stored image when the remote is switched off', async () => {
+    const s = await setup({ images: true })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.images.set('img-a', { ok: true, bytes: pngBytes })
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toHaveLength(1))
+    // 上次没删成留下的一张，也一起清掉。
+    fs.writeFileSync(path.join(s.imageDirectory, `${'0'.repeat(32)}.png`), Buffer.from(pngBytes))
+    await s.service.setChannelEnabled('feishu', false)
+    expect(storedImages(s.imageDirectory)).toEqual([])
+  })
+
+  it('clears images left over from last time when the remote is first switched on', async () => {
+    const root = tempRoot()
+    const leftover = path.join(root, 'data', 'codex-remote', 'images', `${'a'.repeat(32)}.jpg`)
+    fs.mkdirSync(path.dirname(leftover), { recursive: true })
+    fs.writeFileSync(leftover, 'old')
+    const s = await setup({ images: true, root })
+    await s.service.setChannelEnabled('feishu', true)
+    expect(fs.existsSync(leftover)).toBe(false)
+  })
+
+  it('answers that only words and pictures work when there is nowhere to keep images', async () => {
+    const s = await setup({ images: true, imageStore: false })
+    const channel = await enabledAndPaired(s) as FakeImageChannel
+    channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
+    channel.handlers?.onInbound({ kind: 'unsupported', peer: alice, direct: true, messageId: 'voice-1' })
+    await vi.waitFor(() => expect(channel.texts()).toEqual([
+      '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
+      '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
+    ]))
+    expect(channel.fetched).toEqual([])
+  })
+})
+
 describe('codex-remote-service folders', () => {
   function folder(s: Setup, name: string): string {
     const directory = path.join(path.dirname(s.workspace), name)

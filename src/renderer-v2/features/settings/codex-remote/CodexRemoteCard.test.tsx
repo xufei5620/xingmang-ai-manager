@@ -4,7 +4,7 @@ import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../.
 import type { V2Bridge } from '../../../types'
 import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, remoteLowBalanceAmount } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
-import { feishuBotChatLink, feishuBotQrText, feishuGuideActions } from './FeishuRemoteSection'
+import { feishuBotChatLink, feishuBotQrText, feishuGuideActions, feishuSetupSteps } from './FeishuRemoteSection'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
   return { channel: 'feishu', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null, ...patch }
@@ -362,6 +362,13 @@ describe('codex remote card', () => {
     expect(feishuBotQrText).toBe('用手机飞书扫一扫，直接打开和机器人的对话')
     const paired = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4', boundPeer: { userIdTail: 'a1b2', boundAt: 1 } }))
     expect(paired).not.toContain('settings-remote-feishu-bot-qr')
+  })
+
+  // YF-14：手机上能发图片了，取图要多开「获取单聊、群组消息」（yoyo 2026-11-11「图片改」）。
+  it('asks for the permission that lets the bot fetch pictures in the Feishu setup steps', () => {
+    expect(feishuSetupSteps[2]).toBe('在「权限管理」里开通「读取用户发给机器人的单聊消息」「获取单聊、群组消息」和「以应用的身份发消息」。')
+    const fresh = render(snapshot())
+    expect(fresh).toContain('「获取单聊、群组消息」')
   })
 
   it('builds the Feishu bot chat link only from an App ID that looks right', () => {

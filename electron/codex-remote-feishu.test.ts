@@ -5,6 +5,7 @@ import {
   buildFeishuProgressCard,
   classifyFeishuSendResponse,
   createFeishuRemoteChannel,
+  extractFeishuImageKeys,
   extractFeishuText,
   FeishuAuthError,
   FeishuFragmentCache,
@@ -847,6 +848,95 @@ describe('codex-remote-feishu progress card', () => {
     expect(logged).toContain('feishu.progress-update-failed')
     expect(JSON.stringify(logged)).not.toContain('机密')
     expect(h.fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
+    await channel.stop()
+  })
+})
+
+describe('codex-remote-feishu images', () => {
+  const imageKey = 'img_v3_02ab_8c7e7ad1-9b5d-4ec7-a5a0-c9d7cef5a7eg'
+  const picture = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 7, 7])
+
+  function imageResponse(bytes: Uint8Array): Response {
+    return new Response(bytes, { status: 200, headers: { 'Content-Type': 'image/png' } })
+  }
+
+  // YF-14：图片消息是那一张，富文本按顺序取每个 img；认不出的 key 不要。
+  it('finds the images in an image message and in rich text, in order', () => {
+    expect(extractFeishuImageKeys('image', JSON.stringify({ image_key: imageKey }))).toEqual([imageKey])
+    const post = JSON.stringify({ zh_cn: { title: '', content: [
+      [{ tag: 'text', text: '看这两张' }, { tag: 'img', image_key: 'img_v3_a' }],
+      [{ tag: 'img', image_key: '../../etc' }, { tag: 'img', image_key: 'img_v3_b' }],
+    ] } })
+    expect(extractFeishuImageKeys('post', post)).toEqual(['img_v3_a', 'img_v3_b'])
+    expect(extractFeishuImageKeys('text', JSON.stringify({ text: 'img_v3_a' }))).toEqual([])
+    expect(extractFeishuImageKeys('file', JSON.stringify({ file_key: 'file_v3_a' }))).toEqual([])
+    expect(extractFeishuImageKeys('image', '{not json')).toEqual([])
+  })
+
+  it('hands images over with the words of the same rich text', () => {
+    const context = { p2pChats: new Map<string, string>() }
+    expect(parseFeishuEvent(textEvent({ messageType: 'image', content: JSON.stringify({ image_key: imageKey }) }), context).inbound).toEqual({
+      kind: 'image',
+      peer: { channel: 'feishu', userId: 'ou_alice' },
+      direct: true,
+      replyContext: 'om_1',
+      sentAt: 1761379200123,
+      messageId: 'om_1',
+      images: [`om_1/${imageKey}`],
+    })
+    const post = JSON.stringify({ title: '', content: [[{ tag: 'text', text: '改成这样' }, { tag: 'img', image_key: 'img_v3_a' }]] })
+    expect(parseFeishuEvent(textEvent({ messageType: 'post', content: post }), context).inbound).toMatchObject({
+      kind: 'image', text: '改成这样', images: ['om_1/img_v3_a'],
+    })
+    expect(parseFeishuEvent(textEvent({ messageType: 'audio', content: JSON.stringify({ file_key: 'f' }) }), context).inbound).toMatchObject({ kind: 'unsupported' })
+  })
+
+  it('downloads the image from the message resources with the tenant token', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/resources/')) return imageResponse(picture)
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    const result = await channel.fetchImage?.(`om_1/${imageKey}`, 1024)
+    expect(result).toEqual({ ok: true, bytes: Buffer.from(picture) })
+    const call = h.fetch.mock.calls.find(([url]) => String(url).includes('/resources/'))
+    expect(String(call?.[0])).toBe(`https://open.feishu.cn/open-apis/im/v1/messages/om_1/resources/${imageKey}?type=image`)
+    expect(new Headers(call?.[1]?.headers).get('authorization')).toBe('Bearer t-1')
+    await channel.stop()
+  })
+
+  it('says which images were refused for a missing permission or their size, and refreshes an expired token once', async () => {
+    let attempts = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/resources/img_v3_denied')) return json({ code: 99991672, msg: 'Access denied' }, 400)
+      if (url.includes('/resources/img_v3_huge')) return json({ code: 234037, msg: 'too large' }, 400)
+      if (url.includes('/resources/img_v3_gone')) return json({ code: 234003, msg: 'not in message' }, 400)
+      if (url.includes('/resources/img_v3_retry')) {
+        attempts += 1
+        return attempts === 1 ? json({ code: 99991663, msg: 'token invalid' }, 400) : imageResponse(picture)
+      }
+      if (url.includes('/resources/img_v3_big')) return imageResponse(new Uint8Array(2048))
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    await expect(channel.fetchImage?.('om_1/img_v3_denied', 1024)).resolves.toEqual({ ok: false, reason: 'permission' })
+    await expect(channel.fetchImage?.('om_1/img_v3_huge', 1024)).resolves.toEqual({ ok: false, reason: 'too-large' })
+    await expect(channel.fetchImage?.('om_1/img_v3_big', 1024)).resolves.toEqual({ ok: false, reason: 'too-large' })
+    await expect(channel.fetchImage?.('om_1/img_v3_gone', 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
+    await expect(channel.fetchImage?.('om_1/img_v3_retry', 1024)).resolves.toMatchObject({ ok: true })
+    expect(attempts).toBe(2)
+    expect(h.logs).toContain('feishu.image-fetch-failed')
+    await channel.stop()
+  })
+
+  it('does not build a request from a handle it did not make', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), defaultRespond)
+    const channel = await startChannel(h)
+    const before = h.fetch.mock.calls.length
+    for (const ref of ['om_1/../../x', 'om_1', 'evil/img_v3_a', 'om_1/img_v3_a/extra', `om_1/${'img_'}`]) {
+      await expect(channel.fetchImage?.(ref, 1024)).resolves.toEqual({ ok: false, reason: 'failed' })
+    }
+    expect(h.fetch.mock.calls.length).toBe(before)
     await channel.stop()
   })
 })
