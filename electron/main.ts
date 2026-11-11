@@ -2555,6 +2555,7 @@ if (!hasSingleInstanceLock) {
         canvasController.setAppearance({ theme, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
+      openCanvasAssetLibrary: () => canvasController.openAssetLibrary(),
       xingmangAiSkill: {
         bundledRoot: bundledXingmangAiSkillRoot,
         userHome: os.homedir(),

@@ -57,6 +57,7 @@ export const canvasHostChannels = {
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
   appearanceChanged: 'canvas-host:appearance-changed',
+  showAccountAssets: 'canvas-host:show-account-assets',
   closeRequested: 'canvas-host:close-requested',
   closeCancelled: 'canvas-host:close-cancelled',
   finishClose: 'canvas-host:finish-close',
