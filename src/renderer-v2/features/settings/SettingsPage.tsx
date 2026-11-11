@@ -408,6 +408,8 @@ export function SettingsPage({
     void operation.execute(
       'transfer-import',
       async () => {
+        // 聊天在回复或出图就先不动，连文件也不让选（D41）。
+        chatTransfer?.assertChatIdle()
         const preview = await api.importAppData()
         if (!preview) return null
         const conversations = parseImportedConversations(preview.conversations)
