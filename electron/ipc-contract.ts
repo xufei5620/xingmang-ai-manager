@@ -716,6 +716,16 @@ export interface DataTransferImportPreview {
   conflictLabels: string[]
 }
 
+/**
+ * 「只让 Claude Code 改项目文件夹里的文件」切完的结果。applied：written = 当场改了 Claude Code 的配置；
+ * unchanged = 配置本来就是这样；kept = 客户自己在配置里写过这一项，星芒没动；later = Claude Code 现在不是接着
+ * 当前账号（官方账号、自己填的密钥、还没配过），只记了开关，以后接当前账号时补上。
+ */
+export interface ClaudeWriteBoundaryResult {
+  enabled: boolean
+  applied: 'written' | 'unchanged' | 'kept' | 'later'
+}
+
 /** 聊天页「导出这段对话」：渲染层排好的纯文本。 */
 export interface ChatConversationExportInput {
   title: string
@@ -944,6 +954,12 @@ export interface XingmangInvokeContract {
    * 用户自己写的钩子不动。
    */
   repairCliHooks: IpcInvokeDefinition<'config:repair-cli-hooks', [provider: ProviderId], ConfigSaveResult>
+  /**
+   * 设置 › 工具管理「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）。Claude Code 接着当前账号时
+   * 当场改它 settings.json 里 permissions.blockWritesOutsideWorkingDirectories 这一项（只动星芒自己写的），
+   * 再记下开关；别的情况只记开关，以后接当前账号写配置时补上。改配置失败就抛，开关不变。
+   */
+  setClaudeWriteBoundary: IpcInvokeDefinition<'config:set-claude-write-boundary', [enabled: boolean], ClaudeWriteBoundaryResult>
   /**
    * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
    * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
@@ -1546,6 +1562,7 @@ export const ipcInvokeChannels = {
   switchToOfficialAccount: 'config:switch-to-official-account',
   switchAccountSource: 'config:switch-account-source',
   repairCliHooks: 'config:repair-cli-hooks',
+  setClaudeWriteBoundary: 'config:set-claude-write-boundary',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
   getCliModelHints: 'tools:cli-model-hints',

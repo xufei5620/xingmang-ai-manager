@@ -3086,6 +3086,27 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), { provider: 'unknown' })).toThrow('未知的 CLI 类型')
   })
 
+  it('switches the Claude Code write boundary with a backup taken only when the config is about to change', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    service.setClaudeWriteBoundary = vi.fn(async (enabled: boolean, backup?: () => void) => {
+      backup?.()
+      return { enabled, applied: 'written' as const }
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:set-claude-write-boundary')!
+
+    await expect(handler(trustedEvent(), true)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(create).toHaveBeenCalledWith('claude', 'pre-save', undefined, null)
+    await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('开关格式错误')
+    expect(service.setClaudeWriteBoundary).toHaveBeenCalledTimes(1)
+
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+  })
+
   it('keeps a restorable backup before a reset save and refuses to reset without one', async () => {
     const service = serviceStub()
     const create = vi.fn(() => ({ id: 'backup-1' }))

@@ -388,6 +388,12 @@ const methods = {
   },
   getSettings: async () => settingsView(),
   saveSettings: async (patch) => { settings = { ...settings, relayEndpointIds: patch.relayEndpointIds ?? settings.relayEndpointIds, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion, hardwareAcceleration: patch.hardwareAcceleration ?? settings.hardwareAcceleration, largeText: patch.largeText ?? settings.largeText, ...(patch.uiScale === undefined ? {} : { uiScale: patch.uiScale === 'auto' ? undefined : patch.uiScale }), codexDesktopChineseRuntimePatch: patch.codexDesktopChineseRuntimePatch ?? settings.codexDesktopChineseRuntimePatch, crashReporting: patch.crashReporting ?? settings.crashReporting, crashReportingNoticeShown: patch.crashReportingNoticeShown || settings.crashReportingNoticeShown, checkUpdatesOnStartup: patch.checkUpdatesOnStartup ?? settings.checkUpdatesOnStartup, autoUpdate: patch.autoUpdate ?? settings.autoUpdate }; return settingsView() },
+  // ?writeBoundary=kept|later：主进程没当场改 Claude Code 的配置（客户自己写过这一项 / 现在不是星芒在管它的配置），开关照样记下。
+  setClaudeWriteBoundary: async (enabled: boolean) => {
+    settings = { ...settings, claudeWritesInsideProject: enabled }
+    const applied = query.get('writeBoundary')
+    return { enabled, applied: applied === 'kept' || applied === 'later' ? applied : 'written' as const }
+  },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {

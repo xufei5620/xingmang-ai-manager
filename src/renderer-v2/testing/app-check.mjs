@@ -596,6 +596,40 @@ test('acceleration state is read once when idle, and again when the game acceler
   } finally { await page.close() }
 })
 
+// Fable 第二轮 Q6：「设置 › 工具管理」里的开关默认关；拨它走专门那条通道（主进程先对齐 Claude Code 的配置再记开关），
+// 不混进 saveSettings；小提示按主进程实际做了什么说。
+test('the Claude Code write boundary switch starts off and goes through its own channel', async () => {
+  const page = await open()
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch', { name: '只让 Claude Code 改项目文件夹里的文件', exact: true })
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    await settings.getByText('开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。', { exact: true }).waitFor()
+    await row.click()
+    await waitForToast(page, '已打开，新开的 Claude Code 会按这个来。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
+    await row.click()
+    await waitForToast(page, '已关掉，新开的 Claude Code 不再拦。')
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'setClaudeWriteBoundary').map((entry) => entry.args), [[true], [false]])
+    assert.equal(calls.some((entry) => entry.method === 'saveSettings'), false, '这个开关不走 saveSettings')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the Claude Code write boundary switch says so when the customer\'s own Claude Code setting was left alone', async () => {
+  const page = await open('writeBoundary=kept')
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-write-boundary').getByRole('switch')
+    await row.click()
+    await waitForToast(page, '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('external client platform and detection failures remain distinct from missing installation', async () => {
   const page = await open('externalUnsupported=opencode&externalDetectionError=workbuddy')
   try {
