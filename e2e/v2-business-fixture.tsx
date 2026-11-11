@@ -653,6 +653,10 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
         ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
         : []),
+      // claudeMcp=名字：只有 Claude Code「我的（全局）」里有的连接，用来看「也装到别的工具」。
+      ...(query.has('claudeMcp') && provider === 'claude' && page === 'mcp'
+        ? [{ ...scopedExtension('plugin', query.get('claudeMcp') ?? '', query.get('claudeMcp') ?? '', 'local'), kind: 'mcp' as const, scope: 'user' as const }]
+        : []),
       ...(empty
       ? []
       : [
@@ -845,12 +849,22 @@ const apiMethods = {
     endTimestamp: 2,
     buckets: [],
     models: [],
-    quota: 500,
+    // usageDetail=sub-cent：一天只花 $0.0032，看柱子和日均不再写成 $0.00（D53）。
+    quota: query.get('usageDetail') === 'sub-cent' ? 0.32 : 500,
     count: 11,
     tokens: 2000,
     discardedCount: 0,
     ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
   } },
+  getAccountPriceList: async () => {
+    record('get-price-list')
+    if (fail === 'prices') throw new Error('价目暂时不可用')
+    return { rows: [
+      { model: 'gpt-image-2', group: '图片模型', kind: 'call' as const, perCall: 0.06 },
+      { model: 'claude-tiered', group: 'Claude', kind: 'tiered' as const },
+      { model: 'gpt-5.6-sol', group: 'GPT', kind: 'token' as const, input: 1.25, output: 10 },
+    ] }
+  },
   getAccountTasks: async () => {
     if (fail === 'tasks') throw new Error('任务服务暂时不可用')
     const completed = ++taskReads > 1
@@ -1224,6 +1238,11 @@ const apiMethods = {
   addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
     record('add-mcp', input)
     return []
+  },
+  // 「也装到别的工具」：只收名字，连接本身由主进程读。copyMcpFail=工具：装进那个工具时失败。
+  copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
+    record('copy-mcp', input)
+    if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),
