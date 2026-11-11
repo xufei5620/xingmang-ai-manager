@@ -131,19 +131,27 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     options.backupStore.create(provider, 'pre-save', undefined, await readBackupAccountContext())
     return service.repairCliHooks(provider)
   })
-  registerTrustedHandler('config:set-claude-write-boundary', async (_event, enabled: unknown) => {
-    if (typeof enabled !== 'boolean') throw new Error('开关格式错误')
-    if (!service.setClaudeWriteBoundary) throw new Error('这个版本还不能改这个开关')
+  // 设置里两个 Claude Code 开关：真要改 Claude Code 的配置才备份，跟保存配置同一份，「设置 › 备份迁移」里能找回
+  // 改之前的样子。备份不成就不改，开关也不记。
+  async function claudeToggleBackup(): Promise<() => void> {
     const context = await readBackupAccountContext()
-    // 真要改 Claude Code 的配置才备份，跟保存配置同一份：「设置 › 备份迁移」里能找回改之前的样子。
-    // 备份不成就不改，开关也不记。
-    return service.setClaudeWriteBoundary(enabled, () => {
+    return () => {
       try {
         options.backupStore.create('claude', 'pre-save', undefined, context)
       } catch {
         throw new Error('没能先备份 Claude Code 的配置，这次没有改')
       }
-    })
+    }
+  }
+  registerTrustedHandler('config:set-claude-write-boundary', async (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new Error('开关格式错误')
+    if (!service.setClaudeWriteBoundary) throw new Error('这个版本还不能改这个开关')
+    return service.setClaudeWriteBoundary(enabled, await claudeToggleBackup())
+  })
+  registerTrustedHandler('config:set-claude-commit-attribution', async (_event, hidden: unknown) => {
+    if (typeof hidden !== 'boolean') throw new Error('开关格式错误')
+    if (!service.setClaudeCommitAttribution) throw new Error('这个版本还不能改这个开关')
+    return service.setClaudeCommitAttribution(hidden, await claudeToggleBackup())
   })
   async function switchAccountSourceOnce(provider: ProviderId, target: 'account' | 'official') {
     if (target === 'account' && !accountService.getSessionState().account?.userId) throw new Error('请先登录账号，再改用当前账号')

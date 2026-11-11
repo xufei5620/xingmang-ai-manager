@@ -396,6 +396,10 @@ const methods = {
     const applied = query.get('writeBoundary')
     return { enabled, applied: applied === 'kept' || applied === 'later' ? applied : 'written' as const }
   },
+  setClaudeCommitAttribution: async (hidden: boolean) => {
+    settings = { ...settings, claudeHidesCommitAttribution: hidden }
+    return { enabled: hidden, applied: 'written' as const }
+  },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => {
     if (nextAccountSessionHeld) {

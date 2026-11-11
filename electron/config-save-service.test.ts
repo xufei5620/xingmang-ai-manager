@@ -320,6 +320,26 @@ describe('the Claude Code write boundary toggle', () => {
     expect(store.read().claudeWritesInsideProject).toBeUndefined()
   })
 
+  // 同类对比 备选 6：「不署名」走同一条路，记的是自己那个开关，两个开关互不影响。
+  it('switches commit attribution the same way and keeps it apart from the write boundary', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    const backup = vi.fn()
+
+    await expect(service.setClaudeCommitAttribution(true, backup)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(backup).toHaveBeenCalledTimes(1)
+    expect((settingsOf(userHome) as Record<string, unknown>).attribution).toEqual({ commit: '', pr: '' })
+    expect(store.read().claudeHidesCommitAttribution).toBe(true)
+    expect(store.read().claudeWritesInsideProject).toBeUndefined()
+    expect(settingsOf(userHome).permissions).not.toHaveProperty('blockWritesOutsideWorkingDirectories')
+
+    await saveForAccount(service, 'sk-fixture-2')
+    expect((settingsOf(userHome) as Record<string, unknown>).attribution).toEqual({ commit: '', pr: '' })
+    await expect(service.setClaudeCommitAttribution(false, backup)).resolves.toEqual({ enabled: false, applied: 'written' })
+    expect(settingsOf(userHome)).not.toHaveProperty('attribution')
+    expect(store.read().claudeHidesCommitAttribution).toBeUndefined()
+  })
+
   it('leaves an official-account Claude Code alone', async () => {
     const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
     await saveForAccount(service)
