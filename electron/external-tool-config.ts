@@ -1,7 +1,7 @@
 import path from 'node:path'
 import { applyEdits, getNodeValue, modify, parseTree, type Node, type ParseError } from 'jsonc-parser'
 import { executeFilePlans, type NativeConfigWriteHooks } from './config-files'
-import { ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
+import { ensureSafeDataDirectory, localPathPresentSync, readSafeUtf8FileSync } from './safe-local-data'
 import type { ExternalClientConnectionStatus } from './external-client-contract'
 
 /** 外部客户端不属于四个 CLI Provider，凭据由服务层解析后传入。 */
@@ -12,6 +12,11 @@ export interface ExternalToolPathRoots {
   userHome: string
   appData?: string
   configHome?: string
+  /**
+   * OpenCode 放登录凭据（auth.json）的那一层，对应 XDG_DATA_HOME。只用来认「从没配置过」（决定单 D7），
+   * 星芒不读也不写里面的东西。缺省 = 用户目录下的 .local/share，同 OpenCode 自己的默认。
+   */
+  dataHome?: string
 }
 
 export interface ExternalToolConfigOptions {
@@ -59,6 +64,15 @@ export function externalToolConfigPath(
   const userHome = pathApi.resolve(input.userHome)
   if (tool === 'workbuddy') return pathApi.join(userHome, '.workbuddy', 'models.json')
   return pathApi.join(input.configHome ? pathApi.resolve(input.configHome) : pathApi.join(userHome, '.config'), 'opencode', 'opencode.json')
+}
+
+/**
+ * OpenCode 记登录凭据的文件：客户在它里面接过别家（/connect、opencode auth login）就会有。Windows 上按跟配置
+ * 目录同一套规则取用户目录的 .local/share（推断，还没真机核过，见 docs/EXTERNAL-CLIENT-CONFIG.md 的 OpenCode 一节）。
+ * 推错了的话，Windows 上只在 OpenCode 里登过别家、没写过全局配置的客户会被当成从没配置过，默认型号换成星芒的。
+ */
+export function openCodeAuthPath(input: ExternalToolPathRoots): string {
+  return path.join(input.dataHome ? path.resolve(input.dataHome) : path.join(path.resolve(input.userHome), '.local', 'share'), 'opencode', 'auth.json')
 }
 
 function configError(detail: string): never {
@@ -308,7 +322,9 @@ function inspectExternalTool(
     const isKey = (value: unknown) => typeof value === 'string' && Boolean(value.trim()) && !/^\{(?:env|file):/.test(value)
     if (tool === 'workbuddy') {
       const content = readSafeUtf8FileSync(defaultPath, '外部客户端配置', MAX_EXTERNAL_CONFIG_BYTES)
-      if (content === null) return missing
+      // 没有 models.json 才算从没配置过（D7）。文件在、里面一条都没有的不算：多半是客户删过星芒那条，再加回去
+      // 就不是「自动连一次」了。
+      if (content === null) return { ...missing, pristine: true }
       const current = parseConfig(tool, content)
       const allowed = Array.isArray(current) ? undefined : stringArray(current.availableModels, 'availableModels')
       const models = workBuddyModels(current)
@@ -325,7 +341,9 @@ function inspectExternalTool(
       const content = readSafeUtf8FileSync(file, '外部客户端配置', MAX_EXTERNAL_CONFIG_BYTES)
       if (content !== null) { exists = true; current = mergeObjects(current, parseConfig(tool, content)) }
     }
-    if (!exists) return missing
+    // 全局配置一个都没有、也没在 OpenCode 里登过别家（它把登录凭据放在 auth.json），才算从没配置过（D7）。
+    // 配置文件在、只是没写默认型号的不算：客户可能靠 auth.json 里的别家在用，写进星芒的默认型号就换掉了他的。
+    if (!exists) return localPathPresentSync(openCodeAuthPath(rootsInput)) ? missing : { ...missing, pristine: true }
     if (typeof current.model !== 'string' || !current.model) return missing
     const model = current.model.startsWith('xingmang/') ? current.model.slice('xingmang/'.length) : null
     if (!model) return { ...missing, configurationSource: 'other' }
