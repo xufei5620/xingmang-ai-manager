@@ -196,8 +196,14 @@ const feishuProblemStatuses = {
   'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
   other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' },
 } as const
-// 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。
-const weixinRemote: { accountLabel: string | null; enabled: boolean; stage: 'idle' | 'code' | 'scanned' } = { accountLabel: null, enabled: false, stage: 'idle' }
+// 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。过了数字，主进程直接把扫码人
+// 记成绑定的人（YF-5），这里也跟着绑上。
+const weixinRemote: {
+  accountLabel: string | null
+  enabled: boolean
+  stage: 'idle' | 'code' | 'scanned'
+  boundPeer: RemoteSnapshot['channels']['weixin']['boundPeer']
+} = { accountLabel: null, enabled: false, stage: 'idle', boundPeer: null }
 const weixinLoginId = '0f8fad5b-d9cb-469f-a165-70867728950e'
 const weixinQrImage = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII='
 let releaseWeixinScan: (() => void) | null = null
@@ -233,7 +239,7 @@ function remoteSnapshot(): RemoteSnapshot {
         accountLabel: weixinRemote.accountLabel,
         enabled: weixinRemote.enabled,
         status: { state: weixinRemote.enabled ? 'connected' : 'stopped' },
-        boundPeer: null,
+        boundPeer: weixinRemote.boundPeer,
         pairing: null,
       },
     },
@@ -298,6 +304,7 @@ const codexRemoteMethods = {
     if (channel === 'weixin') {
       weixinRemote.accountLabel = null
       weixinRemote.enabled = false
+      weixinRemote.boundPeer = null
       return remoteSnapshot()
     }
     remoteState.accountLabel = null
@@ -352,8 +359,9 @@ const codexRemoteMethods = {
       // 主进程存好登录信息时推一份新快照，卡片靠它变成「已登录」。
       weixinRemote.stage = 'idle'
       weixinRemote.accountLabel = 'ClawBot decb'
+      weixinRemote.boundPeer = { userIdTail: 'c0de', boundAt: Date.parse('2026-11-11T03:40:00Z') }
       pushRemoteSnapshot()
-      return { loginId: input.loginId, phase: 'confirmed' as const, retryAfterMs: 0 }
+      return { loginId: input.loginId, phase: 'confirmed' as const, retryAfterMs: 0, boundByScan: true }
     }
     // 跟主进程的长轮询一样：手机还没扫，这一次查询就挂着不回。
     await new Promise<void>((resolve) => {

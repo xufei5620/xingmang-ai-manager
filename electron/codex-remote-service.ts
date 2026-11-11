@@ -1062,12 +1062,23 @@ export class CodexRemoteService {
   /**
    * 保存（或清掉）渠道凭据。换了账号（accountLabel 变了）或清掉凭据时一并解绑：飞书的 open_id
    * 按应用分，换个应用同一个人编号也不一样。渠道开着就重启一次，让它用新凭据。
+   *
+   * verifiedPeerUserId：微信扫码时微信要过手机上那串数字并且输对了，扫码的人直接记成绑定的人，不用再发配对码
+   * （YF-5，yoyo 2026-11-11 亲手打字「微信免配对码，加条件做」）。没过数字的登录不带它，照旧要配对。原来绑着别人时
+   * 跟换人一样先跟他说一声。
    */
-  async saveChannelCredential(channel: RemoteChannelId, value: string | null, accountLabel: string | null): Promise<CodexRemoteSnapshot> {
+  async saveChannelCredential(
+    channel: RemoteChannelId,
+    value: string | null,
+    accountLabel: string | null,
+    options: { verifiedPeerUserId?: string } = {},
+  ): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
     const before = (await this.options.store.readSettings()).channels[channel]
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
-    if (!sameAccount) {
+    const verifiedPeer = value !== null ? options.verifiedPeerUserId ?? null : null
+    const keepsPeer = sameAccount && (verifiedPeer === null || !before?.boundPeer || before.boundPeer.userId === verifiedPeer)
+    if (!keepsPeer) {
       // 换凭据以前说：凭据一换（退出登录是清掉），就发不出去了。
       await this.tellUnbound(runtime)
       await this.forgetPeer(runtime)
@@ -1085,9 +1096,15 @@ export class CodexRemoteService {
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel] ?? emptyChannelSettings()
       if (!removeFailure) stored.accountLabel = value === null ? null : accountLabel
-      if (!sameAccount) stored.boundPeer = null
+      if (!keepsPeer) stored.boundPeer = null
+      if (verifiedPeer && stored.boundPeer?.userId !== verifiedPeer) stored.boundPeer = { userId: verifiedPeer, boundAt: this.now() }
       settings.channels[channel] = stored
     })
+    if (verifiedPeer) {
+      // 已经绑好了人：电脑上挂着的配对码作废，免得别人再拿它换掉。
+      this.clearPairing(runtime)
+      this.options.log('info', 'remote.paired-by-scan', { channel })
+    }
     this.secretsReadAt = 0
     if (runtime.enabled) {
       if (value === null) await this.disableChannel(runtime, null)

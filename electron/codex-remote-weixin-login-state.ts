@@ -21,6 +21,11 @@ export interface WeixinLoginSnapshot {
   message?: string
   /** 界面隔多久再调 poll；0 表示马上。 */
   retryAfterMs: number
+  /**
+   * 登录好了，而且这次扫码微信要过手机上那串数字、输对了，扫码的人已经直接记成绑定的人，不用再发配对码（YF-5）。
+   * 缺省 = 没有这回事，照旧要配对。
+   */
+  boundByScan?: boolean
 }
 
 export interface WeixinLoginPollInput {
