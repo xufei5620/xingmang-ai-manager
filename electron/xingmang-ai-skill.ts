@@ -638,7 +638,7 @@ export const XINGMANG_AI_IMAGE_MODEL_FALLBACKS = ['gpt-image-2.6-sunburst', 'gpt
 export const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
 export const GEMINI_IMAGE_MODEL_PATTERN = /^(?:nano-banana(?:-[a-z0-9][a-z0-9._-]{0,63})?|gemini-[a-z0-9][a-z0-9._-]{0,63}-image(?:-[a-z0-9][a-z0-9._-]{0,63})?)$/i
 export const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]{0,63})?$/i
-/** 默认链最多写几个进 config.json：首选三个加备选两个。 */
+/** config.json 里的 fallbackModels 最多认几个：现在的默认链一共 5 个，留点余量，手改得很长的截掉。 */
 const MAX_IMAGE_FALLBACK_MODELS = 8
 
 /** 账号列表里有的，按默认顺序排好；第一个是默认模型，后面是它失败时依次换的。 */
