@@ -179,4 +179,23 @@ describe('guide setup result names', () => {
     const result = buildGuideSetupResult({ route: 'claude', tool: { ...codex, id: 'claude', configured: false }, signedIn: true, readiness: { prepared: true, connected: false }, name: 'Claude Code', officialName: 'Claude 账号' })
     expect(result.connection.detail).toBe('还没设好，点「去连好」保存一次。')
   })
+  // D46（新手流程 N5）：一切正常时最后一步把结果卡收成一行；有一行要人看一眼就摊开。
+  it('is all clear only when no row needs a look', () => {
+    const claude: GuideToolState = { ...codex, id: 'claude' }
+    const base = { route: 'claude' as const, signedIn: true, readiness: ready, name: 'Claude Code', officialName: 'Claude 账号' }
+    expect(buildGuideSetupResult({ ...base, tool: claude }).allClear).toBe(true)
+    expect(buildGuideSetupResult({ ...base, tool: { ...claude, source: 'official' } }).allClear).toBe(true)
+    expect(buildGuideSetupResult({ ...base, tool: { ...claude, source: 'manual' } }).allClear).toBe(true)
+    expect(buildGuideSetupResult({ ...base, route: 'chat', tool: undefined, name: '聊天' }).allClear).toBe(true)
+    // 有新版、余额 $0、没连好、没装好、没试通：都摊开。
+    expect(buildGuideSetupResult({ ...base, tool: { ...claude, update: { version: '2.1.319', target: '2.1.319', newer: true, knownIssue: false, manualHint: null } } }).allClear).toBe(false)
+    expect(buildGuideSetupResult({ ...base, tool: claude, walletEmpty: true }).allClear).toBe(false)
+    expect(buildGuideSetupResult({ ...base, tool: claude, readiness: { prepared: true, connected: false } }).allClear).toBe(false)
+    expect(buildGuideSetupResult({ ...base, tool: { ...claude, installed: false }, readiness: { prepared: false, connected: true } }).allClear).toBe(false)
+    expect(buildGuideSetupResult({ ...base, tool: claude, switched: { ...switched, provider: 'claude', verified: false } }).allClear).toBe(false)
+    expect(buildGuideSetupResult({ ...base, tool: { ...claude, source: 'unknown', keyState: 'otherAccount' } }).allClear).toBe(false)
+    // 桌面端用密钥连的：「切到 Codex」那句不看就会报错；用官方账号的不用切。
+    expect(buildGuideSetupResult({ ...base, route: 'codexDesktop', tool: codex, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' }).allClear).toBe(false)
+    expect(buildGuideSetupResult({ ...base, route: 'codexDesktop', tool: { ...codex, source: 'official' }, name: 'Codex 桌面端', officialName: 'ChatGPT 账号' }).allClear).toBe(true)
+  })
 })

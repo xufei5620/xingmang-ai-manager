@@ -17,6 +17,12 @@ export interface GuideSetupResult {
   walletEmpty: boolean
   next: GuideResultRow
   prompt: string | null
+  /**
+   * 一切正常、没有哪一行要人看一眼：最后一步把结果卡收成一行（D46，新手流程 N5）。
+   * 有一行是黄的（没装好、没连好、有新版、先充值）就整张摊开。桌面端用密钥连的那句「切到 Codex」
+   * 不看就会报错，也摊开。
+   */
+  allClear: boolean
 }
 
 interface GuideSetupInput {
@@ -132,13 +138,15 @@ export function buildGuideSetupResult(input: GuideSetupInput): GuideSetupResult 
         : topUpFirst
           ? { value: '先充值', detail: '充值后回来点「打开」就能用。', tone: 'warn' }
           : { value: '打开工具试一次', detail: keyedDesktop ? '打开后在左侧栏最上面把模式切到「Codex」，再把下面这句话发给它试试。' : prompt ? '打开后把下面这句话发给它试试。' : '打开后随便问它一个问题试试。', tone: 'neutral' }
+  const install = installationResult(route, input.tool, readiness.prepared)
   return {
-    install: installationResult(route, input.tool, readiness.prepared),
+    install,
     connection: connection.row,
     billing: connection.billing,
     usesAccountBalance,
     walletEmpty,
     next,
     prompt,
+    allClear: !keyedDesktop && [install, connection.row, next].every((row) => row.tone !== 'warn'),
   }
 }

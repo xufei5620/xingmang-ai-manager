@@ -18,7 +18,7 @@ import { FirstRunSteps } from './FirstRun'
 import { bootstrapErrorText, isAccountNotEnabledFailure, keySyncFailureText, networkBlockedNotice } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, opensUntouchedStarterWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
+import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, opensUntouchedStarterWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, startsInNewFolder, type CliLaunchChoice } from './recent-workspaces'
 import { dollars as money, errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId, isProviderId } from '../../../../electron/catalog'
@@ -733,12 +733,9 @@ export function Home(props: HomeProps) {
       && openable && tool.id !== 'codexDesktop'
     const workspaces = opensWorkspace ? launchWorkspaces(recent?.items ?? [], tool.provider, snapshot?.config.rememberedWorkspace) : []
     const lastWorkspace = job ? null : workspaces[0] ?? null
-    // 这个工具没聊过、也从没选过文件夹（已知40）：「打开」不弹选择框，直接替他建好
-    // 「文档\XingmangProjects\my-project」在里面打开，新手不会再选到桌面被拦。记录还没读到时
-    // 说不准聊没聊过，照旧弹选择框。聊没聊过看整份记录里它有几条（stats），不只看首页取的那
-    // 60 条：用得少的工具挤不进最近 60 条，不等于没用过。
-    const startsFresh = opensWorkspace && workspaces.length === 0 && recent !== null
-      && recent.stats.byProvider[tool.provider] === 0 && Boolean(props.onLaunchInNewFolder)
+    // 这个工具没聊过、也从没选过文件夹（已知40）：「打开」直接替他建好项目文件夹在里面打开，
+    // 判法跟引导最后一步共用（startsInNewFolder）。
+    const startsFresh = opensWorkspace && startsInNewFolder(recent, tool.provider, workspaces) && Boolean(props.onLaunchInNewFolder)
     // 归客户自己装的（认不出芯片的 Mac 上的 Codex 桌面端）这颗按钮只能把人带到教程：写「安装」就是骗人。
     const manualInstall = !tool.status.installed && needsManualInstall(snapshot, tool.id)
     // Codex 桌面端在 Windows 上是 Appx，装它要提权；命令行工具走 npm，不提权。

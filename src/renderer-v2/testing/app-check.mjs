@@ -2579,6 +2579,82 @@ test('the first-run card keeps the usual sentence for a folder the user picked (
   } finally { await page.close() }
 })
 
+// D46（新手流程 N2、N5）：引导最后一步那颗「打开」以前一律弹选择窗口，首页第一次「打开」早就替他新建了。
+// 现在跟首页同一套；「打开」「进入首页」在底栏，「选择其他文件夹…」给想自己挑的人。
+async function guideReadyFor(page, route) {
+  await page.getByTestId('home-guide').click()
+  await page.getByTestId(`guide-route-${route}`).check()
+  while (await page.getByTestId('start-guide').getAttribute('data-guide-step') !== 'ready') await page.getByTestId('guide-next').click()
+}
+
+test('the guide opens a never-used CLI in a folder the app creates, like the home card (D46)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    await page.getByTestId('tool-row-claude').waitFor()
+    await recentRead(page)
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool-choose-folder').waitFor()
+    assert.equal(await page.getByTestId('guide-open-tool-choose-folder').innerText(), '选择其他文件夹…')
+    assert.equal(await page.getByTestId('guide-folder-hint').count(), 0)
+    assert.equal(await page.getByTestId('guide-first-run-command').count(), 0)
+    assert.equal(await page.getByTestId('guide-connected-note').count(), 0)
+    assert.equal(await page.getByTestId('guide-result').getAttribute('data-collapsed'), 'true')
+    // 底栏不随内容滚走：「打开」在对话框正文外面，不用往下翻就看得到。
+    assert.equal(await page.locator('.xm-modal-content > footer [data-testid="guide-open-tool"]').count(), 1)
+    assert.equal(await page.locator('.xm-dialog-body [data-testid="guide-open-tool"]').count(), 0)
+    assert.equal(await page.getByTestId('guide-open-tool').isVisible(), true)
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[{ createStarter: true, firstOpen: true }]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', starterFolder]])
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the guide opens a used CLI in the folder its home card shows, and can still pick another (D46)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\work\\my-app 打开')
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool-choose-folder').waitFor()
+    // 在这里用过：那句话照旧是「介绍一下这个项目」。
+    assert.equal(await page.getByTestId('guide-first-run-prompt').innerText(), '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。')
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCli'))
+    let calls = await page.evaluate(() => window.v2Test.calls)
+    assert.equal(calls.some((entry) => entry.method === 'chooseWorkspace'), false)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app']])
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    await page.waitForFunction(() => !document.querySelector('[data-testid="tool-codex-primary"]')?.disabled)
+    // 想用别的文件夹：「选择其他文件夹…」弹的是原来的选择窗口。
+    await guideReadyFor(page, 'codex')
+    await page.getByTestId('guide-open-tool-choose-folder').click()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'launchCli').length === 2)
+    calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').at(-1).args, ['codex', 'C:\\Selected Project'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the guide falls back to the folder picker when the folder its home card shows is gone (D46)', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&workspaceGone=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\work\\my-app 打开')
+    await guideReadyFor(page, 'claude')
+    await page.getByTestId('guide-open-tool-choose-folder').waitFor()
+    await page.getByTestId('guide-open-tool').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'chooseWorkspace'))
+    await page.getByTestId('start-guide').waitFor({ state: 'detached' })
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'chooseWorkspace').map((entry) => entry.args), [[]])
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCli').map((entry) => entry.args), [['claude', 'C:\\work\\my-app'], ['claude', 'C:\\Selected Project']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第四十批 A：托盘「已安装的工具」和 Ctrl+数字以前什么文件夹都不带，每次都弹选择框；
 // 现在和首页那颗「打开 xx」挑同一个文件夹，都没有才弹。
 test('the tray and Ctrl+number shortcuts open a CLI in the folder its home button shows', async () => {
