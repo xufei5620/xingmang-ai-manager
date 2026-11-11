@@ -120,7 +120,7 @@ export function buildFeedbackMessage(input: {
   if (contact) lines.push(`联系方式：${contact}`)
   if (input.identity) lines.push(input.identity)
   if (input.lastFailure) lines.push(input.lastFailure)
-  if (input.reportMissing) lines.push('诊断报告：这次没生成出来')
+  if (input.reportMissing) lines.push('反馈报告：这次没生成出来')
   const head = redactSecretPatterns(lines.join('\n'))
   return input.report ? `${head}\n\n${input.report}` : head
 }
@@ -241,7 +241,7 @@ export function FeedbackPage({
         reportMissing,
       }))
       support?.open()
-      if (reportMissing) toast.show('诊断报告没生成出来，只复制了你写的内容，发给客服就行', 'warn')
+      if (reportMissing) toast.show('反馈报告没生成出来，只复制了你写的内容，发给客服就行', 'warn')
       return reportMissing
     }, (reportMissing) => reportMissing ? '' : '已复制，发给客服就行')
   }
