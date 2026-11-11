@@ -121,11 +121,4 @@ describe('appUninstallNotice', () => {
       '另外，有工具里的提醒设置没收回来、登录记录和聊天记录没有清除。',
     )
   })
-
-  // 移不进废纸篓时密钥一样没删（程序还开着，登录着的账号会把它写回工具里），要跟登录记录一样说出来。
-  it('says the stored keys were not deleted when the Trash step failed', () => {
-    expect(appUninstallNotice({ trashed: false, leftovers: ['records', 'keys'] })).toContain(
-      '另外，登录记录和聊天记录没有清除、这台电脑上存的密钥没有删掉。',
-    )
-  })
 })

@@ -109,14 +109,10 @@ export async function runMacUninstall(
   }
   const bundle = trashableBundle(dependencies)
   // 程序还在，人也还要看提示：不退出，登录记录和密钥也不删（还开着的窗口会把它写回来，登录着的
-  // 账号会把密钥重新写进工具）。
+  // 账号会把密钥重新写进工具）。密钥没删不在提示里说（yoyo 11-11「这个不提示」），只有登录记录那一项。
   const stayOpen = (): AppUninstallResult => ({
     trashed: false,
-    leftovers: [
-      ...leftovers,
-      ...(request.clearLoginRecords ? ['records' as const] : []),
-      ...(request.clearStoredKeys ? ['keys' as const] : []),
-    ],
+    leftovers: request.clearLoginRecords ? [...leftovers, 'records'] : leftovers,
   })
   if (!bundle) return stayOpen()
   // 先断开加速、还原系统代理再挪程序：还原要用的东西可能按安装位置找，挪走以后就找不到了。
@@ -135,9 +131,8 @@ export async function runMacUninstall(
   // 程序确实挪走了才删：挪不动时人还要用它，下好的新版留着照样能装。没删掉只记日志，
   // 不算进 leftovers——那只占地方，不值得在提示里多说一句。
   await attempt(dependencies, 'update cache', () => dependencies.removeUpdaterCache())
-  if (request.clearStoredKeys && !await attempt(dependencies, 'stored keys', () => dependencies.clearStoredKeys())) {
-    leftovers.push('keys')
-  }
+  // 没删干净只记日志，同样不进提示（见上面 stayOpen）。
+  if (request.clearStoredKeys) await attempt(dependencies, 'stored keys', () => dependencies.clearStoredKeys())
   if (request.clearLoginRecords && !await attempt(dependencies, 'login records', () => dependencies.clearLoginRecords())) {
     leftovers.push('records')
   }

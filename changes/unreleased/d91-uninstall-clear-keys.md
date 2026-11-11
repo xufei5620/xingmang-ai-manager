@@ -17,6 +17,6 @@
   清登录记录之前跑；别的 Windows 账号装的那份照旧整个不碰（#498）。`windows-uninstall-cleanup-smoke.ps1` 加了只勾密钥、
   两个都勾、都不勾三种，核对密钥缓存、配置备份和 Claude Code 配置（连同 `.bak`）里的密钥按勾删或留。
 - Mac：设置里「卸载星芒」的对话框加同一个勾（`AppUninstall.tsx`），`AppUninstallRequest.clearStoredKeys` 缺省不删；
-  `macos-uninstall.ts` 只在程序确实挪进废纸篓以后才删（挪不动时人还要用，登录着的账号会把密钥写回去），挪不动或没删干净
-  在提示里多一项 `keys`。
+  `macos-uninstall.ts` 只在程序确实挪进废纸篓以后才删（挪不动时人还要用，登录着的账号会把密钥写回去）。挪不动或没删干净
+  都不在卸载提示里说（yoyo 11-11「这个不提示」），只记日志。
 - 没覆盖：Claude Desktop、WorkBuddy、OpenCode 三个桌面客户端里星芒写进去的密钥，这一版不删。

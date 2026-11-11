@@ -30,7 +30,6 @@ const leftoverLabels: Record<AppUninstallLeftover, string> = {
   'login-item': '开机自动打开没关掉',
   tools: '星芒装的命令行工具没删干净',
   records: '登录记录和聊天记录没有清除',
-  keys: '这台电脑上存的密钥没有删掉',
 }
 
 /** 没移到废纸篓时界面要说的话；移走了就不用说，程序马上退出。 */
