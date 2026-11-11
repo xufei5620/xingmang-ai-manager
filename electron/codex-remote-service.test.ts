@@ -217,6 +217,8 @@ async function setup(options: {
   now?: () => number
   /** 起出来的每份 Codex 回 config/read 用的（FakeCodex.configRead）。 */
   configRead?: Record<string, unknown>
+  /** 还剩几次起 Codex 直接失败：模拟 Codex 坏了、起不来。 */
+  failSpawns?: { remaining: number }
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -250,6 +252,10 @@ async function setup(options: {
     ...(options.now ? { now: options.now } : {}),
     spawnCodex: async () => {
       await options.spawnGate
+      if (options.failSpawns && options.failSpawns.remaining > 0) {
+        options.failSpawns.remaining -= 1
+        throw new Error('spawn codex ENOENT')
+      }
       const fake = new FakeCodex()
       for (const [method, gate] of options.replyGates ?? []) fake.replyGates.set(method, gate)
       if (options.configRead) fake.configRead = options.configRead
@@ -1276,6 +1282,42 @@ describe('codex-remote-service turns', () => {
     expect(s.logs).toContain('remote.codex-start-abandoned')
     expect(s.logs).not.toContain('remote.codex-start-failed')
     expect(channel.texts()).not.toContain('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。')
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
+  })
+
+  // YK-5：手机上收到「Codex 没能启动」，电脑卡片上也要看得见；Codex 下次起来了就收起。
+  it('tells the window Codex could not start until a later message gets it started', async () => {
+    const s = await setup({ failSpawns: { remaining: 1 } })
+    const channel = await enabledAndPaired(s)
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.codexStartFailed).toBe(true))
+    expect(s.logs).toContain('remote.codex-start-failed')
+    expect((await s.service.snapshot()).task).toBe('idle')
+    channel.sent.length = 0
+    s.snapshots.length = 0
+    const codex = await prompted(s, channel, '再跑一次')
+    expect(codex.requests('turn/start')).toHaveLength(1)
+    await vi.waitFor(() => expect(s.snapshots.length).toBeGreaterThan(0))
+    expect(s.snapshots.every((snapshot) => snapshot.codexStartFailed === undefined)).toBe(true)
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
+  })
+
+  it('drops the Codex-could-not-start notice once every channel is off, not while one is still on', async () => {
+    const s = await setup({ failSpawns: { remaining: 1 } })
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).codexStartFailed).toBe(true))
+    await s.service.setChannelEnabled('weixin', true)
+    await s.service.setChannelEnabled('weixin', false)
+    expect((await s.service.snapshot()).codexStartFailed).toBe(true)
+    const off = await s.service.setChannelEnabled('feishu', false)
+    expect(off.codexStartFailed).toBeUndefined()
+    await s.service.setChannelEnabled('feishu', true)
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
   })
 
   it('hands nothing to a Codex that finishes starting after the manager began quitting, and stops it', async () => {

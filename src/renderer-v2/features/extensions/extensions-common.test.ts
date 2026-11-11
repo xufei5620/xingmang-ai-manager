@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mcpNameTakenIn, parseHttpHeaders } from './extensions-common'
+import { mcpCopyChoices, mcpCopyOffered, mcpNameTakenIn, parseHttpHeaders } from './extensions-common'
 import type { V2Bridge } from '../../types'
 
 type Snapshot = Awaited<ReturnType<V2Bridge['listProviderExtensions']>>
@@ -60,5 +60,38 @@ describe('mcpNameTakenIn', () => {
     expect(await mcpNameTakenIn(api, ['codex', 'grok'], 'github', 'project')).toEqual(['codex', 'grok'])
     expect(await mcpNameTakenIn(api, ['grok'], 'docs', 'user')).toEqual([])
     expect(await mcpNameTakenIn(api, [], 'github', 'user')).toEqual([])
+  })
+})
+
+describe('mcpCopyOffered', () => {
+  const [item] = snapshot('claude', [{ id: 'docs', scope: 'user' }]).items
+
+  it('offers copying only for a Claude Code or Codex connection the customer added globally', () => {
+    expect(mcpCopyOffered('claude', item)).toBe(true)
+    expect(mcpCopyOffered('codex', { ...item, provider: 'codex' })).toBe(true)
+    // Grok 的列表不带环境变量和请求头，主进程读不全，搬过去会少一截。
+    expect(mcpCopyOffered('grok', { ...item, provider: 'grok' })).toBe(false)
+  })
+
+  it('leaves out project connections, built-in ones and anything that is not a connection', () => {
+    // 项目里的连接常跟着仓库走，搬进别的工具的项目配置等于把密钥写进仓库文件。
+    expect(mcpCopyOffered('claude', { ...item, scope: 'project' })).toBe(false)
+    expect(mcpCopyOffered('claude', { ...item, scope: 'local' })).toBe(false)
+    expect(mcpCopyOffered('claude', { ...item, operations: { ...item.operations, uninstall: false } })).toBe(false)
+    expect(mcpCopyOffered('claude', { ...item, installed: false })).toBe(false)
+    expect(mcpCopyOffered('claude', { ...item, kind: 'skill' })).toBe(false)
+  })
+})
+
+describe('mcpCopyChoices', () => {
+  it('lists every other tool and greys out the ones that already have the name or are not installed', () => {
+    expect(mcpCopyChoices('claude', undefined, ['codex']).map(({ id, note }) => [id, note])).toEqual([
+      ['codex', '已添加'],
+      ['grok', null],
+    ])
+    expect(mcpCopyChoices('codex', ['codex', 'claude'], []).map(({ id, note }) => [id, note])).toEqual([
+      ['claude', null],
+      ['grok', '未安装'],
+    ])
   })
 })

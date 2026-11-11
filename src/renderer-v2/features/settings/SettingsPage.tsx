@@ -59,7 +59,7 @@ import { parseImportedConversations } from '../chat/storage'
 import type { Conversation } from '../chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
 import type { V2Bridge } from '../../types'
-import type { DataTransferImportPreview } from '../../../../electron/ipc-contract'
+import type { ClaudeWriteBoundaryResult, DataTransferImportPreview } from '../../../../electron/ipc-contract'
 import type { PlatformSystemState } from '../../../../electron/platform/contract'
 import { platformApi } from '../../platform-api'
 import type { BusinessActions } from '../../business-actions'
@@ -97,6 +97,17 @@ export function shortcutRows(os: WindowOs): Array<{ keys: string; label: string 
 
 /** 设置页顶上那句。找设置用左栏的「搜索设置」，这里不再教按 Ctrl K。 */
 export const settingsPageLead = '改动会立即保存。'
+
+/**
+ * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
+ * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下；later：现在不是星芒在管 Claude Code 的配置（官方账号、
+ * 没登录、自己填的密钥、还没配过），等下次星芒替它保存配置时一起写。
+ */
+export function claudeWriteBoundaryNotice(result: ClaudeWriteBoundaryResult): { text: string; tone: 'ok' | 'warn' } {
+  if (result.applied === 'kept') return { text: '开关记下了。Claude Code 自己的设置里你写过这一项，星芒没有改它。', tone: 'warn' }
+  if (result.applied === 'later') return { text: '开关记下了，下次星芒替 Claude Code 保存配置时一起写进去。', tone: 'ok' }
+  return { text: result.enabled ? '已打开，新开的 Claude Code 会按这个来。' : '已关掉，新开的 Claude Code 不再拦。', tone: 'ok' }
+}
 
 /**
  * 设置页「版本更新」里的两个重来入口。两件事名字很像、做的事不一样：「新手引导」重走
@@ -532,7 +543,7 @@ export function SettingsPage({
       />
     ),
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
-    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} onOpenHelp={openHelp} />,
+    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} onOpenHelp={openHelp} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard
@@ -790,6 +801,36 @@ export function SettingsPage({
             更换
           </Button>
         </div>,
+      ),
+      // 不走 saveSettings：主进程先对齐 Claude Code 的配置（先做一份备份）再记开关，改配置失败就不记、页顶出红条。
+      'claude-write-boundary': row(
+        'claude-write-boundary',
+        '开着时，Claude Code 写文件、改文件只在你打开的那个文件夹里做，要改外面的会被拒绝。它在终端里跑的命令不受这个限制。',
+        <Switch
+          checked={settings.claudeWritesInsideProject === true}
+          aria-label="只让 Claude Code 改项目文件夹里的文件"
+          testId="settings-claude-write-boundary"
+          disabled={Boolean(operation.busy)}
+          onChange={(enabled) =>
+            void operation.execute(
+              'claude-write-boundary',
+              async () => {
+                const result = await api.setClaudeWriteBoundary(enabled)
+                resource.setData((previous) =>
+                  previous
+                    ? { ...previous, settings: { ...previous.settings, claudeWritesInsideProject: result.enabled } }
+                    : previous,
+                )
+                return result
+              },
+              (result) => {
+                const notice = claudeWriteBoundaryNotice(result)
+                showToast(notice.text, notice.tone)
+                return null
+              },
+            )
+          }
+        />,
       ),
       'latest-cli': row(
         'latest-cli',

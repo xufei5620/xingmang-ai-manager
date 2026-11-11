@@ -1197,21 +1197,25 @@ describe('canvasRunDescendants', () => {
     const workflow = graph(
       [
         node('prompt', 'text'),
+        node('split', 'image-grid-split'),
+        // An image tool with no executor of its own (imageTools off) must not fall back either.
         node('compare', 'image-compare'),
         { ...node('many', 'image-generate'), desktopUnsupported: reason },
         node('after', 'image'),
       ],
-      [edge('prompt', 'compare'), edge('prompt', 'many'), edge('many', 'after', 'image')],
+      [edge('prompt', 'split'), edge('prompt', 'compare'), edge('prompt', 'many'), edge('many', 'after', 'image')],
     )
     const record = await executeCanvasRun(runOptions(workflow, { executors: executors({ image, video }) }))
 
     expect(image).not.toHaveBeenCalled()
     expect(video).not.toHaveBeenCalled()
     const states = Object.fromEntries(record.nodes.map((entry) => [entry.nodeId, entry.state]))
-    expect(states).toEqual({ prompt: 'succeeded', compare: 'failed', many: 'failed', after: 'skipped' })
+    expect(states).toEqual({ prompt: 'succeeded', split: 'failed', compare: 'failed', many: 'failed', after: 'skipped' })
     expect(record.nodes.find((entry) => entry.nodeId === 'many')?.errorMessage).toBe(reason)
-    expect(record.nodes.find((entry) => entry.nodeId === 'compare')?.errorMessage)
+    expect(record.nodes.find((entry) => entry.nodeId === 'split')?.errorMessage)
       .toBe('该节点桌面版暂不支持，本次没有提交任何付费请求')
+    expect(record.nodes.find((entry) => entry.nodeId === 'compare')?.errorMessage)
+      .toBe('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
   })
 
   it('returns descendants in topological order without including the roots', () => {
@@ -1431,5 +1435,65 @@ describe('executeCanvasRun frame preparations', () => {
     }))
     expect(video).not.toHaveBeenCalled()
     expect(record.nodes[0]).toMatchObject({ state: 'failed', errorMessage: '「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求' })
+  })
+})
+
+// 画布完善第 7 条第三步: an image-tool node waits for the page to make its pictures.
+describe('executeCanvasRun image preparations', () => {
+  function imagePreparation(attemptId: string, nodeId = 'crop') {
+    return {
+      operationId: attemptId, attemptId, runId: 'run-1', projectId: '11111111-1111-4111-8111-111111111111', nodeId,
+      sourceAssetIds: ['a'.repeat(43)], recipe: { kind: 'crop' as const, outputWidth: 64, outputHeight: 32, note: 'x'.repeat(4096) },
+      processorRevision: 'browser-image-v1',
+    }
+  }
+
+  it('sends the page the whole recipe while the run file keeps the waiting events without it', async () => {
+    const live: unknown[] = []
+    const persisted: CanvasRunRecord[] = []
+    const crop = vi.fn<CanvasNodeExecutor>(async ({ attemptId, reportImagePreparation, reportFramePreparation }) => {
+      await reportImagePreparation!(imagePreparation(attemptId), true)
+      // A frame reported later still carries the pictures list, so the page sees both.
+      const frame = { operationId: 'frame-op', nodeId: 'crop', attemptId: 'frame-op', sourceAssetId: 'V'.repeat(43), timestampSeconds: 1 }
+      await reportFramePreparation!(frame, true)
+      await reportFramePreparation!(frame, false)
+      await reportImagePreparation!(imagePreparation(attemptId), false)
+      return { assets: [asset('c'.repeat(43))] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('image', 'image'), node('crop', 'image-crop')], [edge('image', 'crop', 'image')]), {
+      executors: executors({ 'image-crop': crop }),
+      onEvent: (event) => { if (event.type === 'run-waiting') live.push({ frames: event.framePreparations.length, images: event.imagePreparations?.map((entry) => entry.recipe.note === 'x'.repeat(4096)) }) },
+      persistRecord: async (snapshot) => { persisted.push(structuredClone(snapshot)) },
+    }))
+    expect(record.status).toBe('succeeded')
+    expect(live).toEqual([
+      { frames: 0, images: [true] },
+      { frames: 1, images: [true] },
+      { frames: 0, images: [true] },
+      { frames: 0, images: [] },
+    ])
+    for (const snapshot of [...persisted, record]) {
+      expect(snapshot).not.toHaveProperty('imagePreparations')
+      expect(snapshot.events.filter((event) => event.type === 'run-waiting').every((event) => !('imagePreparations' in event))).toBe(true)
+    }
+    expect(crop.mock.calls[0][0].inputs.imageSources).toEqual([{ edgeId: 'image->crop:image', outputIndex: 0, asset: asset() }])
+  })
+
+  it('refuses pictures for another node or run and never hands an image tool to the paid video executor', async () => {
+    const video = vi.fn(async () => ({ assets: [asset()] }))
+    const refusals: string[] = []
+    const record = await executeCanvasRun(runOptions(graph([node('crop', 'image-crop'), node('tile', 'image-tile')]), {
+      executors: executors({
+        video,
+        'image-crop': async ({ attemptId, reportImagePreparation }) => {
+          refusals.push(await reportImagePreparation!(imagePreparation(attemptId, 'other'), true).then(() => 'sent', (error: Error) => error.message))
+          refusals.push(await reportImagePreparation!({ ...imagePreparation(attemptId), runId: 'run-2' }, true).then(() => 'sent', (error: Error) => error.message))
+          throw new Error('图片处理结果没有交回来（画布关了或处理超时），请重新运行这个节点')
+        },
+      }),
+    }))
+    expect(refusals).toEqual(['图片处理不属于这个节点', '图片处理不属于这个节点'])
+    expect(video).not.toHaveBeenCalled()
+    expect(record.nodes.find((entry) => entry.nodeId === 'tile')).toMatchObject({ state: 'failed', errorMessage: '「平铺图片」节点桌面版暂不支持，本次没有提交任何付费请求' })
   })
 })

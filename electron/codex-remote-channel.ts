@@ -226,5 +226,10 @@ export interface CodexRemoteSnapshot {
   workspaceDirectory: string | null
   task: CodexRemoteTaskState
   pendingApprovals: number
+  /**
+   * 手机上最近一条因为电脑上的 Codex 起不来没做（YK-5），卡片上摆一条黄条。
+   * 下次 Codex 起来了、或者遥控全关了就不带；缺省 = 没有这回事。
+   */
+  codexStartFailed?: boolean
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

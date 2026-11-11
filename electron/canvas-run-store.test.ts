@@ -173,6 +173,26 @@ describe('CanvasRunStore', () => {
     expect(recovered[0].nodes[0].errorMessage).toContain('未自动重试')
   })
 
+  it('never writes the pictures a run waits on, nor their recipes in waiting events, to the run file', async () => {
+    const { root, store } = fixture()
+    const preparation = {
+      operationId: 'attempt-1', attemptId: 'attempt-1', runId: 'waiting', projectId: '11111111-1111-4111-8111-111111111111', nodeId: 'node',
+      sourceAssetIds: [], recipe: { kind: 'layer' as const, outputWidth: 8, outputHeight: 8, secretSauce: 'x'.repeat(1024) }, processorRevision: 'browser-image-v1',
+    }
+    const base = record('waiting', 'running')
+    const waitingEvent = { version: 1 as const, runId: 'waiting', graphRevision: base.graphRevision, sequence: 1, at: base.startedAt, type: 'run-waiting' as const, waitingForVideo: false as const, framePreparations: [], imagePreparations: [preparation] }
+    const waiting: CanvasRunRecord = { ...base, imagePreparations: [preparation], events: [waitingEvent] }
+    await store.saveRun(7, waiting)
+    expect(waiting.imagePreparations).toEqual([preparation])
+    const content = fs.readFileSync(path.join(root, 'user-7', 'canvas-runtime.json'), 'utf8')
+    expect(content).not.toContain('secretSauce')
+    expect(content).not.toContain('imagePreparations')
+    const [listed] = await store.listRuns(7)
+    expect(listed).not.toHaveProperty('imagePreparations')
+    expect(listed.events[0]).toMatchObject({ type: 'run-waiting', framePreparations: [] })
+    expect(listed.events[0]).not.toHaveProperty('imagePreparations')
+  })
+
   it('forgets the frames an interrupted run waited on and reads back only well-formed ones', async () => {
     const { root, store } = fixture()
     const preparation = { operationId: 'attempt-1', nodeId: 'node', attemptId: 'attempt-1', sourceAssetId: 'V'.repeat(43), timestampSeconds: 2.5 }

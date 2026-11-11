@@ -209,6 +209,21 @@ describe('codex remote card', () => {
     expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
   })
 
+  // YK-5：手机上收到「Codex 没能启动」时，电脑卡片上也看得见、点一下去首页。
+  it('says on top of the card that Codex could not start, with a way to the home page', () => {
+    const connected = { hasCredential: true, enabled: true, status: { state: 'connected' } } as const
+    const failed = renderToStaticMarkup(
+      <CodexRemotePanel snapshot={snapshot({ workspaceDirectory: '~/projects/demo', codexStartFailed: true }, connected)} api={{} as V2Bridge} busy="" run={async () => true} error={null} navigate={() => undefined} />,
+    )
+    expect(failed).toContain('data-testid="settings-remote-codex-failed"')
+    expect(failed).toContain('xm-tone-warn')
+    expect(failed).toContain('<strong>Codex 没能启动</strong>')
+    expect(failed).toContain('手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。')
+    expect(failed).toMatch(/data-testid="settings-remote-codex-failed-home"[^>]*>.*去首页看 Codex/)
+    expect(failed.indexOf('settings-remote-codex-failed')).toBeLessThan(failed.indexOf('settings-remote-workspace-row'))
+    expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, connected))).not.toContain('settings-remote-codex-failed')
+  })
+
   it('warns when the credentials only last until the manager closes', () => {
     expect(render(snapshot({ credentialPersistence: 'session-only' }))).toContain('凭据只记到这次关掉星芒')
     expect(render(snapshot({ credentialPersistence: 'unavailable' }))).toContain('凭据存不下')

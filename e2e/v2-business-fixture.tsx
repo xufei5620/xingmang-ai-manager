@@ -61,6 +61,8 @@ declare global {
       weixinScanned(): void
       // 飞书渠道停在一种毛病上（D23）：主进程推一份带那句话的快照；null = 回到正常的连上 / 没打开。
       feishuProblem(problem: 'credential' | 'connection-limit' | 'other' | null): void
+      // 手机上来了一条，电脑上的 Codex 没起来（YK-5）；false = 后来又起来了。
+      codexStartFailed(failed: boolean): void
     }
   }
 }
@@ -172,6 +174,7 @@ const remoteState: {
   pairing: RemoteSnapshot['channels']['feishu']['pairing']
   boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
   problem: RemoteSnapshot['channels']['feishu']['status'] | null
+  codexStartFailed: boolean
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
@@ -179,6 +182,7 @@ const remoteState: {
   pairing: null,
   boundPeer: null,
   problem: null,
+  codexStartFailed: false,
 }
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
@@ -204,6 +208,7 @@ function remoteSnapshot(): RemoteSnapshot {
     workspaceDirectory: remoteState.workspaceDirectory,
     task: 'idle',
     pendingApprovals: 0,
+    ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     channels: {
       feishu: {
         channel: 'feishu',
@@ -240,6 +245,10 @@ window.remoteHarness = {
   weixinScanned() {
     releaseWeixinScan?.()
     releaseWeixinScan = null
+  },
+  codexStartFailed(failed) {
+    remoteState.codexStartFailed = failed
+    pushRemoteSnapshot()
   },
   feishuProblem(problem) {
     remoteState.problem = problem ? feishuProblemStatuses[problem] : null
@@ -665,6 +674,10 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
         ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
         : []),
+      // claudeMcp=名字：只有 Claude Code「我的（全局）」里有的连接，用来看「也装到别的工具」。
+      ...(query.has('claudeMcp') && provider === 'claude' && page === 'mcp'
+        ? [{ ...scopedExtension('plugin', query.get('claudeMcp') ?? '', query.get('claudeMcp') ?? '', 'local'), kind: 'mcp' as const, scope: 'user' as const }]
+        : []),
       ...(empty
       ? []
       : [
@@ -857,12 +870,22 @@ const apiMethods = {
     endTimestamp: 2,
     buckets: [],
     models: [],
-    quota: 500,
+    // usageDetail=sub-cent：一天只花 $0.0032，看柱子和日均不再写成 $0.00（D53）。
+    quota: query.get('usageDetail') === 'sub-cent' ? 0.32 : 500,
     count: 11,
     tokens: 2000,
     discardedCount: 0,
     ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
   } },
+  getAccountPriceList: async () => {
+    record('get-price-list')
+    if (fail === 'prices') throw new Error('价目暂时不可用')
+    return { rows: [
+      { model: 'gpt-image-2', group: '图片模型', kind: 'call' as const, perCall: 0.06 },
+      { model: 'claude-tiered', group: 'Claude', kind: 'tiered' as const },
+      { model: 'gpt-5.6-sol', group: 'GPT', kind: 'token' as const, input: 1.25, output: 10 },
+    ] }
+  },
   getAccountTasks: async () => {
     if (fail === 'tasks') throw new Error('任务服务暂时不可用')
     const completed = ++taskReads > 1
@@ -1236,6 +1259,11 @@ const apiMethods = {
   addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
     record('add-mcp', input)
     return []
+  },
+  // 「也装到别的工具」：只收名字，连接本身由主进程读。copyMcpFail=工具：装进那个工具时失败。
+  copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
+    record('copy-mcp', input)
+    if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),

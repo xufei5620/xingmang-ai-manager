@@ -4,7 +4,7 @@ import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
 import { cliCatalog, isActiveProviderId } from '../../catalog'
 import type { ProviderExtensionsSnapshot } from '../../provider-extensions'
 import { optionalString, requiredString } from '../parsers/common'
-import { parseMarketplaceInput, parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from '../parsers/extensions'
+import { parseMarketplaceInput, parseMcpCopyInput, parseMcpInput, parseProviderExtensionMutation, parseSkillInput } from '../parsers/extensions'
 import type { IpcHandlerContext } from './context'
 
 export function registerExtensionHandlers(ctx: IpcHandlerContext): void {
@@ -91,6 +91,24 @@ export function registerExtensionHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('extensions:check-mcp-health', (_event, provider: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 AI 工具')
     return options.providerExtensionService.checkMcpHealth(provider)
+  })
+  // 「也装到别的工具」：连接原样从来源工具的全局配置里读，再走跟手填添加同一条路、过同一道检查（I1、I5），
+  // 装进目标工具的「我的（全局）」。密钥只在主进程里转一手。
+  registerTrustedHandler('extensions:copy-mcp', async (_event, input: unknown) => {
+    const request = parseMcpCopyInput(input)
+    const mcp = await options.providerExtensionService.readUserMcpConnection(request.from, request.name)
+    if (request.to === 'codex') {
+      await options.extensionService.addMcpServer(parseMcpInput({ name: request.name, ...mcp }))
+      return
+    }
+    await options.providerExtensionService.mutate(parseProviderExtensionMutation({
+      provider: request.to,
+      kind: 'mcp',
+      action: 'install',
+      id: request.name,
+      scope: 'user',
+      mcp,
+    }))
   })
   registerTrustedHandler('extensions:choose-directory', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
