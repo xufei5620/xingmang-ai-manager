@@ -11,7 +11,7 @@ import { answerHistoryFlushRequests } from './features/chat/storage'
 import { OnlineStatusContext } from './features/shell/useOnlineStatus'
 import { buildEnvironmentStatus, environmentJobsFinished, markDiagnosticsStale, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
-import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState, type LoginTarget } from './features/auth'
+import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, isGuideToolRoute, type AuthMode, type GuideLanding, type GuideRoute, type GuideToolState, type LoginTarget } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
@@ -195,6 +195,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   // 装完工具同步 Key 要对的是「现在」的账号，安装闭包里那份会话还停在点安装那一刻（#1097）。
   const latestScope = useRef(scope)
   latestScope.current = scope
+  // 引导里选「做图、做视频」时还没登录：先去登录。登好了引导会按新账号重开，所以记在这里，
+  // 登好了直接算走完、进视频剪辑页；登录框关掉没登就作罢。
+  const guideCreateAfterLogin = useRef(false)
   // 开机账号恢复超过了启动画面的等待上限：先进首页，按正在恢复的账号显示，
   // 恢复结束再补读一次配置（见 useAccountSessionSync）。
   const restoring = sessionRestoring(session)
@@ -278,6 +281,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     chineseSuspended: featuresOff.includes('codex-desktop-chinese') })
   const closeAccountDialogs = useCallback(() => { setConfigTool(null); setExternalClient(null) }, [])
   const leaveWorkspace = useCallback(() => { setGuide(false); setPage('home'); setWorkspaceEntered(false) }, [setPage])
+  const finishGuide = (id: GuideRoute, landing: GuideLanding) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }
+  // 等会话换成登好的那个账号再走完：登录回调里那一刻的 navigate 还当没登录，会再弹一次登录框。
+  useEffect(() => {
+    if (!guideCreateAfterLogin.current || !session.authenticated) return
+    guideCreateAfterLogin.current = false
+    finishGuide('create', 'video')
+  }, [session.authenticated, scope])
   const { accountReadError, setAccountReadError, reloadAccount, logoutVoluntarily } = useAccountSessionSync({
     native, app, toolsApi, toolbox, toast, balanceStore, session, setSession, scope, restoring, sessionEvents, accountEpoch, mounted,
     cancelPendingLaunchDialogs, followSessionChange, refreshRecent, noteStartupCheck, closeAccountDialogs, leaveWorkspace, setUnread, setPaymentReturn,
@@ -540,15 +550,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         return Boolean(outcome?.result?.configured.includes(provider))
       }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       walletEmpty={session.authenticated && homeWalletEmpty(balanceAmount, subscription, accountSupports(session, 'supportsBilling'))}
-      onLaunch={async (id, newFolder) => id === 'chat' ? true : launch(id, 'open', undefined, newFolder ? 'create' : 'choose')}
-      onComplete={(id, landing) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); rememberTourPending(scope); setTourOpen(true); navigate(landing) }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
-    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
+      onLaunch={async (id, newFolder) => isGuideToolRoute(id) ? launch(id, 'open', undefined, newFolder ? 'create' : 'choose') : true}
+      createAvailable={signedInSiteId(session) !== 'solov-api'} onCreateLogin={() => { guideCreateAfterLogin.current = true; setAuth('login') }}
+      onComplete={finishGuide} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
+    {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { guideCreateAfterLogin.current = false; setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}
       onRelaunch={() => void perform('重开软件', async () => { await app.relaunch() })}
       connectionSettings={settings ? (onBusyChange) => <AuthConnectionRoutes api={app} settings={settings} onSettingsChanged={setSettings} onBusyChange={onBusyChange} /> : undefined}
       notice={maintenance ? <MaintenanceNotice maintenance={maintenance} testId="auth-maintenance-notice" /> : undefined} onAuthenticated={(result, options) => {
       const authenticatedScope = accountScope(result)
       suppressRestore(authenticatedScope)
-      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
+      setAuth(null); setAuthTarget(null); setSession({ ...result, authenticated: true }); setGuide(!guideCreateAfterLogin.current && !readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
       void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
       if (options?.notice) toast.show(options.notice, 'ok')
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
