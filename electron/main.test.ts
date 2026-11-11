@@ -234,7 +234,7 @@ describe('main process quit cleanup', () => {
         'business.chatVideoService.cancelAll()',
         'business.canvasRuns.shutdown()',
       ],
-      'asset-protocol-and-windows': ["protocol.unhandle('xingmang-asset')", 'paymentWindow.destroy()', 'canvasController.dispose()'],
+      'asset-protocol-and-windows': ["protocol.unhandle('xingmang-asset')", 'paymentWindow.destroy()', 'invoicePortalWindow.destroy()', 'canvasController.dispose()'],
       updater: ['updaterService.dispose()'],
       'display-watch': [
         'clearTimeout(displayChangeTimer)',

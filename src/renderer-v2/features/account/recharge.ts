@@ -355,14 +355,14 @@ export function ordersSearchEmpty(keyword: string, multiplierAccount: boolean): 
 }
 
 /**
- * 「我的订单」的「开发票」打开开票中心以后那条提示（2026-11-02 yoyo 回「发票改」批的原字）。
- * 开票中心另要登录一次：星芒账号填用户名，历史账号填邮箱，和它自己登录页上写的一致。
+ * 「我的订单」的「开发票」打开开票窗口以后那条提示（2026-11-11 yoyo 回「窗口改」批的原字）。
+ * 开票中心另要登录一次，同一个账号登过就记着：星芒账号填用户名，历史账号填邮箱，和它自己登录页上写的一致。
  */
 export function invoicePortalOpenedText(multiplierAccount: boolean): string {
-  return `已在浏览器打开开票中心，用这个账号的${multiplierAccount ? '邮箱' : '用户名'}和密码登录就行。`
+  return `开票中心已在新窗口打开；要登录的话，用这个账号的${multiplierAccount ? '邮箱' : '用户名'}和密码。`
 }
 
-/** 浏览器没打开开票中心时那句（同一次批的原字）。 */
+/** 开票窗口没打开时那句（2026-11-02 批的原字，「窗口改」时照旧）。 */
 export const invoicePortalOpenFailed = '没能打开开票中心，请稍后再试；还不行请找客服。'
 
 /** 「本次充值」里「按最近用量」后面那句：跟账号概览同一套说法（runwayDaysText），左边已经写了「按最近用量」，这里去掉打头那几个字。 */

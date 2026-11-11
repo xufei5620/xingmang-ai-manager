@@ -138,18 +138,11 @@ describe('relay site registry', () => {
       // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
       // Unchanged by D-10: the removed sub2api entry was same-domain, so it
       // contributed no URL of its own here either.
-      // 2026-11-02:「开发票」加了两个开票中心「申请开票」页，各跟各的账号。
-      expect(relaySiteExternalUrls(relaySites)).toEqual([
-        'https://xm.solov.cc',
-        'https://xm.solov.cc/keys',
-        'https://invoice-xm.solov.cc/orders',
-        'https://api.solov.cc',
-        'https://api.solov.cc/keys',
-        'https://invoice-api.solov.cc/orders',
-      ])
+      // 开票中心的地址只在软件里的开票窗口打开，不进外链白名单（invoice-portal-window.ts）。
+      expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys', 'https://api.solov.cc', 'https://api.solov.cc/keys'])
     })
 
-    it('returns only marketing and keys pages for an account-backed site without an invoice portal', () => {
+    it('returns only marketing and keys pages for an account-backed site', () => {
       const accountSite = {
         id: 'account-example',
         label: 'Account example',

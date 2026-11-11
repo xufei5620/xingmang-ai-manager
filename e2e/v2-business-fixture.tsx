@@ -690,11 +690,10 @@ const apiMethods = {
   onNodeRuntimeInstallProgress: () => () => undefined,
   onPythonRuntimeInstallProgress: () => () => undefined,
   onCodexDesktopLaunchProgress: () => () => undefined,
-  // 「开发票」只把开票中心交给系统浏览器；externalFail 时与主进程 external:open 抛错一样。
-  openExternal: async (url: string) => {
-    record('open-external', url)
-    if (query.has('externalFail')) throw new Error("Error invoking remote method 'external:open': Error: 打开失败")
-    return true
+  // 「开发票」只叫主进程开开票窗口，不带参数；invoiceFail 时与主进程那条通道抛错一样。
+  openAccountInvoicePortal: async (...args: unknown[]) => {
+    record('open-invoice-portal', args)
+    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 没能打开开票中心，请稍后再试；还不行请找客服。")
   },
   getAccountSession: async () => ({
     authenticated: true,

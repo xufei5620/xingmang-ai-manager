@@ -88,14 +88,13 @@ describe('explicit relay site identity', () => {
     expect(new Set(relaySites.map((site) => site.id)).size).toBe(relaySites.length)
   })
 
-  it('pins the exact external URLs the relay sites add to the allowlist', () => {
+  it('does not expand the external URL allowlist in this preparatory wave', () => {
+    // The invoice portals open only in the in-app invoice window, never in the system browser.
     expect(relaySiteExternalUrls(relaySites)).toEqual([
       'https://xm.solov.cc',
       'https://xm.solov.cc/keys',
-      'https://invoice-xm.solov.cc/orders',
       'https://api.solov.cc',
       'https://api.solov.cc/keys',
-      'https://invoice-api.solov.cc/orders',
     ])
   })
 

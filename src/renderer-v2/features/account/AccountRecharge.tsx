@@ -1024,23 +1024,21 @@ function subscriptionExpiry(endsAt: string): string {
 }
 
 /**
- * 「开发票」：用浏览器打开这个账号的开票中心。开票中心要客户在那边再登录一次，这里不带任何凭据；
- * 白名单里没有、系统打不开浏览器，都只说一句批过的话（原因进不了客户能做的事里）。
+ * 「开发票」：主进程按当前账号开一个开票窗口（electron/invoice-portal-window.ts），这里不给地址也不带任何凭据。
+ * 打不开时不管原因都只说一句批过的话（原因进不了客户能做的事里）。
  */
-async function openInvoicePortal(api: V2Bridge, url: string): Promise<void> {
-  let opened: boolean
+async function openInvoicePortal(api: V2Bridge): Promise<void> {
   try {
-    opened = await api.openExternal(url)
+    await api.openAccountInvoicePortal()
   } catch {
     throw new Error(invoicePortalOpenFailed)
   }
-  if (!opened) throw new Error(invoicePortalOpenFailed)
 }
 
 /**
  * 「我的订单」：充值订阅这一页最下面一节，两行一条（v4）。支付窗口开着的那一单尾巴上写
  * 「支付窗口开着」；付款回跳、充值页「查看我的订单」都按订单号重新查（paymentReturn 每次加一）。
- * 标题行的「开发票」把客户送到这个账号的开票中心，在那边按到账订单申请。
+ * 标题行的「开发票」在新窗口打开这个账号的开票中心，在那边按到账订单申请。
  */
 export function AccountOrders({
   api,
@@ -1048,7 +1046,7 @@ export function AccountOrders({
   refreshRequest,
   openTradeNo,
   multiplierAccount,
-  invoicePortalUrl,
+  invoicePortal,
 }: {
   api: V2Bridge
   paymentReturn?: { sequence: number; order: string | null }
@@ -1057,8 +1055,8 @@ export function AccountOrders({
   openTradeNo?: string | null
   /** 历史账号：订单上记的是人民币那一档。 */
   multiplierAccount?: boolean
-  /** 这个账号的开票中心；缺省 = 没有，不出「开发票」。 */
-  invoicePortalUrl?: string
+  /** 这个账号有没有开票中心；缺省 = 没有，不出「开发票」。 */
+  invoicePortal?: boolean
 }) {
   const operation = useOperation()
   const [page, setPage] = useState(1)
@@ -1094,7 +1092,7 @@ export function AccountOrders({
     <section className="v2-acct-section" data-anchor="orders" data-testid="account-orders-section">
       <div className="v2-acct-section-head">
         <h2>我的订单</h2>
-        {invoicePortalUrl && (
+        {invoicePortal && (
           <Button
             size="sm"
             variant="ghost"
@@ -1102,7 +1100,7 @@ export function AccountOrders({
             disabled={Boolean(operation.busy)}
             onClick={() => void operation.execute(
               '打开开票中心',
-              () => openInvoicePortal(api, invoicePortalUrl),
+              () => openInvoicePortal(api),
               invoicePortalOpenedText(Boolean(multiplierAccount)),
             )}
             testId="account-orders-invoice"

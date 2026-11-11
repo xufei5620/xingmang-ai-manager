@@ -203,8 +203,8 @@ describe('recharge', () => {
   })
 
   it('tells each account which name to log in to the invoice portal with', () => {
-    expect(invoicePortalOpenedText(false)).toBe('已在浏览器打开开票中心，用这个账号的用户名和密码登录就行。')
-    expect(invoicePortalOpenedText(true)).toBe('已在浏览器打开开票中心，用这个账号的邮箱和密码登录就行。')
+    expect(invoicePortalOpenedText(false)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的用户名和密码。')
+    expect(invoicePortalOpenedText(true)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的邮箱和密码。')
   })
 
   it('shows the invoice portal failure as approved instead of a catalogued rewrite', () => {

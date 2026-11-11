@@ -1206,6 +1206,8 @@ export interface XingmangInvokeContract {
     AccountTopupPaymentResult
   >
   closeAccountPaymentWindow: IpcInvokeDefinition<'account:close-payment-window', [], void>
+  // 「我的订单」的「开发票」：主进程按当前账号打开开票窗口（invoice-portal-window.ts），入参为空，地址和账号都不经渲染层。
+  openAccountInvoicePortal: IpcInvokeDefinition<'account:open-invoice-portal', [], void>
   getAccountTopupOrders: IpcInvokeDefinition<
     'account:list-topup-orders',
     [input: AccountTopupOrdersQuery],
@@ -1642,6 +1644,7 @@ export const ipcInvokeChannels = {
   quoteAccountTopupAmount: 'account:quote-topup',
   createAccountTopupPayment: 'account:create-topup-payment',
   closeAccountPaymentWindow: 'account:close-payment-window',
+  openAccountInvoicePortal: 'account:open-invoice-portal',
   getAccountTopupOrders: 'account:list-topup-orders',
   redeemAccountTopupCode: 'account:redeem-topup-code',
   transferAccountAffiliateQuota: 'account:transfer-affiliate-quota',

@@ -424,21 +424,22 @@ test('account exposes the six v4 tabs and keeps server orders and keys visible',
   }
 })
 
-test('the orders head opens the signed-in account\'s own invoice portal in the browser', async () => {
-  // 两个账号是两个开票中心、两套登录：送错了，客户在那边会被说密码不对。
-  for (const [route, url, loginName] of [
-    ['page=account', 'https://invoice-xm.solov.cc/orders', '用户名'],
-    ['page=account&sub2apiReliability=1', 'https://invoice-api.solov.cc/orders', '邮箱'],
+test('the orders head asks the main process to open the invoice window without naming a site or account', async () => {
+  // 两个账号登录开票中心用的名字不同：星芒账号是用户名，历史账号是邮箱。开哪一个由主进程按当前账号定，
+  // 界面这一下不带地址、不带账号。
+  for (const [route, loginName] of [
+    ['page=account', '用户名'],
+    ['page=account&sub2apiReliability=1', '邮箱'],
   ]) {
     const page = await fixture(route)
     try {
       await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
       const orders = page.getByTestId('account-orders-section')
       await orders.getByRole('button', { name: '开发票', exact: true }).click()
-      await waitForToast(page, `已在浏览器打开开票中心，用这个账号的${loginName}和密码登录就行。`)
+      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
       assert.deepEqual(
-        (await calls(page)).filter((call) => call.name === 'open-external').map((call) => call.args),
-        [url],
+        (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
+        [[]],
       )
       assert.equal(await orders.getByRole('alert').count(), 0)
     } finally {
@@ -447,8 +448,8 @@ test('the orders head opens the signed-in account\'s own invoice portal in the b
   }
 })
 
-test('the invoice button says the approved line when the browser does not open', async () => {
-  const page = await fixture('page=account&externalFail=1')
+test('the invoice button says the approved line when the invoice window does not open', async () => {
+  const page = await fixture('page=account&invoiceFail=1')
   try {
     await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
     const orders = page.getByTestId('account-orders-section')
