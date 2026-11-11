@@ -281,8 +281,8 @@ type PreparedFilePlan = FilePlan & {
  */
 export interface NotUtf8ConfigRewrite {
   file: string
-  /** 写回前那份原样；换线路那种写成就删备份的（backupRetention 是 discard）是 null。 */
-  backup: string | null
+  /** 写回前那份原样。换线路那种写成就删备份的（backupRetention 是 discard）遇到这种文件也留着它。 */
+  backup: string
 }
 
 export type NotUtf8ConfigRewriteLog = (rewrite: NotUtf8ConfigRewrite) => void
@@ -305,13 +305,14 @@ function existingConfigNotUtf8(filePath: string): boolean {
   }
 }
 
-function logNotUtf8Rewrites(prepared: PreparedFilePlan[], backupKept: boolean): void {
+function logNotUtf8Rewrites(prepared: PreparedFilePlan[]): void {
   const log = notUtf8RewriteLog
   if (!log) return
   for (const plan of prepared) {
-    if (!plan.notUtf8) continue
+    // notUtf8 只标原来就在的文件，那种一定有 backupPath。
+    if (!plan.notUtf8 || !plan.backupPath) continue
     try {
-      log({ file: plan.path, backup: backupKept ? plan.backupPath : null })
+      log({ file: plan.path, backup: plan.backupPath })
     } catch {
       // 记不下来也不能让一次已经写成的保存报失败。
     }
@@ -549,6 +550,8 @@ export function executeFilePlans(
   providerRoot: string,
   // discard：提交成功以后把这次的 .bak 删掉，不进每个文件 5 份的轮换。换线路的定点改写
   // 来回切几次就会把客户自己保存时留下的备份挤掉，那几份才是有用的（原件另由调用方留一份）。
+  // 原文不是 UTF-8 的例外：写回后那几个字成了「�」，原样只剩这次的 .bak，照 rotate 留着、一起轮换。
+  // 写回的那份已经是 UTF-8，下回再换线路就照常删，留下的不会越攒越多。
   backupRetention: 'rotate' | 'discard' = 'rotate',
 ): NativeConfigSaveResult {
   const targets = plans.map((plan) => plan.path)
@@ -612,6 +615,10 @@ export function executeFilePlans(
   if (backupRetention === 'discard') {
     for (const plan of prepared) {
       if (!plan.backupPath) continue
+      if (plan.notUtf8) {
+        pruneBackups(plan.path, providerRoot)
+        continue
+      }
       try {
         assertSafeConfigPath(plan.backupPath, providerRoot, 'file')
         removeIfPresent(plan.backupPath)
@@ -619,11 +626,14 @@ export function executeFilePlans(
         // 删不掉只是多留一份备份，不影响已经写成的配置。
       }
     }
-    logNotUtf8Rewrites(prepared, false)
-    return { backups: [], files: prepared.map((plan) => plan.path) }
+    logNotUtf8Rewrites(prepared)
+    return {
+      backups: prepared.flatMap((plan) => plan.notUtf8 && plan.backupPath ? [plan.backupPath] : []),
+      files: prepared.map((plan) => plan.path),
+    }
   }
   for (const plan of prepared) pruneBackups(plan.path, providerRoot)
-  logNotUtf8Rewrites(prepared, true)
+  logNotUtf8Rewrites(prepared)
 
   return {
     backups: prepared.flatMap((plan) => plan.backupPath ? [plan.backupPath] : []),

@@ -2970,7 +2970,8 @@ export function planProviderRouteFollow(
 
 /**
  * 照 planProviderRouteFollow 算好的写下去。照旧走两阶段提交（I9），这次的 .bak 写成就删，不挤占
- * 客户自己保存时留下的备份；替换前再读一遍原文，被别的程序改过就整个放弃，留给下一次重试。
+ * 客户自己保存时留下的备份（原文不是 UTF-8 的那份例外，见 executeFilePlans 的 discard）；替换前再读
+ * 一遍原文，被别的程序改过就整个放弃，留给下一次重试。
  */
 export function applyProviderRouteFollow(
   provider: ProviderId,
