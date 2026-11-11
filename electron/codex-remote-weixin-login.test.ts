@@ -11,12 +11,16 @@ interface LoginHarness {
   requests: string[]
   saved: Array<{ value: string; label: string }>
   clock: { now: number }
+  reconnects: { count: number; failure: Error | null }
+  logs: string[]
 }
 
 function harness(responses: Array<Response | Error>, existing: string | null = null): LoginHarness {
   const requests: string[] = []
   const saved: LoginHarness['saved'] = []
   const clock = { now: 1_000_000 }
+  const reconnects: LoginHarness['reconnects'] = { count: 0, failure: null }
+  const logs: string[] = []
   const queue = [...responses]
   const fetchImpl = (async (input: RequestInfo | URL) => {
     requests.push(String(input))
@@ -29,6 +33,8 @@ function harness(responses: Array<Response | Error>, existing: string | null = n
     requests,
     saved,
     clock,
+    reconnects,
+    logs,
     dependencies: {
       fetch: fetchImpl,
       botAgent: 'XingmangAI/test',
@@ -37,8 +43,14 @@ function harness(responses: Array<Response | Error>, existing: string | null = n
       saveCredential: async (value, label) => {
         saved.push({ value, label })
       },
+      reconnectIfLoggedOut: async () => {
+        reconnects.count += 1
+        if (reconnects.failure) throw reconnects.failure
+      },
       renderQrCode: async (content) => `data:image/png;base64,${Buffer.from(content).toString('base64')}`,
-      log: () => undefined,
+      log: (_level, event) => {
+        logs.push(event)
+      },
     },
   }
 }
@@ -58,7 +70,7 @@ describe('normalizeWeixinVerifyCode', () => {
 
 describe('createWeixinLoginController', () => {
   it('draws the QR code in the main process and saves the scanned credential', async () => {
-    const { dependencies, requests, saved } = harness([
+    const { dependencies, requests, saved, reconnects } = harness([
       qr('q1'),
       jsonResponse({ status: 'scaned' }),
       jsonResponse({ status: 'scaned_but_redirect', redirect_host: 'sz.ilinkai.weixin.qq.com' }),
@@ -78,6 +90,8 @@ describe('createWeixinLoginController', () => {
     expect(JSON.stringify(done)).not.toContain('tok')
     expect(requests[3]).toBe('https://sz.ilinkai.weixin.qq.com/ilink/bot/get_qrcode_status?qrcode=q1')
     expect(saved).toHaveLength(1)
+    // 新凭据走保存那条路重启渠道，不用另外重连。
+    expect(reconnects.count).toBe(0)
     expect(saved[0].label).toBe('ClawBot decb')
     expect(decodeWeixinCredential(saved[0].value)).toEqual({
       version: 1, token: 'tok', botId: 'b0f5860fdecb@im.bot', origin: 'https://sz.ilinkai.weixin.qq.com', ownerUserId: 'owner@im.wechat',
@@ -165,11 +179,32 @@ describe('createWeixinLoginController', () => {
 
   it('offers the existing token so an already-linked WeChat stays linked', async () => {
     const existing = encodeWeixinCredential({ version: 1, token: 'old', botId: 'b1@im.bot', origin: 'https://ilinkai.weixin.qq.com', ownerUserId: null })
-    const { dependencies, saved } = harness([qr('q1'), jsonResponse({ status: 'binded_redirect' })], existing)
+    const { dependencies, saved, reconnects } = harness([qr('q1'), jsonResponse({ status: 'binded_redirect' })], existing)
     const login = createWeixinLoginController(dependencies)
     const started = await login.start()
     await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'confirmed', message: '这个微信已经连着这台电脑了' })
     expect(saved).toHaveLength(0)
+    // YKS-6：凭据没换，保存那条重启渠道的路不走，由这里让渠道重连。
+    expect(reconnects.count).toBe(1)
+  })
+
+  it('still finishes the login when the channel cannot reconnect after the old login is recognised', async () => {
+    const existing = encodeWeixinCredential({ version: 1, token: 'old', botId: 'b1@im.bot', origin: 'https://ilinkai.weixin.qq.com', ownerUserId: null })
+    const { dependencies, reconnects, logs } = harness([qr('q1'), jsonResponse({ status: 'binded_redirect' })], existing)
+    reconnects.failure = new Error('这台电脑还没装 Codex 命令行工具，先在首页把它装好。')
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'confirmed', message: '这个微信已经连着这台电脑了' })
+    expect(reconnects.count).toBe(1)
+    expect(logs).toContain('weixin-login-reconnect-failed')
+  })
+
+  it('fails without touching the channel when the server says already linked but this computer had no login', async () => {
+    const { dependencies, reconnects } = harness([qr('q1'), jsonResponse({ status: 'binded_redirect' })])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'failed', message: '微信扫码登录失败，请重试' })
+    expect(reconnects.count).toBe(0)
   })
 
   it('ends a login on cancel and when a new one starts', async () => {

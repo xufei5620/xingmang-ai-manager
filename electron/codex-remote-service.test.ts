@@ -747,6 +747,38 @@ describe('codex-remote-service enabling', () => {
     expect(s.channels).toHaveLength(1)
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
+
+  // YKS-6：微信重新扫码、服务端认出是原来那份登录时凭据没换；渠道停在「需要重新登录」就重连一次，连着的、关着的不动。
+  it('reconnects a channel stuck on signing in again once the old login is recognised, and leaves a working or closed one alone', async () => {
+    const s = await setup()
+    await s.service.reconnectIfLoggedOut('feishu')
+    expect(s.channels).toHaveLength(0)
+    const first = await enabledAndPaired(s)
+    await s.service.reconnectIfLoggedOut('feishu')
+    expect(first.stopped).toBe(0)
+    expect(s.channels).toHaveLength(1)
+
+    first.handlers?.onStatus({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+    await s.service.reconnectIfLoggedOut('feishu')
+    expect(first.stopped).toBe(1)
+    expect(first.sent).toHaveLength(0)
+    expect(s.channels).toHaveLength(2)
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'connected' } })
+    expect(snapshot.channels.feishu.boundPeer).not.toBeNull()
+    expect(s.logs).toContain('remote.channel-relogin-reconnect')
+  })
+
+  it('does not throw when remote control may no longer run at the moment the old login is recognised', async () => {
+    const s = await setup()
+    const first = await enabledAndPaired(s)
+    first.handlers?.onStatus({ state: 'needs-login', message: '微信这边的登录已经过期，请在电脑上重新扫码' })
+    s.unavailable.reason = '星芒正以管理员身份运行'
+    await expect(s.service.reconnectIfLoggedOut('feishu')).resolves.toBeUndefined()
+    expect(first.stopped).toBe(1)
+    expect(s.channels).toHaveLength(1)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
 })
 
 // YF-8：托盘「打开手机遥控」。只开凭据、配对过的人都在的渠道，过的检查跟设置里那个开关一样，打不开时给原因原句。
