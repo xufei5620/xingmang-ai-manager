@@ -1313,22 +1313,22 @@ describe('codex-remote-service turns', () => {
     })
     now += 6 * 60_000 + 30_000
     channel.handlers?.onInbound(text(alice, '状态'))
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('工作文件夹：~/projects/demo\n现在：正在处理，已经 6 分钟，做到「运行测试」\n余额：$12.40\n再过 4 小时没新消息就自动关'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：正在处理，已经 6 分钟，做到「运行测试」\n余额：$12.40\n再过 4 小时没新消息就自动关`))
     // 计划里一条正在做的都没有了（都做完了），就不写「做到…」。
     codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', explanation: null, plan: [{ step: '读代码', status: 'completed' }] })
     channel.handlers?.onInbound(text(alice, '状态'))
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('工作文件夹：~/projects/demo\n现在：正在处理，已经 6 分钟\n余额：$12.40\n再过 4 小时没新消息就自动关'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：正在处理，已经 6 分钟\n余额：$12.40\n再过 4 小时没新消息就自动关`))
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     channel.handlers?.onInbound(text(alice, '状态'))
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('工作文件夹：~/projects/demo\n现在：空闲\n余额：$12.40\n再过 4 小时没新消息就自动关'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲\n余额：$12.40\n再过 4 小时没新消息就自动关`))
   })
 
   it('leaves the balance and idle close lines out when the balance cannot be read and the remote never closes by itself', async () => {
     const s = await setup({ readBalanceUsd: async () => { throw new Error('network down') } })
     const channel = await enabledAndPaired(s)
     channel.handlers?.onInbound(text(alice, '状态'))
-    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('工作文件夹：~/projects/demo\n现在：空闲'))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(`工作文件夹：${path.join('~', 'projects', 'demo')}\n现在：空闲`))
   })
 
   // YF-16：做完以后在回答后面接一行，用了多久、真改成了哪些文件；停下、没做完的不接。
