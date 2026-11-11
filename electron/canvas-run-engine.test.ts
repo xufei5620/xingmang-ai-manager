@@ -1189,16 +1189,16 @@ describe('executeCanvasRun multi-image nodes', () => {
 
 describe('canvasRunDescendants', () => {
   it('fails a node the desktop cannot run without reaching an executor when a caller skips the service check', async () => {
-    // A kernel-only kind falls back to the video executor, so this second
-    // line is what keeps a direct engine call from spending money.
+    // A node the parser marked would otherwise fall back to an executor, so
+    // this second line is what keeps a direct engine call from spending money.
     const image = vi.fn(async () => ({ assets: [asset()] }))
     const video = vi.fn(async () => ({ assets: [] }))
     const reason = '「参考图角色」桌面版暂不支持，本次没有提交任何付费请求'
     const workflow = graph(
       [
         node('prompt', 'text'),
+        // An image tool with no executor of its own (imageTools off) must not fall back to the video executor.
         node('split', 'image-grid-split'),
-        // An image tool with no executor of its own (imageTools off) must not fall back either.
         node('compare', 'image-compare'),
         { ...node('many', 'image-generate'), desktopUnsupported: reason },
         node('after', 'image'),
@@ -1213,7 +1213,7 @@ describe('canvasRunDescendants', () => {
     expect(states).toEqual({ prompt: 'succeeded', split: 'failed', compare: 'failed', many: 'failed', after: 'skipped' })
     expect(record.nodes.find((entry) => entry.nodeId === 'many')?.errorMessage).toBe(reason)
     expect(record.nodes.find((entry) => entry.nodeId === 'split')?.errorMessage)
-      .toBe('该节点桌面版暂不支持，本次没有提交任何付费请求')
+      .toBe('「宫格裁剪」节点桌面版暂不支持，本次没有提交任何付费请求')
     expect(record.nodes.find((entry) => entry.nodeId === 'compare')?.errorMessage)
       .toBe('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
   })
@@ -1495,5 +1495,62 @@ describe('executeCanvasRun image preparations', () => {
     expect(refusals).toEqual(['图片处理不属于这个节点', '图片处理不属于这个节点'])
     expect(video).not.toHaveBeenCalled()
     expect(record.nodes.find((entry) => entry.nodeId === 'tile')).toMatchObject({ state: 'failed', errorMessage: '「平铺图片」节点桌面版暂不支持，本次没有提交任何付费请求' })
+  })
+
+  // 宫格裁剪: one node, several slices. A single-picture connection hands on
+  // the slice the canvas shows; out:images hands on all of them, each named by
+  // its place, as on the web host. Choosing another slice reuses the cached
+  // grid and leaves a batch connection's work cached too.
+  it('hands on the shown slice over a single connection and every slice over the batch one', async () => {
+    const slices = ['0', '1', '2', '3'].map((index) => asset(`${'s'.repeat(42)}${index}`))
+    const split = vi.fn<CanvasNodeExecutor>(async () => ({ assets: slices.map((slice) => structuredClone(slice)) }))
+    const crop = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('c'.repeat(43))] }))
+    const collage = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('d'.repeat(43))] }))
+    const cache = new Map<string, CanvasRunCacheEntry>()
+    function workflow(imageOutputIndex: number) {
+      const grid = node('split', 'image-grid-split')
+      grid.data.imageTransform = { kind: 'grid-split', rows: 2, columns: 2, gap: 0, padding: 0 }
+      grid.data.imageOutputIndex = imageOutputIndex
+      return graph([node('image', 'image'), grid, node('one', 'image-crop'), node('all', 'image-collage')], [
+        edge('image', 'split', 'image'),
+        edge('split', 'one', 'image'),
+        { id: 'split->all:batch', source: 'split', sourceHandle: 'out:images', target: 'all', targetHandle: 'in:images' },
+      ])
+    }
+    function run(imageOutputIndex: number) {
+      return executeCanvasRun(runOptions(workflow(imageOutputIndex), {
+        executors: executors({ 'image-grid-split': split, 'image-crop': crop, 'image-collage': collage }),
+        resolveCache: async (fingerprint) => structuredClone(cache.get(fingerprint) ?? null),
+        storeCache: async (entry) => { cache.set(entry.fingerprint, structuredClone(entry)) },
+      }))
+    }
+
+    const first = await run(2)
+    expect(first.status).toBe('succeeded')
+    const splitAttempt = first.nodes.find((entry) => entry.nodeId === 'split')!.attempts[0]
+    // The shown slice comes first, every slice keeps its place.
+    expect(splitAttempt.candidates.map((candidate) => [candidate.outputIndex, candidate.asset.assetId.at(-1)])).toEqual([[2, '2'], [0, '0'], [1, '1'], [3, '3']])
+    function shownIds(record: CanvasRunRecord) {
+      const event = [...record.events].reverse().find((entry) => entry.type === 'node-state' && entry.nodeId === 'split' && entry.candidateIds !== undefined)
+      return event?.type === 'node-state' ? event.candidateIds : undefined
+    }
+    expect(shownIds(first)).toEqual(splitAttempt.candidates.map((candidate) => candidate.candidateId))
+    expect(crop.mock.calls[0][0].inputs.imageSources).toEqual([{ edgeId: 'split->one:image', outputIndex: 0, asset: slices[2] }])
+    expect(collage.mock.calls[0][0].inputs.imageSources).toEqual(slices.map((slice, outputIndex) => ({ edgeId: 'split->all:batch', outputIndex, asset: slice })))
+    expect(collage.mock.calls[0][0].inputs.images).toEqual(slices)
+    const stored = [...cache.values()].find((entry) => entry.nodeKind === 'image-grid-split')!
+    expect(stored.candidate).toEqual(splitAttempt.candidates[0])
+    expect(stored.candidates).toEqual(splitAttempt.candidates)
+
+    const second = await run(1)
+    const states = Object.fromEntries(second.nodes.map((entry) => [entry.nodeId, entry.state]))
+    expect(states).toEqual({ image: 'cached', split: 'cached', one: 'succeeded', all: 'cached' })
+    expect(split).toHaveBeenCalledOnce()
+    expect(collage).toHaveBeenCalledOnce()
+    expect(crop).toHaveBeenCalledTimes(2)
+    expect(crop.mock.calls[1][0].inputs.imageSources).toEqual([{ edgeId: 'split->one:image', outputIndex: 0, asset: slices[1] }])
+    const replayed = second.nodes.find((entry) => entry.nodeId === 'split')!
+    expect(replayed.attempts[0].candidates.map((candidate) => candidate.outputIndex)).toEqual([1, 2, 0, 3])
+    expect(shownIds(second)).toEqual(replayed.attempts[0].candidates.map((candidate) => candidate.candidateId))
   })
 })

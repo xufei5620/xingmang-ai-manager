@@ -17,6 +17,8 @@ interface CanvasFingerprintInput {
     fingerprint: string
     text?: string
     asset?: CanvasRunAsset
+    /** A batch connection (out:images): every picture it hands on, in order. */
+    assets?: CanvasRunAsset[]
   }>
 }
 
@@ -121,6 +123,9 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       imageTransformProcessor: canvasImageTransformKindForNode(input.node.kind) ? canvasImageTransformProcessorRevision : undefined,
       imageCollageInputOrder: input.node.data.imageCollageInputOrder,
       tileInput: input.node.data.tileInput,
+      // imageOutputIndex stays out, as on the web host: picking another slice
+      // of the same grid is not another picture. What it picks reaches the
+      // downstream fingerprints through the asset handed on.
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -130,6 +135,8 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
         fingerprint: entry.fingerprint,
         text: entry.text,
         asset: stableAsset(entry.asset),
+        // Absent on every connection that ran before grid splits, so their keys stay as they were.
+        assets: entry.assets?.map(stableAsset),
       })),
   })
 }
@@ -174,6 +181,7 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         imageTransform: node.data.imageTransform,
         imageCollageInputOrder: node.data.imageCollageInputOrder,
         tileInput: node.data.tileInput,
+        imageOutputIndex: node.data.imageOutputIndex,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges

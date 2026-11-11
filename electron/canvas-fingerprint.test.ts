@@ -5,7 +5,7 @@ import {
   computeCanvasGraphRevision,
   computeCanvasNodeFingerprint,
 } from './canvas-fingerprint'
-import type { CanvasImageEditMask, CanvasRunGraph, CanvasRunGraphNode } from './canvas-run-contract'
+import type { CanvasImageEditMask, CanvasRunAsset, CanvasRunGraph, CanvasRunGraphNode } from './canvas-run-contract'
 
 function imageNode(overrides: Partial<CanvasRunGraphNode['data']> = {}): CanvasRunGraphNode {
   return {
@@ -254,6 +254,31 @@ describe('canvas fingerprints', () => {
     const tile = (edgeId: string) => tool('image-tile', { tileInput: { edgeId, outputIndex: 0 } })
     expect(computeCanvasNodeFingerprint({ node: tile('a'), upstream: [] })).not.toBe(computeCanvasNodeFingerprint({ node: tile('b'), upstream: [] }))
     expect(computeCanvasGraphRevision({ nodes: [tile('a')], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [tile('b')], edges: [] }))
+  })
+
+  it('keeps a grid split key for another shown slice and keys a batch connection by every slice', () => {
+    const grid = (imageOutputIndex?: number): CanvasRunGraphNode => ({
+      id: 'grid', kind: 'image-grid-split', definitionVersion: 1,
+      data: { prompt: '', model: '', imageTransform: { kind: 'grid-split', rows: 2, columns: 2 }, ...(imageOutputIndex !== undefined ? { imageOutputIndex } : {}) },
+    })
+    // Showing another slice is not another picture, so the split itself keeps its key...
+    expect(computeCanvasNodeFingerprint({ node: grid(3), upstream: [] })).toBe(computeCanvasNodeFingerprint({ node: grid(), upstream: [] }))
+    // ...while the page still learns the graph moved.
+    expect(computeCanvasGraphRevision({ nodes: [grid(3)], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [grid()], edges: [] }))
+
+    const slice = (letter: string): CanvasRunAsset => ({ kind: 'image', assetId: letter.repeat(43), localUrl: `xingmang-asset://image/${letter.repeat(43)}` })
+    const batch = (assets: CanvasRunAsset[]) => computeCanvasNodeFingerprint({
+      node: imageNode(),
+      upstream: [{ sourceNodeId: 'grid', sourceHandle: 'out:images', targetHandle: 'in:image', fingerprint: 'grid', asset: assets[0], assets }],
+    })
+    const all = batch([slice('a'), slice('b')])
+    expect(batch([slice('a'), slice('b')])).toBe(all)
+    expect(batch([slice('a'), slice('c')])).not.toBe(all)
+    expect(batch([slice('b'), slice('a')])).not.toBe(all)
+    // A single connection carries no list, and keeps the key it had before grid splits.
+    const single = { sourceNodeId: 'grid', sourceHandle: 'out:image', targetHandle: 'in:image', fingerprint: 'grid', asset: slice('a') }
+    expect(computeCanvasNodeFingerprint({ node: imageNode(), upstream: [{ ...single, assets: undefined }] }))
+      .toBe(computeCanvasNodeFingerprint({ node: imageNode(), upstream: [single] }))
   })
 
   it('changes the graph revision with the image count but keeps it for one image', () => {
