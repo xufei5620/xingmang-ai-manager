@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  WeixinIlinkError,
   buildWeixinBotAgent,
   buildWeixinClientVersion,
   clampWeixinLongPollMs,
@@ -11,9 +10,11 @@ import {
   pollWeixinLoginStatus,
   resolveWeixinIlinkOrigin,
   sendWeixinText,
-  weixinIlinkDefaultOrigin,
-  weixinStatusNeedsVerifyCode,
   type WeixinIlinkContext,
+  weixinIlinkDefaultOrigin,
+  WeixinIlinkError,
+  weixinStatusNeedsVerifyCode,
+  weixinVerifyPinBusinessData,
 } from './codex-remote-weixin-api'
 
 interface RecordedRequest {
@@ -152,7 +153,9 @@ describe('login requests', () => {
     await expect(fetchWeixinLoginQrCode(contextFor(fetch), [])).resolves.toEqual({ qrcode: 'q1', content: 'https://liteapp.weixin.qq.com/q/abc' })
     expect(requests[0].url).toBe('https://ilinkai.weixin.qq.com/ilink/bot/get_bot_qrcode?bot_type=3')
     expect(requests[0].headers.authorization).toBeUndefined()
-    expect(requests[0].body).toEqual({ local_token_list: [] })
+    // YF-5：每次都请微信要扫码人输手机上那串数字，跟腾讯 3.0 插件 encodeBotSpamBusinessData 一样的写法。
+    expect(requests[0].body).toEqual({ local_token_list: [], bot_spam_business_data: 'eyJ2ZXJpZnlfcGluIjoxfQ==' })
+    expect(JSON.parse(Buffer.from(weixinVerifyPinBusinessData, 'base64').toString('utf8'))).toEqual({ verify_pin: 1 })
   })
 
   it('maps scan states and refuses a redirect to a foreign host', async () => {
