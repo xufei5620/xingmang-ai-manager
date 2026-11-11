@@ -2,7 +2,7 @@ import { awaitingCanvasFixedVideoSources, type CanvasNodeSourceCatalog } from '.
 import { readFileSync } from 'node:fs'
 import * as ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
-import type { CanvasGroupSummary, CanvasRunEvent, CanvasRunGraph, CanvasRunRecord } from '../host'
+import type { CanvasGroupSummary, CanvasImagePreparation, CanvasRunEvent, CanvasRunGraph, CanvasRunRecord } from '../host'
 import type { WorkflowNode } from '../model'
 import { canvasRunStatusLabel, mergeCanvasRunEvent } from './run-events'
 import { mergeCanvasRunChargeEvent } from './run-charge'
@@ -109,13 +109,21 @@ describe('actual App waiting notification reconciliation', () => {
 
   it('hands the frames a run waits on to the host preparations, resumes them from a record and stops them with the run', async () => {
     const f = fixture(); f.waiting('run-1', 'frame')
-    expect(f.runPreparationsRef.current.update).toHaveBeenCalledExactlyOnceWith('run-1', [{}])
+    expect(f.runPreparationsRef.current.update).toHaveBeenCalledExactlyOnceWith('run-1', [{}], [])
     const listed = { operationId: 'attempt-1', nodeId: 'frame', attemptId: 'attempt-1', sourceAssetId: 'V'.repeat(43), timestampSeconds: 2.5 }
     f.reads[0].resolve([{ ...record('run-1'), framePreparations: [listed] }, { ...record('run-2'), projectId: 'project-2', framePreparations: [listed] }]); await f.refreshes[0]
     // Only a still-running record of the open project starts frames.
-    expect(f.runPreparationsRef.current.resume).toHaveBeenCalledExactlyOnceWith('run-1', [listed])
+    expect(f.runPreparationsRef.current.resume).toHaveBeenCalledExactlyOnceWith('run-1', [listed], [])
     f.event(terminal())
     expect(f.runPreparationsRef.current.finish).toHaveBeenCalledExactlyOnceWith('run-1')
+  })
+
+  it('hands the pictures a run waits on to the host preparations and resumes them from a record without frames', async () => {
+    const f = fixture(); f.waiting('run-1', 'image')
+    expect(f.runPreparationsRef.current.update).toHaveBeenCalledExactlyOnceWith('run-1', [], [{}])
+    const listed: CanvasImagePreparation = { operationId: 'attempt-1', attemptId: 'attempt-1', runId: 'run-1', projectId: 'project-1', nodeId: 'tool', sourceAssetIds: ['S'.repeat(43)], recipe: { kind: 'crop', x: 0, y: 0, width: 1, height: 1, outputWidth: 8, outputHeight: 8, rotation: 0, flipX: false, flipY: false }, processorRevision: 'browser-image-v1' }
+    f.reads[0].resolve([{ ...record('run-1'), imagePreparations: [listed] }, { ...record('run-2'), projectId: 'project-2', imagePreparations: [listed] }]); await f.refreshes[0]
+    expect(f.runPreparationsRef.current.resume).toHaveBeenCalledExactlyOnceWith('run-1', [], [listed])
   })
 
   it.each(['请核对恢复结果', null])('does not overwrite a later unrelated or dismissed notification: %s', async (message) => {
