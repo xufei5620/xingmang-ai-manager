@@ -1,7 +1,3 @@
-## 用户
-
-- 聊天能带文字类的文件了（txt、md、csv、json、代码、日志）：点输入框下面的「加文件」，一条消息最多三个，AI 会连文件一起看。
-
 ## 开发
 
 - Fable 第二轮 Q2 第 1 步：新通道 `chat:pick-text-files`（契约、preload、注册、`ipc-channel-policy.ts` 四处一起加，
