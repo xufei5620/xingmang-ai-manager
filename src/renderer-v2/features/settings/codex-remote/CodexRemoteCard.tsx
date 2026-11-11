@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { FolderOpen, Home } from 'lucide-react'
+import { FolderOpen, Headset, Home, RefreshCw } from 'lucide-react'
 import { Button, Card, Confirm, Notice, Pill, SettingRow, Switch } from '../../../ui'
 import { ResultNotice, useOperation, useResource } from '../../../business-common'
 import { remoteChannelIds } from '../../../../../electron/codex-remote-channel'
@@ -48,13 +48,18 @@ export const codexRemoteConfirmText = {
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
-function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
+function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpenHelp }: {
   id: RemoteChannelId
   definition: RemoteChannelSectionDefinition
   snapshot: CodexRemoteSnapshot
   channel: CodexRemoteChannelSnapshot
+  onOpenHelp?: () => void
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const disabled = !snapshot.available || Boolean(busy)
+  // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「找客服」。
+  // 凭据不对时就是下面「飞书应用」那一行的「重新填写」，不再摆第二颗。只在开着时给：关着的渠道没什么可重连的。
+  const problem = channel.status.state === 'connected' ? undefined : channel.status.problem
+  const canReconnect = channel.enabled && (problem === 'connection-limit' || problem === 'other')
   const { Section } = definition
   const canEnable = channel.hasCredential && Boolean(snapshot.workspaceDirectory)
   const pairing = channel.pairing
@@ -143,6 +148,25 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
       {channel.status.message && channel.status.state !== 'connected' && (
         <p className="v2-remote-status" data-testid={`settings-remote-${id}-status`}>{channel.status.message}</p>
       )}
+      {canReconnect && (
+        <div className="v2-remote-status-actions" data-testid={`settings-remote-${id}-status-actions`}>
+          <Button
+            size="sm"
+            icon={RefreshCw}
+            disabled={disabled}
+            loading={busy === `${id}-reconnect`}
+            onClick={() => void run(`${id}-reconnect`, () => api.reconnectCodexRemoteChannel(id))}
+            testId={`settings-remote-${id}-reconnect`}
+          >
+            重新连接
+          </Button>
+          {problem === 'other' && onOpenHelp && (
+            <Button size="sm" variant="ghost" icon={Headset} onClick={onOpenHelp} testId={`settings-remote-${id}-support`}>
+              找客服
+            </Button>
+          )}
+        </div>
+      )}
       <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} />
       <SettingRow
         title="打开遥控"
@@ -177,11 +201,13 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
 /**
  * 卡片本身：拿到快照以后怎么摆。和取数分开，好用 renderToStaticMarkup 按各种快照直接测。
  */
-export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: {
+export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, onOpenHelp }: {
   snapshot: CodexRemoteSnapshot
   /** 卡上那条红条；没有失败时是空的。 */
   error: ReactNode
   navigate?: (page: V2Page, section?: string) => void
+  /** 渠道没连上时「找客服」打开的帮助框；没给就不摆这颗按钮。 */
+  onOpenHelp?: () => void
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const persistenceNotice = snapshot.credentialPersistence === 'durable' ? null : codexRemotePersistenceNotices[snapshot.credentialPersistence]
   return (
@@ -232,6 +258,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: 
           api={api}
           busy={busy}
           run={run}
+          onOpenHelp={onOpenHelp}
         />
       ))}
     </Card>
@@ -243,7 +270,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: 
  * 卡头、说明、干活的文件夹，再一个渠道一块（填凭据、打开遥控、配对）。
  * 操作的返回值和 state-changed 事件都是整份快照，按 revision 只收新的那份（newerRemoteSnapshot）。
  */
-export function CodexRemoteCard({ api, navigate }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void }) {
+export function CodexRemoteCard({ api, navigate, onOpenHelp }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void; onOpenHelp?: () => void }) {
   const load = useCallback(() => api.getCodexRemoteState(), [api])
   const resource = useResource(load)
   const { setData } = resource
@@ -278,6 +305,7 @@ export function CodexRemoteCard({ api, navigate }: { api: V2Bridge; navigate?: (
       run={run}
       error={<ResultNotice error={operation.error} detail={operation.detail} />}
       navigate={navigate}
+      onOpenHelp={onOpenHelp}
     />
   )
 }
