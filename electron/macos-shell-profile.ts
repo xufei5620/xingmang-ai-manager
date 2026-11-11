@@ -20,6 +20,11 @@ const macosShellProfileEndMarker = '# <<< xingmang-ai-manager terminal commands 
 const stampFileName = 'terminal-commands-added'
 const fishFileName = 'xingmang-ai-manager.fish'
 
+// 写进那句注释里列的命令，和 Linux 那边同一句（linux-shell-profile.ts 的 profileCommandList）。
+// 2026-11-11 以前写的还列着 gemini（Gemini CLI 10-14 下线，深查 Shell差异 SH-12）：已经写下的那段靠标记认出来，
+// 不用跟着改；以后要在卸载时撤掉这一段，记得旧写法也要认，同 Linux 的 previousProfileCommandLists。
+const profileCommandList = 'claude / codex / grok'
+
 // bash 作为登录 shell 只读这三个里第一个存在的那个，后面的就不读了（bash 自己的规矩）。
 const bashLoginFileNames = ['.bash_profile', '.bash_login', '.profile']
 
@@ -49,7 +54,7 @@ export type MacosLoginShell = 'zsh' | 'bash' | 'fish'
 export function buildMacosShellProfileBlock(): string {
   return [
     macosShellProfileMarker,
-    '# 星芒AI管理工具加的：让新开的终端能直接敲 claude / codex / gemini / grok。不想要可以连同上下两行标记一起删掉。',
+    `# 星芒AI管理工具加的：让新开的终端能直接敲 ${profileCommandList}。不想要可以连同上下两行标记一起删掉。`,
     `for xingmang_dir in ${terminalCommandDirectories.map((directory) => `"${directory}"`).join(' ')}; do`,
     '  case ":$PATH:" in',
     '    *":$xingmang_dir:"*) ;;',
@@ -70,7 +75,7 @@ export function buildMacosShellProfileBlock(): string {
 export function buildMacosFishProfile(): string {
   return [
     macosShellProfileMarker,
-    '# 星芒AI管理工具加的：让新开的终端能直接敲 claude / codex / gemini / grok。不想要可以删掉这个文件。',
+    `# 星芒AI管理工具加的：让新开的终端能直接敲 ${profileCommandList}。不想要可以删掉这个文件。`,
     ...terminalCommandDirectories.flatMap((directory) => [
       `if not contains -- "${directory}" $PATH`,
       `    set -gx PATH $PATH "${directory}"`,
@@ -144,6 +149,12 @@ export interface EnsureMacosShellProfileOptions {
   loginShell?: string | null
   /** XDG_CONFIG_HOME is read from here, for fish. */
   env?: NodeJS.ProcessEnv
+  /**
+   * The fish file a zsh or bash account also gets (see ensureMacosShellProfile) could not be
+   * written: `fish/conf.d/…` for the log, and why. That file is a courtesy, so its failure is
+   * reported here instead of failing the call. Left out, it is not reported.
+   */
+  skipped?: (displayPath: string, error: unknown) => void
 }
 
 function defaultLoginShell(): string | null {
@@ -168,6 +179,16 @@ function loginFileExists(filePath: string): boolean {
     // 看不清的当作有：宁可这次不改，也别另建一个 bash 根本不读的 ~/.profile。
     const code = (error as NodeJS.ErrnoException).code
     return code !== 'ENOENT' && code !== 'ENOTDIR'
+  }
+}
+
+/** Whether anything, a link included, is at this path; the way Linux decides it (linux-shell-profile.ts). */
+function pathExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath)
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -201,7 +222,8 @@ async function writeFishProfile(target: MacosShellProfileTarget, label: string):
  * Windows side does through the user PATH. Only the user's own startup file is
  * touched, the one their login shell reads (planMacosShellProfileTarget): it
  * is appended to, never rewritten, so nothing the user wrote moves, and fish
- * gets a file of its own. The file has to be a single-link regular file reached
+ * gets a file of its own. A zsh or bash account whose fish config folder exists
+ * gets that fish file as well, as on Linux. The file has to be a single-link regular file reached
  * without symlinks (I8); a dotfiles-managed one that is a symlink is left for
  * its owner and the caller only logs it. Login shells other than zsh, bash and
  * fish are skipped rather than guessed at.
@@ -219,10 +241,11 @@ export async function ensureMacosShellProfile(options: EnsureMacosShellProfileOp
     const stamp = await readSafeUtf8File(stampPath, '终端设置记录', 4096)
     if (stamp !== null) return 'already-handled'
   }
+  const fishDirectory = fishConfigDirectory(options.env ?? process.env, homeDirectory)
   const target = planMacosShellProfileTarget({
     shell,
     homeDirectory,
-    fishConfigDirectory: fishConfigDirectory(options.env ?? process.env, homeDirectory),
+    fishConfigDirectory: fishDirectory,
     exists: loginFileExists,
   })
   // bash 可能落在三个文件里的任何一个，出错时日志得说清是哪一个。
@@ -230,7 +253,20 @@ export async function ensureMacosShellProfile(options: EnsureMacosShellProfileOp
   const added = target.kind === 'fish'
     ? await writeFishProfile(target, label)
     : await appendShellProfileBlock(target, label)
+  // 账号的登录 shell 还是 zsh、bash，只在「终端」或 iTerm 的偏好设置里改成开 fish 的，fish 不读上面那份；
+  // fish 的设置文件夹在，就说明他也用 fish，同 Linux 的做法另给一份（planLinuxShellProfileTargets，
+  // 深查 Shell差异 SH-12）。这份是顺带的：写不进去（比如 dotfiles 把 fish 文件夹做成了链接）只报给 skipped，
+  // 不让主的那份跟着算失败，也不新建 fish 文件夹。
+  let fishAdded = false
+  if (target.kind !== 'fish' && pathExists(fishDirectory)) {
+    const fishTarget = planMacosShellProfileTarget({ shell: 'fish', homeDirectory, fishConfigDirectory: fishDirectory, exists: loginFileExists })
+    try {
+      fishAdded = await writeFishProfile(fishTarget, `终端启动设置（${fishTarget.displayPath}）`)
+    } catch (error) {
+      options.skipped?.(fishTarget.displayPath, error)
+    }
+  }
   // 记录写不进去不影响结果：下次打开软件最多再确认一次，那一行已经在了就不会重复加。
   await writeAtomicSafeUtf8File(stampPath, `${new Date().toISOString()}\n`, '终端设置记录').catch(() => undefined)
-  return added ? 'added' : 'present'
+  return added || fishAdded ? 'added' : 'present'
 }
