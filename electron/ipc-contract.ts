@@ -490,6 +490,20 @@ export type AccountManagedCliConfigurationResult = ManagedCliConfigurationOutcom
 export type LegalDocumentKind = NewApiLegalDocumentKind
 export type LegalDocument = NewApiLegalDocument
 export type AccountUsableGroup = NewApiUsableGroup
+/**
+ * One line of the 用量账单 price table, already at this account's ratio for the group.
+ * token: US dollars per million input and output tokens; call: US dollars per call;
+ * tiered: priced in tiers (shown on each call's details), so no single number.
+ */
+export interface AccountPriceRow {
+  model: string
+  group: string
+  kind: 'token' | 'call' | 'tiered'
+  input?: number
+  output?: number
+  perCall?: number
+}
+export interface AccountPriceList { rows: AccountPriceRow[] }
 export type AccountResetPasswordInput = NewApiResetPasswordInput
 export type AccountResetPasswordResult = NewApiResetPasswordResult
 export type AccountProfileDetail = NewApiAccountProfileDetail
@@ -1283,6 +1297,8 @@ export interface XingmangInvokeContract {
   >
   getAccountKeys: IpcInvokeDefinition<'account:list-keys', [input: AccountKeysQuery], AccountKeysPage>
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
+  /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
+  getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
@@ -1663,6 +1679,7 @@ export const ipcInvokeChannels = {
   getAccountTasks: 'account:get-tasks',
   getAccountKeys: 'account:list-keys',
   getAccountUsableGroups: 'account:list-groups',
+  getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',

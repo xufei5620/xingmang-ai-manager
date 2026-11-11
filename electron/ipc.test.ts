@@ -8118,6 +8118,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('account:get-price-list', () => {
+    it('turns the account price list into rows at each group ratio, and answers null where the backend has none', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getModelPricing!).mockResolvedValue({
+        models: [{ model: 'gpt-test', quotaType: 0, modelPrice: 0, expressionPriced: false, modelRatio: 1.25, completionRatio: 8, groups: ['GPT'] }],
+        groupRatios: { GPT: 0.5 },
+      })
+      const handler = electronMocks.handlers.get('account:get-price-list')!
+      await expect(handler(trustedEvent())).resolves.toEqual({ rows: [{ model: 'gpt-test', group: 'GPT', kind: 'token', input: 1.25, output: 10 }] })
+
+      const legacy = register()
+      Reflect.deleteProperty(legacy.accountService, 'getModelPricing')
+      await expect(electronMocks.handlers.get('account:get-price-list')!(trustedEvent())).resolves.toBeNull()
+    })
+  })
+
   describe('account:copy-reset-password', () => {
     it('writes the new password to the clipboard verbatim, without logging it or requiring a session', async () => {
       const { runtimeLog } = register()
@@ -9137,6 +9153,7 @@ describe('IPC channel log and account policies', () => {
         'account:get-dashboard',
         'account:get-key-options',
         'account:get-legal-document',
+        'account:get-price-list',
         'account:get-profile',
         'account:get-remembered-login',
         'account:get-session',

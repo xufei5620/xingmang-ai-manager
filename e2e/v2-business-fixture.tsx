@@ -843,6 +843,15 @@ const apiMethods = {
     discardedCount: 0,
     ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
   } },
+  getAccountPriceList: async () => {
+    record('get-price-list')
+    if (fail === 'prices') throw new Error('价目暂时不可用')
+    return { rows: [
+      { model: 'gpt-image-2', group: '图片模型', kind: 'call' as const, perCall: 0.06 },
+      { model: 'claude-tiered', group: 'Claude', kind: 'tiered' as const },
+      { model: 'gpt-5.6-sol', group: 'GPT', kind: 'token' as const, input: 1.25, output: 10 },
+    ] }
+  },
   getAccountTasks: async () => {
     if (fail === 'tasks') throw new Error('任务服务暂时不可用')
     const completed = ++taskReads > 1

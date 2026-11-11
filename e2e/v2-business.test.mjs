@@ -599,6 +599,56 @@ test('the usage and task filters fold behind one button on the toolbar and count
   }
 })
 
+test('the price table is a third view of the usage page, read only when first opened, with a retry when it cannot be read', async () => {
+  for (const query of ['page=account', 'page=account&fail=prices']) {
+    const page = await fixture(query)
+    try {
+      await page.getByRole('tab', { name: '用量账单', exact: true }).click()
+      const usage = page.getByTestId('account-usage-section')
+      await usage.getByRole('button', { name: '价格表', exact: true }).waitFor()
+      assert.equal((await calls(page)).some((call) => call.name === 'get-price-list'), false, 'nothing is read before the view opens')
+      await usage.getByRole('button', { name: '价格表', exact: true }).click()
+      const prices = page.getByTestId('account-prices-section')
+      await prices.getByRole('button', { name: '价格表', exact: true }).waitFor()
+      assert.equal(await prices.getByRole('button', { name: '价格表', exact: true }).getAttribute('aria-pressed'), 'true')
+      if (query.includes('fail')) {
+        await prices.getByText('价格表暂时读不到，稍后再试。不影响使用。').waitFor()
+        await prices.getByTestId('account-prices-retry').click()
+        await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-price-list').length === 2)
+        await prices.getByText('价格表暂时读不到，稍后再试。不影响使用。').waitFor()
+        continue
+      }
+      const table = prices.getByTestId('account-prices-table')
+      await table.locator('tbody tr').first().waitFor()
+      assert.deepEqual(await table.locator('thead th').allInnerTexts(), ['模型', '分组', '输入', '输出'])
+      assert.deepEqual(await table.locator('tbody tr').evaluateAll((rows) => rows.map((row) => [...row.cells].map((cell) => cell.innerText))), [
+        ['gpt-image-2', '图片模型', '$0.06 / 次', '—'],
+        ['claude-tiered', 'Claude', '分档计价', '—'],
+        ['gpt-5.6-sol', 'GPT', '$1.25', '$10.00'],
+      ])
+      await prices.getByText('价格表 · 美元 / 每百万 Token').waitFor()
+      assert.equal(await prices.getByTestId('account-prices-note').innerText(), '已经算上分组的倍数。实际扣多少以用量账单为准。分档计价的，用过以后在调用明细里点开那一次，能看到每一档的价格。')
+      // Switching away and back keeps what was read.
+      await prices.getByRole('button', { name: '调用明细', exact: true }).click()
+      await usage.getByRole('button', { name: '价格表', exact: true }).click()
+      await table.locator('tbody tr').first().waitFor()
+      assert.equal((await calls(page)).filter((call) => call.name === 'get-price-list').length, 1)
+    } finally {
+      await page.close()
+    }
+  }
+  // A history account has no per-model price list, so the view is not offered.
+  const legacy = await fixture('page=account&sub2apiReliability')
+  try {
+    await legacy.getByRole('tab', { name: '用量账单', exact: true }).click()
+    await legacy.getByTestId('account-usage-section').waitFor()
+    assert.equal(await legacy.getByRole('button', { name: '价格表', exact: true }).count(), 0)
+    assert.equal(await legacy.getByTestId('account-prices-section').count(), 0)
+  } finally {
+    await legacy.close()
+  }
+})
+
 test('recharge stays open when subscriptions fail and says when the top-up details could not be read', async () => {
   const page = await fixture('page=account&fail=subscriptions')
   try {
