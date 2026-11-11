@@ -694,7 +694,7 @@ test('canceling CLI workspace selection keeps the guide on its ready step', asyn
     // 第十一批 3：Key 已经写好、连上了，「确认连接」这一步直接跳过。
     await page.getByTestId('guide-next').click()
     assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
-    await page.getByTestId('guide-connected-note').waitFor()
+    await page.getByTestId('guide-first-run').waitFor()
     await page.getByTestId('guide-open-tool').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('launch'))
     await page.getByTestId('guide-open-tool').waitFor()
