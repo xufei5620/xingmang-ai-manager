@@ -176,6 +176,7 @@ describe('renderer-v2 settings rows registry', () => {
     expect(shape('backup')).toEqual([
       [null, ['backups']],
       ['搬到新电脑', ['transfer', 'transfer-import']],
+      [null, ['storage']],
     ]);
     expect(shape('about')).toEqual([
       [null, ['version']],

@@ -24,5 +24,6 @@ paths:
 - **行尾分号只在 `ui/`、`registry/` 与 `gallery*.tsx` 里写**（`R-B5`，2026-09-19）：那几处是照原型抄下来的既成事实，`features/`、`pages-*.tsx` 等一律不加。`scripts/verify-renderer-style.test.cjs` 会红。模块顶层用 `function` 声明，测试夹具除外。
 - 自动化测试只用本地 mock/隔离临时数据，不请求生产服务、不执行真实付费生成。Windows 无签名发布设置保持不变。
 - 每改完一块：暗、亮两套截图对照 v4 原型，改对应的 md，在 `ui-spec/CHANGELOG.md` 记一行。
+- **等 yoyo 点头的界面改动，动了版面的要配图**（yoyo 2026-11-11 定）：加按钮、挪位置、新页面这类，帖子里除了逐字贴出的字，再配一张改完的样子的截图；纯改字的照旧只贴字。图用 `node scripts/audit/v2-page-screenshot.mjs` 在本地夹具上截，放仓库外面，口径见 `docs/COLLABORATION.md` §7.5。
 
 v3.1.1 阶段的实施状态与真实验证范围见 `docs/UI-V3.1.1-V2-REBUILD.md`。截图对照由仓库脚本生成并留在本地，不纳入源码 PR；不能把截图生成或 mock 通过写成原生平台、后台能力或产品验收通过。

@@ -8,6 +8,8 @@ import { inspectHomeFolderTrust, type NativeConfigInspection, type ProviderAccou
 import { networkFailureMessages, type NetworkFailureReason } from './network-failure'
 import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, relaySites, requireRelaySite } from './relay-sites'
 import {
+  claudeSettingsProxyOutcome,
+  claudeSettingsProxyVariables,
   clockSkewMs,
   clockSkewSummary,
   buildWindowsArmSummary,
@@ -38,6 +40,7 @@ import {
   type NodeTlsProbeInput,
 } from './diagnostics'
 import type { NodeTlsOutcome } from './certificate-trust-probe'
+import { decodeShellSettingsBytes } from './diagnostics-override-checks'
 import { readProjectInstructionsTemplate } from './project-instructions'
 import { launchExcludedEnvironmentVariables, macosShellOverrideVariables } from './system-service'
 import { valueReferences } from './type-only-imports.test-support'
@@ -1723,17 +1726,30 @@ describe('diagnostics', () => {
         })
       })
 
-      it.runIf(posixHost)('leaves the shell settings alone on Windows and Linux', async () => {
+      // SH-12：fish 的 conf.d 里每个文件、set -Ux 存进 fish_variables 的也读；没 --export 的只在 fish 里，不算。
+      it.runIf(posixHost)('also reads fish conf.d files and exported universal variables', async () => {
         const home = realHome()
-        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell CLAUDE_CONFIG_DIR=/elsewhere\n')
+        writeShellSettings(home, '.config/fish/conf.d/relay.fish', 'set -gx ANTHROPIC_API_KEY sk-must-not-leak\n')
+        writeShellSettings(home, '.config/fish/conf.d/notes.txt', 'set -gx ANTHROPIC_API_KEY sk-must-not-leak\n')
+        writeShellSettings(home, '.config/fish/fish_variables', [
+          '# This file contains fish universal variable definitions.',
+          '# VERSION: 3.0',
+          'SETUVAR --export CLAUDE_CONFIG_DIR:\\x2fmust\\x2dnot\\x2dleak',
+          'SETUVAR ANTHROPIC_API_KEY:sk\\x2dnot\\x2dexported',
+          '',
+        ].join('\n'))
 
-        for (const platform of ['win32', 'linux'] as const) {
-          expect(overrideItem(await runDiagnostics({ ...macosInput(home), platform }))).toMatchObject({
-            state: 'pass',
-            summary: '没有另外设过工具地址或密钥',
-            details: { count: 0 },
-          })
-        }
+        const item = overrideItem(await runDiagnostics(macosInput(home)))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.config/fish/conf.d/relay.fish）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.config/fish/fish_variables）',
+          },
+        })
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
       })
 
       it.runIf(posixHost)('leaves a tool that is not on the 星芒 account alone', async () => {
@@ -1869,6 +1885,126 @@ describe('diagnostics', () => {
         }
         // ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR 和改走云厂商的五个开关，各三种账号。
         expect(checked).toHaveLength(21)
+      })
+    })
+
+    // SH-5：Windows 的 Git Bash、PowerShell 启动文件，Linux 的 ~/.bashrc 这些，客户自己开命令窗口时会读，星芒开的窗口不读。
+    describe('on Windows and Linux', () => {
+      const posixHost = process.platform !== 'win32'
+
+      function platformInput(home: string, platform: 'win32' | 'linux', env: NodeJS.ProcessEnv = {}) {
+        const input = dependencies(home)
+        input.platform = platform
+        input.env = env
+        input.timeoutMs = 2000
+        input.inspectProvider = (provider) => inspection(provider, home, 'sk-super-secret-value')
+        return input
+      }
+
+      function realHome(): string {
+        return fs.realpathSync.native(temporaryHome())
+      }
+
+      function writeSettings(home: string, file: string, content: string | Buffer): void {
+        const target = path.join(home, ...file.split('/'))
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.writeFileSync(target, content)
+      }
+
+      it('decodes profiles saved as UTF-16 or with a UTF-8 byte order mark', () => {
+        const text = "$env:ANTHROPIC_API_KEY = 'sk-中'"
+        const bigEndian = Buffer.from(text, 'utf16le').swap16()
+        expect(decodeShellSettingsBytes(Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(text, 'utf16le')]))).toBe(text)
+        expect(decodeShellSettingsBytes(Buffer.concat([Buffer.from([0xFE, 0xFF]), bigEndian]))).toBe(text)
+        expect(decodeShellSettingsBytes(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(text)]))).toBe(text)
+        expect(decodeShellSettingsBytes(Buffer.from(text))).toBe(text)
+      })
+
+      const shellOnlySummary = '终端设置里另外设了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉'
+
+      it.runIf(posixHost)('names a key in the Linux ~/.bashrc, with the file but never the value', async () => {
+        const home = realHome()
+        writeSettings(home, '.bashrc', '# 别家中转的教程\nexport ANTHROPIC_API_KEY=sk-must-not-leak\n')
+
+        const item = overrideItem(await runDiagnostics(platformInput(home, 'linux')))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          summary: shellOnlySummary,
+          details: { count: 1, variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bashrc）' },
+        })
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it.runIf(posixHost)('reads the Git Bash files and both PowerShell profile folders on Windows, in the real Documents folder', async () => {
+        const home = realHome()
+        const documents = path.join(home, 'OneDrive', 'Documents')
+        writeSettings(home, '.bash_profile', 'export ANTHROPIC_API_KEY=sk-must-not-leak\r\n')
+        writeSettings(home, 'OneDrive/Documents/PowerShell/Microsoft.PowerShell_profile.ps1', '$env:ANTHROPIC_API_KEY = "sk-must-not-leak"\r\n')
+        // Windows PowerShell 5.1 的 `>` 存成带 BOM 的 UTF-16。
+        writeSettings(home, 'OneDrive/Documents/WindowsPowerShell/profile.ps1', Buffer.concat([
+          Buffer.from([0xFF, 0xFE]),
+          Buffer.from("[Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', 'D:\\must-not-leak', 'User')\r\n", 'utf16le'),
+        ]))
+        // 星芒不认的地方：zsh 的文件 Git Bash 不读，个人文件夹下没挪走的 Documents 也不是这台电脑的「文档」。
+        writeSettings(home, '.zshrc', 'export CLAUDE_CODE_USE_BEDROCK=1\n')
+        writeSettings(home, 'Documents/PowerShell/profile.ps1', '$env:CLAUDE_CODE_USE_VERTEX = 1\n')
+
+        const input = platformInput(home, 'win32')
+        input.documentsDirectory = documents
+        const item = overrideItem(await runDiagnostics(input))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          details: {
+            count: 3,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bash_profile）',
+            variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/OneDrive/Documents/PowerShell/Microsoft.PowerShell_profile.ps1）',
+            variable3: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/OneDrive/Documents/WindowsPowerShell/profile.ps1）',
+          },
+        })
+        // 按钮删的是进程环境里的变量，删不到文件里，不挂。
+        expect(item?.details?.fix).toBeUndefined()
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it.runIf(posixHost)('falls back to Documents under the home folder when the host gives no Documents folder', async () => {
+        const home = realHome()
+        writeSettings(home, 'Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1', '$env:ANTHROPIC_API_KEY = $env:SOME_KEY\n')
+
+        expect(overrideItem(await runDiagnostics(platformInput(home, 'win32')))).toMatchObject({
+          state: 'warn',
+          summary: shellOnlySummary,
+          details: { variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1）' },
+        })
+      })
+
+      it.runIf(posixHost)('keeps the environment finding, its fail state and the clear button next to a file finding', async () => {
+        const home = realHome()
+        writeSettings(home, '.bashrc', 'export ANTHROPIC_API_KEY=sk-must-not-leak\n')
+
+        const item = overrideItem(await runDiagnostics(platformInput(home, 'win32', { ANTHROPIC_API_KEY: 'sk-must-not-leak' })))
+
+        expect(item).toMatchObject({
+          state: 'fail',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+            variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bashrc）',
+            fix: 'clear-user-overrides',
+          },
+        })
+        expect(item?.summary).toContain('电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置')
+      })
+
+      it.runIf(posixHost)('leaves a file alone that only sets a value pointing back at the current account', async () => {
+        const home = realHome()
+        writeSettings(home, '.bashrc', `export CLAUDE_CONFIG_DIR="$HOME/.claude"\nexport ANTHROPIC_API_KEY=\n`)
+
+        expect(overrideItem(await runDiagnostics(platformInput(home, 'linux')))).toMatchObject({
+          state: 'pass',
+          details: { count: 0 },
+        })
       })
     })
 
@@ -3589,6 +3725,123 @@ describe('proxySettingsOutcome', () => {
     it('leaves Linux alone, which has no Codex desktop app', async () => {
       const input = { ...windowsInput(null), platform: 'linux' as const }
       expect(proxyItem(await runDiagnostics(input))?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+    })
+  })
+})
+
+// D35（代理.md PX-4）：照教程写在 ~/.claude/settings.json env 段里的代理，Claude Code 启动时盖过进程环境，
+// 星芒打开工具前去掉没开的代理那一步管不到它。只提示、不给按钮。
+describe('the Claude Code settings proxy check', () => {
+  const summary = 'Claude Code 自己的设置里写了一个代理，它现在没开，Claude Code 会连不上。'
+  const closedOnly = async () => false
+  const openOnly = async () => true
+
+  it('keeps only the proxy variables of the env block, whatever their case', () => {
+    expect(claudeSettingsProxyVariables(JSON.stringify({
+      env: {
+        https_proxy: 'http://127.0.0.1:7890',
+        ALL_PROXY: 'socks5://127.0.0.1:7891',
+        NO_PROXY: 'localhost',
+        ANTHROPIC_AUTH_TOKEN: 'sk-must-not-travel',
+        HTTP_PROXY: 7890,
+      },
+    }))).toEqual({ https_proxy: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7891' })
+    expect(claudeSettingsProxyVariables(JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' } }))).toEqual({})
+    expect(claudeSettingsProxyVariables(JSON.stringify({ env: ['HTTPS_PROXY=http://127.0.0.1:7890'] }))).toEqual({})
+    expect(claudeSettingsProxyVariables('[]')).toEqual({})
+    expect(() => claudeSettingsProxyVariables('{ env: ')).toThrow()
+  })
+
+  it('warns about a proxy that points at a closed local port, without echoing its value', async () => {
+    const outcome = await claudeSettingsProxyOutcome(
+      JSON.stringify({ env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890', ANTHROPIC_BASE_URL: 'https://xm.solov.cc' } }),
+      closedOnly,
+    )
+    expect(outcome).toEqual({ state: 'warn', summary, details: { HTTPS_PROXY: '本机 7890 端口（没开）' } })
+    // The value may carry proxy credentials and is never copied into the report.
+    expect(JSON.stringify(outcome)).not.toContain('secret')
+    // No button: the setting is the customer's own (D35 without the button).
+    expect(outcome.details).not.toHaveProperty('fix')
+  })
+
+  it('lists every proxy it found once one of them is closed', async () => {
+    const probe = async (target: { port: number }) => target.port === 7891
+    const outcome = await claudeSettingsProxyOutcome(
+      JSON.stringify({ env: { HTTPS_PROXY: 'http://127.0.0.1:7890', ALL_PROXY: 'socks5://127.0.0.1:7891' } }),
+      probe,
+    )
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary,
+      details: { HTTPS_PROXY: '本机 7890 端口（没开）', ALL_PROXY: '本机 7891 端口（开着）' },
+    })
+  })
+
+  it('stays out of the list when there is nothing to warn about', async () => {
+    const omitted = { state: 'pass', summary: '', omit: true }
+    // 没有这份文件、没写代理、代理开着、代理在别的机器上：决定单只给了发现时那一句。
+    expect(await claudeSettingsProxyOutcome(null, closedOnly)).toEqual(omitted)
+    expect(await claudeSettingsProxyOutcome(JSON.stringify({ env: { NO_PROXY: 'localhost' } }), closedOnly)).toEqual(omitted)
+    expect(await claudeSettingsProxyOutcome(JSON.stringify({ env: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }), openOnly)).toEqual(omitted)
+    expect(await claudeSettingsProxyOutcome(JSON.stringify({ env: { HTTPS_PROXY: 'http://proxy.corp.example:8080' } }), closedOnly)).toEqual(omitted)
+  })
+
+  describe('in the full check', () => {
+    function claudeHome(settings?: string): string {
+      // macOS 的临时目录在 /var 下，而 /var 是指向 /private/var 的链接，readSafeUtf8File 不读穿过链接的路径。
+      const home = fs.realpathSync.native(temporaryHome())
+      if (settings !== undefined) {
+        fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+        fs.writeFileSync(path.join(home, '.claude', 'settings.json'), settings)
+      }
+      return home
+    }
+    function input(home: string, platform: NodeJS.Platform = 'win32') {
+      const log = vi.fn()
+      return {
+        log,
+        // 要读文件，给足时间，免得机器忙时这一项报「检查超时」。
+        input: { ...dependencies(home), platform, timeoutMs: 2000, probeLoopbackProxy: async () => false, log },
+      }
+    }
+    const codes = (report: DiagnosticsReport) => report.items.map((item) => item.code)
+
+    it.each(['win32', 'darwin', 'linux'] as const)('adds a yellow row right after the computer proxy settings on %s', async (platform) => {
+      const home = claudeHome(JSON.stringify({ env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' } }))
+      const report = await runDiagnostics(input(home, platform).input)
+      const item = report.items.find((entry) => entry.code === 'CLAUDE_SETTINGS_PROXY')
+      expect(item).toMatchObject({
+        title: 'Claude Code 自己设置里的代理',
+        state: 'warn',
+        summary,
+        details: { HTTPS_PROXY: '本机 7890 端口（没开）' },
+      })
+      expect(item?.details).not.toHaveProperty('fix')
+      expect(JSON.stringify(item)).not.toContain('secret')
+      const order = codes(report)
+      expect(order.indexOf('CLAUDE_SETTINGS_PROXY')).toBe(order.indexOf('PROXY_ENVIRONMENT') + 1)
+      // 跟「电脑里的代理设置」是两行：电脑里没设代理时那一行照旧是绿的。
+      expect(report.items.find((entry) => entry.code === 'PROXY_ENVIRONMENT')?.state).toBe('pass')
+    })
+
+    it('reads the settings where Xingmang writes them for Claude Code', async () => {
+      const home = claudeHome()
+      const elsewhere = fs.realpathSync.native(temporaryHome())
+      fs.mkdirSync(path.join(elsewhere, '.claude'), { recursive: true })
+      fs.writeFileSync(path.join(elsewhere, '.claude', 'settings.json'), JSON.stringify({ env: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }))
+      const { input: checked } = input(home)
+      const report = await runDiagnostics({ ...checked, providerRoots: { userHome: elsewhere, codexHome: path.join(elsewhere, '.codex') } })
+      expect(codes(report)).toContain('CLAUDE_SETTINGS_PROXY')
+      expect(codes(await runDiagnostics(checked))).not.toContain('CLAUDE_SETTINGS_PROXY')
+    })
+
+    it('leaves broken settings to the bypass row and only logs why it skipped', async () => {
+      const home = claudeHome('{ "env": { "HTTPS_PROXY": "http://127.0.0.1:7890" ')
+      const { input: broken, log } = input(home)
+      const report = await runDiagnostics(broken)
+      expect(codes(report)).not.toContain('CLAUDE_SETTINGS_PROXY')
+      expect(report.items.find((entry) => entry.code === 'CLAUDE_BYPASS_PERMISSIONS')?.state).toBe('error')
+      expect(log).toHaveBeenCalledWith('info', 'diagnostics.claude-settings-proxy.skipped', expect.any(String), expect.objectContaining({ raw: expect.any(String) }))
     })
   })
 })

@@ -299,6 +299,34 @@ describe('CanvasRunStore', () => {
     await expect(store.resolveCache(7, entry.fingerprint)).resolves.toBeNull()
   })
 
+  // 宫格裁剪: a grid split's slices are cached together, and come back
+  // together or not at all, so the next node never gets part of a batch.
+  it('keeps every slice of a grid split in its cache entry and drops the entry once one slice is gone', async () => {
+    const { owned, store } = fixture()
+    const slices = [asset('a'), asset('b'), asset('c')]
+    for (const slice of slices) owned.set(slice.assetId, slice)
+    const candidates = slices.map((slice, outputIndex) => ({ outputIndex, candidateId: `slice-${outputIndex}`, attemptId: 'split', createdAt: '2026-08-13T00:00:00.000Z', asset: slice }))
+    const entry: CanvasRunCacheEntry = { ...cacheEntry('d', slices[0]), nodeKind: 'image-grid-split', candidate: candidates[0], candidates }
+    await store.storeCache(7, entry)
+    const resolved = await store.resolveCache(7, entry.fingerprint)
+    expect(resolved?.candidates?.map((candidate) => [candidate.outputIndex, candidate.asset.assetId])).toEqual(slices.map((slice, index) => [index, slice.assetId]))
+    expect(resolved?.candidate).toEqual(resolved?.candidates?.[0])
+
+    // The list must lead with the entry's own candidate and number slices within a 4 x 4 grid.
+    await expect(store.storeCache(7, { ...entry, candidates: [candidates[1], candidates[0]] })).rejects.toThrow('画布节点缓存格式错误')
+    await expect(store.storeCache(7, { ...entry, candidates: [candidates[0]] })).rejects.toThrow('画布节点缓存格式错误')
+    await expect(store.storeCache(7, { ...entry, candidates: [candidates[0], { ...candidates[1], outputIndex: 16 }] })).rejects.toThrow('画布节点缓存格式错误')
+
+    owned.delete(slices[2].assetId)
+    await expect(store.resolveCache(7, entry.fingerprint)).resolves.toBeNull()
+    owned.set(slices[2].assetId, slices[2])
+    await store.storeCache(7, entry)
+    owned.delete(slices[1].assetId)
+    await store.reconcileAssets(7)
+    owned.set(slices[1].assetId, slices[1])
+    await expect(store.resolveCache(7, entry.fingerprint)).resolves.toBeNull()
+  })
+
   it('reconciles missing assets out of both manifest and cache', async () => {
     const { owned, store } = fixture()
     const first = asset('a')
