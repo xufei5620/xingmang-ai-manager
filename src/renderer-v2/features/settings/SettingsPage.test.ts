@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { closeToTrayLabel, closeToTrayNote, launchAtLoginFallbackNote } from './SettingsPage'
+import {
+  canOpenNotificationSettings,
+  closeToTrayLabel,
+  closeToTrayNote,
+  launchAtLoginFallbackNote,
+  notificationSettingsUnavailableText,
+  openNotificationSettingsLabel,
+  testNotificationHandedOffText,
+} from './SettingsPage'
 
 // 决定单 D30：Mac 上没有「托盘」，同一个图标在屏幕顶部的菜单栏里；Windows、Linux 照旧。
 describe('settings close and startup wording', () => {
@@ -15,5 +23,22 @@ describe('settings close and startup wording', () => {
     expect(closeToTrayNote(false, false)).toBe('缩到托盘后，正在进行的安装会继续在后台运行')
     expect(closeToTrayNote(false, true)).toBe('缩到托盘后，加速和正在进行的安装会继续在后台运行')
     expect(launchAtLoginFallbackNote(false)).toBe('开机后在托盘里待命，不弹窗口')
+  })
+})
+
+// 决定单 D68：系统里把星芒的通知关了，测试通知照样「发得出去」，界面不能再说「已发送」。
+describe('settings test notification wording', () => {
+  it('says the notification was handed to the system and where to look when it does not show', () => {
+    expect(testNotificationHandedOffText).toBe('已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。')
+    expect(testNotificationHandedOffText).not.toContain('已发送')
+    expect(openNotificationSettingsLabel).toBe('打开系统通知设置')
+    expect(notificationSettingsUnavailableText).toBe('没能打开系统通知设置，请在系统设置里找「通知」。')
+  })
+
+  it('offers to open the system notification settings only on Windows and macOS', () => {
+    expect(canOpenNotificationSettings('windows')).toBe(true)
+    expect(canOpenNotificationSettings('macos')).toBe(true)
+    expect(canOpenNotificationSettings('linux')).toBe(false)
+    expect(canOpenNotificationSettings('')).toBe(false)
   })
 })

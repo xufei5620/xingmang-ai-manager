@@ -4152,7 +4152,18 @@ test('desktop notifications start on, the master switch gates test notifications
       .getByRole('switch', { name: '余额不足通知', exact: true })
       .click()
     await testNotice.click()
-    await waitForToast(page, '已发送一条测试通知')
+    // 系统里把星芒的通知关了也照样「发得出去」，所以不说「已发送」（决定单 D68）；旁边那颗按钮打开了，那句才收起。
+    const handedOff = page.locator('.xm-toast', {
+      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+    })
+    await handedOff
+      .getByRole('button', { name: '打开系统通知设置', exact: true })
+      .click()
+    await handedOff.waitFor({ state: 'detached' })
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'open-notification-settings').length,
+      1,
+    )
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
       name: '自动发送错误报告',
@@ -4198,6 +4209,30 @@ test('desktop notifications start on, the master switch gates test notifications
     assert.equal(
       (await calls(page)).filter((call) => call.name === 'test-notification')
         .length,
+      1,
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a system notification settings page that will not open keeps the test notification line and says where to look', async () => {
+  const page = await fixture('page=settings&system=1&fail=notification-settings')
+  try {
+    await page.getByRole('tab', { name: '消息通知', exact: true }).click()
+    await page.getByRole('button', { name: '发测试通知', exact: true }).click()
+    const handedOff = page.locator('.xm-toast', {
+      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+    })
+    await handedOff
+      .getByRole('button', { name: '打开系统通知设置', exact: true })
+      .click()
+    await page
+      .locator('.xm-toast', { hasText: '没能打开系统通知设置，请在系统设置里找「通知」。' })
+      .waitFor()
+    assert.equal(await handedOff.count(), 1)
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'open-notification-settings').length,
       1,
     )
   } finally {

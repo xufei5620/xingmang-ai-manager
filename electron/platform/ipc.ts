@@ -36,6 +36,7 @@ const platformOperationLabels: Record<string, string> = {
   [platformChannels.setNotificationPreference]: '切换通知偏好',
   [platformChannels.setPrivacyPreference]: '切换隐私偏好',
   [platformChannels.testNotification]: '发送测试通知',
+  [platformChannels.openNotificationSettings]: '打开系统通知设置',
   [platformChannels.notifyActivity]: '发送活动通知',
 }
 
@@ -169,6 +170,12 @@ export function summarizePlatformInvocation(
     const install = readInstallNotice(args[2])
     if (install) Object.assign(detail, install)
   }
+  // 客户点了「打开系统通知设置」却说没打开时，日志里要看得出是系统没让开还是根本没点到这里。
+  if (
+    channel === platformChannels.openNotificationSettings &&
+    typeof result === 'boolean'
+  )
+    detail.opened = result
   if (isNotificationResult(result)) detail.result = result
   return detail
 }
@@ -293,6 +300,9 @@ export function registerPlatformHandlers(options: {
   })
   handle(platformChannels.testNotification, 0, () =>
     options.service().testNotification(),
+  )
+  handle(platformChannels.openNotificationSettings, 0, () =>
+    options.service().openNotificationSettings(),
   )
   handle(platformChannels.notifyActivity, [2, 3], (kind, key, detail) => {
     // 加速那两条只能由主进程发：渲染层拿到这条通道也只会被拒，免得它绕过
