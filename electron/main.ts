@@ -129,6 +129,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { syncXingmangImageMcpConfigs } from './config-files'
+import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -1034,6 +1035,12 @@ if (!hasSingleInstanceLock) {
     // so their audit entries buffer in the bridge until it is handed over.
     attachPlatformAuditLog((level, source, event, message, detail) => {
       runtimeLog.log(level, source, event, message, detail)
+    })
+    // D78：只记日志，不提示客户。写回前就读出原文不是 UTF-8，写成以后才记，没写成的不算。
+    attachNotUtf8ConfigRewriteLog(({ file, backup }) => {
+      runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten', backup
+        ? '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，原样在备份里'
+        : '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，这次写回不留备份', { file, backup })
     })
     if (loginItemMigration === true) {
       runtimeLog.log('info', 'main', 'login-item.migrated', '旧版开机启动项已改成开机后留在托盘')

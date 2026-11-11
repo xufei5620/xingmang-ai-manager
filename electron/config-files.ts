@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -110,6 +111,11 @@ const MAX_CLAUDE_ROOT_CONFIG_BYTES = 16 * 1024 * 1024
 export interface NativeConfigFile {
   path: string
   exists: boolean
+  /**
+   * 这份文件不是合法 UTF-8（D78，多半是老记事本存的中文）：星芒下次写回，那几个字就成了「�」。只进导出的
+   * 检查报告给客服看，界面上不说；缺省 = 没发现。
+   */
+  notUtf8?: boolean
 }
 
 export interface NativeConfigInspection {
@@ -357,6 +363,11 @@ const mainConfigBrokenChecks: Record<ProviderId, ((content: Buffer) => boolean) 
   claude: isClaudeSettingsBroken,
   gemini: isGeminiSettingsBroken,
   grok: null,
+}
+
+function readFileNotUtf8(filePath: string): boolean {
+  const content = readConfigBytes(filePath)
+  return content !== null && !isUtf8(content)
 }
 
 // 判断编码要看原始字节（解码会把坏字节悄悄换成 U+FFFD），读不到、不是单链接普通文件都当没坏。
@@ -1733,17 +1744,17 @@ function inspectProviderConfigFiles(
   // Validate before parsing any existing file so a junction cannot redirect the read.
   for (const filePath of paths) assertSafeConfigPath(filePath, providerRoot, 'file')
   const dataDirectory = path.dirname(paths[0])
-  const files = paths.map((filePath) => ({
-    path: filePath,
-    exists: (() => {
+  const files = paths.map((filePath): NativeConfigFile => {
+    const exists = (() => {
       try {
         const info = fs.lstatSync(filePath)
         return info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()
       } catch {
         return false
       }
-    })(),
-  }))
+    })()
+    return { path: filePath, exists, ...(exists && readFileNotUtf8(filePath) ? { notUtf8: true } : {}) }
+  })
   const modifiedTimes = files
     .filter((file) => file.exists)
     .map((file) => fs.lstatSync(file.path).mtimeMs)

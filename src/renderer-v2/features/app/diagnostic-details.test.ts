@@ -37,6 +37,13 @@ describe('diagnostic detail rows', () => {
     expect(diagnosticDetailRows({ HTTP_PROXY: '本机 7890 端口（开着）', HTTPS_PROXY: '本机 7890 端口（开着）' })).toEqual([])
   })
 
+  // D78 定的是不提示客户：配置不是 UTF-8 的那个标记只进导出报告，旁边那行位置照常显示。
+  it('keeps the not-UTF-8 config marker off the screen', () => {
+    expect(diagnosticDetailRows({ file1: '~/.claude/settings.json', file1NotUtf8: true })).toEqual([
+      { key: 'file1', label: '文件 1', value: '~/.claude/settings.json' },
+    ])
+  })
+
   it('shows a readable reason but drops unknown answers', () => {
     expect(diagnosticDetailRows({ reason: '单项检查超过 8000ms', canElevate: null })).toEqual([
       { key: 'reason', label: '原因', value: '单项检查超过 8000ms' },
