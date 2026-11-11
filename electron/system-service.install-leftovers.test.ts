@@ -191,7 +191,7 @@ describe('the manual clean on the storage card', () => {
 
   it('keeps the six hours as administrator on Windows, where every account shares the folders', async () => {
     const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[], _options?: InstallLeftoverSweepOptions) => ({ removed: 0, freedBytes: 0, failed: 0 }))
-    const measure = vi.fn(async () => 0)
+    const measure = vi.fn(async (_locations: readonly InstallLeftoverLocation[], _options?: InstallLeftoverSweepOptions) => 0)
     const { service } = createFixture(sweep, { platform: 'win32', windowsExecutionMode: 'trusted-only' }, measure)
 
     await service.cleanInstallLeftoversNow()
@@ -220,7 +220,7 @@ describe('the manual clean on the storage card', () => {
   })
 
   it('measures with the same rule without queueing, and measures nothing when no measurer is wired in', async () => {
-    const measure = vi.fn(async () => 7168)
+    const measure = vi.fn(async (_locations: readonly InstallLeftoverLocation[], _options?: InstallLeftoverSweepOptions) => 7168)
     const { service } = createFixture(undefined, undefined, measure)
     await expect(service.measureInstallLeftoversNow()).resolves.toBe(7168)
     expect(measure.mock.calls[0]?.[1]).toEqual({ minimumAgeMs: 0 })
