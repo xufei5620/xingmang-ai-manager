@@ -3,7 +3,7 @@
 // starts it outside its command sandbox, so everything that crosses that line is
 // narrowed here: the only network peer is the account's own image endpoint, the
 // only files read are the skill config and images the user asked to edit, and
-// the API key never leaves this process except in that one Authorization header.
+// the API key never leaves this process except in that one auth header.
 
 import { open, lstat, readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -14,9 +14,25 @@ const MAX_INPUT_IMAGES = 4
 const MAX_INPUT_IMAGE_BYTES = 20 * 1024 * 1024
 const REQUEST_TIMEOUT_MS = 300_000
 const DEFAULT_MODEL = 'gpt-image-2'
-// 只用 OpenAI 的 gpt-image 系列，认法跟星芒主程序（xingmang-ai-skill.ts）和 generate.mjs 同一条：
+const DEFAULT_QUALITY = 'high'
+// 认型号三处同一套（主程序 xingmang-ai-skill.ts、技能脚本 generate.mjs、这里），测试钉住。
 // 以前这里只认写死的 5 个，站上换代后主程序写进来的新型号会被悄悄换回 gpt-image-2（#1059）。
+// 默认只用 OpenAI 的 gpt-image 系列；Nano Banana 和 Grok 要点名才用，只走图片模型分组的 Key。
 const OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]{0,63}$/i
+const RETIRED_OPENAI_IMAGE_MODEL_PATTERN = /^gpt-image-1(?:[.-]|$)/i
+const GEMINI_IMAGE_MODEL_PATTERN = /^(?:nano-banana(?:-[a-z0-9][a-z0-9._-]{0,63})?|gemini-[a-z0-9][a-z0-9._-]{0,63}-image(?:-[a-z0-9][a-z0-9._-]{0,63})?)$/i
+const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]{0,63})?$/i
+const SUPPORTED_MODELS_HINT = [
+  'OpenAI：gpt-image-2.6-flare、gpt-image-2.5-flare、gpt-image-2、gpt-image-2.6-sunburst、gpt-image-2.5-sunburst（gpt-image- 开头的新型号也行）',
+  'Nano Banana：nano-banana-2（即 gemini-3.1-flash-image）、nano-banana-pro',
+  'Grok：grok-imagine-image、grok-imagine-image-2.0、grok-imagine-image-quality',
+  '不填 model 就用星芒为当前账号挑好的那个。',
+].join('\n')
+const ASPECT_RATIOS = ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3']
+const SIZE_TIERS = { '1K': 1024, '2K': 2048, '4K': 3840 }
+// gpt-image-2 系列：宽高都是 16 的倍数，总像素在这两个数之间（4K 16:9 = 3840x2160 正好顶格）。
+const GPT_IMAGE_MIN_PIXELS = 655_360
+const GPT_IMAGE_MAX_PIXELS = 8_294_400
 // This standalone script cannot import the desktop registry. Trust exact TLS
 // origins instead of permitting other services on the same host to receive the
 // account's keys. The desktop app rewrites this skill's base URL to the active
@@ -33,7 +49,7 @@ class ImageError extends Error {
   constructor(message, retryable = false, upstream = false) {
     super(message)
     this.retryable = retryable
-    // 中转明确回了错误（不是连不上、超时）：自动挑的新模型这样失败时，换回 gpt-image-2 再试。
+    // 中转明确回了错误（不是连不上、超时）：自动挑的默认模型这样失败时，按顺序换下一个再试。
     this.upstream = upstream
   }
 }
@@ -56,6 +72,20 @@ function redactUpstream(text) {
     .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
     .replace(/[\u0000-\u001F\u007F]/g, '')
     .slice(0, 300)
+}
+
+function modelFamily(model) {
+  if (OPENAI_IMAGE_MODEL_PATTERN.test(model)) return RETIRED_OPENAI_IMAGE_MODEL_PATTERN.test(model) ? null : 'openai'
+  if (GEMINI_IMAGE_MODEL_PATTERN.test(model)) return 'gemini'
+  if (GROK_IMAGE_MODEL_PATTERN.test(model)) return 'grok'
+  return null
+}
+
+function unsupportedModelMessage(model) {
+  const reason = RETIRED_OPENAI_IMAGE_MODEL_PATTERN.test(model)
+    ? `${model} 已经下线，用不了。`
+    : `不认识图片模型「${model}」。`
+  return `${reason}能用的有：\n${SUPPORTED_MODELS_HINT}`
 }
 
 function configPath() {
@@ -92,23 +122,35 @@ async function readConfig() {
   }
   // 与生图技能同一个顺序：先用 Codex Key，被拒再换生图分组 Key。
   const keys = []
-  for (const field of ['codexApiKey', 'apiKey']) {
+  for (const [field, source] of [['codexApiKey', 'codex'], ['apiKey', 'image']]) {
     const value = typeof parsed[field] === 'string' ? parsed[field].trim() : ''
-    if (value.startsWith('sk-') && !keys.includes(value)) keys.push(value)
+    if (value.startsWith('sk-') && !keys.some((entry) => entry.value === value)) keys.push({ source, value })
   }
   if (keys.length === 0) throw new ImageError('当前账号还没有可以画图的 Key，请打开星芒AI管理工具登录')
-  return { origin, keys, model: configuredModel(parsed) }
+  return { origin, keys, chain: defaultModelChain(parsed) }
 }
 
-// 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型挑一个写进 model；没有或不是 gpt-image 系列就用 gpt-image-2。
-function configuredModel(parsed) {
-  const model = typeof parsed.model === 'string' ? parsed.model.trim() : ''
-  return OPENAI_IMAGE_MODEL_PATTERN.test(model) ? model : DEFAULT_MODEL
+function configuredModel(value) {
+  const model = typeof value === 'string' ? value.trim() : ''
+  return modelFamily(model) === 'openai' ? model : ''
+}
+
+/**
+ * 星芒登录同步时按当前账号实际能用的 OpenAI 图片模型排好顺序：model 是第一个，fallbackModels 是后面的。
+ * 没点名时按这个顺序往下退，只退到账号列表里有的；老版本写的配置没有 fallbackModels，照旧退到 gpt-image-2。
+ */
+function defaultModelChain(parsed) {
+  const model = configuredModel(parsed.model)
+  if (!model) return [DEFAULT_MODEL]
+  const rest = Array.isArray(parsed.fallbackModels)
+    ? parsed.fallbackModels.map(configuredModel).filter(Boolean)
+    : [DEFAULT_MODEL]
+  return [...new Set([model, ...rest])]
 }
 
 async function defaultModel() {
   try {
-    return (await readConfig()).model
+    return (await readConfig()).chain[0]
   } catch {
     return DEFAULT_MODEL
   }
@@ -124,11 +166,16 @@ function schema(model) {
         type: 'array',
         items: { type: 'string' },
         maxItems: MAX_INPUT_IMAGES,
-        description: '改图时填要修改的原图（PNG、JPEG 或 WebP）的完整路径；画新图时不填',
+        description: '改图时填参考图（PNG、JPEG 或 WebP）的完整路径，可以给多张；画新图时不填',
       },
-      model: { type: 'string', default: model, description: '一般不填，用星芒为当前账号挑好的模型；要换就写 gpt-image- 开头的完整型号名' },
-      size: { type: 'string', description: '例如 1024x1024、1536x1024、1024x1536 或 auto；gpt-image-2 的宽高要是 16 的倍数' },
-      quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], default: 'low' },
+      model: {
+        type: 'string',
+        default: model,
+        description: '一般不填，用星芒为当前账号挑好的 OpenAI 模型。用户点名时可写 gpt-image- 开头的型号、nano-banana-2、nano-banana-pro、grok-imagine-image',
+      },
+      size: { type: 'string', description: '1K、2K、4K，或 宽x高（如 1536x1024）；gpt-image-2 系列宽高要是 16 的倍数。4K 多收钱' },
+      aspect: { type: 'string', enum: ASPECT_RATIOS, description: '画面比例，配 1K/2K/4K 用，默认 1:1' },
+      quality: { type: 'string', enum: ['low', 'medium', 'high', 'auto'], default: DEFAULT_QUALITY },
       background: { type: 'string', enum: ['opaque', 'transparent', 'auto'], default: 'opaque' },
     },
     required: ['prompt'],
@@ -157,10 +204,15 @@ function parseArguments(argumentsValue) {
   if (!prompt) throw new ImageError('图片描述不能为空')
   // 没点名就留空，等读到配置再用星芒挑好的那个。
   const model = argumentsValue.model === undefined ? undefined : textValue(argumentsValue.model, '', 80)
-  if (model !== undefined && !OPENAI_IMAGE_MODEL_PATTERN.test(model)) throw new ImageError('图片模型不在允许列表中')
-  const size = textValue(argumentsValue.size, '1024x1024', 32)
-  if (size !== 'auto' && !/^(\d{2,5})x(\d{2,5})$/.test(size)) throw new ImageError('图片尺寸格式错误')
-  const quality = textValue(argumentsValue.quality, 'low', 16)
+  if (model !== undefined && !modelFamily(model)) throw new ImageError(unsupportedModelMessage(model))
+  const size = textValue(argumentsValue.size, '', 32)
+  if (size && size !== 'auto' && !SIZE_TIERS[size.toUpperCase()] && !/^(\d{2,5})x(\d{2,5})$/i.test(size)) {
+    throw new ImageError('图片尺寸格式错误：写 1K、2K、4K，或者 宽x高')
+  }
+  const aspect = textValue(argumentsValue.aspect, '', 8)
+  if (aspect && !ASPECT_RATIOS.includes(aspect)) throw new ImageError(`图片比例只能是 ${ASPECT_RATIOS.join('、')}`)
+  if (aspect && /x/i.test(size)) throw new ImageError('已经用 size 写了宽高，就不要再给 aspect')
+  const quality = textValue(argumentsValue.quality, DEFAULT_QUALITY, 16)
   if (!['low', 'medium', 'high', 'auto'].includes(quality)) throw new ImageError('图片质量参数错误')
   const background = textValue(argumentsValue.background, 'opaque', 16)
   if (!['opaque', 'transparent', 'auto'].includes(background)) throw new ImageError('图片背景参数错误')
@@ -171,14 +223,57 @@ function parseArguments(argumentsValue) {
     throw new ImageError(`原图最多 ${MAX_INPUT_IMAGES} 张，每张都要写完整路径`)
   }
   const images = (imagesValue ?? []).map((entry) => entry.trim())
-  return { prompt, model, size, quality, background, images }
+  return { prompt, model, size, aspect, quality, background, images }
+}
+
+function greatestCommonDivisor(left, right) {
+  return right === 0 ? left : greatestCommonDivisor(right, left % right)
+}
+
+// 与 generate.mjs 的 tierDimensions 同一套换算，测试钉住两边结果一样。
+function tierDimensions(tier, aspect) {
+  const [ratioWidth, ratioHeight] = aspect.split(':').map(Number)
+  const unitWidth = 16 * ratioWidth
+  const unitHeight = 16 * ratioHeight
+  let scale = Math.floor(SIZE_TIERS[tier] / Math.max(unitWidth, unitHeight))
+  scale = Math.min(scale, Math.floor(Math.sqrt(GPT_IMAGE_MAX_PIXELS / (unitWidth * unitHeight))))
+  while (unitWidth * unitHeight * scale * scale < GPT_IMAGE_MIN_PIXELS) scale += 1
+  return `${unitWidth * scale}x${unitHeight * scale}`
+}
+
+/**
+ * OpenAI 要宽x高（或 auto）；Nano Banana 要 imageSize 加比例；Grok 不收尺寸（实测传 aspect_ratio 也照样出 1280x720），
+ * 返回 ignored 让结果里说一句。
+ */
+function resolveImageSize(family, size, aspect) {
+  const tier = SIZE_TIERS[size.toUpperCase()] ? size.toUpperCase() : ''
+  const dimensions = /^(\d{2,5})x(\d{2,5})$/i.exec(size)
+  if (family === 'openai') {
+    if (size === 'auto') return { size: 'auto' }
+    if (dimensions) return { size: `${dimensions[1]}x${dimensions[2]}` }
+    return { size: tierDimensions(tier || '1K', aspect || '1:1') }
+  }
+  if (family === 'grok') return { ignored: Boolean((size && size !== 'auto') || aspect) }
+  let ratio = ''
+  if (dimensions) {
+    const width = Number(dimensions[1])
+    const height = Number(dimensions[2])
+    const divisor = greatestCommonDivisor(width, height) || 1
+    ratio = `${width / divisor}:${height / divisor}`
+    if (!ASPECT_RATIOS.includes(ratio)) {
+      throw new ImageError(`这个模型按比例出图，${size} 不是能用的比例。改用 size 填 1K、2K、4K，aspect 填 ${ASPECT_RATIOS.join('、')}`)
+    }
+  }
+  const longSide = dimensions ? Math.max(Number(dimensions[1]), Number(dimensions[2])) : 0
+  const imageSize = tier || (!dimensions ? '1K' : longSide <= 1536 ? '1K' : longSide <= 3072 ? '2K' : '4K')
+  return { imageSize, aspectRatio: aspect || ratio || '1:1' }
 }
 
 function assertSizeFitsModel(size, model) {
-  const dimensions = /^(\d{2,5})x(\d{2,5})$/.exec(size)
+  const dimensions = /^(\d{2,5})x(\d{2,5})$/.exec(size ?? '')
   if (dimensions && model.startsWith('gpt-image-2')
     && (Number(dimensions[1]) % 16 !== 0 || Number(dimensions[2]) % 16 !== 0)) {
-    throw new ImageError('gpt-image-2 的宽高必须是 16 的倍数')
+    throw new ImageError('gpt-image-2 系列的宽高必须是 16 的倍数')
   }
 }
 
@@ -240,37 +335,79 @@ async function readLimited(response) {
   return Buffer.concat(chunks)
 }
 
-function requestBody(input, images) {
-  if (images.length === 0) {
+function imagesForm(fields, images) {
+  const form = new FormData()
+  for (const [key, value] of Object.entries(fields)) form.append(key, String(value))
+  const field = images.length === 1 ? 'image' : 'image[]'
+  for (const image of images) form.append(field, new Blob([image.bytes], { type: image.mimeType }), image.name)
+  return form
+}
+
+function requestBody(input, images, apiKey) {
+  if (input.family === 'gemini') {
+    // Gemini 类型的渠道走 Images API 会回「only imagen models are supported」，只能走原生接口；图放在 inlineData 里回来。
     return {
-      headers: { 'Content-Type': 'application/json' },
-      pathname: '/v1/images/generations',
+      pathname: `/v1beta/models/${encodeURIComponent(input.model)}:generateContent`,
+      headers: { 'x-goog-api-key': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: input.model,
-        prompt: input.prompt,
-        size: input.size,
-        quality: input.quality,
-        background: input.background,
-        n: 1,
-        output_format: 'png',
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: input.prompt },
+            ...images.map((image) => ({ inlineData: { mimeType: image.mimeType, data: image.bytes.toString('base64') } })),
+          ],
+        }],
+        generationConfig: {
+          responseModalities: ['IMAGE'],
+          imageConfig: { aspectRatio: input.resolved.aspectRatio, imageSize: input.resolved.imageSize },
+        },
       }),
     }
   }
-  const form = new FormData()
-  form.append('model', input.model)
-  form.append('prompt', input.prompt)
-  form.append('size', input.size)
-  form.append('quality', input.quality)
-  form.append('background', input.background)
-  form.append('n', '1')
-  form.append('output_format', 'png')
-  const field = images.length === 1 ? 'image' : 'image[]'
-  for (const image of images) form.append(field, new Blob([image.bytes], { type: image.mimeType }), image.name)
-  return { headers: {}, pathname: '/v1/images/edits', body: form }
+  const fields = input.family === 'grok'
+    ? {
+      model: input.model,
+      prompt: input.prompt,
+      n: 1,
+      // xAI 默认回一个很快过期的地址，要 base64 省一次下载。
+      response_format: 'b64_json',
+    }
+    : {
+      model: input.model,
+      prompt: input.prompt,
+      size: input.resolved.size,
+      quality: input.quality,
+      background: input.background,
+      n: 1,
+      output_format: 'png',
+    }
+  const authorization = { Authorization: `Bearer ${apiKey}` }
+  if (images.length === 0) {
+    return {
+      headers: { ...authorization, 'Content-Type': 'application/json' },
+      pathname: '/v1/images/generations',
+      body: JSON.stringify(fields),
+    }
+  }
+  return { headers: authorization, pathname: '/v1/images/edits', body: imagesForm(fields, images) }
+}
+
+function encodedImage(payload, family) {
+  if (family === 'gemini') {
+    const parts = payload?.candidates?.[0]?.content?.parts
+    for (const part of Array.isArray(parts) ? parts : []) {
+      const inline = part?.inlineData ?? part?.inline_data
+      if (typeof inline?.data === 'string' && inline.data) return inline.data
+    }
+    const said = (Array.isArray(parts) ? parts : []).map((part) => part?.text).filter((text) => typeof text === 'string').join(' ')
+    const reason = payload?.promptFeedback?.blockReason || payload?.candidates?.[0]?.finishReason
+    throw new ImageError(redactUpstream(`图片服务没有返回图片${said ? `：${said}` : reason ? `（${reason}）` : ''}`))
+  }
+  return payload?.data?.[0]?.b64_json
 }
 
 async function requestImage(origin, apiKey, input, images) {
-  const request = requestBody(input, images)
+  const request = requestBody(input, images, apiKey)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   let response
@@ -280,10 +417,13 @@ async function requestImage(origin, apiKey, input, images) {
       method: 'POST',
       redirect: 'manual',
       signal: controller.signal,
-      headers: { ...request.headers, Authorization: `Bearer ${apiKey}` },
+      headers: request.headers,
       body: request.body,
     })
-    if (response.status >= 300 && response.status < 400) throw new ImageError('图片服务返回了重定向，已拒绝')
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new ImageError('图片服务返回了重定向，已拒绝')
+    }
     bytes = await readLimited(response)
   } catch (error) {
     if (error instanceof ImageError) throw error
@@ -302,33 +442,42 @@ async function requestImage(origin, apiKey, input, images) {
       true,
     )
   }
-  const encoded = payload?.data?.[0]?.b64_json
+  const encoded = encodedImage(payload, input.family)
   if (typeof encoded !== 'string' || !encoded || encoded.length > MAX_RESPONSE_BYTES
     || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) {
     throw new ImageError('图片服务没有返回有效图片')
   }
-  return encoded
+  // Nano Banana、Grok 回的是 JPEG，按内容标类型；认不出的照旧当 PNG。
+  return { encoded, mimeType: imageMimeType(Buffer.from(encoded.slice(0, 32), 'base64')) ?? 'image/png' }
 }
 
 async function generateImage(argumentsValue) {
   const input = parseArguments(argumentsValue)
   const config = await readConfig()
-  // AI 没点名、或点的就是星芒挑好的那个：站上新开的模型这次没画出来（还没定价、渠道没好），
-  // 自动换回 gpt-image-2 再试一次。点名要别的就只用它，失败原样交回去让 AI 自己换。
-  const requested = input.model ?? config.model
-  const models = requested === config.model ? [...new Set([requested, DEFAULT_MODEL])] : [requested]
-  for (const model of models) assertSizeFitsModel(input.size, model)
+  // AI 没点名、或点的就是星芒挑好的那个：按账号列表里有的顺序往下退（站上新开的这次没画出来：还没定价、渠道没好）。
+  // 点名要别的就只用它，失败原样交回去让 AI 自己换。
+  const requested = input.model ?? config.chain[0]
+  const family = modelFamily(requested)
+  const models = requested === config.chain[0] ? config.chain : [requested]
+  const resolved = resolveImageSize(family, input.size, input.aspect)
+  for (const model of models) assertSizeFitsModel(resolved.size, model)
+  // Nano Banana 和 Grok 只在图片模型分组里有，Codex Key 一定被拒，不白试。
+  const keys = family === 'openai' ? config.keys : config.keys.filter((entry) => entry.source === 'image')
+  if (keys.length === 0) {
+    throw new ImageError(`${requested} 只能用图片模型分组画图，当前账号还没有这个分组的 Key。请打开星芒AI管理工具重新登录；账号还没开通图片模型分组的，先开通再登录`)
+  }
   const images = []
   for (const filePath of input.images) images.push(await readInputImage(filePath))
   let lastError = null
   for (const model of models) {
-    for (let index = 0; index < config.keys.length; index += 1) {
+    for (let index = 0; index < keys.length; index += 1) {
       try {
-        const encoded = await requestImage(config.origin, config.keys[index], { ...input, model }, images)
+        const image = await requestImage(config.origin, keys[index].value, { ...input, model, family, resolved }, images)
+        const done = images.length ? `已用 ${model} 改好图片` : `已用 ${model} 画好图片`
         return {
           content: [
-            { type: 'image', data: encoded, mimeType: 'image/png' },
-            { type: 'text', text: images.length ? `已用 ${model} 改好图片` : `已用 ${model} 画好图片` },
+            { type: 'image', data: image.encoded, mimeType: image.mimeType },
+            { type: 'text', text: resolved.ignored ? `${done}（Grok 不能指定尺寸和比例，按它自己的默认尺寸出的）` : done },
           ],
         }
       } catch (error) {
@@ -349,7 +498,7 @@ async function handle(message) {
     return resultMessage(message.id, {
       protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
-      serverInfo: { name: 'xingmang-image', version: '1.2.0' },
+      serverInfo: { name: 'xingmang-image', version: '1.3.0' },
     })
   }
   if (message.method === 'tools/list') return resultMessage(message.id, { tools: toolList(await defaultModel()) })

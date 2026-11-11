@@ -147,8 +147,9 @@ describe('chat credential coordinator', () => {
     const prepared = await context.coordinator.prepareGroup('生图分组')
     expect(prepared.models).toEqual([
       'gpt-image-2',
-      'gpt-image-1',
       'jimeng_high_aes_general_v21_L',
+      // Retired upstream, so it is no longer ordered; still listed after the curated ones.
+      'gpt-image-1',
     ])
   })
 

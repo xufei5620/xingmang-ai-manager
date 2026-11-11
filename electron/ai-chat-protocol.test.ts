@@ -129,8 +129,9 @@ describe('AI model capabilities', () => {
     ])).toEqual([
       'gpt-image-2',
       'gemini-3.1-flash-image',
-      'gpt-image-1',
       'jimeng_high_aes_general_v21_L',
+      // Retired upstream: no longer ordered, but an account that still lists it keeps it at the end.
+      'gpt-image-1',
     ])
     expect(selectAiChatModelsForGroup('生图分组', [
       'gemini-3.1-flash-image',
@@ -138,9 +139,9 @@ describe('AI model capabilities', () => {
     ])).toEqual(['gpt-image-2', 'gemini-3.1-flash-image'])
   })
 
-  it('lists GPT Image 2.5 flare first and sunburst after GPT Image 2 in the image group', () => {
-    const models = ['gpt-image-2.5-sunburst', 'gpt-image-1', 'gpt-image-2', 'gpt-4o', 'gpt-image-2.5-flare']
-    const curated = ['gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-1']
+  it('lists GPT Image 2.6 and 2.5 flare first and the sunburst models after GPT Image 2 in the image group', () => {
+    const models = ['gpt-image-2.5-sunburst', 'gpt-image-1', 'gpt-image-2', 'gpt-4o', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-flare', 'gpt-image-2.6-flare']
+    const curated = ['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2', 'gpt-image-2.6-sunburst', 'gpt-image-2.5-sunburst', 'gpt-image-1']
 
     expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
     expect(selectAiChatModelsForGroup('画图', models, ['画图'])).toEqual(curated)
@@ -189,7 +190,7 @@ describe('AI model capabilities', () => {
 
   it('curates the image group under its current xm name only, now that the old name is gone', () => {
     const models = ['gpt-4o', 'gpt-image-1', 'gpt-image-2', 'jimeng_high_aes_general_v21_L']
-    const curated = ['gpt-image-2', 'gpt-image-1', 'jimeng_high_aes_general_v21_L']
+    const curated = ['gpt-image-2', 'jimeng_high_aes_general_v21_L', 'gpt-image-1']
 
     expect(selectAiChatModelsForGroup('图片模型', models)).toEqual(curated)
     expect(selectAiChatModelsForGroup('图片模型-中转/订阅', models)).toEqual(models)

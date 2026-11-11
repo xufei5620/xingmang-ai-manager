@@ -3,6 +3,7 @@ import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contr
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
+import { IMAGE_GROUP_MODEL_ORDER } from '../../../../electron/ai-chat-protocol'
 import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
@@ -25,7 +26,9 @@ describe('v2 chat request transitions', () => {
     expect(resolveChatModel(['gpt-image-1', 'gpt-image-2'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
   })
 
-  it('defaults image mode to GPT Image 2.5 flare when the group lists it, like the Xingmang image skill', () => {
+  it('defaults image mode to GPT Image 2.6 flare, then 2.5 flare, like the Xingmang image skill', () => {
+    expect(DEFAULT_IMAGE_MODELS).toEqual(IMAGE_GROUP_MODEL_ORDER.slice(0, DEFAULT_IMAGE_MODELS.length))
+    expect(resolveChatModel(['gpt-image-2', 'gpt-image-2.5-flare', 'gpt-image-2.6-sunburst', 'gpt-image-2.6-flare'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2.6-flare')
     expect(resolveChatModel(['gpt-image-2', 'gpt-image-2.5-sunburst', 'gpt-image-2.5-flare'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2.5-flare')
     expect(resolveChatModel(['gpt-image-2.5-sunburst', 'gpt-image-2'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2')
     expect(resolveChatModel(['gpt-image-2.5-sunburst', 'gpt-image-1'], '', DEFAULT_IMAGE_MODELS)).toBe('gpt-image-2.5-sunburst')

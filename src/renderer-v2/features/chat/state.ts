@@ -51,9 +51,10 @@ export interface TurnPlan { conversation: Conversation; requestId: string; assis
 export const DEFAULT_CHAT_GROUP = 'GPT'
 export const SUB2API_CHAT_GROUP = 'Codex_pro'
 export const DEFAULT_CHAT_MODEL = 'gpt-5.6-sol'
-// 跟星芒AI生图（#999）一样：分组里有 gpt-image-2.5-flare 就默认用它，没有照旧 gpt-image-2。
-// gpt-image-2.5-sunburst 慢、偏精修，不当默认，客户可以自己在下拉里挑。
-export const DEFAULT_IMAGE_MODELS = ['gpt-image-2.5-flare', 'gpt-image-2'] as const
+// 跟星芒AI生图（xingmang-ai-skill.ts 的 XINGMANG_AI_IMAGE_MODEL_PREFERENCE）同一个顺序，测试钉住：
+// 分组里有 gpt-image-2.6-flare 就默认用它，没有依次 2.5-flare、gpt-image-2。
+// sunburst 慢、偏精修，不当默认，客户可以自己在下拉里挑。
+export const DEFAULT_IMAGE_MODELS = ['gpt-image-2.6-flare', 'gpt-image-2.5-flare', 'gpt-image-2'] as const
 
 export function createId(): string { return crypto.randomUUID() }
 export function defaultChatSettings(): ChatSettings { return { mode: 'text', group: '', model: '', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' } }
