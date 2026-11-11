@@ -488,6 +488,12 @@ describe('application tray subscription line', () => {
     expect(traySubscriptionLabel({ ...self, billingPreference: 'wallet_only' }, 500_000, now)).toBeNull()
   })
 
+  it('tells when a daily plan comes back, on the tray clock rather than whenever the menu is read', () => {
+    const evening = new Date(2026, 8, 25, 20, 0).getTime()
+    const daily = { ...self, activeSubscriptions: self.activeSubscriptions.map((plan) => ({ ...plan, nextResetAt: new Date(2026, 8, 26, 0, 0).toISOString() })) }
+    expect(traySubscriptionLabel(daily, 500_000, evening)).toBe('剩余 USD 9.00 · 明天 00:00 恢复 · 10月3日到期')
+  })
+
   it('adds the subscription row under the balance only when there is one', () => {
     const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
     const labels = (subscriptionLabel?: string) => buildApplicationTrayMenu({ accountLabel: 'u', balanceUsd: 0, subscriptionLabel, installedTools: [] }, actions, () => undefined).map((entry) => entry.label)
