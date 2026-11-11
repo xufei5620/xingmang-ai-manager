@@ -109,6 +109,8 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
   }
   inspection.files.forEach((file, index) => {
     details[`file${index + 1}`] = pathForDisplay(file.path, roots)
+    // D78：老记事本存的中文，下次写回会成「�」。只进导出的报告给客服看，检查页详情不认这个键、不上屏。
+    if (file.notUtf8) details[`file${index + 1}NotUtf8`] = true
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
     // 工具走的线路和星芒这会儿走的对不上（#941 第 2 节）：线路换了以后写失败的、客户自己改过配置所以没跟着

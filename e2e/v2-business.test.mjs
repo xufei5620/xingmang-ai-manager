@@ -256,6 +256,28 @@ test('the usage range drives the stats, one bar per local day or week and the ca
   } finally { await page.close() }
 })
 
+test('sub-cent calls, bars and the daily average show the fraction of a cent the call details show', async () => {
+  // D53：一次几厘钱的调用以前在明细、柱子、日均上都写成「$0.00」，状态却是「成功」，点进详情又是「$0.0032」。
+  const page = await fixture('page=account&accountTab=usage&usageDetail=sub-cent')
+  try {
+    await page.getByRole('tab', { name: '用量账单', exact: true, selected: true }).waitFor()
+    const stats = page.getByTestId('usage-stats')
+    await stats.getByText('日均 $0.0032', { exact: true }).waitFor()
+    // 七天合计 $0.0224，一分以上照旧两位小数。
+    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $0.02 日均 $0.0032 请求次数 77 处理字数 14,000')
+    const bars = page.locator('.v2-usage-chart-col')
+    assert.equal(await bars.count(), 7)
+    assert.equal(await bars.last().innerText().then((text) => text.replace(/\s+/g, ' ')), '$0.0032 今天')
+    assert.match(await bars.last().getAttribute('title'), /：\$0\.0032$/)
+    const row = usageRow(page)
+    await row.getByText('$0.0032', { exact: true }).waitFor()
+    await row.click()
+    const dialog = page.getByTestId('usage-detail-dialog')
+    await dialog.waitFor()
+    assert.match(await dialog.locator('section[aria-label="计费明细"]').innerText(), /合计\s*\$0\.0032/)
+  } finally { await page.close() }
+})
+
 test('changing the usage range sends the call list back to its first page', async () => {
   const page = await fixture('page=account&accountTab=usage&usagePages=1')
   try {
@@ -574,6 +596,56 @@ test('the usage and task filters fold behind one button on the toolbar and count
     for (const label of ['开始时间', '结束时间', '状态', '平台', '任务 ID', '动作']) await tasks.getByLabel(label, { exact: true }).waitFor()
   } finally {
     await page.close()
+  }
+})
+
+test('the price table is a third view of the usage page, read only when first opened, with a retry when it cannot be read', async () => {
+  for (const query of ['page=account', 'page=account&fail=prices']) {
+    const page = await fixture(query)
+    try {
+      await page.getByRole('tab', { name: '用量账单', exact: true }).click()
+      const usage = page.getByTestId('account-usage-section')
+      await usage.getByRole('button', { name: '价格表', exact: true }).waitFor()
+      assert.equal((await calls(page)).some((call) => call.name === 'get-price-list'), false, 'nothing is read before the view opens')
+      await usage.getByRole('button', { name: '价格表', exact: true }).click()
+      const prices = page.getByTestId('account-prices-section')
+      await prices.getByRole('button', { name: '价格表', exact: true }).waitFor()
+      assert.equal(await prices.getByRole('button', { name: '价格表', exact: true }).getAttribute('aria-pressed'), 'true')
+      if (query.includes('fail')) {
+        await prices.getByText('价格表暂时读不到，稍后再试。不影响使用。').waitFor()
+        await prices.getByTestId('account-prices-retry').click()
+        await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'get-price-list').length === 2)
+        await prices.getByText('价格表暂时读不到，稍后再试。不影响使用。').waitFor()
+        continue
+      }
+      const table = prices.getByTestId('account-prices-table')
+      await table.locator('tbody tr').first().waitFor()
+      assert.deepEqual(await table.locator('thead th').allInnerTexts(), ['模型', '分组', '输入', '输出'])
+      assert.deepEqual(await table.locator('tbody tr').evaluateAll((rows) => rows.map((row) => [...row.cells].map((cell) => cell.innerText))), [
+        ['gpt-image-2', '图片模型', '$0.06 / 次', '—'],
+        ['claude-tiered', 'Claude', '分档计价', '—'],
+        ['gpt-5.6-sol', 'GPT', '$1.25', '$10.00'],
+      ])
+      await prices.getByText('价格表 · 美元 / 每百万 Token').waitFor()
+      assert.equal(await prices.getByTestId('account-prices-note').innerText(), '已经算上分组的倍数。实际扣多少以用量账单为准。分档计价的，用过以后在调用明细里点开那一次，能看到每一档的价格。')
+      // Switching away and back keeps what was read.
+      await prices.getByRole('button', { name: '调用明细', exact: true }).click()
+      await usage.getByRole('button', { name: '价格表', exact: true }).click()
+      await table.locator('tbody tr').first().waitFor()
+      assert.equal((await calls(page)).filter((call) => call.name === 'get-price-list').length, 1)
+    } finally {
+      await page.close()
+    }
+  }
+  // A history account has no per-model price list, so the view is not offered.
+  const legacy = await fixture('page=account&sub2apiReliability')
+  try {
+    await legacy.getByRole('tab', { name: '用量账单', exact: true }).click()
+    await legacy.getByTestId('account-usage-section').waitFor()
+    assert.equal(await legacy.getByRole('button', { name: '价格表', exact: true }).count(), 0)
+    assert.equal(await legacy.getByTestId('account-prices-section').count(), 0)
+  } finally {
+    await legacy.close()
   }
 })
 
@@ -2152,6 +2224,72 @@ test('a custom connection leaves alone a same-named one another picked tool alre
     await dialog.getByText('Codex CLI 里已经有叫「github」的连接了，为了不动原来那条，这次没有添加。换个名字，或者不勾 Codex CLI。', { exact: true }).waitFor()
     assert.equal((await callsNamed(page, 'extension')).length, 0)
     assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// 同类对比 备选 5：Claude Code 全局里的一条连接「也装到别的工具」。界面只把名字交给主进程，已经有同名的不给勾。
+test('a Claude Code connection is copied to the other tools that do not have it yet', async () => {
+  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&codexMcp=docs')
+  try {
+    const row = page.getByTestId('mcp-row-docs')
+    await row.getByRole('button', { name: 'docs 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
+    const dialog = page.getByTestId('mcp-copy')
+    await dialog.getByText('把「docs」也装到别的工具', { exact: true }).waitFor()
+    const codex = dialog.getByTestId('mcp-copy-tools-codex')
+    const grok = dialog.getByTestId('mcp-copy-tools-grok')
+    await codex.getByText('已添加', { exact: true }).waitFor()
+    assert.equal(await grok.getAttribute('aria-pressed'), 'true', '查回来以后能装的先勾上')
+    assert.equal(await codex.isDisabled(), true)
+    assert.equal(await dialog.getByTestId('mcp-copy-tools-claude').count(), 0, '不列来源那个工具')
+    await dialog.getByTestId('mcp-copy-confirm').click()
+    await waitForToast(page, '已添加「docs」，给 Grok CLI 使用，下次打开工具时生效')
+    await dialog.waitFor({ state: 'detached' })
+    assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args), [{ from: 'claude', to: 'grok', name: 'docs' }])
+    assert.equal((await callsNamed(page, 'extension')).length, 0)
+    assert.equal((await callsNamed(page, 'add-mcp')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('a copy that fails for one tool keeps the ones already done and retries only the rest', async () => {
+  const page = await fixture('page=mcp&extensionOk&claudeMcp=docs&copyMcpFail=grok')
+  try {
+    await page.getByTestId('mcp-row-docs').getByRole('button', { name: 'docs 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
+    const dialog = page.getByTestId('mcp-copy')
+    await dialog.locator('[data-testid="mcp-copy-tools-grok"][aria-pressed="true"]').waitFor()
+    assert.equal(await dialog.getByTestId('mcp-copy-tools-codex').getAttribute('aria-pressed'), 'true')
+    await dialog.getByTestId('mcp-copy-confirm').click()
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    await dialog.getByTestId('mcp-copy-tools-codex').getByText('已添加', { exact: true }).waitFor()
+    await dialog.getByTestId('mcp-copy-confirm').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'copy-mcp').length === 3)
+    await dialog.getByText('扩展操作失败，已有配置保留').first().waitFor()
+    assert.deepEqual((await callsNamed(page, 'copy-mcp')).map((call) => call.args.to), ['codex', 'grok', 'grok'])
+  } finally {
+    await page.close()
+  }
+})
+
+// 测试扩展在三个工具里都有：没有能装的，「装上」点不了；Grok 的连接不给这一项（读不全）。
+test('copying is offered only where every other tool can still take the connection', async () => {
+  const page = await fixture('page=mcp&extensionOk')
+  try {
+    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).click()
+    const dialog = page.getByTestId('mcp-copy')
+    await dialog.getByTestId('mcp-copy-tools-grok').getByText('已添加', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('mcp-copy-confirm').isDisabled(), true)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await page.getByRole('tab', { name: /^Grok CLI/ }).click()
+    await page.getByTestId('mcp-row-test-extension').getByRole('button', { name: '测试扩展 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '从 Grok CLI 移除…', exact: true }).waitFor()
+    assert.equal(await page.getByRole('menuitem', { name: '也装到别的工具…', exact: true }).count(), 0)
   } finally {
     await page.close()
   }

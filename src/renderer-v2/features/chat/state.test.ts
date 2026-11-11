@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationsByDay, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, shouldShowOfflineReplyNotice, offlineReplyNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, shouldShowOfflineReplyNotice, offlineReplyNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -328,6 +328,33 @@ describe('v2 chat request transitions', () => {
     const grouped = groupConversationsByDay([conversation('a', at(15, 0)), conversation('b', at(1, 9)), conversation('c', at(15, 0)), conversation('d', at(14, 9))], now)
     expect(grouped.map((group) => [group.day, group.conversations.map((item) => item.id)])).toEqual([['今天', ['a', 'c']], ['昨天', ['d']], ['更早', ['b']]])
     expect(groupConversationsByDay([conversation('e', at(2, 9))], now).map((group) => group.day)).toEqual(['更早'])
+  })
+  it('lists pinned conversations first under their own heading and the rest by day', () => {
+    const now = new Date(2026, 9, 15, 12).getTime()
+    const at = (day: number) => new Date(2026, 9, day, 9).getTime()
+    const conversation = (id: string, updatedAt: number, pinned = false) => ({ ...createConversation(undefined, id), updatedAt, ...(pinned ? { pinned: true } : {}) })
+    const grouped = groupConversationList([conversation('a', at(15)), conversation('b', at(1), true), conversation('c', at(14)), conversation('d', at(15), true)], now)
+    expect(grouped.map((group) => [group.label, group.conversations.map((item) => item.id)])).toEqual([['置顶', ['b', 'd']], ['今天', ['a']], ['昨天', ['c']]])
+    expect(groupConversationList([conversation('e', at(15))], now).map((group) => group.label)).toEqual(['今天'])
+  })
+  it('renames a conversation without moving it to today and keeps the name when its messages are cleared out', () => {
+    const conversation = { ...readyConversation(), title: '帮我写一个批量重命名文件的脚本', updatedAt: 5 }
+    const renamed = renameConversation(conversation, '  重命名脚本  ')
+    expect(renamed).toMatchObject({ title: '重命名脚本', renamed: true, updatedAt: 5 })
+    expect(renameConversation(conversation, '   ')).toBe(conversation)
+    expect(renameConversation(renamed, '重命名脚本')).toBe(renamed)
+    expect(renameConversation(conversation, '长'.repeat(60)).title).toHaveLength(MAX_CONVERSATION_TITLE_LENGTH)
+    // 消息删光了再发，自己起的名字不被第一句话盖掉；没改过名的照旧按第一句起名。
+    expect(planTurn({ ...renamed, messages: [] }, { prompt: '新的问题', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title).toBe('重命名脚本')
+    expect(planTurn({ ...conversation, messages: [] }, { prompt: '新的问题', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).conversation.title).toBe('新的问题')
+  })
+  it('pins and unpins without touching anything else', () => {
+    const conversation = readyConversation()
+    const pinned = setConversationPinned(conversation, true)
+    expect(pinned).toEqual({ ...conversation, pinned: true })
+    expect(setConversationPinned(pinned, true)).toBe(pinned)
+    expect(setConversationPinned(pinned, false)).toEqual(conversation)
+    expect('pinned' in setConversationPinned(pinned, false)).toBe(false)
   })
   it('uses the authoritative model protocol for media capabilities and validation', () => {
     expect(inspectModel('gpt-image-1.5')).toMatchObject({ available: false, hidden: true })

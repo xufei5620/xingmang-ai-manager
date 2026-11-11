@@ -290,6 +290,64 @@ test('source maps reach Sentry only for what an approved publish shipped, from a
   assert.equal(sentryJob.env.PACKAGE_VERSION, publishJob.env.PACKAGE_VERSION)
 })
 
+test('the Windows packages are scanned by the built-in Microsoft Defender before publish can run', () => {
+  // D96 / AV-11：出包到上传之间原来没有任何杀毒扫描，而出包机器的 Defender 出厂排除了整个
+  // C:\ 和 D:\，打包冒烟看不出报不报毒。扫描放在 windows-build 里：它不成功，publish 就不跑。
+  const scans = windowsJob.steps.filter((step) => /MpCmdRun\.exe/.test(String(step.run || '')))
+  assert.equal(scans.length, 1)
+  const scan = scans[0]
+  const scanIndex = windowsJob.steps.indexOf(scan)
+  assert.ok(scanIndex > stepIndex(windowsJob, /npm run release:build:unsigned/))
+  // 排在上传 artifact 之后：报毒时被报的那个包还能从这次运行里下下来交给微软复核。
+  assert.ok(scanIndex > stepIndex(windowsJob, /Upload the release artifacts for the publish job/))
+  assert.equal(scan.shell, 'pwsh')
+  // 报毒必须能让作业失败，continue-on-error 会把这一步变成摆设。
+  assert.equal(scan['continue-on-error'], undefined)
+  assert.equal(scan.if, undefined)
+  assert.equal(scan.env.RELEASE_VERSION, '${{ steps.metadata.outputs.version }}')
+
+  const script = String(scan.run)
+  // 扫客户下的那个 Setup.exe，和装好以后的全部文件（elevate.exe、mihomo.exe 都在 win-unpacked 里）。
+  assert.match(script, /'\*Setup\.exe'/)
+  assert.match(script, /'win-unpacked'/)
+  // 自定义扫描 + -DisableRemediation：只报告、不动文件，不理排除目录，拆开压缩包。每次扫描都这样。
+  const scanCalls = script.match(/-Scan -ScanType 3 -File [^"\n]*"[^\n]*/g) || []
+  assert.equal(scanCalls.length, 2)
+  for (const call of scanCalls) assert.match(call, /-DisableRemediation/)
+  assert.match(script, /Remove-MpPreference -ExclusionPath/)
+  assert.match(script, /'-SignatureUpdate'/)
+
+  // 对照样本必须是真的 EICAR 测试文件，又不能原样写在仓库里（不然谁的杀毒都会把这个工作流文件当毒）。
+  const reversed = script.match(/\$reversed = '([^']+)'/)
+  assert.ok(reversed, 'the EICAR control must stay in the script')
+  const eicar = [...reversed[1]].reverse().join('')
+  assert.equal(
+    require('node:crypto').createHash('sha256').update(eicar, 'ascii').digest('hex'),
+    '275a021bbfb6489e54d471899f7db9d1663fc695ec2fe2a2c4538aabf651fd0f',
+  )
+  assert.equal(source.includes(eicar), false)
+  // 对照样本报出来（退出码 2）以后才扫真的包；对照没报出来只算「没扫成」，不挡发版。
+  const controlCheck = script.indexOf('$check.Code -ne 2')
+  assert.ok(controlCheck > 0)
+  assert.ok(controlCheck < script.indexOf('foreach ($target in $targets)'))
+
+  // 只有报毒（退出码 2）让这一步失败；起不来、超时都走 Skip-Scan，它以 exit 0 结束。
+  const failures = [...script.matchAll(/exit 1\b/g)].map((match) => match.index)
+  assert.equal(failures.length, 2)
+  assert.ok(failures[0] < script.indexOf('$targets ='), 'the first failure is the missing-package guard')
+  assert.ok(failures[1] > script.indexOf('if ($flagged.Count -gt 0)'))
+  const skip = script.slice(script.indexOf('function Skip-Scan'), script.indexOf('function Invoke-Defender'))
+  assert.match(skip, /::warning /)
+  assert.match(skip, /exit 0/)
+  // 每次调用 Defender 的时限加起来比这一步的上限短，卡住的那次按「没扫成」处理，不会撞上限变失败。
+  const limits = [...script.matchAll(/^\s*\$\w+ = Invoke-Defender .* (\d+)$/gm)].map((match) => Number(match[1]))
+  assert.deepEqual(limits, [10, 5, 15])
+  const worstCase = limits[0] + limits[1] + limits[2] * scanCalls.length
+  assert.ok(worstCase < scan['timeout-minutes'], `${worstCase} < ${scan['timeout-minutes']}`)
+  // 在线多引擎扫描要把安装包传给第三方，D96 定了不加。
+  assert.doesNotMatch(source, /virustotal/i)
+})
+
 test('the Windows build job holds no credentials at all', () => {
   // Windows 那一份是无签名发布，出包不需要任何 secret。少一个作业能读到凭据，
   // 「谁能读到证书和 R2 密钥」这个问题就少一个答案。

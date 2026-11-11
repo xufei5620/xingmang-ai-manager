@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as configFiles from './config-files'
 import {
+  attachNotUtf8ConfigRewriteLog,
   executeFilePlans,
   explainConfigWriteFailure,
   fillableRecord,
@@ -28,6 +29,7 @@ function temporaryDirectory(): string {
 
 afterEach(() => {
   vi.restoreAllMocks()
+  attachNotUtf8ConfigRewriteLog(null)
   for (const directory of temporaryDirectories.splice(0)) {
     // 只读那条用例留下的只读文件（连同它的备份）：先放开再删。
     for (const entry of fs.readdirSync(directory)) {
@@ -197,6 +199,79 @@ describe('config-files-context', () => {
     fs.chmodSync(config, 0o444)
     expect(() => executeFilePlans([{ path: config, content: 'model = "new"\n' }], {}, root)).toThrow(/^这个文件被设成了只读（错误码 E(PERM|ACCES)）$/)
     expect(fs.readFileSync(config, 'utf8')).toBe('model = "old"\n')
+  })
+
+  // {"dir":"中文"} saved by an old Notepad on Chinese Windows: GBK, not UTF-8.
+  const gbkSettings = Buffer.concat([Buffer.from('{"dir":"'), Buffer.from([0xd6, 0xd0, 0xce, 0xc4]), Buffer.from('"}\n')])
+
+  it('logs a config that was not UTF-8 once it has been written back, and writes the same content as before (D78)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const settings = path.join(root, 'settings.json')
+    fs.writeFileSync(settings, gbkSettings)
+    const log = vi.fn()
+    attachNotUtf8ConfigRewriteLog(log)
+
+    const saved = executeFilePlans([{ path: settings, content: '{"dir":"\uFFFD\uFFFD"}\n' }], {}, root)
+
+    expect(fs.readFileSync(settings, 'utf8')).toBe('{"dir":"\uFFFD\uFFFD"}\n')
+    expect(saved.backups).toHaveLength(1)
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith({ file: settings, backup: saved.backups[0] })
+    // 客服照着日志去找的那份备份，就是写回前的原样字节。
+    expect(fs.readFileSync(saved.backups[0])).toEqual(gbkSettings)
+  })
+
+  it('does not log UTF-8 configs, new files or files it removes (D78)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const chinese = path.join(root, 'settings.json')
+    const marked = path.join(root, 'config.toml')
+    const removed = path.join(root, 'auth.json')
+    fs.writeFileSync(chinese, '{"dir":"中文"}\n', 'utf8')
+    fs.writeFileSync(marked, '\uFEFFmodel = "a"\n', 'utf8')
+    fs.writeFileSync(removed, gbkSettings)
+    const log = vi.fn()
+    attachNotUtf8ConfigRewriteLog(log)
+
+    executeFilePlans([
+      { path: chinese, content: '{"dir":"中文","new":true}\n' },
+      { path: marked, content: 'model = "b"\n' },
+      { path: path.join(root, 'added.json'), content: '{}\n' },
+      { path: removed, remove: true },
+    ], {}, root)
+
+    expect(log).not.toHaveBeenCalled()
+    expect(fs.existsSync(removed)).toBe(false)
+  })
+
+  it('logs no backup for a write that discards its backup (D78)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const settings = path.join(root, 'settings.json')
+    fs.writeFileSync(settings, gbkSettings)
+    const log = vi.fn()
+    attachNotUtf8ConfigRewriteLog(log)
+
+    executeFilePlans([{ path: settings, content: '{}\n' }], {}, root, 'discard')
+
+    expect(log).toHaveBeenCalledWith({ file: settings, backup: null })
+    expect(fs.readdirSync(root)).toEqual(['settings.json'])
+  })
+
+  it('logs nothing when the write back did not happen, and a failing log never fails a save (D78)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const settings = path.join(root, 'settings.json')
+    fs.writeFileSync(settings, gbkSettings)
+    const log = vi.fn()
+    attachNotUtf8ConfigRewriteLog(log)
+
+    expect(() => executeFilePlans([{ path: settings, content: '{}\n' }], {
+      beforeReplace: () => { throw new Error('配置在保存时被别的程序改了') },
+    }, root)).toThrow('配置在保存时被别的程序改了')
+    expect(fs.readFileSync(settings)).toEqual(gbkSettings)
+    expect(log).not.toHaveBeenCalled()
+
+    attachNotUtf8ConfigRewriteLog(() => { throw new Error('日志写不进去') })
+    expect(() => executeFilePlans([{ path: settings, content: '{}\n' }], {}, root)).not.toThrow()
+    expect(fs.readFileSync(settings, 'utf8')).toBe('{}\n')
   })
 
   it('compares a verbatim Windows path the same as the plain one', () => {

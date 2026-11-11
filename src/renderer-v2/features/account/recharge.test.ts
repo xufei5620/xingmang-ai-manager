@@ -17,6 +17,7 @@ import {
   planUsageText,
   rechargeRunwayText,
   redeemSuccessText,
+  subscriptionResetSuffix,
   topupCreditedUsd,
   topupGift,
 } from './recharge'
@@ -113,6 +114,31 @@ describe('recharge', () => {
     expect(planTermText({ ...duration, totalAmount: null }, 100)).toBe('/ 30 天')
     expect(planTermText({ ...duration, totalAmount: 1000 }, null)).toBe('/ 30 天')
     expect(planTermText({ durationUnit: 'custom', durationValue: 0, customSeconds: 90, totalAmount: 1000 }, 100)).toBe('含 $10.00 额度')
+  })
+
+  it('says a capped plan refills every day only when its quota resets daily', () => {
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'daily' }, 100)).toBe('/ 30 天，含 $10.00 额度，每天重置额度')
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'daily' }, null)).toBe('/ 30 天，每天重置额度')
+    // An uncapped plan has nothing to refill; weekly and monthly have no approved wording yet.
+    expect(planTermText({ ...duration, totalAmount: 0, quotaResetPeriod: 'daily' }, 100)).toBe('/ 30 天')
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'weekly' }, 100)).toBe('/ 30 天，含 $10.00 额度')
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'never' }, 100)).toBe('/ 30 天，含 $10.00 额度')
+  })
+
+  it('follows a remaining amount with when it comes back', () => {
+    const now = new Date(2026, 10, 11, 10, 0)
+    const resetsAt = new Date(2026, 10, 12, 0, 0).toISOString()
+    expect(subscriptionResetSuffix(subscription({ nextResetAt: resetsAt }), null, now)).toBe(' · 明天 00:00 恢复')
+    expect(subscriptionResetSuffix(subscription({ nextResetAt: null }), null, now)).toBe('')
+    expect(subscriptionResetSuffix(subscription({ nextResetAt: resetsAt, status: 'expired' }), null, now)).toBe('')
+    const history = subscription({
+      source: 'sub2api', startedAt: new Date(2026, 10, 1, 9, 30).toISOString(), endsAt: new Date(2026, 11, 1, 9, 30).toISOString(),
+    })
+    const daily = { period: 'daily' as const, limit: 5, limitState: 'limited' as const, used: 1, windowStartedAt: new Date(2026, 10, 11).toISOString() }
+    const weekly = { period: 'weekly' as const, limit: 20, limitState: 'limited' as const, used: 4, windowStartedAt: new Date(2026, 10, 8, 9, 30).toISOString() }
+    expect(subscriptionResetSuffix(history, daily, now)).toBe(' · 明天 00:00 恢复')
+    expect(subscriptionResetSuffix(history, weekly, now)).toBe(' · 11月15日 09:30 恢复')
+    expect(subscriptionResetSuffix(history, { ...daily, windowStartedAt: null }, now)).toBe('')
   })
 
   it('matches a plan card to its own active subscription but never to a Sub2API group id', () => {
