@@ -1381,7 +1381,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
               fingerprint,
               nodeKind: node.kind,
               ...(candidates[0] ? { candidate: candidates[0] } : {}),
-              ...(candidates.length > 1 ? { candidates } : {}),
+              // Only a numbered batch (a grid split's slices) is kept whole; every other
+              // node caches its first picture as it always has.
+              ...(numbered && candidates.length > 1 ? { candidates } : {}),
               ...(result.outputText !== undefined ? { outputText: result.outputText } : {}),
               createdAt: completedAt.toISOString(),
               lastUsedAt: completedAt.toISOString(),

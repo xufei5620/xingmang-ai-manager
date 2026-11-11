@@ -1501,6 +1501,23 @@ describe('executeCanvasRun image preparations', () => {
   // the slice the canvas shows; out:images hands on all of them, each named by
   // its place, as on the web host. Choosing another slice reuses the cached
   // grid and leaves a batch connection's work cached too.
+  it('keeps caching only the first picture of a node that is not a grid split', async () => {
+    const pictures = [asset('a'.repeat(43)), asset('b'.repeat(43))]
+    const compare = vi.fn<CanvasNodeExecutor>(async () => ({ assets: pictures.map((picture) => structuredClone(picture)) }))
+    const stored: CanvasRunCacheEntry[] = []
+    const record = await executeCanvasRun(runOptions(graph([node('compare', 'image-compare')], []), {
+      executors: executors({ 'image-compare': compare }),
+      storeCache: async (entry) => { stored.push(structuredClone(entry)) },
+    }))
+    expect(record.status).toBe('succeeded')
+    const attempt = record.nodes.find((entry) => entry.nodeId === 'compare')!.attempts[0]
+    // Not numbered, not reordered, and the cache keeps the one picture it always kept.
+    expect(attempt.candidates.map((candidate) => [candidate.outputIndex, candidate.asset.assetId])).toEqual([[undefined, pictures[0].assetId], [undefined, pictures[1].assetId]])
+    expect(stored).toHaveLength(1)
+    expect(stored[0].candidate?.asset.assetId).toBe(pictures[0].assetId)
+    expect(stored[0]).not.toHaveProperty('candidates')
+  })
+
   it('hands on the shown slice over a single connection and every slice over the batch one', async () => {
     const slices = ['0', '1', '2', '3'].map((index) => asset(`${'s'.repeat(42)}${index}`))
     const split = vi.fn<CanvasNodeExecutor>(async () => ({ assets: slices.map((slice) => structuredClone(slice)) }))
