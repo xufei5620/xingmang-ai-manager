@@ -1184,3 +1184,50 @@ describe('chat text files in history', () => {
     expect(text).not.toContain('secret content')
   })
 })
+
+describe('saved phrases in chat history', () => {
+  it('keeps saved phrases across a reload and leaves the record unchanged when nothing else moved', async () => {
+    const state = { ...workspace(), phrases: ['回答尽量简短，用大白话', '帮我把这段话翻译成英文'] }
+    const files = memoryFiles()
+    const restored = await saveAndReopen(state, files)
+    expect(restored.warning).toBeUndefined()
+    expect(restored.state.phrases).toEqual(['回答尽量简短，用大白话', '帮我把这段话翻译成英文'])
+    expect(planHistoryWrite(restored.state, restored.saved)).toBeNull()
+  })
+
+  it('rewrites the index when only the phrases change and leaves conversations alone', () => {
+    const state = workspace()
+    const first = planHistoryWrite(state, null)!
+    const plan = planHistoryWrite({ ...state, phrases: ['新存的一句'] }, first.saved)!
+    expect(plan.write.put).toEqual([])
+    expect(JSON.parse(plan.write.index).phrases).toEqual(['新存的一句'])
+  })
+
+  it('redacts pasted keys out of saved phrases before they reach disk', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save({ ...workspace(), phrases: ['用这个密钥 sk-live-0123456789abcdef 试一下'] })
+    expect(files.raw()).not.toContain('sk-live-0123456789abcdef')
+  })
+
+  it('drops broken phrase entries instead of failing the whole history', () => {
+    const snapshot = snapshotOf(workspace())
+    const index = JSON.parse(snapshot.index!)
+    index.phrases = ['好的一句', 42, '', '   ', 'x'.repeat(2_001), null, ...Array.from({ length: 40 }, (_, position) => `第 ${position} 句`)]
+    const { state, unreadable } = parseHistorySnapshot({ ...snapshot, index: JSON.stringify(index) }, scope)
+    expect(unreadable).toEqual([])
+    expect(state.conversations).toHaveLength(1)
+    expect(state.phrases).toHaveLength(30)
+    expect(state.phrases?.[0]).toBe('好的一句')
+    expect(state.phrases).not.toContain('')
+  })
+
+  it('reads an index without phrases as an empty list', () => {
+    expect(parseHistorySnapshot(snapshotOf(workspace()), scope).state.phrases).toBeUndefined()
+  })
+
+  it('merges phrases saved while the record was unreadable ahead of the stored ones without duplicates', () => {
+    const loaded = { ...workspace(scope, 1), phrases: ['原来的一句', '两边都有'] }
+    const session = { ...createWorkspace(scope), phrases: ['新存的一句', '两边都有'] }
+    expect(mergeSessionIntoHistory(loaded, session).phrases).toEqual(['新存的一句', '两边都有', '原来的一句'])
+  })
+})

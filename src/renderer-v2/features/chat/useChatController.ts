@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import { chatTextFileFullMessage } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { chatLimits, inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
-import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile } from './state'
+import { activeConversation, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, changeConversation, chatErrorMessage, completeImages, continueInNewConversation, createConversation, createId, isConversationTooLongMessage, isGenerating, offlineSendMessage, pendingChatGroups, pickChatGroup, planTurn, removeDraftImage, renameConversation, saveConversation, setConversationPinned, settleChatModel, updateRequest, type ChatMode, type ChatSettings, type ChatSite, type ChatWorkspace, type Conversation, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, removeDraftFile, addChatPhrase, removeChatPhrase } from './state'
 import { autosaveDelay, ChatStorageError, conversationLimitMessage, createHistoryWriter, MAX_CONVERSATIONS, registerHistoryFlusher, unreadableConversationsNotice, type LoadedChatHistory } from './storage'
 import { useLatestRequest } from '../../latest-request'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
@@ -398,6 +398,9 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
     }
   }
   const removeFile = (index: number) => updateActive((item) => removeDraftFile(item, index))
+  // 「常用」里的话跟着账号的聊天记录一起存，换账号各是各的。
+  const savePhrase = (text: string) => commit((workspace) => ({ ...workspace, phrases: addChatPhrase(workspace.phrases, text) }))
+  const removePhrase = (index: number) => commit((workspace) => ({ ...workspace, phrases: removeChatPhrase(workspace.phrases, index) }))
   const removeConversation = (id: string) => {
     const item = stateRef.current.conversations.find((candidate) => candidate.id === id)
     if (item && isGenerating(item)) { setError('请先停止这个对话的请求，再删除记录'); return }
@@ -420,7 +423,7 @@ export function useChatController(api: ChatApi, scope: string, initial: LoadedCh
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
   // 以前的记录没读出来：这一回不往本机写，免得空记录盖掉原文件；页面上给「重新读取」。
   const historyUnreadable = Boolean(initial.warning)
-  return { site, attaching, pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive, pickFiles, removeFile }
+  return { site, attaching, pickImages, pasteImage, reuseImage, removeImage, state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, historyUnreadable, setError, setNotice, changeSettings, selectModel, selectMode, refreshGroups, refreshModels, refreshOnInteraction, newConversation, continueInNew, retryOfflineSend, clearAllConversations, dismissLengthNotice, openConversation, removeConversation, renameConversation: renameSavedConversation, pinConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive, pickFiles, removeFile, savePhrase, removePhrase }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {
