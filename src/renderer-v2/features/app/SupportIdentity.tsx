@@ -1,5 +1,6 @@
 import type { AccountSessionState } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
+import { calendarDaysBefore, formatClockTime } from '../../calendar-time'
 import { Button } from '../../ui'
 import type { WindowOs } from './window-os'
 
@@ -96,9 +97,14 @@ function supportReason(failure: SupportFailure): string | undefined {
   return failure.reason ?? (failure.detail ? '没认出是哪一类问题，原话在下面' : undefined)
 }
 
-/** 帮助框身份行下面那一行：「最近一次出错：14:37 打开 Codex 桌面端：……」。 */
-export function buildLastFailureLine(failure: SupportFailure): string {
-  const time = `${pad(failure.at.getHours())}:${pad(failure.at.getMinutes())}`
+/**
+ * 帮助框身份行下面那一行：「最近一次出错：14:37 打开 Codex 桌面端：……」。不是今天出的错带上哪天：
+ * 「最近一次出错：昨天 14:37 ……」，免得客户把昨天那次当成刚才的（D60）。
+ */
+export function buildLastFailureLine(failure: SupportFailure, now = Date.now()): string {
+  const days = calendarDaysBefore(failure.at.getTime(), now)
+  const earlier = days !== null && days > 0 ? formatClockTime(failure.at.getTime(), now) : null
+  const time = earlier ?? `${pad(failure.at.getHours())}:${pad(failure.at.getMinutes())}`
   const what = failure.action ?? failure.message
   const why = failure.reason ?? (failure.action ? supportOutcome(failure) : undefined) ?? failure.detail
   return redactSecretPatterns(why ? `最近一次出错：${time} ${what}：${why}` : `最近一次出错：${time} ${what}`)

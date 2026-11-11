@@ -172,9 +172,10 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 
 - 每次问 xAI 现在的 stable（`https://x.ai/cli/stable`，备用 `storage.googleapis.com/grok-build-public-artifacts/cli/stable`），再读本仓 `electron/cli-verified-versions.ts` 里 Grok 的推荐版本（星芒默认装它）。这两版的 x64、ARM64 都要在桶里；已经在桶里、对象大小和 ETag 没变的不再下，所以多数运行几分钟就结束。
 - 缺的那几个才从 xAI 下（x.ai 不通换 GCS 备用地址，不跟跳转，1 MB～512 MB），在 Windows 机器上先核 PE 头写的芯片和文件名一致，再用 `Get-AuthenticodeSignature` 核签名有效、签名者是 xAI 的两张证书之一：1.0.53 及更早是 X.AI LLC（SSL.com 签发），1.0.54 起是 X Corp.（GlobalSign 签发），签名者和签发机构都要对上（和客户端 `trusted-native-cli.ts` 同一份名单，#1051），核不过不传。文件不在同步机器上运行。
-- 失败时日志里搜 `stage-failed`，`failure.code` 是原因（#1084）：签名状态不是有效 `package-signature-invalid`，签名有效但签名者或签发机构不在名单上 `package-signer-mismatch`（多半是 xAI 又换了证书，两份名单要一起改），PE 头写的芯片和文件名不一致 `package-identity-mismatch`，签名检查程序没跑成 `inspector-failed`、结果读不出 `inspection-unparsable`，桶里清单不对 `cos-index-invalid`。签名对不上时 `failure.observed` 里是实际读到的签名状态、签名者和签发机构（公开的证书信息），芯片对不上时是 PE 头写的芯片；`sourceHost` 是这份文件从哪个官方地址下的。x.ai 和 GCS 每个没通的地址各打一行 `source-attempt-failed`，带地址名和脱敏后的原因（比如 HTTP 状态码），两个都不通时能看到各自卡在哪。
+- 失败时日志里搜 `stage-failed`，`failure.code` 是原因（#1084）：仓库里的许可文件缺了或是空的 `license-unreadable`（`stage` 是 `read-license`，在下载任何东西之前），签名状态不是有效 `package-signature-invalid`，签名有效但签名者或签发机构不在名单上 `package-signer-mismatch`（多半是 xAI 又换了证书，两份名单要一起改），PE 头写的芯片和文件名不一致 `package-identity-mismatch`，签名检查程序没跑成 `inspector-failed`、结果读不出 `inspection-unparsable`，桶里清单不对 `cos-index-invalid`。签名对不上时 `failure.observed` 里是实际读到的签名状态、签名者和签发机构（公开的证书信息），芯片对不上时是 PE 头写的芯片；`sourceHost` 是这份文件从哪个官方地址下的。x.ai 和 GCS 每个没通的地址各打一行 `source-attempt-failed`，带地址名和脱敏后的原因（比如 HTTP 状态码），两个都不通时能看到各自卡在哪。
 - 传到 `xingmang/offline/grok/<windows-x64|windows-arm64>/sha256-<SHA-256>/grok-<版本>-windows-<x86_64|aarch64>.exe`（`application/octet-stream`，不可覆盖），完整回读核过，最后才改 `latest.json`。清单留最近 12 版（stable 和推荐版本一定在），旧版文件不删；x64 一个一百六七十 MB。
 - 在 Windows 机器上跑，因为签名只有 Windows 能核。
+- Grok 是 Apache-2.0，转发要带上许可原文和 xAI 自己的第三方声明（决定单 D98，yoyo 2026-11-11 定「桶照旧」）。程序都传完、核过以后，把仓库里 `scripts/cos-licenses/grok-cli/` 的 `LICENSE.txt`、`THIRD_PARTY_NOTICES.md` 原样传到 `xingmang/offline/grok/licenses/sha256-<SHA-256>/<文件名>`（`text/plain; charset=utf-8`，不可覆盖），完整回读核过，写进 `latest.json` 顶层的 `license`：`spdx`（`Apache-2.0`）和 `files[]`，每份的 `fileName`、`key`、`url`、`bytes`、`sha256`、`contentType`、`cosEtag`。桶里已经有、对象没变的不再传；没变的运行照旧只刷新 `checkedAt`。文件从哪来、什么时候要改见 `scripts/cos-licenses/README.md`。客户端不读这个字段。
 
 打开 **Actions → sync-grok-cos → Run workflow**，分支选 `main` 即可手动跑一次；抬了 Grok 推荐版本、不想等下一次定时同步时也这么做。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/grok/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 
@@ -186,6 +187,7 @@ Codex 自己启动时要从 GitHub 同步 `openai/plugins` 这份目录，国内
 - 以前问的是 `latest.json`：那份只给旧版 Tauri 自动更新用，OpenCode 1.19.5（2026-10-28）起不再放，同步从那天起每次都卡在 `source-feed`（#1519）。桶里那时写的清单 `source.feedUrl` 还是旧地址，照样认。
 - 版本变了才下两种芯片的包（不跟跳转，10 MB～640 MB），在 Mac 机器上解开：必须正好是 `OpenCode.app`，bundle id `ai.opencode.desktop`、版本和 `latest-mac.yml` 一致、主程序芯片对得上，`codesign` 核 Team `5NZ4Q7NXJ4` 的 Developer ID 签名，Gatekeeper 放行，核不过不传。包里的东西不运行。
 - 传到 `xingmang/offline/opencode/<macos-arm64|macos-x64>/sha256-<SHA-256>/opencode-desktop-mac-<arm64|x64>.app.tar.gz`（`application/gzip`，不可覆盖），完整回读核过，最后才改 `latest.json`。清单只写当前一版，旧版文件不删；一个一百五十 MB 左右。
+- OpenCode 是 MIT，转发要带上许可原文，包里没有（决定单 D98）。两个包都在桶里以后，把 `scripts/cos-licenses/opencode-desktop/LICENSE.txt` 原样传到 `xingmang/offline/opencode/licenses/sha256-<SHA-256>/LICENSE.txt`，写进 `latest.json` 的 `license`（`spdx` 是 `MIT`，`files[]` 的写法同上一节 Grok）。版本没变、包也还在时不下包，只在许可文件缺了或变了时补传并重写清单；两样都没变就什么都不写。客户端不读这个字段。
 
 打开 **Actions → sync-opencode-cos → Run workflow**，分支选 `main` 即可手动跑一次。成功后检查 `https://xingmang-downloads-1342302199.cos.ap-shanghai.myqcloud.com/xingmang/offline/opencode/latest.json`。沿用现有 `xingmang/*` 的权限和 Secrets，不用新密钥。
 

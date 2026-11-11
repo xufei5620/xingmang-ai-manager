@@ -6,13 +6,15 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
 const { checkFailure, observedArchitectures, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { assertCompleteLicense, publishLicense, readLicenseFiles, validateLicense } = require('./cos-license-files.cjs')
 
 // Mac 上一键装 OpenCode 从 GitHub 下官方的 .app.tar.gz（electron/macos-desktop-app-installer.ts），国内时好时坏，
 // 以前靠加速。yoyo 2026-10-14 定「做」：和 Codex、Claude 桌面端一样放进星芒的腾讯云存储桶，客户端先从桶里下
 // （electron/desktop-package-bucket.ts），解开后照旧核 bundle id、Team ID 签名和 Gatekeeper；桶里没有或对不上，
 // 照旧去 GitHub。每次同步问 OpenCode 最新一版的 latest-mac.yml（客户端问的就是它），版本变了才下两种芯片的包。
 // 以前问的是 latest.json：那份只给旧版 Tauri 自动更新用，OpenCode 1.19.5（2026-10-28）起不再放（#1519，
-// 同步从那天起每次都卡在问版本这一步）。
+// 同步从那天起每次都卡在问版本这一步）。OpenCode 是 MIT，转发要带上许可原文，包里没有，所以单独放进桶、
+// 写进清单的 license（决定单 D98，见 cos-license-files.cjs）。
 //
 // Trust: the feed and the packages come only from github.com's release paths of
 // anomalyco/opencode and GitHub's two release-asset hosts; every redirect hop is checked
@@ -122,6 +124,7 @@ function validateLatest(value, publicUrl) {
     if (typeof file.cosEtag !== 'string' || !file.cosEtag || file.cosEtag.length > 256 || /[\r\n]/.test(file.cosEtag)) throw checkFailure('cos-index-invalid', 'COS 现有 OpenCode 清单缺少已核验对象指纹')
     platforms.add(file.platformId)
   }
+  validateLicense(value.license, { prefix: PREFIX, publicUrl, message: 'COS 现有 OpenCode 清单的许可文件记录无效' })
   return value
 }
 
@@ -198,13 +201,36 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
     const feedUrl = await resolveAssetUrl(FEED_URL, dependencies)
     return parseFeed(await dependencies.fetchText({ url: feedUrl, allowedHosts: ASSET_HOSTS, maxBytes: MAX_FEED_BYTES, headers: { accept: '*/*', 'user-agent': 'xingmang-opencode-cos-sync/1' } }))
   })
+  // Read before any download so a broken checkout fails fast; uploaded only once the packages are in.
+  const licenseFiles = await stage('read-license', {}, function () { return dependencies.readLicenseFiles() })
+  let intact = false
   if (old && old.version === version) {
-    let intact = true
+    intact = true
     for (const file of old.files) {
       if (!await stage('cos-check-existing', { platformId: file.platformId }, function () { return verifyUnchangedArtifact(store, file) })) intact = false
     }
-    if (intact) return { changed: false, manifest: old }
   }
+  async function publishPointer(files) {
+    const license = await publishLicense({ stage, store, prefix: PREFIX, product: PRODUCT, files: licenseFiles, previous: old?.license })
+    // Same packages and same texts as the pointer already lists: nothing to write. A pointer from
+    // before D98 has no license yet, so the first run after it gains one rewrites the pointer.
+    if (intact && JSON.stringify(license) === JSON.stringify(old.license)) return { changed: false, manifest: old }
+    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), version, source: { feedUrl: FEED_URL }, files, license }
+    await stage('validate-latest', {}, async function () {
+      validateLatest(manifest, store.publicUrl)
+      assertCompleteLicense(manifest.license, PRODUCT)
+    })
+    await stage('cos-recheck-latest', {}, async function () {
+      const current = validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
+      if (JSON.stringify(current) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'COS OpenCode 清单在同步期间发生变化，停止发布以保留现有状态')
+    })
+    latestState = 'write-unconfirmed'
+    await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
+    latestState = 'published-and-read-back'
+    return { changed: true, manifest }
+  }
+  // The packages in the bucket are still this version's: no download and no temporary directory.
+  if (intact) return publishPointer(old.files)
   const workDirectory = await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
   let primaryError
   try {
@@ -241,16 +267,7 @@ async function synchronizeOpenCode({ store, dependencies, progress, now = functi
         size: downloaded.bytes, sha256: downloaded.sha256, sourceUrl, cosEtag: head.etag,
       })
     }
-    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), version, source: { feedUrl: FEED_URL }, files }
-    await stage('validate-latest', {}, async function () { validateLatest(manifest, store.publicUrl) })
-    await stage('cos-recheck-latest', {}, async function () {
-      const current = validateLatest(await store.readJson(LATEST_KEY, { missingOk: true }), store.publicUrl)
-      if (JSON.stringify(current) !== JSON.stringify(old)) throw checkFailure('cos-index-changed', 'COS OpenCode 清单在同步期间发生变化，停止发布以保留现有状态')
-    })
-    latestState = 'write-unconfirmed'
-    await stage('cos-publish-latest', {}, function (onProgress) { return store.publishJson(LATEST_KEY, manifest, { overwrite: true, cacheControl: 'no-cache, max-age=0, must-revalidate', onProgress }) })
-    latestState = 'published-and-read-back'
-    return { changed: true, manifest }
+    return await publishPointer(files)
   } catch (error) {
     primaryError = error
     throw error
@@ -342,6 +359,7 @@ function createRuntimeDependencies(common) {
     fetchText: common.fetchText,
     downloadResource: common.downloadResource,
     requestHead: function (url) { return requestHead(url) },
+    readLicenseFiles: function () { return readLicenseFiles(PRODUCT) },
     inspectPackage: function (filePath, workDirectory, machine) { return inspectPackage(filePath, workDirectory, machine) },
     removeFile: function (filePath) { return fs.rm(filePath, { force: true }) },
     createWorkDirectory: async function () { return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-opencode-cos-')) },

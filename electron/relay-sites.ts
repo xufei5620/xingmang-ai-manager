@@ -93,6 +93,13 @@ export interface RelaySite {
   websiteUrl: string
   /** Page a user is sent to in order to obtain/manage an API key. */
   keysPageUrl: string
+  /**
+   * 这个账号的开票中心「申请开票」页（「我的订单」的「开发票」在软件里的开票窗口打开它，见
+   * invoice-portal-window.ts）。缺省 = 这个站没有开票中心，不出按钮。开票中心是另一套服务（xingmang-console
+   * 仓库的客户门户），客户在窗口里用同一个账号密码登录：它不收别处带过去的登录，所以这里只给地址，
+   * 不带任何凭据。不进外链白名单：这个地址只在开票窗口里开，不交给系统浏览器。
+   */
+  invoicePortalUrl?: string
   /** Which account backend (if any) this site's login/balance/key-management UI talks to. */
   accountBackend: 'new-api' | 'sub2api'
   /** Account API origin for this site. */
@@ -129,6 +136,9 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
     // 但探测必须永远跟着 CLI 实际调用的域走,不跟营销页走。
     websiteUrl: 'https://xm.solov.cc',
     keysPageUrl: 'https://xm.solov.cc/keys',
+    // 两个开票中心的域名与站点的对应以开票那边生产栈的 INVOICE_PORTAL_ORIGINS 为准；换了要跟着发版
+    // （开票窗口只许停在这个地址的 origin 上）。
+    invoicePortalUrl: 'https://invoice-xm.solov.cc/orders',
     accountBackend: 'new-api',
     accountBaseUrl: 'https://xm.solov.cc',
   },
@@ -143,6 +153,7 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
     },
     websiteUrl: 'https://api.solov.cc',
     keysPageUrl: 'https://api.solov.cc/keys',
+    invoicePortalUrl: 'https://invoice-api.solov.cc/orders',
     accountBackend: 'sub2api',
     accountBaseUrl: 'https://api.solov.cc',
   },
