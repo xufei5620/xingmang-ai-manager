@@ -1,5 +1,6 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
 import type {
+  CanvasImagePreparation,
   CanvasRunChargeEvent,
   CanvasRunEvent,
   CanvasRunGraph,
@@ -60,6 +61,12 @@ interface ActiveRun {
   exclusiveNodeIds: string[]
   controller: AbortController
   handle: CanvasRunHandle
+  /**
+   * The pictures this run waits on, from its latest waiting event (画布完善第
+   * 7 条第三步). The run file never holds them; listRuns and getRun add them
+   * back so a reloaded page can still answer.
+   */
+  imagePreparations?: CanvasImagePreparation[]
 }
 
 export interface CanvasRunPublication {
@@ -122,7 +129,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     const runId = randomUUID()
     const controller = new AbortController()
     const handle = {} as CanvasRunHandle
-    const activeRun = { userId: input.userId, ownerId: input.ownerId, lockKey, exclusiveNodeIds, controller, handle }
+    const activeRun: ActiveRun = { userId: input.userId, ownerId: input.ownerId, lockKey, exclusiveNodeIds, controller, handle }
     active.set(runId, activeRun)
     for (const nodeId of exclusiveNodeIds) nodeLocks.set(nodeLockId(lockKey, nodeId), runId)
     let admissionSettled = false
@@ -155,7 +162,10 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       },
       persistRecord: (record) => options.store.saveRun(input.userId, record),
       persistProgress: (record) => options.store.saveRun(input.userId, record, { deferWrite: true }),
-      onEvent: (event) => publish(event, input.userId, input.ownerId),
+      onEvent: (event) => {
+        if (event.type === 'run-waiting' && event.imagePreparations !== undefined) activeRun.imagePreparations = structuredClone(event.imagePreparations)
+        return publish(event, input.userId, input.ownerId)
+      },
     }).then((record) => {
       // The terminal record is on disk by now; its charges are checked a few seconds later.
       try {
@@ -241,13 +251,25 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     return () => listeners.delete(listener)
   }
 
+  // Only a run still going in this process, under the same account, waits on
+  // pictures; whatever a record read from the file says is dropped.
+  function withImagePreparations(run: CanvasRunRecord, userId: number): CanvasRunRecord {
+    const { imagePreparations: _stored, ...record } = run
+    const current = active.get(run.runId)
+    if (run.status !== 'running' || !current || current.userId !== userId || !current.imagePreparations?.length) return record
+    return { ...record, imagePreparations: structuredClone(current.imagePreparations) }
+  }
+
   return {
     initializeUser: (userId: number) => options.store.initializeUser(userId),
     listRuns: async (userId: number, projectId?: string) => {
       const runs = await options.store.listRuns(userId)
-      return projectId ? runs.filter((run) => run.projectId === projectId) : runs
+      return (projectId ? runs.filter((run) => run.projectId === projectId) : runs).map((run) => withImagePreparations(run, userId))
     },
-    getRun: (userId: number, runId: string) => options.store.getRun(userId, runId),
+    getRun: async (userId: number, runId: string) => {
+      const run = await options.store.getRun(userId, runId)
+      return run ? withImagePreparations(run, userId) : run
+    },
     getAssetLineage: (userId: number, assetIds: readonly string[]) => options.store.getAssetLineage(userId, assetIds),
     listAssetIdsByLineage: (userId: number, selector: { runId?: string; nodeId?: string }) => options.store.listAssetIdsByLineage(userId, selector),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
@@ -260,7 +282,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     completePreparation: async (userId: number, ownerId: number, completion: CanvasRunPreparationCompletion) => {
       const run = active.get(completion.runId)
       if (!run || run.userId !== userId || run.ownerId !== ownerId || !options.preparations) {
-        throw new Error('这一帧不在等待中，可能已经超时或运行已停止')
+        throw new Error(completion.kind === 'image' ? '这次图片处理不在等待中，可能已经超时或运行已停止' : '这一帧不在等待中，可能已经超时或运行已停止')
       }
       await options.preparations.complete(userId, completion)
     },

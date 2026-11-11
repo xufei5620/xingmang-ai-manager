@@ -3,7 +3,16 @@ import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-proto
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
 import { assertCanvasImageEditMaskInput, buildCanvasImageMaskPng } from './canvas-image-mask'
 import { assertCanvasTextImageInput } from './canvas-text-image-input'
-import type { CanvasFrameExtraction } from './canvas-run-preparations'
+import type { CanvasFrameExtraction, CanvasImageToolProcessing } from './canvas-run-preparations'
+import {
+  canvasImageTransformKindForNode,
+  canvasImageTransformProcessorRevision,
+  maximumCanvasImageTransformInputs,
+  orderCanvasCollageSources,
+  parseCanvasImageTransformRecipe,
+  selectCanvasTileSource,
+} from './canvas-image-tools'
+import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRunAsset } from './canvas-run-contract'
 import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
@@ -159,6 +168,8 @@ export function createCanvasNodeExecutors(options: {
   textGroup?: string
   /** Frame-extract nodes run only with it (画布完善第 7 条第二步); without it they stay refused. */
   frames?: CanvasFrameExtraction
+  /** Image-tool nodes run only with it (第三步); without it they stay refused. */
+  imageTools?: CanvasImageToolProcessing
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
   const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
@@ -374,6 +385,58 @@ export function createCanvasNodeExecutors(options: {
       await reportFramePreparation(preparation, false)
     }
   }
+  // 画布完善第 7 条第三步：裁剪、拼图、平铺、图层合成。主进程不处理像素，只核对来源是这个账号、这个项目的
+  // 图片、张数和大小在网页版的上限内，再请页面按节点上的参数做好交回来。不发任何付费请求。
+  const imageTransform: CanvasNodeExecutors['image-crop'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportImagePreparation }) => {
+    const label = canvasRunImageToolNodeLabels[node.kind as keyof typeof canvasRunImageToolNodeLabels] ?? '图片处理'
+    const tools = options.imageTools
+    const kind = canvasImageTransformKindForNode(node.kind)
+    if (!tools || !reportImagePreparation || !kind) throw new Error(`「${label}」节点桌面版暂不支持，本次没有提交任何付费请求`)
+    if (!projectId) throw new Error('画布项目尚未选择，无法保存图片处理结果')
+    if (!node.data.imageTransform) throw new Error('请先设置图像工具参数')
+    // Parsed when the run started; read again here only for what the pictures are checked against.
+    const { expectation, layerGroups } = parseCanvasImageTransformRecipe(node.kind, node.data.imageTransform, { remaining: Number.MAX_SAFE_INTEGER })
+    const connected = inputs.imageSources ?? []
+    let sources = connected
+    if (kind === 'collage') sources = orderCanvasCollageSources(connected, node.data.imageCollageInputOrder)
+    if (kind === 'tile') {
+      const chosen = selectCanvasTileSource(connected, node.data.tileInput)
+      sources = chosen ? [chosen] : []
+    }
+    // The kernel checks the rest (collage capacity, layer references) before the run starts.
+    if ((kind === 'crop' || kind === 'tile') && sources.length !== 1) throw new Error(kind === 'crop' ? '裁剪只能使用一个图片来源' : '平铺图片每次只能使用一张输入图片')
+    if (kind === 'collage' && sources.length < 1) throw new Error('请连接可读取的图片来源')
+    if (sources.length > maximumCanvasImageTransformInputs) throw new Error('图片处理最多用 20 张图片')
+    const sourceAssetIds = sources.map((source) => source.asset.assetId)
+    await tools.assertSources(userId, projectId, sourceAssetIds)
+    throwIfCancelled(signal)
+    // The web host names the operation after the attempt too; the kernel checks they match.
+    const preparation: CanvasImagePreparation = {
+      operationId: attemptId,
+      attemptId,
+      runId,
+      projectId,
+      nodeId: node.id,
+      sourceAssetIds,
+      recipe: structuredClone(node.data.imageTransform),
+      ...(layerGroups ? { layerGroupsVersion: 1 as const } : {}),
+      processorRevision: canvasImageTransformProcessorRevision,
+    }
+    const pictures = tools.waitForImages({ runId, userId, projectId, preparation, expectation, signal })
+    void pictures.catch(() => undefined)
+    try {
+      await reportImagePreparation(preparation, true)
+      return { assets: await pictures }
+    } finally {
+      await reportImagePreparation(preparation, false)
+    }
+  }
+  // 图片对比、全景预览不处理图片，跟网页版一样把连进来的图原样往下传。
+  const imagePassThrough: CanvasNodeExecutors['image-compare'] = async ({ inputs }) => {
+    const images: CanvasRunAsset[] = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    if (images.length === 0) throw new Error('请连接可读取的图片来源')
+    return { assets: images.map((asset) => structuredClone(asset)) }
+  }
   const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal, billing }) => {
     const script = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim()
     if (!script) throw new Error('请先连接或粘贴剧本文本')
@@ -463,5 +526,13 @@ export function createCanvasNodeExecutors(options: {
     'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,
     'drama-character': dramaAsset, 'drama-scene': dramaAsset, 'drama-prop': dramaAsset,
     'text-generate': textGenerate,
+    ...(options.imageTools ? {
+      'image-crop': imageTransform,
+      'image-collage': imageTransform,
+      'image-tile': imageTransform,
+      'image-layer': imageTransform,
+      'image-compare': imagePassThrough,
+      'image-panorama': imagePassThrough,
+    } : {}),
   }
 }

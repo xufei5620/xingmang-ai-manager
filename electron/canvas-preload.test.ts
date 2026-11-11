@@ -215,4 +215,48 @@ describe('canvas sandbox preload', () => {
     expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', png: new Blob([new Uint8Array(20 * 1024 * 1024 + 1)]) }))).message).toBe('视频帧图片超过 20 MB，没有保存')
     expect(invoke).toHaveBeenCalledTimes(2)
   })
+
+  // 画布完善第 7 条第三步: the source pictures of an image tool and what the kernel made of them.
+  it('reads an image-tool source by its asset address only, within the per-picture limit', async () => {
+    const assetId = 'A'.repeat(43)
+    const fetch = vi.fn(async (_url: string, _init: unknown) => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'image/png' } }))
+    const invoke = vi.fn(async () => null)
+    const bridge = loadCanvasBridge(invoke, () => '', { fetch, Blob })
+
+    const picture = await bridge.readImageForRunPreparation(assetId) as Blob
+    expect(fetch).toHaveBeenCalledWith(`xingmang-asset://image/${assetId}`, { cache: 'no-store', redirect: 'error' })
+    expect(picture.size).toBe(3)
+    expect(invoke).not.toHaveBeenCalled()
+    for (const wrong of ['../etc/passwd', 'C:\\photo.png', `${assetId}/x`, 42]) {
+      expect((await rejection(bridge.readImageForRunPreparation(wrong))).message).toBe('图片素材标识格式错误')
+    }
+    expect(fetch).toHaveBeenCalledTimes(1)
+    fetch.mockResolvedValueOnce(new Response(null, { status: 404 }))
+    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片读不出来，请确认素材还在')
+    fetch.mockResolvedValueOnce(new Response('x', { headers: { 'content-length': String(20 * 1024 * 1024 + 1) } }))
+    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片超过 20 MB，画布处理不了')
+    fetch.mockResolvedValueOnce(new Response(new Uint8Array(20 * 1024 * 1024 + 1)))
+    expect((await rejection(bridge.readImageForRunPreparation(assetId))).message).toBe('图片超过 20 MB，画布处理不了')
+  })
+
+  it('hands image-tool pictures back as bytes with the ids, and a failure with nothing else', async () => {
+    const invoke = vi.fn(async (..._args: unknown[]) => undefined)
+    const bridge = loadCanvasBridge(invoke, () => '', { Blob })
+    const ids = { runId: 'run-1', operationId: 'attempt-2', kind: 'image' }
+
+    await bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [new Blob([new Uint8Array([0x89, 0x50])], { type: 'image/png' }), new Blob([new Uint8Array([7])])], png: new Blob([new Uint8Array([1])]), names: ['a.png'] })
+    const sent = invoke.mock.calls[0][1] as Record<string, unknown>
+    expect(Object.keys(sent).sort()).toEqual(['kind', 'operationId', 'outcome', 'pngs', 'runId'])
+    expect((sent.pngs as Uint8Array[]).map((bytes) => [...bytes])).toEqual([[0x89, 0x50], [7]])
+    await bridge.completeRunPreparation({ ...ids, outcome: 'failed', pngs: [new Blob([new Uint8Array([1])])] })
+    expect(invoke.mock.calls[1]).toEqual(['canvas-host:complete-run-preparation', { ...ids, outcome: 'failed' }])
+
+    for (const wrong of [undefined, [], [new Uint8Array([1])], ['C:\\a.png'], Array.from({ length: 17 }, () => new Blob([new Uint8Array([1])]))]) {
+      expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: wrong }))).message).toBe('图片处理结果内容格式错误')
+    }
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [new Blob([new Uint8Array(20 * 1024 * 1024 + 1)])] }))).message).toBe('图片处理结果超过 20 MB，没有保存')
+    const large = new Blob([new Uint8Array(20 * 1024 * 1024)])
+    expect((await rejection(bridge.completeRunPreparation({ ...ids, outcome: 'completed', pngs: [large, large, large, large] }))).message).toBe('图片处理结果合计超过 64 MB，没有保存')
+    expect(invoke).toHaveBeenCalledTimes(2)
+  })
 })

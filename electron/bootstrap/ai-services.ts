@@ -28,7 +28,7 @@ import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from '../c
 import { CanvasProjectStore } from '../canvas-project-store'
 import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
 import { createCanvasRunChargeChecker } from '../canvas-run-charges'
-import { CanvasRunPreparationBroker, createCanvasFrameExtraction } from '../canvas-run-preparations'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction, createCanvasImageToolProcessing } from '../canvas-run-preparations'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
 import { readCanvasTextImages } from '../canvas-text-image-input'
@@ -582,6 +582,15 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
           broker: canvasRunPreparations,
           assets: canvasProjectAssets,
           onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '视频帧已保存，但来源信息保存失败', {
+            assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        }),
+        // 画布完善第 7 条第三步：图片工具等页面交回的图。运行图里的图片工具节点只在 imageTools 打开后才收（canvas-request-parser.ts）。
+        imageTools: createCanvasImageToolProcessing({
+          broker: canvasRunPreparations,
+          assets: canvasProjectAssets,
+          onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '图片处理结果已保存，但来源信息保存失败', {
             assetId,
             reason: error instanceof Error ? error.message : String(error),
           }),
