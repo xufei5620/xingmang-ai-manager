@@ -99,6 +99,14 @@ export function ipcLogDetail(channel: string, args: unknown[], result: unknown, 
     detail.action = first.action
     detail.id = first.id
   }
+  // 「星芒占用的空间」：清的是哪一样、腾出多少、几份没删掉，客服看得出清理有没有用。只有数，没有路径（I13）。
+  if (channel === 'storage:clean' && typeof first === 'string') {
+    detail.target = first
+    if (isRecord(result)) {
+      detail.freedBytes = result.freedBytes
+      detail.kept = result.kept
+    }
+  }
   // 「装上了但连不上」是这一页最常见的工单。日志里只留条数，原因文本来自 CLI
   // 输出，不进日志（I13）。
   if (channel === 'extensions:check-mcp-health' && isRecord(result) && Array.isArray(result.entries)) {

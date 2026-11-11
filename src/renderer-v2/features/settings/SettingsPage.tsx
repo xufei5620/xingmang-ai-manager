@@ -45,6 +45,7 @@ import {
 import { shortcutTools } from '../../registry/tools'
 import { AppUninstallRow } from '../app/AppUninstall'
 import { BackupCard } from './BackupCard'
+import { StorageCard } from './StorageCard'
 import { CodexRemoteCard } from './codex-remote/CodexRemoteCard'
 import { VersionCard } from './VersionCard'
 import { RelayRouteRestartNotice, RelayRouteRow } from '../app/RelayRouteSettings'
@@ -199,6 +200,8 @@ export function SettingsPage({
   }), [api, setResourceData])
   const operation = useOperation()
   const showToast = useToast().show
+  // 「星芒占用的空间」清掉旧备份就加一，「工具配置备份」那张卡跟着重读。
+  const [backupsRevision, setBackupsRevision] = useState(0)
   const systemApi = platformApi()
   const [systemState, setSystemState] = useState<PlatformSystemState | null>(
     null,
@@ -526,8 +529,11 @@ export function SettingsPage({
         navigate={navigate}
         onRestored={onBackupRestored}
         installedProviders={installedProviders}
+        reloadSignal={backupsRevision}
       />
     ),
+    // 星芒占用的空间（D100）：切到这一组时新挂上、算一次；清掉旧备份后叫上面那张备份卡重读。
+    storage: <StorageCard key="storage" api={api} active={active} onBackupsCleaned={() => setBackupsRevision((value) => value + 1)} />,
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
     'codex-remote': <CodexRemoteCard key="codex-remote" api={api} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。

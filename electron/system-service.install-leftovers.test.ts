@@ -3,8 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
-import type { InstallLeftoverLocation, InstallLeftoverSweepResult } from './install-leftovers'
+import type { InstallLeftoverLocation, InstallLeftoverSweepOptions, InstallLeftoverSweepResult } from './install-leftovers'
 import {
+  installLeftoverMinimumAgeMs,
   managedNpmTransactionLeftoverPrefixes,
   managedNpmTransactionPreservedEntries,
   trustedCacheLeftoverPrefixes,
@@ -34,6 +35,7 @@ function createFixture(
     platform: 'linux',
     windowsExecutionMode: 'same-user',
   },
+  measure?: (locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => Promise<number>,
 ) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-leftover-service-')))
   temporaryDirectories.push(root)
@@ -47,6 +49,7 @@ function createFixture(
       findExecutable: vi.fn(async () => null),
       runtimeLog: { log },
       ...(sweep ? { sweepInstallLeftovers: sweep } : {}),
+      ...(measure ? { measureInstallLeftovers: measure } : {}),
     },
   )
   return { service, log, home }
@@ -171,5 +174,59 @@ describe('cleaning up downloads left by interrupted installs', () => {
     await new Promise((resolve) => setTimeout(resolve, 20))
 
     expect(sweep).not.toHaveBeenCalled()
+  })
+})
+
+describe('the manual clean on the storage card', () => {
+  it('does not wait six hours when running with the user\'s own rights, and says so in the log', async () => {
+    const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[], _options?: InstallLeftoverSweepOptions) => ({ removed: 1, freedBytes: 80 * 1024 * 1024, failed: 1 }))
+    const { service, log } = createFixture(sweep)
+
+    await expect(service.cleanInstallLeftoversNow()).resolves.toEqual({ removed: 1, freedBytes: 80 * 1024 * 1024, failed: 1 })
+
+    expect(sweep.mock.calls[0]?.[1]).toEqual({ minimumAgeMs: 0 })
+    expect(sweep.mock.calls[0]?.[0][0]).toEqual({ directory: os.tmpdir(), prefixes: [...userTemporaryLeftoverPrefixes, 'InstallerCache-'] })
+    expect(log).toHaveBeenCalledWith('warn', 'install', 'install-leftovers.manual-cleaned', expect.stringContaining('80 MB'), { removed: 1, freedBytes: 80 * 1024 * 1024, failed: 1 })
+  })
+
+  it('keeps the six hours as administrator on Windows, where every account shares the folders', async () => {
+    const sweep = vi.fn(async (_locations: readonly InstallLeftoverLocation[], _options?: InstallLeftoverSweepOptions) => ({ removed: 0, freedBytes: 0, failed: 0 }))
+    const measure = vi.fn(async () => 0)
+    const { service } = createFixture(sweep, { platform: 'win32', windowsExecutionMode: 'trusted-only' }, measure)
+
+    await service.cleanInstallLeftoversNow()
+    await service.measureInstallLeftoversNow()
+
+    expect(sweep.mock.calls[0]?.[1]).toEqual({ minimumAgeMs: installLeftoverMinimumAgeMs })
+    expect(measure.mock.calls[0]?.[1]).toEqual({ minimumAgeMs: installLeftoverMinimumAgeMs })
+  })
+
+  it('waits in the installation queue behind an install and keeps its own place apart from the automatic sweep', async () => {
+    let release!: () => void
+    const sweep = vi.fn((_locations: readonly InstallLeftoverLocation[], options?: InstallLeftoverSweepOptions) => options
+      ? Promise.resolve({ removed: 0, freedBytes: 0, failed: 0 })
+      : new Promise<InstallLeftoverSweepResult>((resolve) => {
+          release = () => resolve({ removed: 0, freedBytes: 0, failed: 0 })
+        }))
+    const { service } = createFixture(sweep)
+
+    const automatic = service.cleanupInstallLeftovers()
+    await vi.waitFor(() => expect(sweep).toHaveBeenCalledTimes(1))
+    const manual = service.cleanInstallLeftoversNow()
+    expect(service.inspectInstallationQueue()).toEqual({ activeKey: 'maintenance:install-leftovers', pendingKeys: ['maintenance:install-leftovers-manual'] })
+    release()
+    await Promise.all([automatic, manual])
+    expect(sweep.mock.calls[1]?.[1]).toEqual({ minimumAgeMs: 0 })
+  })
+
+  it('measures with the same rule without queueing, and measures nothing when no measurer is wired in', async () => {
+    const measure = vi.fn(async () => 7168)
+    const { service } = createFixture(undefined, undefined, measure)
+    await expect(service.measureInstallLeftoversNow()).resolves.toBe(7168)
+    expect(measure.mock.calls[0]?.[1]).toEqual({ minimumAgeMs: 0 })
+
+    const bare = createFixture()
+    await expect(bare.service.measureInstallLeftoversNow()).resolves.toBe(0)
+    await expect(bare.service.cleanInstallLeftoversNow()).resolves.toEqual({ removed: 0, freedBytes: 0, failed: 0 })
   })
 })

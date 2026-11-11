@@ -131,6 +131,8 @@ function serviceStub(): SystemService {
     onInstallationQueueChange: vi.fn(() => () => undefined),
     enqueueCodexRemoteLaunch: vi.fn() as never,
     cleanupInstallLeftovers: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
+    measureInstallLeftoversNow: vi.fn(async () => 0),
+    cleanInstallLeftoversNow: vi.fn(async () => ({ removed: 0, freedBytes: 0, failed: 0 })),
     installExternalClient: vi.fn() as never,
     cancelExternalClientInstall: vi.fn(() => ({ cancelled: false, reason: '正在安装 Claude Desktop，这一步中断会留下装了一半的程序，请等它结束。' })),
     launchExternalClient: vi.fn(async () => undefined),
@@ -6717,6 +6719,37 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('storage:inspect and storage:clean', () => {
+    // 「星芒占用的空间」那张卡只能说是哪一行、清哪一样，给不了路径（I5）。
+    it('turns away anything but a known row or target before measuring or deleting', async () => {
+      const storageUsage = {
+        inspect: vi.fn(async () => ({ bytes: 1024 })),
+        clean: vi.fn(async () => ({ freedBytes: 2048, kept: 0 })),
+      }
+      register(serviceStub(), undefined, undefined, undefined, undefined, undefined, {}, { storageUsage })
+      const inspect = electronMocks.handlers.get('storage:inspect')!
+      const clean = electronMocks.handlers.get('storage:clean')!
+      for (const value of ['../../Windows', 'C:\\Users', 'chat', null, { part: 'works' }]) {
+        await expect(inspect(trustedEvent(), value)).rejects.toThrow('不认识要算的是哪一样')
+      }
+      // 作品、聊天记录、日志只列大小，不给删。
+      for (const value of ['works', 'chat-history', 'logs', '../backups', null]) {
+        await expect(clean(trustedEvent(), value)).rejects.toThrow('不认识要清理的是哪一样')
+      }
+      expect(storageUsage.inspect).not.toHaveBeenCalled()
+      expect(storageUsage.clean).not.toHaveBeenCalled()
+
+      await expect(inspect(trustedEvent(), 'works')).resolves.toEqual({ bytes: 1024 })
+      await expect(clean(trustedEvent(), 'thumbnails')).resolves.toEqual({ freedBytes: 2048, kept: 0 })
+      expect(storageUsage.clean).toHaveBeenCalledExactlyOnceWith('thumbnails')
+    })
+
+    it('says this version cannot do it yet when the host gave no service', async () => {
+      register(serviceStub())
+      await expect(electronMocks.handlers.get('storage:inspect')!(trustedEvent(), 'logs')).rejects.toThrow('这个版本还不能算占用的空间')
+    })
+  })
+
   describe('diagnostics:check-connection on a rejected managed key', () => {
     const rejected = {
       ok: false, layer: 'credential' as const, provider: 'claude' as const, siteId: 'solov',
@@ -9175,6 +9208,7 @@ describe('IPC channel log and account policies', () => {
         'settings:get',
         'setup:codex-status',
         'startup:codex-readiness',
+        'storage:inspect',
         'system:refresh-network-location',
         'system:scan',
         'update:get-state',

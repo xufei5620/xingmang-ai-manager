@@ -2366,6 +2366,47 @@ test('an empty backup list says where backups come from and backs up the tool pi
   }
 })
 
+// 决定单 D100：「备份迁移」最下面那张「星芒占用的空间」。清旧备份要先确认，清缩略图直接清；聊天记录和日志只列大小。
+test('the storage card lists six sizes and only cleans old backups after a confirmation', async () => {
+  const page = await fixture('page=backups')
+  try {
+    const card = page.getByTestId('settings-storage')
+    await card.getByTestId('settings-storage-total').getByText('一共约 3.1 GB', { exact: true }).waitFor()
+    await card.getByTestId('settings-storage-size-works').getByText('约 2.1 GB', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-storage-row-chat-history').getByRole('button').count(), 0)
+    assert.equal(await card.getByTestId('settings-storage-row-logs').getByRole('button').count(), 0)
+    await card.getByText('改工具配置之前自动存的旧配置，一共 24 份。', { exact: true }).waitFor()
+
+    await card.getByTestId('settings-storage-clean-backups').click()
+    const dialog = page.getByRole('dialog', { name: '清理旧备份？', exact: true })
+    await dialog.getByText('只留最近 10 份，更早的 14 份删掉。最近这 10 份照样能在上面的「工具配置备份」里恢复。', { exact: true }).waitFor()
+    assert.equal((await calls(page)).some((call) => call.name === 'clean-storage'), false)
+    await dialog.getByTestId('settings-storage-backups-confirm').click()
+    await waitForToast(page, '已清理，腾出约 120 MB。')
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups'])
+    // 只重算清掉的那一行：剩下最近 10 份，按钮灰掉。
+    await card.getByTestId('settings-storage-row-backups').getByText('只有最近 10 份，不用清理', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-storage-clean-backups').isDisabled(), true)
+
+    await card.getByTestId('settings-storage-clean-thumbnails').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'clean-storage').length === 2)
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups', 'thumbnails'])
+  } finally {
+    await page.close()
+  }
+})
+
+test('the storage card will not clean downloads while a tool is installing', async () => {
+  const page = await fixture('page=backups&storageInstalling')
+  try {
+    const row = page.getByTestId('settings-storage-row-downloads')
+    await row.getByText('正在装工具，装完再清理', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('settings-storage-clean-downloads').isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
 // 搜索框去掉了（v4 批09）；认备份靠的仍是列表上写的时间和工具名，不是谁也看不到的 id。
 test('backup rows are named by the time they were taken and the tool, never by an id nobody sees', async () => {
   const page = await fixture('page=backups')
