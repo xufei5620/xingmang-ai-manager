@@ -46,8 +46,9 @@ async function pickOption(page, testId, value) {
   await page.getByTestId(testId).click()
   await page.getByTestId(`${testId}-option-${value}`).click()
 }
-async function open(query = '', clock = false, initScript = null) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+// timezoneId pins the page to a time zone; omitted, it follows the machine the test runs on.
+async function open(query = '', clock = false, initScript = null, timezoneId = null) {
+  const page = await browser.newPage({ viewport: { width: 1280, height: 820 }, ...(timezoneId ? { timezoneId } : {}) })
   await page.addInitScript(recordToasts)
   if (initScript) await page.addInitScript(initScript)
   // The host outlives a renderer reload and does not share the page's localStorage.
@@ -6321,7 +6322,8 @@ test('a new timeline entry shows up with the next balance refresh without anothe
 })
 
 test('recharge activity card lists bonus tiers and an activity bar stays on top after it is dismissed', async () => {
-  const page = await open('', true, () => { document.hasFocus = () => true })
+  // 公告里的截止按北京时间算（时间数字格式 N-5）。钉在洛杉矶，看不是北京时间的电脑上补不补「（北京时间）」。
+  const page = await open('', true, () => { document.hasFocus = () => true }, 'America/Los_Angeles')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.evaluate(() => {
@@ -6337,13 +6339,14 @@ test('recharge activity card lists bonus tiers and an activity bar stays on top 
     assert.equal(await card.getByTestId('announcement-promo-tier-10').count(), 0)
     assert.equal((await card.textContent()).includes('solov'), false)
     await card.getByTestId('announcement-promo-others').getByText('邀请有礼', { exact: false }).waitFor()
+    assert.equal(await card.getByTestId('announcement-promo-deadline').textContent(), ' · 9月20日 23:59（北京时间）结束，还剩 8 天')
     // 大卡片在说活动时，首页不挂活动条，也不再出灰条。
     assert.equal(await page.getByTestId('announcement-promo-bar').count(), 0)
     assert.equal(await page.getByTestId('announcement-banner').count(), 0)
     await card.getByTestId('announcement-promo-dismiss').click()
     const bar = page.getByTestId('announcement-promo-bar')
     await bar.waitFor()
-    assert.deepEqual(await bar.locator('.v2-promo-bar-item').allTextContents(), ['充值满赠9月20日截止，还剩 8 天', '邀请有礼'])
+    assert.deepEqual(await bar.locator('.v2-promo-bar-item').allTextContents(), ['充值满赠9月20日（北京时间）截止，还剩 8 天', '邀请有礼'])
     await page.getByTestId('announcement-promo-bar-close').click()
     await bar.waitFor({ state: 'hidden' })
     assert.equal(await card.count(), 0)
