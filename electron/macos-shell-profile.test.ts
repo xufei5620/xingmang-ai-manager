@@ -27,6 +27,8 @@ function stampPath(home: string): string {
   return path.join(home, 'Library', 'Application Support', 'XingMangAI', 'terminal-commands-added')
 }
 
+// 下面每次调 ensureMacosShellProfile 都传 env: {}：不传就读这台机器自己的 XDG_CONFIG_HOME（GitHub 的 Linux 机器上设了），
+// 既找错 fish 文件夹，也可能写进开发者真的 fish 设置。
 function fishProfilePath(home: string): string {
   return path.join(home, '.config', 'fish', 'conf.d', 'xingmang-ai-manager.fish')
 }
@@ -157,7 +159,7 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
   it('creates ~/.zprofile with the block and records that it did', async () => {
     const home = homeDirectory()
 
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
 
     expect(fs.readFileSync(path.join(home, '.zprofile'), 'utf8')).toBe(buildMacosShellProfileBlock())
   })
@@ -167,8 +169,8 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
     const profile = path.join(home, '.zprofile')
     fs.writeFileSync(profile, 'eval "$(/opt/homebrew/bin/brew shellenv)"\n')
 
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('present')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('present')
 
     expect(fs.readFileSync(profile, 'utf8')).toBe(`eval "$(/opt/homebrew/bin/brew shellenv)"\n\n${buildMacosShellProfileBlock()}`)
   })
@@ -177,21 +179,21 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
     const home = homeDirectory()
     fs.mkdirSync(path.dirname(stampPath(home)), { recursive: true })
 
-    await expect(ensureMacosShellProfile({ reason: 'startup', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+    await expect(ensureMacosShellProfile({ reason: 'startup', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
     expect(fs.existsSync(stampPath(home))).toBe(true)
     fs.writeFileSync(path.join(home, '.zprofile'), 'export A=1\n')
 
-    await expect(ensureMacosShellProfile({ reason: 'startup', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('already-handled')
+    await expect(ensureMacosShellProfile({ reason: 'startup', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('already-handled')
     expect(fs.readFileSync(path.join(home, '.zprofile'), 'utf8')).toBe('export A=1\n')
 
     // Installing a tool again is an explicit ask, so the block comes back.
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
   })
 
   it('does not write anything, the record included, for a login shell it does not handle', async () => {
     const home = homeDirectory()
 
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/tcsh' })).resolves.toBe('unsupported-shell')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/tcsh', env: {} })).resolves.toBe('unsupported-shell')
 
     expect(fs.readdirSync(home)).toEqual([])
   })
@@ -202,7 +204,7 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
     fs.writeFileSync(target, 'export A=1\n')
     fs.symlinkSync(target, path.join(home, '.zprofile'))
 
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).rejects.toThrow('终端启动设置')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).rejects.toThrow('终端启动设置')
 
     expect(fs.readFileSync(target, 'utf8')).toBe('export A=1\n')
   })
@@ -213,8 +215,8 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
       const home = homeDirectory()
       fs.mkdirSync(path.join(home, '.config', 'fish'), { recursive: true })
 
-      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
-      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('present')
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('present')
 
       expect(fs.readFileSync(path.join(home, '.zprofile'), 'utf8')).toBe(buildMacosShellProfileBlock())
       expect(fs.readFileSync(fishProfilePath(home), 'utf8')).toBe(buildMacosFishProfile())
@@ -225,7 +227,7 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
       fs.writeFileSync(path.join(home, '.zprofile'), buildMacosShellProfileBlock())
       fs.mkdirSync(path.join(home, '.config', 'fish'), { recursive: true })
 
-      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
 
       expect(fs.readFileSync(fishProfilePath(home), 'utf8')).toBe(buildMacosFishProfile())
     })
@@ -233,7 +235,7 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
     it('does not create a fish config folder that is not there', async () => {
       const home = homeDirectory()
 
-      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })).resolves.toBe('added')
 
       expect(fs.existsSync(path.join(home, '.config'))).toBe(false)
     })
@@ -251,6 +253,7 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
         reason: 'install',
         homeDirectory: home,
         loginShell: '/bin/zsh',
+        env: {},
         skipped: (file) => skipped.push(file),
       })).resolves.toBe('added')
 
@@ -263,7 +266,7 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
 
   describe('for a bash account', () => {
     function ensure(home: string, reason: 'install' | 'startup' = 'install') {
-      return ensureMacosShellProfile({ reason, homeDirectory: home, loginShell: '/bin/bash' })
+      return ensureMacosShellProfile({ reason, homeDirectory: home, loginShell: '/bin/bash', env: {} })
     }
 
     it('appends to an existing ~/.bash_profile and leaves ~/.profile, which bash then skips, alone', async () => {
@@ -417,7 +420,7 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
     const home = homeDirectory()
     const probe = installProbe(home)
 
-    await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })
+    await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh', env: {} })
 
     const { stdout, stderr } = runLoginShell(zsh ?? '', home, 'command -v xingmang-probe')
     expect(stdout, stderr).toBe(`${probe}\n`)
@@ -434,7 +437,7 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
       const probe = installProbe(home)
       for (const [name, content] of Object.entries(files)) fs.writeFileSync(path.join(home, name), content)
 
-      await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/bash' })
+      await ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/bash', env: {} })
 
       const { stdout, stderr } = runLoginShell(bash ?? '', home, 'command -v xingmang-probe')
       expect(stdout, stderr).toBe(`${probe}\n`)
@@ -447,7 +450,7 @@ describe.runIf(process.platform !== 'win32')('a new login shell after the check'
     fs.symlinkSync(path.join(home, 'gone'), path.join(home, '.bash_profile'))
     fs.writeFileSync(path.join(home, '.profile'), 'export B=1\n')
 
-    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/bash' })).resolves.toBe('added')
+    await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/bash', env: {} })).resolves.toBe('added')
 
     const { stdout, stderr } = runLoginShell(bash ?? '', home, 'command -v xingmang-probe')
     expect(stdout, stderr).toBe(`${probe}\n`)
