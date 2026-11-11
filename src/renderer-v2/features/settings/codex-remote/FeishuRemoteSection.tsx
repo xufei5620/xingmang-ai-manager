@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import QRCode from 'qrcode'
 import { Button, Input, SettingRow } from '../../../ui'
 import type { RemoteChannelSectionProps } from './channel-sections'
 
@@ -26,6 +27,41 @@ export const feishuNextSteps = {
   ],
   note: '第 2 步要先把遥控打开，飞书后台才存得上。',
 } as const
+
+/**
+ * 「还差这几步」下面那个二维码底下的字（YF-3）：手机飞书一扫直接打开和这个机器人的对话，不用搜名字。
+ * 用的是飞书官方 AppLink「打开机器人会话」（飞书 3.40.0 起支持；用不了这个机器人的人，飞书自己会给引导）。
+ */
+export const feishuBotQrText = '用手机飞书扫一扫，直接打开和机器人的对话'
+
+/** 「打开机器人会话」的链接；App ID 跟保存时的检查不一样（不是 cli_ 开头的字母数字）就不给，不往二维码里塞看不懂的东西。 */
+export function feishuBotChatLink(appId: string | null): string | null {
+  return appId && /^cli_[A-Za-z0-9]{4,64}$/.test(appId) ? `https://applink.feishu.cn/client/bot/open?appId=${appId}` : null
+}
+
+/** 只画成二维码给手机扫，不是能点的外链（I12 的白名单不用动）。画不出来就整块不显示，照旧靠搜名字。 */
+function FeishuBotQr({ appId }: { appId: string | null }) {
+  const link = feishuBotChatLink(appId)
+  const [image, setImage] = useState<{ link: string; url: string | null } | null>(null)
+  useEffect(() => {
+    if (!link) return
+    let current = true
+    QRCode.toDataURL(link, { width: 192, margin: 1, errorCorrectionLevel: 'M' }).then(
+      (url) => { if (current) setImage({ link, url }) },
+      () => { if (current) setImage({ link, url: null }) },
+    )
+    return () => { current = false }
+  }, [link])
+  if (!link) return null
+  const drawn = image?.link === link ? image.url : undefined
+  if (drawn === null) return null
+  return (
+    <div className="v2-remote-bot-qr" data-testid="settings-remote-feishu-bot-qr">
+      {drawn ? <img src={drawn} alt="" /> : <span className="v2-remote-bot-qr-pending" aria-hidden="true" />}
+      <p>{feishuBotQrText}</p>
+    </div>
+  )
+}
 
 function FeishuSetupGuide() {
   return (
@@ -83,6 +119,7 @@ export function FeishuRemoteSection({ snapshot, api, disabled, busy, run }: Remo
               <ol>
                 {feishuNextSteps.steps.map((step) => <li key={step}>{step}</li>)}
               </ol>
+              <FeishuBotQr appId={snapshot.accountLabel} />
               <p className="v2-remote-next-note">{feishuNextSteps.note}</p>
             </div>
           )}
