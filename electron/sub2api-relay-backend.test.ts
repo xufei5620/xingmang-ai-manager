@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
-import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
+import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits, sub2ApiManagedKeyStoppedMessage } from './account-key-quota'
 import { networkFailureMessages } from './network-failure'
 import { loadManagedCliGroups } from './managed-cli-groups'
 
@@ -934,6 +934,60 @@ describe('Sub2API RelayBackend adapter', () => {
     await f.client.login(loginInput)
     f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'quota_exhausted', quota: 5, quota_used: 5 }), keyRecord(32, { name: profile.keyName })]
     await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).resolves.toMatchObject({ id: 32 })
+  })
+
+  // 0.2.24 Fable 复查第 2 条（yoyo 11-11「历史账号也停」）：网页上停用了、到期了的那把，跟星芒账号
+  // （new-api-client.ts 的 hasStoppedCliKey）一样停下来，不签一把不限额、永不过期的新 Key 顶上。
+  it('stops instead of issuing a new key when the same-named key was disabled or expired on the web', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    expect(sub2ApiManagedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到历史账号官网的「API 密钥」里点「启用」（到期的要点「编辑」把过期时间往后改），或者在「个人中心 › 密钥管理」把它撤销后再试。')
+    // Upstream leaves an expired key 'active'; the date alone stops it, from the very second usable() drops it.
+    for (const stopped of [{ status: 'inactive' }, { status: 'expired' }, { expires_at: '2026-09-08T00:00:00Z' }, { expires_at: new Date(now).toISOString() }]) {
+      const f = fixture()
+      await f.client.login(loginInput)
+      f.state.keys = [keyRecord(31, { name: profile.keyName, ...stopped })]
+      await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow(sub2ApiManagedKeyStoppedMessage)
+      expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
+      expect(f.state.keys).toHaveLength(1)
+    }
+  })
+
+  it('does not fall back to an older usable same-named key when the newer one was disabled', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName }), keyRecord(32, { name: profile.keyName, status: 'inactive' })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).rejects.toThrow(sub2ApiManagedKeyStoppedMessage)
+    expect(f.calls.some((call) => call.url.pathname.endsWith('/keys/31') || (call.init.method === 'POST' && call.url.pathname.endsWith('/keys')))).toBe(false)
+  })
+
+  it('keeps using a same-named key that is newer than the stopped one or was re-enabled', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'inactive' }), keyRecord(32, { name: profile.keyName, expires_at: '2026-09-08T00:00:00Z' }),
+      keyRecord(33, { name: profile.keyName, expires_at: '2026-10-01T00:00:00Z' })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).resolves.toMatchObject({ id: 33, key: 'sk-secret-33' })
+    f.state.keys = [keyRecord(31, { name: profile.keyName })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).resolves.toMatchObject({ id: 31 })
+    expect(f.calls.some((call) => call.init.method === 'POST' && call.url.pathname.endsWith('/keys'))).toBe(false)
+  })
+
+  it('still issues a key when the stopped one sits under another name or group, and for fresh or chat keys', async () => {
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    const otherGroup = groups.find((group) => group.id !== codexGroup.id)!
+    const f = fixture()
+    await f.client.login(loginInput)
+    // Deleted on the web = gone from the listing; a group rename leaves the old key in the old group.
+    f.state.keys = [keyRecord(31, { name: profile.keyName, group_id: otherGroup.id, status: 'inactive' }), keyRecord(32, { status: 'inactive' })]
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).resolves.toMatchObject({ id: 33 })
+
+    f.state.keys = [keyRecord(31, { name: profile.keyName, status: 'inactive' })]
+    // fresh: the customer revoked a key in use and its limits carry over to the replacement.
+    await expect(f.client.provisionCliKey({ name: profile.keyName, group: profile.group, fresh: true, unlimitedQuota: false, remainQuota: 3, expiredTime: -1 }))
+      .resolves.toMatchObject({ id: 32 })
+    f.state.keys = [keyRecord(31, { name: 'xingmang-chat', status: 'inactive' })]
+    await expect(f.client.provisionCliKey({ name: 'xingmang-chat', group: profile.group, purpose: 'chat' })).resolves.toMatchObject({ id: 32 })
   })
 
   it('creates a capped replacement instead of reusing an unlimited same-named key when asked for a fresh key', async () => {
