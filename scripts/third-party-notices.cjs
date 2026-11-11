@@ -329,7 +329,7 @@ function buildBundledExtras(projectRoot) {
     },
     {
       name: 'Chromium (bundled with Electron, including FFmpeg and other components)',
-      version: electron.version,
+      version: `as bundled with Electron ${electron.version}`,
       license: 'BSD-3-Clause and others, including LGPL-2.1 (FFmpeg)',
       source: 'https://source.chromium.org/chromium',
       usedIn: ['application runtime'],
