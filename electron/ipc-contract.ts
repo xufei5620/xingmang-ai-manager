@@ -744,6 +744,23 @@ export interface ClaudeToggleResult {
   applied: 'written' | 'unchanged' | 'kept' | 'later'
 }
 
+/**
+ * 切回官方账号的结果。askCommandConfirmation：切完 Claude Code 还是「不逐条确认就执行」，软件分不清是星芒以前替客户开的
+ * 还是客户自己设的，这台电脑上又还没问过，界面接着问客户一次（Fable 复查第一轮 3）。缺省 = 不用问。
+ */
+export interface OfficialAccountSwitchResult extends ConfigSaveResult {
+  askCommandConfirmation?: boolean
+}
+
+/** 「要不要让官方 Claude Code 先问再执行？」的回答：ask = 改回先问我，keep = 保持现在这样。 */
+export type ClaudeCommandConfirmationChoice = 'ask' | 'keep'
+
+/** changed：这次真改了 Claude Code 的 settings.json（改之前备份过）；keep，或者本来就会先问，都是 false。 */
+export interface ClaudeCommandConfirmationResult {
+  choice: ClaudeCommandConfirmationChoice
+  changed: boolean
+}
+
 /** 聊天页「导出这段对话」：渲染层排好的纯文本。 */
 export interface ChatConversationExportInput {
   title: string
@@ -955,7 +972,7 @@ export interface XingmangInvokeContract {
   switchToOfficialAccount: IpcInvokeDefinition<
     'config:switch-to-official-account',
     [provider: ProviderId, mode?: ConfigSavePayload['mode']],
-    ConfigSaveResult
+    OfficialAccountSwitchResult
   >
   /**
    * 首页工具行的一键切换：自动备份 → 写配置（切到当前账号时挪开抢道的官方凭据）
@@ -983,6 +1000,16 @@ export interface XingmangInvokeContract {
    * attribution = { commit: '', pr: '' }（关掉只撤星芒写的），再记下开关；别的情况只记开关。
    */
   setClaudeCommitAttribution: IpcInvokeDefinition<'config:set-claude-commit-attribution', [hidden: boolean], ClaudeToggleResult>
+  /**
+   * 切回官方账号后那一问（Fable 复查第一轮 3）的回答。ask：Claude Code 现在是官方账号的样子、还是「不逐条确认就执行」时，
+   * 先备份，再只撤 permissions.defaultMode = bypassPermissions 和 skipDangerousModePermissionPrompt = true 这两项；
+   * 配置这会儿又接着别的地址就抛错不改。keep：什么都不改。两种都记下问过了，以后不再问。
+   */
+  answerClaudeCommandConfirmation: IpcInvokeDefinition<
+    'config:answer-claude-command-confirmation',
+    [choice: ClaudeCommandConfirmationChoice],
+    ClaudeCommandConfirmationResult
+  >
   /**
    * 换账号把 Key 写进这些工具之后，看哪些还开着（Codex 连同桌面端），只对开着的
    * 提醒关掉重开。只读，不改任何东西；检测不出来的归到 unknown，不抛错。
@@ -1609,6 +1636,7 @@ export const ipcInvokeChannels = {
   repairCliHooks: 'config:repair-cli-hooks',
   setClaudeWriteBoundary: 'config:set-claude-write-boundary',
   setClaudeCommitAttribution: 'config:set-claude-commit-attribution',
+  answerClaudeCommandConfirmation: 'config:answer-claude-command-confirmation',
   inspectRunningTools: 'tools:inspect-running',
   checkToolModels: 'tools:check-models',
   getCliModelHints: 'tools:cli-model-hints',

@@ -815,6 +815,18 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('crashReportingNoticeShown')
   })
 
+  it('keeps the asked-first question answered once recorded and ignores anything but true', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('claudeCommandConfirmationAnswered')
+    await updateAppSettings(filePath, { version: 2, claudeCommandConfirmationAnswered: true })
+    expect(readAppSettings(filePath)).toMatchObject({ claudeCommandConfirmationAnswered: true })
+    await updateAppSettings(filePath, { version: 2, claudeCommandConfirmationAnswered: false })
+    expect(readAppSettings(filePath)).toMatchObject({ claudeCommandConfirmationAnswered: true })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), claudeCommandConfirmationAnswered: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('claudeCommandConfirmationAnswered')
+  })
+
   it('keeps the usage stats notice marker once set', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())

@@ -8,13 +8,16 @@ import { isRetiredProviderId, type ProviderId } from './catalog'
 import {
   classifyCodexConfigProfile,
   forgetStaleGeminiUsageStatisticsRecord,
+  inspectClaudeOfficialSkipsConfirmation,
   moveClaudeConsoleKeyAside,
   type NativeConfigInspection,
   readStoredCodexRelayModel,
   restoreClaudeConsoleKey,
+  restoreClaudeOfficialCommandConfirmation,
   switchProviderToOfficialAccount,
 } from './config-files'
 import { errorCodeClause } from './failure-wording'
+import type { ClaudeCommandConfirmationChoice, ClaudeCommandConfirmationResult } from './ipc-contract'
 import { relayProviderBaseUrlMatches, type RelaySite } from './relay-sites'
 import type { ConfigSavePayload } from './system-service'
 import type { ServiceContext } from './system-service-context'
@@ -246,6 +249,37 @@ export function createOfficialCredentialService(context: ServiceContext) {
     })
   }
 
+  /**
+   * 切回官方账号以后要不要问客户「要不要让官方 Claude Code 先问再执行？」（Fable 复查第一轮 3）：Claude Code 还是
+   * 「不逐条确认就执行」，而且这台电脑上还没问过。只问一次，点哪个都算问过。读不出来当不用问。
+   */
+  function claudeCommandConfirmationQuestionPending(): boolean {
+    if (store.read().claudeCommandConfirmationAnswered === true) return false
+    return inspectClaudeOfficialSkipsConfirmation(providerRoots)
+  }
+
+  /**
+   * 客户在那一问里的回答。ask = 「改回先问我」：真要改 settings.json 才先 backup，再只撤那两项；配置这会儿又接着别的地址
+   * 就抛错不改，也不记问过。keep = 「保持现在这样」，什么都不改。改完（或 keep）记下问过了，以后切回官方不再问；记不下
+   * 只是以后可能再问一次，不把已经改好的说成失败。
+   */
+  async function answerClaudeCommandConfirmation(choice: ClaudeCommandConfirmationChoice, backup?: () => void): Promise<ClaudeCommandConfirmationResult> {
+    return serializeConfigWrite(async () => {
+      const changed = choice === 'ask' && restoreClaudeOfficialCommandConfirmation(providerRoots, backup).outcome === 'written'
+      runtimeLog?.log('info', 'config', 'claude.command-confirmation-answered', choice === 'ask'
+        ? '客户选了让官方 Claude Code 先问再执行'
+        : '客户选了官方 Claude Code 保持不逐条确认就执行', { choice, changed })
+      try {
+        await store.update({ version: 2, claudeCommandConfirmationAnswered: true })
+      } catch (error) {
+        runtimeLog?.log('warn', 'config', 'claude.command-confirmation-unsaved', '没能记下已经问过「先问再执行」，下次切回官方账号可能再问一次', {
+          reason: credentialFailureReason(error),
+        })
+      }
+      return { choice, changed }
+    })
+  }
+
   // 配置已经切过去了：记不下只是以后切回来要重挑型号，不能为它把这次切换说成失败（失败会整份回滚）。
   async function rememberRelayModel(provider: ProviderId, model: string): Promise<void> {
     try {
@@ -285,5 +319,8 @@ export function createOfficialCredentialService(context: ServiceContext) {
     }
   }
 
-  return { restoreOfficialCredentialsNow, moveOfficialCredentialsAside, withCredentialUndo, applyXingmangAiSkillForCodexAccount, switchToOfficialAccount, relayModelBeforeOfficial, adoptRestoredConfig, setOfficialSourcePreference, alignRestoredAccountSource, restoreOfficialCredentials }
+  return {
+    restoreOfficialCredentialsNow, moveOfficialCredentialsAside, withCredentialUndo, applyXingmangAiSkillForCodexAccount, switchToOfficialAccount, relayModelBeforeOfficial,
+    adoptRestoredConfig, setOfficialSourcePreference, alignRestoredAccountSource, restoreOfficialCredentials, claudeCommandConfirmationQuestionPending, answerClaudeCommandConfirmation,
+  }
 }

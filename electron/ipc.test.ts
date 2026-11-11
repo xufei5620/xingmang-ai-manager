@@ -3194,6 +3194,60 @@ describe('registerIpcHandlers', () => {
     expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(3)
   })
 
+  // Fable 复查第一轮 3：切回官方以后 Claude Code 还是「不逐条确认就执行」、又没问过，结果里带上，界面问一次。
+  it('flags the one question about asking first only on a finished official switch of Claude Code', async () => {
+    const service = serviceStub()
+    vi.mocked(service.switchToOfficialAccount).mockResolvedValue({ backups: [], files: [] })
+    service.claudeCommandConfirmationQuestionPending = vi.fn(() => true)
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create: vi.fn(() => ({ id: 'backup-1' })), inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const official = electronMocks.handlers.get('config:switch-to-official-account')!
+    const oneClick = electronMocks.handlers.get('config:switch-account-source')!
+
+    await expect(official(trustedEvent(), 'claude', 'merge')).resolves.toEqual({ backups: [], files: [], askCommandConfirmation: true })
+    await expect(oneClick(trustedEvent(), 'claude', 'official')).resolves.toMatchObject({ target: 'official', askCommandConfirmation: true })
+    // Only Claude Code has the question.
+    await expect(official(trustedEvent(), 'codex', 'merge')).resolves.toEqual({ backups: [], files: [] })
+    expect(await oneClick(trustedEvent(), 'codex', 'official')).not.toHaveProperty('askCommandConfirmation')
+
+    vi.mocked(service.claudeCommandConfirmationQuestionPending!).mockReturnValue(false)
+    await expect(official(trustedEvent(), 'claude')).resolves.toEqual({ backups: [], files: [] })
+    expect(await oneClick(trustedEvent(), 'claude', 'official')).not.toHaveProperty('askCommandConfirmation')
+
+    // A switch that fails and rolls back never asks.
+    vi.mocked(service.claudeCommandConfirmationQuestionPending!).mockClear().mockReturnValue(true)
+    vi.mocked(service.switchToOfficialAccount).mockRejectedValue(new Error('配置文件被占用'))
+    await expect(oneClick(trustedEvent(), 'claude', 'official')).rejects.toThrow('切回官方账号没有完成：配置文件被占用。')
+    await expect(official(trustedEvent(), 'claude', 'merge')).rejects.toThrow('配置文件被占用')
+    expect(service.claudeCommandConfirmationQuestionPending).not.toHaveBeenCalled()
+  })
+
+  it('answers the question through its own channel with the same backup rule as the Claude Code switches', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    service.answerClaudeCommandConfirmation = vi.fn(async (choice: 'ask' | 'keep', backup?: () => void) => {
+      if (choice === 'ask') backup?.()
+      return { choice, changed: choice === 'ask' }
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:answer-claude-command-confirmation')!
+
+    await expect(handler(trustedEvent(), 'keep')).resolves.toEqual({ choice: 'keep', changed: false })
+    expect(create).not.toHaveBeenCalled()
+    await expect(handler(trustedEvent(), 'ask')).resolves.toEqual({ choice: 'ask', changed: true })
+    expect(create).toHaveBeenCalledWith('claude', 'pre-save', undefined, null)
+    for (const choice of ['bypass', true, null, undefined, { choice: 'ask' }]) {
+      await expect(handler(trustedEvent(), choice)).rejects.toThrow('回答格式错误')
+    }
+    expect(service.answerClaudeCommandConfirmation).toHaveBeenCalledTimes(2)
+
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), 'ask')).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+  })
+
   it('validates the one-click account switch before touching any config', async () => {
     const { service } = register()
     const handler = electronMocks.handlers.get('config:switch-account-source')!

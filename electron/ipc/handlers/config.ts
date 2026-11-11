@@ -101,8 +101,27 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isActiveProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
-    if (mode === 'reset') return backupBeforeReset(provider).then(() => service.switchToOfficialAccount(provider, 'reset'))
-    return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
+    return switchToOfficialAccountOnce(provider, mode)
+  })
+  async function switchToOfficialAccountOnce(provider: ProviderId, mode: 'merge' | 'reset' | undefined) {
+    if (mode === 'reset') await backupBeforeReset(provider)
+    const result = await (mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode))
+    return withCommandConfirmationQuestion(provider, result)
+  }
+  /**
+   * 切回官方以后 Claude Code 还是「不逐条确认就执行」、这台电脑上又没问过：结果里带上，界面接着问客户一次
+   * （Fable 复查第一轮 3）。只在切成了以后看，切失败（回滚）的不问。
+   */
+  function withCommandConfirmationQuestion<T extends object>(provider: ProviderId, result: T): T & { askCommandConfirmation?: boolean } {
+    return provider === 'claude' && service.claudeCommandConfirmationQuestionPending?.() === true
+      ? { ...result, askCommandConfirmation: true }
+      : result
+  }
+  registerTrustedHandler('config:answer-claude-command-confirmation', async (_event, choice: unknown) => {
+    if (choice !== 'ask' && choice !== 'keep') throw new Error('回答格式错误')
+    if (!service.answerClaudeCommandConfirmation) throw new Error('这个版本还不能改这一项')
+    // 跟设置里两个 Claude Code 开关同一份备份：真要改 settings.json 才做，「设置 › 备份迁移」里能找回改之前的样子。
+    return service.answerClaudeCommandConfirmation(choice, await claudeToggleBackup())
   })
   // 同一个工具的一键切换一次只跑一个（全面检测 Q35）。切换要备份、写入、自检，
   // 失败还要回滚；两次叠在一起时，后一次的备份会拍到前一次写了一半的配置，两边
@@ -159,7 +178,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
     // 恢复出来的配置照样按来源登记，首页不会因此冒出「配置被改过」。
     const identity = currentBackupAccountId()
     const context = await readBackupAccountContext()
-    return switchAccountSource({
+    const result = await switchAccountSource({
       wasOfficial: (id) => (service.readStoredConfig().officialProviders ?? []).includes(id),
       createBackup: (id) => options.backupStore.create(id, 'pre-save', undefined, context),
       restoreBackup: async (id) => {
@@ -206,6 +225,7 @@ export function registerConfigHandlers(ctx: IpcHandlerContext): () => void {
         ? JSON.parse(redactHomeDirectory(JSON.stringify(detail), options.providerRoots?.userHome ?? os.homedir())) as Record<string, unknown>
         : undefined),
     }, provider, target)
+    return target === 'official' ? withCommandConfirmationQuestion(provider, result) : result
   }
   registerTrustedHandler('tools:inspect-running', async (_event, providers: unknown) => {
     const parsed = parseRunningToolsProviders(providers)

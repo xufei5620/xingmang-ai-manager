@@ -146,6 +146,11 @@ export interface AppSettings {
    */
   claudeHidesCommitAttribution?: boolean
   /**
+   * 切回官方账号时问过客户「要不要让官方 Claude Code 先问再执行？」（Fable 复查第一轮 3）。只问一次，点哪个都算问过，
+   * 只落 true。只经 config:answer-claude-command-confirmation 记，settings:save 不收这一项。
+   */
+  claudeCommandConfirmationAnswered?: boolean
+  /**
    * 崩溃与未捕获异常自动上报。缺省 = 开启——和 alwaysInstallLatestCli 一样,
    * 这是有意的默认行为选择而不是「缺省 = 旧行为」的漏写:一个没人报的崩溃
    * 等于没修。只有显式关闭才落盘,所以文件里出现这个字段就代表用户亲手关过。
@@ -261,6 +266,8 @@ export interface AppSettingsUpdate {
   alwaysInstallLatestCli?: boolean
   claudeWritesInsideProject?: boolean
   claudeHidesCommitAttribution?: boolean
+  /** true is sticky and false is ignored, like trayHintShown. */
+  claudeCommandConfirmationAnswered?: boolean
   crashReporting?: boolean
   /** true is sticky and false is ignored, like trayHintShown. */
   crashReportingNoticeShown?: boolean
@@ -487,6 +494,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
     ...(optionalBoolean(value.claudeWritesInsideProject, false) ? { claudeWritesInsideProject: true as const } : {}),
     ...(optionalBoolean(value.claudeHidesCommitAttribution, false) ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(value.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
@@ -702,6 +710,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(claudeWritesInsideProject === true ? { claudeWritesInsideProject: true as const } : {}),
     ...(claudeHidesCommitAttribution === true ? { claudeHidesCommitAttribution: true as const } : {}),
+    ...(update.claudeCommandConfirmationAnswered === true || base.claudeCommandConfirmationAnswered === true ? { claudeCommandConfirmationAnswered: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
     ...(update.crashReportingNoticeShown === true || base.crashReportingNoticeShown === true ? { crashReportingNoticeShown: true as const } : {}),
     ...(update.usageStatsNoticeShown === true || base.usageStatsNoticeShown === true ? { usageStatsNoticeShown: true as const } : {}),

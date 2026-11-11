@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
-import type { ClaudeToggleResult, NodeRuntimeInstallRequest } from './ipc-contract'
+import type { ClaudeCommandConfirmationChoice, ClaudeCommandConfirmationResult, ClaudeToggleResult, NodeRuntimeInstallRequest } from './ipc-contract'
 import type { LoopbackProbe } from './stale-proxy-environment'
 import type { ProviderId } from './catalog'
 import {
@@ -465,6 +465,13 @@ export interface SystemService {
   setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult>
   /** 设置里「Claude Code 提交代码时不署名」，同上。可选 = 旧实现不提供。 */
   setClaudeCommitAttribution?(hidden: boolean, backup?: () => void): Promise<ClaudeToggleResult>
+  /**
+   * 切回官方账号以后要不要问「要不要让官方 Claude Code 先问再执行？」：还是「不逐条确认就执行」、这台电脑上又没问过。
+   * 不抛错。可选 = 旧实现不提供（当不用问）。
+   */
+  claudeCommandConfirmationQuestionPending?(): boolean
+  /** 那一问的回答：ask 改回先问（backup 在真要写之前调），keep 不改；两种都记下问过了。可选 = 旧实现不提供。 */
+  answerClaudeCommandConfirmation?(choice: ClaudeCommandConfirmationChoice, backup?: () => void): Promise<ClaudeCommandConfirmationResult>
   /**
    * 开机后读配置前：本账号写的、指向旧位置的钩子与状态行不等客户点就改好，每家这次启动只试一次。
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
@@ -1205,6 +1212,8 @@ export function createSystemService(
     setOfficialSourcePreference,
     alignRestoredAccountSource,
     restoreOfficialCredentials,
+    claudeCommandConfirmationQuestionPending,
+    answerClaudeCommandConfirmation,
   } = createOfficialCredentialService(context)
   // 保存配置、钩子、型号名单和开机补设置那一段在 config-save-service.ts（#1070 第 3 步）。
   const {
@@ -1370,6 +1379,8 @@ export function createSystemService(
     relayModelBeforeOfficial,
     setOfficialSourcePreference,
     restoreOfficialCredentials,
+    claudeCommandConfirmationQuestionPending,
+    answerClaudeCommandConfirmation,
     inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),
     adoptRestoredConfig,
     alignRestoredAccountSource,
