@@ -2095,9 +2095,9 @@ export class CodexRemoteService {
     if (turnPayload.status === 'completed') {
       const answer = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
       reply = `${answer}\n\n${turnSummaryLine(this.now() - turn.startedAt, turn.changedFiles.map(remoteFileName))}`
-    }
-    else if (turnPayload.status === 'interrupted') reply = turn.stoppedByUser ? null : remoteMessages.interrupted
-    else {
+    } else if (turnPayload.status === 'interrupted') {
+      reply = turn.stoppedByUser ? null : remoteMessages.interrupted
+    } else {
       // 回执里带着报错就以它为准，没带用这一轮前面那条 error 通知。
       const failure = readTurnFailure(turnPayload.error)
       reply = this.turnFailureReply(runtime, 'remote.turn-failed', failure?.message ? failure : turn.error ?? failure)
