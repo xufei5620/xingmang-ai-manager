@@ -1,12 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalOutcomeTitle,
   approvalTitle,
   classifyRemoteTurnFailure,
+  formatApprovalBody,
   formatApprovalText,
   formatFileChangeLine,
   idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
+  progressCardTitles,
+  progressStepMarks,
+  progressStopButton,
+  progressTextMessage,
   redactRemoteText,
   remoteMessages,
   remoteOpenedMessage,
@@ -153,6 +159,29 @@ describe('codex-remote-text', () => {
     expect(remoteRunningForText(6 * 60_000)).toBe('已经 6 分钟')
     expect(remoteRunningForText(65 * 60_000)).toBe('已经 1 小时 5 分钟')
     expect(remoteRunningForText(120 * 60_000)).toBe('已经 2 小时')
+  })
+
+  // YK-8：处理过的审批卡只留正文，标题换成结果。
+  it('titles an answered approval card by its outcome and drops the reply line from its body', () => {
+    expect(approvalOutcomeTitle('accepted', '3')).toBe('已同意（第 3 条）')
+    expect(approvalOutcomeTitle('declined', '3')).toBe('已拒绝（第 3 条）')
+    expect(approvalOutcomeTitle('expired', '3')).toBe('没回，已自动拒绝（第 3 条）')
+    const request = { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test', cwd: '~/p' }
+    expect(formatApprovalBody(request)).toBe(formatApprovalText(request).split('\n').slice(0, -1).join('\n'))
+    expect(formatApprovalBody(request)).not.toContain('回「同意')
+  })
+
+  // YF-15：yoyo 2026-11-11「进度改」批的字，逐字钉住。
+  it('says the approved progress words for the card and the five-minute text', () => {
+    expect(progressCardTitles).toEqual({ running: 'Codex 正在处理', done: '做完了', stopped: '已停止', failed: '没做完' })
+    expect(progressStepMarks).toEqual({ completed: '✓', inProgress: '▶', pending: '○' })
+    expect(progressStopButton).toBe('停止')
+    expect(remoteMessages.staleProgressCard).toBe('这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。')
+    expect(progressTextMessage(5 * 60_000, '运行测试')).toBe('还在做，已经 5 分钟。现在这一步：运行测试')
+    expect(progressTextMessage(10 * 60_000, null)).toBe('还在做，已经 10 分钟。')
+    expect(progressTextMessage(10 * 60_000, '  \n ')).toBe('还在做，已经 10 分钟。')
+    expect(progressTextMessage(5 * 60_000, '先把\n登录页的表单校验全部改成新的写法，再补上对应的测试用例和文档'))
+      .toBe('还在做，已经 5 分钟。现在这一步：先把 登录页的表单校验全部改成新的写法，再补上对应的测试用…')
   })
 
   it('squeezes a long or multi-line plan step onto the status line', () => {

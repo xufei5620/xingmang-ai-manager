@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildFeishuApprovalCard,
   buildFeishuMessageBody,
+  buildFeishuProgressCard,
   classifyFeishuSendResponse,
   createFeishuRemoteChannel,
   extractFeishuText,
@@ -324,6 +326,24 @@ describe('codex-remote-feishu fragments', () => {
 })
 
 describe('codex-remote-feishu outbound', () => {
+  // YK-8：审批卡一开始就是共享卡片才改得了；处理过以后标题换成结果、按钮去掉、正文留着。
+  it('turns an answered approval card into its outcome without buttons', () => {
+    const message = {
+      kind: 'approval' as const,
+      request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test' },
+      text: 'Codex 想运行命令（第 3 条）：\nnpm test',
+    }
+    expect((buildFeishuApprovalCard(message).config as Record<string, unknown>).update_multi).toBe(true)
+    const body = { tag: 'div', text: { tag: 'plain_text', content: message.text } }
+    expect(buildFeishuApprovalCard(message, 'accepted')).toEqual({
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { template: 'green', title: { tag: 'plain_text', content: '已同意（第 3 条）' } },
+      elements: [body],
+    })
+    expect(buildFeishuApprovalCard(message, 'declined')).toMatchObject({ header: { template: 'grey', title: { content: '已拒绝（第 3 条）' } }, elements: [body] })
+    expect(buildFeishuApprovalCard(message, 'expired')).toMatchObject({ header: { template: 'grey', title: { content: '没回，已自动拒绝（第 3 条）' } }, elements: [body] })
+  })
+
   it('sends text as a text message and approvals as a card with two buttons', () => {
     const peer = { channel: 'feishu' as const, userId: 'ou_alice' }
     expect(buildFeishuMessageBody(peer, { kind: 'text', text: '你好' })).toEqual({
@@ -673,6 +693,160 @@ describe('codex-remote-feishu send retries', () => {
     const channel = await startChannel(h, { sleep: async () => undefined })
     await expect(channel.send(peer, { kind: 'text', text: '机密的回答' })).rejects.toThrow()
     expect(JSON.stringify(logged)).not.toContain('机密')
+    await channel.stop()
+  })
+})
+
+describe('codex-remote-feishu progress card', () => {
+  const peer = { channel: 'feishu' as const, userId: 'ou_alice' }
+  const running = {
+    state: 'running' as const,
+    steps: [
+      { text: '读代码', status: 'completed' as const },
+      { text: '改测试', status: 'inProgress' as const },
+      { text: '跑一遍', status: 'pending' as const },
+    ],
+    elapsed: '已经 3 分钟',
+    stopNonce: 'stop-nonce-0001',
+  }
+
+  it('builds a shared card with marked steps, the elapsed time and a stop button', () => {
+    const card = buildFeishuProgressCard(running)
+    expect(card).toEqual({
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { template: 'blue', title: { tag: 'plain_text', content: 'Codex 正在处理' } },
+      elements: [
+        { tag: 'div', text: { tag: 'plain_text', content: '✓ 读代码\n▶ 改测试\n○ 跑一遍' } },
+        { tag: 'div', text: { tag: 'plain_text', content: '已经 3 分钟' } },
+        {
+          tag: 'action',
+          actions: [{ tag: 'button', text: { tag: 'plain_text', content: '停止' }, type: 'danger', value: { stop: 'stop-nonce-0001' } }],
+        },
+      ],
+    })
+  })
+
+  it('keeps only the title and steps once the turn has ended, and never leaves the card empty', () => {
+    const done = buildFeishuProgressCard({ state: 'done', steps: running.steps.map((step) => ({ ...step, status: 'completed' as const })) })
+    expect(done.header).toEqual({ template: 'green', title: { tag: 'plain_text', content: '做完了' } })
+    expect(JSON.stringify(done)).not.toContain('stop')
+    expect((done.config as Record<string, unknown>).update_multi).toBe(true)
+    expect(buildFeishuProgressCard({ state: 'stopped', steps: [] })).toMatchObject({
+      header: { template: 'grey', title: { content: '已停止' } },
+      elements: [{ tag: 'hr' }],
+    })
+    expect(buildFeishuProgressCard({ state: 'failed', steps: [] }).header).toEqual({ template: 'red', title: { tag: 'plain_text', content: '没做完' } })
+  })
+
+  it('turns a stop click into a stop request, and hands over an unusable nonce as null', () => {
+    const context = { p2pChats: new Map([['ou_alice', 'oc_p2p_alice']]) }
+    expect(parseFeishuEvent(cardEvent('oc_p2p_alice', { stop: 'stop-nonce-0001' }), context).inbound).toEqual({
+      kind: 'stop',
+      peer,
+      direct: true,
+      nonce: 'stop-nonce-0001',
+    })
+    expect(parseFeishuEvent(cardEvent('oc_group', { stop: 'stop-nonce-0001' }), context).inbound).toMatchObject({ kind: 'stop', direct: false })
+    for (const stop of ['', 'short', '<script>', 'x'.repeat(65), 42, null]) {
+      expect(parseFeishuEvent(cardEvent('oc_p2p_alice', { stop }), context).inbound).toMatchObject({ kind: 'stop', nonce: null })
+    }
+  })
+
+  it('sends the card and hands back the message id Feishu gives it', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+      if (url.includes('/im/v1/messages')) return json({ code: 0, data: { message_id: 'om_progress_1' } })
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    await expect(channel.sendProgress?.(peer, running)).resolves.toBe('om_progress_1')
+    const sendCall = h.fetch.mock.calls.find(([url]) => String(url).includes('/im/v1/messages'))
+    expect(String(sendCall?.[0])).toBe('https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id')
+    const body = JSON.parse(String(sendCall?.[1].body)) as Record<string, unknown>
+    expect(body).toMatchObject({ receive_id: 'ou_alice', msg_type: 'interactive' })
+    expect(typeof body.uuid).toBe('string')
+    expect(JSON.parse(String(body.content))).toEqual(buildFeishuProgressCard(running))
+    await channel.stop()
+  })
+
+  it('refuses a card without a usable message id, since it could never be updated', async () => {
+    for (const data of [{}, { message_id: 'om_../x' }, { message_id: 'abc' }]) {
+      const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) => {
+        if (url.includes('/im/v1/messages')) return json({ code: 0, data })
+        return defaultRespond(url)
+      })
+      const channel = await startChannel(h)
+      await expect(channel.sendProgress?.(peer, running)).rejects.toThrow('飞书没有给出这张卡片的编号')
+      await channel.stop()
+    }
+  })
+
+  it('updates the same card in place with PATCH and refreshes an expired token once', async () => {
+    let patches = 0
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url, init) => {
+      if (url.includes('/im/v1/messages/') && init.method === 'PATCH') {
+        patches += 1
+        return patches === 1 ? json({ code: 99991663, msg: 'token invalid' }) : json({ code: 0 })
+      }
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    const done = { state: 'done' as const, steps: running.steps }
+    await channel.updateProgress?.('om_progress_1', done)
+    const patchCalls = h.fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')
+    expect(patchCalls).toHaveLength(2)
+    expect(String(patchCalls[1][0])).toBe('https://open.feishu.cn/open-apis/im/v1/messages/om_progress_1')
+    expect(JSON.parse(String(patchCalls[1][1]?.body))).toEqual({ content: JSON.stringify(buildFeishuProgressCard(done)) })
+    expect(h.fetch.mock.calls.filter(([url]) => String(url).endsWith('/tenant_access_token/internal'))).toHaveLength(2)
+    await channel.stop()
+  })
+
+  it('sends an approval card for its message id and later patches it to the outcome', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url, init) => {
+      if (url.includes('/im/v1/messages') && init.method !== 'PATCH') return json({ code: 0, data: { message_id: 'om_approval_9' } })
+      if (init.method === 'PATCH') return json({ code: 0 })
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    const message = {
+      kind: 'approval' as const,
+      request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test' },
+      text: 'Codex 想运行命令（第 3 条）：\nnpm test\n回「同意 3」或「拒绝 3」。',
+    }
+    await expect(channel.sendApproval?.(peer, message)).resolves.toBe('om_approval_9')
+    const sent = h.fetch.mock.calls.find(([url, init]) => String(url).includes('/im/v1/messages') && init?.method !== 'PATCH')
+    expect(JSON.parse(String(JSON.parse(String(sent?.[1]?.body)).content))).toEqual(buildFeishuApprovalCard(message))
+    const decided = { ...message, text: 'Codex 想运行命令（第 3 条）：\nnpm test' }
+    await channel.updateApproval?.('om_approval_9', decided, 'accepted')
+    const patch = h.fetch.mock.calls.find(([, init]) => init?.method === 'PATCH')
+    expect(String(patch?.[0])).toBe('https://open.feishu.cn/open-apis/im/v1/messages/om_approval_9')
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ content: JSON.stringify(buildFeishuApprovalCard(decided, 'accepted')) })
+    await expect(channel.updateApproval?.('om_../x', decided, 'declined')).rejects.toThrow('飞书卡片编号不对')
+    await channel.stop()
+  })
+
+  it('does not touch the network for a card id that is not a Feishu message id', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), defaultRespond)
+    const channel = await startChannel(h)
+    const before = h.fetch.mock.calls.length
+    for (const handle of ['../chats', 'om_a/b', 'om_', '']) {
+      await expect(channel.updateProgress?.(handle, running)).rejects.toThrow('飞书卡片编号不对')
+    }
+    expect(h.fetch.mock.calls.length).toBe(before)
+    await channel.stop()
+  })
+
+  it('logs a refused update without the card text and lets the caller carry on', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url, init) => {
+      if (init.method === 'PATCH') return json({ code: 230001, msg: 'bad' }, 400)
+      return defaultRespond(url)
+    })
+    const logged: unknown[] = []
+    h.deps.log = (_level, event, fields) => { logged.push(event, fields) }
+    const channel = await startChannel(h)
+    await expect(channel.updateProgress?.('om_progress_1', { ...running, steps: [{ text: '机密的步骤', status: 'inProgress' }] })).rejects.toThrow('230001')
+    expect(logged).toContain('feishu.progress-update-failed')
+    expect(JSON.stringify(logged)).not.toContain('机密')
+    expect(h.fetch.mock.calls.filter(([, init]) => init?.method === 'PATCH')).toHaveLength(1)
     await channel.stop()
   })
 })
