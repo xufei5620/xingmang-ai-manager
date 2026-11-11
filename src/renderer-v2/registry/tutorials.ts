@@ -1,5 +1,5 @@
 import type { PageId } from './pages';
-import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, updatesTutorialTopic, type accountTabs, type FeedbackTabValue, type settingsGroups } from './business';
+import { cliTutorialTopic, macDesktopTutorialTopic, macRuntimeTutorialTopic, phoneRemoteTutorialTopic, updatesTutorialTopic, type accountTabs, type FeedbackTabValue, type settingsGroups } from './business';
 import { errors } from './errors';
 import { statuses } from './status';
 import { firstRunHints } from './tools';
@@ -855,7 +855,7 @@ export const tutorialTopics: readonly TutorialTopic[] = [
   // 卡片上的按钮名、步骤以手机遥控卡为准（features/settings/codex-remote），这里只说走哪几步，不抄卡片上的字，
   // 卡片改字不用跟着改这一章。
   {
-    id: 'phone-remote',
+    id: phoneRemoteTutorialTopic,
     title: '用手机遥控 Codex',
     lead: '人不在电脑前，也能在飞书或微信里让这台电脑上的 Codex 干活，用的是当前账号的额度。',
     category: 'tools',

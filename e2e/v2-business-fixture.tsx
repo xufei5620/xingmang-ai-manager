@@ -296,6 +296,10 @@ const codexRemoteMethods = {
     remoteState.autoStart = enabled
     return remoteSnapshot()
   },
+  openExternal: async (url: string) => {
+    record('openExternal', url)
+    return true
+  },
   stopCodexRemoteTurn: async () => {
     record('remote-stop-turn')
     remoteState.pendingApprovals = 0

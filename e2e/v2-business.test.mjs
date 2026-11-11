@@ -3648,6 +3648,29 @@ test('the settings search lists matching rows in place, links back to their grou
   }
 })
 
+// YF-4：「怎么建飞书机器人」六步下面两颗，飞书开发者后台交给浏览器（白名单只收这一个网址），教程是星芒自己的那一章。
+test('the Feishu setup steps open the developer console in the browser and the phone remote tutorial in place', async () => {
+  const page = await fixture('page=settings')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const form = page.getByTestId('settings-remote-card').getByTestId('settings-remote-feishu-form')
+    await form.getByText('怎么建飞书机器人', { exact: true }).click()
+    await form.getByRole('button', { name: '打开飞书开放平台', exact: true }).click()
+    await form.getByRole('button', { name: '看教程', exact: true }).click()
+    const recorded = await calls(page)
+    assert.deepEqual(
+      recorded.filter((call) => call.name === 'openExternal' || call.name === 'navigate').map((call) => [call.name, call.args ?? null]),
+      [
+        ['openExternal', 'https://open.feishu.cn/app'],
+        ['navigate', ['tutorial', 'phone-remote']],
+      ],
+    )
+    assert.equal(await page.getByRole('alert').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
 // 手机遥控 Codex：先选文件夹、填飞书应用，打开遥控，再配对；App Secret 不进记录，填错了当场说。
 test('the phone remote card walks through folder, Feishu app, switch and pairing, and never records the app secret', async () => {
   const page = await fixture('page=settings')

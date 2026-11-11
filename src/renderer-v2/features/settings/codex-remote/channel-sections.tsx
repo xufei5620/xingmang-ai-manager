@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
-import type { V2Bridge } from '../../../types'
+import type { V2Bridge, V2Page } from '../../../types'
 import { FeishuRemoteSection } from './FeishuRemoteSection'
 import { WeixinRemoteSection } from './WeixinRemoteSection'
 
@@ -17,6 +17,8 @@ export interface RemoteChannelSectionProps {
   busy: string
   /** 成功返回 true；失败的原因卡片自己摆在红条上。 */
   run(name: string, action: () => Promise<CodexRemoteSnapshot | void>): Promise<boolean>
+  /** 跳到星芒别的页面（飞书那块的「看教程」）；不给就不摆要跳页的按钮。 */
+  navigate?: (page: V2Page, section?: string) => void
 }
 
 export interface RemoteChannelSectionDefinition {
