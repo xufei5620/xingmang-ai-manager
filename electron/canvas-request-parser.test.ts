@@ -511,11 +511,9 @@ describe('canvas request parser', () => {
   })
 
   it('marks every kernel-only node kind by its name and still refuses unknown kinds', () => {
-    for (const [kind, label] of Object.entries(canvasRunKernelOnlyNodeLabels)) {
-      const node = parseCanvasStartRunInput(kernelNode(kind, {})).graph.nodes[0]
-      expect(node.kind).toBe(kind)
-      expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
-    }
+    // None left since the grid split joined the image tools. The next kernel
+    // kind the desktop lacks goes on that list and is refused by name there.
+    expect(Object.keys(canvasRunKernelOnlyNodeLabels)).toEqual([])
     // 画布完善第 6 条: text nodes run on the desktop now; web search still does not.
     expect(parseCanvasStartRunInput(kernelNode('text-generate', {})).graph.nodes[0].desktopUnsupported).toBeUndefined()
     expect(parseCanvasStartRunInput(kernelNode('text-generate', { textWebSearch: true })).graph.nodes[0].desktopUnsupported)
@@ -597,8 +595,30 @@ describe('canvas request parser', () => {
       .toBe(`「联网搜索」${kernelRefusal}`)
     expect(parseCanvasStartRunInput(kernelNode('image-generate', { imageTransform: { kind: 'crop' } }), on).graph.nodes[0].desktopUnsupported)
       .toBe(`「图片处理」${kernelRefusal}`)
-    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', {}), on).graph.nodes[0].desktopUnsupported)
-      .toBe(`「宫格裁剪」节点${kernelRefusal}`)
+  })
+
+  // A grid split is the one image tool that makes several pictures, so it is
+  // the one that keeps which slice the canvas shows, clamped as the web host
+  // does (xingmang-canvas lib/canvas-runs.ts): one past the grid means the first.
+  it('hands a grid split its recipe and the slice the canvas shows', () => {
+    const on = { frameExtract: true, imageTools: true }
+    const recipe = { kind: 'grid-split', rows: 2, columns: 3, gap: 0, padding: 0 }
+    const split = parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: 4 }), on).graph.nodes[0]
+    expect(split.desktopUnsupported).toBeUndefined()
+    expect(split.data).toEqual({ prompt: 'p', model: 'm', imageTransform: recipe, imageOutputIndex: 4 })
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: 6 }), on).graph.nodes[0].data.imageOutputIndex).toBe(0)
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageOutputIndex: 3 }), on).graph.nodes[0].data).toEqual({ prompt: 'p', model: 'm', imageOutputIndex: 0 })
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe }), on).graph.nodes[0].data).toEqual({ prompt: 'p', model: 'm', imageTransform: recipe })
+    // Every other image tool makes one picture: the index is checked, never passed on.
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 }, imageOutputIndex: 3 }), on).graph.nodes[0].data)
+      .toEqual({ prompt: 'p', model: 'm', imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 } })
+    for (const bad of [16, -1, 1.5, '1']) {
+      expect(() => parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: bad }), on)).toThrow('图片批次选中序号无效')
+    }
+    expect(() => parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: { ...recipe, rows: 5 } }), on)).toThrow('画布图片处理行数格式错误')
+    // Switched off it is refused by name like the other image tools.
+    expect(parseCanvasStartRunInput(kernelNode('image-grid-split', { imageTransform: recipe, imageOutputIndex: 1 }), { frameExtract: true, imageTools: false }).graph.nodes[0])
+      .toMatchObject({ desktopUnsupported: `「宫格裁剪」节点${kernelRefusal}`, data: { prompt: 'p', model: 'm' } })
   })
 
   it('refuses an image-tool recipe, order or choice it cannot bound or that names another tool', () => {
