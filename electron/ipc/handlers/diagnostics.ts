@@ -18,7 +18,7 @@ export function registerDiagnosticsHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('diagnostics:run', (_event, input: unknown) => options.diagnosticsService.run(parseDiagnosticsRunOptions(input)))
   registerTrustedHandler('diagnostics:export', async () => {
     const result = await dialog.showSaveDialog({
-      title: '导出脱敏诊断报告',
+      title: '导出检查报告',
       defaultPath: `xingmang-diagnostics-${new Date().toISOString().slice(0, 10)}.txt`,
       filters: [{ name: '文本文件', extensions: ['txt'] }],
     })
