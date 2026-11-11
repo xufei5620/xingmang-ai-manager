@@ -1275,6 +1275,32 @@ test('a message typed while offline stays in the composer and goes out from the 
   } finally { await page.close() }
 })
 
+test('a reply still coming in when the network drops says so under it and can be stopped (D43)', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'network drops midway')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'half of the answer' })
+    await page.getByText('half of the answer', { exact: true }).waitFor()
+    const notice = page.locator('.chat-message[data-role=assistant] [data-testid=chat-message-offline]')
+    assert.equal(await notice.count(), 0)
+    await page.context().setOffline(true)
+    await notice.waitFor()
+    assert.equal(await notice.innerText(), '网络断了，这条回复可能接不上，可以先停止。')
+    // 3 分钟的时限照旧，界面不替它先停：字还留着、停止按钮还在，只是告诉人可以先停。
+    assert.equal(await page.getByTestId('chat-stop').count(), 1)
+    assert.equal((await calls(page, 'cancel')).length, 0)
+    await page.context().setOffline(false)
+    await notice.waitFor({ state: 'detached' })
+    await page.context().setOffline(true)
+    await notice.waitFor()
+    await page.getByTestId('chat-stop').click()
+    await page.getByText('已停止生成，保留已返回的内容', { exact: true }).waitFor()
+    assert.equal(await notice.count(), 0)
+    assert.equal(await page.getByText('half of the answer', { exact: true }).count(), 1)
+    assert.equal((await calls(page, 'cancel')).length, 1)
+  } finally { await page.context().setOffline(false); await page.close() }
+})
+
 test('the parameters dialog starts every slider at the model default, explains bad numbers and only changes the conversation on apply', async () => {
   const page = await open('openParameters=1')
   try {
