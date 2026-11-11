@@ -374,6 +374,29 @@ afterEach(() => {
 })
 
 describe('createSystemService', () => {
+  // D45：首页和引导据此把第一句话换成让 AI 动手做点东西；放了别的东西进去就照旧。
+  it('tells the renderer when the remembered folder is the starter folder it made and nothing is in it yet', async () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-starter-summary-')))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const workspace = path.join(userHome, 'Documents', 'XingmangProjects', 'my-project')
+    fs.mkdirSync(workspace, { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'AGENTS.md'), '# 项目说明')
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    await store.write({ ...defaultAppSettings(root), workspace })
+    const inspect = vi.fn((provider: ProviderId) => ({
+      baseUrl: providerBaseUrls[provider], actualBaseUrl: providerBaseUrls[provider], exists: false, apiKey: '', hasApiKey: false,
+      matchesRelay: false, model: '', dataDirectory: path.join(userHome, provider), dataDirectoryExists: false, files: [], updatedAt: null,
+    }))
+    const service = createSystemService(store, { providerRoots: { userHome, codexHome: path.join(userHome, '.codex') }, inspectProviderConfig: inspect })
+
+    expect(service.getConfig(false)).toMatchObject({ rememberedWorkspace: workspace, rememberedWorkspaceFresh: true })
+    fs.writeFileSync(path.join(workspace, 'index.html'), '<!doctype html>')
+    const touched = service.getConfig(false)
+    expect(touched.rememberedWorkspace).toBe(workspace)
+    expect(touched.rememberedWorkspaceFresh).toBeUndefined()
+  })
+
   it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rooted-system-service-'))
     temporaryDirectories.push(root)

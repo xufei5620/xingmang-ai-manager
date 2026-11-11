@@ -18,7 +18,7 @@ import { FirstRunSteps } from './FirstRun'
 import { bootstrapErrorText, isAccountNotEnabledFailure, keySyncFailureText, networkBlockedNotice } from './key-sync-failure'
 import { dismissFirstRun, getFirstRunStorage, readFirstRunDismissals } from './first-run-dismissal'
 import { formatRecentTime, recentReplacedHint, recentResumeHint, recentSessionSubtitle } from './recent-display'
-import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
+import { chooseWorkspaceLabel, conversationsMenuLabel, latestSessionIdsByWorkspace, launchWorkspaces, newWorkspaceLabel, opensUntouchedStarterWorkspace, resumeLaunchChoice, resumeNeedsRecheck, resumeStillLatest, type CliLaunchChoice } from './recent-workspaces'
 import { dollars as money, errorMessage } from '../../business-common'
 import { subscriptionEndDate, type UsableSubscription } from '../../../../electron/subscription-summary'
 import { isActiveProviderId, isProviderId } from '../../../../electron/catalog'
@@ -1228,6 +1228,11 @@ export function Home(props: HomeProps) {
   const weekTotal = weekDays ? weekDays.reduce((sum, day) => sum + day.usd, 0) : weekUsd
   const weekMax = weekDays ? Math.max(...weekDays.map((day) => day.usd)) : 0
   const lowMoney = Boolean(runway?.low)
+  // 「试试第一条命令」那句话跟着这张卡的「打开」会落在哪个文件夹挑（D45）：要替他新建，或者
+  // 要打开的是星芒建的、还空着的那个，换成让它动手做点东西的那句。
+  const firstRunState = firstRunTool ? toolState(firstRunTool) : null
+  const firstRunFreshFolder = firstRunState !== null
+    && opensUntouchedStarterWorkspace({ createsFolder: firstRunState.startsFresh, workspace: firstRunState.workspaces[0]?.path }, snapshot?.config)
 
   return <section className="v2-page v2-home" data-testid="page-home">
     <PageHead title={`${greeting(new Date().getHours())}${account ? `，${account.username}` : ''}`}
@@ -1289,7 +1294,7 @@ export function Home(props: HomeProps) {
     {firstRunTool && firstRun && <Card title="试试第一条命令" meta={firstRunTool.name} testId="home-first-run"
       actions={<Button variant="ghost" size="xs" icon={X} aria-label="不再显示这条提示" title="不再显示这条提示" testId="home-first-run-dismiss"
         onClick={() => setFirstRunDismissed((current) => dismissFirstRun(getFirstRunStorage(), current, firstRunTool.id))} />}>
-      <FirstRunSteps key={firstRunTool.id} name={firstRunTool.name} firstRun={firstRun} testId="home-first-run-steps"
+      <FirstRunSteps key={`${firstRunTool.id}:${firstRunFreshFolder}`} name={firstRunTool.name} firstRun={firstRun} testId="home-first-run-steps" freshFolder={firstRunFreshFolder}
         gitHint={firstRunTool.id === 'claude' && gitMissing ? gitMissingFirstRunHint(gitHost) : undefined} />
     </Card>}
     <div className="v2-home-wells">
