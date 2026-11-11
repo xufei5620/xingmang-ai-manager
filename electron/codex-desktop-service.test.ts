@@ -2557,7 +2557,7 @@ describe('Codex Desktop install on macOS', () => {
 
   it('will not install for root, whose copy the customer could never update', async () => {
     const f = macInstallFixture({ getuid: () => 0 })
-    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开工具箱，再安装 Codex 桌面端。')
+    await expect(f.service.installCodexDesktop(f.target)).rejects.toThrow('请用你平时登录 Mac 的账号重新打开星芒，再安装 Codex 桌面端。')
     expect(f.installMacosDesktopApp).not.toHaveBeenCalled()
   })
 

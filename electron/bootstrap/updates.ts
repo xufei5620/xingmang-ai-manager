@@ -147,13 +147,13 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
       unsignedAutoUpdate: true,
       readAutoUpdate: () => systemService.readStoredConfig().autoUpdate !== false,
       // 每次运行只认一次：用户点「重新安装」后又重新下载同一版时，不该再被判成上次失败。
-      previousAutoInstallFailure: (version) => {
+      previousAutoInstallFailure: (version, rollback) => {
         if (previousAutoInstallFailureReported) return null
         const failed = resolvePreviousAutoInstallFailure(version, app.getVersion(), pendingUpdateAtLaunch)
         if (!failed) return null
         previousAutoInstallFailureReported = true
         runtimeLog.log('warn', 'updater', 'install.auto.previous-failed', `上次自动安装 ${failed} 没有装上，这次不再自动装`)
-        return previousAutoInstallFailureMessage(process.platform)
+        return previousAutoInstallFailureMessage(process.platform, rollback ? failed : null)
       },
       verifyPackageDigest: verifyUpdatePackageDigest,
       // electron-updater 按 `uname -a`（带电脑名）判断 Apple 芯片，Intel Mac 会被挑上 arm64 包（#1155）。
