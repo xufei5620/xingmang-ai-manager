@@ -20,6 +20,7 @@ const {
   copyMacElectronLicenses,
   extractLobeIconsLicense,
   isAcceptedLicense,
+  listAsarPackages,
   normalizeLicenseField,
   normalizeRepositoryUrl,
   resolvePackageDirectoryFromModuleId,
@@ -261,6 +262,25 @@ function checkPackaged(fixture) {
 test('accepts a package whose notices list every package inside app.asar', async (t) => {
   const result = checkPackaged(await createPackagedFixture(t))
   assert.equal(result.listedCount, 2)
+})
+
+test('reads app.asar entries by the path the archive lists, which uses backslashes on Windows', () => {
+  // @electron/asar splits a path on the host's path.sep, so on Windows
+  // node_modules/@iarna/toml/package.json written with forward slashes is not
+  // found; the listing's own spelling is.
+  const files = {
+    'node_modules\\@iarna\\toml\\package.json': { name: '@iarna/toml', version: '2.2.5' },
+    'node_modules\\a\\node_modules\\b\\package.json': { name: 'b', version: '1.0.0' },
+    'node_modules\\a\\lib\\package.json': { type: 'module' },
+  }
+  const windowsAsar = {
+    listPackage: () => ['\\package.json', ...Object.keys(files).map((name) => `\\${name}`)],
+    extractFile: (_archive, name) => {
+      if (!Object.hasOwn(files, name)) throw new Error(`"${name}" was not found in this archive`)
+      return Buffer.from(JSON.stringify(files[name]))
+    },
+  }
+  assert.deepEqual(listAsarPackages(windowsAsar, 'app.asar'), ['@iarna/toml 2.2.5', 'b 1.0.0'])
 })
 
 test('rejects a package with a dependency in app.asar that the notices leave out', async (t) => {

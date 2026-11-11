@@ -540,17 +540,22 @@ function assertNonEmptyRegularFile(filePath, label) {
   }
 }
 
-/** app.asar 里 node_modules 下每个包的「名字 版本」，嵌套安装的也算。 */
+/**
+ * app.asar 里 node_modules 下每个包的「名字 版本」，嵌套安装的也算。
+ * 读文件时用 listPackage 原样给的路径（只去掉开头的分隔符）：@electron/asar 按本机的
+ * path.sep 拆路径，Windows 上写成正斜杠的多级路径找不到文件，只有比较时才统一成正斜杠。
+ */
 function listAsarPackages(asarModule, asarPath) {
   const found = new Set()
   for (const entry of asarModule.listPackage(asarPath)) {
-    const normalized = toPosix(entry).replace(/^\/+/, '')
+    const archivePath = entry.replace(/^[\\/]+/, '')
+    const normalized = toPosix(archivePath)
     if (!normalized.endsWith('/package.json') || !normalized.startsWith('node_modules/')) continue
     const directory = normalized.slice(0, -'/package.json'.length)
     if (resolvePackageDirectoryFromModuleId(`/${directory}/package.json`) !== `/${directory}`) continue
     let packageJson
     try {
-      packageJson = JSON.parse(asarModule.extractFile(asarPath, normalized).toString('utf8'))
+      packageJson = JSON.parse(asarModule.extractFile(asarPath, archivePath).toString('utf8'))
     } catch {
       throw new Error(`读不到 app.asar 里的 ${normalized}`)
     }
