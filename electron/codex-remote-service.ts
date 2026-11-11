@@ -899,6 +899,21 @@ export class CodexRemoteService {
   }
 
   /**
+   * 微信重新扫码，服务端认出是本机原来那份登录、回「这个微信已经连着这台电脑了」（YKS-6）：凭据没换，
+   * saveChannelCredential 那条重启渠道的路不会走。渠道开着、还停在「需要重新登录」时断开重连一次，跟卡片上点
+   * 「重新连接」是同一条路；别的状态不动，扫一次码不把好好的连接断一下。这一下手机遥控被关掉了就不连，也不报错，
+   * 跟换凭据那条一样。
+   */
+  async reconnectIfLoggedOut(channel: RemoteChannelId): Promise<void> {
+    const runtime = this.runtimes[channel]
+    if (this.disposed || !runtime.enabled || runtime.status.state !== 'needs-login') return
+    this.options.log('info', 'remote.channel-relogin-reconnect', { channel })
+    await this.stopAdapter(runtime)
+    await this.startChannel(runtime)
+    await this.emit()
+  }
+
+  /**
    * 能不能开变了（状态文件关掉或放开了手机遥控，remote-features.ts）：现在不能开了，开着的渠道当场停掉，
    * 手机上收到的跟在电脑上点关一样；又能开了不替他打开，只让界面跟上。
    */
