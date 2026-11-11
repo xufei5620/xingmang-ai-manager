@@ -284,8 +284,14 @@ test('v2 home places clients in installed ToolRows and saves and opens through t
         if (tool === 'opencode') await page.getByTestId('external-client-protocol').selectOption('chat-completions')
         await page.getByTestId('external-client-save').click()
         await page.getByTestId('external-client-result').getByText('配置已保存', { exact: true }).waitFor()
+        // 配置文件位置客户用不上，收进「查看详情」，默认不展开（决定单 D62 第 3 条）。
+        const savedPath = page.getByTestId('external-client-path')
+        await expect(savedPath.locator('summary')).toHaveText('查看详情')
+        await expect(savedPath.locator('p')).toBeHidden()
         if (tool === 'claudeDesktop') {
-          await expect(page.getByTestId('external-client-result')).toContainText('configLibrary')
+          await savedPath.locator('summary').click()
+          await expect(savedPath.locator('p')).toBeVisible()
+          await expect(savedPath.locator('p')).toContainText('configLibrary')
           await expect(dialog).not.toContainText('HKEY_CURRENT_USER')
           await expect(dialog).not.toContainText('等待导入')
           await expect(dialog).toContainText('完全退出再重新打开 Claude Desktop')
