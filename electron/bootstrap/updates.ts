@@ -18,7 +18,7 @@ import type { RuntimeLogStore } from '../runtime-log'
 import { createServiceStatusMonitor, locateServiceStatusUrl, pickServiceSwitches, readServiceStatus, resolveHiddenPaymentMethodsFor, resolveReleasePlatforms } from '../service-status'
 import { createServiceSwitchesStore } from '../service-switches-store'
 import type { SystemService } from '../system-service'
-import { classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from '../update-feed-route'
+import { classifyDirectFeedDownloadFailure, classifyDirectFeedFailure, locateDirectUpdateFeed, packagedUpdateFeed, updateFeedLineFor } from '../update-feed-route'
 import { verifyUpdatePackageDigest } from '../update-package-digest'
 import { shouldVerifyUpdateSignature, verifyUpdateEntrySignature } from '../update-package-signature'
 import { createUpdateRequestGuard } from '../update-request-guard'
@@ -189,13 +189,15 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
         runtimeLog.log('info', 'updater', 'download.requests.aborted', `掐断了 ${aborted} 个停住的更新请求`, { aborted, reason: reason.name })
       },
       downloadStalled: (stall) => {
-        runtimeLog.log('warn', 'updater', 'download.stalled', stall.retrying ? '更新下载停住了，换直连重下一次' : '更新下载停住了，报下载失败', {
+        const next = stall.switchingFeed ? '换线路1重下一次' : stall.retrying ? '换直连重下一次' : '报下载失败'
+        runtimeLog.log('warn', 'updater', 'download.stalled', `更新下载停住了，${next}`, {
           retrying: stall.retrying,
           transferred: stall.transferred,
           total: stall.total,
           unsettled: stall.unsettled,
           fullPackage: stall.fullPackage,
           transferEnded: stall.transferEnded,
+          ...(stall.switchingFeed ? { switchingFeed: true } : {}),
         })
       },
       // 每次下好记一条实际下了多少，跟整包比，看增量下载省了多少（在线热更新方案 B1）。
@@ -247,6 +249,17 @@ export function createUpdateFeed(options: UpdateFeedOptions) {
               if (failure.lineFailure) relayRouteController.reportFailure('solov', 'direct', failure.reason)
               useUpdateFeedLine('primary')
               runtimeLog.log('info', 'updater', 'feed.fallback', '更新检查在线路2上没走通，改走线路1再查一次', { reason: failure.reason })
+              return true
+            },
+            // 安装包同理（D84）：「自动」时在直连那份上下不动、半路断了，换回包里那份再查一次、再下一次。手动选了
+            // 线路2 的不换，选它的人可能就是不想走线路1。只换这一次：下次检查照样按这会儿的线路选。
+            fallBackDownload: (error, stalled) => {
+              if (updateFeedLine !== 'direct' || !relayRouteController.route('solov').automatic) return false
+              const failure = classifyDirectFeedDownloadFailure(error, stalled)
+              if (!failure) return false
+              if (failure.lineFailure) relayRouteController.reportFailure('solov', 'direct', failure.reason)
+              useUpdateFeedLine('primary')
+              runtimeLog.log('info', 'updater', 'feed.download-fallback', '更新包在线路2上没下成，改走线路1再下一次', { reason: failure.reason })
               return true
             },
           }
