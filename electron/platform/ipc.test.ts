@@ -91,7 +91,7 @@ describe('platform IPC main-window boundary', () => {
       policy: () => h.policy,
       service: () => service,
     })
-    expect(callbacks.size).toBe(9)
+    expect(callbacks.size).toBe(10)
     expect(() =>
       callbacks.get(platformChannels.getState)!(h.event, 'unexpected'),
     ).toThrow('参数')
@@ -106,7 +106,7 @@ describe('platform IPC main-window boundary', () => {
     ).resolves.toBe('theme')
     expect(service.setThemePreference).toHaveBeenCalledWith('system')
     dispose()
-    expect(removeHandler).toHaveBeenCalledTimes(9)
+    expect(removeHandler).toHaveBeenCalledTimes(10)
     expect(() =>
       callbacks.get(platformChannels.notifyActivity)!(
         h.event,
@@ -221,6 +221,7 @@ describe('platform IPC audit log', () => {
       setNotificationPreference: vi.fn(() => 'notification'),
       setPrivacyPreference: vi.fn(() => 'privacy'),
       testNotification: vi.fn(() => 'requested'),
+      openNotificationSettings: vi.fn(async () => true),
       notifyActivity: vi.fn(async () => 'duplicate'),
     } as unknown as PlatformSystemService
     registerPlatformHandlers({
@@ -345,6 +346,26 @@ describe('platform IPC audit log', () => {
       expect(() => notify(h.event, 'spend', 'spend:7:3', detail)).toThrow('通知内容')
     // 带金额的只有花费这一类，别的通知不能借它塞数字。
     expect(() => notify(h.event, 'balance', 'balance:7:1', { cents: 1240, multiple: 8 })).toThrow('通知内容')
+  })
+
+  it('opens the system notification settings without taking anything from the renderer', async () => {
+    const sink = logged()
+    const { h, callbacks, service } = registered(sink.log)
+    const open = callbacks.get(platformChannels.openNotificationSettings)!
+    // 打开哪一页由主进程定：渲染层塞进来的网址一律当参数不对拒掉，不传给服务。
+    expect(() => open(h.event, 'https://evil.example/')).toThrow('参数')
+    expect(service.openNotificationSettings).not.toHaveBeenCalled()
+    await expect(open(h.event)).resolves.toBe(true)
+    expect(service.openNotificationSettings).toHaveBeenCalledWith()
+    expect(sink.entries.at(-1)).toMatchObject({
+      level: 'info',
+      event: platformChannels.openNotificationSettings,
+      message: '打开系统通知设置完成',
+      detail: { opened: true },
+    })
+    vi.mocked(service.openNotificationSettings).mockResolvedValueOnce(false)
+    await expect(open(h.event)).resolves.toBe(false)
+    expect(sink.entries.at(-1)!.detail).toMatchObject({ opened: false })
   })
 
   it('records a rejected sender as a security event naming the page', () => {

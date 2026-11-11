@@ -12,6 +12,7 @@ import type {
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { installPlatformSystemApi } from './install-system-api'
 import { platformChannels } from './contract'
+import { notificationSettingsTarget } from './system-service'
 import { hostNotifier } from './host-notification-bridge'
 import { attachRendererDelivery, detachRendererDelivery } from './renderer-delivery-bridge'
 import { ipcEventChannels } from '../ipc-contract'
@@ -42,7 +43,10 @@ function notificationRuntimeFixture() {
   }
 }
 
-function installFixture(notificationRuntime?: ReturnType<typeof notificationRuntimeFixture>['runtime']) {
+function installFixture(
+  notificationRuntime?: ReturnType<typeof notificationRuntimeFixture>['runtime'],
+  openExternal?: (url: string) => Promise<void>,
+) {
   const root = fs.mkdtempSync(
     path.join(os.tmpdir(), 'xingmang-platform-install-'),
   )
@@ -102,6 +106,7 @@ function installFixture(notificationRuntime?: ReturnType<typeof notificationRunt
     platformPreloadPath: path.join(root, 'platform-preload.js'),
     onError,
     ...(notificationRuntime ? { notificationRuntime } : {}),
+    ...(openExternal ? { openExternal } : {}),
   })
   return { root, app, handlers, session, frame, contents, window, windowTitle, onError, dispose }
 }
@@ -156,6 +161,20 @@ describe('additional sandbox preload registration', () => {
       type: 'frame',
       filePath: path.join(root, 'platform-preload.js'),
     })
+    dispose()
+    expect(onError).not.toHaveBeenCalled()
+  })
+
+  it('hands only the fixed notification settings page of this system to the injected opener', async () => {
+    const openExternal = vi.fn(async () => undefined)
+    const { app, handlers, frame, contents, window, onError, dispose } = installFixture(undefined, openExternal)
+    app.emit('browser-window-created', {}, window as unknown as BrowserWindow)
+    await Promise.resolve()
+    const event = { sender: contents, senderFrame: frame } as unknown as IpcMainInvokeEvent
+    const target = notificationSettingsTarget(process.platform)
+    await expect(handlers.get(platformChannels.openNotificationSettings)!(event)).resolves.toBe(target !== null)
+    // Linux 没有统一能打开的那一页：不去碰系统，按没打开回给界面。
+    expect(openExternal.mock.calls).toEqual(target ? [[target]] : [])
     dispose()
     expect(onError).not.toHaveBeenCalled()
   })
