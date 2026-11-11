@@ -3480,6 +3480,29 @@ test('an unreachable startup restore keeps the login on the home page and waits 
   } finally { await page.close() }
 })
 
+// Q4：聊天里做过的图在画布窗口项目中心的素材库里，聊天页右上角一颗图标按钮直接叫出来；画布那半管窗口和素材库。
+test('the chat page opens the canvas asset library from the top bar and reports a failure', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-chat').click()
+    const button = page.getByTestId('chat-assets-open')
+    await button.waitFor()
+    assert.equal(await button.getAttribute('aria-label'), '看做过的图')
+    assert.equal(await button.getAttribute('title'), '看做过的图：在画布窗口的项目中心打开素材库，聊天里做的图和发过的图都在里面')
+    // 在「参数设置」左边。
+    const order = await page.locator('.chat-bar-actions [data-testid]').evaluateAll((items) => items.map((item) => item.getAttribute('data-testid')))
+    assert.equal(order.indexOf('chat-assets-open') + 1, order.indexOf('chat-parameters-open'))
+    await button.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'openCanvasAssetLibrary'))
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = 'openCanvasAssetLibrary'; window.v2Test.failMessage = '画布窗口没能打开' })
+    await button.click()
+    await page.getByTestId('operation-error').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.failMessage = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a launch paints the last saved scan first and swaps in the fresh one without calling config changed', async () => {
   const page = await open('allInstalled=1&changedClaude=1&cachedScan=1')
   try {
