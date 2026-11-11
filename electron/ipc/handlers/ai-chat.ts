@@ -96,6 +96,15 @@ export function registerAiChatHandlers(ctx: IpcHandlerContext): void {
     if (typeof remaining !== 'number' || !Number.isSafeInteger(remaining)) throw new Error('聊天图片数量格式错误')
     return options.chatAttachments.pick(currentChatUserId(), remaining)
   })
+  // Same rule for text files: the path comes from the picker in this process and never leaves it.
+  // Still gated on a signed-in account like the rest of the chat, which only an account can send.
+  registerTrustedHandler('chat:pick-text-files', (_event, remainingFiles: unknown, remainingChars: unknown) => {
+    if (!options.chatTextFiles) throw new Error('聊天文件服务未就绪')
+    if (typeof remainingFiles !== 'number' || !Number.isSafeInteger(remainingFiles)) throw new Error('聊天文件数量格式错误')
+    if (typeof remainingChars !== 'number' || !Number.isSafeInteger(remainingChars)) throw new Error('聊天文件字数格式错误')
+    currentChatUserId()
+    return options.chatTextFiles.pick(remainingFiles, remainingChars)
+  })
   registerTrustedHandler('chat:paste-image', () => {
     if (!options.chatAttachments) throw new Error('聊天图片服务未就绪')
     return options.chatAttachments.paste(currentChatUserId())

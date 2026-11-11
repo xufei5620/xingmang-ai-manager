@@ -652,6 +652,17 @@ export interface AiChatAsset {
   revisedPrompt?: string
 }
 
+/**
+ * 聊天里加的一个文字类文件（Fable 第二轮 Q2）：主进程从系统选文件框拿到路径、按上限读出来的字。
+ * 路径不回渲染层；size 是文件在磁盘上的大小，truncated = 只读了开头一截。
+ */
+export interface AiChatTextFile {
+  name: string
+  size: number
+  text: string
+  truncated: boolean
+}
+
 export type AiChatErrorCode = MainAiChatStreamErrorCode
 
 export type AiChatStreamEvent =
@@ -1385,6 +1396,8 @@ export interface XingmangInvokeContract {
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   pickAiChatImages: IpcInvokeDefinition<'chat:pick-images', [remaining: number], AiChatAsset[]>
   pasteAiChatImage: IpcInvokeDefinition<'chat:paste-image', [], AiChatAsset | null>
+  /** 系统选文件框选文字类文件，读出来的字交回去；remainingChars 是这条消息还能放多少字。 */
+  pickAiChatTextFiles: IpcInvokeDefinition<'chat:pick-text-files', [remainingFiles: number, remainingChars: number], AiChatTextFile[]>
   /** 视频剪辑「一句话出片」：文字型号把想法拆成几个镜头。停下用 video:cancel，同一个请求标识。 */
   planVideoStudio: IpcInvokeDefinition<'video-studio:plan', [input: VideoStudioPlanInput], VideoStudioPlan>
   /** 出一段视频，等到存进作品库才回；途中的进度走 onAiVideoProgress。 */
@@ -1752,6 +1765,7 @@ export const ipcInvokeChannels = {
   showAiChatAssetMenu: 'chat:asset-menu',
   pickAiChatImages: 'chat:pick-images',
   pasteAiChatImage: 'chat:paste-image',
+  pickAiChatTextFiles: 'chat:pick-text-files',
   planVideoStudio: 'video-studio:plan',
   generateAiVideo: 'video:generate',
   resumeAiVideo: 'video:resume',

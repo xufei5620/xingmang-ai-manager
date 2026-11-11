@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import type { AiChatAsset } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, shouldShowOfflineReplyNotice, offlineReplyNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -617,5 +617,98 @@ describe('v2 chat empty-page examples', () => {
     expect(chatExampleDraft('这个 Excel 公式怎么写：我想……')).toBe('这个 Excel 公式怎么写：我想')
     expect(chatExampleDraft('这段报错是什么意思')).toBe('这段报错是什么意思')
     expect(chatExampleDraft('……中间的省略号……不动……')).toBe('……中间的省略号……不动')
+  })
+})
+
+describe('v2 chat attached text files', () => {
+  const file = (name: string, text: string, truncated = false): AiChatTextFile => ({ name, size: text.length, text, truncated })
+
+  it('sends the files ahead of what the customer wrote, marked so the AI tells them apart, and clears them from the draft', () => {
+    const conversation = { ...readyConversation(), draftFiles: [file('notes.md', '# 会议记录'), file('big.log', 'start', true)] }
+    const plan = planTurn(conversation, { prompt: '帮我总结', files: conversation.draftFiles, requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages).toEqual([{ role: 'user', content: '<file name="notes.md">\n# 会议记录\n</file>\n\n<file name="big.log" truncated="true">\nstart\n</file>\n\n帮我总结' }])
+    expect(plan.conversation.messages[0]).toMatchObject({ content: '帮我总结', files: conversation.draftFiles })
+    expect(plan.conversation.draftFiles).toBeUndefined()
+    expect(plan.prompt).toBe('帮我总结')
+  })
+
+  it('sends a file without any words and names the conversation after it', () => {
+    const conversation = readyConversation()
+    const plan = planTurn(conversation, { prompt: '', files: [file('报错日志.txt', 'Error: boom')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })
+    expect(plan.messages).toEqual([{ role: 'user', content: '<file name="报错日志.txt">\nError: boom\n</file>' }])
+    expect(plan.conversation.title).toBe('报错日志.txt')
+  })
+
+  it('keeps the files of earlier messages in what every later turn sends, and in retries and edits', () => {
+    const conversation = readyConversation()
+    conversation.messages = [
+      { id: 'u1', role: 'user', content: '看看', reasoning: '', status: 'complete', createdAt: 1, files: [file('a.csv', 'x,y')] },
+      { id: 'a1', role: 'assistant', content: 'ok', reasoning: '', status: 'complete', createdAt: 1 },
+    ]
+    const withFile = '<file name="a.csv">\nx,y\n</file>\n\n看看'
+    expect(planTurn(conversation, { prompt: '接着说', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages[0]).toEqual({ role: 'user', content: withFile })
+    expect(planTurn(conversation, { prompt: '', retryId: 'a1', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages).toEqual([{ role: 'user', content: withFile }])
+    expect(planTurn(conversation, { prompt: '改成这样', editId: 'u1', requestId: 'r', assistantId: 'a', userMessageId: 'u' }).messages).toEqual([{ role: 'user', content: '<file name="a.csv">\nx,y\n</file>\n\n改成这样' }])
+    expect(conversationContextShare(conversation)).toBeCloseTo(Math.max(2 / chatLimits.messageCount, (withFile.length + 2) / chatLimits.totalMessageLength))
+  })
+
+  it('refuses files when generating an image, and says so in words the banner shows as they are', () => {
+    const drawing = readyConversation(); drawing.settings.mode = 'image'; drawing.settings.model = 'gpt-image-2'
+    expect(() => planTurn(drawing, { prompt: '一只猫', files: [file('a.txt', 'x')], requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(imageModeFilesMessage)
+    expect(chatErrorMessage(new Error(imageModeFilesMessage))).toBe(imageModeFilesMessage)
+  })
+
+  it('counts the files toward the single-message limit', () => {
+    const files = [file('a.txt', 'x'.repeat(30_000))]
+    // The file blocks and the blank line before the typed text come off the 40000 first.
+    const room = chatLimits.messageLength - messageWithFiles('', files).length - 2
+    expect(messageWithFiles('y'.repeat(room), files)).toHaveLength(chatLimits.messageLength)
+    expect(draftLengthError('y'.repeat(room), files)).toBe('')
+    expect(() => planTurn(readyConversation(), { prompt: 'y'.repeat(room), files, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).not.toThrow()
+    expect(draftLengthError('y'.repeat(room + 1), files)).toBe('最多 40000 字，现在 40001 字，删掉一些再发。')
+    expect(() => planTurn(readyConversation(), { prompt: 'y'.repeat(room + 1), files, requestId: 'r', assistantId: 'a', userMessageId: 'u' })).toThrow(`单条消息最多 ${chatLimits.messageLength} 个字符`)
+    expect(draftLengthError('y'.repeat(room + 1))).toBe('')
+    expect(draftLengthError('', files)).toBe('')
+  })
+
+  it('works out how many more files and characters the draft has room for', () => {
+    expect(draftFileRoom({ draft: '' })).toEqual({ files: 3, characters: 30_000 })
+    expect(draftFileRoom({ draft: '', draftFiles: [file('a.txt', 'x'.repeat(10_000))] })).toEqual({ files: 2, characters: 20_000 })
+    // A long draft leaves less room for files, so the whole message still fits.
+    const long = draftFileRoom({ draft: 'y'.repeat(30_000) })
+    expect(long.files).toBe(3)
+    expect(long.characters).toBe(chatLimits.messageLength - 30_002 - 3 * 300)
+    expect(draftFileRoom({ draft: '', draftFiles: [file('a', '1'), file('b', '2'), file('c', '3')] })).toEqual({ files: 0, characters: 0 })
+    expect(draftFileRoom({ draft: 'y'.repeat(chatLimits.messageLength) }).characters).toBe(0)
+  })
+
+  it('adds and removes draft files by position, and moves them along with the draft to a new conversation', () => {
+    const first = addDraftFiles(readyConversation(), [file('same.txt', 'one'), file('same.txt', 'two')])
+    expect(first.draftFiles?.map((item) => item.text)).toEqual(['one', 'two'])
+    expect(removeDraftFile(first, 0).draftFiles?.map((item) => item.text)).toEqual(['two'])
+    expect(removeDraftFile(removeDraftFile(first, 0), 0)).not.toHaveProperty('draftFiles')
+    expect(addDraftFiles(first, [file('c', '3'), file('d', '4')]).draftFiles).toHaveLength(3)
+    const state = createWorkspace('owner')
+    state.conversations = [{ ...first, draft: 'carry me' }]
+    const moved = continueInNewConversation(state, first.id, 'carry me', true)
+    expect(moved.conversations[0].draftFiles).toEqual(first.draftFiles)
+    expect(moved.conversations[1]).not.toHaveProperty('draftFiles')
+  })
+
+  it('tells the customer which files were read only in part', () => {
+    expect(fileTruncationNotice([file('a.txt', 'x')])).toBe('')
+    expect(fileTruncationNotice([file('big.log', 'x'.repeat(12_000), true)])).toBe('「big.log」太长，只读了前 12,000 个字。')
+  })
+
+  it('shows the main process words for a failed pick and a fallback for English ones', () => {
+    expect(fileAttachmentErrorMessage(new Error("Error invoking remote method 'chat:pick-text-files': Error: 这个文件读不出来，可能正被别的软件占着，关掉它再试。"))).toBe('这个文件读不出来，可能正被别的软件占着，关掉它再试。')
+    expect(fileAttachmentErrorMessage(new Error('请先登录星芒账号'))).toBe('请先登录，再加文件')
+    expect(fileAttachmentErrorMessage(new Error('EPERM: operation not permitted'))).toBe('文件没有加上，请再试一次')
+  })
+
+  it('finds a conversation by the name of a file sent in it', () => {
+    const conversation = readyConversation()
+    conversation.messages = [{ id: 'u1', role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 1, files: [file('季度报表.csv', 'x')] }]
+    expect(filterConversations([conversation], '季度报表')).toEqual([conversation])
   })
 })
