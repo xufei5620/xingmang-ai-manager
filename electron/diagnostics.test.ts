@@ -40,6 +40,7 @@ import {
   type NodeTlsProbeInput,
 } from './diagnostics'
 import type { NodeTlsOutcome } from './certificate-trust-probe'
+import { decodeShellSettingsBytes } from './diagnostics-override-checks'
 import { readProjectInstructionsTemplate } from './project-instructions'
 import { launchExcludedEnvironmentVariables, macosShellOverrideVariables } from './system-service'
 import { valueReferences } from './type-only-imports.test-support'
@@ -1725,17 +1726,30 @@ describe('diagnostics', () => {
         })
       })
 
-      it.runIf(posixHost)('leaves the shell settings alone on Windows and Linux', async () => {
+      // SH-12：fish 的 conf.d 里每个文件、set -Ux 存进 fish_variables 的也读；没 --export 的只在 fish 里，不算。
+      it.runIf(posixHost)('also reads fish conf.d files and exported universal variables', async () => {
         const home = realHome()
-        writeShellSettings(home, '.zshrc', 'export ANTHROPIC_API_KEY=sk-shell CLAUDE_CONFIG_DIR=/elsewhere\n')
+        writeShellSettings(home, '.config/fish/conf.d/relay.fish', 'set -gx ANTHROPIC_API_KEY sk-must-not-leak\n')
+        writeShellSettings(home, '.config/fish/conf.d/notes.txt', 'set -gx ANTHROPIC_API_KEY sk-must-not-leak\n')
+        writeShellSettings(home, '.config/fish/fish_variables', [
+          '# This file contains fish universal variable definitions.',
+          '# VERSION: 3.0',
+          'SETUVAR --export CLAUDE_CONFIG_DIR:\\x2fmust\\x2dnot\\x2dleak',
+          'SETUVAR ANTHROPIC_API_KEY:sk\\x2dnot\\x2dexported',
+          '',
+        ].join('\n'))
 
-        for (const platform of ['win32', 'linux'] as const) {
-          expect(overrideItem(await runDiagnostics({ ...macosInput(home), platform }))).toMatchObject({
-            state: 'pass',
-            summary: '没有另外设过工具地址或密钥',
-            details: { count: 0 },
-          })
-        }
+        const item = overrideItem(await runDiagnostics(macosInput(home)))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.config/fish/conf.d/relay.fish）',
+            variable2: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/.config/fish/fish_variables）',
+          },
+        })
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
       })
 
       it.runIf(posixHost)('leaves a tool that is not on the 星芒 account alone', async () => {
@@ -1871,6 +1885,126 @@ describe('diagnostics', () => {
         }
         // ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR 和改走云厂商的五个开关，各三种账号。
         expect(checked).toHaveLength(21)
+      })
+    })
+
+    // SH-5：Windows 的 Git Bash、PowerShell 启动文件，Linux 的 ~/.bashrc 这些，客户自己开命令窗口时会读，星芒开的窗口不读。
+    describe('on Windows and Linux', () => {
+      const posixHost = process.platform !== 'win32'
+
+      function platformInput(home: string, platform: 'win32' | 'linux', env: NodeJS.ProcessEnv = {}) {
+        const input = dependencies(home)
+        input.platform = platform
+        input.env = env
+        input.timeoutMs = 2000
+        input.inspectProvider = (provider) => inspection(provider, home, 'sk-super-secret-value')
+        return input
+      }
+
+      function realHome(): string {
+        return fs.realpathSync.native(temporaryHome())
+      }
+
+      function writeSettings(home: string, file: string, content: string | Buffer): void {
+        const target = path.join(home, ...file.split('/'))
+        fs.mkdirSync(path.dirname(target), { recursive: true })
+        fs.writeFileSync(target, content)
+      }
+
+      it('decodes profiles saved as UTF-16 or with a UTF-8 byte order mark', () => {
+        const text = "$env:ANTHROPIC_API_KEY = 'sk-中'"
+        const bigEndian = Buffer.from(text, 'utf16le').swap16()
+        expect(decodeShellSettingsBytes(Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(text, 'utf16le')]))).toBe(text)
+        expect(decodeShellSettingsBytes(Buffer.concat([Buffer.from([0xFE, 0xFF]), bigEndian]))).toBe(text)
+        expect(decodeShellSettingsBytes(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(text)]))).toBe(text)
+        expect(decodeShellSettingsBytes(Buffer.from(text))).toBe(text)
+      })
+
+      const shellOnlySummary = '终端设置里另外设了 ANTHROPIC_API_KEY：从星芒打开的工具不受影响，自己开终端直接用 Claude Code 时会不用当前账号的设置。用不着的话，把这几项从终端设置里删掉'
+
+      it.runIf(posixHost)('names a key in the Linux ~/.bashrc, with the file but never the value', async () => {
+        const home = realHome()
+        writeSettings(home, '.bashrc', '# 别家中转的教程\nexport ANTHROPIC_API_KEY=sk-must-not-leak\n')
+
+        const item = overrideItem(await runDiagnostics(platformInput(home, 'linux')))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          summary: shellOnlySummary,
+          details: { count: 1, variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bashrc）' },
+        })
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it.runIf(posixHost)('reads the Git Bash files and both PowerShell profile folders on Windows, in the real Documents folder', async () => {
+        const home = realHome()
+        const documents = path.join(home, 'OneDrive', 'Documents')
+        writeSettings(home, '.bash_profile', 'export ANTHROPIC_API_KEY=sk-must-not-leak\r\n')
+        writeSettings(home, 'OneDrive/Documents/PowerShell/Microsoft.PowerShell_profile.ps1', '$env:ANTHROPIC_API_KEY = "sk-must-not-leak"\r\n')
+        // Windows PowerShell 5.1 的 `>` 存成带 BOM 的 UTF-16。
+        writeSettings(home, 'OneDrive/Documents/WindowsPowerShell/profile.ps1', Buffer.concat([
+          Buffer.from([0xFF, 0xFE]),
+          Buffer.from("[Environment]::SetEnvironmentVariable('CLAUDE_CONFIG_DIR', 'D:\\must-not-leak', 'User')\r\n", 'utf16le'),
+        ]))
+        // 星芒不认的地方：zsh 的文件 Git Bash 不读，个人文件夹下没挪走的 Documents 也不是这台电脑的「文档」。
+        writeSettings(home, '.zshrc', 'export CLAUDE_CODE_USE_BEDROCK=1\n')
+        writeSettings(home, 'Documents/PowerShell/profile.ps1', '$env:CLAUDE_CODE_USE_VERTEX = 1\n')
+
+        const input = platformInput(home, 'win32')
+        input.documentsDirectory = documents
+        const item = overrideItem(await runDiagnostics(input))
+
+        expect(item).toMatchObject({
+          state: 'warn',
+          details: {
+            count: 3,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bash_profile）',
+            variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/OneDrive/Documents/PowerShell/Microsoft.PowerShell_profile.ps1）',
+            variable3: 'CLAUDE_CONFIG_DIR（Claude Code，在 ~/OneDrive/Documents/WindowsPowerShell/profile.ps1）',
+          },
+        })
+        // 按钮删的是进程环境里的变量，删不到文件里，不挂。
+        expect(item?.details?.fix).toBeUndefined()
+        expect(JSON.stringify(item)).not.toContain('must-not-leak')
+      })
+
+      it.runIf(posixHost)('falls back to Documents under the home folder when the host gives no Documents folder', async () => {
+        const home = realHome()
+        writeSettings(home, 'Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1', '$env:ANTHROPIC_API_KEY = $env:SOME_KEY\n')
+
+        expect(overrideItem(await runDiagnostics(platformInput(home, 'win32')))).toMatchObject({
+          state: 'warn',
+          summary: shellOnlySummary,
+          details: { variable1: 'ANTHROPIC_API_KEY（Claude Code，在 ~/Documents/WindowsPowerShell/Microsoft.PowerShell_profile.ps1）' },
+        })
+      })
+
+      it.runIf(posixHost)('keeps the environment finding, its fail state and the clear button next to a file finding', async () => {
+        const home = realHome()
+        writeSettings(home, '.bashrc', 'export ANTHROPIC_API_KEY=sk-must-not-leak\n')
+
+        const item = overrideItem(await runDiagnostics(platformInput(home, 'win32', { ANTHROPIC_API_KEY: 'sk-must-not-leak' })))
+
+        expect(item).toMatchObject({
+          state: 'fail',
+          details: {
+            count: 2,
+            variable1: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+            variable2: 'ANTHROPIC_API_KEY（Claude Code，在 ~/.bashrc）',
+            fix: 'clear-user-overrides',
+          },
+        })
+        expect(item?.summary).toContain('电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置')
+      })
+
+      it.runIf(posixHost)('leaves a file alone that only sets a value pointing back at the current account', async () => {
+        const home = realHome()
+        writeSettings(home, '.bashrc', `export CLAUDE_CONFIG_DIR="$HOME/.claude"\nexport ANTHROPIC_API_KEY=\n`)
+
+        expect(overrideItem(await runDiagnostics(platformInput(home, 'linux')))).toMatchObject({
+          state: 'pass',
+          details: { count: 0 },
+        })
       })
     })
 

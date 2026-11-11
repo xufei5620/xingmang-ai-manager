@@ -18,7 +18,7 @@ Fixes #
 
 ## 自查
 
-<!-- 四道都跑，每道结尾的汇总行原样贴在下面。Windows / macOS 专有的部分以本 PR 上 quality 工作流对应平台作业的结果为准 -->
+<!-- 四道都跑，每道结尾的汇总行原样贴在下面。`npm run selfcheck` 一条命令把四道跑完，结尾那段汇总就是要贴的。Windows / macOS 专有的部分以本 PR 上 quality 工作流对应平台作业的结果为准 -->
 
 - [ ] `npm run typecheck`
 - [ ] `npm test`

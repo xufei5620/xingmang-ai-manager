@@ -14,6 +14,7 @@
 | `prototype-reference-capture.cjs` | 拍当前原型截图到 `docs/prototype-refs/current/` | Chromium（沙箱里需 `XINGMANG_E2E_CHROMIUM`）、`ui-spec/work/reference-harness.cjs` |
 | `prototype-reference-index.cjs` | 把上一步的 `manifest.json` 渲染成可筛选的 `index.html` | 先跑 `prototype-reference-capture.cjs` |
 | `v2-business-screenshots.mjs` | 生成 renderer-v2 业务页 240 张实现截图 | Chromium、Vite dev server |
+| `v2-page-screenshot.mjs` | 只截指定的一张 renderer-v2 夹具页，几秒一张；等 yoyo 点头的版面改动配图用（`docs/COLLABORATION.md` §7.5） | Chromium、Vite dev server；输出要放仓库外面 |
 | `renderer-v2-evidence-index.mjs` | 把原型截图与实现截图并排成对照矩阵，写进 `docs/renderer-v2-review/` | 先跑上面两个截图脚本 |
 | `renderer-v2-component-surface-check.mjs` | 16 组暗/亮按钮、卡片、字段、状态的计算样式与原型逐项比对 | Chromium、`ui-spec/work/reference-harness.cjs` |
 | `renderer-v2-gap-audit.mjs` | 只读地遍历 renderer-v2 若干场景，把观察到的差异写成报告 | Chromium |
