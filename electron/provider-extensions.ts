@@ -51,6 +51,7 @@ import {
 } from './windows-elevation'
 import { isRecord } from './input-guards'
 import { mcpHttpHeaderEntries } from './mcp-http-headers'
+import { mcpCopyConfig } from './mcp-copy'
 
 const DEFAULT_TIMEOUT_MS = 30_000
 const MUTATION_TIMEOUT_MS = 120_000
@@ -2591,6 +2592,21 @@ export class ProviderExtensionService {
       throw new Error('当前 Provider 不支持该原生操作')
     }
     return this.list(provider)
+  }
+
+  /**
+   * 外接工具页「也装到别的工具」（同类对比 备选 5）：读出 Claude Code、Codex「我的（全局）」那份里这一条连接原样写的内容，
+   * 交给别的工具的添加那条路。只在主进程里用：环境变量、请求头的值不回界面（见 mcp-copy.ts）。
+   */
+  async readUserMcpConnection(provider: ProviderId, name: string): Promise<ProviderMcpInstallConfiguration> {
+    const id = safeIdentifier(name, 'MCP 名称')
+    if (provider === 'claude') {
+      const root = await readJsonFile(path.join(this.homeDirectory, '.claude.json'), MAX_CLAUDE_ROOT_CONFIG_BYTES)
+      const servers = isRecord(root?.mcpServers) ? root.mcpServers : {}
+      return mcpCopyConfig('claude', Object.hasOwn(servers, id) ? servers[id] : undefined)
+    }
+    if (provider === 'codex') return mcpCopyConfig('codex', readCodexMcpServerEntries(path.join(this.codexHome, 'config.toml')).get(id))
+    throw new Error('这个工具的连接星芒读不全，请在要装的工具里手动添加。')
   }
 
   async mutate(input: ProviderExtensionMutation): Promise<ProviderExtensionsSnapshot> {
