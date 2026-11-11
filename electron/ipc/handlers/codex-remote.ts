@@ -6,7 +6,7 @@ import {
   validateFeishuCredentialInput,
   verifyFeishuCredential,
 } from '../../codex-remote-feishu'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled } from '../parsers/codex-remote'
+import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose } from '../parsers/codex-remote'
 import type { IpcHandlerContext } from './context'
 
 export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
@@ -16,6 +16,8 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
     codexRemote().setChannelEnabled(parseRemoteChannel(channel), parseRemoteEnabled(enabled))
   ))
   registerTrustedHandler('codex-remote:reconnect', (_event, channel: unknown) => codexRemote().reconnectChannel(parseRemoteChannel(channel)))
+  registerTrustedHandler('codex-remote:set-auto-start', (_event, enabled: unknown) => codexRemote().setAutoStart(parseRemoteEnabled(enabled)))
+  registerTrustedHandler('codex-remote:set-idle-close', (_event, hours: unknown) => codexRemote().setIdleClose(parseRemoteIdleClose(hours)))
   registerTrustedHandler('codex-remote:choose-workspace', async (event) => {
     const service = codexRemote()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined

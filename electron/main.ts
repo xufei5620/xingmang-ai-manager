@@ -2481,6 +2481,8 @@ if (!hasSingleInstanceLock) {
     })
     // 开机时遥控一个都没开、也还没推过快照：先读一份，托盘才知道该不该出「打开手机遥控」。
     void codexRemote.snapshot().then(followRemoteForTray).catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.tray-state.failed', cause))
+    // 客户自己打开了「打开星芒时自动打开遥控」（YF-9，默认关）才替他连配对过人的渠道；没打开时什么都不做。
+    void codexRemote.startOnLaunch().catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.auto-start.failed', cause))
     releaseCodexRemote = (action) => codexRemote.releaseCodex(action)
     // 状态文件关掉、放开了哪样：开着的遥控当场停（设置页跟着换那句话），「下好了」那句和托盘加速那一行跟着改。
     const unsubscribeRemoteFeatureFollowers = remoteFeatures.subscribe(() => {

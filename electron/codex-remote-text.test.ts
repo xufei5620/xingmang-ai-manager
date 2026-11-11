@@ -4,6 +4,7 @@ import {
   classifyRemoteTurnFailure,
   formatApprovalText,
   formatFileChangeLine,
+  idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
   redactRemoteText,
@@ -135,6 +136,9 @@ describe('codex-remote-text', () => {
     expect(remoteMessages.threadReset).toBe('这是新对话，前面的记不得了。')
     expect(remoteMessages.unbound).toBe('电脑上已经把你解绑了，之后发的消息不会再执行。')
     expect(remoteMessages.idleClosingSoon).toBe('手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。')
+    // YF-10：自动关那句的时长跟着设置走。
+    expect(idleClosedMessage(4)).toBe('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(idleClosedMessage(12)).toBe('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。')
     expect(staleMessageNotice(25)).toBe('这条是 25 分钟前发的，那会儿电脑没连上，没有执行。还要做的话请再发一次。')
     expect(remoteTurnFailureMessages).toEqual({
       balance: '余额不够了，充值后再发一次。',
