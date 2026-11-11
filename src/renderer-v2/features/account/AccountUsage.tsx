@@ -29,6 +29,7 @@ import {
   mergeDashboards,
   modelShares,
   modelShareTitle,
+  priceListCells,
   quickFilterQuery,
   sub2ApiFilterId,
   sub2ApiUsageFilterFields,
@@ -48,7 +49,7 @@ import {
   type UsageRange,
 } from './usage'
 
-export type UsageView = 'calls' | 'tasks'
+export type UsageView = 'calls' | 'tasks' | 'prices'
 
 const pageSizes = [10, 20, 50, 100]
 /**
@@ -245,19 +246,69 @@ function UsageDashboard({
   )
 }
 
-/** 「调用明细 | 生成任务」两段切换（只有两样都有的账号才出），和收起来时读屏用的那个标题。 */
-function ViewSwitch({ view, both, onChange }: { view: UsageView; both: boolean; onChange: (view: UsageView) => void }) {
-  if (!both) return <h2>{view === 'tasks' ? '生成任务' : '调用明细'}</h2>
+const usageViewLabels: Record<UsageView, string> = { calls: '调用明细', tasks: '生成任务', prices: '价格表' }
+
+/** 「调用明细 | 生成任务 | 价格表」几段切换（账号有两样以上才出），和收起来时读屏用的那个标题。 */
+function ViewSwitch({ view, views, onChange }: { view: UsageView; views: readonly UsageView[]; onChange: (view: UsageView) => void }) {
+  if (views.length < 2) return <h2>{usageViewLabels[view]}</h2>
   return (
     <>
-      <h2 className="xm-visually-hidden">{view === 'tasks' ? '生成任务' : '调用明细'}</h2>
+      <h2 className="xm-visually-hidden">{usageViewLabels[view]}</h2>
       <div data-usage-view-switch="true">
         <Segment
-          options={[{ value: 'calls', label: '调用明细' }, { value: 'tasks', label: '生成任务' }]}
+          options={views.map((value) => ({ value, label: usageViewLabels[value] }))}
           value={view}
-          onChange={(value) => onChange(value === 'tasks' ? 'tasks' : 'calls')}
+          onChange={(value) => { const next = views.find((item) => item === value); if (next) onChange(next) }}
         />
       </div>
+    </>
+  )
+}
+
+const priceListUnreadable = '价格表暂时读不到，稍后再试。不影响使用。'
+
+/**
+ * 价格表（Fable 第二轮 Q3）：这个账号能用的模型在各分组的价，已经乘上分组倍率。头一回切到这一段才去读，
+ * 平时打开用量账单不多问一次。读不到不影响别的，照样能聊、能用工具。
+ */
+function AccountPrices({ api, refreshRequest, switcher }: { api: V2Bridge; refreshRequest?: number; switcher: ReactNode }) {
+  const load = useCallback(() => api.getAccountPriceList(), [api])
+  const resource = useResource(load)
+  useRefreshRequest(refreshRequest, () => void resource.reload())
+  const rows = resource.data?.rows ?? []
+  const unreadable = !resource.loading && (Boolean(resource.error) || !rows.length)
+  return (
+    <>
+      <div className="v2-usage-toolbar">
+        {switcher}
+        <span className="v2-usage-toolbar-gap" />
+        <span className="v2-usage-price-caption">价格表 · 美元 / 每百万 Token</span>
+      </div>
+      <Card padding="none">
+        {unreadable ? (
+          <Empty icon={ListX} title={priceListUnreadable} description="" action={<Button size="sm" icon={RefreshCw} onClick={() => void resource.reload()} testId="account-prices-retry">重试</Button>} />
+        ) : (
+          <Table
+            columns={[
+              { key: 'model', label: '模型' },
+              { key: 'group', label: '分组' },
+              { key: 'input', label: '输入' },
+              { key: 'output', label: '输出' },
+            ]}
+            rows={rows.map((row) => ({ id: `${row.group}\u0000${row.model}`, model: <span className="v2-usage-mono">{row.model}</span>, group: row.group, ...priceListCells(row) }))}
+            rowKey={(row) => String(row.id)}
+            empty="正在读取价格表…"
+            label="价格表 · 美元 / 每百万 Token"
+            testId="account-prices-table"
+          />
+        )}
+      </Card>
+      {!unreadable && rows.length > 0 && (
+        <p className="v2-usage-price-note" data-testid="account-prices-note">
+          已经算上分组的倍数。实际扣多少以用量账单为准。
+          {rows.some((row) => row.kind === 'tiered') && '分档计价的，用过以后在调用明细里点开那一次，能看到每一档的价格。'}
+        </p>
+      )}
     </>
   )
 }
@@ -622,6 +673,7 @@ export function AccountUsagePage({
   trends,
   calls: callsOn,
   tasks: tasksOn,
+  prices: pricesOn = false,
   view,
   onViewChange,
   refreshRequest,
@@ -637,14 +689,19 @@ export function AccountUsagePage({
   trends: boolean
   calls: boolean
   tasks: boolean
+  /** 这个账号的后端有没有按型号的价目（星芒账号有，历史账号没有）。 */
+  prices?: boolean
   view: UsageView
   onViewChange: (view: UsageView) => void
   refreshRequest?: number
 }) {
   const [range, setRange] = useState<UsageRange>('7')
   const dashboard = useUsageDashboard(api, dashboardOn, trends, range, refreshRequest)
-  const shown: UsageView = !tasksOn ? 'calls' : !callsOn ? 'tasks' : view
-  const both = callsOn && tasksOn
+  const views = (['calls', 'tasks', 'prices'] as const).filter((item) => item === 'calls' ? callsOn : item === 'tasks' ? tasksOn : pricesOn)
+  const shown: UsageView = views.includes(view) ? view : views[0] ?? 'calls'
+  // 价格表头一回切过去才挂上去读，之后来回切不再重读。
+  const [pricesOpened, setPricesOpened] = useState(false)
+  useEffect(() => { if (shown === 'prices') setPricesOpened(true) }, [shown])
   // 点了切换：点的那颗按钮跟着那一段一起藏起来了，焦点交给新露出来那一段里同一组按钮。
   const section = useRef<HTMLElement>(null)
   const moveFocus = useRef(false)
@@ -662,7 +719,7 @@ export function AccountUsagePage({
   return (
     <>
       {dashboardOn && <UsageDashboard dashboard={dashboard} balance={balance} trends={trends} range={range} onRange={setRange} />}
-      {(callsOn || tasksOn) && (
+      {views.length > 0 && (
         <section ref={section} className="v2-acct-section v2-usage-details">
           {callsOn && (
             <div hidden={shown !== 'calls'} data-testid="account-usage-section">
@@ -674,7 +731,7 @@ export function AccountUsagePage({
                 range={range}
                 models={dashboard.data?.totals.models ?? []}
                 refreshRequest={refreshRequest}
-                switcher={<ViewSwitch view="calls" both={both} onChange={switchView} />}
+                switcher={<ViewSwitch view="calls" views={views} onChange={switchView} />}
               />
             </div>
           )}
@@ -685,8 +742,13 @@ export function AccountUsagePage({
                 balance={balance}
                 accountScope={accountScope}
                 refreshRequest={refreshRequest}
-                switcher={<ViewSwitch view="tasks" both={both} onChange={switchView} />}
+                switcher={<ViewSwitch view="tasks" views={views} onChange={switchView} />}
               />
+            </div>
+          )}
+          {pricesOn && (
+            <div hidden={shown !== 'prices'} data-anchor="prices" data-testid="account-prices-section">
+              {pricesOpened && <AccountPrices api={api} refreshRequest={refreshRequest} switcher={<ViewSwitch view="prices" views={views} onChange={switchView} />} />}
             </div>
           )}
         </section>

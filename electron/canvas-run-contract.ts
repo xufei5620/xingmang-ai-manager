@@ -8,7 +8,26 @@ export type CanvasRunNodeKind =
   | 'drama-bible' | 'drama-script' | 'drama-parse'
   | 'drama-character' | 'drama-scene' | 'drama-prop' | 'drama-shot'
   | 'text-generate'
+  | CanvasRunImageToolNodeKind
   | CanvasRunKernelOnlyNodeKind
+
+/**
+ * The kernel's image tools the desktop runs once imageTools is switched on
+ * (画布完善第 7 条第三步): the page makes the pixels, the main process checks
+ * and stores them; compare and panorama only pass their images on. With the
+ * switch off they are refused like a kernel-only kind. Each label is the
+ * kernel's own node title.
+ */
+export const canvasRunImageToolNodeLabels = {
+  'image-crop': '裁剪图片',
+  'image-collage': '拼图',
+  'image-tile': '平铺图片',
+  'image-layer': '图层合成',
+  'image-compare': '图片对比',
+  'image-panorama': '全景预览',
+} as const
+
+export type CanvasRunImageToolNodeKind = keyof typeof canvasRunImageToolNodeLabels
 
 /**
  * Node kinds the xingmang-canvas kernel can put in a run graph but the desktop
@@ -17,13 +36,7 @@ export type CanvasRunNodeKind =
  * paid request (#1392). Each label is the kernel's own node title.
  */
 export const canvasRunKernelOnlyNodeLabels = {
-  'image-crop': '裁剪图片',
-  'image-collage': '拼图',
   'image-grid-split': '宫格裁剪',
-  'image-tile': '平铺图片',
-  'image-layer': '图层合成',
-  'image-compare': '图片对比',
-  'image-panorama': '全景预览',
 } as const
 
 export type CanvasRunKernelOnlyNodeKind = keyof typeof canvasRunKernelOnlyNodeLabels
@@ -87,8 +100,31 @@ export interface CanvasRunGraphNode {
      * other node, so their fingerprints stay as they were.
      */
     frameTimestampSeconds?: number
+    /**
+     * Crop, collage, tile and layer nodes only (画布完善第 7 条第三步): the
+     * kernel's recipe exactly as it came, bounded but never interpreted; the
+     * page that wrote it gets it back to make the pixels. Kept only while the
+     * desktop runs image tools.
+     */
+    imageTransform?: CanvasImageTransformRecipe
+    /** Collage nodes only: the order the user arranged the pictures in. */
+    imageCollageInputOrder?: CanvasImageCollageInputOrder
+    /** Tile nodes only: which connected picture is the tile. */
+    tileInput?: CanvasTileInputSelection
   }
 }
+
+export type CanvasImageTransformKind = 'crop' | 'collage' | 'tile' | 'layer'
+
+/** The kernel's ImageTransformRecipe (xingmang-canvas image-tools/recipe.ts); only `kind` is typed here. */
+export interface CanvasImageTransformRecipe {
+  kind: CanvasImageTransformKind
+  [field: string]: unknown
+}
+
+export interface CanvasImageCollageInputSlot { edgeId: string; outputIndex: number }
+export interface CanvasImageCollageInputOrder { version: 1; slots: CanvasImageCollageInputSlot[] }
+export type CanvasTileInputSelection = { edgeId: string; outputIndex: number } | { missing: true }
 
 export type CanvasRunImageCandidateCount = 1 | 2 | 3 | 4
 
@@ -285,11 +321,36 @@ export interface CanvasFramePreparation {
   timestampSeconds: number
 }
 
-/** Sent whenever the set of frames the run is waiting on changes; an empty list means none. */
+/**
+ * Pictures the page must make for an image-tool node (画布完善第 7 条第三步).
+ * The kernel processes them with its own browser code and hands the PNGs back
+ * through canvas-host:complete-run-preparation; only operations listed here
+ * are accepted, once each. Same shape as the web host's (xingmang-canvas
+ * lib/image-transform-contract.ts CanvasImagePreparation).
+ */
+export interface CanvasImagePreparation {
+  operationId: string
+  attemptId: string
+  runId: string
+  projectId: string
+  nodeId: string
+  sourceAssetIds: string[]
+  recipe: CanvasImageTransformRecipe
+  /** Present when the recipe holds layer groups; the kernel refuses such a recipe without it. */
+  layerGroupsVersion?: 1
+  processorRevision: string
+}
+
+/**
+ * Sent whenever the set of frames or pictures the run is waiting on changes;
+ * an empty list means none. imagePreparations goes only to the page: recipes
+ * can be large, so the run file keeps this event without them.
+ */
 export interface CanvasRunWaitingEvent extends CanvasRunEventBase {
   type: 'run-waiting'
   waitingForVideo: false
   framePreparations: CanvasFramePreparation[]
+  imagePreparations?: CanvasImagePreparation[]
 }
 
 export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunWaitingEvent | CanvasRunTerminalEvent
@@ -331,6 +392,11 @@ export interface CanvasRunRecord {
   events: CanvasRunEvent[]
   /** Frames the page still has to hand back; left out when none. */
   framePreparations?: CanvasFramePreparation[]
+  /**
+   * Pictures the page still has to make. Added from memory while the run is
+   * going (canvas-run-service.ts) and never written to the run file.
+   */
+  imagePreparations?: CanvasImagePreparation[]
   charge?: CanvasRunCharge
 }
 

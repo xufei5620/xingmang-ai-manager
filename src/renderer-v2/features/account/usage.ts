@@ -1,4 +1,4 @@
-import type { AccountDashboardData, AccountUsageRecord } from '../../../../electron/ipc-contract'
+import type { AccountDashboardData, AccountPriceRow, AccountUsageRecord } from '../../../../electron/ipc-contract'
 import type { AccountFilterField } from '../../AccountFilters'
 import { dollars } from '../../business-common'
 import { localSpendDays, spendDayTitle } from './account-center'
@@ -251,4 +251,17 @@ export function sub2ApiFilterId(value: string | undefined): number | undefined {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error('密钥编号和分组编号要填正整数。')
   return parsed
+}
+
+/** 价格表里的钱：至少两位小数；便宜的小模型多给几位，不会显示成 $0.00。 */
+export function priceListMoney(value: number): string {
+  if (value > 0 && value < 0.000001) return '< $0.000001'
+  return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 6 })}`
+}
+
+/** 价格表一行的输入、输出两格。按次的写在输入那格；分档的没有一个数，写「分档计价」。 */
+export function priceListCells(row: AccountPriceRow): { input: string; output: string } {
+  if (row.kind === 'token') return { input: priceListMoney(row.input ?? 0), output: priceListMoney(row.output ?? 0) }
+  if (row.kind === 'call') return { input: `${priceListMoney(row.perCall ?? 0)} / 次`, output: '—' }
+  return { input: '分档计价', output: '—' }
 }

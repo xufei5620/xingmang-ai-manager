@@ -6,6 +6,7 @@ import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { parseCanvasStartRunInput } from './canvas-request-parser'
 import { canvasRunChargeFirstCheckMs, createCanvasRunChargeChecker } from './canvas-run-charges'
 import { createCanvasRunService } from './canvas-run-service'
+import type { CanvasNodeExecutionContext } from './canvas-run-engine'
 import { CanvasRunStore } from './canvas-run-store'
 import type { CanvasRunAsset, CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
 
@@ -377,6 +378,50 @@ describe('createCanvasRunService', () => {
     // A service without a broker takes no frames at all.
     const bare = createCanvasRunService({ store: memoryStore(), executors })
     await expect(bare.completePreparation(7, 10, completion)).rejects.toThrow(refusal)
+  })
+
+  // 画布完善第 7 条第三步: recipes never reach the run file, so a reloaded page reads them from here.
+  it('adds the pictures a running run waits on to the records it lists, only from memory and only for that account', async () => {
+    const graph: CanvasRunGraph = {
+      nodes: [{ id: 'crop', kind: 'image-crop', definitionVersion: 1, data: { prompt: '', model: '', imageTransform: { kind: 'crop', outputWidth: 8, outputHeight: 8 } } }],
+      edges: [],
+    }
+    const store = memoryStore()
+    let release: (() => void) | undefined
+    const preparation = {
+      operationId: 'attempt', attemptId: 'attempt', runId: 'run-image', projectId: '11111111-1111-4111-8111-111111111111', nodeId: 'crop',
+      sourceAssetIds: [], recipe: { kind: 'crop' as const, outputWidth: 8, outputHeight: 8 }, processorRevision: 'browser-image-v1',
+    }
+    const executors = {
+      text: async () => ({ outputText: '' }),
+      image: async () => ({ assets: [] }),
+      video: async () => ({ assets: [] }),
+      'image-crop': async ({ reportImagePreparation }: CanvasNodeExecutionContext) => {
+        await reportImagePreparation!(preparation, true)
+        await new Promise<void>((resolve) => { release = resolve })
+        await reportImagePreparation!(preparation, false)
+        return { assets: [] }
+      },
+    }
+    const service = createCanvasRunService({ store, randomUUID: () => 'run-image', executors })
+    const handle = await service.start({ userId: 7, ownerId: 10, projectId: preparation.projectId, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    await vi.waitFor(async () => expect((await service.listRuns(7))[0]?.imagePreparations).toEqual([preparation]))
+    expect(await service.getRun(7, 'run-image')).toMatchObject({ imagePreparations: [preparation] })
+    expect((await service.listRuns(7, preparation.projectId))[0].imagePreparations).toEqual([preparation])
+    expect((await service.listRuns(8))[0]).not.toHaveProperty('imagePreparations')
+    expect(store.runs[0]).not.toHaveProperty('imagePreparations')
+
+    release?.()
+    await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
+    await vi.waitFor(() => expect(service.hasActiveRuns()).toBe(false))
+    expect((await service.listRuns(7))[0]).not.toHaveProperty('imagePreparations')
+    // Whatever a record read back from the file says is never handed on.
+    store.runs[0] = { ...store.runs[0], status: 'running', imagePreparations: [preparation] }
+    expect((await service.listRuns(7))[0]).not.toHaveProperty('imagePreparations')
+    expect(await service.getRun(7, 'run-image')).not.toHaveProperty('imagePreparations')
+    await expect(service.completePreparation(7, 10, { runId: 'run-image', operationId: 'attempt', kind: 'image', outcome: 'failed' }))
+      .rejects.toThrow('这次图片处理不在等待中，可能已经超时或运行已停止')
   })
 
   it('lets sibling generate nodes run together and only locks the overlapping ones', async () => {
