@@ -38,6 +38,8 @@ export interface InstallPlatformApiOptions {
   platformPreloadPath?: string
   onError?: (error: unknown) => void
   notificationRuntime?: PlatformNotificationRuntime
+  /** 缺省用 Electron 的 shell.openExternal；测试里换成假的，不真去开系统设置。 */
+  openExternal?: (url: string) => Promise<void>
   log?: PlatformIpcLogger
 }
 
@@ -201,6 +203,13 @@ export function installPlatformSystemApi(
           onPrivacyChanged: notifyPrivacyChanged,
           notify: (kind, key, detail) =>
             notifications?.notify(kind, key, detail) ?? 'unsupported',
+          // 只会拿到 notificationSettingsTarget 写死的系统设置页地址，同 main.ts 打开网络设置那一条。
+          openExternal:
+            options.openExternal ??
+            ((url) =>
+              (
+                require('electron').shell as typeof import('electron').shell
+              ).openExternal(url)),
         })
         unsubscribe = service.subscribe((state) => {
           if (

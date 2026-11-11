@@ -11,6 +11,7 @@ const channels = {
   setNotificationPreference: 'xingmang-platform:set-notification-preference',
   setPrivacyPreference: 'xingmang-platform:set-privacy-preference',
   testNotification: 'xingmang-platform:test-notification',
+  openNotificationSettings: 'xingmang-platform:open-notification-settings',
   notifyActivity: 'xingmang-platform:notify-activity',
   stateChanged: 'xingmang-platform:state-changed',
 } as const
@@ -41,6 +42,8 @@ if (process.isMainFrame && isMainWindowDocument()) {
     setPrivacyPreference: (kind, enabled) =>
       ipcRenderer.invoke(channels.setPrivacyPreference, kind, enabled),
     testNotification: () => ipcRenderer.invoke(channels.testNotification),
+    openNotificationSettings: () =>
+      ipcRenderer.invoke(channels.openNotificationSettings),
     notifyActivity: (kind, eventKey, detail) =>
       detail
         ? ipcRenderer.invoke(channels.notifyActivity, kind, eventKey, detail)
