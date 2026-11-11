@@ -84,13 +84,22 @@ export interface RemoteInboundApproval extends RemoteInboundBase {
   decision: RemoteApprovalDecision
 }
 
+/**
+ * 进度卡上点了「停止」（YF-15，只有能原地更新卡片的渠道有）。nonce 是卡片上按钮原样带回来的
+ * RemoteProgressCard.stopNonce；认不出是 null，底座当上一轮留下的卡片。
+ */
+export interface RemoteInboundStop extends RemoteInboundBase {
+  kind: 'stop'
+  nonce: string | null
+}
+
 /** 收到了渠道转不成文字的东西（图片、文件）。底座回一句「暂时只支持文字」，渠道不用自己回话。 */
 export interface RemoteInboundUnsupported extends RemoteInboundBase {
   kind: 'unsupported'
   messageId: string
 }
 
-export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundUnsupported
+export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundStop | RemoteInboundUnsupported
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 
@@ -132,6 +141,25 @@ export interface RemoteOutboundApproval {
 }
 
 export type RemoteOutbound = RemoteOutboundText | RemoteOutboundApproval
+
+/** 进度卡上的一步（YF-15）：Codex 计划里的一条，字是 Codex 自己写的（已脱敏、已截短）。 */
+export interface RemoteProgressStep {
+  text: string
+  status: 'completed' | 'inProgress' | 'pending'
+}
+
+/**
+ * 底座发的进度（YF-15，yoyo 2026-11-11「进度改」），跟渠道无关。能原地更新卡片的渠道（飞书）画成一张卡，
+ * 之后每次都更新同一张；没有这个本事的渠道底座改发文字，不会调到 sendProgress。
+ */
+export interface RemoteProgressCard {
+  state: 'running' | 'done' | 'stopped' | 'failed'
+  steps: RemoteProgressStep[]
+  /** 「已经 N 分钟」那一行，只在 running 时有。 */
+  elapsed?: string
+  /** 「停止」按钮里带的随机串，只对这一轮有效，只在 running 时有。 */
+  stopNonce?: string
+}
 
 export type RemoteChannelState =
   | 'stopped'
@@ -175,6 +203,12 @@ export interface RemoteChannelAdapter {
   stop(): Promise<void>
   /** 发一条消息给这个人；replyContext 是这个人最近一条入站消息带来的那个。失败就抛，底座记日志。 */
   send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void>
+  /**
+   * 能原地更新的进度卡（YF-15，飞书有，微信没有）：发出去返回之后更新要用的句柄（飞书的 message_id）。
+   * 两个都有才算有；失败就抛，底座记日志，下一次更新照样带着最新的样子。
+   */
+  sendProgress?(peer: RemotePeer, card: RemoteProgressCard): Promise<string>
+  updateProgress?(handle: string, card: RemoteProgressCard): Promise<void>
 }
 
 export type RemoteChannelLogLevel = 'info' | 'warn' | 'error'

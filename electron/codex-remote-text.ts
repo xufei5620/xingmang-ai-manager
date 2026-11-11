@@ -35,7 +35,27 @@ export const remoteMessages = {
   idleClosingSoon: '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。',
   // 手机上发「重试」、这次打开以后还没交给 Codex 过一句时（Fable 手机遥控 YF-22，yoyo 2026-11-11「状态重试改」）。
   nothingToRetry: '还没有可以重发的上一条。直接发要做的事就行。',
+  // 点的是上一轮留下的进度卡上的「停止」（YF-15，yoyo 2026-11-11「进度改」）：这一轮不停。
+  staleProgressCard: '这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。',
 } as const
+
+/** 飞书进度卡的标题（YF-15，yoyo 2026-11-11「进度改」）：做着的时候、做完、停了、没做完。 */
+export const progressCardTitles = {
+  running: 'Codex 正在处理',
+  done: '做完了',
+  stopped: '已停止',
+  failed: '没做完',
+} as const
+
+/** 进度卡上每一步前面的记号（YF-15）：做完、正在做、还没做。 */
+export const progressStepMarks = {
+  completed: '✓',
+  inProgress: '▶',
+  pending: '○',
+} as const
+
+/** 进度卡上「停止」那颗按钮（YF-15）：点了跟发「停止」一样。 */
+export const progressStopButton = '停止'
 
 const retryPreviewLength = 20
 
@@ -213,6 +233,16 @@ export function statusMessage(status: RemoteStatusSummary): string {
   if (typeof status.balanceUsd === 'number' && Number.isFinite(status.balanceUsd)) lines.push(`余额：${remoteDollars(status.balanceUsd)}`)
   if (status.idleCloseHours) lines.push(`再过 ${status.idleCloseHours} 小时没新消息就自动关`)
   return lines.join('\n')
+}
+
+/**
+ * 没有能原地更新的卡片的渠道（微信）每满 5 分钟发的那句（YF-15，yoyo 2026-11-11「进度改」）。
+ * 步骤是 Codex 计划里正在做的那一步，没报计划就不写「现在这一步」。
+ */
+export function progressTextMessage(runningForMs: number, step: string | null): string {
+  const shown = step ? step.replace(/\s+/g, ' ').trim() : ''
+  const head = `还在做，${remoteRunningForText(runningForMs)}。`
+  return shown ? `${head}现在这一步：${truncateRemoteText(shown, maxStatusStepLength)}` : head
 }
 
 /** 做完小结里「用时」那种写法（YF-16）：45 秒、3 分 20 秒、1 小时 5 分。 */

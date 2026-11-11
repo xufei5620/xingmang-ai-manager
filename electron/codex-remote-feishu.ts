@@ -8,6 +8,7 @@ import {
   type FeishuFrame,
 } from './codex-remote-feishu-frame'
 import { isRecord } from './input-guards'
+import { progressCardTitles, progressStepMarks, progressStopButton } from './codex-remote-text'
 import type {
   RemoteChannelAdapter,
   RemoteChannelDependencies,
@@ -18,6 +19,7 @@ import type {
   RemoteOutbound,
   RemoteOutboundApproval,
   RemotePeer,
+  RemoteProgressCard,
 } from './codex-remote-channel'
 
 // 飞书渠道：客户自己在飞书开放平台建一个企业自建应用（机器人），把 App ID、App Secret 填进星芒。
@@ -106,6 +108,8 @@ export class FeishuTokenResponseError extends Error {
 const appIdPattern = /^cli_[A-Za-z0-9]{4,64}$/
 const appSecretPattern = /^[A-Za-z0-9]{8,128}$/
 const approvalNoncePattern = /^[A-Za-z0-9_-]{8,64}$/
+// 飞书消息编号（om_ 开头）。拼进更新卡片的接口路径之前先认一遍，不让奇怪的串改了路径。
+const feishuMessageIdPattern = /^om_[A-Za-z0-9_-]{1,128}$/
 
 /** 界面填进来的两串字：去掉两边空白，格式不对直接报能上屏的中文。 */
 export function validateFeishuCredentialInput(appId: unknown, appSecret: unknown): FeishuCredential {
@@ -339,6 +343,13 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
     const actionContext = isRecord(event.context) ? event.context : {}
     const openId = stringField(operator.open_id)
     const chatId = stringField(actionContext.open_chat_id) ?? stringField(event.open_chat_id)
+    if ('stop' in value) {
+      // 进度卡上的「停止」（YF-15）：随机串认不出也交给底座，让它回一句是上一轮的卡片。
+      if (!openId) return { eventId, inbound: null }
+      const stopNonce = typeof value.stop === 'string' && approvalNoncePattern.test(value.stop) ? value.stop : null
+      const direct = Boolean(chatId) && context.p2pChats.get(openId) === chatId
+      return { eventId, inbound: { kind: 'stop', peer: { channel: 'feishu', userId: openId }, direct, nonce: stopNonce } }
+    }
     const approvalId = typeof value.approval === 'string' && /^\d{1,4}$/.test(value.approval) ? value.approval : null
     // 随机串认不出也照样交给底座，让它回一句卡片失效，而不是点了没反应。
     const nonce = typeof value.nonce === 'string' && approvalNoncePattern.test(value.nonce) ? value.nonce : null
@@ -372,6 +383,39 @@ export function buildFeishuApprovalCard(message: RemoteOutboundApproval): Record
       { tag: 'div', text: { tag: 'plain_text', content: message.text } },
       { tag: 'action', actions: [button('同意', 'primary', 'accept'), button('拒绝', 'danger', 'decline')] },
     ],
+  }
+}
+
+const progressTemplates: Record<RemoteProgressCard['state'], string> = {
+  running: 'blue',
+  done: 'green',
+  stopped: 'grey',
+  failed: 'red',
+}
+
+/**
+ * 进度卡（YF-15，消息卡片 1.0 写法）：标题、计划里的每一步、「已经 N 分钟」和「停止」。之后每次原地更新
+ * 同一张，所以要 update_multi（飞书只许更新共享卡片，更新前后都得是 true）。做完以后只剩标题和步骤。
+ */
+export function buildFeishuProgressCard(card: RemoteProgressCard): Record<string, unknown> {
+  const elements: Array<Record<string, unknown>> = []
+  if (card.steps.length) {
+    const lines = card.steps.map((step) => `${progressStepMarks[step.status]} ${step.text}`)
+    elements.push({ tag: 'div', text: { tag: 'plain_text', content: lines.join('\n') } })
+  }
+  if (card.elapsed) elements.push({ tag: 'div', text: { tag: 'plain_text', content: card.elapsed } })
+  if (card.stopNonce) {
+    elements.push({
+      tag: 'action',
+      actions: [{ tag: 'button', text: { tag: 'plain_text', content: progressStopButton }, type: 'danger', value: { stop: card.stopNonce } }],
+    })
+  }
+  // 卡片不能一个元素都没有：没报计划又做完了的，只留一道分隔线。
+  if (!elements.length) elements.push({ tag: 'hr' })
+  return {
+    config: { wide_screen_mode: true, update_multi: true },
+    header: { template: progressTemplates[card.state], title: { tag: 'plain_text', content: progressCardTitles[card.state] } },
+    elements,
   }
 }
 
@@ -577,10 +621,59 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   }
 
   async send(peer: RemotePeer, message: RemoteOutbound): Promise<void> {
+    await this.post(buildFeishuMessageBody(peer, message))
+  }
+
+  /** 发进度卡（YF-15），交回它的 message_id，之后的 updateProgress 拿它原地更新。 */
+  async sendProgress(peer: RemotePeer, card: RemoteProgressCard): Promise<string> {
+    const payload = await this.post({ receive_id: peer.userId, msg_type: 'interactive', content: JSON.stringify(buildFeishuProgressCard(card)) })
+    const data = isRecord(payload.data) ? payload.data : {}
+    const messageId = stringField(data.message_id)
+    if (!messageId || !feishuMessageIdPattern.test(messageId)) throw new Error('飞书没有给出这张卡片的编号')
+    return messageId
+  }
+
+  /**
+   * 原地更新进度卡（YF-15，PATCH /open-apis/im/v1/messages/:message_id）。只换一次令牌，不等不重发：
+   * 进度隔一会儿就会再更新，下一次带的总是最新的样子。
+   */
+  async updateProgress(handle: string, card: RemoteProgressCard): Promise<void> {
+    if (!this.credential) throw new Error('飞书渠道没有在运行')
+    if (!feishuMessageIdPattern.test(handle)) throw new Error('飞书卡片编号不对')
+    const body = { content: JSON.stringify(buildFeishuProgressCard(card)) }
+    for (let attempt = 0; ; attempt += 1) {
+      const token = await this.tenantToken()
+      const response = await requestRemoteJson({
+        fetch: this.deps.fetch,
+        url: `${feishuOpenOrigin}/open-apis/im/v1/messages/${handle}`,
+        allowedOrigins,
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}` },
+        body,
+        timeoutMs: requestTimeoutMs,
+        maxResponseBytes,
+        label,
+      })
+      this.noteServerTime(response.serverTime)
+      const payload = isRecord(response.payload) ? response.payload : {}
+      const code = numberField(payload.code)
+      const outcome = classifyFeishuSendResponse(response.status, code)
+      if (outcome === 'sent') return
+      if (outcome === 'token-invalid' && attempt === 0) {
+        this.token = null
+        continue
+      }
+      this.deps.log('warn', 'feishu.progress-update-failed', { status: response.status, code })
+      throw new Error(`飞书没有更新这张卡片（错误码 ${code ?? response.status}）`)
+    }
+  }
+
+  /** 发一条消息，交回飞书的应答（发进度卡要从里面取 message_id）。 */
+  private async post(message: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!this.credential) throw new Error('飞书渠道没有在运行')
     // 一条消息不管重发几次都带同一个 uuid：第一次其实已经发到了、只是回应在路上断了时，飞书一小时内
     // 只认一次，手机上不会出现两条一样的（尤其是审批卡，两张卡同一个编号会让人以为要点两次）。
-    const body = { ...buildFeishuMessageBody(peer, message), uuid: randomUUID() }
+    const body = { ...message, uuid: randomUUID() }
     let tokenRefreshed = false
     let retries = 0
     for (;;) {
@@ -614,7 +707,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
       const payload = isRecord(response.payload) ? response.payload : {}
       const code = numberField(payload.code)
       const outcome = classifyFeishuSendResponse(response.status, code)
-      if (outcome === 'sent') return
+      if (outcome === 'sent') return payload
       if (outcome === 'token-invalid' && !tokenRefreshed) {
         tokenRefreshed = true
         this.token = null

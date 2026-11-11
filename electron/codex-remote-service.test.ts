@@ -12,6 +12,7 @@ import type {
   RemoteInbound,
   RemoteOutbound,
   RemotePeer,
+  RemoteProgressCard,
 } from './codex-remote-channel'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { encodeWeixinCredential } from './codex-remote-weixin-credential'
@@ -183,6 +184,23 @@ class FakeChannel implements RemoteChannelAdapter {
   }
 }
 
+/** 能原地更新进度卡的渠道（像飞书，YF-15）：发卡、更新都记下来。 */
+class FakeCardChannel extends FakeChannel {
+  readonly progress: Array<{ op: 'send' | 'update'; handle: string; card: RemoteProgressCard }> = []
+  private cards = 0
+
+  async sendProgress(_peer: RemotePeer, card: RemoteProgressCard): Promise<string> {
+    this.cards += 1
+    const handle = `om_card_${this.cards}`
+    this.progress.push({ op: 'send', handle, card })
+    return handle
+  }
+
+  async updateProgress(handle: string, card: RemoteProgressCard): Promise<void> {
+    this.progress.push({ op: 'update', handle, card })
+  }
+}
+
 let messageCounter = 0
 const commandRequest = { threadId: 'th-1', turnId: 'tu-1', itemId: 'i1', startedAtMs: 0, environmentId: null, kind: 'command', command: 'npm test', cwd: '/tmp/x' }
 
@@ -225,6 +243,8 @@ async function setup(options: {
   idleCloseHours?: 4 | 12
   /** 「状态」里报的余额（YF-18）；缺省 = 不报。 */
   readBalanceUsd?: () => Promise<number | null>
+  /** 渠道能原地更新进度卡（像飞书，YF-15）；缺省像微信，只能发文字。 */
+  progressCards?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -243,7 +263,7 @@ async function setup(options: {
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
-      const channel = new FakeChannel()
+      const channel = options.progressCards ? new FakeCardChannel() : new FakeChannel()
       channels.push(channel)
       return channel
     },
@@ -1710,6 +1730,112 @@ describe('codex-remote-service turns', () => {
     const asked = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, turnId: 'tu-9' })
     await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
     expect(approvalsSent(channel)).toHaveLength(0)
+  })
+})
+
+// YF-15（yoyo 2026-11-11「进度改」）：长任务中途给进度。飞书一张原地更新的卡，微信每满 5 分钟一句。
+describe('codex-remote-service progress', () => {
+  const twoSteps = [{ step: '读登录页的代码', status: 'inProgress' }, { step: '改登录页', status: 'pending' }]
+
+  it('shows a progress card once Codex reports its plan, updates it at most every thirty seconds and leaves it as done', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let clock = Date.UTC(2026, 10, 11, 12)
+    const s = await setup({ now: () => clock, progressCards: true })
+    const channel = await enabledAndPaired(s) as FakeCardChannel
+    const codex = await prompted(s, channel)
+    expect(channel.progress).toHaveLength(0)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: twoSteps })
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
+    expect(channel.progress[0]).toMatchObject({
+      op: 'send',
+      card: { state: 'running', steps: [{ text: '读登录页的代码', status: 'inProgress' }, { text: '改登录页', status: 'pending' }], elapsed: '已经不到 1 分钟' },
+    })
+    expect(channel.progress[0].card.stopNonce).toMatch(/^[A-Za-z0-9_-]{16}$/)
+    // The same plan sent again changes nothing on the card.
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: twoSteps })
+    clock += 10_000
+    await vi.advanceTimersByTimeAsync(10_000)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: [{ step: '读登录页的代码', status: 'completed' }, { step: '改登录页', status: 'inProgress' }] })
+    clock += 19_000
+    await vi.advanceTimersByTimeAsync(19_000)
+    expect(channel.progress).toHaveLength(1)
+    clock += 1_000
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(2))
+    expect(channel.progress[1]).toMatchObject({ op: 'update', handle: 'om_card_1', card: { state: 'running', steps: [{ status: 'completed' }, { status: 'inProgress' }] } })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(() => expect(channel.progress.at(-1)?.card.state).toBe('done'))
+    expect(channel.progress.at(-1)).toMatchObject({ op: 'update', handle: 'om_card_1', card: { steps: [{ status: 'completed' }, { status: 'inProgress' }] } })
+    expect(channel.progress.at(-1)?.card).not.toHaveProperty('stopNonce')
+    expect(channel.progress.at(-1)?.card).not.toHaveProperty('elapsed')
+    // Nothing more once the turn is over.
+    const count = channel.progress.length
+    clock += 10 * 60_000
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(channel.progress).toHaveLength(count)
+  })
+
+  it('posts the card after two minutes without a plan and refreshes the time every five minutes', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let clock = Date.UTC(2026, 10, 11, 12)
+    const s = await setup({ now: () => clock, progressCards: true })
+    const channel = await enabledAndPaired(s) as FakeCardChannel
+    await prompted(s, channel)
+    clock += 119_000
+    await vi.advanceTimersByTimeAsync(119_000)
+    expect(channel.progress).toHaveLength(0)
+    clock += 1_000
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
+    expect(channel.progress[0]).toMatchObject({ op: 'send', card: { state: 'running', steps: [], elapsed: '已经 2 分钟' } })
+    clock += 5 * 60_000
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(2))
+    expect(channel.progress[1]).toMatchObject({ op: 'update', card: { elapsed: '已经 7 分钟' } })
+    // The card goes out after 「收到」 in the same queue as the text messages.
+    expect(channel.texts()[0]).toContain('收到')
+  })
+
+  it('stops the turn from this turn\'s card like 「停止」, and leaves the turn alone for a card from an earlier turn', async () => {
+    const s = await setup({ progressCards: true })
+    const channel = await enabledAndPaired(s) as FakeCardChannel
+    const codex = await prompted(s, channel)
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: twoSteps })
+    await vi.waitFor(() => expect(channel.progress).toHaveLength(1))
+    const nonce = channel.progress[0].card.stopNonce ?? ''
+    channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce: 'an-earlier-turn-1' })
+    await vi.waitFor(() => expect(channel.texts()).toContain('这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。'))
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+    // Someone else pressing a card the bot sent is not the bound person.
+    channel.handlers?.onInbound({ kind: 'stop', peer: mallory, direct: true, nonce })
+    channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce })
+    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    expect(codex.requests('turn/interrupt')).toHaveLength(1)
+    await vi.waitFor(() => expect(channel.progress.at(-1)?.card.state).toBe('stopped'))
+    expect(s.logs).toContain('remote.turn-stopped-from-card')
+    channel.handlers?.onInbound({ kind: 'stop', peer: alice, direct: true, nonce })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('现在没有在处理的任务。'))
+  })
+
+  it('says it is still working every five minutes on a channel without cards, and keeps quiet while waiting for approval', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    let clock = Date.UTC(2026, 10, 11, 12)
+    const s = await setup({ now: () => clock })
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    clock += 5 * 60_000
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('还在做，已经 5 分钟。'))
+    codex.notify('turn/plan/updated', { threadId: 'th-1', turnId: 'tu-1', plan: [{ step: '读登录页的代码', status: 'completed' }, { step: '改登录页', status: 'inProgress' }] })
+    clock += 5 * 60_000
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('还在做，已经 10 分钟。现在这一步：改登录页'))
+    void codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    const sent = channel.sent.length
+    clock += 5 * 60_000
+    await vi.advanceTimersByTimeAsync(5 * 60_000)
+    expect(channel.texts().slice(sent).filter((line) => line.startsWith('还在做'))).toHaveLength(0)
   })
 })
 
