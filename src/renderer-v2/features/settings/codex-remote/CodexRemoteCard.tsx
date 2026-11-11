@@ -99,13 +99,13 @@ export const codexRemoteConfirmText = {
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
-function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpenHelp }: {
+function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navigate, onOpenHelp }: {
   id: RemoteChannelId
   definition: RemoteChannelSectionDefinition
   snapshot: CodexRemoteSnapshot
   channel: CodexRemoteChannelSnapshot
   onOpenHelp?: () => void
-} & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
+} & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run' | 'navigate'>) {
   // 没登录的渠道收成一行，点标题才摊开（YF-7）。登录、打开以后就不再收。
   const collapsible = remoteChannelCollapsed(snapshot, channel)
   const [expanded, setExpanded] = useState(false)
@@ -246,7 +246,7 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpe
             )}
           </div>
         )}
-        <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} />
+        <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} navigate={navigate} />
         <SettingRow
           title="打开遥控"
           description={remoteSwitchHint(snapshot, channel, definition.credentialHint)}
@@ -409,6 +409,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
           api={api}
           busy={busy}
           run={run}
+          navigate={navigate}
           onOpenHelp={onOpenHelp}
         />
       ))}

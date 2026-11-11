@@ -4,7 +4,7 @@ import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../.
 import type { V2Bridge } from '../../../types'
 import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, remoteLowBalanceAmount } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
-import { feishuBotChatLink, feishuBotQrText } from './FeishuRemoteSection'
+import { feishuBotChatLink, feishuBotQrText, feishuGuideActions } from './FeishuRemoteSection'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
   return { channel: 'feishu', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null, ...patch }
@@ -57,6 +57,19 @@ describe('codex remote card', () => {
     expect(switchMarkup(markup)).toContain('disabled=""')
     // 还没填应用时不摆配对那一行。
     expect(markup).not.toContain('data-testid="settings-remote-feishu-peer"')
+  })
+
+  // YF-4：六步下面两颗，飞书开发者后台交给浏览器，教程是星芒自己的那一章；不给跳页的就只摆前一颗。
+  it('puts the Feishu console and the tutorial under the setup steps, and drops the tutorial without a way to navigate', () => {
+    const state = snapshot()
+    const withNavigate = renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy="" run={async () => true} error={null} navigate={() => undefined} />)
+    expect(feishuGuideActions).toEqual({ console: '打开飞书开放平台', tutorial: '看教程' })
+    expect(withNavigate).toContain('data-testid="settings-remote-feishu-console"')
+    expect(withNavigate).toContain('data-testid="settings-remote-feishu-tutorial"')
+    expect(withNavigate.indexOf('在「版本管理与发布」里发布一个版本')).toBeLessThan(withNavigate.indexOf('settings-remote-feishu-console'))
+    const withoutNavigate = render(state)
+    expect(withoutNavigate).toContain('data-testid="settings-remote-feishu-console"')
+    expect(withoutNavigate).not.toContain('data-testid="settings-remote-feishu-tutorial"')
   })
 
   it('shows the saved app by its App ID only and lets the switch on once the folder is chosen', () => {

@@ -21,6 +21,12 @@ export function isRemoteChannelId(value: unknown): value is RemoteChannelId {
 }
 
 /**
+ * 手机遥控卡飞书那块「打开飞书开放平台」交给浏览器的网址（YF-4）：开发者后台的应用列表，建机器人第 1 步就到这里。
+ * 主窗口外链白名单（main.ts，I12 全等匹配）收的就是这一条，两边用同一个常量。
+ */
+export const feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app'
+
+/**
  * 「多久没消息就自动关」能选的时长，单位小时（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。
  * 不在这里面就是「不自动关」，也是缺省：设置里不存、快照里不带。
  */

@@ -3,7 +3,9 @@ import path from 'node:path'
 import ts from 'typescript'
 import { describe, expect, it } from 'vitest'
 import { directCallPositions, enclosingFunction, innerFunction, mainWiringFiles, moduleFunction, parseWiringFile, readMainWiringSource, startupCallback } from './bootstrap/main-source.test-support'
+import { feishuDeveloperConsoleUrl } from './codex-remote-channel'
 import { ipcEventChannels } from './ipc-contract'
+import { isAllowedExternalUrl } from './security'
 
 // main.ts boots the whole app on import, so these read its source instead.
 function mainSource() {
@@ -385,9 +387,7 @@ describe('main process application protocol', () => {
 })
 
 describe('main process external links', () => {
-  it('lets both ways out of a failed Claude Desktop install through the external link allowlist', () => {
-    // 外链白名单是全等匹配（I12）：漏了这一条，错误框里的「下载离线安装包」点了只会报不允许打开（D64）。
-    const { source } = mainSource()
+  function nonSiteAllowlistEntries(source: ts.SourceFile): string[] {
     const entries: string[] = []
     function visit(node: ts.Node): void {
       if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'nonSiteExternalUrlAllowlist' && node.initializer) {
@@ -397,10 +397,29 @@ describe('main process external links', () => {
       ts.forEachChild(node, visit)
     }
     visit(source)
+    return entries
+  }
+
+  it('lets both ways out of a failed Claude Desktop install through the external link allowlist', () => {
+    // 外链白名单是全等匹配（I12）：漏了这一条，错误框里的「下载离线安装包」点了只会报不允许打开（D64）。
+    const { source } = mainSource()
+    const entries = nonSiteAllowlistEntries(source)
     expect(entries).toContain('claudeDesktopOfflinePackagesUrl')
     // 「去 Claude 官网」打开的 claude.com/download 经它收进来。
     expect(entries).toContain('...Object.values(externalClientOfficialDownloadUrls)')
     expect(source.getText()).toContain("import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'")
+  })
+
+  // YF-4：yoyo 2026-11-11 亲手打字「飞书网址加」，白名单只多这一个网址；飞书别的页面、带参数的照样拦下。
+  it('lets only the exact Feishu developer console address through for the phone remote card', () => {
+    const { source } = mainSource()
+    expect(nonSiteAllowlistEntries(source)).toContain('feishuDeveloperConsoleUrl')
+    expect(feishuDeveloperConsoleUrl).toBe('https://open.feishu.cn/app')
+    const allowlist = [feishuDeveloperConsoleUrl]
+    expect(isAllowedExternalUrl('https://open.feishu.cn/app', allowlist)).toBe(true)
+    for (const other of ['https://open.feishu.cn/', 'https://open.feishu.cn/app/cli_a1b2c3', 'https://open.feishu.cn/app?lang=zh-CN', 'https://open.feishu.cn.evil.example/app', 'http://open.feishu.cn/app']) {
+      expect(isAllowedExternalUrl(other, allowlist)).toBe(false)
+    }
   })
 })
 
