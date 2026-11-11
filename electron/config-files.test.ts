@@ -79,6 +79,7 @@ import {
   trustManagedWorkspace,
   toNativeConfigSummary,
 } from './config-files'
+import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { relayProviderBaseUrls } from './relay-sites'
 import type { CliHookInvocation } from './cli-hooks'
@@ -458,6 +459,38 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(authPath, '{ "OPENAI_API_KEY": "sk-relay" }\n', 'utf8')
     expect(inspectProviderConfig('codex', roots)).not.toHaveProperty('codexAuthBroken')
     expect(inspectProviderConfig('claude', roots)).not.toHaveProperty('codexAuthBroken')
+  })
+
+  // 中文 Windows 上老记事本把手改过的 settings.json 存成 GBK：Claude Code 照用，星芒写回后那几个字成「�」（D78）。
+  it('notes a Claude Code settings.json that is not UTF-8 and logs the save over it, writing what it always wrote (D78)', () => {
+    const roots = providerRoots(temporaryHome())
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true })
+    const original = Buffer.concat([
+      Buffer.from('{ "env": { "PROJECT_DIR": "D:/'),
+      Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+      Buffer.from('" } }\n'),
+    ])
+    fs.writeFileSync(settingsPath, original)
+    expect(inspectProviderConfig('claude', roots).files).toEqual([{ path: settingsPath, exists: true, notUtf8: true }])
+
+    const log = vi.fn()
+    attachNotUtf8ConfigRewriteLog(log)
+    try {
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    } finally {
+      attachNotUtf8ConfigRewriteLog(null)
+    }
+
+    expect(log).toHaveBeenCalledTimes(1)
+    const [{ file, backup }] = log.mock.calls[0] as [{ file: string; backup: string }]
+    expect(file).toBe(settingsPath)
+    expect(fs.readFileSync(backup)).toEqual(original)
+    // 写回的还是解码时换成占位符的那几个字，客户自己设的值一个不少。
+    const written = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as { env: Record<string, string> }
+    expect(written.env.PROJECT_DIR).toBe(`D:/${'\uFFFD'.repeat(4)}`)
+    expect(written.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(inspectProviderConfig('claude', roots).files).toEqual([{ path: settingsPath, exists: true }])
   })
 
   it('resets the account config over an auth.json Codex cannot read, after backing it up', () => {

@@ -383,6 +383,23 @@ describe('diagnostics', () => {
       .toBe('~/.claude/config.json')
   })
 
+  // D78：老记事本存的中文，下次写回会成「�」。只进导出的报告给客服看，检查页照常通过、结论不变。
+  it('marks a tool config that is not UTF-8 for the exported report without changing the verdict', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.inspectProvider = (provider) => {
+      const base = inspection(provider, home, 'sk-test')
+      return provider === 'claude' ? { ...base, files: [{ ...base.files[0], notUtf8: true }] } : base
+    }
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE'))
+      .toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { file1NotUtf8: true } })
+    expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details).not.toHaveProperty('file1NotUtf8')
+    expect(createDiagnosticsExport(report, { userHome: home })).toContain('"file1NotUtf8": true')
+  })
+
   // #941 第 2 节：工具配置里写的地址和星芒这会儿走的线路对不上时，导出的报告里写清两边各是哪条。两条线路连的
   // 是同一个账号，所以检查页照常算通过，不提醒（yoyo 10-8：线路的事不要太多提示）。
   describe('tool connection settings against the current line', () => {

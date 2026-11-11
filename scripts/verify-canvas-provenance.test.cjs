@@ -2,6 +2,8 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const { validatePackageLockSources } = require('./audit-development-dependencies.cjs')
+const { buildCanvasLockfile } = require('./trim-canvas-lockfile.cjs')
 
 const projectRoot = path.resolve(__dirname, '..')
 
@@ -34,6 +36,36 @@ test('records every direct canvas runtime dependency in the provenance ledger', 
   assert.ok(provenance.templates.every((entry) => entry.provenance === 'xingmang-original'))
   assert.equal(new Set(provenance.templates.map((entry) => entry.id)).size, provenance.templates.length, 'template provenance ids must be unique')
   assert.equal(provenance.templates.length, 24)
+})
+
+// The canvas ships from the root dependencies (canvas:prepare), so its own lockfile only
+// serves a standalone install. Holding it to the root lockfile keeps that install on the
+// audited set from the official registry, and keeps the ledger above on what ships (D102).
+test('trims the canvas lockfile from the audited root lockfile', () => {
+  const rootLock = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package-lock.json'), 'utf8'))
+  const manifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'canvas-v2', 'package.json'), 'utf8'))
+  const lockfile = JSON.parse(fs.readFileSync(path.join(projectRoot, 'canvas-v2', 'package-lock.json'), 'utf8'))
+  const rootManifest = JSON.parse(fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8'))
+  const regenerate = 'run node scripts/trim-canvas-lockfile.cjs, then the npm command it prints'
+
+  const rootRanges = { ...rootManifest.dependencies, ...rootManifest.devDependencies }
+  for (const [name, range] of Object.entries({ ...manifest.dependencies, ...manifest.devDependencies })) {
+    assert.equal(range, rootRanges[name], `canvas-v2/package.json must declare ${name} exactly as the root package.json does`)
+  }
+  assert.ok(validatePackageLockSources(lockfile) > 0)
+  const expected = buildCanvasLockfile(rootLock, manifest)
+  assert.deepEqual(lockfile.packages[''], expected.packages[''], `canvas-v2/package-lock.json is stale: ${regenerate}`)
+  assert.deepEqual(
+    Object.keys(lockfile.packages).sort(),
+    Object.keys(expected.packages).sort(),
+    `canvas-v2/package-lock.json must hold exactly the root lockfile entries the canvas manifest reaches: ${regenerate}`,
+  )
+  for (const location of Object.keys(expected.packages)) {
+    if (!location) continue
+    for (const field of ['version', 'resolved', 'integrity']) {
+      assert.equal(lockfile.packages[location][field], rootLock.packages[location][field], `${location} ${field} must match the root lockfile: ${regenerate}`)
+    }
+  }
 })
 
 test('keeps executable canvas sources free of copied research-only project names', () => {
