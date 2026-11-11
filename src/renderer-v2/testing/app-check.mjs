@@ -3254,6 +3254,46 @@ test('login synchronizes account Keys, configures installed tools, and route sel
   } finally { await page.close() }
 })
 
+// Y3：「做图、做视频」跟聊天一样什么都不装；没登录先登录，登好了引导按新账号重开也不再弹，直接进视频剪辑页。
+test('the images-and-videos guide choice signs in and lands on the video page without installing anything', async () => {
+  const page = await open('guest=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-create').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="nav-video"]')?.getAttribute('aria-current') === 'page')
+    assert.equal(await page.getByTestId('start-guide').count(), 0)
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(methods.some((method) => ['installCli', 'installNodeRuntime', 'installCodexDesktop', 'launchCodexDesktop'].includes(method)), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('closing the login box from the images-and-videos choice does not send a later login to the video page', async () => {
+  const page = await open('guest=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-create').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('login-cancel').click()
+    assert.equal(await page.getByTestId('guide-route-create').isChecked(), true)
+    await page.getByTestId('guide-pause').click()
+    await page.getByTestId('welcome-login').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    // 这次是从欢迎页登录的：照旧弹出新账号的引导，不当成刚才那一下。
+    await page.getByTestId('start-guide').waitFor()
+    assert.notEqual(await page.getByTestId('nav-video').getAttribute('aria-current'), 'page')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('restored login repairs missing tool configs without overwriting official or third-party sources', async () => {
   const page = await open('missingConfig=1&allInstalled=1&official=1&unknownClaude=1')
   try {
