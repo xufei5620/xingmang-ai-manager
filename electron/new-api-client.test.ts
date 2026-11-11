@@ -2815,7 +2815,7 @@ describe('getModelPricing', () => {
     }))
 
     await expect(client.getModelPricing()).resolves.toEqual({
-      models: [{ model: 'gpt-image-2', quotaType: 1, modelPrice: 0.06, expressionPriced: false }],
+      models: [{ model: 'gpt-image-2', quotaType: 1, modelPrice: 0.06, expressionPriced: false, modelRatio: 0, groups: ['图片模型'] }],
       groupRatios: { 图片模型: 0.8 },
     })
     expect(fetchImpl).toHaveBeenCalledTimes(1)
@@ -2851,12 +2851,23 @@ describe('parseModelPricing', () => {
     expect(pricing).toEqual({
       models: [
         { model: 'a', quotaType: 1, modelPrice: 0.1, expressionPriced: false },
-        { model: 'tokens', quotaType: 0, modelPrice: 0, expressionPriced: false },
+        { model: 'tokens', quotaType: 0, modelPrice: 0, expressionPriced: false, modelRatio: 2 },
         { model: 'expr', quotaType: 1, modelPrice: 0, expressionPriced: true },
         { model: 'plugin', quotaType: 1, modelPrice: 0, expressionPriced: true },
       ],
       groupRatios: { default: 1, vip: 0.5 },
     })
+  })
+
+  it('keeps the token ratios and the groups that enable a model, for the price table', () => {
+    const pricing = parseModelPricing([
+      { model_name: 'chat', quota_type: 0, model_price: 0, model_ratio: 0.625, completion_ratio: 8, enable_groups: ['GPT', ' GPT ', '', 'a\nb', 3, 'x'.repeat(129), 'default'] },
+      { model_name: 'odd', quota_type: 0, model_price: 0, model_ratio: -1, completion_ratio: 'x', enable_groups: 'GPT' },
+    ], {})
+    expect(pricing.models).toEqual([
+      { model: 'chat', quotaType: 0, modelPrice: 0, expressionPriced: false, modelRatio: 0.625, completionRatio: 8, groups: ['GPT', 'default'] },
+      { model: 'odd', quotaType: 0, modelPrice: 0, expressionPriced: false },
+    ])
   })
 
   it('refuses a list that is not a list, and reads no ratios when there are none', () => {

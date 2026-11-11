@@ -3,6 +3,8 @@ import type { AccountDashboardData } from '../../../../electron/ipc-contract'
 import { spendSegmentQuery } from './account-center'
 import {
   frequentModels,
+  priceListCells,
+  priceListMoney,
   mergeDashboards,
   modelShares,
   modelShareTitle,
@@ -190,5 +192,21 @@ describe('usage', () => {
     expect(usageCalendarNote('UTC', instant)).toBe(`${plain}按这台电脑的时间算。`)
     expect(usageCalendarNote('Not/A_Zone', instant)).toBe(`${plain}按这台电脑的时间算。`)
     for (const note of [usageCalendarNote('Asia/Tokyo', instant), usageCalendarNote('Asia/Shanghai', instant)]) expect(note).not.toMatch(/[A-Za-z]/)
+  })
+})
+
+describe('usage price table cells', () => {
+  it('shows at least two decimals, more for cheap models, and never rounds a tiny price down to zero', () => {
+    expect(priceListMoney(10)).toBe('$10.00')
+    expect(priceListMoney(1.25)).toBe('$1.25')
+    expect(priceListMoney(0.075)).toBe('$0.075')
+    expect(priceListMoney(0)).toBe('$0.00')
+    expect(priceListMoney(0.0000001)).toBe('< $0.000001')
+  })
+
+  it('puts a per-call price in the input cell and gives tiered pricing words instead of a number', () => {
+    expect(priceListCells({ model: 'm', group: 'g', kind: 'token', input: 1.25, output: 10 })).toEqual({ input: '$1.25', output: '$10.00' })
+    expect(priceListCells({ model: 'm', group: 'g', kind: 'call', perCall: 0.04 })).toEqual({ input: '$0.04 / 次', output: '—' })
+    expect(priceListCells({ model: 'm', group: 'g', kind: 'tiered' })).toEqual({ input: '分档计价', output: '—' })
   })
 })

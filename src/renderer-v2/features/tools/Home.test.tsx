@@ -1644,7 +1644,8 @@ describe('renderer-v2 home manual desktop install on macOS', () => {
 
 describe('renderer-v2 home balance for subscription customers', () => {
   const empty = { quota: 0, usedQuota: 0, quotaPerUnit: 500_000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, displayAmount: 0 }
-  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  // 不是今年的到期日会带上年份（D52）；这里只看措辞，用今年的日期。
+  const endsAt = new Date(new Date().getFullYear(), 9, 3, 12).toISOString()
   const subscription = { name: '月卡', remainingUsd: 8, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
 
   it('keeps the low-balance warning for wallet-only customers', () => {

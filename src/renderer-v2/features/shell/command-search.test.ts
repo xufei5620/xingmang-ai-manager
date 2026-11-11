@@ -187,6 +187,13 @@ describe('searchCommands', () => {
     expect(searchCommands('接口地址', noKeys).some((item) => item.section === 'other-apps')).toBe(false)
   })
 
+  it('finds the price table of the usage page by what customers call prices', () => {
+    const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
+    expect(landing('价格表')).toEqual({ key: 'account:prices', group: 'account', label: '价格表', page: 'account', section: 'prices' })
+    expect(landing('哪个贵')).toMatchObject({ section: 'prices' })
+    expect(searchCommands('价格表', { accountTabVisible: (tab: string) => tab !== 'prices' }).some((item) => item.section === 'prices')).toBe(false)
+  })
+
   it('leaves out the moved parts the current account cannot use', () => {
     const historical = { accountTabVisible: (tab: string) => !['tasks', 'devices'].includes(tab) }
     expect(searchCommands('生成任务', historical).some((item) => item.section === 'tasks')).toBe(false)
