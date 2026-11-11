@@ -289,6 +289,14 @@ export function continueInNewConversation(state: ChatWorkspace, sourceId: string
   return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
 }
 
+// 输入框不再靠 maxLength 截字：浏览器截掉的是尾巴，客户贴的报错日志最要紧的偏偏是最后几行，
+// 截了 AI 照样回答，客户不知道它没看到（D42）。超长时输入框下面说这一句、发送灰掉。
+// 跟 planTurn 一样按去掉首尾空白后的长度算，灰着的按钮和真发出去时的检查口径一致。
+export function draftLengthError(text: string): string {
+  const length = text.trim().length
+  return length > chatLimits.messageLength ? `最多 ${chatLimits.messageLength} 字，现在 ${length} 字，删掉一些再发。` : ''
+}
+
 export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[] }): TurnPlan {
   if (isGenerating(conversation)) throw new Error('当前对话仍在生成，请先停止或等待完成')
   let history = conversation.messages.slice()
