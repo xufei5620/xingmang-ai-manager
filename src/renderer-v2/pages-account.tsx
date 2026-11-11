@@ -592,6 +592,7 @@ export function AccountPage({
                 refreshRequest={refresh}
                 openTradeNo={openTradeNo}
                 multiplierAccount={accountSiteId(session) === 'solov-api'}
+                invoicePortal={Boolean(site?.invoicePortalUrl)}
               />
             )}
           </>

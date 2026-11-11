@@ -26,6 +26,16 @@ export function formatCalendarTime(milliseconds: number, now: number): string | 
 }
 
 /**
+ * 按本机日历算隔了几天：今天 0、昨天 1，往后的时间是负数；读不出日期返回 null。只写钟点的几处（余额的
+ * 「最后更新于」、帮助框的「最近一次出错」）靠它分出「不是今天」，再换成 formatClockTime 带上哪天（D60）。
+ */
+export function calendarDaysBefore(milliseconds: number, now: number): number | null {
+  const date = new Date(milliseconds)
+  if (!Number.isFinite(date.getTime())) return null
+  return Math.round((startOfDay(new Date(now)) - startOfDay(date)) / 86_400_000)
+}
+
+/**
  * 备份那一行的标题：一份备份就靠时间认，同一天里也要分得开，所以哪天都带上钟点、也不写「刚刚」：
  * 「今天 09:12」「昨天 18:40」「10月12日 18:40」，往年带上年份。读不出日期返回 null。
  */

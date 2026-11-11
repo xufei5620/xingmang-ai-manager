@@ -367,7 +367,7 @@
             {
               "id": "target",
               "definitionVersion": 1,
-              "kind": "image-compare",
+              "kind": "image-grid-split",
               "data": {
                 "prompt": "",
                 "model": ""
@@ -389,7 +389,7 @@
         }
       },
       "expect": {
-        "refusal": "「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求"
+        "refusal": "「宫格裁剪」节点桌面版暂不支持，本次没有提交任何付费请求"
       }
     },
     {
@@ -409,7 +409,7 @@
             {
               "id": "target",
               "definitionVersion": 1,
-              "kind": "image-compare",
+              "kind": "image-grid-split",
               "data": {
                 "prompt": "",
                 "model": ""
