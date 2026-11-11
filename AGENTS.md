@@ -39,7 +39,7 @@
 
 - **跨进程通道有三套，各自一组「契约 + preload + 注册」**：主窗口业务通道 `ipc-contract.ts` + `preload.ts` + `ipc.ts`；主窗口系统设置与通知 `platform/contract.ts` + `platform/preload.ts` + `platform/ipc.ts`（`xingmang-platform:*`）；画布窗口 `canvas-contract.ts` + `canvas-preload.ts` + `canvas-window.ts`（`canvas-host:*`）。三个 preload 里的通道表都是 sandbox 约束下的有意重复（见 I7、T1）。
 - **本项目的复杂度不在业务，在提权、可信路径与原子写入这套边界上**——`command-runner.ts` / `windows-elevation.ts` / `windows-machine-paths.ts` / `trusted-temp.ts` / `config-files.ts` / `config-files-context.ts`（见第 4 节）。
-- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另一个加载外部网页的是充值的支付窗口 `payment-window.ts`，它不挂 preload（见 I15）。
+- **画布是全项目唯一运行第三方前端代码且有宿主桥的地方**（源码 `canvas-v2/`，产物 `dist-canvas/` 不入 git），全部 AI 调用都在主进程完成（见 I15、T13）。另外两个加载外部网页的是充值的支付窗口 `payment-window.ts` 和「开发票」的开票窗口 `invoice-portal-window.ts`，都不挂 preload（见 I15）。
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
@@ -144,6 +144,8 @@ renderer-v2 还直接从一批 `electron/*` 模块导入运行时值。真正守
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
 
 支付窗口（`payment-window.ts`）是另一个加载外部网页的窗口，付款页来自支付商、不归我们控制。它守的是更严的一条：**不挂 preload**（页面拿不到任何宿主桥）、`sandbox` 加每次随机的 `partition`、权限请求与下载一律拒绝、导航和新窗口只放行白名单 origin。给它加 preload 或放宽导航前，先回答同一个问题：付款页被换掉以后，这个能力能干什么？
+
+开票窗口（`invoice-portal-window.ts`，「我的订单」的「开发票」）显示开票中心，那是 xingmang-console 仓库的客户门户，不归本仓。它同样不挂 preload、`sandbox`、权限请求一律拒绝、导航只放行开票中心那一个 origin、新窗口一律拒绝。跟支付窗口不同的两处是有意的：分区按账号持久（开票中心的登录要记着），换人、退出时关窗并清掉上一个人的分区；下载只收开票中心页面自己的 `blob:` 发票文件，先落临时文件、按开头字节认过类型，再经保存框原子写（I8），Chromium 不直接写客户选的位置。开哪个账号的开票中心只由主进程按当前登录定，渲染层那条通道不带参数。
 
 ---
 

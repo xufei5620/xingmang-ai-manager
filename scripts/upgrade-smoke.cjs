@@ -67,6 +67,9 @@ const DOWNLOAD_BUDGET_MS = 8 * 60 * 1000
 const INSTALL_BUDGET_MS = 10 * 60 * 1000
 // 新版本起来以后至少要撑这么久没退出，才算「重开」这一步过了。
 const STAY_ALIVE_MS = 20 * 1000
+// 新版本记下上次运行版本以后，version.updated 那一行最晚多久该进运行日志。平时不到一秒；
+// 留宽是给 runner 上 Defender 扫文件拖慢日志追加的时候，真没认出旧记录的照样会在这之后红。
+const VERSION_UPDATED_BUDGET_MS = 30 * 1000
 // Mac 改完 hosts 到系统解析认它：平时问第一遍就认了，10-28 有一次问完一整遍还都解析到外面。
 const HOSTS_SETTLE_BUDGET_MS = 60 * 1000
 const POLL_MS = 2000
@@ -770,9 +773,11 @@ async function upgrade(options) {
     tick()
     const finalVersion = platform.installedVersion(installed)
     if (finalVersion !== newVersion) throw new Error(`新版本记下了自己的版本号，但装着的程序是 ${finalVersion}`)
-    if (!findVersionUpdatedEntry(log.entries(), { from: options.oldVersion, to: newVersion })) {
-      throw new Error('新版本没有记下「本次启动是更新后的第一次」：它没认出旧版本留下的记录，像是重新装的')
-    }
+    // main.ts 记 version.updated 这一行只是排进运行日志的写入队列，紧接着直接写 last-run-version.json；
+    // 队列前面还压着开机那几行，last-run-version 常常先落盘。看到它就只查一次日志会查早
+    // （10-31 #1565、11-11 #1748 都是这样红的：新版本已经起来，日志只写到这一行之前），所以这一行也等一小段。
+    await waitFor('新版本没有记下「本次启动是更新后的第一次」：它没认出旧版本留下的记录，像是重新装的', VERSION_UPDATED_BUDGET_MS,
+      () => findVersionUpdatedEntry(log.entries(), { from: options.oldVersion, to: newVersion }), tick)
     for (const until = Date.now() + STAY_ALIVE_MS; Date.now() < until; await delay(POLL_MS)) {
       if (!platform.alive(installed)) throw new Error(`新版本起来以后 ${STAY_ALIVE_MS / 1000} 秒内又退出了`)
       tick()

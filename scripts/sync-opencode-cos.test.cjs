@@ -10,6 +10,7 @@ const {
   synchronizeOpenCode, createRuntimeDependencies, safeOpenCodeSyncFailure,
 } = require('./sync-opencode-cos.cjs')
 const { safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { LICENSE_CONTENT_TYPE, licenseKey, readLicenseFiles } = require('./cos-license-files.cjs')
 
 const ASSET = 'https://release-assets.githubusercontent.com/github-production-release-asset/1/abc'
 
@@ -74,6 +75,8 @@ function createFixture() {
       return { version: fixture.bundleVersion || fixture.version, bundleIdentifier: 'ai.opencode.desktop', minimumSystemVersion: '12.0' }
     },
     async removeFile(filePath) { fixture.removedFiles.push(filePath) },
+    // The texts the sync really ships: scripts/cos-licenses/opencode-desktop/.
+    readLicenseFiles() { return readLicenseFiles('opencode-desktop') },
     async createWorkDirectory() { return path.resolve(os.tmpdir(), 'mock-opencode-cos') },
     async removeWorkDirectory(directory) { fixture.removed.push(directory) },
   }
@@ -166,11 +169,16 @@ test('the first run uploads both verified packages under their digests, then wri
   const fixture = createFixture()
   const result = await fixture.run()
   assert.equal(result.changed, true)
-  assert.equal(fixture.publications.length, 2)
-  for (const publication of fixture.publications) {
+  assert.equal(fixture.publications.length, 3)
+  for (const publication of fixture.publications.slice(0, 2)) {
     assert.equal(publication.contentType, CONTENT_TYPE)
     assert.match(publication.cacheControl, /immutable/)
   }
+  // The MIT text goes up once both packages are in, before the pointer (D98).
+  const [text] = await readLicenseFiles('opencode-desktop')
+  const licenseObject = licenseKey('xingmang/offline/opencode', text.sha256, 'LICENSE.txt')
+  assert.deepEqual([fixture.publications[2].key, fixture.publications[2].contentType, fixture.publications[2].expectedSha256, fixture.publications[2].cacheControl],
+    [licenseObject, LICENSE_CONTENT_TYPE, text.sha256, 'public, max-age=31536000, immutable'])
   assert.deepEqual(fixture.inspections.map(function (inspection) { return inspection.machine }), ['arm64', 'x86_64'])
   for (const download of fixture.downloads) {
     assert.deepEqual(download.allowedHosts, ASSET_HOSTS)
@@ -189,6 +197,8 @@ test('the first run uploads both verified packages under their digests, then wri
     sourceUrl: packageSourceUrl('1.18.34', 'macos-arm64'), cosEtag: `"cos-${sha256(name).slice(0, 16)}"`,
   })
   assert.equal(manifest.files[1].platformId, 'macos-x64')
+  assert.deepEqual(manifest.license, { spdx: 'MIT', files: [{ fileName: 'LICENSE.txt', key: licenseObject, url: fixture.store.publicUrl(licenseObject),
+    bytes: text.bytes, sha256: text.sha256, contentType: LICENSE_CONTENT_TYPE, cosEtag: `"cos-${text.sha256.slice(0, 16)}"` }] })
   assert.equal(validateLatest(manifest, fixture.store.publicUrl), manifest)
   assert.doesNotMatch(JSON.stringify(manifest), /SECRET-SIGNATURE/)
   assert.equal(fixture.removed.length, 1)
@@ -214,6 +224,49 @@ test('an unchanged release with intact objects means no download and no write; a
   assert.equal(next.changed, true)
   assert.equal(fixture.latest.version, '1.18.35')
   assert.equal(fixture.pointers.length, 3)
+})
+
+test('a pointer from before the license field gains the text without downloading the packages again', async () => {
+  const fixture = createFixture()
+  await fixture.run()
+  // What the bucket held before D98: both packages and a pointer without the license text.
+  const before = clone(fixture.latest)
+  delete fixture.latest.license
+  fixture.latest.source.feedUrl = RETIRED_FEED_URL
+  for (const key of [...fixture.objects.keys()]) if (key.includes('/licenses/')) fixture.objects.delete(key)
+  fixture.publications.length = 0
+  const events = []
+  const result = await fixture.run({ now: function () { return '2026-10-14T22:00:00.000Z' }, progress: (event) => events.push(event) })
+  assert.equal(result.changed, true)
+  assert.equal(fixture.downloads.length, 2)
+  assert.equal(fixture.inspections.length, 2)
+  // No package to unpack, so no temporary directory either.
+  assert.equal(events.some((event) => event.stage === 'prepare-temp'), false)
+  assert.deepEqual(fixture.publications.map(function (publication) { return publication.key }), [before.license.files[0].key])
+  assert.equal(fixture.pointers.length, 2)
+  assert.deepEqual(fixture.latest, { ...before, generatedAt: '2026-10-14T22:00:00.000Z' })
+
+  const unchanged = await fixture.run()
+  assert.equal(unchanged.changed, false)
+  assert.equal(fixture.pointers.length, 2)
+  assert.equal(fixture.publications.length, 1)
+})
+
+test('a checkout without the license text fails before anything is downloaded', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'opencode-license-missing-'))
+  try {
+    const fixture = createFixture()
+    fixture.dependencies.readLicenseFiles = function () { return readLicenseFiles('opencode-desktop', directory) }
+    await assert.rejects(fixture.run(), (error) => {
+      assert.deepEqual(safeOpenCodeSyncFailure(error), { stage: 'read-license', latestState: 'not-written-by-this-run', failure: { code: 'license-unreadable' } })
+      return true
+    })
+    assert.equal(fixture.downloads.length, 0)
+    assert.equal(fixture.publications.length, 0)
+    assert.equal(fixture.pointers.length, 0)
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('a pointer written while the feed was latest.json still counts, and the first release without it replaces it', async () => {
@@ -305,6 +358,12 @@ test('an existing pointer must describe this bucket and the exact object layout'
     (value) => { value.files[0].verification = 'none' },
     (value) => { value.files[0].size = 1 },
     (value) => { value.files[0].cosEtag = '' },
+    (value) => { value.license = 'MIT' },
+    (value) => { value.license.spdx = '' },
+    (value) => { value.license.files[0].key = value.files[0].key },
+    (value) => { value.license.files[0].url = 'https://evil.invalid/LICENSE.txt' },
+    (value) => { value.license.files[0].contentType = 'application/octet-stream' },
+    (value) => { value.license.files[0].cosEtag = 'a\nb' },
   ]) {
     const value = clone(good)
     mutate(value)

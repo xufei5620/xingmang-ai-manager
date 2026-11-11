@@ -49,6 +49,7 @@ import type { SensitiveClipboard } from './sensitive-clipboard'
 import type { NetworkSettingsKind, ProxyBypassOutcome } from './proxy-bypass'
 import type { StaleProxyClearResult } from './stale-proxy-environment'
 import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
+import type { InvoicePortalWindowController } from './invoice-portal-window'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
@@ -148,6 +149,8 @@ export interface IpcRegistrationOptions {
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
   paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'close' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
+  /** 「开发票」打开的开票窗口；省略 = 这条通道报打不开。 */
+  invoicePortalWindow?: Pick<InvoicePortalWindowController, 'open'>
   // Resolves once main.ts's startup session-restore attempt (see
   // realm-account-service.ts's restoreActive) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
