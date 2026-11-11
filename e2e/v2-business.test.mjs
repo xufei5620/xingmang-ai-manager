@@ -2501,11 +2501,11 @@ test('feedback still copies what the customer wrote when the diagnostic report c
     await page.getByTestId('feedback-form').waitFor()
     await page.getByTestId('feedback-description').fill('点「打开」后终端闪一下就关了')
     await page.getByTestId('feedback-send').click()
-    await waitForToast(page, '诊断报告没生成出来，只复制了你写的内容，发给客服就行')
+    await waitForToast(page, '反馈报告没生成出来，只复制了你写的内容，发给客服就行')
     const copied = (await calls(page)).filter((call) => call.name === 'copy-clipboard').map((call) => call.args)
     assert.equal(copied.length, 1)
     assert.match(copied[0], /^留言反馈 · 遇到问题\n点「打开」后终端闪一下就关了\n/)
-    assert.match(copied[0], /\n诊断报告：这次没生成出来$/)
+    assert.match(copied[0], /\n反馈报告：这次没生成出来$/)
     assert.ok((await calls(page)).some((call) => call.name === 'open-support'), 'the support page still opens')
   } finally {
     await page.close()
