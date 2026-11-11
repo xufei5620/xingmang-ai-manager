@@ -28,7 +28,7 @@ import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from '../c
 import { CanvasProjectStore } from '../canvas-project-store'
 import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
 import { createCanvasRunChargeChecker } from '../canvas-run-charges'
-import { CanvasRunPreparationBroker, createCanvasFrameExtraction } from '../canvas-run-preparations'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction, createCanvasImageToolProcessing } from '../canvas-run-preparations'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
 import { readCanvasTextImages } from '../canvas-text-image-input'
@@ -165,16 +165,25 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
   } = options
   // Each realm moves its own subtree once per launch; a second realm object for
   // the same subtree must not start a second walk over files already moving.
+  // Moves run one after another: the old folder next to the executable and the
+  // home-folder fallback can both hold the same account, and two walks into one
+  // account folder at once could both find it missing and race to create it.
   const aiOutputMigrations = new Set<string>()
-  function migrateAiOutputOnce(from: string, to: string, mergeMetadata: (userId: number, content: string) => Promise<void>): void {
+  let aiOutputMigrationQueue: Promise<void> = Promise.resolve()
+  function migrateAiOutputOnce(
+    from: string,
+    to: string,
+    mergeMetadata: (userId: number, content: string) => Promise<void>,
+    log: { event: string, failedEvent: string, message: string },
+  ): void {
     if (aiOutputMigrations.has(from)) return
     aiOutputMigrations.add(from)
-    void migrateLegacyAiOutput(from, to, { mergeMetadata }).then((result) => {
+    aiOutputMigrationQueue = aiOutputMigrationQueue.then(() => migrateLegacyAiOutput(from, to, { mergeMetadata })).then((result) => {
       if (!result.moved && !result.kept && !result.failed) return
       // Counts only: support needs to know whether anything stayed behind, not
       // where the user's files are (I13).
-      runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', 'asset.output.migrated', '老版本的 AI 作品已搬到新的保存位置', { ...result })
-    }).catch((error) => runtimeLog.exception('ai-chat', 'asset.output.migrate-failed', error))
+      runtimeLog.log(result.failed ? 'warn' : 'info', 'ai-chat', log.event, log.message, { ...result })
+    }).catch((error) => runtimeLog.exception('ai-chat', log.failedEvent, error))
   }
   function createBusiness(siteId: RealmAccountSiteId) {
     // AI 工作区的请求同样按默认线路的地址发，走哪条线路由 routedRelayFetch 换（「自动」会在运行中换线路）。
@@ -307,7 +316,16 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     // 元数据合并交给正在用的这个 store，和搬家期间的收藏、新作品写入排同一个队。
     const legacyAiOutputRoot = resolveLegacyAiOutputRoot({ isPackaged: app.isPackaged, execPath: process.execPath })
     if (legacyAiOutputRoot) {
-      migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content))
+      migrateAiOutputOnce(roots.assetOutputDirectory(legacyAiOutputRoot), aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content), {
+        event: 'asset.output.migrated', failedEvent: 'asset.output.migrate-failed', message: '老版本的 AI 作品已搬到新的保存位置',
+      })
+    }
+    // 「文档」又能写了：上次存到个人文件夹的作品挪回来，跟上面同一套搬法（同一块盘只改名、
+    // 不覆盖、不跟链接），作品库、聊天、画布按编号照样找得到（决定单 D107）。
+    if (aiOutputPlacement.worksToMoveBackFrom) {
+      migrateAiOutputOnce(aiOutputPlacement.worksToMoveBackFrom, aiOutputRoot, (userId, content) => assetMetadata.mergeLegacy(userId, content), {
+        event: 'asset.output.moved-back-to-documents', failedEvent: 'asset.output.move-back-failed', message: '「文档」又能写了，个人文件夹里的 AI 作品已挪回「文档」',
+      })
     }
     // Permanent deletion hands the file to the OS recycle bin rather than
     // unlinking it. The bytes are the user's artwork; the last recoverable copy
@@ -582,6 +600,15 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
           broker: canvasRunPreparations,
           assets: canvasProjectAssets,
           onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '视频帧已保存，但来源信息保存失败', {
+            assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          }),
+        }),
+        // 画布完善第 7 条第三步：图片工具等页面交回的图。运行图里的图片工具节点只在 imageTools 打开后才收（canvas-request-parser.ts）。
+        imageTools: createCanvasImageToolProcessing({
+          broker: canvasRunPreparations,
+          assets: canvasProjectAssets,
+          onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '图片处理结果已保存，但来源信息保存失败', {
             assetId,
             reason: error instanceof Error ? error.message : String(error),
           }),

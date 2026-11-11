@@ -774,7 +774,8 @@ describe('foreign key kinds', () => {
 })
 
 describe('renderer subscription warning', () => {
-  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  // 不是今年的到期日会带上年份（D52）；这里只看措辞，用今年的日期。
+  const endsAt = new Date(new Date().getFullYear(), 9, 3, 12).toISOString()
   const base = { name: null, remainingUsd: 3, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
 
   it('stays quiet while the wallet can take over or nothing is running out', () => {

@@ -1,3 +1,4 @@
+import { isUtf8 } from 'node:buffer'
 import fs from 'node:fs'
 import path from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -110,6 +111,11 @@ const MAX_CLAUDE_ROOT_CONFIG_BYTES = 16 * 1024 * 1024
 export interface NativeConfigFile {
   path: string
   exists: boolean
+  /**
+   * 这份文件不是合法 UTF-8（D78，多半是老记事本存的中文）：星芒下次写回，那几个字就成了「�」。只进导出的
+   * 检查报告给客服看，界面上不说；缺省 = 没发现。
+   */
+  notUtf8?: boolean
 }
 
 export interface NativeConfigInspection {
@@ -359,6 +365,11 @@ const mainConfigBrokenChecks: Record<ProviderId, ((content: Buffer) => boolean) 
   grok: null,
 }
 
+function readFileNotUtf8(filePath: string): boolean {
+  const content = readConfigBytes(filePath)
+  return content !== null && !isUtf8(content)
+}
+
 // 判断编码要看原始字节（解码会把坏字节悄悄换成 U+FFFD），读不到、不是单链接普通文件都当没坏。
 function readFileBroken(filePath: string, broken: (content: Buffer) => boolean): boolean {
   const content = readConfigBytes(filePath)
@@ -539,15 +550,23 @@ function skipClaudeCommandConfirmation(parsed: Record<string, unknown>, permissi
  * 现在接当前账号时把星芒补上的那几项记进 xingmang-claude-foreign-settings.json，切回官方只撤记下的、
  * 而且值还是星芒写的那个的；客户自己设过的、记号出现之前就已经在的，一律不动。
  */
-export type ClaudeFilledDefault = 'permissions.defaultMode' | 'skipDangerousModePermissionPrompt'
-const claudeFilledDefaults: readonly ClaudeFilledDefault[] = ['permissions.defaultMode', 'skipDangerousModePermissionPrompt']
+export type ClaudeFilledDefault = 'permissions.defaultMode' | 'skipDangerousModePermissionPrompt' | typeof claudeWriteBoundaryKey
+/**
+ * 「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）：设置里开着时星芒写进 permissions 的那一项
+ * （Claude Code 2.1.314 起），默认不写。跟「不逐条确认」一样记进快照，关掉、切回官方账号时只撤记下的、
+ * 值还是 true 的；客户自己写过的（快照里没记）一律不动。
+ */
+const claudeWriteBoundaryKey = 'permissions.blockWritesOutsideWorkingDirectories'
+const claudeFilledDefaults: readonly ClaudeFilledDefault[] = ['permissions.defaultMode', 'skipDangerousModePermissionPrompt', claudeWriteBoundaryKey]
 
 /** 原文件里还没有、整份重建的模板会补上的那几项（reset 那条路用；merge 那条路看 skipClaudeCommandConfirmation 的返回）。 */
-function claudeConfirmationDefaultsMissing(settings: Record<string, unknown>): ClaudeFilledDefault[] {
+function claudeConfirmationDefaultsMissing(settings: Record<string, unknown>, writeBoundary = false): ClaudeFilledDefault[] {
   const permissions = isJsonRecord(settings.permissions) ? settings.permissions : {}
   return claudeFilledDefaults.filter((key) => key === 'permissions.defaultMode'
     ? permissions.defaultMode === undefined
-    : settings.skipDangerousModePermissionPrompt === undefined)
+    : key === 'skipDangerousModePermissionPrompt'
+      ? settings.skipDangerousModePermissionPrompt === undefined
+      : writeBoundary && permissions.blockWritesOutsideWorkingDirectories === undefined)
 }
 
 /** 这一项现在是不是还是星芒补上的那个值。 */
@@ -557,7 +576,25 @@ function claudeFilledDefaultPresent(settings: Record<string, unknown>, key: Clau
       return isJsonRecord(settings.permissions) && settings.permissions.defaultMode === 'bypassPermissions'
     case 'skipDangerousModePermissionPrompt':
       return settings.skipDangerousModePermissionPrompt === true
+    case claudeWriteBoundaryKey:
+      return isJsonRecord(settings.permissions) && settings.permissions.blockWritesOutsideWorkingDirectories === true
   }
+}
+
+/**
+ * 保存配置、接当前账号（merge）时对齐「只让 Claude Code 改项目文件夹里的文件」：开着而文件里没有这一项就补上，
+ * 返回要记进快照的那一项；关着而快照记着是星芒写的、值还是 true 就撤掉（快照里的记号随之不再作数）。
+ * 客户自己写的（快照没记）、写成别的值的，开关怎么样都不动。写之前是官方账号的样子时，快照里以前的记号
+ * 不作数（同 recordClaudeFilledDefaults），调用方传 recorded = false，什么都不撤。
+ */
+function alignClaudeWriteBoundary(permissions: Record<string, unknown>, enabled: boolean, recorded: boolean): ClaudeFilledDefault[] {
+  if (enabled) {
+    if (permissions.blockWritesOutsideWorkingDirectories !== undefined) return []
+    permissions.blockWritesOutsideWorkingDirectories = true
+    return [claudeWriteBoundaryKey]
+  }
+  if (recorded && permissions.blockWritesOutsideWorkingDirectories === true) delete permissions.blockWritesOutsideWorkingDirectories
+  return []
 }
 
 // 四个 CLI 各自带着更新机制，会绕过 cli-verified-versions.ts 钉住的推荐版本：Claude Code
@@ -741,6 +778,11 @@ export interface SeededToolDefaults {
   claudeFallbackModel?: boolean
   /** Codex、Grok 配置目录里星芒放的那份「用中文回复」。 */
   responseLanguage?: boolean
+  /**
+   * 设置里「只让 Claude Code 改项目文件夹里的文件」开着（Fable 第二轮 Q6）。这一项不是「出现过」的记号，
+   * 是客户现在的选择，放在这里只是跟着写配置的各条路一起传。缺省 = 关。
+   */
+  claudeWritesInsideProject?: boolean
 }
 
 const MAX_GLOBAL_RESPONSE_LANGUAGE_BYTES = 64 * 1024
@@ -1733,17 +1775,17 @@ function inspectProviderConfigFiles(
   // Validate before parsing any existing file so a junction cannot redirect the read.
   for (const filePath of paths) assertSafeConfigPath(filePath, providerRoot, 'file')
   const dataDirectory = path.dirname(paths[0])
-  const files = paths.map((filePath) => ({
-    path: filePath,
-    exists: (() => {
+  const files = paths.map((filePath): NativeConfigFile => {
+    const exists = (() => {
       try {
         const info = fs.lstatSync(filePath)
         return info.isFile() && info.nlink <= 1 && !info.isSymbolicLink()
       } catch {
         return false
       }
-    })(),
-  }))
+    })()
+    return { path: filePath, exists, ...(exists && readFileNotUtf8(filePath) ? { notUtf8: true } : {}) }
+  })
   const modifiedTimes = files
     .filter((file) => file.exists)
     .map((file) => fs.lstatSync(file.path).mtimeMs)
@@ -2609,9 +2651,10 @@ function createPlans(
         ANTHROPIC_BASE_URL: siteBaseUrls.claude,
         DISABLE_AUTOUPDATER: '1',
       }
+      const writeBoundary = seeded.claudeWritesInsideProject === true
       const settings: Record<string, unknown> = {
         env,
-        permissions: { defaultMode: 'bypassPermissions', deny: [...claudeDeniedRelayTools] },
+        permissions: { defaultMode: 'bypassPermissions', deny: [...claudeDeniedRelayTools], ...(writeBoundary ? { blockWritesOutsideWorkingDirectories: true } : {}) },
         model,
         effortLevel: 'medium',
         skipDangerousModePermissionPrompt: true,
@@ -2626,7 +2669,7 @@ function createPlans(
       const existing = readJson(paths[0]) ?? {}
       const aside = claudeForeignSettingsAsidePlans(
         settings, existing, roots, apiKey, claudeOfficialModelToKeep(existing),
-        claudeConfirmationDefaultsMissing(existing), claudeSettingsLookOfficial(existing),
+        claudeConfirmationDefaultsMissing(existing, writeBoundary), claudeSettingsLookOfficial(existing),
       )
       return [...aside, { path: paths[0], content: jsonContent(settings) }]
     }
@@ -2741,7 +2784,8 @@ function createMergePlans(
       disableClaudeSelfUpdate(env)
       const permissions = ensureRecord(parsed, 'permissions')
       denyClaudeRelayTool(permissions)
-      const filled = skipClaudeCommandConfirmation(parsed, permissions)
+      const recordedBoundary = !wasOfficial && readClaudeForeignSnapshot(readClaudeForeignSnapshotText(roots)).filled.includes(claudeWriteBoundaryKey)
+      const filled = [...skipClaudeCommandConfirmation(parsed, permissions), ...alignClaudeWriteBoundary(permissions, seeded.claudeWritesInsideProject === true, recordedBoundary)]
       skipClaudeWebFetchPreflight(parsed)
       ensureClaudeResponseLanguage(parsed)
       extendClaudeSessionRetention(parsed)
@@ -2959,7 +3003,8 @@ export function planProviderRouteFollow(
 
 /**
  * 照 planProviderRouteFollow 算好的写下去。照旧走两阶段提交（I9），这次的 .bak 写成就删，不挤占
- * 客户自己保存时留下的备份；替换前再读一遍原文，被别的程序改过就整个放弃，留给下一次重试。
+ * 客户自己保存时留下的备份（原文不是 UTF-8 的那份例外，见 executeFilePlans 的 discard）；替换前再读
+ * 一遍原文，被别的程序改过就整个放弃，留给下一次重试。
  */
 export function applyProviderRouteFollow(
   provider: ProviderId,
@@ -4170,7 +4215,8 @@ export function withdrawClaudeFilledDefaults(
     }
     const permissions = settings.permissions
     if (!isJsonRecord(permissions)) continue
-    delete permissions.defaultMode
+    if (key === claudeWriteBoundaryKey) delete permissions.blockWritesOutsideWorkingDirectories
+    else delete permissions.defaultMode
     if (Object.keys(permissions).length === 0) delete settings.permissions
   }
   return withdrawn
@@ -4207,6 +4253,51 @@ function claudeForeignSettingsAsidePlans(
   // 只删掉了一把与这次相同的 Key、又本来没有快照时，不必为此建一个空文件。
   if (snapshot === null || (snapshot === '' && current === null)) return []
   return [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]
+}
+
+/** 设置里切「只让 Claude Code 改项目文件夹里的文件」时，当场改 settings.json 的结果。 */
+export type ClaudeWriteBoundaryOutcome = 'written' | 'unchanged' | 'kept'
+
+/**
+ * 设置里切这个开关时（Fable 第二轮 Q6）当场对齐：只动 permissions 里这一项和快照里的记号，其余一个字不动，
+ * 写之前照旧备份、两阶段提交（I9）。调用方先确认 Claude Code 现在接的是当前账号。
+ * - 打开：没有这一项就写 true、记进快照；已经是 true 不动；客户写成了别的值，不动，返回 kept。
+ * - 关掉：快照记着是星芒写的、值还是 true 就撤掉并划掉记号；客户自己写的 true 不动，返回 kept。
+ * 还没有 settings.json（Claude Code 没配过）时什么都不写：以后接当前账号写配置时再按开关补。
+ */
+export function applyClaudeWriteBoundary(
+  rootsInput: ProviderConfigRoots,
+  enabled: boolean,
+): { outcome: ClaudeWriteBoundaryOutcome; result: NativeConfigSaveResult } {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('claude', roots)
+  for (const filePath of providerConfigPaths('claude', roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const [settingsPath] = providerConfigPaths('claude', roots)
+  const untouched = { backups: [], files: [] }
+  if (requireConfigText(settingsPath, '现有 Claude settings.json') === null) return { outcome: 'unchanged', result: untouched }
+  const parsed = requireJson(settingsPath, '现有 Claude settings.json', 'Claude Code')
+  const snapshotText = readClaudeForeignSnapshotText(roots)
+  const recorded = readClaudeForeignSnapshot(snapshotText).filled.includes(claudeWriteBoundaryKey)
+  // permissions 不是一张表（客户手写坏了）就不替他重建：那是保存配置、重置的事。
+  if (parsed.permissions !== undefined && !isJsonRecord(parsed.permissions)) return { outcome: 'kept', result: untouched }
+  const current = isJsonRecord(parsed.permissions) ? parsed.permissions.blockWritesOutsideWorkingDirectories : undefined
+  if (enabled ? current === true : current !== true) return { outcome: 'unchanged', result: untouched }
+  if (enabled ? current !== undefined : !recorded) return { outcome: 'kept', result: untouched }
+  const permissions = ensureRecord(parsed, 'permissions')
+  if (enabled) permissions.blockWritesOutsideWorkingDirectories = true
+  else {
+    delete permissions.blockWritesOutsideWorkingDirectories
+    if (Object.keys(permissions).length === 0) delete parsed.permissions
+  }
+  // 关掉时不再「现在还在」，recordClaudeFilledDefaults 自己就把记号划掉了；别的记号照旧留着。
+  const snapshot = recordClaudeFilledDefaults(snapshotText, parsed, enabled ? [claudeWriteBoundaryKey] : [], false)
+  const plans: FilePlan[] = [
+    ...(snapshot === null || (snapshot === '' && snapshotText === null) ? [] : [{ path: claudeForeignSnapshotPath(roots), content: snapshot }]),
+    { path: settingsPath, content: jsonContent(parsed) },
+  ]
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return { outcome: 'written', result: executeFilePlans(plans, {}, providerRoot) }
 }
 
 /** 开机补设置那一轮补上「不逐条确认」时，同样记进快照。没补就不碰快照。 */

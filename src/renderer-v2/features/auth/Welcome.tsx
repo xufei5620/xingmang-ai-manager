@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { ArrowUpRight, KeyRound, MessageCircle, Moon, ShieldCheck, Sun, Zap } from 'lucide-react'
+import { ArrowUpRight, Clapperboard, KeyRound, MessageCircle, Moon, Sun, Zap } from 'lucide-react'
 import type { LegalDocumentKind } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Logo } from '../../ui'
 import { welcomeOrbitItems } from '../../registry/tools'
@@ -107,7 +107,7 @@ export function Welcome({ onLogin, onRegister, onSteps, onHistoryLogin, onHelp, 
     <div className="auth-welcome-foot">
       <div className="auth-welcome-feature"><Zap size={16} aria-hidden="true" /><div><strong>不用敲命令</strong><p>点几下就装好，装失败会自动撤回。</p></div></div>
       <div className="auth-welcome-feature"><KeyRound size={16} aria-hidden="true" /><div><strong>一个账号就够</strong><p>每个工具的密钥自动配好，额度共用。</p></div></div>
-      <div className="auth-welcome-feature"><ShieldCheck size={16} aria-hidden="true" /><div><strong>用量随时能对账</strong><p>余额、请求明细和密钥额度，都能在个人中心查看。</p></div></div>
+      <div className="auth-welcome-feature"><Clapperboard size={16} aria-hidden="true" /><div><strong>不止写代码</strong><p>聊天、出图、画布、视频剪辑，用的是同一个账号。</p></div></div>
       <div className="auth-welcome-support" data-testid="welcome-support">{supportQrUrl ? <img src={supportQrUrl} alt="微信客服二维码" /> : <MessageCircle size={28} aria-hidden="true" />}<div><strong>装不上？找客服</strong><p>微信扫码，装不上、付了没到账都可以问。</p><Button variant="ghost" size="xs" iconRight={ArrowUpRight} onClick={onHelp} testId="welcome-help">打开客服</Button></div></div>
     </div>
   </main></AuthWindow>

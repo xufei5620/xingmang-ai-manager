@@ -22,8 +22,12 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}, feishu: Partial<Code
   }
 }
 
-function render(state: CodexRemoteSnapshot, busy = '') {
-  return renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy={busy} run={async () => true} error={null} />)
+function render(state: CodexRemoteSnapshot, busy = '', onOpenHelp?: () => void) {
+  return renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy={busy} run={async () => true} error={null} onOpenHelp={onOpenHelp} />)
+}
+
+function buttonMarkup(markup: string, testId: string) {
+  return markup.match(new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`))?.[0] ?? ''
 }
 
 function switchMarkup(markup: string) {
@@ -118,11 +122,50 @@ describe('codex remote card', () => {
   })
 
   it('says why the channel stopped and does not repeat it once connected', () => {
-    const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: 'App ID 或 App Secret 不对' } }))
+    const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。' } }))
     expect(stopped).toContain('要重新登录')
     expect(stopped).toContain('data-testid="settings-remote-feishu-status"')
     const connected = render(snapshot({}, { hasCredential: true, enabled: true, status: { state: 'connected', message: '旧原因' } }))
     expect(connected).not.toContain('旧原因')
+  })
+
+  // D23：三种说法各配按钮。凭据不对就是「飞书应用」那一行的「重新填写」，不另摆一颗。
+  it('pairs each stop reason with its own buttons: refill for a bad credential, reconnect, and support for anything else', () => {
+    const ready = { workspaceDirectory: '~/projects/demo' }
+    const saved = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true }
+    const openHelp = () => undefined
+
+    const credential = render(snapshot(ready, { ...saved, status: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' } }), '', openHelp)
+    expect(credential).toMatch(/data-testid="settings-remote-feishu-status"[^>]*>飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。</)
+    expect(buttonMarkup(credential, 'settings-remote-feishu-edit')).toContain('xm-btn-primary')
+    expect(credential).not.toContain('settings-remote-feishu-reconnect')
+    expect(credential).not.toContain('settings-remote-feishu-support')
+
+    const limit = render(snapshot(ready, { ...saved, status: { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' } }), '', openHelp)
+    expect(limit).toMatch(/data-testid="settings-remote-feishu-reconnect"[^>]*>.*<span>重新连接<\/span><\/button>/)
+    expect(limit).not.toContain('settings-remote-feishu-support')
+    expect(buttonMarkup(limit, 'settings-remote-feishu-edit')).not.toContain('xm-btn-primary')
+    // 按钮紧跟在那句话下面。
+    expect(limit.indexOf('settings-remote-feishu-status-actions')).toBeGreaterThan(limit.indexOf('settings-remote-feishu-status'))
+
+    const other = render(snapshot(ready, { ...saved, status: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' } }), '', openHelp)
+    expect(other).toContain('data-testid="settings-remote-feishu-reconnect"')
+    expect(other).toMatch(/data-testid="settings-remote-feishu-support"[^>]*>.*<span>找客服<\/span><\/button>/)
+    // 没有帮助框可开时不摆「找客服」。
+    expect(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }))).not.toContain('settings-remote-feishu-support')
+
+    // 别的操作在跑时先别点；正在重连时转圈。
+    expect(buttonMarkup(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }), 'feishu-pair'), 'settings-remote-feishu-reconnect')).toContain('disabled=""')
+    expect(buttonMarkup(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }), 'feishu-reconnect'), 'settings-remote-feishu-reconnect')).toContain('aria-busy="true"')
+  })
+
+  it('offers no reconnect for a channel that is switched off, still connecting, or has no stop reason', () => {
+    const ready = { workspaceDirectory: '~/projects/demo' }
+    const saved = { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }
+    expect(render(snapshot(ready, { ...saved, enabled: false, status: { state: 'error', problem: 'other' } }))).not.toContain('settings-remote-feishu-reconnect')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connecting', message: '连不上飞书，正在重试。' } }))).not.toContain('settings-remote-feishu-reconnect')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'error', message: '渠道没能连上。' } }))).not.toContain('settings-remote-feishu-status-actions')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connected', problem: 'other' } }))).not.toContain('settings-remote-feishu-reconnect')
   })
 
   it('locks every action when the manager runs elevated and says why', () => {
@@ -164,6 +207,21 @@ describe('codex remote card', () => {
     expect(remoteChannelSections.feishu.logoutHint).toBe('退出后要重新填机器人的凭据，才能再用手机遥控。')
     expect(remoteChannelSections.weixin.logoutHint).toBe('退出后要重新用微信扫码登录，才能再用手机遥控。')
     expect(codexRemoteConfirmText.logout.ok).toBe('退出登录')
+  })
+
+  // YK-5：手机上收到「Codex 没能启动」时，电脑卡片上也看得见、点一下去首页。
+  it('says on top of the card that Codex could not start, with a way to the home page', () => {
+    const connected = { hasCredential: true, enabled: true, status: { state: 'connected' } } as const
+    const failed = renderToStaticMarkup(
+      <CodexRemotePanel snapshot={snapshot({ workspaceDirectory: '~/projects/demo', codexStartFailed: true }, connected)} api={{} as V2Bridge} busy="" run={async () => true} error={null} navigate={() => undefined} />,
+    )
+    expect(failed).toContain('data-testid="settings-remote-codex-failed"')
+    expect(failed).toContain('xm-tone-warn')
+    expect(failed).toContain('<strong>Codex 没能启动</strong>')
+    expect(failed).toContain('手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。')
+    expect(failed).toMatch(/data-testid="settings-remote-codex-failed-home"[^>]*>.*去首页看 Codex/)
+    expect(failed.indexOf('settings-remote-codex-failed')).toBeLessThan(failed.indexOf('settings-remote-workspace-row'))
+    expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, connected))).not.toContain('settings-remote-codex-failed')
   })
 
   it('warns when the credentials only last until the manager closes', () => {

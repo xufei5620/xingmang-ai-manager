@@ -6,6 +6,7 @@ import {
   extractFeishuText,
   FeishuAuthError,
   FeishuFragmentCache,
+  feishuProblemMessages,
   parseFeishuCredential,
   parseFeishuEndpointResponse,
   parseFeishuEvent,
@@ -14,6 +15,7 @@ import {
   serializeFeishuCredential,
   transientFeishuRequestFailure,
   validateFeishuCredentialInput,
+  verifyFeishuCredential,
   type FeishuChannelOptions,
   type FeishuSocket,
 } from './codex-remote-feishu'
@@ -186,6 +188,31 @@ describe('codex-remote-feishu credentials', () => {
     expect(String(ok.mock.calls[0][0])).toBe('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal')
     const bad = vi.fn(async () => json({ code: 10014, msg: 'app secret invalid' }))
     await expect(requestFeishuTenantToken(bad, { appId, appSecret }, 0)).rejects.toBeInstanceOf(FeishuAuthError)
+    // Saving the credential shows this on the card too (D23): one fixed sentence, never Feishu's own words.
+    await expect(requestFeishuTenantToken(bad, { appId, appSecret }, 0)).rejects.toThrow(feishuProblemMessages.credential)
+  })
+
+  // 「飞书保存改」：保存时飞书回的不是正常应答，红条只说批过的那句，HTTP 状态只进日志。
+  it('keeps the HTTP status of an odd token answer out of the save failure and logs it instead', async () => {
+    const logged: Array<{ event: string; detail?: Record<string, unknown> }> = []
+    const deps = (respond: () => Response) => ({
+      fetch: vi.fn(async () => respond()),
+      now: () => 0,
+      log: (_level: string, event: string, detail?: Record<string, string | number | boolean | null>) => { logged.push({ event, detail }) },
+    })
+    const page = deps(() => new Response('<html>401 Unauthorized</html>', { status: 401, headers: { 'Content-Type': 'text/html' } }))
+    const failure = await verifyFeishuCredential(page, { appId, appSecret }).then(() => null, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(Error)
+    expect((failure as Error).message).toBe('飞书凭据没保存上。请核对 App ID 和 App Secret 有没有填错，再点一次「保存」；还不行请找客服。')
+    expect((failure as Error).message).not.toMatch(/HTTP|401/)
+    expect(logged).toEqual([{ event: 'feishu.save-token-unexpected', detail: { status: 401 } }])
+
+    // A wrong secret and a good one keep their own outcome.
+    await expect(verifyFeishuCredential(deps(() => json({ code: 10014, msg: 'app secret invalid' })), { appId, appSecret }))
+      .rejects.toThrow(feishuProblemMessages.credential)
+    await expect(verifyFeishuCredential(deps(() => json({ code: 0, tenant_access_token: 'tok', expire: 7200 })), { appId, appSecret }))
+      .resolves.toBeUndefined()
+    expect(logged).toHaveLength(1)
   })
 
   it('refuses to follow a redirect with the secret', async () => {
@@ -448,6 +475,37 @@ describe('codex-remote-feishu channel', () => {
     const channel = createFeishuRemoteChannel(h.deps, { createSocket: (url) => new FakeSocket(url) })
     await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
     await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('needs-login'))
+    expect(h.statuses.at(-1)).toEqual({ state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' })
+  })
+
+  // D23：原来这句带着「长连接」，现在只说关掉别处再试，卡片配「重新连接」。
+  it('stops with a plain connection-limit sentence when the app is connected elsewhere', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url) =>
+      url.endsWith('/callback/ws/endpoint') ? json({ code: 1000040350, msg: 'connection limit' }) : defaultRespond(url))
+    const channel = createFeishuRemoteChannel(h.deps, { createSocket: (url) => new FakeSocket(url) })
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
+    await vi.waitFor(() => expect(h.statuses.at(-1)?.state).toBe('error'))
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' })
+    expect(h.logs).toContain('feishu.connection-limit')
+  })
+
+  it('says the fixed fallback sentence instead of throwing when the saved credential cannot be read', async () => {
+    const h = harness(null, defaultRespond)
+    const deps: RemoteChannelDependencies = {
+      ...h.deps,
+      readCredential: async () => { throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.') },
+    }
+    const channel = createFeishuRemoteChannel(deps)
+    await channel.start({ onInbound: () => undefined, onStatus: (status) => h.statuses.push(status) })
+    expect(h.statuses.at(-1)).toEqual({ state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' })
+    expect(h.logs).toContain('feishu.credential-read-failed')
+    expect(h.fetch).not.toHaveBeenCalled()
+  })
+
+  it('never puts status codes or the words long connection on the card', () => {
+    for (const message of Object.values(feishuProblemMessages)) {
+      expect(message).not.toMatch(/HTTP|长连接|错误码|\d{3}/)
+    }
   })
 
   it('reconnects with backoff after the socket closes', async () => {

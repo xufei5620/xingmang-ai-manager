@@ -686,6 +686,11 @@ export class CodexRemoteService {
   private revision = 0
   private codex: CodexAppServerClient | null = null
   private codexStarting: Promise<CodexAppServerClient> | null = null
+  /**
+   * 手机上最近一条因为电脑上的 Codex 起不来没做（YK-5）：手机上收到那句，电脑卡片上也要看得见。
+   * 下次 Codex 起来了、或者遥控全关了就清掉。
+   */
+  private codexStartFailed = false
   /** 已经叫停、还没真退出的几份 Codex（retireClient）：装、卸 Codex 前也要等它们放开文件。 */
   private readonly retiringClients = new Set<CodexAppServerClient>()
   private secrets: readonly string[] = []
@@ -813,6 +818,7 @@ export class CodexRemoteService {
         : null,
       task,
       pendingApprovals,
+      ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
     }
   }
@@ -846,6 +852,20 @@ export class CodexRemoteService {
     if ((await this.options.store.readCredential(channel)) === null) throw new Error('先完成这个渠道的登录。')
     const codexProblem = await this.options.checkCodexReady?.()
     if (codexProblem) throw new Error(codexProblem)
+    const blocked = await this.startChannel(runtime)
+    if (blocked) throw new Error(blocked)
+    return this.emit()
+  }
+
+  /**
+   * 卡片上的「重新连接」（0.2.24 D23）：开着、停在出错上的渠道断开重连一次。凭据、绑定的人、配对码都不动，
+   * 手机上也不收「电脑上关了」那句，跟换凭据以后重启渠道是同一条路。没开着就不连：按钮只在开着时才有，
+   * 点下去这一会儿被关掉了就算了。
+   */
+  async reconnectChannel(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
+    const runtime = this.runtimes[channel]
+    if (!runtime.enabled) return this.emit()
+    await this.stopAdapter(runtime)
     const blocked = await this.startChannel(runtime)
     if (blocked) throw new Error(blocked)
     return this.emit()
@@ -1136,7 +1156,10 @@ export class CodexRemoteService {
     runtime.replyContext = undefined
     this.dropThread(runtime)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
-    if (!remoteChannelIds.some((id) => this.runtimes[id].enabled)) await this.stopCodex()
+    if (!remoteChannelIds.some((id) => this.runtimes[id].enabled)) {
+      this.codexStartFailed = false
+      await this.stopCodex()
+    }
   }
 
   private async boundPeer(channel: RemoteChannelId): Promise<RemotePeer | null> {
@@ -1599,6 +1622,7 @@ export class CodexRemoteService {
       if (runtime.turn !== turn) return
       this.options.log('error', 'remote.codex-start-failed', { reason: error instanceof Error ? error.name : 'unknown' })
       this.clearTurn(runtime)
+      this.codexStartFailed = true
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       this.emitSoon()
       return
@@ -1683,6 +1707,10 @@ export class CodexRemoteService {
           throw new Error('手机遥控已经关了')
         }
         this.codex = client
+        if (this.codexStartFailed) {
+          this.codexStartFailed = false
+          this.emitSoon()
+        }
         await this.refreshSecrets(true)
         this.options.log('info', 'remote.codex-started')
         return client

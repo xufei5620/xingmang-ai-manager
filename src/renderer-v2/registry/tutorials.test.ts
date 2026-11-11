@@ -154,6 +154,43 @@ describe('tutorial wording that follows the current app', () => {
     for (const os of ['win', 'mac', 'linux'] as const) expect(tutorialTopicsFor(os).map((topic) => topic.id)).toContain('video');
   });
 
+  // Fable 第二轮 Q5：Claude Code 2.1.318 起不再自己往编辑器里装插件，客户得知道要自己装、装完不用登录。
+  it('tells editor users to install the extension themselves and to save the Claude Code config again if it still asks to sign in', () => {
+    const editor = tutorialTopics.find((topic) => topic.id === 'editor');
+    expect(editor?.category).toBe('tools');
+    expect(editor?.title).toBe('在 VS Code 或 Cursor 里用 Claude Code');
+    const text = JSON.stringify(editor);
+    expect(text).toContain('不会再自己往编辑器里装插件');
+    expect(text).toContain('认准发布者是 Anthropic');
+    // 第 4 步的按钮名照首页卡片「…」菜单和配置弹窗上的字写。
+    expect(step('editor', '回首页重新保存 Claude Code 配置').bullets).toContain('回星芒首页，在 Claude Code 卡片的「…」里点「配置…」，再点「保存配置」。');
+    for (const entry of editor?.steps ?? []) expect(entry.page, entry.action).toBe('home');
+  });
+
+  it('lands every phone remote step on the remote card in settings', () => {
+    const remote = tutorialTopics.find((topic) => topic.id === 'phone-remote');
+    expect(remote?.title).toBe('用手机遥控 Codex');
+    for (const entry of remote?.steps ?? []) {
+      expect(entry, entry.action).toMatchObject({ page: 'settings', section: 'codex-remote' });
+      expect(entry.where, entry.action).toContain(`工具管理 › ${settingsItemLabel('codex-remote')}`);
+    }
+    expect(JSON.stringify(remote)).toContain('长期用建议选飞书');
+  });
+
+  it('teaches the Claude Code rewind and warns that terminal commands cannot be undone', () => {
+    const undo = tutorialTopics.find((topic) => topic.id === 'undo');
+    expect(undo?.category).toBe('trouble');
+    const text = JSON.stringify(undo);
+    for (const words of ['连按两下 Esc', '/rewind', 'Restore code and conversation', '退不回来', '复制一份']) expect(text).toContain(words);
+  });
+
+  it('offers the editor, phone remote and undo chapters on every system', () => {
+    for (const os of ['win', 'mac', 'linux'] as const) {
+      const ids = tutorialTopicsFor(os).map((topic) => topic.id);
+      for (const id of ['editor', 'phone-remote', 'undo']) expect(ids, `${os} / ${id}`).toContain(id);
+    }
+  });
+
   it('keeps npm and the bare word CLI out of what customers read', () => {
     // keywords only feed the search box, so customers who type「npm」or「CLI」still land on the right chapter.
     const visible = JSON.stringify(tutorialTopics.map(({ keywords: _keywords, ...topic }) => topic));

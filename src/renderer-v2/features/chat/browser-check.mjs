@@ -1208,7 +1208,7 @@ test('the conversation list groups by day, finds by title and clears everything 
     await page.getByTestId('chat-conversation-search').fill('')
     await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
     const menu = page.getByRole('menu', { name: '对话操作', exact: true })
-    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['导出这段对话', '删除这段对话…'])
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '置顶', '导出这段对话', '删除这段对话…'])
     await menu.getByRole('menuitem', { name: '导出这段对话', exact: true }).click()
     await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
     assert.equal((await calls(page, 'export-text'))[0].input.title, '今天聊的')
@@ -1232,6 +1232,60 @@ test('the conversation list groups by day, finds by title and clears everything 
     // 没发出去的草稿也算本机记录，清空后不会再冒出来。
     assert.equal(await page.getByTestId('chat-composer-input').inputValue(), '')
     await waitSaved(page, (workspace) => workspace.conversations.length === 0 && workspace.draftConversation.draft === '' && workspace.draftConversation.settings.model === 'gpt-test')
+  } finally { await page.close() }
+})
+
+// Fable 第二轮 Y2：聊多了找不到、重要的被挤下去，所以能改名、能置顶。改名不挪位置，置顶的排在最上面单独一段。
+test('a conversation can be renamed and pinned to the top, and both survive a reload', async () => {
+  const state = storedWorkspace()
+  const settings = state.conversations[0].settings
+  const noon = new Date(); noon.setHours(12, 0, 0, 0)
+  const message = (id) => [{ id: `${id}-q`, role: 'user', content: '问题', status: 'complete', createdAt: 1 }, { id: `${id}-a`, role: 'assistant', content: '回答', reasoning: '', status: 'complete', createdAt: 2 }]
+  const conversation = (id, title, updatedAt) => ({ id, title, createdAt: updatedAt, updatedAt, draft: '', settings, messages: message(id) })
+  state.conversations = [conversation('today', '今天聊的', Date.now()), conversation('older', '很久以前聊的', noon.getTime() - 10 * 86_400_000)]
+  state.activeId = 'today'
+  const page = await open('', { [storedChatKey]: JSON.stringify(state) })
+  try {
+    const list = page.getByRole('navigation', { name: '已保存的对话' })
+    await list.getByTestId('chat-conversation-older').waitFor()
+    const menu = page.getByRole('menu', { name: '对话操作', exact: true })
+    await page.getByRole('button', { name: '「很久以前聊的」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    const dialog = page.getByTestId('chat-rename-dialog')
+    await dialog.getByRole('heading', { name: '给这段对话改个名', exact: true }).waitFor()
+    const input = page.getByTestId('chat-rename-input')
+    assert.equal(await input.inputValue(), '很久以前聊的')
+    assert.equal(await input.evaluate((element) => element === document.activeElement), true)
+    // 没改或者删空了，「保存」是灰的。
+    assert.equal(await page.getByTestId('chat-rename-save').isDisabled(), true)
+    await input.fill('   ')
+    assert.equal(await page.getByTestId('chat-rename-save').isDisabled(), true)
+    await input.fill('  年终总结  ')
+    await input.press('Enter')
+    await dialog.waitFor({ state: 'detached' })
+    await list.getByText('年终总结', { exact: true }).waitFor()
+    // 改名不挪位置：还在「更早」里。
+    assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['今天', '更早'])
+    await page.getByRole('button', { name: '「年终总结」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '置顶', exact: true }).click()
+    await page.waitForFunction(() => [...document.querySelectorAll('.chat-conversation-day')].map((item) => item.textContent).join() === '置顶,今天')
+    assert.deepEqual(await list.locator('.chat-conversation-select strong').allTextContents(), ['年终总结', '今天聊的'])
+    await waitSaved(page, (workspace) => workspace.conversations.some((item) => item.id === 'older' && item.pinned === true && item.renamed === true && item.title === '年终总结'))
+    await page.reload()
+    await list.getByTestId('chat-conversation-older').waitFor()
+    assert.deepEqual(await list.locator('.chat-conversation-day').allTextContents(), ['置顶', '今天'])
+    await page.getByRole('button', { name: '「年终总结」更多操作', exact: true }).click()
+    assert.deepEqual(await menu.getByRole('menuitem').allTextContents(), ['改名', '取消置顶', '导出这段对话', '删除这段对话…'])
+    await menu.getByRole('menuitem', { name: '取消置顶', exact: true }).click()
+    await page.waitForFunction(() => [...document.querySelectorAll('.chat-conversation-day')].map((item) => item.textContent).join() === '今天,更早')
+    // 取消也能退出改名框，不改名字。
+    await page.getByRole('button', { name: '「今天聊的」更多操作', exact: true }).click()
+    await menu.getByRole('menuitem', { name: '改名', exact: true }).click()
+    await input.fill('不要了')
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await list.getByText('今天聊的', { exact: true }).waitFor()
+    assert.equal(await page.locator('.chat-bar strong').textContent(), '今天聊的')
   } finally { await page.close() }
 })
 
@@ -1273,6 +1327,32 @@ test('a message typed while offline stays in the composer and goes out from the 
     assert.deepEqual((await calls(page, 'start'))[0].input.messages.at(-1), { role: 'user', content: 'sent after reconnecting' })
     assert.equal(await page.getByTestId('chat-send-retry').count(), 0)
   } finally { await page.close() }
+})
+
+test('a reply still coming in when the network drops says so under it and can be stopped (D43)', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'network drops midway')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'half of the answer' })
+    await page.getByText('half of the answer', { exact: true }).waitFor()
+    const notice = page.locator('.chat-message[data-role=assistant] [data-testid=chat-message-offline]')
+    assert.equal(await notice.count(), 0)
+    await page.context().setOffline(true)
+    await notice.waitFor()
+    assert.equal(await notice.innerText(), '网络断了，这条回复可能接不上，可以先停止。')
+    // 3 分钟的时限照旧，界面不替它先停：字还留着、停止按钮还在，只是告诉人可以先停。
+    assert.equal(await page.getByTestId('chat-stop').count(), 1)
+    assert.equal((await calls(page, 'cancel')).length, 0)
+    await page.context().setOffline(false)
+    await notice.waitFor({ state: 'detached' })
+    await page.context().setOffline(true)
+    await notice.waitFor()
+    await page.getByTestId('chat-stop').click()
+    await page.getByText('已停止生成，保留已返回的内容', { exact: true }).waitFor()
+    assert.equal(await notice.count(), 0)
+    assert.equal(await page.getByText('half of the answer', { exact: true }).count(), 1)
+    assert.equal((await calls(page, 'cancel')).length, 1)
+  } finally { await page.context().setOffline(false); await page.close() }
 })
 
 test('the parameters dialog starts every slider at the model default, explains bad numbers and only changes the conversation on apply', async () => {

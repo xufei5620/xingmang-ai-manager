@@ -47,6 +47,12 @@ import { redactHomeDirectory } from './startup-log'
 import type { RendererMessageTarget } from './system-service'
 import type { ServiceContext } from './system-service-context'
 
+/**
+ * OpenCode 的配置位置跟着 XDG_CONFIG_HOME 走，这个设置不是完整路径时找不到它（0.2.24 深查决定单 D62 第 4 条的原字）。
+ * WorkBuddy 的配置在主目录下的 .workbuddy 里，不看这个设置，所以只拦 OpenCode。
+ */
+const relativeXdgConfigHomeMessage = '你电脑上的 XDG_CONFIG_HOME 设置不是完整路径，OpenCode 的配置位置找不到。把它改成以 / 开头的完整路径，或者删掉这个设置再试。'
+
 /** 读不出来的安装记录进运行日志时的那几项：原因里万一带着主目录，按主目录脱敏。 */
 export function buildExternalClientRegistryLogDetail(failures: ExternalClientRegistryFailure[], userHome: string) {
   return { failures: failures.map((failure) => ({ ...failure, reason: redactHomeDirectory(failure.reason, userHome) })) }
@@ -208,8 +214,8 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       }
     }
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-    if (xdgConfig && !path.isAbsolute(xdgConfig)) return { ...status, configured: false, model: null,
-      configurationSource: 'unknown', configurationError: 'XDG_CONFIG_HOME 必须是绝对路径。' }
+    if (status.tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) return { ...status, configured: false, model: null,
+      configurationSource: 'unknown', configurationError: relativeXdgConfigHomeMessage }
     const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
     return { ...status, ...inspectExternalToolConnection(status.tool, externalPlatform, {
       userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
@@ -396,7 +402,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       }
       const externalPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux' ? platform : 'linux'
       const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-      if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
+      if (tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
       const result = await saveExternalToolConfig(tool, externalPlatform, {
         userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
       }, { apiKey, model, baseUrl: activeSite.providerBaseUrls.codex,
@@ -407,7 +413,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       const connection = await verifySavedExternalClient(tool, latestExternalClients?.find((entry) => entry.tool === tool))
       return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
         message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。'
-          : '全局配置与默认模型已保存。重新打开 OpenCode 后使用；项目配置或环境变量可能覆盖全局设置。',
+          : '已经连好了。关掉 OpenCode 再打开就能用；要是你在某个项目里单独给 OpenCode 配过模型，那个项目里以你自己配的为准。',
         restartRequired: tool === 'opencode',
         connectionVerified: connection?.ok === true, connection }
     }
@@ -820,7 +826,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       return (await (await claudeDesktopConfig(status, assertContext)).followKey(change, recheck)).removedModels
     }
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-    if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
+    if (status.tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
     await recheck()
     return (await followExternalToolKey(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
       userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
@@ -953,7 +959,7 @@ export function createExternalClientRouteService(context: ServiceContext, depend
       return
     }
     const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
-    if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
+    if (status.tool === 'opencode' && xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error(relativeXdgConfigHomeMessage)
     await recheck()
     await followExternalToolRoute(status.tool, platform === 'win32' || platform === 'darwin' ? platform : 'linux', {
       userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
