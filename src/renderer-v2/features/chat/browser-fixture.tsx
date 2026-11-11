@@ -1,6 +1,7 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { AiChatAsset, AiChatGroupSummary, AiChatHistoryFlushRequest, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, AiChatTextFile, XingmangApi } from '../../../../electron/ipc-contract'
+import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import type { ChatBridge } from './api'
 import { answerHistoryFlushRequests } from './storage'
 import { ChatPage } from './ChatPage'
@@ -24,7 +25,10 @@ let groupOverride: AiChatGroupSummary[] | undefined = query.has('emptyGroups') ?
 let failingPreparation = query.get('prepareFail')
 let groupGate: Promise<void> | undefined
 let releaseGroupGate: (() => void) | undefined
-const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
+// 图片文件在外面被删了（D37）：预览读不出来，复制、另存时主进程那句原话经 IPC 带着通道名交过来。
+const assetGone = query.has('assetGone')
+function assetGoneError(channel: string): Error { return new Error(`Error invoking remote method '${channel}': Error: ${missingAiAssetMessages.image}`) }
+const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: assetGone ? '/assets/brand/v3/fixture-gone.png' : '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
 function noRecheck() {}
 // Stands in for the main-process history files. IndexedDB survives page.reload()
@@ -115,8 +119,8 @@ const bridge: ChatBridge = {
   generateAiImage: async (input) => { record('image', input); return new Promise<AiChatAsset[]>((resolve, reject) => { images.set(input.requestId, { resolve, reject }) }) },
   cancelAiChat: async (requestId) => { record('cancel', requestId); if (query.has('cancelReject')) { images.get(requestId)?.reject(new Error('request canceled')); await Promise.resolve() } return { canceled: true, mayStillComplete: images.has(requestId) } },
   onAiChatStream: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
-  copyAiChatAsset: async (assetId) => { record('copy-asset', assetId) },
-  saveAiChatAsset: async (assetId) => { record('save-asset', assetId); return { saved: !query.has('saveCancel') } },
+  copyAiChatAsset: async (assetId) => { record('copy-asset', assetId); if (assetGone) throw assetGoneError('chat:copy-asset') },
+  saveAiChatAsset: async (assetId) => { record('save-asset', assetId); if (assetGone) throw assetGoneError('chat:save-asset'); return { saved: !query.has('saveCancel') } },
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
   pickAiChatTextFiles: async (remainingFiles, remainingChars) => { record('pick-text-files', { remainingFiles, remainingChars }); const next = textFilePicks.shift(); if (next instanceof Error) throw next; return next ?? [] },

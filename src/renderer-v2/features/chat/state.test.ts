@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice } from './state'
+import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatAssetSaveErrorMessage, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -235,6 +236,16 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${blocked}`))).toBe(blocked)
     const tooLarge = '参考图太大了，服务端收不下。换一张小一点的图，或者压缩一下再试。'
     expect(chatErrorMessage(new Error(tooLarge))).toBe(tooLarge)
+  })
+  it('says a picture removed outside the app is gone instead of asking for a retry that cannot work (D37)', () => {
+    const gone = missingAiAssetMessages.image
+    expect(gone).toBe('这张图已经不在电脑上了，可能被移走或删掉了。')
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:copy-asset': Error: ${gone}`))).toBe(gone)
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'chat:asset-menu': Error: ${gone}`))).toBe(gone)
+    expect(chatAssetSaveErrorMessage(new Error(`Error invoking remote method 'chat:save-asset': Error: ${gone}`))).toBe(gone)
+    // Anything else still reads as a save that can be tried again.
+    expect(chatAssetSaveErrorMessage(new Error("Error invoking remote method 'chat:save-asset': Error: 图片另存失败，请检查目标目录写入权限"))).toBe('图片没有保存成功，可以重试')
+    expect(chatAssetSaveErrorMessage(undefined)).toBe('图片没有保存成功，可以重试')
   })
   it('keeps the partial reply and shows the main-process cut-off note when a stream times out', () => {
     const plan = turn(); let state = saveConversation(createWorkspace('owner:7'), plan.conversation)
