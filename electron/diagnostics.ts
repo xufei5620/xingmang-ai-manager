@@ -20,6 +20,8 @@ import {
   buildProxyChecks,
   certificateProbeTarget,
   certificateTrustOutcome,
+  claudeSettingsProxyOutcome,
+  claudeSettingsProxyVariables,
   clockSkewMs,
   clockSkewSummary,
   clockSyncGuidance,
@@ -376,6 +378,8 @@ export {
 export {
   certificateProbeTarget,
   certificateTrustOutcome,
+  claudeSettingsProxyOutcome,
+  claudeSettingsProxyVariables,
   clockSkewMs,
   clockSkewSummary,
   clockSyncGuidance,
