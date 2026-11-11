@@ -624,7 +624,8 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
       const saved = commitClaudeDesktopFiles(plans, snapshots, assertContext)
       return {
         path: gatewayPath, ...saved, mode: 'local', supportsRelay: true, restartRequired: true, connectionVerified: false,
-        warnings: ['已保存到 Claude Desktop 的第三方推理配置；完全退出并重新打开客户端后生效。尚未验证真实推理连接。'],
+        // 同一个框下面紧跟着「连接自检」那一行，这里不再说「尚未验证」（0.2.24 深查决定单 D62 第 2 条的原字）。
+        warnings: ['已经写进 Claude Desktop。把它完全退出，再从这里点「打开」就生效。'],
       }
     }),
   }
