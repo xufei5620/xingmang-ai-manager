@@ -1216,6 +1216,11 @@ export interface XingmangInvokeContract {
   copyMcpToTool: IpcInvokeDefinition<'extensions:copy-mcp', [input: McpCopyInput], void>
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [mode?: import('./relay-backend').RelayNoticeReadMode], import('./relay-backend').RelayNotice | null>
+  /**
+   * 公告里官网自己的图：主进程下好换成 data: 地址交回（决定单 D89 a），页面的安全设置不放网上图片。只认当前账号
+   * 那个站官网的 https 地址，下不下来就抛错，页面照旧显示「[图片：说明]」。
+   */
+  getAccountNoticeImage: IpcInvokeDefinition<'account:get-notice-image', [url: string], string>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
   syncLocalNoticeReads: IpcInvokeDefinition<'account:sync-local-notice-reads', [scope: string, ids: string[]], string[]>
   getAccelerationState: IpcInvokeDefinition<'acceleration:get-state', [scope: string], import('./acceleration-contract').AccelerationState>
@@ -1668,6 +1673,7 @@ export const ipcInvokeChannels = {
   copyMcpToTool: 'extensions:copy-mcp',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
+  getAccountNoticeImage: 'account:get-notice-image',
   markAccountNoticeRead: 'account:mark-notice-read',
   syncLocalNoticeReads: 'account:sync-local-notice-reads',
   getAccelerationState: 'acceleration:get-state',

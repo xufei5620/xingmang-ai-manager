@@ -97,10 +97,11 @@ describe('renderer-v2 announcement error mapping', () => {
     expect(html).toContain('rel="noreferrer"')
   })
 
-  it('keeps unsafe Markdown links and remote images inert while allowing same-origin raster images', () => {
+  it('keeps unsafe Markdown links and remote images inert, and never points an image at the network', () => {
+    const text = '[危险链接](javascript:alert(1))\n\n![官方二维码](https://xm.solov.cc/qr.png)\n\n![外部图片](https://attacker.invalid/qr.png)'
     const html = renderToStaticMarkup(
       <AnnouncementContent
-        text={'[危险链接](javascript:alert(1))\n\n![官方二维码](https://xm.solov.cc/qr.png)\n\n![外部图片](https://attacker.invalid/qr.png)'}
+        text={text}
         noticeUrl="https://xm.solov.cc"
         openExternal={async () => undefined}
         onError={() => undefined}
@@ -108,9 +109,25 @@ describe('renderer-v2 announcement error mapping', () => {
     )
     expect(html).not.toContain('javascript:')
     expect(html).toContain('<span>危险链接</span>')
-    expect(html).toContain('<img src="https://xm.solov.cc/qr.png" alt="官方二维码"')
+    // 页面的安全设置不放网上图片（D89 a）：没有主进程代下（readImage）时，官网的图也只显示说明。
+    expect(html).toContain('[图片：官方二维码]')
     expect(html).toContain('[图片：外部图片]')
+    expect(html).not.toContain('<img')
     expect(html).not.toContain('attacker.invalid/qr.png')
+
+    // 有代下时官网的图先空着，等主进程交回 data: 地址；外站的图照旧只显示说明。
+    const withDownloads = renderToStaticMarkup(
+      <AnnouncementContent
+        text={text}
+        noticeUrl="https://xm.solov.cc"
+        readImage={async () => 'data:image/png;base64,AAAA'}
+        openExternal={async () => undefined}
+        onError={() => undefined}
+      />,
+    )
+    expect(withDownloads).not.toContain('<img')
+    expect(withDownloads).not.toContain('[图片：官方二维码]')
+    expect(withDownloads).toContain('[图片：外部图片]')
   })
 
   it('requires every native CSS selector to stay inside its random announcement scope', () => {

@@ -7763,6 +7763,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(invoicePortalWindow.open).toHaveBeenCalledWith({ siteId: 'solov-api', userId: 42 })
     })
 
+    it('downloads announcement images for the signed-in account site only, never a site the renderer names', async () => {
+      const accountService = accountServiceStub()
+      const announcementImages = { read: vi.fn(async () => 'data:image/png;base64,AAAA') }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { announcementImages })
+      const readImage = electronMocks.handlers.get('account:get-notice-image')!
+
+      await expect(readImage(trustedEvent(), 'https://xm.solov.cc/qr.png')).resolves.toBe('data:image/png;base64,AAAA')
+      expect(announcementImages.read).toHaveBeenLastCalledWith('solov', 'https://xm.solov.cc/qr.png')
+
+      accountService.getActiveSiteId = vi.fn(() => 'solov-api' as const)
+      // A second argument from the renderer is ignored: the main process picks the site.
+      await readImage(trustedEvent(), 'https://api.solov.cc/qr.png', 'solov')
+      expect(announcementImages.read).toHaveBeenLastCalledWith('solov-api', 'https://api.solov.cc/qr.png')
+    })
+
+    it('fails the announcement image read when this host cannot download them', async () => {
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+
+      await expect(electronMocks.handlers.get('account:get-notice-image')!(trustedEvent(), 'https://xm.solov.cc/qr.png'))
+        .rejects.toThrow('公告图片暂时显示不了，请更新或重启软件')
+    })
+
     it('says the approved line when this host has no invoice window', async () => {
       const accountService = accountServiceStub()
       vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)

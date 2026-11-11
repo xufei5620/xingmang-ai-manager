@@ -626,6 +626,10 @@ const methods = {
     if (query.has('noticeOversized')) throw new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限")
     if (query.has('noticeNative')) return { id: 'native-notice', text: nativeFixtureNotice }
     if (query.has('noticeMarkdown')) return { id: 'markdown-notice', text: '# 服务公告\n\n- 第一项\n- 第二项\n\n**重点提醒**：请查看 [官方说明](https://xm.solov.cc/help)。' }
+    // 公告里的图（D89 a）：官网的一张能下、一张下不下来，外站的一张不该交给主进程。
+    if (query.has('noticeImage')) return { id: 'image-notice', text: query.has('noticeImageHtml')
+      ? '<p>活动海报</p><img src="https://xm.solov.cc/qr.png" alt="官方二维码"><img src="https://xm.solov.cc/missing.png" alt="下不下来"><img src="https://attacker.invalid/qr.png" alt="外部图片">'
+      : '# 活动海报\n\n![官方二维码](https://xm.solov.cc/qr.png)\n\n![下不下来](https://xm.solov.cc/missing.png)\n\n![外部图片](https://attacker.invalid/qr.png)' }
     if (session.siteId === 'solov-api') return query.has('noticeEmpty') ? null : {
       id: 'sub2api-notices', text: '服务通知\n\n套餐更新', entries: [
         { id: '12', title: query.has('noticeLongTitle') ? '服务通知：模型与套餐更新说明 / Service announcement: updated models and subscriptions, pricing details and account usage policies' : '服务通知', text: '**系统升级完成**，请重新读取分组。', read: noticesRead.has('12'), publishedAt: '2026-09-28T12:00:00.000Z' },
@@ -633,6 +637,10 @@ const methods = {
       ],
     }
     return { id: 'local-notice', text: '本地测试公告' }
+  },
+  getAccountNoticeImage: async (url: string) => {
+    if (url === 'https://xm.solov.cc/qr.png') return nativeFixturePng
+    throw new Error("Error invoking remote method 'account:get-notice-image': Error: 公告图片下载失败，服务返回 HTTP 404")
   },
   markAccountNoticeRead: async (_snapshotId: string, entryId: string) => {
     if (query.has('noticeMarkPending')) await new Promise<void>((resolve) => pendingNoticeMarks.set(entryId, resolve))
