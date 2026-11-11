@@ -6,6 +6,7 @@ const os = require('node:os')
 const path = require('node:path')
 const { Readable, Writable } = require('node:stream')
 const { fetchText, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { LICENSE_CONTENT_TYPE, licenseKey, readLicenseFiles } = require('./cos-license-files.cjs')
 const {
   STABLE_URLS, LATEST_KEY, CONTENT_TYPE, VERIFICATION, MIN_BINARY_BYTES, MAX_RELEASES, PLATFORMS,
   parseVersion, compareVersions, artifactKey, sourceUrls, readRecommendedGrokVersion, targetVersions, validateLatest, validateSignature,
@@ -68,6 +69,8 @@ function createFixture() {
       return MACHINES[/-(windows-[a-z0-9_]+)\.exe$/.exec(path.basename(filePath))[1]]
     },
     async inspectSignature() { return clone(fixture.signature) },
+    // The texts the sync really ships: scripts/cos-licenses/grok-cli/.
+    readLicenseFiles() { return readLicenseFiles('grok-cli') },
     async removeFile(filePath) { fixture.removedFiles.push(filePath) },
     async createWorkDirectory() { return path.resolve(os.tmpdir(), 'mock-grok-cos') },
     async removeWorkDirectory(directory) { fixture.removed.push(directory) },
@@ -102,6 +105,21 @@ function createFixture() {
     return synchronizeGrok({ store: fixture.store, dependencies: fixture.dependencies, recommendedVersion: '1.0.46', now: function () { return '2026-10-14T16:00:00.000Z' }, ...extra })
   }
   return fixture
+}
+
+function packagePublications(fixture) {
+  return fixture.publications.filter(function (publication) { return !publication.key.includes('/licenses/') })
+}
+
+async function expectedLicense(fixture) {
+  const files = await readLicenseFiles('grok-cli')
+  return {
+    spdx: 'Apache-2.0',
+    files: files.map(function (file) {
+      const key = licenseKey('xingmang/offline/grok', file.sha256, file.fileName)
+      return { fileName: file.fileName, key, url: fixture.store.publicUrl(key), bytes: file.bytes, sha256: file.sha256, contentType: LICENSE_CONTENT_TYPE, cosEtag: `"cos-${file.sha256.slice(0, 16)}"` }
+    }),
+  }
 }
 
 function versionsOf(manifest) {
@@ -147,11 +165,15 @@ test('the first run uploads stable and the recommended version for both processo
   const result = await fixture.run()
   assert.equal(result.changed, true)
   assert.deepEqual(result.versions, ['1.0.52', '1.0.46'])
-  assert.equal(fixture.publications.length, 4)
-  for (const publication of fixture.publications) {
+  assert.equal(fixture.publications.length, 6)
+  for (const publication of fixture.publications.slice(0, 4)) {
     assert.equal(publication.contentType, CONTENT_TYPE)
     assert.match(publication.cacheControl, /immutable/)
   }
+  // The two license texts go up once the binaries are in, before the pointer (D98).
+  const license = await expectedLicense(fixture)
+  assert.deepEqual(fixture.publications.slice(4).map(function (publication) { return [publication.key, publication.contentType, publication.expectedSha256, publication.cacheControl] }),
+    license.files.map(function (file) { return [file.key, LICENSE_CONTENT_TYPE, file.sha256, 'public, max-age=31536000, immutable'] }))
   assert.deepEqual(fixture.downloads.map(function (download) { return download.url }), [
     'https://x.ai/cli/grok-1.0.52-windows-x86_64.exe',
     'https://x.ai/cli/grok-1.0.52-windows-aarch64.exe',
@@ -172,6 +194,8 @@ test('the first run uploads stable and the recommended version for both processo
     bytes: expected.bytes, sha256: expected.sha256, contentType: CONTENT_TYPE, verification: VERIFICATION,
     sourceUrl: 'https://x.ai/cli/grok-1.0.52-windows-x86_64.exe', cosEtag: `"cos-${expected.sha256.slice(0, 16)}"`,
   })
+  assert.deepEqual(manifest.license, license)
+  assert.deepEqual(license.files.map(function (file) { return file.fileName }), ['LICENSE.txt', 'THIRD_PARTY_NOTICES.md'])
   assert.equal(validateLatest(manifest, fixture.store.publicUrl), manifest)
   assert.equal(fixture.removed.length, 1)
   // Every downloaded binary is removed once uploaded, so two releases never pile up on the runner.
@@ -248,7 +272,8 @@ test('an unchanged stable with intact objects means no download and only a fresh
   const result = await fixture.run({ now: function () { return '2026-10-14T22:00:00.000Z' } })
   assert.equal(result.changed, false)
   assert.equal(fixture.downloads.length, 4)
-  assert.equal(fixture.publications.length, 4)
+  // Still the four binaries and two license texts of the first run: nothing is uploaded again.
+  assert.equal(fixture.publications.length, 6)
   // The index is rewritten anyway: clients stop trusting its "latest" once checkedAt is a day old (#1061 item 7).
   assert.equal(fixture.pointers.length, 2)
   assert.deepEqual(fixture.latest, { ...before, checkedAt: '2026-10-14T22:00:00.000Z' })
@@ -281,6 +306,48 @@ test('a new stable is added on top of the history and a damaged object is upload
   assert.equal(repaired.changed, true)
   assert.equal(fixture.downloads.length, 7)
   assert.equal(fixture.downloads[6].url, 'https://x.ai/cli/grok-1.0.46-windows-aarch64.exe')
+})
+
+test('a pointer from before the license field gains the texts without fetching a binary again', async () => {
+  const fixture = createFixture()
+  await fixture.run()
+  // What the bucket held before D98: the binaries and a pointer without license texts.
+  const before = clone(fixture.latest)
+  delete fixture.latest.license
+  for (const key of [...fixture.objects.keys()]) if (key.includes('/licenses/')) fixture.objects.delete(key)
+  fixture.publications.length = 0
+  const result = await fixture.run({ now: function () { return '2026-10-14T22:00:00.000Z' } })
+  assert.equal(result.changed, true)
+  assert.equal(fixture.downloads.length, 4)
+  assert.deepEqual(fixture.publications.map(function (publication) { return publication.key }), before.license.files.map(function (file) { return file.key }))
+  assert.deepEqual(fixture.latest.releases, before.releases)
+  assert.deepEqual(fixture.latest.license, before.license)
+
+  // A license text replaced by hand is uploaded again and the pointer records the new ETag.
+  const key = fixture.latest.license.files[1].key
+  fixture.objects.set(key, { ...fixture.objects.get(key), etag: '"replaced-by-hand"' })
+  const repaired = await fixture.run()
+  assert.equal(repaired.changed, true)
+  assert.equal(fixture.downloads.length, 4)
+  assert.equal(fixture.publications.at(-1).key, key)
+  assert.equal(fixture.latest.license.files[1].cosEtag, '"replaced-by-hand"')
+})
+
+test('a checkout without the license texts fails before anything is downloaded', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'grok-license-missing-'))
+  try {
+    const fixture = createFixture()
+    fixture.dependencies.readLicenseFiles = function () { return readLicenseFiles('grok-cli', directory) }
+    await assert.rejects(fixture.run(), (error) => {
+      assert.deepEqual(safeGrokSyncFailure(error), { stage: 'read-license', latestState: 'not-written-by-this-run', failure: { code: 'license-unreadable' } })
+      return true
+    })
+    assert.equal(fixture.downloads.length, 0)
+    assert.equal(fixture.publications.length, 0)
+    assert.equal(fixture.pointers.length, 0)
+  } finally {
+    await fs.rm(directory, { recursive: true, force: true })
+  }
 })
 
 test('the history keeps stable, the recommendation and the newest older releases up to the limit', async () => {
@@ -347,7 +414,7 @@ test('a stable signed by X Corp. and a recommendation signed by X.AI LLC are bot
   }
   const result = await fixture.run({ recommendedVersion: '1.0.52' })
   assert.deepEqual(versionsOf(result.manifest), ['1.0.62', '1.0.52'])
-  assert.equal(fixture.publications.length, 4)
+  assert.equal(packagePublications(fixture).length, 4)
   assert.equal(fixture.pointers.length, 1)
 })
 
@@ -403,6 +470,13 @@ test('an existing pointer must describe this bucket and the exact object layout'
     (value) => { value.releases[0].files[0].contentType = 'text/html' },
     (value) => { value.releases[0].files[0].bytes = 1 },
     (value) => { value.releases[0].files[0].cosEtag = '' },
+    (value) => { value.license = null },
+    (value) => { value.license.files = [] },
+    (value) => { value.license.files[0].key = value.releases[0].files[0].key },
+    (value) => { value.license.files[0].url = 'https://evil.invalid/LICENSE.txt' },
+    (value) => { value.license.files[0].contentType = 'text/html' },
+    (value) => { value.license.files[1].fileName = 'LICENSE.txt' },
+    (value) => { value.license.files[0].bytes = 0 },
   ]) {
     const value = clone(good)
     mutate(value)

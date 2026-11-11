@@ -59,6 +59,10 @@ declare global {
       pair(displayName: string): void
       // 手机微信扫了二维码：挂着的那次查询这时才回「要输数字」。
       weixinScanned(): void
+      // 飞书渠道停在一种毛病上（D23）：主进程推一份带那句话的快照；null = 回到正常的连上 / 没打开。
+      feishuProblem(problem: 'credential' | 'connection-limit' | 'other' | null): void
+      // 手机上来了一条，电脑上的 Codex 没起来（YK-5）；false = 后来又起来了。
+      codexStartFailed(failed: boolean): void
     }
   }
 }
@@ -169,13 +173,23 @@ const remoteState: {
   enabled: boolean
   pairing: RemoteSnapshot['channels']['feishu']['pairing']
   boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
+  problem: RemoteSnapshot['channels']['feishu']['status'] | null
+  codexStartFailed: boolean
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
   enabled: false,
   pairing: null,
   boundPeer: null,
+  problem: null,
+  codexStartFailed: false,
 }
+// 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
+const feishuProblemStatuses = {
+  credential: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' },
+  'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
+  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' },
+} as const
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。
 const weixinRemote: { accountLabel: string | null; enabled: boolean; stage: 'idle' | 'code' | 'scanned' } = { accountLabel: null, enabled: false, stage: 'idle' }
 const weixinLoginId = '0f8fad5b-d9cb-469f-a165-70867728950e'
@@ -194,13 +208,14 @@ function remoteSnapshot(): RemoteSnapshot {
     workspaceDirectory: remoteState.workspaceDirectory,
     task: 'idle',
     pendingApprovals: 0,
+    ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     channels: {
       feishu: {
         channel: 'feishu',
         hasCredential: remoteState.accountLabel !== null,
         accountLabel: remoteState.accountLabel,
         enabled: remoteState.enabled,
-        status: { state: remoteState.enabled ? 'connected' : 'stopped' },
+        status: remoteState.problem ?? { state: remoteState.enabled ? 'connected' : 'stopped' },
         boundPeer: remoteState.boundPeer,
         pairing: remoteState.pairing,
       },
@@ -231,6 +246,14 @@ window.remoteHarness = {
     releaseWeixinScan?.()
     releaseWeixinScan = null
   },
+  codexStartFailed(failed) {
+    remoteState.codexStartFailed = failed
+    pushRemoteSnapshot()
+  },
+  feishuProblem(problem) {
+    remoteState.problem = problem ? feishuProblemStatuses[problem] : null
+    pushRemoteSnapshot()
+  },
 }
 const codexRemoteMethods = {
   getCodexRemoteState: async () => remoteSnapshot(),
@@ -246,8 +269,10 @@ const codexRemoteMethods = {
   saveCodexRemoteFeishuCredentials: async (request: Parameters<V2Bridge['saveCodexRemoteFeishuCredentials']>[0]) => {
     // App Secret 不记：测试只看主进程收到的是哪个应用。
     record('remote-feishu-save', request.appId)
-    if (request.appSecret === 'wrong-secret') throw new Error('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。')
+    if (request.appSecret === 'wrong-secret') throw new Error('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。')
     remoteState.accountLabel = request.appId
+    // 主进程存好新凭据会重启渠道，原来停着的那种毛病跟着没了。
+    remoteState.problem = null
     return remoteSnapshot()
   },
   clearCodexRemoteCredentials: async (channel: Parameters<V2Bridge['clearCodexRemoteCredentials']>[0]) => {
@@ -261,6 +286,11 @@ const codexRemoteMethods = {
     remoteState.enabled = false
     remoteState.pairing = null
     remoteState.boundPeer = null
+    return remoteSnapshot()
+  },
+  reconnectCodexRemoteChannel: async (channel: Parameters<V2Bridge['reconnectCodexRemoteChannel']>[0]) => {
+    record('remote-reconnect', channel)
+    if (channel === 'feishu' && remoteState.enabled) remoteState.problem = null
     return remoteSnapshot()
   },
   setCodexRemoteChannelEnabled: async (channel: Parameters<V2Bridge['setCodexRemoteChannelEnabled']>[0], enabled: boolean) => {
@@ -644,6 +674,10 @@ function extensionList(provider: Parameters<V2Bridge['listProviderExtensions']>[
       ...(query.has('codexMcp') && provider === 'codex' && page === 'mcp'
         ? [{ ...scopedExtension('plugin', query.get('codexMcp') ?? '', 'Codex 自己的连接', 'local'), provider, kind: 'mcp' as const, scope: 'user' as const }]
         : []),
+      // claudeMcp=名字：只有 Claude Code「我的（全局）」里有的连接，用来看「也装到别的工具」。
+      ...(query.has('claudeMcp') && provider === 'claude' && page === 'mcp'
+        ? [{ ...scopedExtension('plugin', query.get('claudeMcp') ?? '', query.get('claudeMcp') ?? '', 'local'), kind: 'mcp' as const, scope: 'user' as const }]
+        : []),
       ...(empty
       ? []
       : [
@@ -843,6 +877,15 @@ const apiMethods = {
     discardedCount: 0,
     ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
   } },
+  getAccountPriceList: async () => {
+    record('get-price-list')
+    if (fail === 'prices') throw new Error('价目暂时不可用')
+    return { rows: [
+      { model: 'gpt-image-2', group: '图片模型', kind: 'call' as const, perCall: 0.06 },
+      { model: 'claude-tiered', group: 'Claude', kind: 'tiered' as const },
+      { model: 'gpt-5.6-sol', group: 'GPT', kind: 'token' as const, input: 1.25, output: 10 },
+    ] }
+  },
   getAccountTasks: async () => {
     if (fail === 'tasks') throw new Error('任务服务暂时不可用')
     const completed = ++taskReads > 1
@@ -1216,6 +1259,11 @@ const apiMethods = {
   addMcpServer: async (input: Parameters<V2Bridge['addMcpServer']>[0]) => {
     record('add-mcp', input)
     return []
+  },
+  // 「也装到别的工具」：只收名字，连接本身由主进程读。copyMcpFail=工具：装进那个工具时失败。
+  copyMcpToTool: async (input: Parameters<V2Bridge['copyMcpToTool']>[0]) => {
+    record('copy-mcp', input)
+    if (query.get('copyMcpFail') === input.to) throw new Error('扩展操作失败，已有配置保留')
   },
   ...(query.has('mcpAuth') ? mcpAuthMethods : {}),
   ...(query.has('customMarket') ? customMarketMethods : {}),

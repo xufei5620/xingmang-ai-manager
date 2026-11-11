@@ -1,6 +1,7 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
 import {
   canvasRunContractVersion,
+  canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
   canvasRunTimelineLimit,
   type CanvasRunAsset,
@@ -9,6 +10,7 @@ import {
   type CanvasRunCandidate,
   type CanvasRunEvent,
   type CanvasFramePreparation,
+  type CanvasImagePreparation,
   type CanvasRunGraph,
   type CanvasRunGraphNode,
   type CanvasRunImageBatch,
@@ -23,6 +25,7 @@ import {
   type CanvasRunStatus,
 } from './canvas-run-contract'
 import { canvasImageCandidateCacheKey, computeCanvasNodeFingerprint } from './canvas-fingerprint'
+import type { CanvasImageToolSource } from './canvas-image-tools'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { createCanvasRelayBillingRecorder, type CanvasRelayBillingRecorder } from './canvas-run-charges'
 
@@ -96,6 +99,12 @@ export interface CanvasNodeInputs {
   text?: string
   image?: CanvasRunAsset
   images?: CanvasRunAsset[]
+  /**
+   * The same pictures as images, each named by the connection it came over
+   * (画布完善第 7 条第三步): a collage orders them and a tile picks one the
+   * way the kernel names them.
+   */
+  imageSources?: CanvasImageToolSource<CanvasRunAsset>[]
   video?: CanvasRunAsset
   videos?: CanvasRunAsset[]
   audio?: CanvasRunAsset
@@ -132,6 +141,8 @@ export interface CanvasNodeExecutionContext {
    * run-waiting event with every frame the run still waits on.
    */
   reportFramePreparation?(preparation: CanvasFramePreparation, waiting: boolean): Promise<void>
+  /** The same for the pictures an image-tool node asks the page to make (第三步). */
+  reportImagePreparation?(preparation: CanvasImagePreparation, waiting: boolean): Promise<void>
 }
 
 export type CanvasNodeExecutor = (
@@ -145,6 +156,22 @@ function isCanvasRunKernelOnlyNodeKind(kind: CanvasRunNodeKind): boolean {
   return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
 }
 
+function isCanvasRunImageToolNodeKind(kind: CanvasRunNodeKind): kind is keyof typeof canvasRunImageToolNodeLabels {
+  return Object.prototype.hasOwnProperty.call(canvasRunImageToolNodeLabels, kind)
+}
+
+/**
+ * The run file keeps a waiting event without its image preparations: a layer
+ * recipe can be hundreds of KB and every change resends the whole list, while
+ * the file has 8 MB for all runs. The page gets the full event; a reloaded
+ * page reads the list from the run service, which holds it in memory.
+ */
+function timelineEvent(event: CanvasRunEvent): CanvasRunEvent {
+  if (event.type !== 'run-waiting' || event.imagePreparations === undefined) return event
+  const { imagePreparations: _imagePreparations, ...rest } = event
+  return rest
+}
+
 /**
  * A frame-extract node has its own executor or none: falling back to the
  * video executor would turn a local frame into a paid video request.
@@ -153,6 +180,12 @@ function executorFor(executors: CanvasNodeExecutors, kind: CanvasRunNodeKind): C
   if (kind === 'frame-extract') {
     const executor = executors['frame-extract']
     if (!executor) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    return executor
+  }
+  // Same for image tools: a crop is made on the page, never by a paid video request.
+  if (isCanvasRunImageToolNodeKind(kind)) {
+    const executor = executors[kind]
+    if (!executor) throw new Error(`「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`)
     return executor
   }
   return executors[kind] ?? executors[fallbackExecutorKind(kind)]
@@ -538,6 +571,7 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
 } {
   const inputs: CanvasNodeInputs = {}
   const images: CanvasRunAsset[] = []
+  const imageSources: CanvasImageToolSource<CanvasRunAsset>[] = []
   const videos: CanvasRunAsset[] = []
   const audios: CanvasRunAsset[] = []
   const fingerprintInputs = []
@@ -548,6 +582,8 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
     if (output.asset?.kind === 'image') {
       inputs.image ??= output.asset
       images.push(output.asset)
+      // One picture per connection here, so it is always the connection's first.
+      imageSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
     }
     if (output.asset?.kind === 'video') {
       inputs.video ??= output.asset
@@ -566,7 +602,10 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
       ...(output.asset ? { asset: output.asset } : {}),
     })
   }
-  if (images.length > 0) inputs.images = images
+  if (images.length > 0) {
+    inputs.images = images
+    inputs.imageSources = imageSources
+  }
   if (videos.length > 0) inputs.videos = videos
   if (audios.length > 0) inputs.audios = audios
   return { inputs, fingerprintInputs }
@@ -640,7 +679,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         nodeRecord.latestHealth = complete.health
       }
     }
-    appendCanvasRunTimelineEvent(record.events, complete)
+    appendCanvasRunTimelineEvent(record.events, timelineEvent(complete))
     const snapshot = cloneRecord(record)
     // A video reports progress every few seconds, and several run side by
     // side; writing the whole run file for each report stalled the main
@@ -720,6 +759,22 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   // the web host's run-waiting events are, so a reloaded page reads the
   // current list from the record and an empty list clears the banner.
   const framePreparations = new Map<string, CanvasFramePreparation>()
+  // Pictures the page still has to make (第三步). Never put on the record:
+  // see timelineEvent. Once a run has asked for one, every waiting event
+  // carries the list, so an empty one clears the page's banner too.
+  const imagePreparations = new Map<string, CanvasImagePreparation>()
+  let imagePreparationsReported = false
+  function waitingEvent(): CanvasRunEventPayload {
+    const frames = [...framePreparations.values()].map((entry) => structuredClone(entry))
+    if (frames.length) record.framePreparations = frames
+    else delete record.framePreparations
+    return {
+      type: 'run-waiting',
+      waitingForVideo: false,
+      framePreparations: frames,
+      ...(imagePreparationsReported ? { imagePreparations: [...imagePreparations.values()].map((entry) => structuredClone(entry)) } : {}),
+    }
+  }
   async function reportFramePreparation(nodeId: string, preparation: CanvasFramePreparation, waiting: boolean): Promise<void> {
     if (preparation.nodeId !== nodeId) throw new Error('视频帧不属于这个节点')
     if (waiting) {
@@ -728,10 +783,18 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     } else if (!framePreparations.delete(preparation.operationId)) {
       return
     }
-    const pending = [...framePreparations.values()].map((entry) => structuredClone(entry))
-    if (pending.length) record.framePreparations = pending
-    else delete record.framePreparations
-    await emit({ type: 'run-waiting', waitingForVideo: false, framePreparations: pending })
+    await emit(waitingEvent())
+  }
+  async function reportImagePreparation(nodeId: string, preparation: CanvasImagePreparation, waiting: boolean): Promise<void> {
+    if (preparation.nodeId !== nodeId || preparation.runId !== options.runId) throw new Error('图片处理不属于这个节点')
+    if (waiting) {
+      if (isTerminalState(nodeRecords.get(nodeId)!.state)) return
+      imagePreparations.set(preparation.operationId, structuredClone(preparation))
+      imagePreparationsReported = true
+    } else if (!imagePreparations.delete(preparation.operationId)) {
+      return
+    }
+    await emit(waitingEvent())
   }
 
   for (const nodeId of admitted) await emit({ type: 'node-state', nodeId, state: 'queued' })
@@ -1216,6 +1279,10 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             await stageReportingReady
             await reportFramePreparation(nodeId, preparation, waiting)
           },
+          reportImagePreparation: async (preparation, waiting) => {
+            await stageReportingReady
+            await reportImagePreparation(nodeId, preparation, waiting)
+          },
         })
         // raceWithAbort below observes the outcome, but only after the
         // processing stage is persisted. An executor that fails fast (an
@@ -1339,6 +1406,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   }
   // Every frame executor clears its own entry; a finished run waits on nothing.
   framePreparations.clear()
+  imagePreparations.clear()
   delete record.framePreparations
   const completedAt = now()
   record.status = runStatus(outcome)

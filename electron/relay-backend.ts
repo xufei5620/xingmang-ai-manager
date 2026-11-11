@@ -158,6 +158,8 @@ export interface RelayBackendCapabilities {
   supportsDashboard?: boolean
   supportsDashboardTrends?: boolean
   supportsTasks?: boolean
+  /** getModelPricing() -- the 用量账单 price table (new-api only; sub2api has no per-model price list). */
+  supportsPriceList?: boolean
   /** display_name editing. */
   supportsProfileUpdate: boolean
   /** Login-session list and revocation. */

@@ -449,6 +449,190 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+      # D96 / AV-11：传到更新源之前，先用 Windows 自带的 Microsoft Defender 扫一遍这一版。
+      # 原来出包到上传之间没有任何杀毒扫描，报不报毒只能等客户来说；这台出包机器的 Defender
+      # 出厂还把整个 C:\ 和 D:\ 排除在外（docs/TEST-BASELINE.md），打包冒烟也看不出来。
+      #
+      # 扫两样：客户下的 Setup.exe（连里面压着的文件），和 win-unpacked（装好以后的全部文件，
+      # electron-builder 的 elevate.exe、加速内核 mihomo.exe 都在它的 resources 里）。用的是
+      # MpCmdRun 的自定义扫描加 -DisableRemediation：只报告、不删不改文件，不理排除目录，会拆开
+      # 压缩包。扫之前先去掉那两条排除、更新病毒库，再扫一个 EICAR 测试文件当对照，它报不出来
+      # 就说明这台机器上的扫描不管用。
+      #
+      # 只有 Defender 真报了毒才让这一步失败：windows-build 不成功，publish 就不会跑，这一版不发。
+      # 扫描本身起不来（没有 Defender、对照样本没报出来、超时）只打一条黄色警告、照常往下走，
+      # 跟加这一步以前一样，不让出包机器自己的问题挡住快修。排在上传 artifact 之后，是为了报毒时
+      # 被报的那个安装包还能从这次运行里下下来，交给微软复核误报。
+      #
+      # 只代表微软一家，360、火绒照旧人工报。在线多引擎扫描要把安装包传给第三方，D96 定了不加。
+      - name: Scan the installer with the built-in Microsoft Defender
+        shell: pwsh
+        # 下面几次 Defender 调用各有自己的时限（10 + 5 + 15 + 15 分钟），都比这里短：
+        # 卡住的是哪一次就按「没扫成」处理，不会撞上这一步的上限变成失败、挡住发版。
+        timeout-minutes: 50
+        env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          $PSNativeCommandUseErrorActionPreference = $false
+          $mpCmdRun = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
+
+          function Add-Summary {
+            param([string[]]$Lines)
+            Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Lines -Encoding utf8
+          }
+
+          # 扫描本身起不来：打警告，这一步照常成功。
+          function Skip-Scan {
+            param([string]$Reason)
+            Write-Host "::warning title=这一版没用微软自带杀毒扫成::$($Reason)"
+            Add-Summary @(
+              '### 微软自带杀毒：这一版没扫成'
+              ''
+              $Reason
+              ''
+              '没扫成不挡发版，跟加这一步以前一样。批准之前知道这一版没扫过就行。'
+            )
+            exit 0
+          }
+
+          # 带时限地跑一次 MpCmdRun。跑完了 Problem 是 $null、Code 是退出码；
+          # 起不来或超时，Problem 写着原因。
+          function Invoke-Defender {
+            param([string]$Arguments, [int]$Minutes)
+            $id = [guid]::NewGuid().ToString('N')
+            $stdout = Join-Path $env:RUNNER_TEMP "defender-$($id)-out.txt"
+            $stderr = Join-Path $env:RUNNER_TEMP "defender-$($id)-err.txt"
+            try {
+              $process = Start-Process -FilePath $mpCmdRun -ArgumentList $Arguments -NoNewWindow -PassThru `
+                -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            } catch {
+              return [pscustomobject]@{ Code = $null; Problem = "Defender 起不来：$($_.Exception.Message)"; Output = '' }
+            }
+            $null = $process.Handle
+            $problem = $null
+            if (-not $process.WaitForExit($Minutes * 60000)) {
+              $problem = "$($Minutes) 分钟还没跑完"
+              try { $process.Kill($true) } catch { }
+            }
+            $pieces = @($stdout, $stderr) | Where-Object { Test-Path -LiteralPath $_ } |
+              ForEach-Object { Get-Content -LiteralPath $_ -Raw }
+            $output = (@($pieces) -join "`n").Trim()
+            if ($output) { Write-Host $output }
+            $code = $null
+            if (-not $problem) { $code = $process.ExitCode }
+            return [pscustomobject]@{ Code = $code; Problem = $problem; Output = $output }
+          }
+
+          function Format-Outcome {
+            param($Result)
+            if ($Result.Problem) { return $Result.Problem }
+            return "退出码 $($Result.Code)"
+          }
+
+          $releaseDirectory = Join-Path $env:GITHUB_WORKSPACE "release-$($env:RELEASE_VERSION)"
+          $installers = @(Get-ChildItem -LiteralPath $releaseDirectory -Filter '*Setup.exe' -File -ErrorAction SilentlyContinue)
+          $unpacked = Join-Path $releaseDirectory 'win-unpacked'
+          if ($installers.Count -eq 0 -or -not (Test-Path -LiteralPath $unpacked -PathType Container)) {
+            Write-Host "::error::在 release-$($env:RELEASE_VERSION) 里找不到 Setup.exe 或 win-unpacked：这一步扫的位置跟出包的对不上，先改这一步再发"
+            exit 1
+          }
+          $targets = @($installers | ForEach-Object { $_.FullName }) + @($unpacked)
+
+          if (-not (Test-Path -LiteralPath $mpCmdRun -PathType Leaf)) {
+            Skip-Scan "这台出包机器上没有 Defender 的命令行（$($mpCmdRun)）。"
+          }
+
+          # The EICAR test string, stored reversed so this workflow file is not
+          # itself an EICAR file to whatever scanner reads a checkout of it.
+          $reversed = '*H+H$!ELIF-TSET-SURIVITNA-DRADNATS-RACIE$}7)CC7)^P(45XZP\4[PA@%P!O5X'
+          $characters = $reversed.ToCharArray()
+          [array]::Reverse($characters)
+          $eicar = -join $characters
+          $controlDirectory = Join-Path $env:RUNNER_TEMP 'defender-control'
+          $control = Join-Path $controlDirectory 'eicar-test-file.txt'
+          try {
+            $null = New-Item -ItemType Directory -Force -Path $controlDirectory
+            [System.IO.File]::WriteAllText($control, $eicar, [System.Text.Encoding]::ASCII)
+          } catch {
+            Skip-Scan "对照样本（EICAR 测试文件）写不进去（$($_.Exception.Message)）。"
+          }
+
+          try {
+            $excluded = @((Get-MpPreference).ExclusionPath | Where-Object { $_ })
+            if ($excluded.Count -gt 0) {
+              Remove-MpPreference -ExclusionPath $excluded
+              Write-Host "已去掉出包机器出厂带的 Defender 排除目录：$($excluded -join '、')"
+            }
+          } catch {
+            Write-Host "::warning::去不掉出包机器出厂带的 Defender 排除目录（$($_.Exception.Message)），接着扫，下面的对照样本会说明扫描管不管用"
+          }
+
+          $update = Invoke-Defender '-SignatureUpdate' 10
+          if ($update.Problem -or $update.Code -ne 0) {
+            Write-Host "::warning::病毒库没更新成（$(Format-Outcome $update)），用出包机器镜像里自带的那份接着扫"
+          }
+          $signature = '读不到'
+          try {
+            $status = Get-MpComputerStatus
+            $signature = "$($status.AntivirusSignatureVersion)（$($status.AntivirusSignatureLastUpdated)）"
+            Write-Host "Defender 引擎 $($status.AMEngineVersion)，病毒库 $($signature)"
+          } catch {
+            Write-Host "读不到 Defender 的状态：$($_.Exception.Message)"
+          }
+
+          # 报毒时 MpCmdRun 的退出码是 2；对照样本先证明这台机器上确实如此。
+          $check = Invoke-Defender "-Scan -ScanType 3 -File `"$control`" -DisableRemediation" 5
+          Remove-Item -LiteralPath $controlDirectory -Recurse -Force -ErrorAction SilentlyContinue
+          if ($check.Problem -or $check.Code -ne 2) {
+            Skip-Scan "对照样本（EICAR 测试文件）没报出来（$(Format-Outcome $check)），这台机器上的 Defender 扫描不管用。"
+          }
+
+          $flagged = [System.Collections.Generic.List[object]]::new()
+          $unscanned = [System.Collections.Generic.List[string]]::new()
+          $clean = [System.Collections.Generic.List[string]]::new()
+          foreach ($target in $targets) {
+            $name = [System.IO.Path]::GetRelativePath($env:GITHUB_WORKSPACE, $target)
+            $result = Invoke-Defender "-Scan -ScanType 3 -File `"$target`" -DisableRemediation" 15
+            if ($result.Problem -or ($result.Code -ne 0 -and $result.Code -ne 2)) {
+              $unscanned.Add("$($name)（$(Format-Outcome $result)）")
+            } elseif ($result.Code -eq 2) {
+              $flagged.Add([pscustomobject]@{ Name = $name; Output = $result.Output })
+            } else {
+              $clean.Add($name)
+            }
+          }
+
+          if ($flagged.Count -gt 0) {
+            $names = @($flagged | ForEach-Object { $_.Name }) -join '、'
+            Write-Host "::error title=微软自带杀毒报毒了，这一版不发::$($names) 被 Defender 报毒。被报的安装包留在这次运行的 Artifacts（windows-release-$($env:RELEASE_VERSION)）里，可以下下来交给微软复核误报：https://www.microsoft.com/wdsi/filesubmission"
+            $lines = @('### 微软自带杀毒：报毒了，这一版不发', '', "病毒库 $($signature)", '')
+            foreach ($item in $flagged) {
+              $lines += "**$($item.Name)**"
+              $lines += ''
+              $lines += '```'
+              $lines += $item.Output
+              $lines += '```'
+              $lines += ''
+            }
+            if ($unscanned.Count -gt 0) { $lines += "另外没扫成的：$($unscanned -join '、')" }
+            Add-Summary $lines
+            exit 1
+          }
+          if ($unscanned.Count -gt 0) {
+            Skip-Scan "有的没扫成：$($unscanned -join '、')。扫完没报毒的：$(if ($clean.Count -gt 0) { $clean -join '、' } else { '没有' })。"
+          }
+
+          Write-Host "Defender 扫过 $($clean -join '、')，都没报毒"
+          Add-Summary @(
+            '### 微软自带杀毒：没报毒'
+            ''
+            "- 病毒库：$($signature)"
+            "- 扫过：$($clean -join '、')（Setup.exe 连里面压着的文件一起扫，win-unpacked 是装好以后的全部文件）"
+            '- 对照样本（EICAR 测试文件）报出来了，说明扫描本身管用'
+            '- 只代表微软一家，360、火绒照旧人工报'
+          )
+          exit 0
+
       # G06：这次编译出来的对照表（source map），发版通过以后由 sentry-sourcemaps 作业传给 Sentry。
       # 单独一个 artifact：publish 和 cos-sync 下的是安装包那一个，对照表进不了更新目录和发布页。
       - name: Upload the source maps for the Sentry job
