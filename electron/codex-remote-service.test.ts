@@ -14,6 +14,7 @@ import type {
   RemotePeer,
 } from './codex-remote-channel'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
+import { encodeWeixinCredential } from './codex-remote-weixin-credential'
 import { CodexRemoteStore, credentialRemoveFailedMessage } from './codex-remote-store'
 import type { SafeStorageLike } from './account-session-store'
 import {
@@ -2266,6 +2267,43 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(follow()).toBe(false))
     expect(held).toBe(0)
+  })
+
+  // YF-5：微信扫码过了手机上那串数字，扫码的人直接绑上，不用配对码；原来绑着别人时先跟他说一声。
+  it('binds the person who passed the number on the phone while scanning, telling whoever was bound before', async () => {
+    const s = await setup()
+    const weixinCredential = encodeWeixinCredential({ version: 1, token: 'tok', botId: 'b1@im.bot', origin: 'https://ilinkai.weixin.qq.com', ownerUserId: 'owner@im.wechat' })
+    const first = await s.service.saveChannelCredential('weixin', weixinCredential, 'ClawBot 1bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    expect(first.channels.weixin.boundPeer).toMatchObject({ userIdTail: expect.any(String) })
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer).toMatchObject({ userId: 'owner@im.wechat' })
+    expect(s.logs).toContain('remote.paired-by-scan')
+
+    // 同一个机器人、同一个人再扫一次：绑定原样留着（时间也不变）。
+    const boundAt = (await s.store.readSettings()).channels.weixin?.boundPeer?.boundAt
+    await s.service.saveChannelCredential('weixin', weixinCredential, 'ClawBot 1bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer?.boundAt).toBe(boundAt)
+
+    // 同一个机器人换了个人扫、也过了数字：换成他。
+    await s.service.saveChannelCredential('weixin', weixinCredential, 'ClawBot 1bot', { verifiedPeerUserId: 'other@im.wechat' })
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer?.userId).toBe('other@im.wechat')
+
+    // 没过数字的再扫：同一个机器人留着原来的人，换了机器人就解绑、等配对。
+    await s.service.saveChannelCredential('weixin', weixinCredential, 'ClawBot 1bot')
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer?.userId).toBe('other@im.wechat')
+    await s.service.saveChannelCredential('weixin', weixinCredential, 'ClawBot 2bot')
+    expect((await s.store.readSettings()).channels.weixin?.boundPeer).toBeNull()
+  })
+
+  it('voids a pairing code that was waiting when the scan binds someone', async () => {
+    const s = await setup()
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    await s.store.updateSettings((settings) => { settings.channels.weixin = { accountLabel: 'ClawBot 1bot', boundPeer: null } })
+    await s.service.setChannelEnabled('weixin', true)
+    await s.service.startPairing('weixin')
+    expect((await s.service.snapshot()).channels.weixin.pairing).not.toBeNull()
+    const after = await s.service.saveChannelCredential('weixin', 'weixin-credential-value', 'ClawBot 1bot', { verifiedPeerUserId: 'owner@im.wechat' })
+    expect(after.channels.weixin.pairing).toBeNull()
+    expect(after.channels.weixin.boundPeer).not.toBeNull()
   })
 
   it('keeps the binding when the same account logs in again and drops it for a different one', async () => {

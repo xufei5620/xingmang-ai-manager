@@ -26,6 +26,7 @@ export const weixinRemoteText = {
   wrongCode: '数字不对，请对照手机上的数字重新输入',
   confirmed: '微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。',
   confirmedStillBound: '微信登录好了，绑定的人没变，不用重新配对。',
+  confirmedBound: '微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。',
   cancel: '取消',
   retry: '重新扫码',
   close: '关闭',
@@ -49,8 +50,9 @@ export function weixinLoginFinished(phase: WeixinLoginPhase): boolean {
 /**
  * 登录好了以后那句按有没有绑着人分两种（0.2.24 D65）：「开始配对」要先打开遥控才点得动；扫的还是原来那个
  * 机器人时主进程留着绑定的人（saveChannelCredential 的 sameAccount），这时按钮是「换人」，也不用再配对。
+ * 这次扫码微信要过手机上那串数字、输对了的（boundByScan，YF-5），主进程已经把扫码人记成绑定的人，说第三句。
  */
-export function weixinLoginHeadline(phase: WeixinLoginPhase, hasBoundPeer: boolean): string | null {
+export function weixinLoginHeadline(phase: WeixinLoginPhase, hasBoundPeer: boolean, boundByScan = false): string | null {
   switch (phase) {
     case 'waiting-scan':
       return weixinRemoteText.scanHint
@@ -61,6 +63,7 @@ export function weixinLoginHeadline(phase: WeixinLoginPhase, hasBoundPeer: boole
     case 'verify-code-wrong':
       return weixinRemoteText.wrongCode
     case 'confirmed':
+      if (boundByScan) return weixinRemoteText.confirmedBound
       return hasBoundPeer ? weixinRemoteText.confirmedStillBound : weixinRemoteText.confirmed
     case 'failed':
     case 'cancelled':
@@ -83,7 +86,7 @@ export function WeixinLoginDialogBody({ view, hasBoundPeer, code, onCodeChange, 
   onSubmitCode(): void
   busy: boolean
 }) {
-  const headline = weixinLoginHeadline(view.phase, hasBoundPeer)
+  const headline = weixinLoginHeadline(view.phase, hasBoundPeer, view.boundByScan === true)
   const askingForCode = view.phase === 'need-verify-code' || view.phase === 'verify-code-wrong'
   const showQr = view.qrImage && (view.phase === 'waiting-scan' || view.phase === 'scanned')
   function submit(event: FormEvent) {

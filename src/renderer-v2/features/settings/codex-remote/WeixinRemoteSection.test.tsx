@@ -58,6 +58,8 @@ describe('weixin login view helpers', () => {
   it('points a first login at the switch before pairing, and tells a rescan that kept its person not to pair again', () => {
     expect(weixinLoginHeadline('confirmed', false)).toBe('微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。')
     expect(weixinLoginHeadline('confirmed', true)).toBe('微信登录好了，绑定的人没变，不用重新配对。')
+    // YF-5：这次扫码过了手机上那串数字，扫码的人直接绑上，不用配对码；快照里这时也绑着人，不能说成「没变」。
+    expect(weixinLoginHeadline('confirmed', true, true)).toBe('微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。')
     // 还在扫码时绑没绑人都一样。
     expect(weixinLoginHeadline('scanned', true)).toBe('已扫码，请在手机上点确认')
   })

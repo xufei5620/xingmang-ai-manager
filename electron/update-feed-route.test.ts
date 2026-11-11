@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
+  classifyDirectFeedDownloadFailure,
   classifyDirectFeedFailure,
   locateDirectUpdateFeed,
   packagedUpdateFeed,
@@ -157,6 +158,36 @@ describe('classifyDirectFeedFailure', () => {
     expect(classifyDirectFeedFailure(new Error('net::ERR_ABORTED'))).toBeNull()
     expect(classifyDirectFeedFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'))).toBeNull()
     expect(classifyDirectFeedFailure(null)).toBeNull()
+  })
+})
+
+describe('classifyDirectFeedDownloadFailure', () => {
+  function httpError(statusCode: number): Error {
+    return Object.assign(new Error(`HttpError: ${statusCode}`), { statusCode })
+  }
+
+  it('retries a download that stopped receiving data on the packaged feed without blaming the line', () => {
+    expect(classifyDirectFeedDownloadFailure(new Error('update download stalled'), true)).toEqual({ reason: 'stalled', lineFailure: false })
+  })
+
+  it('retries a transfer cut short midway on the packaged feed without blaming the line', () => {
+    expect(classifyDirectFeedDownloadFailure(new Error('net::ERR_CONTENT_LENGTH_MISMATCH'), false)).toEqual({ reason: 'ERR_CONTENT_LENGTH_MISMATCH', lineFailure: false })
+    expect(classifyDirectFeedDownloadFailure(new Error('net::ERR_INCOMPLETE_CHUNKED_ENCODING'), false)).toEqual({ reason: 'ERR_INCOMPLETE_CHUNKED_ENCODING', lineFailure: false })
+  })
+
+  it('treats connection failures and gateway answers the same way as an update check', () => {
+    expect(classifyDirectFeedDownloadFailure(new Error('net::ERR_CONNECTION_RESET'), false)).toEqual({ reason: 'ERR_CONNECTION_RESET', lineFailure: true })
+    expect(classifyDirectFeedDownloadFailure(httpError(502), false)).toEqual({ reason: 'http-502', lineFailure: true })
+    expect(classifyDirectFeedDownloadFailure(httpError(404), false)).toEqual({ reason: 'http-404', lineFailure: false })
+  })
+
+  it('keeps the feed for failures another feed cannot fix', () => {
+    expect(classifyDirectFeedDownloadFailure(Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }), false)).toBeNull()
+    expect(classifyDirectFeedDownloadFailure(Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }), false)).toBeNull()
+    expect(classifyDirectFeedDownloadFailure(new Error('sha512 checksum mismatch'), false)).toBeNull()
+    expect(classifyDirectFeedDownloadFailure(new Error('net::ERR_ABORTED'), false)).toBeNull()
+    expect(classifyDirectFeedDownloadFailure(new Error('net::ERR_PROXY_CONNECTION_FAILED'), false)).toBeNull()
+    expect(classifyDirectFeedDownloadFailure(httpError(403), false)).toBeNull()
   })
 })
 
