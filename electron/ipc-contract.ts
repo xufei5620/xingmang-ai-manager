@@ -25,6 +25,7 @@ import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours } from 
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
+  CodexRemoteLastRequestSnapshot,
   CodexRemotePairingSnapshot,
   CodexRemoteSnapshot,
   CodexRemoteTaskState,
@@ -1506,6 +1507,10 @@ export interface XingmangInvokeContract {
   setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
   /** 「多久没消息就自动关」（YF-10）：4 / 12 小时，null = 不自动关（缺省）。开着的渠道当场按新时长重新起算。 */
   setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
+  /** 卡片「最近一次」的「停下这一轮」（YF-13）：跟手机上发「停止」一样，手机上也收到「已停止。」。 */
+  stopCodexRemoteTurn: IpcInvokeDefinition<'codex-remote:stop-turn', [], CodexRemoteSnapshot>
+  /** 卡片「最近一次」的「都拒绝」（YF-13）：等着同意的一条条拒绝，跟手机上点「拒绝」一样；这一轮不停。 */
+  declineCodexRemoteApprovals: IpcInvokeDefinition<'codex-remote:decline-approvals', [], CodexRemoteSnapshot>
   /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1816,6 +1821,8 @@ export const ipcInvokeChannels = {
   reconnectCodexRemoteChannel: 'codex-remote:reconnect',
   setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
   setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
+  stopCodexRemoteTurn: 'codex-remote:stop-turn',
+  declineCodexRemoteApprovals: 'codex-remote:decline-approvals',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',

@@ -938,6 +938,20 @@ test('a replaced manual client key cannot save the previous key first detected m
   } finally { await page.close() }
 })
 
+// YF-6：手机遥控的入口原来只有设置 › 工具管理最下面那张卡；首页 Codex CLI 的「…」里多一项直接过去，桌面端不给。
+test('the home Codex CLI menu leads to the phone remote card in the settings', async () => {
+  const page = await open()
+  try {
+    await page.getByRole('button', { name: 'Codex CLI 更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '手机遥控', exact: true }).click()
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await settings.getByTestId('settings-remote-card').waitFor()
+    assert.equal(await settings.getByRole('tab', { name: '工具管理', exact: true }).getAttribute('aria-selected'), 'true')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('Codex non-GPT menu requires a detected non-GPT model before saving', async () => {
   const page = await open('clientModels=1')
   try {

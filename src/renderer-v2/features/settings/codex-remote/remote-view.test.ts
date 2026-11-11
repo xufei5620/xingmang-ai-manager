@@ -2,9 +2,14 @@ import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import {
   boundPeerText,
+  lastRequestText,
   newerRemoteSnapshot,
   pairingAttemptText,
+  pendingApprovalsText,
   remoteCardMeta,
+  remoteChannelCollapsed,
+  remoteClockText,
+  remoteElapsedText,
   remoteChannelStateLabel,
   remoteChannelStateTone,
   remoteSwitchHint,
@@ -87,5 +92,49 @@ describe('codex remote view', () => {
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing' } }), quiet)).toBe(quiet)
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'group-only' } }), quiet)).toBe('收到的是群里的消息，不算。要点开机器人单独私聊它。')
     expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing', failures: 2 } }), quiet)).toBe('配对码错了 2 次')
+  })
+})
+
+describe('last phone request (YF-13)', () => {
+  const now = new Date(2026, 10, 11, 14, 8, 30).getTime()
+  const at = new Date(2026, 10, 11, 14, 5, 0).getTime()
+
+  it('writes the clock for today and adds the date for an earlier day', () => {
+    expect(remoteClockText(at, now)).toBe('14:05')
+    expect(remoteClockText(new Date(2026, 10, 10, 23, 50).getTime(), now)).toBe('11 月 10 日 23:50')
+  })
+
+  it('rounds the elapsed time down to whole minutes', () => {
+    expect(remoteElapsedText(59_000)).toBe('不到 1 分钟')
+    expect(remoteElapsedText(3 * 60_000 + 59_000)).toBe('3 分钟')
+    expect(remoteElapsedText(65 * 60_000)).toBe('1 小时 5 分钟')
+    expect(remoteElapsedText(120 * 60_000)).toBe('2 小时')
+    expect(remoteElapsedText(-5)).toBe('不到 1 分钟')
+  })
+
+  it('says when it came in and how far it got, never what was asked', () => {
+    expect(lastRequestText({ receivedAt: at, state: 'running' }, now)).toBe('14:05 发来一条，正在处理，已经 3 分钟')
+    expect(lastRequestText({ receivedAt: at, state: 'done' }, now)).toBe('14:05 那一条做完了')
+    expect(lastRequestText({ receivedAt: at, state: 'stopped' }, now)).toBe('14:05 那一条停下了')
+    expect(lastRequestText({ receivedAt: at, state: 'failed', reason: '余额不够了，充值后再发一次。' }, now)).toBe('14:05 那一条没做完：余额不够了，充值后再发一次。')
+    expect(lastRequestText({ receivedAt: at, state: 'failed' }, now)).toBe('14:05 那一条没做完。')
+  })
+
+  it('mentions waiting approvals only when there are some', () => {
+    expect(pendingApprovalsText(0)).toBeNull()
+    expect(pendingApprovalsText(2)).toBe('等你同意 2 条，要在手机上回。')
+  })
+})
+
+describe('folding a channel that is not logged in (YF-7)', () => {
+  it('folds it only while the other channel is logged in, and never once it is logged in or on', () => {
+    const feishuIn = snapshot({ channels: { feishu: channel(), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null }) } })
+    expect(remoteChannelCollapsed(feishuIn, feishuIn.channels.weixin)).toBe(true)
+    expect(remoteChannelCollapsed(feishuIn, feishuIn.channels.feishu)).toBe(false)
+    const neither = snapshot({ channels: { feishu: channel({ hasCredential: false, accountLabel: null }), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null }) } })
+    expect(remoteChannelCollapsed(neither, neither.channels.weixin)).toBe(false)
+    expect(remoteChannelCollapsed(neither, neither.channels.feishu)).toBe(false)
+    const weixinOn = snapshot({ channels: { feishu: channel(), weixin: channel({ channel: 'weixin', hasCredential: false, accountLabel: null, enabled: true }) } })
+    expect(remoteChannelCollapsed(weixinOn, weixinOn.channels.weixin)).toBe(false)
   })
 })

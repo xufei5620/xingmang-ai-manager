@@ -292,6 +292,8 @@ const homeNoticeLimit = 2
 
 // 卡片「改用…」统一不带用户名（批 04 字表）：长邮箱会把按钮撑出卡片。
 const useAccountLabel = '改用当前账号'
+/** 首页 Codex CLI 卡片「…」菜单里去手机遥控那张卡的那一项（YF-6）。 */
+export const remoteMenuLabel = '手机遥控'
 
 /** npm 是随 Node.js 一起装的：Node.js 在、它却确实不在（不是没查出来）才算缺。 */
 export function nodeInstallerPartMissing(runtime: ToolboxSnapshot['system']['runtime'] | undefined) {
@@ -842,6 +844,8 @@ export function Home(props: HomeProps) {
         ...(switchTarget && props.onSwitchAccount ? [{ label: switchTarget === 'account' ? useAccountLabel : '切回官方账号', testId: `tool-${tool.id}-switch-${switchTarget}`, onSelect: () => props.onSwitchAccount?.(tool.id, switchTarget) }] : []),
         ...(tool.provider === 'codex' ? [{ label: '换用别家模型…', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: 'ChatGPT 账号额度…', testId: `tool-${tool.id}-official-quota`, onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
+        // 手机遥控的入口原来只有设置 › 工具管理最下面那张卡（YF-6）。遥控用的是 Codex CLI，桌面端不给。
+        ...(tool.id === 'codex' ? [{ label: remoteMenuLabel, testId: 'tool-codex-remote', onSelect: () => props.onNavigate('settings', 'codex-remote') }] : []),
       ],
       [
         ...(!externalManaged && update?.newer && !blocked && update.target ? [{ label: `更新到 ${versionText(update.target)}`, testId: `tool-${tool.id}-update-menu`, onSelect: () => props.onInstall(tool.id, update.version ?? update.target ?? undefined, 'update') }] : []),
