@@ -842,6 +842,9 @@ describe('codex-remote-service switching on when Xingmang opens', () => {
     expect(snapshot.channels.weixin.enabled).toBe(false)
     expect(s.channels).toHaveLength(1)
     expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 1, failed: false })
+    // 自己连上的也跟手动打开一样，给配对过的人说一声（YF-11），他在外面才知道能用了。
+    await s.channels[0].sentUntil(() => s.channels[0].texts().some((line) => line.startsWith('电脑上的手机遥控打开了')))
+    expect(s.channels[0].sent[0].peer).toMatchObject({ userId: alice.userId })
   })
 
   it('only logs when it cannot open, leaving the switch on for next time', async () => {
