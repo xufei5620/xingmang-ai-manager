@@ -316,7 +316,7 @@ describe('macOS terminal launcher', () => {
     }
   })
 
-  it('rejects invalid environment keys and NUL values', () => {
+  it('rejects invalid cleared keys and NUL values it would write', () => {
     const base = {
       executable: '/usr/bin/true',
       argv: [],
@@ -325,7 +325,8 @@ describe('macOS terminal launcher', () => {
     }
     expect(() => buildMacosTerminalScript({
       ...base,
-      env: { 'CODEX-HOME': '/tmp/codex' },
+      env: { HOME: '/tmp/home', PATH: '/usr/bin' },
+      clearedEnvironmentKeys: ['ANTHROPIC-API-KEY'],
     })).toThrow('environment key')
     expect(() => buildMacosTerminalScript({
       ...base,
@@ -335,6 +336,27 @@ describe('macOS terminal launcher', () => {
       ...base,
       env: { HOME: '/tmp/home' },
     })).toThrow('PATH')
+  })
+
+  // SH-11：从终端里起星芒时带进来的 bash 导出函数、别的软件 launchctl setenv 塞的怪名字不写进脚本，也不挡住打开。
+  it('ignores names it never writes, however they look', () => {
+    const script = buildMacosTerminalScript({
+      executable: '/usr/local/bin/claude',
+      argv: [],
+      workspace: '/workspace',
+      launcherPath: '/tmp/launcher',
+      env: {
+        HOME: '/Users/tester',
+        PATH: '/usr/bin',
+        'BASH_FUNC_module%%': '() {  eval "$(/usr/bin/modulecmd bash $*)"\n}',
+        'CODEX-HOME': '/tmp/codex',
+        UNLISTED_VALUE: 'with\0nul',
+      },
+    })
+    expect(script).not.toContain('BASH_FUNC')
+    expect(script).not.toContain('CODEX-HOME')
+    expect(script).not.toContain('UNLISTED_VALUE')
+    expect(script).toContain("export HOME='/Users/tester'")
   })
 
   it('rejects non-absolute paths in terminal scripts', () => {

@@ -23,6 +23,7 @@ import {
 } from './cli-hooks'
 import { type CliModelHints, isRetiredCliModel } from './cli-model-defaults'
 import { type CodexDesktopPackageProbe, inspectCodexDesktopPackage } from './codex-desktop-service'
+import { trustedCommandEnvironment } from './command-runner'
 import {
   buildCodexRelayModelCatalog,
   codexCliAcceptsModelCatalog,
@@ -93,6 +94,7 @@ import type { ToolConfigOwnership, ToolTemplateFillResult } from './tool-config-
 import type { CliInstallation } from './tool-installation'
 import { createToolModelChecker, type ToolModelCheckTarget } from './tool-model-check'
 import type { ToolRouteFollowRecord, ToolRouteFollowState } from './tool-route-follow-state'
+import type { WindowsCliExecutionMode } from './windows-elevation'
 import { withAppendedWindowsPath } from './windows-live-path'
 import { resolveRememberedWorkspace } from './workspace-guard'
 
@@ -112,6 +114,23 @@ export function permitsShadowedCodexRepair(
   const key = apiKey.trim()
   return provider === 'codex' && previousOwnership === 'unknown' && before.codexProviderShadowed === true
     && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
+}
+
+/**
+ * 推 Windows 版 Grok 拿哪个 shell 跑钩子时用的环境：得是从星芒打开 Grok 时它真拿到的那份
+ * （provider-launch-service.ts 的 launchProviderOperation）。同一用户身份打开时是启动时的快照再补上注册表里
+ * 新加的那几段 PATH；以管理员身份运行星芒（trusted-only）时，那个窗口的环境由 trustedCommandEnvironment
+ * 重建，PATH 只留机器目录，用户目录里的 pwsh（商店版在 WindowsApps、scoop 装的）Grok 找不到。照完整 PATH
+ * 推会推成 PowerShell、按它写钩子，Grok 却改用 Git Bash 跑，每一轮多一行红字（深查 Shell差异 SH-10）。
+ * 这里只拿来推 shell，不拿去起任何进程。
+ */
+export function grokShellEnvironment(
+  mode: WindowsCliExecutionMode,
+  baseEnv: NodeJS.ProcessEnv,
+  livePath: string | null,
+  trustedEnvironment: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv = trustedCommandEnvironment,
+): NodeJS.ProcessEnv {
+  return mode === 'trusted-only' ? trustedEnvironment(baseEnv) : withAppendedWindowsPath(baseEnv, livePath)
 }
 
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
@@ -268,7 +287,7 @@ export interface ConfigSaveServiceDependencies {
 
 export function createConfigSaveService(context: ServiceContext, dependencies: ConfigSaveServiceDependencies) {
   const {
-    store, serviceOptions, platform, providerRoots, runtimeLog, configOwnership, toolRouteFollow,
+    store, serviceOptions, platform, windowsExecutionMode, providerRoots, runtimeLog, configOwnership, toolRouteFollow,
     serializeConfigWrite, relayRouting, activeRelaySite, providerRelaySite, inspectNativeProviderConfig,
     detectMacosCodexApp, findInstalledExecutable, credentialFailureReason, refreshWindowsLivePath,
     currentWindowsLivePath, untouchedSince, fetchAvailableModels,
@@ -668,10 +687,14 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   /**
    * Windows 版 Grok 现在会拿哪个 shell 跑钩子。PATH 用启动时快照再补上注册表里新加的那几段：
    * 客户新开的终端看得到的，这里也要看得到；从星芒打开 Grok 时也补上同样几段（launchProviderOperation），
-   * 两边推出来的是同一个 shell。Git Bash 那三处本来就是实时看文件在不在。
+   * 两边推出来的是同一个 shell。以管理员身份运行时照那个窗口收窄过的 PATH 推（grokShellEnvironment）。
+   * Git Bash 那三处本来就是实时看文件在不在。
    */
   function expectedGrokWindowsShell(): GrokWindowsShell {
-    return resolveGrokWindowsShell(withAppendedWindowsPath(process.env, currentWindowsLivePath()), (candidate) => fs.existsSync(candidate))
+    return resolveGrokWindowsShell(
+      grokShellEnvironment(windowsExecutionMode, process.env, currentWindowsLivePath()),
+      (candidate) => fs.existsSync(candidate),
+    )
   }
 
   /**

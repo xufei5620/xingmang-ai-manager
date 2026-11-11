@@ -4,8 +4,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore } from './app-settings'
 import { providerBaseUrls } from './catalog'
+import { resolveGrokWindowsShell } from './cli-hooks'
 import { providerConfigPaths, saveProviderConfig } from './config-files'
-import { createConfigSaveService } from './config-save-service'
+import { createConfigSaveService, grokShellEnvironment } from './config-save-service'
 import { resolveEditorSettingsLocations } from './editor-claude-login-prompt'
 import type { SystemServiceOptions, ToolStatus } from './system-service'
 import { createServiceContext } from './system-service-context'
@@ -234,5 +235,36 @@ describe('the reply-in-Chinese AGENTS.md Xingmang places for Codex', () => {
 
     expect(fs.readFileSync(agents, 'utf8')).toBe('# 我自己的规矩\n')
     expect(store.read().seededToolDefaults ?? []).not.toContain('codex:response-language')
+  })
+})
+
+// SH-10：以管理员身份运行时，从星芒打开的 Grok 拿的是 trustedCommandEnvironment 收窄过的 PATH，推 shell 也得照它推。
+describe('the environment the Windows Grok shell is worked out from', () => {
+  const storePwsh = 'C:\\Users\\tester\\AppData\\Local\\Microsoft\\WindowsApps'
+  const env: NodeJS.ProcessEnv = {
+    Path: `C:\\Windows\\System32;${storePwsh}`,
+    ProgramFiles: 'C:\\Program Files',
+    LOCALAPPDATA: 'C:\\Users\\tester\\AppData\\Local',
+  }
+  const exists = (candidate: string) => candidate === `${storePwsh}\\pwsh.exe`
+    || candidate === 'C:\\Program Files\\Git\\bin\\bash.exe'
+  // Stands in for trustedCommandEnvironment on Windows: only machine directories survive in PATH.
+  function machineOnly(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+    return { ...base, Path: undefined, PATH: 'C:\\Windows\\System32;C:\\Program Files\\PowerShell\\7' }
+  }
+
+  it('keeps the snapshot and appends the live PATH when the app runs as the same user', () => {
+    const result = grokShellEnvironment('same-user', env, 'C:\\Tools', machineOnly)
+    expect(result.PATH).toBe(`C:\\Windows\\System32;${storePwsh};C:\\Tools`)
+    expect(resolveGrokWindowsShell(result, exists)).toBe('powershell')
+  })
+
+  it('works from the narrowed PATH the elevated Grok window gets, ignoring the live PATH', () => {
+    const builder = vi.fn(machineOnly)
+    const result = grokShellEnvironment('trusted-only', env, 'C:\\Tools', builder)
+    expect(builder).toHaveBeenCalledWith(env)
+    expect(result.PATH).toBe('C:\\Windows\\System32;C:\\Program Files\\PowerShell\\7')
+    // The Store pwsh is out of reach there, so Grok falls through to Git Bash, and so must the guess.
+    expect(resolveGrokWindowsShell(result, exists)).toBe('bash')
   })
 })

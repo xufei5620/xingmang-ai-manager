@@ -1310,7 +1310,16 @@ if (!hasSingleInstanceLock) {
           }
         : {}),
       ...(process.platform === 'darwin'
-        ? { ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({ reason }) }
+        ? {
+            ensureMacosShellProfile: (reason: 'install' | 'startup') => ensureMacosShellProfile({
+              reason,
+              // 登录 shell 是 zsh、bash 时顺带给 fish 的那份没写上：主的那份照旧算数，这里只留一笔。
+              skipped: (file, error) => runtimeLog.log('warn', 'system', 'cli.shell-profile.fish-skipped', '顺带给 fish 的终端启动设置没写上', {
+                file,
+                error: redactHomeDirectory(error instanceof Error ? error.message : String(error), os.homedir()),
+              }),
+            }),
+          }
         : {}),
       ...(process.platform !== 'win32' && process.platform !== 'darwin'
         ? { syncLinuxTerminalCommands: (reason: LinuxTerminalCommandsReason) => syncLinuxTerminalCommands({ reason }) }

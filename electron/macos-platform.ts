@@ -222,9 +222,10 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
   }
   const environmentEntries = Object.entries(plan.env)
   for (const [key, value] of environmentEntries) {
-    if (!environmentKeyPattern.test(key)) {
-      throw new TypeError(`invalid environment key: ${key}`)
-    }
+    // 只查真要写进脚本的那几个，同 Linux（linux-terminal.ts 的 exportedEnvironment）：名单外的名字
+    // 不会写进去，从终端里起星芒时带进来的 `BASH_FUNC_x%%`、别的软件 launchctl setenv 塞的怪名字
+    // 留在「终端」自己的环境里，不该挡住打开（深查 Shell差异 SH-11）。名单上的名字都是合规的变量名。
+    if (!persistedTerminalEnvironmentKeys.has(key)) continue
     if (value?.includes('\0')) throw new TypeError(`environment value for ${key} must not contain NUL bytes`)
   }
   const clearedEnvironmentKeys = plan.clearedEnvironmentKeys ?? []

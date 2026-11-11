@@ -207,6 +207,60 @@ describe.runIf(process.platform !== 'win32')('ensureMacosShellProfile', () => {
     expect(fs.readFileSync(target, 'utf8')).toBe('export A=1\n')
   })
 
+  // SH-12：登录 shell 还是 zsh、bash，只在「终端」或 iTerm 里改成开 fish 的客户，fish 的设置文件夹在就另给一份。
+  describe('for a zsh account that also uses fish', () => {
+    it('also writes the fish file when the fish config folder exists', async () => {
+      const home = homeDirectory()
+      fs.mkdirSync(path.join(home, '.config', 'fish'), { recursive: true })
+
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('present')
+
+      expect(fs.readFileSync(path.join(home, '.zprofile'), 'utf8')).toBe(buildMacosShellProfileBlock())
+      expect(fs.readFileSync(fishProfilePath(home), 'utf8')).toBe(buildMacosFishProfile())
+    })
+
+    it('reports added when only the fish file was missing', async () => {
+      const home = homeDirectory()
+      fs.writeFileSync(path.join(home, '.zprofile'), buildMacosShellProfileBlock())
+      fs.mkdirSync(path.join(home, '.config', 'fish'), { recursive: true })
+
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+
+      expect(fs.readFileSync(fishProfilePath(home), 'utf8')).toBe(buildMacosFishProfile())
+    })
+
+    it('does not create a fish config folder that is not there', async () => {
+      const home = homeDirectory()
+
+      await expect(ensureMacosShellProfile({ reason: 'install', homeDirectory: home, loginShell: '/bin/zsh' })).resolves.toBe('added')
+
+      expect(fs.existsSync(path.join(home, '.config'))).toBe(false)
+    })
+
+    it('keeps the zsh result and reports the fish file when the fish folder is a link', async () => {
+      const home = homeDirectory()
+      const dotfiles = path.join(home, 'dotfiles', 'fish')
+      fs.mkdirSync(dotfiles, { recursive: true })
+      fs.mkdirSync(path.join(home, '.config'))
+      fs.symlinkSync(dotfiles, path.join(home, '.config', 'fish'))
+      fs.mkdirSync(path.dirname(stampPath(home)), { recursive: true })
+      const skipped: string[] = []
+
+      await expect(ensureMacosShellProfile({
+        reason: 'install',
+        homeDirectory: home,
+        loginShell: '/bin/zsh',
+        skipped: (file) => skipped.push(file),
+      })).resolves.toBe('added')
+
+      expect(skipped).toEqual(['fish/conf.d/xingmang-ai-manager.fish'])
+      expect(fs.readFileSync(path.join(home, '.zprofile'), 'utf8')).toBe(buildMacosShellProfileBlock())
+      expect(fs.readdirSync(dotfiles)).toEqual([])
+      expect(fs.existsSync(stampPath(home))).toBe(true)
+    })
+  })
+
   describe('for a bash account', () => {
     function ensure(home: string, reason: 'install' | 'startup' = 'install') {
       return ensureMacosShellProfile({ reason, homeDirectory: home, loginShell: '/bin/bash' })
