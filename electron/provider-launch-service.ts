@@ -39,7 +39,7 @@ import {
 import { inspectWorkspaceWritable, shouldNoteReadOnlyWorkspace } from './documents-fallback'
 import { errorCodeOf, toolLaunchFailureMessage } from './failure-wording'
 import { type LinuxTerminalAttempt, LinuxTerminalLaunchError } from './linux-terminal'
-import type { MacosTerminalLaunchPlan } from './macos-platform'
+import { type MacosTerminalLaunchPlan, MacosTerminalNotStartedError } from './macos-platform'
 import { ensureProjectInstructions, readProjectInstructionsTemplate } from './project-instructions'
 import { redactHomeDirectory } from './startup-log'
 import { withSystemCertificateTrust } from './system-certificate-trust'
@@ -62,6 +62,7 @@ import {
   launchOverrideNotice,
 } from './workspace-config-overrides'
 import { assertWorkspaceDirectory } from './workspace-access'
+import { isUntouchedStarterWorkspace } from './starter-workspace'
 import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 
 /**
@@ -599,8 +600,14 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
           macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
-        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
-        // 随这次失败一起进运行日志。
+        // open 交回来的退出码和原话挂在 cause 上，随这次失败一起进运行日志。窗口开了、工具没起来的，
+        // 同 Windows、Linux 另记一条 terminal.failed（SH-3）。
+        if (error instanceof MacosTerminalNotStartedError) {
+          runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的终端窗口开了，工具没有跟着起来`, {
+            provider,
+            waitedMs: error.waitedMs,
+          })
+        }
         throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult
@@ -721,9 +728,13 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     accountWork?: QueuedAccountWork,
   ): Promise<CliLaunchResult> {
     async function launch(): Promise<CliLaunchResult> {
+      const result = await launchProviderOperation(provider, workspace, mode, resumeSessionId)
+      const rememberedWorkspace = rememberedWorkspaceFor(store.read().workspace)
       return {
-        ...await launchProviderOperation(provider, workspace, mode, resumeSessionId),
-        rememberedWorkspace: rememberedWorkspaceFor(store.read().workspace),
+        ...result,
+        rememberedWorkspace,
+        // 记着的文件夹换了，首页「试试第一条命令」那句话跟着它挑，不等下一轮读配置（D45）。
+        ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
       }
     }
     return installationQueue.enqueue(

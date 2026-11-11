@@ -13,9 +13,17 @@ import type { ToolFirstRun } from '../../registry/tools'
  * 按了没反应会让用户以为是工具坏了。
  *
  * 调用方要给它一个随工具变化的 key：换了工具就得重置这句回音，否则关掉
- * Claude Code 那张卡之后，接上来的 Codex 卡上会挂着一句「已复制」。
+ * Claude Code 那张卡之后，接上来的 Codex 卡上会挂着一句「已复制」。freshFolder 变了
+ * 那句话也跟着换，key 里也要带上它。
+ *
+ * freshFolder：「打开」会落在星芒刚建、还空着的项目文件夹里（opensUntouchedStarterWorkspace），
+ * 那句话换成让它动手做点东西（D45）。缺省 = 不是，照旧。
+ *
+ * withCommand：给不给「新开一个终端，敲这一条」和「复制命令」。引导最后一步不给（D46，新手流程 N5）：
+ * 新手看了会以为还要自己开终端，点「打开」星芒就替他敲了；想自己敲的去首页那份。缺省 = 给。
  */
-export function FirstRunSteps({ name, firstRun, testId, gitHint }: { name: string; firstRun: ToolFirstRun; testId: string; gitHint?: string }) {
+export function FirstRunSteps({ name, firstRun, testId, gitHint, freshFolder, withCommand = true }: { name: string; firstRun: ToolFirstRun; testId: string; gitHint?: string; freshFolder?: boolean; withCommand?: boolean }) {
+  const prompt = freshFolder ? firstRun.freshFolderPrompt : firstRun.prompt
   const [copied, setCopied] = useState<'' | 'command' | 'prompt'>('')
   const [failed, setFailed] = useState(false)
   const copy = (part: 'command' | 'prompt', value: string) => {
@@ -24,15 +32,17 @@ export function FirstRunSteps({ name, firstRun, testId, gitHint }: { name: strin
       .catch(() => { setCopied(''); setFailed(true) })
   }
   return <div className="v2-first-run" data-testid={testId}>
-    <p>在你要写代码的那个文件夹里新开一个终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
-    <div className="v2-first-run-line">
-      <code className="v2-business-code" data-testid={`${testId}-command`}>{firstRun.command}</code>
-      <Button size="sm" icon={Copy} testId={`${testId}-copy-command`} onClick={() => copy('command', firstRun.command)}>复制命令</Button>
-    </div>
+    {withCommand && <>
+      <p>在你要写代码的那个文件夹里新开一个终端，敲这一条就能启动（点「打开」时，星芒替你敲的也是它）：</p>
+      <div className="v2-first-run-line">
+        <code className="v2-business-code" data-testid={`${testId}-command`}>{firstRun.command}</code>
+        <Button size="sm" icon={Copy} testId={`${testId}-copy-command`} onClick={() => copy('command', firstRun.command)}>复制命令</Button>
+      </div>
+    </>}
     <p>{name} 起来之后，把下面这句话粘进去，看看它能做什么：</p>
     <div className="v2-first-run-line">
-      <code className="v2-business-code" data-testid={`${testId}-prompt`}>{firstRun.prompt}</code>
-      <Button size="sm" icon={Copy} testId={`${testId}-copy-prompt`} onClick={() => copy('prompt', firstRun.prompt)}>复制这句话</Button>
+      <code className="v2-business-code" data-testid={`${testId}-prompt`} data-fresh-folder={freshFolder ? 'true' : undefined}>{prompt}</code>
+      <Button size="sm" icon={Copy} testId={`${testId}-copy-prompt`} onClick={() => copy('prompt', prompt)}>复制这句话</Button>
     </div>
     {copied && <p className="v2-first-run-note" role="status">{copied === 'command' ? '命令已复制，粘到终端里回车即可' : '这句话已复制，粘到工具里回车即可'}</p>}
     {failed && <p className="v2-first-run-note" role="status">没能写进剪贴板，手动选中上面的文字复制就行</p>}

@@ -25,7 +25,15 @@ import {
   type CanvasRunStatus,
 } from './canvas-run-contract'
 import { canvasImageCandidateCacheKey, computeCanvasNodeFingerprint } from './canvas-fingerprint'
-import type { CanvasImageToolSource } from './canvas-image-tools'
+import { canvasImageTransformKindForNode, type CanvasImageToolSource } from './canvas-image-tools'
+import {
+  assertCanvasImageReferenceRunConfiguration,
+  assertCanvasVideoReferenceSlots,
+  canvasVideoReferenceNodeKind,
+  orderCanvasImageReferenceInputs,
+  orderCanvasVideoReferences,
+} from './canvas-reference-order'
+import { assertCanvasSceneRunConfiguration, canvasSceneSourceChecks, type CanvasSceneSourceCheck } from './canvas-scene-tasks'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { createCanvasRelayBillingRecorder, type CanvasRelayBillingRecorder } from './canvas-run-charges'
 
@@ -131,6 +139,11 @@ export interface CanvasNodeExecutionContext {
   signal: AbortSignal
   /** Hand to every paid request this attempt makes; the run's 实扣 is matched by what it records. */
   billing?: AiRelayBillingObserver
+  /**
+   * The scene tasks whose pictures must differ by their bytes (画布完善第 8
+   * 条第二步): the executor reads and compares them before the paid request.
+   */
+  sceneSourceChecks?: readonly CanvasSceneSourceCheck[]
   reportStage?(
     stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>,
     progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
@@ -237,7 +250,40 @@ interface GraphIndex {
 interface NodeOutput {
   fingerprint: string
   text?: string
+  /** What a single-picture connection hands on: the candidate the canvas shows. */
   asset?: CanvasRunAsset
+  /**
+   * Present when the node made more than one: all of them in the order they
+   * were made, whichever is shown. A batch connection (a grid split's
+   * out:images) hands these on.
+   */
+  assets?: CanvasRunAsset[]
+}
+
+/** The grid split's port that hands on every slice (xingmang-canvas builtin-node-definitions.ts). */
+const batchImageHandle = 'out:images'
+
+/**
+ * xingmang-canvas lib/canvas-runs.ts buildPreferredRunCandidates, for image
+ * tools: the picture the canvas shows first (the adopted one, else for a grid
+ * split the selected slice), then the rest in their order. Only candidates
+ * this node made are eligible, so a stale or forged choice names nothing else.
+ */
+function preferredImageToolCandidates(node: CanvasRunGraphNode, candidates: CanvasRunCandidate[]): CanvasRunCandidate[] {
+  if (!isCanvasRunImageToolNodeKind(node.kind)) return candidates
+  const adopted = node.data.adoptedAssetId ? candidates.findIndex((candidate) => candidate.asset.assetId === node.data.adoptedAssetId) : -1
+  const selected = adopted >= 0 ? adopted : candidates.findIndex((candidate) => candidate.outputIndex === (node.data.imageOutputIndex ?? 0))
+  if (selected <= 0) return candidates
+  return [candidates[selected], ...candidates.slice(0, selected), ...candidates.slice(selected + 1)]
+}
+
+function nodeOutputAssets(candidates: readonly CanvasRunCandidate[]): Pick<NodeOutput, 'asset' | 'assets'> {
+  if (candidates.length === 0) return {}
+  if (candidates.length === 1) return { asset: candidates[0].asset }
+  const made = candidates.every((candidate) => candidate.outputIndex !== undefined)
+    ? [...candidates].sort((left, right) => (left.outputIndex as number) - (right.outputIndex as number))
+    : candidates
+  return { asset: candidates[0].asset, assets: made.map((candidate) => candidate.asset) }
 }
 
 function collectedInputAssetIds(inputs: CanvasNodeInputs): string[] {
@@ -466,7 +512,7 @@ function cachedAttempt(
     durationMs: 0,
     cached: true,
     ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
-    candidates: entry.candidate ? [structuredClone(entry.candidate)] : [],
+    candidates: entry.candidates ? structuredClone(entry.candidates) : entry.candidate ? [structuredClone(entry.candidate)] : [],
     ...(entry.outputText !== undefined ? { outputText: entry.outputText } : {}),
     ...(entry.candidate?.costQuota !== undefined ? { costQuota: entry.candidate.costQuota } : {}),
     ...(entry.candidate?.group ? { group: entry.candidate.group } : {}),
@@ -516,7 +562,9 @@ export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope
  * the desktop. Disabled nodes and everything downstream of them are skipped
  * without calling an executor, so they do not block the run; nodes outside
  * the scope are never touched. Callers refuse the whole run on a reason,
- * before a single paid request goes out.
+ * before a single paid request goes out. Picture roles that no longer match
+ * the connections are such a reason too, as the web host refuses them when a
+ * run starts (画布完善第 8 条).
  */
 export function canvasRunDesktopUnsupportedReason(graph: CanvasRunGraph, scope: CanvasRunScope): string | undefined {
   const index = validateGraph(graph)
@@ -532,6 +580,12 @@ export function canvasRunDesktopUnsupportedReason(graph: CanvasRunGraph, scope: 
       continue
     }
     if (node.desktopUnsupported) return node.desktopUnsupported
+    try {
+      assertCanvasSceneRunConfiguration(node, graph.edges, index.nodesById)
+      assertCanvasImageReferenceRunConfiguration(node, graph.edges, index.nodesById)
+    } catch (error) {
+      return sanitizeRunError(error)
+    }
   }
   return undefined
 }
@@ -567,11 +621,15 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
     fingerprint: string
     text?: string
     asset?: CanvasRunAsset
+    assets?: CanvasRunAsset[]
   }>
+  /** Every picture, video and sound in connection order, each named the way a reference order names it. */
+  mediaSources: CanvasImageToolSource<CanvasRunAsset>[]
 } {
   const inputs: CanvasNodeInputs = {}
   const images: CanvasRunAsset[] = []
   const imageSources: CanvasImageToolSource<CanvasRunAsset>[] = []
+  const mediaSources: CanvasImageToolSource<CanvasRunAsset>[] = []
   const videos: CanvasRunAsset[] = []
   const audios: CanvasRunAsset[] = []
   const fingerprintInputs = []
@@ -579,19 +637,28 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
     const output = outputs.get(edge.source)
     if (!output) continue
     if (output.text !== undefined) inputs.text = inputs.text === undefined ? output.text : `${inputs.text}\n${output.text}`
-    if (output.asset?.kind === 'image') {
-      inputs.image ??= output.asset
-      images.push(output.asset)
-      // One picture per connection here, so it is always the connection's first.
-      imageSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
+    // A batch connection hands on every picture the node made, each named by
+    // its place in the batch, as the web host does; any other connection
+    // hands on the one picture the canvas shows.
+    const batch = edge.sourceHandle === batchImageHandle
+    const pictures = batch
+      ? (output.assets ?? (output.asset ? [output.asset] : [])).filter((asset) => asset.kind === 'image')
+      : output.asset?.kind === 'image' ? [output.asset] : []
+    for (const [outputIndex, asset] of pictures.entries()) {
+      inputs.image ??= asset
+      images.push(asset)
+      imageSources.push({ edgeId: edge.id, outputIndex, asset })
+      mediaSources.push({ edgeId: edge.id, outputIndex, asset })
     }
-    if (output.asset?.kind === 'video') {
+    if (!batch && output.asset?.kind === 'video') {
       inputs.video ??= output.asset
       videos.push(output.asset)
+      mediaSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
     }
-    if (output.asset?.kind === 'audio') {
+    if (!batch && output.asset?.kind === 'audio') {
       inputs.audio ??= output.asset
       audios.push(output.asset)
+      mediaSources.push({ edgeId: edge.id, outputIndex: 0, asset: output.asset })
     }
     fingerprintInputs.push({
       sourceNodeId: edge.source,
@@ -599,7 +666,10 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
       targetHandle: edge.targetHandle,
       fingerprint: output.fingerprint,
       ...(output.text !== undefined ? { text: output.text } : {}),
-      ...(output.asset ? { asset: output.asset } : {}),
+      // Which slice the canvas shows does not change what a batch hands on,
+      // so choosing another one leaves a batch connection's key alone (the
+      // kernel's run-input-matching.ts does not mark it stale either).
+      ...(batch ? { assets: pictures } : output.asset ? { asset: output.asset } : {}),
     })
   }
   if (images.length > 0) {
@@ -608,7 +678,51 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
   }
   if (videos.length > 0) inputs.videos = videos
   if (audios.length > 0) inputs.audios = audios
-  return { inputs, fingerprintInputs }
+  return { inputs, fingerprintInputs, mediaSources }
+}
+
+// Only the outgoing edges matter for the graph half: a text node is checked
+// when it writes the prompt of an exterior task or a storyboard downstream.
+function sceneSourceContext(node: CanvasRunGraphNode, index: GraphIndex): Pick<CanvasNodeExecutionContext, 'sceneSourceChecks'> {
+  const checks = canvasSceneSourceChecks(node, index.outgoing.get(node.id) ?? [], index.nodesById)
+  return checks.length > 0 ? { sceneSourceChecks: checks } : {}
+}
+
+/**
+ * The inputs in the order the node's reference order asks for (画布完善第 8
+ * 条), as the web host orders them before it builds the request: pictures by
+ * role, exactly the slots and nothing else; a video's references by the saved
+ * order with the rest after them. A slot that is gone, a connection without a
+ * role or one picture used twice throws, and nothing is paid for.
+ */
+function orderReferenceInputs(node: CanvasRunGraphNode, collected: ReturnType<typeof collectInputs>, index: GraphIndex): CanvasNodeInputs {
+  const { inputs, mediaSources } = collected
+  const imageOrder = node.data.imageReferenceOrder
+  if (imageOrder) {
+    const incoming = (index.incoming.get(node.id) ?? []).filter((edge) => edge.targetHandle === 'in:images').map((edge) => edge.id)
+    const ordered = orderCanvasImageReferenceInputs(
+      (inputs.imageSources ?? []).map((source) => ({ ...source, assetId: source.asset.assetId })),
+      imageOrder,
+      incoming,
+    ).map(({ edgeId, outputIndex, asset }) => ({ edgeId, outputIndex, asset }))
+    return { ...inputs, image: ordered[0].asset, images: ordered.map((source) => source.asset), imageSources: ordered }
+  }
+  const videoOrder = node.data.videoReferenceOrder
+  if (videoOrder && canvasVideoReferenceNodeKind(node.kind)) {
+    assertCanvasVideoReferenceSlots(mediaSources, videoOrder)
+    const ordered = orderCanvasVideoReferences(mediaSources, videoOrder)
+    const of = (kind: CanvasRunAsset['kind']) => ordered.filter((source) => source.asset.kind === kind)
+    const images = of('image')
+    const videos = of('video').map((source) => source.asset)
+    const audios = of('audio').map((source) => source.asset)
+    return {
+      ...(inputs.text !== undefined ? { text: inputs.text } : {}),
+      ...(images.length > 0 ? { image: images[0].asset, images: images.map((source) => source.asset), imageSources: images } : {}),
+      ...(videos.length > 0 ? { video: videos[0], videos } : {}),
+      ...(audios.length > 0 ? { audio: audios[0], audios } : {}),
+    }
+  }
+  return inputs
 }
 
 async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -973,6 +1087,8 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     const nodeId = node.id
     const nodeRecord = nodeRecords.get(nodeId)!
     const batchId = randomUUID()
+    // Worked out once: every request of the batch reads the same pictures.
+    const sceneContext = sceneSourceContext(node, index)
     function keep(attempt: CanvasRunAttempt): void {
       nodeRecord.attempts.push(attempt)
       // The kernel lists a batch in attempt order and falls back to its first
@@ -1025,6 +1141,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           inputs,
           signal: options.signal,
           billing: billing.observer,
+          ...sceneContext,
           reportStage: async (stage, progress) => {
             await stageReportingReady
             if (leads(index)) await updateStage(nodeId, stage, attemptId, progress)
@@ -1151,6 +1268,14 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
 
       const collected = collectInputs(nodeId, index, outputs)
+      try {
+        // Checked at run start too; a caller that skips that check still pays nothing.
+        assertCanvasSceneRunConfiguration(node, options.graph.edges, index.nodesById)
+        collected.inputs = orderReferenceInputs(node, collected, index)
+      } catch (error) {
+        await updateNode(nodeId, 'failed', { errorMessage: sanitizeRunError(error) })
+        return
+      }
       const inputAssetIds = collectedInputAssetIds(collected.inputs)
       const fingerprint = computeCanvasNodeFingerprint({ projectId: options.projectId, node, upstream: collected.fingerprintInputs })
       await updateStage(nodeId, 'resolving-cache')
@@ -1215,11 +1340,13 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
       if (cached && (cached.outputText !== undefined || cached.candidate)) {
         const attempt = cachedAttempt(cached, fingerprint, cached.candidate?.attemptId ?? randomUUID(), inputAssetIds, now())
+        // The slice shown may have changed since; it is not in the fingerprint.
+        attempt.candidates = preferredImageToolCandidates(node, attempt.candidates)
         nodeRecords.get(nodeId)!.attempts.push(attempt)
         outputs.set(nodeId, {
           fingerprint,
           ...(cached.outputText !== undefined ? { text: cached.outputText } : {}),
-          ...(cached.candidate ? { asset: cached.candidate.asset } : {}),
+          ...nodeOutputAssets(attempt.candidates),
         })
         if (reusedAdopted && rememberAdopted) {
           try {
@@ -1233,7 +1360,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         await updateNode(nodeId, 'cached', {
           attemptId: attempt.attemptId,
           fingerprint,
-          ...(cached.candidate ? { candidateIds: [cached.candidate.candidateId] } : {}),
+          ...(attempt.candidates.length > 0 ? { candidateIds: attempt.candidates.map((candidate) => candidate.candidateId) } : {}),
         })
         return
       }
@@ -1271,6 +1398,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           inputs: collected.inputs,
           signal: options.signal,
           ...(billing ? { billing: billing.observer } : {}),
+          ...sceneSourceContext(node, index),
           reportStage: async (stage, progress) => {
             await stageReportingReady
             await updateStage(nodeId, stage, attemptId, progress)
@@ -1295,7 +1423,11 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         const result = await raceWithAbort(executorPromise, options.signal)
         if (options.signal.aborted || isTerminalState(nodeRecords.get(nodeId)!.state)) return
         const completedAt = now()
-        const candidates: CanvasRunCandidate[] = (result.assets ?? []).map((asset) => ({
+        // A page-made picture keeps its place in what the node made (the web
+        // host numbers the same kinds), so a slice is found again after reordering.
+        const numbered = canvasImageTransformKindForNode(node.kind) !== null
+        const candidates: CanvasRunCandidate[] = preferredImageToolCandidates(node, (result.assets ?? []).map((asset, outputIndex) => ({
+          ...(numbered ? { outputIndex } : {}),
           candidateId: randomUUID(),
           attemptId,
           createdAt: completedAt.toISOString(),
@@ -1303,7 +1435,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(result.group ? { group: result.group } : {}),
           ...(result.model ? { model: result.model } : {}),
           ...(result.costQuota !== undefined ? { costQuota: result.costQuota } : {}),
-        }))
+        })))
         const attempt: CanvasRunAttempt = {
           attemptId,
           fingerprint,
@@ -1323,7 +1455,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         outputs.set(nodeId, {
           fingerprint,
           ...(result.outputText !== undefined ? { text: result.outputText } : {}),
-          ...(candidates[0] ? { asset: candidates[0].asset } : {}),
+          ...nodeOutputAssets(candidates),
         })
         try {
           if (isCanvasNodeCacheEligible(node.kind)) {
@@ -1332,6 +1464,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
               fingerprint,
               nodeKind: node.kind,
               ...(candidates[0] ? { candidate: candidates[0] } : {}),
+              // Only a numbered batch (a grid split's slices) is kept whole; every other
+              // node caches its first picture as it always has.
+              ...(numbered && candidates.length > 1 ? { candidates } : {}),
               ...(result.outputText !== undefined ? { outputText: result.outputText } : {}),
               createdAt: completedAt.toISOString(),
               lastUsedAt: completedAt.toISOString(),

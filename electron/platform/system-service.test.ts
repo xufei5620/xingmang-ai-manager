@@ -4,6 +4,7 @@ import type { PlatformPreferences } from './contract'
 import { loginLaunchArgument } from '../login-launch'
 import {
   migrateLegacyWindowsLoginItem,
+  notificationSettingsTarget,
   PlatformSystemService,
   describeSessionProxy,
   removeWindowsLoginItem,
@@ -153,6 +154,27 @@ describe('platform system preferences', () => {
       '系统没有保存',
     )
   })
+  // 决定单 D26：Windows 上写开机项多半是被 360、火绒拦了，叫客户去它的提示里放行；别的系统照旧。
+  it('points a Windows login item the OS did not keep at the security software prompt', async () => {
+    const windows = setup()
+    windows.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
+    await expect(windows.service.setStartup(true)).rejects.toThrow(
+      '系统没有保存开机启动设置。装了 360、火绒这类安全软件的话，在它弹出的提示里点「允许」，再打开一次这个开关。',
+    )
+    const mac = setup('darwin')
+    mac.app.setLoginItemSettings.mockImplementationOnce(() => undefined)
+    await expect(mac.service.setStartup(true)).rejects.toThrow(
+      '系统没有保存开机启动设置，请在系统设置中检查。',
+    )
+  })
+  // 决定单 D30：Mac 上没有「托盘」，同一个图标在屏幕顶部的菜单栏里。
+  it('describes login starts in the menu bar on macOS', async () => {
+    const state = setup('darwin')
+    expect(state.service.getState().startup.note).toBe('打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。')
+    await state.service.setStartup(true)
+    expect(state.service.getState().startup.note).toBe('开机后在菜单栏里待命，不弹窗口；开机头几分钟不做检测和更新，不跟电脑抢资源。要用时点屏幕顶部的星芒图标。')
+    expect(state.service.getState().startup.note).not.toContain('托盘')
+  })
   it('still reports a login item registered by an older version without the login argument', async () => {
     const state = setup()
     state.registerWindowsLoginItem([])
@@ -283,10 +305,13 @@ describe('platform system preferences', () => {
     const devService = new PlatformSystemService({ ...development.dependencies, linuxAutostart })
     expect(devService.getState().startup).toMatchObject({ supported: false, note: '开发模式不设置开机自动启动。' })
     await expect(devService.setStartup(true)).rejects.toThrow('不能设置')
-    for (const platform of ['win32', 'darwin']) {
+    for (const [platform, note] of [
+      ['win32', '打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'],
+      ['darwin', '打开后，开机时会在菜单栏里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。'],
+    ] as const) {
       const state = setup(platform)
       const service = new PlatformSystemService({ ...state.dependencies, linuxAutostart, trayAvailable: () => false })
-      expect(service.getState().startup.note).toBe('打开后，开机时会在托盘里待命，不弹窗口，开机头几分钟也不跟电脑抢资源。')
+      expect(service.getState().startup.note).toBe(note)
       await service.setStartup(true)
       expect(state.app.setLoginItemSettings).toHaveBeenCalled()
     }
@@ -358,6 +383,44 @@ describe('platform system preferences', () => {
     expect(h.dependencies.resolveProxy).not.toHaveBeenCalled()
     expect(h.app.setLoginItemSettings).not.toHaveBeenCalled()
     expect(h.service.testNotification()).toBe('unsupported')
+  })
+  it('points the notification settings button at a fixed system page on Windows and macOS only', () => {
+    expect(notificationSettingsTarget('win32')).toBe('ms-settings:notifications')
+    expect(notificationSettingsTarget('darwin')).toBe(
+      'x-apple.systempreferences:com.apple.Notifications-Settings.extension',
+    )
+    expect(notificationSettingsTarget('linux')).toBeNull()
+    expect(notificationSettingsTarget('freebsd')).toBeNull()
+  })
+  it('opens the system notification settings through the injected opener and nothing else', async () => {
+    for (const [platform, target] of [
+      ['win32', 'ms-settings:notifications'],
+      ['darwin', 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'],
+    ] as const) {
+      const h = setup(platform)
+      const openExternal = vi.fn(async () => undefined)
+      h.dependencies.openExternal = openExternal
+      await expect(h.service.openNotificationSettings()).resolves.toBe(true)
+      expect(openExternal).toHaveBeenCalledTimes(1)
+      expect(openExternal).toHaveBeenCalledWith(target)
+      expect(h.store.update).not.toHaveBeenCalled()
+      expect(h.app.setLoginItemSettings).not.toHaveBeenCalled()
+    }
+  })
+  it('reports the notification settings as not opened on Linux or without an opener', async () => {
+    const linux = setup('linux')
+    const openExternal = vi.fn(async () => undefined)
+    linux.dependencies.openExternal = openExternal
+    await expect(linux.service.openNotificationSettings()).resolves.toBe(false)
+    expect(openExternal).not.toHaveBeenCalled()
+    await expect(setup('win32').service.openNotificationSettings()).resolves.toBe(false)
+  })
+  it('lets a refused system settings page surface as a failure', async () => {
+    const h = setup('darwin')
+    h.dependencies.openExternal = vi.fn(async () => {
+      throw new Error('系统没让打开')
+    })
+    await expect(h.service.openNotificationSettings()).rejects.toThrow('系统没让打开')
   })
   it('stores the anonymous usage switch only once it is turned, and keeps it off after that', async () => {
     const h = setup()

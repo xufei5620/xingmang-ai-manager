@@ -5,7 +5,7 @@ import {
   computeCanvasGraphRevision,
   computeCanvasNodeFingerprint,
 } from './canvas-fingerprint'
-import type { CanvasImageEditMask, CanvasRunGraph, CanvasRunGraphNode } from './canvas-run-contract'
+import type { CanvasImageEditMask, CanvasRunAsset, CanvasRunGraph, CanvasRunGraphNode } from './canvas-run-contract'
 
 function imageNode(overrides: Partial<CanvasRunGraphNode['data']> = {}): CanvasRunGraphNode {
   return {
@@ -254,6 +254,75 @@ describe('canvas fingerprints', () => {
     const tile = (edgeId: string) => tool('image-tile', { tileInput: { edgeId, outputIndex: 0 } })
     expect(computeCanvasNodeFingerprint({ node: tile('a'), upstream: [] })).not.toBe(computeCanvasNodeFingerprint({ node: tile('b'), upstream: [] }))
     expect(computeCanvasGraphRevision({ nodes: [tile('a')], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [tile('b')], edges: [] }))
+  })
+
+  it('keeps a grid split key for another shown slice and keys a batch connection by every slice', () => {
+    const grid = (imageOutputIndex?: number): CanvasRunGraphNode => ({
+      id: 'grid', kind: 'image-grid-split', definitionVersion: 1,
+      data: { prompt: '', model: '', imageTransform: { kind: 'grid-split', rows: 2, columns: 2 }, ...(imageOutputIndex !== undefined ? { imageOutputIndex } : {}) },
+    })
+    // Showing another slice is not another picture, so the split itself keeps its key...
+    expect(computeCanvasNodeFingerprint({ node: grid(3), upstream: [] })).toBe(computeCanvasNodeFingerprint({ node: grid(), upstream: [] }))
+    // ...while the page still learns the graph moved.
+    expect(computeCanvasGraphRevision({ nodes: [grid(3)], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [grid()], edges: [] }))
+
+    const slice = (letter: string): CanvasRunAsset => ({ kind: 'image', assetId: letter.repeat(43), localUrl: `xingmang-asset://image/${letter.repeat(43)}` })
+    const batch = (assets: CanvasRunAsset[]) => computeCanvasNodeFingerprint({
+      node: imageNode(),
+      upstream: [{ sourceNodeId: 'grid', sourceHandle: 'out:images', targetHandle: 'in:image', fingerprint: 'grid', asset: assets[0], assets }],
+    })
+    const all = batch([slice('a'), slice('b')])
+    expect(batch([slice('a'), slice('b')])).toBe(all)
+    expect(batch([slice('a'), slice('c')])).not.toBe(all)
+    expect(batch([slice('b'), slice('a')])).not.toBe(all)
+    // A single connection carries no list, and keeps the key it had before grid splits.
+    const single = { sourceNodeId: 'grid', sourceHandle: 'out:image', targetHandle: 'in:image', fingerprint: 'grid', asset: slice('a') }
+    expect(computeCanvasNodeFingerprint({ node: imageNode(), upstream: [{ ...single, assets: undefined }] }))
+      .toBe(computeCanvasNodeFingerprint({ node: imageNode(), upstream: [single] }))
+  })
+
+  it('keys picture roles and a video reference order only on the nodes that set them', () => {
+    const base = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    const baseRevision = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
+    // Nodes from before 画布完善第 8 条 keep their keys.
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageReferenceOrder: undefined, videoReferenceOrder: undefined }), upstream: [] })).toBe(base)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageReferenceOrder: undefined, videoReferenceOrder: undefined })], edges: [] })).toBe(baseRevision)
+    const roles = (first: string, second: string): CanvasRunGraphNode['data']['imageReferenceOrder'] => ({
+      version: 1, slots: [{ role: 'source', edgeId: first, outputIndex: 0 }, { role: 'reference', edgeId: second, outputIndex: 0 }],
+    })
+    const keyed = computeCanvasNodeFingerprint({ node: imageNode({ imageReferenceOrder: roles('a', 'b') }), upstream: [] })
+    expect(keyed).not.toBe(base)
+    // Swapping source and reference sends other pictures first: another request.
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ imageReferenceOrder: roles('b', 'a') }), upstream: [] })).not.toBe(keyed)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageReferenceOrder: roles('a', 'b') })], edges: [] })).not.toBe(baseRevision)
+    const order = (...edgeIds: string[]): CanvasRunGraphNode['data']['videoReferenceOrder'] => ({ version: 1, slots: edgeIds.map((edgeId) => ({ edgeId, outputIndex: 0 })) })
+    const video = computeCanvasNodeFingerprint({ node: imageNode({ videoReferenceOrder: order('first', 'last') }), upstream: [] })
+    expect(video).not.toBe(base)
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ videoReferenceOrder: order('last', 'first') }), upstream: [] })).not.toBe(video)
+  })
+
+  it('keys the four scene tasks only on the nodes that set them, and each option is another request', () => {
+    const base = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    const baseRevision = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ commerceTask: undefined, interiorTask: undefined, exteriorTask: undefined, storyboardTask: undefined }), upstream: [] })).toBe(base)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ commerceTask: undefined, interiorTask: undefined, exteriorTask: undefined, storyboardTask: undefined })], edges: [] })).toBe(baseRevision)
+    const tasks: Array<[Partial<CanvasRunGraphNode['data']>, Partial<CanvasRunGraphNode['data']>]> = [
+      [{ commerceTask: { version: 1, kind: 'material-a', preserve: ['shape'], strength: 0.5 } }, { commerceTask: { version: 1, kind: 'material-a', preserve: ['shape'], strength: 0.6 } }],
+      [{ interiorTask: { version: 1, kind: 'interior-render', addDecor: false, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'none', time: 'none', exterior: 'none', filter: 'none' } },
+        { interiorTask: { version: 1, kind: 'interior-render', addDecor: true, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'none', time: 'none', exterior: 'none', filter: 'none' } }],
+      [{ exteriorTask: { version: 1, kind: 'landscape-redesign', automaticPrompt: true } }, { exteriorTask: { version: 1, kind: 'landscape-redesign', automaticPrompt: false } }],
+      [{ storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 4 } }, { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 9 } }],
+    ]
+    const seen = new Set([base])
+    for (const [one, other] of tasks) {
+      const keyed = computeCanvasNodeFingerprint({ node: imageNode(one), upstream: [] })
+      const changed = computeCanvasNodeFingerprint({ node: imageNode(other), upstream: [] })
+      expect(seen.has(keyed)).toBe(false)
+      expect(changed).not.toBe(keyed)
+      seen.add(keyed).add(changed)
+      expect(computeCanvasGraphRevision({ nodes: [imageNode(one)], edges: [] })).not.toBe(baseRevision)
+      expect(computeCanvasGraphRevision({ nodes: [imageNode(other)], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [imageNode(one)], edges: [] }))
+    }
   })
 
   it('changes the graph revision with the image count but keeps it for one image', () => {

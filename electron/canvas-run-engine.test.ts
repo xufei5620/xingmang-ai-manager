@@ -24,6 +24,7 @@ import type {
 import { canvasRunTimelineLimit } from './canvas-run-contract'
 import { canvasImageCandidateCacheKey } from './canvas-fingerprint'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
+import { buildCanvasExteriorAnalysisPrompt, buildCanvasStoryboardAnalysisPrompt } from './canvas-scene-tasks'
 
 function node(id: string, kind: CanvasRunGraphNode['kind'], prompt = id): CanvasRunGraphNode {
   return { id, kind, definitionVersion: 1, data: { prompt, model: kind === 'image' ? 'gpt-image-2' : '' } }
@@ -1189,16 +1190,16 @@ describe('executeCanvasRun multi-image nodes', () => {
 
 describe('canvasRunDescendants', () => {
   it('fails a node the desktop cannot run without reaching an executor when a caller skips the service check', async () => {
-    // A kernel-only kind falls back to the video executor, so this second
-    // line is what keeps a direct engine call from spending money.
+    // A node the parser marked would otherwise fall back to an executor, so
+    // this second line is what keeps a direct engine call from spending money.
     const image = vi.fn(async () => ({ assets: [asset()] }))
     const video = vi.fn(async () => ({ assets: [] }))
     const reason = '「参考图角色」桌面版暂不支持，本次没有提交任何付费请求'
     const workflow = graph(
       [
         node('prompt', 'text'),
+        // An image tool with no executor of its own (imageTools off) must not fall back to the video executor.
         node('split', 'image-grid-split'),
-        // An image tool with no executor of its own (imageTools off) must not fall back either.
         node('compare', 'image-compare'),
         { ...node('many', 'image-generate'), desktopUnsupported: reason },
         node('after', 'image'),
@@ -1213,7 +1214,7 @@ describe('canvasRunDescendants', () => {
     expect(states).toEqual({ prompt: 'succeeded', split: 'failed', compare: 'failed', many: 'failed', after: 'skipped' })
     expect(record.nodes.find((entry) => entry.nodeId === 'many')?.errorMessage).toBe(reason)
     expect(record.nodes.find((entry) => entry.nodeId === 'split')?.errorMessage)
-      .toBe('该节点桌面版暂不支持，本次没有提交任何付费请求')
+      .toBe('「宫格裁剪」节点桌面版暂不支持，本次没有提交任何付费请求')
     expect(record.nodes.find((entry) => entry.nodeId === 'compare')?.errorMessage)
       .toBe('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
   })
@@ -1495,5 +1496,224 @@ describe('executeCanvasRun image preparations', () => {
     expect(refusals).toEqual(['图片处理不属于这个节点', '图片处理不属于这个节点'])
     expect(video).not.toHaveBeenCalled()
     expect(record.nodes.find((entry) => entry.nodeId === 'tile')).toMatchObject({ state: 'failed', errorMessage: '「平铺图片」节点桌面版暂不支持，本次没有提交任何付费请求' })
+  })
+
+  it('keeps caching only the first picture of a node that is not a grid split', async () => {
+    const pictures = [asset('a'.repeat(43)), asset('b'.repeat(43))]
+    const compare = vi.fn<CanvasNodeExecutor>(async () => ({ assets: pictures.map((picture) => structuredClone(picture)) }))
+    const stored: CanvasRunCacheEntry[] = []
+    const record = await executeCanvasRun(runOptions(graph([node('compare', 'image-compare')], []), {
+      executors: executors({ 'image-compare': compare }),
+      storeCache: async (entry) => { stored.push(structuredClone(entry)) },
+    }))
+    expect(record.status).toBe('succeeded')
+    const attempt = record.nodes.find((entry) => entry.nodeId === 'compare')!.attempts[0]
+    // Not numbered, not reordered, and the cache keeps the one picture it always kept.
+    expect(attempt.candidates.map((candidate) => [candidate.outputIndex, candidate.asset.assetId])).toEqual([[undefined, pictures[0].assetId], [undefined, pictures[1].assetId]])
+    expect(stored).toHaveLength(1)
+    expect(stored[0].candidate?.asset.assetId).toBe(pictures[0].assetId)
+    expect(stored[0]).not.toHaveProperty('candidates')
+  })
+
+  // 宫格裁剪: one node, several slices. A single-picture connection hands on
+  // the slice the canvas shows; out:images hands on all of them, each named by
+  // its place, as on the web host. Choosing another slice reuses the cached
+  // grid and leaves a batch connection's work cached too.
+  it('hands on the shown slice over a single connection and every slice over the batch one', async () => {
+    const slices = ['0', '1', '2', '3'].map((index) => asset(`${'s'.repeat(42)}${index}`))
+    const split = vi.fn<CanvasNodeExecutor>(async () => ({ assets: slices.map((slice) => structuredClone(slice)) }))
+    const crop = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('c'.repeat(43))] }))
+    const collage = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('d'.repeat(43))] }))
+    const cache = new Map<string, CanvasRunCacheEntry>()
+    function workflow(imageOutputIndex: number) {
+      const grid = node('split', 'image-grid-split')
+      grid.data.imageTransform = { kind: 'grid-split', rows: 2, columns: 2, gap: 0, padding: 0 }
+      grid.data.imageOutputIndex = imageOutputIndex
+      return graph([node('image', 'image'), grid, node('one', 'image-crop'), node('all', 'image-collage')], [
+        edge('image', 'split', 'image'),
+        edge('split', 'one', 'image'),
+        { id: 'split->all:batch', source: 'split', sourceHandle: 'out:images', target: 'all', targetHandle: 'in:images' },
+      ])
+    }
+    function run(imageOutputIndex: number) {
+      return executeCanvasRun(runOptions(workflow(imageOutputIndex), {
+        executors: executors({ 'image-grid-split': split, 'image-crop': crop, 'image-collage': collage }),
+        resolveCache: async (fingerprint) => structuredClone(cache.get(fingerprint) ?? null),
+        storeCache: async (entry) => { cache.set(entry.fingerprint, structuredClone(entry)) },
+      }))
+    }
+
+    const first = await run(2)
+    expect(first.status).toBe('succeeded')
+    const splitAttempt = first.nodes.find((entry) => entry.nodeId === 'split')!.attempts[0]
+    // The shown slice comes first, every slice keeps its place.
+    expect(splitAttempt.candidates.map((candidate) => [candidate.outputIndex, candidate.asset.assetId.at(-1)])).toEqual([[2, '2'], [0, '0'], [1, '1'], [3, '3']])
+    function shownIds(record: CanvasRunRecord) {
+      const event = [...record.events].reverse().find((entry) => entry.type === 'node-state' && entry.nodeId === 'split' && entry.candidateIds !== undefined)
+      return event?.type === 'node-state' ? event.candidateIds : undefined
+    }
+    expect(shownIds(first)).toEqual(splitAttempt.candidates.map((candidate) => candidate.candidateId))
+    expect(crop.mock.calls[0][0].inputs.imageSources).toEqual([{ edgeId: 'split->one:image', outputIndex: 0, asset: slices[2] }])
+    expect(collage.mock.calls[0][0].inputs.imageSources).toEqual(slices.map((slice, outputIndex) => ({ edgeId: 'split->all:batch', outputIndex, asset: slice })))
+    expect(collage.mock.calls[0][0].inputs.images).toEqual(slices)
+    const stored = [...cache.values()].find((entry) => entry.nodeKind === 'image-grid-split')!
+    expect(stored.candidate).toEqual(splitAttempt.candidates[0])
+    expect(stored.candidates).toEqual(splitAttempt.candidates)
+
+    const second = await run(1)
+    const states = Object.fromEntries(second.nodes.map((entry) => [entry.nodeId, entry.state]))
+    expect(states).toEqual({ image: 'cached', split: 'cached', one: 'succeeded', all: 'cached' })
+    expect(split).toHaveBeenCalledOnce()
+    expect(collage).toHaveBeenCalledOnce()
+    expect(crop).toHaveBeenCalledTimes(2)
+    expect(crop.mock.calls[1][0].inputs.imageSources).toEqual([{ edgeId: 'split->one:image', outputIndex: 0, asset: slices[1] }])
+    const replayed = second.nodes.find((entry) => entry.nodeId === 'split')!
+    expect(replayed.attempts[0].candidates.map((candidate) => candidate.outputIndex)).toEqual([1, 2, 0, 3])
+    expect(shownIds(second)).toEqual(replayed.attempts[0].candidates.map((candidate) => candidate.candidateId))
+  })
+})
+
+describe('executeCanvasRun reference orders', () => {
+  const pictureA = asset('a'.repeat(43))
+  const pictureB = asset('b'.repeat(43))
+  function pictures(id: string, assetId: string) {
+    return { ...node(id, 'image-input'), data: { prompt: '', model: '', adoptedAssetId: assetId } }
+  }
+  function into(source: string, target: string) {
+    return { id: `${source}->${target}`, source, sourceHandle: 'out:image', target, targetHandle: 'in:images' }
+  }
+  const inputPictures: CanvasNodeExecutor = async ({ node: current }) => ({ assets: [asset(current.data.adoptedAssetId)] })
+
+  it('hands an edit its pictures by role and refuses roles that no longer match, before anything is paid', async () => {
+    const edit = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+    function workflow(slots: NonNullable<CanvasRunGraphNode['data']['imageReferenceOrder']>['slots'], extra: CanvasRunGraphNode[] = [], extraEdges: CanvasRunGraph['edges'] = []) {
+      const target: CanvasRunGraphNode = { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成夜景', model: 'gpt-image-2', imageReferenceOrder: { version: 1, slots } } }
+      return graph([pictures('a', pictureA.assetId), pictures('b', pictureB.assetId), ...extra, target], [into('a', 'edit'), into('b', 'edit'), ...extraEdges])
+    }
+    const run = (value: CanvasRunGraph) => executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': inputPictures, 'image-edit': edit }) }))
+
+    const ordered = workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'a->edit', outputIndex: 0 }])
+    expect(canvasRunDesktopUnsupportedReason(ordered, { kind: 'all' })).toBeUndefined()
+    const record = await run(ordered)
+    expect(record.status).toBe('succeeded')
+    // The second connection is the source the user picked: it goes first.
+    expect(edit.mock.calls[0][0].inputs.images).toEqual([pictureB, pictureA])
+    expect(edit.mock.calls[0][0].inputs.image).toEqual(pictureB)
+    expect(edit.mock.calls[0][0].inputs.imageSources).toEqual([
+      { edgeId: 'b->edit', outputIndex: 0, asset: pictureB },
+      { edgeId: 'a->edit', outputIndex: 0, asset: pictureA },
+    ])
+
+    const refused: Array<[CanvasRunGraph, string, string]> = [
+      // A picture connected after the roles were set has no role.
+      [workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }]), '新连接的图片尚未分配角色，请打开创作配置核对', '有新接入的参考图片尚未分配角色，请打开创作配置核对；不会自动加入模型请求'],
+      // A slot whose connection is gone is never filled with another picture.
+      [workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'a->edit', outputIndex: 0 }, { role: 'reference', missing: true }]), '原图或参考图位置已失联，请重新绑定；不会使用其他图片', '参考图位置已失联或尚未就绪，请重新绑定；不会改用其他图片'],
+      // The same picture cannot be the source and a reference.
+      [workflow([{ role: 'source', edgeId: 'b->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'a->edit', outputIndex: 0 }, { role: 'reference', edgeId: 'c->edit', outputIndex: 0 }], [pictures('c', pictureA.assetId)], [into('c', 'edit')]), '原图和参考图必须是不同的实际图片，请检查重复素材', '原图和参考图必须是不同的实际图片，请检查重复素材'],
+    ]
+    for (const [value, atStart, atNode] of refused) {
+      // The run service refuses the run up front (canvas-run-service.ts) ...
+      expect(canvasRunDesktopUnsupportedReason(value, { kind: 'all' })).toBe(atStart)
+      // ... and the node fails the same way if a caller skipped that check.
+      const failed = await run(value)
+      expect(failed.nodes.find((entry) => entry.nodeId === 'edit')).toMatchObject({ state: 'failed', errorMessage: atNode })
+    }
+    expect(edit).toHaveBeenCalledOnce()
+  })
+
+  it('hands a video its references in the saved order and refuses a saved slot that is gone', async () => {
+    const video = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [{ kind: 'video', assetId: 'v'.repeat(43), localUrl: 'xingmang-asset://video/v' }] }))
+    function workflow(videoReferenceOrder?: CanvasRunGraphNode['data']['videoReferenceOrder']) {
+      const target: CanvasRunGraphNode = { id: 'video', kind: 'video-generate', definitionVersion: 1, data: { prompt: '镜头推进', model: 'minimax-h3-fast', seconds: '6', ...(videoReferenceOrder ? { videoReferenceOrder } : {}) } }
+      return graph([pictures('first', pictureA.assetId), pictures('last', pictureB.assetId), target], [into('first', 'video'), into('last', 'video')])
+    }
+    const run = (value: CanvasRunGraph) => executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': inputPictures, video, 'video-generate': video }) }))
+
+    await run(workflow())
+    expect(video.mock.calls[0][0].inputs.images).toEqual([pictureA, pictureB])
+    await run(workflow({ version: 1, slots: [{ edgeId: 'last->video', outputIndex: 0 }, { edgeId: 'first->video', outputIndex: 0 }] }))
+    // The user swapped first and last frame.
+    expect(video.mock.calls[1][0].inputs.images).toEqual([pictureB, pictureA])
+    expect(video.mock.calls[1][0].inputs.image).toEqual(pictureB)
+    // A partial order puts the saved slots first and keeps the rest after them.
+    await run(workflow({ version: 1, slots: [{ edgeId: 'last->video', outputIndex: 0 }] }))
+    expect(video.mock.calls[2][0].inputs.images).toEqual([pictureB, pictureA])
+
+    const gone = await run(workflow({ version: 1, slots: [{ edgeId: 'removed->video', outputIndex: 0 }, { edgeId: 'first->video', outputIndex: 0 }] }))
+    expect(gone.nodes.find((entry) => entry.nodeId === 'video')).toMatchObject({ state: 'failed', errorMessage: '已保存的视频参考位置缺失，请核对首尾帧并重新确认参考顺序；当前不会提交生成' })
+    expect(video).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('executeCanvasRun scene tasks', () => {
+  const pictureA = asset('a'.repeat(43))
+  const pictureB = asset('b'.repeat(43))
+  function pictures(id: string, assetId: string) {
+    return { ...node(id, 'image-input'), data: { prompt: '', model: '', adoptedAssetId: assetId } }
+  }
+  function into(source: string, target: string) {
+    return { id: `${source}->${target}`, source, sourceHandle: 'out:image', target, targetHandle: 'in:images' }
+  }
+  function roles(target: string) {
+    return { version: 1 as const, slots: [{ role: 'source' as const, edgeId: `a->${target}`, outputIndex: 0 }, { role: 'reference' as const, edgeId: `b->${target}`, outputIndex: 0 }] }
+  }
+  const inputPictures: CanvasNodeExecutor = async ({ node: current }) => ({ assets: [asset(current.data.adoptedAssetId)] })
+  const exteriorTask = { version: 1 as const, kind: 'landscape-redesign' as const, automaticPrompt: true }
+  const storyboardTask = { version: 1 as const, kind: 'storyboard' as const, automaticPlot: true, style: 'cinematic' as const, panels: 4 as const }
+
+  function workflow(task: 'exterior' | 'storyboard', change: { analysisPrompt?: string; targetRoles?: boolean } = {}) {
+    const plot = task === 'storyboard' ? '两只猫在窗台上' : ''
+    const analysis: CanvasRunGraphNode = {
+      id: 'analysis', kind: 'text-generate', definitionVersion: 1,
+      data: { prompt: change.analysisPrompt ?? (task === 'exterior' ? buildCanvasExteriorAnalysisPrompt(exteriorTask) : buildCanvasStoryboardAnalysisPrompt(storyboardTask, plot)), model: 'gpt-5.5', imageReferenceOrder: roles('analysis') },
+    }
+    const target: CanvasRunGraphNode = {
+      id: 'target', kind: 'image-edit', definitionVersion: 1,
+      data: { prompt: plot, model: 'gpt-image-2', ...(change.targetRoles === false ? {} : { imageReferenceOrder: roles('target') }), ...(task === 'exterior' ? { exteriorTask } : { storyboardTask }) },
+    }
+    return graph(
+      [pictures('a', pictureA.assetId), pictures('b', pictureB.assetId), analysis, target],
+      [into('a', 'analysis'), into('b', 'analysis'), into('a', 'target'), into('b', 'target'), { id: 'analysis->target', source: 'analysis', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' }],
+    )
+  }
+
+  it('asks the executors to compare the pictures of a scene task and of its prompt-writing node, and nothing else', async () => {
+    for (const task of ['exterior', 'storyboard'] as const) {
+      const text = vi.fn<CanvasNodeExecutor>(async () => ({ outputText: '写好的提示词' }))
+      const edit = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+      const input = vi.fn<CanvasNodeExecutor>(inputPictures)
+      const value = workflow(task)
+      expect(canvasRunDesktopUnsupportedReason(value, { kind: 'all' })).toBeUndefined()
+      const record = await executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': input, 'text-generate': text, 'image-edit': edit }) }))
+      expect(record.status).toBe('succeeded')
+      expect(text.mock.calls[0][0].sceneSourceChecks).toEqual([task])
+      expect(text.mock.calls[0][0].inputs.images).toEqual([pictureA, pictureB])
+      expect(edit.mock.calls[0][0].sceneSourceChecks).toEqual([task])
+      expect(edit.mock.calls[0][0].inputs.text).toBe('写好的提示词')
+      for (const call of input.mock.calls) expect(call[0]).not.toHaveProperty('sceneSourceChecks')
+    }
+    // A plain edit over the same two pictures compares nothing.
+    const plain = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+    const bare = graph([pictures('a', pictureA.assetId), pictures('b', pictureB.assetId), { id: 'target', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成夜景', model: 'gpt-image-2', imageReferenceOrder: roles('target') } }], [into('a', 'target'), into('b', 'target')])
+    await executeCanvasRun(runOptions(bare, { executors: executors({ 'image-input': inputPictures, 'image-edit': plain }) }))
+    expect(plain.mock.calls[0][0]).not.toHaveProperty('sceneSourceChecks')
+  })
+
+  it('refuses a scene task whose roles or prompt-writing node no longer match, at run start and at the node, before anything is paid', async () => {
+    const refused: Array<[CanvasRunGraph, string]> = [
+      // No roles at all counts as no pictures, as in the kernel.
+      [workflow('storyboard', { targetRoles: false }), '故事板需要 1–4 张有序输入图片'],
+      [workflow('exterior', { targetRoles: false }), '室外任务需要明确绑定对应的原图和参考图角色'],
+      [workflow('exterior', { analysisPrompt: '描述一下这两张图' }), '自动提示需要唯一、可用的显式图片分析节点，请重新配置室外任务'],
+      [workflow('storyboard', { analysisPrompt: buildCanvasStoryboardAnalysisPrompt(storyboardTask, '他们去了海边') }), '自动剧情需要唯一、可用且与当前剧情一致的显式图片分析节点，请重新配置故事板'],
+    ]
+    const edit = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+    for (const [value, message] of refused) {
+      expect(canvasRunDesktopUnsupportedReason(value, { kind: 'all' })).toBe(message)
+      const failed = await executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': inputPictures, 'image-edit': edit }) }))
+      expect(failed.nodes.find((entry) => entry.nodeId === 'target')).toMatchObject({ state: 'failed', errorMessage: message })
+    }
+    expect(edit).not.toHaveBeenCalled()
   })
 })

@@ -71,6 +71,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:switch-account-source': { log: 'normal', account: 'scoped' },
   'config:repair-cli-hooks': { log: 'normal', account: 'scoped' },
   'config:set-claude-write-boundary': { label: '只让 Claude Code 改项目文件夹里的文件', log: 'normal', account: 'scoped' },
+  'config:set-claude-commit-attribution': { label: 'Claude Code 提交代码时不署名', log: 'normal', account: 'scoped' },
   'tools:inspect-running': { label: '换账号后检查哪些工具还开着', log: 'normal', account: 'none' },
   'tools:check-models': { label: '打开工具前核对当前账号能用的模型', log: 'normal', account: 'scoped' },
   'tools:cli-model-hints': { label: '读取服务状态文件里的型号表', log: 'normal', account: 'none' },
@@ -145,6 +146,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'backups:inspect': { label: '配置备份详情读取', log: 'normal', account: 'none' },
   'backups:restore': { label: '配置备份恢复', log: 'normal', account: 'none' },
   'backups:delete': { label: '配置备份删除', log: 'normal', account: 'none' },
+  // 打开「备份迁移」那一组就问六次，每次成功都记一条只会刷屏；没算出来的那一行由 storage-usage-service.ts 自己记。
+  'storage:inspect': { label: '星芒占用的空间计算', log: 'quiet-success', account: 'none' },
+  'storage:clean': { label: '星芒占用的空间清理', log: 'normal', account: 'none' },
   // 结果里是登录二维码的图片，扫了它就能把别人的微信连到这台：成功不记（I13）。poll 每四十秒一次，
   // 记了也只会刷屏。失败照记，失败那一行不带入参。
   'codex-remote:weixin-login-start': { label: '手机遥控微信扫码', log: 'quiet-success', account: 'none' },
@@ -182,6 +186,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // configure-managed-clis, reveal-key, list-key-models, configure-cli-with-key).
   'account:get-status': { label: '星芒账号服务状态读取', log: 'quiet-success', account: 'none' },
   'account:get-notice': { log: 'polling', account: 'scoped' },
+  // 打开公告时一张图一次，成功了只会刷屏；下不下来照记，排查破图要用。
+  'account:get-notice-image': { label: '公告图片下载', log: 'quiet-success', account: 'scoped' },
   'account:mark-notice-read': { log: 'normal', account: 'scoped' },
   'account:sync-local-notice-reads': { log: 'polling', account: 'scoped' },
   'acceleration:get-state': { log: 'normal', account: 'none' },
@@ -209,6 +215,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:quote-topup': { log: 'normal', account: 'scoped' },
   'account:create-topup-payment': { log: 'normal', account: 'scoped' },
   'account:close-payment-window': { log: 'normal', account: 'scoped' },
+  'account:open-invoice-portal': { log: 'normal', account: 'scoped' },
   'account:list-topup-orders': { log: 'normal', account: 'scoped' },
   'account:redeem-topup-code': { log: 'normal', account: 'scoped' },
   'account:transfer-affiliate-quota': { log: 'normal', account: 'scoped' },
@@ -283,6 +290,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
+  'chat:pick-text-files': { label: '聊天选文字文件', log: 'quiet-success', account: 'scoped' },
   // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
   'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
   'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },
@@ -316,6 +324,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'extensions:choose-directory': { label: '外接工具选择文件夹', log: 'normal', account: 'none' },
   'codex-remote:get-state': { label: '手机遥控状态读取', log: 'quiet-success', account: 'none' },
   'codex-remote:set-channel-enabled': { label: '手机遥控开关', log: 'normal', account: 'none' },
+  'codex-remote:reconnect': { label: '手机遥控重新连接', log: 'normal', account: 'none' },
+  'codex-remote:set-auto-start': { label: '手机遥控打开星芒时自动打开', log: 'normal', account: 'none' },
+  'codex-remote:set-idle-close': { label: '手机遥控多久没消息自动关', log: 'normal', account: 'none' },
   'codex-remote:choose-workspace': { label: '手机遥控工作文件夹选择', log: 'normal', account: 'none' },
   // 返回值里带着配对码：只该出现在客户自己眼前的屏幕上，成功不进日志和反馈报告。
   'codex-remote:start-pairing': { label: '手机遥控开始配对', log: 'quiet-success', account: 'none' },

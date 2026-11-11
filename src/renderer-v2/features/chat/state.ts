@@ -1,7 +1,8 @@
-import { IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
+import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
+import { resolveMissingAiAssetMessage } from '../../../../electron/ai-asset-missing'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
-import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile } from '../../../../electron/ipc-contract'
 import { redactSecretPatterns } from '../../../../electron/redaction-patterns'
 import { matchRelayQuotaFailureMessage, relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
 import { rawErrorMessage, speaksChinese, userFacingErrorMessage } from '../../business-common'
@@ -30,12 +31,15 @@ export interface ChatMessage {
   error?: string
   mayStillComplete?: boolean
   assets?: AiChatAsset[]
+  /** Text files sent with a user message: their text goes to the AI together with the message (messageWithFiles). */
+  files?: AiChatTextFile[]
   settings?: ChatSettings
 }
-// draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。
+// draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。draftFiles 同理，挂在 files 上。
 // pinned：客户置顶的，列表里排在最上面「置顶」那一段。renamed：客户自己改过名字，消息删光了再发也不按第一句话重新起名。
-export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean; pinned?: boolean; renamed?: boolean }
-export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
+export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; draftFiles?: AiChatTextFile[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean; pinned?: boolean; renamed?: boolean }
+// phrases 是客户自己存的「常用的话」（Fable 第二轮 Q7），跟这个账号的聊天记录存在一起，新的在前。
+export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation; phrases?: string[] }
 export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[]; images: AiChatAsset[] }
 
 // Keep the first chat surface aligned with the account-side Codex defaults.
@@ -187,6 +191,10 @@ export function saveConversation(state: ChatWorkspace, conversation: Conversatio
 export function isGenerating(conversation: Conversation): boolean { return conversation.messages.some((message) => message.status === 'pending' || message.status === 'streaming') }
 // 出图那一条带着发出时的设置；换账号会把它掐掉、钱可能已经扣了，切换前要先问一句（D44）。出字的不算。
 export function isGeneratingImage(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode === 'image') }
+// 回复途中网断了，主进程要连着 3 分钟收不到字才停（给长思考模型留的，时限不改），这期间界面只转圈，
+// 客户以为卡死了。在那条下面说一句，让客户知道可以先停（D43）。出图的不说：停下也可能照样计费，停之前另有一问。
+export const offlineReplyNotice = '网络断了，这条回复可能接不上，可以先停止。'
+export function shouldShowOfflineReplyNotice(message: ChatMessage, offline: boolean): boolean { return offline && message.role === 'assistant' && (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode !== 'image' }
 
 // A stream chunk replaces only the conversation it belongs to, so every other
 // conversation keeps its object identity for the whole answer. Caching the
@@ -197,7 +205,7 @@ const conversationSearchTexts = new WeakMap<Conversation, string>()
 function conversationSearchText(conversation: Conversation): string {
   const cached = conversationSearchTexts.get(conversation)
   if (cached !== undefined) return cached
-  const searchable = `${conversation.title} ${conversation.messages.map((message) => message.content).join(' ')}`.toLocaleLowerCase()
+  const searchable = `${conversation.title} ${conversation.messages.map((message) => [message.content, ...(message.files ?? []).map((file) => file.name)].join(' ')).join(' ')}`.toLocaleLowerCase()
   conversationSearchTexts.set(conversation, searchable)
   return searchable
 }
@@ -253,6 +261,48 @@ export const offlineSendMessage = '没发出去：现在连不上网。网络恢
 // 换成一句话，让 AI 知道那里原本有图。
 function earlierImagesNote(count: number): string { return `（这里附过 ${count} 张图片，这次没有再发给 AI）` }
 
+// 带的文件和这条消息的字拼成一段发给 AI。每份文件前后有标记、写着文件名，AI 分得清哪段是文件、哪段是客户自己写的；
+// 只读了开头的标出来，AI 不会当成全文去总结。界面上不显示这段，客户看到的是文件卡片和自己写的字。
+function fileBlock(file: AiChatTextFile): string {
+  return `<file name="${file.name}"${file.truncated ? ' truncated="true"' : ''}>\n${file.text}\n</file>`
+}
+export function messageWithFiles(content: string, files: readonly AiChatTextFile[] | undefined): string {
+  if (!files?.length) return content
+  const blocks = files.map(fileBlock).join('\n\n')
+  return content.trim() ? `${blocks}\n\n${content}` : blocks
+}
+// 每份文件的标记加文件名最多占这么多字（文件名最长 255）。选文件前还不知道叫什么，先按最长的留出来。
+const FILE_MARKUP_ALLOWANCE = 300
+function fileCharacters(files: readonly AiChatTextFile[] | undefined): number { return files?.reduce((total, file) => total + file.text.length, 0) ?? 0 }
+
+/** 再选文件时还能加几个、能放多少字：文件合计不超过 3 万字，跟已经写的字拼起来也不超过单条上限。 */
+export function draftFileRoom(conversation: Pick<Conversation, 'draft' | 'draftFiles'>): { files: number; characters: number } {
+  const present = conversation.draftFiles ?? []
+  const files = AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage - present.length
+  if (files <= 0) return { files: 0, characters: 0 }
+  const used = messageWithFiles(conversation.draft, present).length + 2
+  const characters = Math.min(AI_CHAT_TEXT_FILE_LIMITS.charsPerMessage - fileCharacters(present), chatLimits.messageLength - used - files * FILE_MARKUP_ALLOWANCE)
+  return { files, characters: Math.max(0, characters) }
+}
+
+export function addDraftFiles(conversation: Conversation, files: readonly AiChatTextFile[]): Conversation {
+  if (!files.length) return conversation
+  return { ...conversation, draftFiles: [...(conversation.draftFiles ?? []), ...files].slice(0, AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage) }
+}
+
+export function removeDraftFile(conversation: Conversation, index: number): Conversation {
+  const rest = (conversation.draftFiles ?? []).filter((_file, position) => position !== index)
+  if (rest.length) return { ...conversation, draftFiles: rest }
+  const { draftFiles: _removed, ...withoutFiles } = conversation
+  return withoutFiles
+}
+
+export const imageModeFilesMessage = '生成图片时带不了文件，请先把文件去掉，或者换回「文本对话」'
+/** 只读了开头的文件，加上以后在横幅上说一声，免得客户以为 AI 看了全文。 */
+export function fileTruncationNotice(files: readonly AiChatTextFile[]): string {
+  return files.filter((file) => file.truncated).map((file) => `「${file.name}」太长，只读了前 ${file.text.length.toLocaleString('zh-CN')} 个字。`).join('')
+}
+
 // 每发一句，这段对话前面的内容都会一起发出去，这里就是那一份。提醒和上限都按它算，
 // 两边口径一致，提醒到七成时离真正拦下还差三成。
 function contextMessages(history: readonly ChatMessage[], settings: ChatSettings): AiChatMessageInput[] {
@@ -270,9 +320,10 @@ function contextMessages(history: readonly ChatMessage[], settings: ChatSettings
   for (const message of history) {
     if (message.role === 'user') {
       const images = message.assets?.map((asset) => asset.assetId) ?? []
-      if (images.length && sendImages.has(message.id)) messages.push({ role: 'user', content: message.content, images })
-      else if (images.length) messages.push({ role: 'user', content: message.content.trim() ? `${message.content}\n${earlierImagesNote(images.length)}` : earlierImagesNote(images.length) })
-      else if (message.content.trim()) messages.push({ role: 'user', content: message.content })
+      const content = messageWithFiles(message.content, message.files)
+      if (images.length && sendImages.has(message.id)) messages.push({ role: 'user', content, images })
+      else if (images.length) messages.push({ role: 'user', content: content.trim() ? `${content}\n${earlierImagesNote(images.length)}` : earlierImagesNote(images.length) })
+      else if (content.trim()) messages.push({ role: 'user', content })
     } else if (message.content.trim() && !message.assets?.length && message.status !== 'error') messages.push({ role: message.role, content: message.content })
   }
   return messages
@@ -307,18 +358,29 @@ export function continueInNewConversation(state: ChatWorkspace, sourceId: string
   const source = state.conversations.find((item) => item.id === sourceId) ?? (state.draftConversation.id === sourceId ? state.draftConversation : null)
   if (!source) return state
   const images = fromSourceDraft ? source.draftImages ?? [] : []
-  const next = { ...createConversation(source.settings), draft: text, ...(images.length ? { draftImages: images } : {}) }
-  const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => { const { draftImages: _moved, ...rest } = item; return { ...rest, draft: '' } }) : state
+  const files = fromSourceDraft ? source.draftFiles ?? [] : []
+  const next = { ...createConversation(source.settings), draft: text, ...(images.length ? { draftImages: images } : {}), ...(files.length ? { draftFiles: files } : {}) }
+  const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => { const { draftImages: _moved, draftFiles: _movedFiles, ...rest } = item; return { ...rest, draft: '' } }) : state
   return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
 }
 
-export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[] }): TurnPlan {
+// 输入框不再靠 maxLength 截字：浏览器截掉的是尾巴，客户贴的报错日志最要紧的偏偏是最后几行，
+// 截了 AI 照样回答，客户不知道它没看到（D42）。超长时输入框下面说这一句、发送灰掉。
+// 跟 planTurn 一样按去掉首尾空白、连同带的文件一起算，灰着的按钮和真发出去时的检查口径一致；
+// 带了文件时「现在 N 字」也含文件，删字或拿掉文件都能降下来。
+export function draftLengthError(text: string, files?: readonly AiChatTextFile[]): string {
+  const length = messageWithFiles(text.trim(), files).length
+  return length > chatLimits.messageLength ? `最多 ${chatLimits.messageLength} 字，现在 ${length} 字，删掉一些再发。` : ''
+}
+
+export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[]; files?: AiChatTextFile[] }): TurnPlan {
   if (isGenerating(conversation)) throw new Error('当前对话仍在生成，请先停止或等待完成')
   let history = conversation.messages.slice()
   let settings = conversation.settings
   let prompt = input.prompt.trim()
   let assistantId = input.assistantId
   let images: AiChatAsset[] = []
+  let files: AiChatTextFile[] = []
   if (input.retryId) {
     const index = history.findIndex((message) => message.id === input.retryId && message.role === 'assistant')
     if (index < 1) throw new Error('找不到要重新生成的回复')
@@ -328,20 +390,24 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
     const lastUser = [...history].reverse().find((message) => message.role === 'user')
     prompt = lastUser?.content ?? ''
     images = lastUser?.assets ?? []
+    files = lastUser?.files ?? []
   } else if (input.editId) {
     const index = history.findIndex((message) => message.id === input.editId && message.role === 'user')
     if (index < 0) throw new Error('找不到要编辑的消息')
     images = history[index].assets ?? []
+    files = history[index].files ?? []
     history = [...history.slice(0, index), { ...history[index], content: prompt }]
   } else {
     images = input.images?.slice(0, chatLimits.imagesPerMessage) ?? []
-    history.push({ id: input.userMessageId, role: 'user', content: prompt, reasoning: '', status: 'complete', createdAt: Date.now(), ...(images.length ? { assets: images } : {}) })
+    files = input.files?.slice(0, AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage) ?? []
+    history.push({ id: input.userMessageId, role: 'user', content: prompt, reasoning: '', status: 'complete', createdAt: Date.now(), ...(images.length ? { assets: images } : {}), ...(files.length ? { files } : {}) })
   }
-  if (!prompt && !images.length) throw new Error('请先输入消息内容')
-  if (prompt.length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
+  if (!prompt && !images.length && !files.length) throw new Error('请先输入消息内容')
+  if (messageWithFiles(prompt, files).length > chatLimits.messageLength) throw new Error(`单条消息最多 ${chatLimits.messageLength} 个字符`)
   if (!settings.group || !settings.model) throw new Error('请先选择模型')
   // 生成图片时带的图是参考图，照着它改；要说清楚怎么改，光有图不够。
   if (settings.mode === 'image' && !prompt) throw new Error('请先输入消息内容')
+  if (files.length && settings.mode === 'image') throw new Error(imageModeFilesMessage)
   if (images.length && settings.mode === 'image' && !canEditImages(settings.model)) throw new Error(noImageEditModelMessage)
   if (images.length && settings.mode === 'text' && !canReadImages(settings.model)) throw new Error(noImageModelMessage)
   const messages = contextMessages(history, settings)
@@ -352,8 +418,8 @@ export function planTurn(conversation: Conversation, input: { prompt: string; re
   const snapshot = { ...settings, parameters: { ...settings.parameters } }
   const assistant: ChatMessage = { id: assistantId, role: 'assistant', content: '', reasoning: '', status: 'pending', createdAt: Date.now(), requestId: input.requestId, settings: snapshot }
   const fresh = !input.retryId && !input.editId
-  const title = conversation.messages.length || conversation.renamed ? conversation.title : prompt.slice(0, 32) || '图片提问'
-  const { draftImages: _sent, ...rest } = conversation
+  const title = conversation.messages.length || conversation.renamed ? conversation.title : prompt.slice(0, 32) || files[0]?.name.slice(0, 32) || '图片提问'
+  const { draftImages: _sent, draftFiles: _sentFiles, ...rest } = conversation
   return { conversation: { ...(fresh ? rest : conversation), title, updatedAt: Date.now(), draft: fresh ? '' : conversation.draft, messages: [...history, assistant] }, requestId: input.requestId, assistantId, settings: snapshot, prompt, messages, images }
 }
 
@@ -372,6 +438,9 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 再被 /登录|密钥/ 之类撞上，就会变回「请重新登录」。
   if (code === 'service-unavailable' || networkFailureReasonForMessage(message) === 'serviceUnavailable') return networkFailureMessages.serviceUnavailable
   if (code) return message || '本次请求没有完成，已保留内容，请稍后重试'
+  // 图片文件在外面被删掉、挪走了：复制、拿去改、带着它发都不会再成，原话上屏，别叫客户重试（D37）。
+  const missing = resolveMissingAiAssetMessage(message)
+  if (missing) return missing
   // 主进程在发付费请求之前试写保存位置，写不进就停下。原话里有「这次没有扣费」和
   // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
   const unwritable = message.indexOf('保存位置写不进去')
@@ -393,7 +462,7 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   if (quota) return relayQuotaFailureMessages[quota]
   // 本来就是说给客户听的话原样上屏，必须排在下面按字面猜的几条前面：从没登录过时主进程说
   // 「请先登录星芒账号」，里面有「登录」两个字，以前被 /登录|密钥/ 改成「已失效，请重新登录」。
-  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^这个模型不能照着图片改/.test(message)) return message
+  if (/^当前对话|^找不到要|^请先|^单条消息|^这段对话|^当前模型看不了图片|^这个模型不能照着图片改|^生成图片时带不了文件/.test(message)) return message
   if (/余额|额度不足|insufficient|quota|402/i.test(message)) return '账号余额或密钥额度不足，请充值后重试'
   if (/401|credential|未登录|登录|密钥|key.*失效/i.test(message)) return '当前登录或密钥已失效，请重新登录后重试'
   if (/429|rate.limit|限流|频繁/i.test(message)) return '请求太频繁，请稍候再试'
@@ -407,6 +476,11 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   return '本次请求没有完成，已保留内容，请稍后重试'
 }
 
+/** 另存图片没成：图片文件不在了就照实说（D37），别的原因照旧可以重试。 */
+export function chatAssetSaveErrorMessage(error: unknown): string {
+  return resolveMissingAiAssetMessage(rawErrorMessage(error)) ?? '图片没有保存成功，可以重试'
+}
+
 /**
  * 选图、贴图失败时主进程说的就是原因和下一步，中文原话上屏（剥掉 IPC 前缀、脱路径、打码）。
  * 英文原话（图片存不进去时系统给的 EPERM 这类）换成兜底句。以前从第一个汉字截起，
@@ -416,6 +490,13 @@ export function attachmentErrorMessage(error: unknown): string {
   const message = userFacingErrorMessage(error)
   if (/请先登录/.test(message)) return '请先登录，再加图片'
   return speaksChinese(message) ? redactSecretPatterns(message) : '图片没有加上，请再试一次'
+}
+
+/** 选文件失败时同选图：主进程的中文原话上屏，英文的换成兜底句。 */
+export function fileAttachmentErrorMessage(error: unknown): string {
+  const message = userFacingErrorMessage(error)
+  if (/请先登录/.test(message)) return '请先登录，再加文件'
+  return speaksChinese(message) ? redactSecretPatterns(message) : '文件没有加上，请再试一次'
 }
 
 export function addDraftImages(conversation: Conversation, images: readonly AiChatAsset[]): Conversation {
@@ -474,3 +555,27 @@ export function shouldPasteScreenshot(clipboard: { items: Iterable<{ kind: strin
 export const chatExamples: readonly string[] = ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
 /** 带「……」的示例是半句话：填进去时去掉省略号，光标停在末尾，客户接着往下打，不用先删掉它。 */
 export function chatExampleDraft(example: string): string { return example.replace(/…+$/, '') }
+
+// 「常用」里最多存几条、一条最长多少字。一条是一句常说的话或一段固定要求，不是一篇文章。
+export const MAX_CHAT_PHRASES = AI_CHAT_PHRASE_LIMITS.count
+export const MAX_CHAT_PHRASE_LENGTH = AI_CHAT_PHRASE_LIMITS.length
+
+/** 存一条常用的话：去掉首尾空白，新的放最前面；已经有一样的就挪到最前面，不重复存。满了不再加。 */
+export function addChatPhrase(phrases: readonly string[] | undefined, text: string): string[] {
+  const phrase = text.trim().slice(0, MAX_CHAT_PHRASE_LENGTH)
+  const present = phrases ?? []
+  if (!phrase) return [...present]
+  const rest = present.filter((item) => item !== phrase)
+  if (rest.length >= MAX_CHAT_PHRASES) return [...present]
+  return [phrase, ...rest]
+}
+
+export function removeChatPhrase(phrases: readonly string[] | undefined, index: number): string[] {
+  return (phrases ?? []).filter((_phrase, position) => position !== index)
+}
+
+/** 填进输入框：输入框空着就换成这一句；已经写了字就接在下一行，不把写好的冲掉。 */
+export function draftWithPhrase(draft: string, phrase: string): string {
+  const text = draft.trim() ? `${draft.replace(/\s+$/, '')}\n${phrase}` : phrase
+  return text.slice(0, chatLimits.messageLength)
+}

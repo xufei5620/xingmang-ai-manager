@@ -21,6 +21,7 @@ export type CanvasRunNodeKind =
 export const canvasRunImageToolNodeLabels = {
   'image-crop': '裁剪图片',
   'image-collage': '拼图',
+  'image-grid-split': '宫格裁剪',
   'image-tile': '平铺图片',
   'image-layer': '图层合成',
   'image-compare': '图片对比',
@@ -33,11 +34,10 @@ export type CanvasRunImageToolNodeKind = keyof typeof canvasRunImageToolNodeLabe
  * Node kinds the xingmang-canvas kernel can put in a run graph but the desktop
  * has no executor for yet. They parse so a graph that merely contains one is
  * not refused as a whole; a run whose scope reaches one is refused before any
- * paid request (#1392). Each label is the kernel's own node title.
+ * paid request (#1392). Each label is the kernel's own node title. Empty since
+ * the grid split joined the image tools; the next kernel kind goes here.
  */
-export const canvasRunKernelOnlyNodeLabels = {
-  'image-grid-split': '宫格裁剪',
-} as const
+export const canvasRunKernelOnlyNodeLabels = {} as const
 
 export type CanvasRunKernelOnlyNodeKind = keyof typeof canvasRunKernelOnlyNodeLabels
 export type CanvasRunScope =
@@ -111,10 +111,88 @@ export interface CanvasRunGraphNode {
     imageCollageInputOrder?: CanvasImageCollageInputOrder
     /** Tile nodes only: which connected picture is the tile. */
     tileInput?: CanvasTileInputSelection
+    /**
+     * Grid-split nodes only: which slice the canvas shows and a single-picture
+     * connection hands on, below rows x columns. Choosing another slice is not
+     * a new picture, so it stays out of the fingerprint, as on the web host.
+     */
+    imageOutputIndex?: number
+    /**
+     * Image, image-generate, image-edit and text-generate nodes (画布完善第 8
+     * 条): which connected picture is the source and which are references, in
+     * the order the request sends them. Absent means connection order.
+     */
+    imageReferenceOrder?: CanvasImageReferenceOrder
+    /**
+     * Video nodes only: the order the user arranged the references in (which
+     * picture is the first frame). Absent means connection order, as before;
+     * an empty order is dropped by the parser for the same reason.
+     */
+    videoReferenceOrder?: CanvasVideoReferenceOrder
+    /**
+     * Image, image-generate and image-edit nodes (画布完善第 8 条): one scene
+     * task at most, picked from fixed options. The main process writes the
+     * prompt around the user's own words (canvas-scene-tasks.ts); each needs
+     * an imageReferenceOrder that matches it.
+     */
+    commerceTask?: CanvasCommerceTask
+    interiorTask?: CanvasInteriorTask
+    exteriorTask?: CanvasExteriorTask
+    storyboardTask?: CanvasStoryboardTask
   }
 }
 
-export type CanvasImageTransformKind = 'crop' | 'collage' | 'tile' | 'layer'
+export type CanvasCommercePreserve = 'shape' | 'color' | 'logo' | 'composition'
+export type CanvasCommerceView = 'front' | 'back' | 'left' | 'right' | 'three-quarter' | 'top'
+export type CanvasCommerceStyle = 'studio' | 'cinematic' | 'watercolor' | 'ink' | 'oil' | 'pencil' | 'flat' | 'clay' | 'paper' | 'retro' | 'pixel'
+/** The kernel's CommerceTask (xingmang-canvas commerce/commerce-task.ts). */
+export type CanvasCommerceTask = { version: 1; preserve: CanvasCommercePreserve[] } & (
+  | { kind: 'material-a'; strength: number }
+  | { kind: 'material-b'; strength: number; upscale: number }
+  | { kind: 'style-preset'; preset: CanvasCommerceStyle }
+  | { kind: 'style-reference' }
+  | { kind: 'product-view'; view: CanvasCommerceView }
+)
+
+export type CanvasInteriorWeather = 'none' | 'overcast' | 'sunny' | 'rainy'
+export type CanvasInteriorTime = 'none' | 'dawn' | 'noon-sun' | 'noon-overcast' | 'evening' | 'night'
+export type CanvasInteriorExterior = 'none' | 'sea' | 'river' | 'mountain' | 'garden' | 'city' | 'town' | 'snow-mountain' | 'street'
+export type CanvasInteriorFilter = 'none' | 'airy-japanese' | 'cool-nordic' | 'soft-cream' | 'teal-orange' | 'dramatic' | 'film'
+/** The kernel's InteriorTask (interior/interior-task.ts). */
+export interface CanvasInteriorTask {
+  version: 1
+  kind: 'interior-render'
+  addDecor: boolean
+  addPeople: boolean
+  enclosedSpace: boolean
+  interiorLighting: boolean
+  weather: CanvasInteriorWeather
+  time: CanvasInteriorTime
+  exterior: CanvasInteriorExterior
+  filter: CanvasInteriorFilter
+}
+
+export type CanvasExteriorWeather = 'none' | 'overcast' | 'rainy' | 'snowy' | 'sunny'
+export type CanvasExteriorTime = 'none' | 'dawn' | 'noon' | 'evening' | 'night'
+export type CanvasExteriorEnvironment = 'none' | 'jiangnan' | 'urban' | 'coast' | 'mountain-city' | 'historic-city' | 'european-street' | 'river-bank' | 'desert-oasis' | 'tropical' | 'mountain-retreat' | 'market-street' | 'japanese-street'
+export type CanvasExteriorDistant = 'none' | 'sea' | 'river' | 'mountain' | 'forest' | 'city' | 'snow-mountain'
+/** The kernel's ExteriorTask (exterior/exterior-task.ts). */
+export type CanvasExteriorTask = { version: 1 } & (
+  | { kind: 'exterior-render'; addPeople: boolean; motionBlur: boolean; interiorLighting: boolean; lightTemperature: 3000 | 4000 | 6000; weather: CanvasExteriorWeather; time: CanvasExteriorTime; environment: CanvasExteriorEnvironment; distant: CanvasExteriorDistant }
+  | { kind: 'exterior-redraw'; useToneReference: boolean }
+  | { kind: 'landscape-redesign' | 'facade-renovation' | 'exterior-style-transfer' | 'storefront-redesign'; automaticPrompt: boolean }
+)
+
+/** The kernel's StoryboardTask (storyboard/storyboard-task.ts). */
+export interface CanvasStoryboardTask {
+  version: 1
+  kind: 'storyboard'
+  automaticPlot: boolean
+  style: 'white-model' | 'hand-drawn' | 'cinematic' | 'stick-figure'
+  panels: 4 | 9 | 16 | 25
+}
+
+export type CanvasImageTransformKind = 'crop' | 'collage' | 'grid-split' | 'tile' | 'layer'
 
 /** The kernel's ImageTransformRecipe (xingmang-canvas image-tools/recipe.ts); only `kind` is typed here. */
 export interface CanvasImageTransformRecipe {
@@ -125,6 +203,14 @@ export interface CanvasImageTransformRecipe {
 export interface CanvasImageCollageInputSlot { edgeId: string; outputIndex: number }
 export interface CanvasImageCollageInputOrder { version: 1; slots: CanvasImageCollageInputSlot[] }
 export type CanvasTileInputSelection = { edgeId: string; outputIndex: number } | { missing: true }
+
+/** One picture reaching a node, named by its connection and its place in that connection's batch. */
+export interface CanvasReferenceIdentity { edgeId: string; outputIndex: number }
+/** The kernel's ImageReferenceSlot (commerce/image-reference-order.ts): slot 1 is the source, the rest references. */
+export type CanvasImageReferenceSlot = { role: 'source' | 'reference' } & (CanvasReferenceIdentity | { missing: true })
+export interface CanvasImageReferenceOrder { version: 1; slots: CanvasImageReferenceSlot[] }
+/** The kernel's VideoReferenceOrder (video-tools/video-reference-order.ts), at most 12 slots. */
+export interface CanvasVideoReferenceOrder { version: 1; slots: CanvasReferenceIdentity[] }
 
 export type CanvasRunImageCandidateCount = 1 | 2 | 3 | 4
 
@@ -194,6 +280,12 @@ export type CanvasRunStatus =
   | 'interrupted'
 
 export interface CanvasRunCandidate {
+  /**
+   * Image tools only: the picture's place in what the node made (a grid
+   * split's slice number), whichever candidate comes first. The kernel's
+   * CanvasRunCandidate has the same field.
+   */
+  outputIndex?: number
   candidateId: string
   attemptId: string
   createdAt: string
@@ -405,6 +497,12 @@ export interface CanvasRunCacheEntry {
   fingerprint: string
   nodeKind: CanvasRunNodeKind
   candidate?: CanvasRunCandidate
+  /**
+   * Every candidate, when the node handed on more than one (a grid split's
+   * slices, the pictures a compare node shows), starting with `candidate`.
+   * A release that predates it reads only `candidate`.
+   */
+  candidates?: CanvasRunCandidate[]
   outputText?: string
   createdAt: string
   lastUsedAt: string

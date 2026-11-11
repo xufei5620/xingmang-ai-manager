@@ -172,6 +172,7 @@
 - `features/auth/api.ts` — 认证相关 IPC 的封装；找回密码给的临时密码经主进程写剪贴板，主进程 60 秒后清掉（渲染层做不到）。
 - `features/auth/StartGuide.tsx` — 新手引导：选工具 → 准备环境 → 连接账号 → 完成；没有默认选择，按 Node → Python → CLI 解锁，步骤是否完成以父级回读的数据为准，来源不明必须用户明确处理。
 - `features/auth/guide-progress.ts` / `features/auth/guide-result.ts` — 引导进度按账号作用域存 localStorage（停在下线 Gemini 的当读不出），以及最后一步「接好了」那张结果卡的说法。
+- `features/auth/useGuideLaunch.ts` — 引导最后一步那颗「打开」落在哪：引导开着时读一份会话记录，跟首页这个工具的「打开」同一套（没用过的替他新建项目文件夹、用过的在上次的文件夹里开，D46）。
 - `features/auth/Welcome.tsx` / `features/auth/WelcomeStarfield.tsx` / `features/auth/welcome-starfield.ts` — 欢迎页与满屏星空：星点位置只算一次交给 SVG 画死，闪烁改成几层整体变透明度，由合成器做；低配电脑与窗口在后台时动画停住。
 - `features/auth/Splash.tsx` / `features/auth/AuthWindow.tsx` — 启动画面（显示父级真实阶段、进度与失败）和登录前几屏共用的可拖动窗口条。
 - `features/auth/LegalDocument.tsx` — 用户协议与隐私政策弹窗：Markdown 里的链接走外链兜底，图片只显示替代文字。
@@ -185,9 +186,10 @@
 - `features/chat/useChatController.ts` — 聊天控制器：打开时准备账号的全部分组（一次三个）、按模型落定计费分组、发送/停止/重试、编辑重发、图片生成与取消、断网后重发；后台刷新只重读分组列表、只准备新冒出来的分组，不换用户的模型和草稿，模型哪儿都没有了也不悄悄换。
 - `features/chat/state.ts` — 会话与消息的数据结构和纯操作：全部分组的模型表与厂商分节（`buildChatCatalog` / `chatModelVendor`）、同一模型几个分组都有时挑哪个计费（`pickChatGroup`）、记着的模型怎么落定（`settleChatModel`）、推荐分组 `GPT`、默认对话与生图模型、每轮请求快照、失败话术（过打码表，I13）。
 - `features/chat/storage.ts` — 聊天记录读写：经主进程按对话分文件写盘、每次只重写改过的；写盘前剥掉 `sk-`、`Bearer`、`api_key=` 与 `blob:`、内联 base64（I13）；旧 localStorage 记录只读迁移，文件里有了才删旧副本。
-- `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
+- `features/chat/transfer.ts` — 「搬到新电脑」里聊天记录那一半（「常用的话」跟着走）：导入前先同步卸下聊天页，免得它下一次自动保存把导入的对话又冲掉。
 - `features/chat/api.ts` — 聊天 IPC 的封装；只复用 `electron/ai-chat-protocol` 里无 Node 依赖的模型能力与请求校验函数，不改协议。
 - `features/chat/ParametersDialog.tsx` / `features/chat/parameters.ts` — 每个对话自己的参数对话框：点「应用」才写回，滑块没动过就是「默认」、请求里不带这一项。
+- `features/chat/PhrasesDialog.tsx` — 输入框旁「常用」点开的「常用的话」：客户自己存的话（最多 30 条，存在这个账号的聊天记录索引里），点「填进输入框」只填不发。
 - `features/chat/links.ts` / `features/chat/math.ts` — 模型输出里的链接从不打开、只给复制，host 按 URL 解析认（`xm.solov.cc@evil.example` 显示真去处，I12 同理）；公式渲染成 MathML，不带字体文件、关掉 `\href` 等命令，CSP 不用放宽。
 - `features/chat/index.ts` — 本目录出口，App 懒加载时从这里取 `ChatPage`。
 - `features/chat/chat.css` — 聊天页样式（消息最宽 684、输入框最宽 740，悬停才露出的按钮）。

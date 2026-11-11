@@ -476,6 +476,8 @@ export const settingsItems: readonly SettingsItem[] = [
   { id: 'workspace', group: 'tools', label: '工作文件夹', keywords: ['工作文件夹', '项目文件夹', '默认文件夹'] },
   // Claude Code 的写文件、改文件只在打开的那个文件夹里做（Fable 第二轮 Q6），默认关。
   { id: 'claude-write-boundary', group: 'tools', label: '只让 Claude Code 改项目文件夹里的文件', keywords: ['文件夹外面', '乱改文件', '改错文件', '写文件', '权限'] },
+  // 提交代码、发 PR 时不带 Claude 的署名（同类对比 备选 6），默认关。
+  { id: 'claude-commit-attribution', group: 'tools', label: 'Claude Code 提交代码时不署名', keywords: ['署名', 'Co-Authored-By', 'commit', 'git', 'PR', '提交记录'] },
   { id: 'latest-cli', group: 'tools', label: '命令行工具总是装最新版', keywords: ['最新版', '推荐版本'] },
   { id: 'install-location', group: 'tools', label: '安装位置', keywords: ['装在哪'] },
   { id: 'terminal', group: 'tools', label: '终端', keywords: ['命令行'] },
@@ -502,6 +504,9 @@ export const settingsItems: readonly SettingsItem[] = [
   // 没登录时只能导设置，那一行写「导出设置」（页面上换）；这里的标题给顶部搜索用。
   { id: 'transfer', group: 'backup', section: 'transfer', label: '导出设置和聊天记录', keywords: ['导出', '换电脑', '新电脑', '迁移', '聊天记录', '搬到新电脑'] },
   { id: 'transfer-import', group: 'backup', section: 'transfer', label: '从文件导入', keywords: ['导入', '换电脑', '新电脑', '迁移', '搬到新电脑'] },
+  // 星芒自己占了多少地方、能清哪些（决定单 D100，「空间页改」）。「C盘满了」是批过的「C 盘满了」不带空格的写法：
+  // 搜索按空格拆词，客户多半不打那个空格。
+  { id: 'storage', group: 'backup', label: '星芒占用的空间', keywords: ['空间', '磁盘', '清理', '占用', 'C 盘满了', 'C盘满了', '内存不够'], card: true },
   { id: 'crash-reporting', group: 'privacy', label: '自动发送错误报告', keywords: [] },
   { id: 'usage-stats', group: 'privacy', label: '匿名使用统计', keywords: [] },
   { id: 'logs', group: 'privacy', label: '运行日志', keywords: ['日志', '报告'] },

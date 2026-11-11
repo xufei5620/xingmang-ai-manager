@@ -1144,3 +1144,90 @@ describe('reading an unreadable record again', () => {
     expect(() => planHistoryWrite(merged, null)).toThrow('聊天记录超过 200 个，这台电脑存不下，原来的记录没动')
   })
 })
+
+describe('chat text files in history', () => {
+  const file = (name: string, text: string, truncated = false) => ({ name, size: text.length + 1, text, truncated })
+
+  it('keeps the files of sent messages and of the draft across a reload', async () => {
+    const state = workspace()
+    state.conversations[0].messages = [message(0, { files: [file('notes.md', '# 会议记录'), file('big.log', 'start', true)] })]
+    state.conversations[0].draftFiles = [file('next.csv', 'a,b')]
+    const restored = await saveAndReopen(state)
+    expect(restored.state).toEqual(state)
+  })
+
+  it('takes keys out of file names and text before saving', async () => {
+    const files = memoryFiles()
+    const state = workspace()
+    state.conversations[0].messages = [message(0, { files: [file('key sk-live-0123456789abcdef.txt', 'token=sk-live-0123456789abcdef')] })]
+    state.conversations[0].draftFiles = [file('draft.txt', 'Bearer abcdef0123456789')]
+    await createHistoryWriter(files.api, null).save(state)
+    expect(files.raw()).not.toContain('sk-live-0123456789abcdef')
+    expect(files.raw()).not.toContain('abcdef0123456789')
+  })
+
+  it('treats a file entry it does not recognize as an unreadable conversation, not a crash', () => {
+    for (const bad of [{ name: '', text: 'x' }, { name: 'a.txt', text: 1 }, { name: 'a.txt', text: 'x'.repeat(40_001) }, 'a.txt']) {
+      const state = workspace()
+      Object.assign(state.conversations[0].messages[0], { files: [bad] })
+      expect(parseHistorySnapshot(snapshotOf(state), scope).unreadable).toHaveLength(1)
+    }
+    const tooMany = workspace()
+    Object.assign(tooMany.conversations[0], { draftFiles: [file('a', '1'), file('b', '2'), file('c', '3'), file('d', '4')] })
+    expect(parseHistorySnapshot(snapshotOf(tooMany), scope).unreadable).toHaveLength(1)
+  })
+
+  it('names each attached file in the exported text without pasting its content', () => {
+    const conversation = { ...createConversation(), title: '看文件', messages: [message(0, { content: '帮我看看', createdAt: 0, files: [file('报错日志.txt', 'secret content')] })] }
+    const text = conversationPlainText(conversation)
+    expect(text).toContain('帮我看看\n附件：报错日志.txt')
+    expect(text).not.toContain('secret content')
+  })
+})
+
+describe('saved phrases in chat history', () => {
+  it('keeps saved phrases across a reload and leaves the record unchanged when nothing else moved', async () => {
+    const state = { ...workspace(), phrases: ['回答尽量简短，用大白话', '帮我把这段话翻译成英文'] }
+    const files = memoryFiles()
+    const restored = await saveAndReopen(state, files)
+    expect(restored.warning).toBeUndefined()
+    expect(restored.state.phrases).toEqual(['回答尽量简短，用大白话', '帮我把这段话翻译成英文'])
+    expect(planHistoryWrite(restored.state, restored.saved)).toBeNull()
+  })
+
+  it('rewrites the index when only the phrases change and leaves conversations alone', () => {
+    const state = workspace()
+    const first = planHistoryWrite(state, null)!
+    const plan = planHistoryWrite({ ...state, phrases: ['新存的一句'] }, first.saved)!
+    expect(plan.write.put).toEqual([])
+    expect(JSON.parse(plan.write.index).phrases).toEqual(['新存的一句'])
+  })
+
+  it('redacts pasted keys out of saved phrases before they reach disk', async () => {
+    const files = memoryFiles()
+    await createHistoryWriter(files.api, null).save({ ...workspace(), phrases: ['用这个密钥 sk-live-0123456789abcdef 试一下'] })
+    expect(files.raw()).not.toContain('sk-live-0123456789abcdef')
+  })
+
+  it('drops broken phrase entries instead of failing the whole history', () => {
+    const snapshot = snapshotOf(workspace())
+    const index = JSON.parse(snapshot.index!)
+    index.phrases = ['好的一句', 42, '', '   ', 'x'.repeat(2_001), null, ...Array.from({ length: 40 }, (_, position) => `第 ${position} 句`)]
+    const { state, unreadable } = parseHistorySnapshot({ ...snapshot, index: JSON.stringify(index) }, scope)
+    expect(unreadable).toEqual([])
+    expect(state.conversations).toHaveLength(1)
+    expect(state.phrases).toHaveLength(30)
+    expect(state.phrases?.[0]).toBe('好的一句')
+    expect(state.phrases).not.toContain('')
+  })
+
+  it('reads an index without phrases as an empty list', () => {
+    expect(parseHistorySnapshot(snapshotOf(workspace()), scope).state.phrases).toBeUndefined()
+  })
+
+  it('merges phrases saved while the record was unreadable ahead of the stored ones without duplicates', () => {
+    const loaded = { ...workspace(scope, 1), phrases: ['原来的一句', '两边都有'] }
+    const session = { ...createWorkspace(scope), phrases: ['新存的一句', '两边都有'] }
+    expect(mergeSessionIntoHistory(loaded, session).phrases).toEqual(['新存的一句', '两边都有', '原来的一句'])
+  })
+})

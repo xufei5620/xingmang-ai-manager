@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel, codexRemoteConfirmText } from './CodexRemoteCard'
+import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
@@ -22,8 +22,12 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}, feishu: Partial<Code
   }
 }
 
-function render(state: CodexRemoteSnapshot, busy = '') {
-  return renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy={busy} run={async () => true} error={null} />)
+function render(state: CodexRemoteSnapshot, busy = '', onOpenHelp?: () => void) {
+  return renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy={busy} run={async () => true} error={null} onOpenHelp={onOpenHelp} />)
+}
+
+function buttonMarkup(markup: string, testId: string) {
+  return markup.match(new RegExp(`<button[^>]*data-testid="${testId}"[^>]*>`))?.[0] ?? ''
 }
 
 function switchMarkup(markup: string) {
@@ -118,11 +122,50 @@ describe('codex remote card', () => {
   })
 
   it('says why the channel stopped and does not repeat it once connected', () => {
-    const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: 'App ID 或 App Secret 不对' } }))
+    const stopped = render(snapshot({}, { hasCredential: true, status: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。' } }))
     expect(stopped).toContain('要重新登录')
     expect(stopped).toContain('data-testid="settings-remote-feishu-status"')
     const connected = render(snapshot({}, { hasCredential: true, enabled: true, status: { state: 'connected', message: '旧原因' } }))
     expect(connected).not.toContain('旧原因')
+  })
+
+  // D23：三种说法各配按钮。凭据不对就是「飞书应用」那一行的「重新填写」，不另摆一颗。
+  it('pairs each stop reason with its own buttons: refill for a bad credential, reconnect, and support for anything else', () => {
+    const ready = { workspaceDirectory: '~/projects/demo' }
+    const saved = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true }
+    const openHelp = () => undefined
+
+    const credential = render(snapshot(ready, { ...saved, status: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' } }), '', openHelp)
+    expect(credential).toMatch(/data-testid="settings-remote-feishu-status"[^>]*>飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。</)
+    expect(buttonMarkup(credential, 'settings-remote-feishu-edit')).toContain('xm-btn-primary')
+    expect(credential).not.toContain('settings-remote-feishu-reconnect')
+    expect(credential).not.toContain('settings-remote-feishu-support')
+
+    const limit = render(snapshot(ready, { ...saved, status: { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' } }), '', openHelp)
+    expect(limit).toMatch(/data-testid="settings-remote-feishu-reconnect"[^>]*>.*<span>重新连接<\/span><\/button>/)
+    expect(limit).not.toContain('settings-remote-feishu-support')
+    expect(buttonMarkup(limit, 'settings-remote-feishu-edit')).not.toContain('xm-btn-primary')
+    // 按钮紧跟在那句话下面。
+    expect(limit.indexOf('settings-remote-feishu-status-actions')).toBeGreaterThan(limit.indexOf('settings-remote-feishu-status'))
+
+    const other = render(snapshot(ready, { ...saved, status: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' } }), '', openHelp)
+    expect(other).toContain('data-testid="settings-remote-feishu-reconnect"')
+    expect(other).toMatch(/data-testid="settings-remote-feishu-support"[^>]*>.*<span>找客服<\/span><\/button>/)
+    // 没有帮助框可开时不摆「找客服」。
+    expect(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }))).not.toContain('settings-remote-feishu-support')
+
+    // 别的操作在跑时先别点；正在重连时转圈。
+    expect(buttonMarkup(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }), 'feishu-pair'), 'settings-remote-feishu-reconnect')).toContain('disabled=""')
+    expect(buttonMarkup(render(snapshot(ready, { ...saved, status: { state: 'error', problem: 'other' } }), 'feishu-reconnect'), 'settings-remote-feishu-reconnect')).toContain('aria-busy="true"')
+  })
+
+  it('offers no reconnect for a channel that is switched off, still connecting, or has no stop reason', () => {
+    const ready = { workspaceDirectory: '~/projects/demo' }
+    const saved = { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }
+    expect(render(snapshot(ready, { ...saved, enabled: false, status: { state: 'error', problem: 'other' } }))).not.toContain('settings-remote-feishu-reconnect')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connecting', message: '连不上飞书，正在重试。' } }))).not.toContain('settings-remote-feishu-reconnect')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'error', message: '渠道没能连上。' } }))).not.toContain('settings-remote-feishu-status-actions')
+    expect(render(snapshot(ready, { ...saved, enabled: true, status: { state: 'connected', problem: 'other' } }))).not.toContain('settings-remote-feishu-reconnect')
   })
 
   it('locks every action when the manager runs elevated and says why', () => {
@@ -179,6 +222,38 @@ describe('codex remote card', () => {
     expect(failed).toMatch(/data-testid="settings-remote-codex-failed-home"[^>]*>.*去首页看 Codex/)
     expect(failed.indexOf('settings-remote-codex-failed')).toBeLessThan(failed.indexOf('settings-remote-workspace-row'))
     expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, connected))).not.toContain('settings-remote-codex-failed')
+  })
+
+  // YF-9：「打开星芒时自动打开遥控」在卡片最后一行，默认关，说明把没人在电脑前也会连上说在前头。
+  it('ends the card with the launch switch, off unless turned on, warning that it connects with nobody around', () => {
+    expect(codexRemoteAutoStartText).toEqual({
+      title: '打开星芒时自动打开遥控',
+      description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
+    })
+    const off = render(snapshot())
+    const row = off.slice(off.indexOf('data-testid="settings-remote-auto-start"'))
+    expect(off.indexOf('data-testid="settings-remote-auto-start"')).toBeGreaterThan(off.indexOf('data-testid="settings-remote-weixin"'))
+    expect(row).toContain(codexRemoteAutoStartText.title)
+    expect(row).toContain(codexRemoteAutoStartText.description)
+    expect(row).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="false"[^>]*aria-label="打开星芒时自动打开遥控"/)
+    expect(render(snapshot({ autoStart: true }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="true"/)
+    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*disabled=""/)
+  })
+
+  // YF-10：「多久没消息就自动关」三选一，缺省「不自动关」并写明还有哪几种办法关；选了时长不写小字。
+  it('offers four hours, twelve hours or never for the idle close, never by default with how else it closes', () => {
+    expect(codexRemoteIdleCloseText).toEqual({ title: '多久没消息就自动关', never: '不自动关', neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。' })
+    const never = render(snapshot())
+    const row = never.slice(never.indexOf('data-testid="settings-remote-idle-close"'))
+    expect(never.indexOf('data-testid="settings-remote-idle-close"')).toBeGreaterThan(never.indexOf('data-testid="settings-remote-auto-start"'))
+    expect(row).toContain('<strong>多久没消息就自动关</strong>')
+    expect(row).toContain('只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。')
+    expect(row).toMatch(/role="group" aria-label="多久没消息就自动关" data-testid="settings-remote-idle-close-choice">/)
+    expect([...row.matchAll(/aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[2], match[1]])).toEqual([['4 小时', 'false'], ['12 小时', 'false'], ['不自动关', 'true']])
+    const twelve = render(snapshot({ idleCloseHours: 12 }))
+    expect(twelve).not.toContain('只有你在电脑上、托盘里关')
+    expect(twelve).toMatch(/aria-pressed="true"[^>]*>12 小时<\/button>/)
+    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/<button[^>]*disabled=""[^>]*aria-pressed="true"[^>]*>不自动关<\/button>/)
   })
 
   it('warns when the credentials only last until the manager closes', () => {

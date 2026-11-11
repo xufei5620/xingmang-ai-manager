@@ -2,11 +2,11 @@
 // 微信那几条（扫码登录）在 codex-remote-weixin.ts，同用 ctx.codexRemote()。
 import { BrowserWindow, dialog, type OpenDialogOptions } from 'electron'
 import {
-  requestFeishuTenantToken,
   serializeFeishuCredential,
   validateFeishuCredentialInput,
+  verifyFeishuCredential,
 } from '../../codex-remote-feishu'
-import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled } from '../parsers/codex-remote'
+import { parseFeishuCredentialRequest, parseRemoteChannel, parseRemoteEnabled, parseRemoteIdleClose } from '../parsers/codex-remote'
 import type { IpcHandlerContext } from './context'
 
 export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
@@ -15,6 +15,9 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
   registerTrustedHandler('codex-remote:set-channel-enabled', (_event, channel: unknown, enabled: unknown) => (
     codexRemote().setChannelEnabled(parseRemoteChannel(channel), parseRemoteEnabled(enabled))
   ))
+  registerTrustedHandler('codex-remote:reconnect', (_event, channel: unknown) => codexRemote().reconnectChannel(parseRemoteChannel(channel)))
+  registerTrustedHandler('codex-remote:set-auto-start', (_event, enabled: unknown) => codexRemote().setAutoStart(parseRemoteEnabled(enabled)))
+  registerTrustedHandler('codex-remote:set-idle-close', (_event, hours: unknown) => codexRemote().setIdleClose(parseRemoteIdleClose(hours)))
   registerTrustedHandler('codex-remote:choose-workspace', async (event) => {
     const service = codexRemote()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
@@ -37,9 +40,7 @@ export function registerCodexRemoteHandlers(ctx: IpcHandlerContext): void {
     const service = codexRemote()
     const request = parseFeishuCredentialRequest(rawRequest)
     const credential = validateFeishuCredentialInput(request.appId, request.appSecret)
-    // 先拿去飞书换一次访问凭证：填错了当场说，不等打开遥控才发现连不上。
-    const deps = service.channelDependencies('feishu')
-    await requestFeishuTenantToken(deps.fetch, credential, deps.now())
+    await verifyFeishuCredential(service.channelDependencies('feishu'), credential)
     return service.saveChannelCredential('feishu', serializeFeishuCredential(credential), credential.appId)
   })
 }

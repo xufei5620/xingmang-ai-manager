@@ -12,6 +12,7 @@ const { ensureNoGroupOrOtherWrite } = require('./scripts/linux-payload-modes.cjs
 const { resolveLockedElectronZipChecksums } = require('./scripts/electron-zip-checksums.cjs')
 const { buildReleaseCopyright } = require('./scripts/release-copyright.cjs')
 const { feedReleaseNotes } = require('./scripts/extract-release-notes.cjs')
+const { NOTICES_FILE_NAME, OUTPUT_DIRECTORY_NAME: THIRD_PARTY_DIRECTORY, copyMacElectronLicenses } = require('./scripts/third-party-notices.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
@@ -290,6 +291,13 @@ module.exports = {
       to: 'bundled-catalog/cli-hooks',
       filter: ['**/*'],
     },
+    // 第三方许可清单（D97）：compile 最后一步生成，放在 asar 外面，客户不用解包就能打开。
+    // 少了它 electron-builder 不报错，靠出包后的 verify-packaged-hardening.cjs、
+    // verify-macos-free-artifacts.cjs 拦。
+    {
+      from: `${THIRD_PARTY_DIRECTORY}/${NOTICES_FILE_NAME}`,
+      to: NOTICES_FILE_NAME,
+    },
     ...accelerationBundle.resources,
   ],
   // The last point at which an unshippable build mode can still be rejected,
@@ -306,6 +314,12 @@ module.exports = {
       const result = spawnSync(process.execPath, [path.join(__dirname, 'scripts/build-macos-system-proxy.cjs')], { stdio: 'inherit', shell: false })
       if (result.error || result.status !== 0) throw new Error('Mac 系统代理组件编译失败。')
     }
+  },
+  // Electron 压缩包刚解开、electron-builder 还没删掉它的两份许可文件时（Mac 上会删，
+  // Windows、Linux 留在安装目录里），把它们拷进 Mac 应用的 Contents/Resources（LC-2）。
+  afterExtract: async (context) => {
+    if (context.electronPlatformName !== 'darwin') return
+    copyMacElectronLicenses(context.appOutDir, context.packager.info.framework.distMacOsAppName)
   },
   // Runs on linux-unpacked before fpm turns it into the deb; see
   // scripts/linux-payload-modes.cjs for why the Electron 45 payload needs it.

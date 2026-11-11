@@ -446,6 +446,44 @@ test('account exposes the six v4 tabs and keeps server orders and keys visible',
   }
 })
 
+test('the orders head asks the main process to open the invoice window without naming a site or account', async () => {
+  // 两个账号登录开票中心用的名字不同：星芒账号是用户名，历史账号是邮箱。开哪一个由主进程按当前账号定，
+  // 界面这一下不带地址、不带账号。
+  for (const [route, loginName] of [
+    ['page=account', '用户名'],
+    ['page=account&sub2apiReliability=1', '邮箱'],
+  ]) {
+    const page = await fixture(route)
+    try {
+      await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+      const orders = page.getByTestId('account-orders-section')
+      await orders.getByRole('button', { name: '开发票', exact: true }).click()
+      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
+      assert.deepEqual(
+        (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
+        [[]],
+      )
+      assert.equal(await orders.getByRole('alert').count(), 0)
+    } finally {
+      await page.close()
+    }
+  }
+})
+
+test('the invoice button says the approved line when the invoice window does not open', async () => {
+  const page = await fixture('page=account&invoiceFail=1')
+  try {
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const orders = page.getByTestId('account-orders-section')
+    await orders.getByRole('button', { name: '开发票', exact: true }).click()
+    await orders.getByRole('alert').filter({ hasText: '没能打开开票中心，请稍后再试；还不行请找客服。' }).waitFor()
+    // 订单照常列着：打不开开票中心不影响看订单。
+    await orders.getByText('TEST-ORDER').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('the account tabs move with the left and right arrow keys and open on Enter', async () => {
   const page = await fixture('page=account')
   try {
@@ -2504,6 +2542,47 @@ test('an empty backup list says where backups come from and backs up the tool pi
   }
 })
 
+// 决定单 D100：「备份迁移」最下面那张「星芒占用的空间」。清旧备份要先确认，清缩略图直接清；聊天记录和日志只列大小。
+test('the storage card lists six sizes and only cleans old backups after a confirmation', async () => {
+  const page = await fixture('page=backups')
+  try {
+    const card = page.getByTestId('settings-storage')
+    await card.getByTestId('settings-storage-total').getByText('一共约 3.1 GB', { exact: true }).waitFor()
+    await card.getByTestId('settings-storage-size-works').getByText('约 2.1 GB', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-storage-row-chat-history').getByRole('button').count(), 0)
+    assert.equal(await card.getByTestId('settings-storage-row-logs').getByRole('button').count(), 0)
+    await card.getByText('改工具配置之前自动存的旧配置，一共 24 份。', { exact: true }).waitFor()
+
+    await card.getByTestId('settings-storage-clean-backups').click()
+    const dialog = page.getByRole('dialog', { name: '清理旧备份？', exact: true })
+    await dialog.getByText('只留最近 10 份，更早的 14 份删掉。最近这 10 份照样能在上面的「工具配置备份」里恢复。', { exact: true }).waitFor()
+    assert.equal((await calls(page)).some((call) => call.name === 'clean-storage'), false)
+    await dialog.getByTestId('settings-storage-backups-confirm').click()
+    await waitForToast(page, '已清理，腾出约 120 MB。')
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups'])
+    // 只重算清掉的那一行：剩下最近 10 份，按钮灰掉。
+    await card.getByTestId('settings-storage-row-backups').getByText('只有最近 10 份，不用清理', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-storage-clean-backups').isDisabled(), true)
+
+    await card.getByTestId('settings-storage-clean-thumbnails').click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').filter((call) => call.name === 'clean-storage').length === 2)
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'clean-storage').map((call) => call.args), ['backups', 'thumbnails'])
+  } finally {
+    await page.close()
+  }
+})
+
+test('the storage card will not clean downloads while a tool is installing', async () => {
+  const page = await fixture('page=backups&storageInstalling')
+  try {
+    const row = page.getByTestId('settings-storage-row-downloads')
+    await row.getByText('正在装工具，装完再清理', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('settings-storage-clean-downloads').isDisabled(), true)
+  } finally {
+    await page.close()
+  }
+})
+
 // 搜索框去掉了（v4 批09）；认备份靠的仍是列表上写的时间和工具名，不是谁也看不到的 id。
 test('backup rows are named by the time they were taken and the tool, never by an id nobody sees', async () => {
   const page = await fixture('page=backups')
@@ -3585,7 +3664,7 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
     await card.getByTestId('settings-remote-feishu-app-id').fill('cli_a1b2c3d4e5')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('wrong-secret')
     await card.getByTestId('settings-remote-feishu-save').click()
-    await card.getByRole('alert').getByText('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。').waitFor()
+    await card.getByRole('alert').getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。').waitFor()
     // 填错了框里的字留着，改一下再存就行。
     assert.equal(await card.getByTestId('settings-remote-feishu-app-secret').inputValue(), 'wrong-secret')
     await card.getByTestId('settings-remote-feishu-app-secret').fill('rightSecret123')
@@ -3644,6 +3723,44 @@ test('the phone remote card walks through folder, Feishu app, switch and pairing
       ],
     )
     assert.equal(JSON.stringify(recorded).includes('rightSecret123'), false)
+  } finally {
+    await page.close()
+  }
+})
+
+// D23：飞书停下来时只说三种固定的话，各配按钮：重新填写、重新连接、找客服。
+test('the Feishu block says one of three fixed sentences when it stops and gives each its buttons', async () => {
+  const page = await fixture('page=settings&remoteReady=1&help=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    const status = card.getByTestId('settings-remote-feishu-status')
+
+    await page.evaluate(() => window.remoteHarness.feishuProblem('other'))
+    await status.getByText('没连上，点「重新连接」再试；还不行点「找客服」。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-support').click()
+    assert.equal((await callsNamed(page, 'open-help')).length, 1)
+    await card.getByTestId('settings-remote-feishu-reconnect').click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-status-actions').count(), 0)
+
+    await page.evaluate(() => window.remoteHarness.feishuProblem('connection-limit'))
+    await status.getByText('这个飞书应用在别处也连着，先关掉别处再试。', { exact: true }).waitFor()
+    await card.getByTestId('settings-remote-feishu-reconnect').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-support').count(), 0)
+    await card.getByTestId('settings-remote-feishu-reconnect').click()
+    await card.getByTestId('settings-remote-feishu-state').getByText('已连上', { exact: true }).waitFor()
+
+    // 凭据不对：不另摆按钮，下面那颗「重新填写」就是它的，点了打开填写框。
+    await page.evaluate(() => window.remoteHarness.feishuProblem('credential'))
+    await status.getByText('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', { exact: true }).waitFor()
+    assert.equal(await card.getByTestId('settings-remote-feishu-reconnect').count(), 0)
+    await card.getByTestId('settings-remote-feishu-edit').click()
+    await card.getByTestId('settings-remote-feishu-form').waitFor()
+
+    assert.deepEqual((await callsNamed(page, 'remote-reconnect')).map((call) => call.args), ['feishu', 'feishu'])
   } finally {
     await page.close()
   }
@@ -3729,6 +3846,52 @@ test('the phone remote card says Codex could not start and leads to the home pag
     assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
     await page.evaluate(() => window.remoteHarness.codexStartFailed(false))
     await notice.waitFor({ state: 'detached' })
+  } finally {
+    await page.close()
+  }
+})
+
+// YF-9：卡片最后一行「打开星芒时自动打开遥控」默认关，点开、点关都记给主进程，开着时飞书那个开关不跟着动。
+test('the phone remote card lets the customer turn on opening the remote whenever the manager starts, off by default', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const row = card.getByTestId('settings-remote-auto-start')
+    await row.getByText('开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。', { exact: true }).waitFor()
+    const toggle = row.getByRole('switch', { name: '打开星芒时自动打开遥控', exact: true })
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false')
+    await toggle.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="settings-remote-auto-start-switch"] button')?.getAttribute('aria-checked') === 'true')
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).getAttribute('aria-checked'), 'false')
+    await toggle.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="settings-remote-auto-start-switch"] button')?.getAttribute('aria-checked') === 'false')
+    assert.deepEqual((await callsNamed(page, 'remote-auto-start')).map((call) => call.args), [true, false])
+    assert.equal((await callsNamed(page, 'remote-enable')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// YF-10：「多久没消息就自动关」缺省「不自动关」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关又出来。
+test('the phone remote card picks how long it may idle before closing, never by default', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const row = card.getByTestId('settings-remote-idle-close')
+    const neverHint = '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。'
+    await row.getByText(neverHint, { exact: true }).waitFor()
+    const choice = row.getByRole('group', { name: '多久没消息就自动关', exact: true })
+    assert.equal(await choice.getByRole('button', { name: '不自动关', exact: true }).getAttribute('aria-pressed'), 'true')
+    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次。', { exact: true }).waitFor()
+    await choice.getByRole('button', { name: '12 小时', exact: true }).click()
+    await row.getByText(neverHint, { exact: true }).waitFor({ state: 'detached' })
+    assert.equal(await choice.getByRole('button', { name: '12 小时', exact: true }).getAttribute('aria-pressed'), 'true')
+    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 12 小时也会自动断开。', { exact: true }).waitFor()
+    await choice.getByRole('button', { name: '不自动关', exact: true }).click()
+    await row.getByText(neverHint, { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-idle-close')).map((call) => call.args), [12, null])
   } finally {
     await page.close()
   }
@@ -3987,7 +4150,18 @@ test('desktop notifications start on, the master switch gates test notifications
       .getByRole('switch', { name: '余额不足通知', exact: true })
       .click()
     await testNotice.click()
-    await waitForToast(page, '已发送一条测试通知')
+    // 系统里把星芒的通知关了也照样「发得出去」，所以不说「已发送」（决定单 D68）；旁边那颗按钮打开了，那句才收起。
+    const handedOff = page.locator('.xm-toast', {
+      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+    })
+    await handedOff
+      .getByRole('button', { name: '打开系统通知设置', exact: true })
+      .click()
+    await handedOff.waitFor({ state: 'detached' })
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'open-notification-settings').length,
+      1,
+    )
     await page.getByRole('tab', { name: '隐私数据', exact: true }).click()
     const crashReports = page.getByRole('switch', {
       name: '自动发送错误报告',
@@ -4033,6 +4207,30 @@ test('desktop notifications start on, the master switch gates test notifications
     assert.equal(
       (await calls(page)).filter((call) => call.name === 'test-notification')
         .length,
+      1,
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('a system notification settings page that will not open keeps the test notification line and says where to look', async () => {
+  const page = await fixture('page=settings&system=1&fail=notification-settings')
+  try {
+    await page.getByRole('tab', { name: '消息通知', exact: true }).click()
+    await page.getByRole('button', { name: '发测试通知', exact: true }).click()
+    const handedOff = page.locator('.xm-toast', {
+      hasText: '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。',
+    })
+    await handedOff
+      .getByRole('button', { name: '打开系统通知设置', exact: true })
+      .click()
+    await page
+      .locator('.xm-toast', { hasText: '没能打开系统通知设置，请在系统设置里找「通知」。' })
+      .waitFor()
+    assert.equal(await handedOff.count(), 1)
+    assert.equal(
+      (await calls(page)).filter((call) => call.name === 'open-notification-settings').length,
       1,
     )
   } finally {

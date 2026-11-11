@@ -574,9 +574,11 @@ describe('createCanvasRunService', () => {
             nodes: [
               { id: 'prompt', kind: 'prompt', definitionVersion: 1, data: { prompt: '一只猫', model: '', imageCandidateCount: undefined } },
               { id: 'image', kind: 'image-generate', definitionVersion: 1, disabled, data: {
-                prompt: '', model: 'gpt-image-2', group: '生图分组', imageReferenceOrder: { version: 1, slots: [] },
+                prompt: '', model: 'gpt-image-2', group: '生图分组', textWebSearch: true,
               } },
-              { id: 'compare', kind: 'image-compare', definitionVersion: 1, disabled, data: { prompt: '', model: '' } },
+              { id: 'audio', kind: 'video-generate', definitionVersion: 1, disabled, data: {
+                prompt: '', model: 'grok-imagine-video', group: '视频模型', seconds: '5', generateAudio: false,
+              } },
               { id: 'other', kind: 'text', definitionVersion: 1, data: { prompt: '独立分支', model: '' } },
             ],
             edges: [{ id: 'e-1', source: 'prompt', sourceHandle: 'out:text', target: 'image', targetHandle: 'in:text' }],
@@ -596,9 +598,9 @@ describe('createCanvasRunService', () => {
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'all' } }))
         .rejects.toThrow('桌面版暂不支持，本次没有提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'image' } }))
-        .rejects.toThrow('「参考图角色」桌面版暂不支持，本次没有提交任何付费请求')
-      await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['compare'] } }))
-        .rejects.toThrow('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「联网搜索」桌面版暂不支持，本次没有提交任何付费请求')
+      await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['audio'] } }))
+        .rejects.toThrow('「生成音频设置」桌面版暂不支持，本次没有提交任何付费请求')
       expect(text).not.toHaveBeenCalled()
       expect(image).not.toHaveBeenCalled()
       expect(video).not.toHaveBeenCalled()
@@ -618,7 +620,7 @@ describe('createCanvasRunService', () => {
       })
       const record = await handle.promise
       expect(Object.fromEntries(record.nodes.map((entry) => [entry.nodeId, entry.state]))).toEqual({
-        prompt: 'succeeded', image: 'skipped', compare: 'skipped', other: 'succeeded',
+        prompt: 'succeeded', image: 'skipped', audio: 'skipped', other: 'succeeded',
       })
       expect(image).not.toHaveBeenCalled()
       expect(video).not.toHaveBeenCalled()

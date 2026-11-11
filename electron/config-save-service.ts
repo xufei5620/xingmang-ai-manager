@@ -23,6 +23,7 @@ import {
 } from './cli-hooks'
 import { type CliModelHints, isRetiredCliModel } from './cli-model-defaults'
 import { type CodexDesktopPackageProbe, inspectCodexDesktopPackage } from './codex-desktop-service'
+import { trustedCommandEnvironment } from './command-runner'
 import {
   buildCodexRelayModelCatalog,
   codexCliAcceptsModelCatalog,
@@ -47,8 +48,9 @@ import {
   codexModelCatalogTargetUsable,
   codexOfficialAliasPending,
   fillRelayTemplateDefaults,
-  applyClaudeWriteBoundary,
-  type ClaudeWriteBoundaryOutcome,
+  applyClaudeToggle,
+  type ClaudeToggle,
+  type ClaudeToggleOutcome,
   inspectCodexModelCatalogOnDisk,
   inspectManagedCliHookParts,
   inspectManagedCliHookTargets,
@@ -90,13 +92,15 @@ import {
 } from './removed-cli-hooks'
 import { emptyRunningToolsReport, type RunningToolsReport } from './running-tools'
 import type { AppConfigSummary, CodexReadinessStatus, ConfigSavePayload, ToolStatus } from './system-service'
-import type { ClaudeWriteBoundaryResult } from './ipc-contract'
+import type { ClaudeToggleResult } from './ipc-contract'
 import { modelAccessCacheKey, sameNativeConfigSnapshot, type ServiceContext } from './system-service-context'
 import type { ToolConfigOwnership, ToolTemplateFillResult } from './tool-config-ownership'
 import type { CliInstallation } from './tool-installation'
 import { createToolModelChecker, type ToolModelCheckTarget } from './tool-model-check'
 import type { ToolRouteFollowRecord, ToolRouteFollowState } from './tool-route-follow-state'
+import type { WindowsCliExecutionMode } from './windows-elevation'
 import { withAppendedWindowsPath } from './windows-live-path'
+import { isUntouchedStarterWorkspace } from './starter-workspace'
 import { resolveRememberedWorkspace } from './workspace-guard'
 
 /**
@@ -115,6 +119,23 @@ export function permitsShadowedCodexRepair(
   const key = apiKey.trim()
   return provider === 'codex' && previousOwnership === 'unknown' && before.codexProviderShadowed === true
     && before.hasApiKey && before.matchesRelay && key.length > 0 && before.apiKey === key
+}
+
+/**
+ * 推 Windows 版 Grok 拿哪个 shell 跑钩子时用的环境：得是从星芒打开 Grok 时它真拿到的那份
+ * （provider-launch-service.ts 的 launchProviderOperation）。同一用户身份打开时是启动时的快照再补上注册表里
+ * 新加的那几段 PATH；以管理员身份运行星芒（trusted-only）时，那个窗口的环境由 trustedCommandEnvironment
+ * 重建，PATH 只留机器目录，用户目录里的 pwsh（商店版在 WindowsApps、scoop 装的）Grok 找不到。照完整 PATH
+ * 推会推成 PowerShell、按它写钩子，Grok 却改用 Git Bash 跑，每一轮多一行红字（深查 Shell差异 SH-10）。
+ * 这里只拿来推 shell，不拿去起任何进程。
+ */
+export function grokShellEnvironment(
+  mode: WindowsCliExecutionMode,
+  baseEnv: NodeJS.ProcessEnv,
+  livePath: string | null,
+  trustedEnvironment: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv = trustedCommandEnvironment,
+): NodeJS.ProcessEnv {
+  return mode === 'trusted-only' ? trustedEnvironment(baseEnv) : withAppendedWindowsPath(baseEnv, livePath)
 }
 
 /** 看不出来就不带这个字段，旧的快照与测试夹具不用跟着改。 */
@@ -271,7 +292,7 @@ export interface ConfigSaveServiceDependencies {
 
 export function createConfigSaveService(context: ServiceContext, dependencies: ConfigSaveServiceDependencies) {
   const {
-    store, serviceOptions, platform, providerRoots, runtimeLog, configOwnership, toolRouteFollow,
+    store, serviceOptions, platform, windowsExecutionMode, providerRoots, runtimeLog, configOwnership, toolRouteFollow,
     serializeConfigWrite, relayRouting, activeRelaySite, providerRelaySite, inspectNativeProviderConfig,
     detectMacosCodexApp, findInstalledExecutable, credentialFailureReason, refreshWindowsLivePath,
     currentWindowsLivePath, untouchedSince, fetchAvailableModels,
@@ -364,6 +385,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     const result = {
       workspace: stored.workspace,
       ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
+      ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)
@@ -671,10 +693,14 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   /**
    * Windows 版 Grok 现在会拿哪个 shell 跑钩子。PATH 用启动时快照再补上注册表里新加的那几段：
    * 客户新开的终端看得到的，这里也要看得到；从星芒打开 Grok 时也补上同样几段（launchProviderOperation），
-   * 两边推出来的是同一个 shell。Git Bash 那三处本来就是实时看文件在不在。
+   * 两边推出来的是同一个 shell。以管理员身份运行时照那个窗口收窄过的 PATH 推（grokShellEnvironment）。
+   * Git Bash 那三处本来就是实时看文件在不在。
    */
   function expectedGrokWindowsShell(): GrokWindowsShell {
-    return resolveGrokWindowsShell(withAppendedWindowsPath(process.env, currentWindowsLivePath()), (candidate) => fs.existsSync(candidate))
+    return resolveGrokWindowsShell(
+      grokShellEnvironment(windowsExecutionMode, process.env, currentWindowsLivePath()),
+      (candidate) => fs.existsSync(candidate),
+    )
   }
 
   /**
@@ -889,33 +915,46 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
       responseLanguage: (provider === 'codex' && seeded.includes('codex:response-language'))
         || (provider === 'grok' && seeded.includes('grok:response-language')),
       claudeWritesInsideProject: provider === 'claude' && store.read().claudeWritesInsideProject === true,
+      claudeHidesCommitAttribution: provider === 'claude' && store.read().claudeHidesCommitAttribution === true,
     }
   }
 
   /**
-   * 设置里「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）：先对齐 Claude Code 现在的配置，再记下开关。
+   * 设置里两个默认关的 Claude Code 开关：「只让 Claude Code 改项目文件夹里的文件」（Fable 第二轮 Q6）、
+   * 「Claude Code 提交代码时不署名」（同类对比 备选 6）。先对齐 Claude Code 现在的配置，再记下开关。
    * 只有接着当前账号、配置归当前账号（星芒写的）时才当场改，改之前 backup 做一份整套备份；官方账号、自己填的密钥、
-   * 换了账号、还没配过的只记开关（later），以后接当前账号写配置时 merge / reset 按开关补或撤（seededFor 里这一项）。
+   * 换了账号、还没配过的只记开关（later），以后接当前账号写配置时 merge / reset 按开关补或撤（seededFor 里那两项）。
    * 改配置失败就抛，开关不记，跟客户看到的一致。
    */
-  async function setClaudeWriteBoundary(enabled: boolean, backup?: () => void): Promise<ClaudeWriteBoundaryResult> {
+  async function setClaudeToggle(toggle: ClaudeToggle, enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult> {
     // 记开关也在写锁里：不然中间插进来的一次保存配置会按旧开关把刚写的那一项又撤掉（或补回去）。
-    const applied = await serializeConfigWrite(async (): Promise<ClaudeWriteBoundaryOutcome | 'later'> => {
-      const outcome = alignClaudeWriteBoundaryNow(enabled, backup)
-      await store.update({ version: 2, claudeWritesInsideProject: enabled })
+    const applied = await serializeConfigWrite(async (): Promise<ClaudeToggleOutcome | 'later'> => {
+      const outcome = alignClaudeToggleNow(toggle, enabled, backup)
+      await store.update(toggle === 'writesInsideProject' ? { version: 2, claudeWritesInsideProject: enabled } : { version: 2, claudeHidesCommitAttribution: enabled })
       return outcome
     })
-    runtimeLog?.log('info', 'config', 'claude.write-boundary', enabled ? '已打开「只让 Claude Code 改项目文件夹里的文件」' : '已关掉「只让 Claude Code 改项目文件夹里的文件」', { enabled, applied })
     return { enabled, applied }
   }
 
-  function alignClaudeWriteBoundaryNow(enabled: boolean, backup?: () => void): ClaudeWriteBoundaryOutcome | 'later' {
+  function alignClaudeToggleNow(toggle: ClaudeToggle, enabled: boolean, backup?: () => void): ClaudeToggleOutcome | 'later' {
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     if (!owner || store.read().officialProviders?.includes('claude')) return 'later'
     const config = inspectNativeProviderConfig('claude')
     if (!config.hasApiKey || !config.matchesRelay || configOwnership.read('claude', config, owner) !== 'account') return 'later'
     backup?.()
-    return applyClaudeWriteBoundary(providerRoots, enabled).outcome
+    return applyClaudeToggle(providerRoots, toggle, enabled).outcome
+  }
+
+  async function setClaudeWriteBoundary(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult> {
+    const result = await setClaudeToggle('writesInsideProject', enabled, backup)
+    runtimeLog?.log('info', 'config', 'claude.write-boundary', enabled ? '已打开「只让 Claude Code 改项目文件夹里的文件」' : '已关掉「只让 Claude Code 改项目文件夹里的文件」', { ...result })
+    return result
+  }
+
+  async function setClaudeCommitAttribution(hidden: boolean, backup?: () => void): Promise<ClaudeToggleResult> {
+    const result = await setClaudeToggle('hidesCommitAttribution', hidden, backup)
+    runtimeLog?.log('info', 'config', 'claude.commit-attribution', hidden ? '已打开「Claude Code 提交代码时不署名」' : '已关掉「Claude Code 提交代码时不署名」', { ...result })
+    return result
   }
 
   // 记不下只少记一笔：客户删掉以后下次可能又补回去，不算这次保存失败。
@@ -1487,5 +1526,5 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
-  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, setClaudeWriteBoundary, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
+  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, setClaudeWriteBoundary, setClaudeCommitAttribution, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
 }

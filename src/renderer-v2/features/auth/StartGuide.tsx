@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, Clapperboard, Copy, Download, FolderOpen, FolderPlus, Info, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal, UserPlus, UserRound, Zap, type LucideIcon } from 'lucide-react'
+import { Check, Clapperboard, Copy, Download, FolderOpen, Info, KeyRound, LogIn, MessageSquare, Play, RefreshCw, Settings, Terminal, UserPlus, UserRound, Zap, type LucideIcon } from 'lucide-react'
 import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Dialog, Pill, Progress, useToast } from '../../ui'
 import { guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, officialAccountNotes, tools as toolRegistry, type ToolDef } from '../../registry/tools'
 import { FirstRunSteps } from '../tools/FirstRun'
+import { chooseWorkspaceLabel } from '../tools/recent-workspaces'
 import { switchAccountLabel, type ToolUpdateOffer } from '../tools/model'
 import { matchNetworkFailureMessage, officialRegistryUnreachableMarker } from '../../../../electron/network-failure'
 import { configLinkRefusalIn } from '../../../../electron/config-link-refusal'
@@ -41,6 +42,17 @@ export interface GuideToolState {
   update?: ToolUpdateOffer | null
   model?: string
   workspace?: string
+  /**
+   * 最后一步打开时多半落在星芒刚建、还空着的项目文件夹里：「新建并打开」建的就是它，记着的那个也还空着。
+   * 那句粘进去的话换成让它动手做点东西（D45）。缺省 = 不是，照旧。
+   */
+  freshFolder?: boolean
+  /**
+   * 最后一步那颗「打开」落在哪，跟首页这个工具的「打开」同一套（D46，新手流程 N2）：newFolder = 没用过、
+   * 也没记过文件夹，替他新建项目文件夹打开（已知40）；lastFolder = 在首页「打开」写着的那个文件夹里开。
+   * 这两种旁边再给一颗「选择其他文件夹…」。缺省 = 记录还没读到，「打开」弹选择窗口，不另给。
+   */
+  opensIn?: 'newFolder' | 'lastFolder'
   /**
    * 来源没确认（source 为 unknown）时，Key 到底是哪种（方案盘查 2026-09-25）：
    * otherSite = 不是当前账号所在站的 Key，在这里用不了；otherAccount = 当前账号
@@ -98,8 +110,11 @@ export interface StartGuideProps {
   createAvailable?: boolean
   /** 最后一步没登录时的「注册新账号」；缺省 = 不给这颗按钮。 */
   onRegister?: () => void
-  /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对命令行工具有意义）。 */
-  onLaunch: (route: GuideRoute, newFolder?: boolean) => Promise<boolean | void>
+  /**
+   * chooseFolder：「选择其他文件夹…」那一下，弹选择窗口（只对命令行工具有意义）。缺省 = 跟首页那颗「打开」
+   * 一样落在 opensIn 说的地方。
+   */
+  onLaunch: (route: GuideRoute, chooseFolder?: boolean) => Promise<boolean | void>
   /** landing：走完以后进哪一页。「去聊天」进聊天页，「做图、做视频」进视频剪辑页，「进入首页」「打开 X」「去充值」都先回首页。 */
   onComplete: (route: GuideRoute, landing: GuideLanding) => void
   onBack?: () => void
@@ -343,8 +358,16 @@ export function StartGuide(props: StartGuideProps) {
 /**
  * 很多客户是客服远程装好的，走完引导也没人告诉他钱从哪来、没钱了去哪充。
  * onRecharge 只在最后一步、而且花的确实是当前账号的余额时才给。
+ *
+ * collapse：最后一步一切正常时（allClear）收成一行，只留装好的版本、用的账号和费用（D46，新手流程 N5）；
+ * 有一行要人看一眼就整张摊开。第 3 步那张不收。
  */
-function GuideResultCard({ result }: { result: GuideSetupResult }) {
+function GuideResultCard({ result, collapse = false }: { result: GuideSetupResult; collapse?: boolean }) {
+  if (collapse && result.allClear) return <section className="auth-guide-result auth-guide-result-line" aria-label="安装与连接结果" data-testid="guide-result" data-collapsed="true">
+    <Pill tone={result.install.tone} testId="guide-result-install">{result.install.value}</Pill>
+    <Pill tone={result.connection.tone} testId="guide-result-connection">{result.connection.value}</Pill>
+    <p className="auth-guide-result-billing" data-testid="guide-result-billing">费用：{result.billing}</p>
+  </section>
   return <section className="auth-guide-result" aria-label="安装与连接结果" data-testid="guide-result">
     {([
       ['install', '安装情况', result.install],
@@ -546,17 +569,19 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     else if (step === 'connect' && readiness.prepared && readiness.connected) move('ready')
     setError(''); setFailed(null)
   }
-  const launch = (newFolder = false) => {
+  const launch = (chooseFolder = false) => {
     if (!route || !readiness.prepared || !readiness.connected) return
     const chosen = route
     void run('打开工具', async () => {
       const ticket = owner.capture()
-      const launched = await onLaunch(chosen, newFolder)
+      const launched = await onLaunch(chosen, chooseFolder)
       if (launched !== false && ticket()) complete(chosen, chosen === 'chat' ? 'chat' : 'home')
     })
   }
   // Codex 桌面端自己管工作区，只有命令行工具打开时要选文件夹。
   const opensFolder = isGuideToolRoute(route) && route !== 'codexDesktop'
+  // 「打开」不弹选择窗口的时候（替他新建、或在上次的文件夹里开），旁边给一颗「选择其他文件夹…」，跟首页一样（D46）。
+  const offerOtherFolder = opensFolder && tool?.opensIn !== undefined
   // 保留着官方来源的工具,在这一步也要看到它自己的限制(registry/tools.ts 的
   // officialAccountNotes),否则用户会拿着一份用不了的连接走完引导。
   const officialNote = isGuideToolRoute(route) && tool?.source === 'official' ? officialAccountNotes[route === 'codexDesktop' ? 'codex' : route] : null
@@ -612,6 +637,11 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     <span className="auth-guide-count">第 {currentStep + 1} 步，共 4 步</span>
     {step !== 'choose' && <Button variant="secondary" disabled={locked} onClick={() => { setError(''); move(steps[currentStep - 1].id) }} testId="guide-back">上一步</Button>}
     {step !== 'ready' && !(step === 'connect' && foreign === 'otherSite') && <Button variant="primary" disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || connectPending} title={connectPending && !locked ? '先把上面那项连好' : undefined} onClick={next} testId="guide-next">下一步</Button>}
+    {/* 最后一步的「打开」「进入首页」放在底栏，跟「上一步」排在一起，内容再长也不用往下翻（D46，新手流程 N5）。 */}
+    {step === 'ready' && <>
+      <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route, 'home') }} testId="guide-home">进入首页</Button>
+      <Button variant={(signedIn || readyToOpen) && !walletFirst ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : Play} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '去聊天' : `打开 ${name}`}</Button>
+    </>}
   </>
   return <Dialog open title="新手引导" width={640} testId="onboarding-page" busy={locked} onClose={pause} initialFocus={heading} footer={footer}>
     <div className="auth-guide" data-testid="start-guide" data-guide-step={step} data-guide-route={route ?? ''} aria-busy={locked} data-busy={locked}>
@@ -644,15 +674,15 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
         {step === 'ready' && <>
           {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉星芒。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
           {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
-          {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (isGuideToolRoute(route)) void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
-          {result && <GuideResultCard result={result} />}
-          {definition?.firstRun && readyToOpen && <FirstRunSteps key={route} name={name} firstRun={definition.firstRun} testId="guide-first-run" />}
+          {/* 「已用当前账号连好。想换密钥或模型，点这里」引导里不再出（D46）：新手用不着，下面一行已经写着用的是当前账号。 */}
+          {switchedHere && <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div>}
+          {result && <GuideResultCard result={result} collapse />}
+          {/* 只给那句中文：「新开一个终端，敲这一条」引导里不给（D46），点「打开」星芒就替他敲了，首页那份照旧。 */}
+          {definition?.firstRun && readyToOpen && <FirstRunSteps key={`${route}:${tool?.freshFolder === true}`} name={name} firstRun={definition.firstRun} testId="guide-first-run" freshFolder={tool?.freshFolder === true} withCommand={false} />}
           {result?.prompt && readyToOpen && <GuideFirstTaskPrompt key={route} prompt={result.prompt} copiedNotice={route === 'chat' ? '已复制，粘贴到聊天里试试' : `已复制，粘贴到 ${spaceAfter(name)}里试试`} disabled={locked} />}
-          {opensFolder && readyToOpen && <div className="auth-guide-check-row" data-testid="guide-folder-hint"><FolderPlus size={20} aria-hidden="true" /><div><strong>选哪个文件夹</strong><p>打开时要选一个项目文件夹。不知道选哪个，就点「新建并打开」，软件替你建好一个空文件夹并直接打开。</p></div><Button size="sm" icon={FolderPlus} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-new-folder">新建并打开</Button></div>}
           <div className="auth-guide-ready-actions">
             {!signedIn && !readyToOpen && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
-            <Button variant={(signedIn || readyToOpen) && !walletFirst ? 'primary' : 'secondary'} icon={route === 'chat' ? MessageSquare : FolderOpen} loading={pending === '打开工具'} disabled={locked || !readyToOpen} onClick={() => launch()} testId={route === 'chat' ? 'guide-chat' : 'guide-open-tool'}>{route === 'chat' ? '去聊天' : `打开 ${name}`}</Button>
-            <Button variant="secondary" disabled={locked || !route || !readyToOpen} onClick={() => { if (route) complete(route, 'home') }} testId="guide-home">进入首页</Button>
+            {offerOtherFolder && readyToOpen && <Button variant="secondary" icon={FolderOpen} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-choose-folder">{chooseWorkspaceLabel}</Button>}
             {showRecharge && !walletFirst && route && <span className="auth-guide-recharge" data-testid="guide-recharge"><Button variant="ghost" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></span>}
             {!signedIn && readyToOpen && <Button variant="secondary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-ready-login">去登录</Button>}
             {!signedIn && onRegister && <Button variant="secondary" icon={UserPlus} disabled={locked} onClick={onRegister} testId="guide-ready-register">注册新账号</Button>}

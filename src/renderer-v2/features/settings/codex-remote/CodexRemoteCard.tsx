@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { FolderOpen, Home } from 'lucide-react'
-import { Button, Card, Confirm, Notice, Pill, SettingRow, Switch } from '../../../ui'
+import { FolderOpen, Headset, Home, RefreshCw } from 'lucide-react'
+import { Button, Card, Confirm, Notice, Pill, Segment, SettingRow, Switch } from '../../../ui'
 import { ResultNotice, useOperation, useResource } from '../../../business-common'
-import { remoteChannelIds } from '../../../../../electron/codex-remote-channel'
+import { isRemoteIdleCloseHours, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
 import type { V2Bridge, V2Page } from '../../../types'
 import { remoteChannelSections, type RemoteChannelSectionDefinition, type RemoteChannelSectionProps } from './channel-sections'
@@ -39,6 +39,30 @@ export const codexStartFailedNotice = {
 } as const
 
 /**
+ * 「打开星芒时自动打开遥控」那一行（YF-9，yoyo 2026-11-11 亲手打字「遥控自动开，做」）。默认关；说明把风险说在前头：
+ * 开机自启的星芒没人在电脑前也会连上。
+ */
+export const codexRemoteAutoStartText = {
+  title: '打开星芒时自动打开遥控',
+  description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
+} as const
+
+/**
+ * 「多久没消息就自动关」那一行（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。缺省是「不自动关」，
+ * 选它时下面那句小字说清楚还有哪几种办法关；选了时长不写小字，「打开遥控」那行的说明会带上时长。
+ */
+export const codexRemoteIdleCloseText = {
+  title: '多久没消息就自动关',
+  never: '不自动关',
+  neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。',
+} as const
+
+const idleCloseOptions = [
+  ...remoteIdleCloseHours.map((hours) => ({ value: String(hours), label: `${hours} 小时` })),
+  { value: 'never', label: codexRemoteIdleCloseText.never },
+]
+
+/**
  * 「解绑」「退出登录」点了先问一句（0.2.24 D67）：做完那个人立刻用不了，得重新配对或重新登录。
  * 退出登录那个框的标题带渠道名，跟按钮的读屏名字（退出飞书登录 / 退出微信登录）一样；正文各渠道不同
  * （飞书重新填凭据、微信重新扫码），放在 remoteChannelSections 的 logoutHint。
@@ -48,13 +72,18 @@ export const codexRemoteConfirmText = {
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
-function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
+function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpenHelp }: {
   id: RemoteChannelId
   definition: RemoteChannelSectionDefinition
   snapshot: CodexRemoteSnapshot
   channel: CodexRemoteChannelSnapshot
+  onOpenHelp?: () => void
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const disabled = !snapshot.available || Boolean(busy)
+  // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「找客服」。
+  // 凭据不对时就是下面「飞书应用」那一行的「重新填写」，不再摆第二颗。只在开着时给：关着的渠道没什么可重连的。
+  const problem = channel.status.state === 'connected' ? undefined : channel.status.problem
+  const canReconnect = channel.enabled && (problem === 'connection-limit' || problem === 'other')
   const { Section } = definition
   const canEnable = channel.hasCredential && Boolean(snapshot.workspaceDirectory)
   const pairing = channel.pairing
@@ -143,6 +172,25 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
       {channel.status.message && channel.status.state !== 'connected' && (
         <p className="v2-remote-status" data-testid={`settings-remote-${id}-status`}>{channel.status.message}</p>
       )}
+      {canReconnect && (
+        <div className="v2-remote-status-actions" data-testid={`settings-remote-${id}-status-actions`}>
+          <Button
+            size="sm"
+            icon={RefreshCw}
+            disabled={disabled}
+            loading={busy === `${id}-reconnect`}
+            onClick={() => void run(`${id}-reconnect`, () => api.reconnectCodexRemoteChannel(id))}
+            testId={`settings-remote-${id}-reconnect`}
+          >
+            重新连接
+          </Button>
+          {problem === 'other' && onOpenHelp && (
+            <Button size="sm" variant="ghost" icon={Headset} onClick={onOpenHelp} testId={`settings-remote-${id}-support`}>
+              找客服
+            </Button>
+          )}
+        </div>
+      )}
       <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} />
       <SettingRow
         title="打开遥控"
@@ -177,11 +225,13 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run }: {
 /**
  * 卡片本身：拿到快照以后怎么摆。和取数分开，好用 renderToStaticMarkup 按各种快照直接测。
  */
-export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: {
+export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, onOpenHelp }: {
   snapshot: CodexRemoteSnapshot
   /** 卡上那条红条；没有失败时是空的。 */
   error: ReactNode
   navigate?: (page: V2Page, section?: string) => void
+  /** 渠道没连上时「找客服」打开的帮助框；没给就不摆这颗按钮。 */
+  onOpenHelp?: () => void
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const persistenceNotice = snapshot.credentialPersistence === 'durable' ? null : codexRemotePersistenceNotices[snapshot.credentialPersistence]
   return (
@@ -232,8 +282,41 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: 
           api={api}
           busy={busy}
           run={run}
+          onOpenHelp={onOpenHelp}
         />
       ))}
+      <SettingRow
+        title={codexRemoteAutoStartText.title}
+        description={codexRemoteAutoStartText.description}
+        control={
+          <Switch
+            checked={snapshot.autoStart === true}
+            disabled={!snapshot.available || Boolean(busy)}
+            onChange={(enabled) => void run('auto-start', () => api.setCodexRemoteAutoStart(enabled))}
+            aria-label={codexRemoteAutoStartText.title}
+            testId="settings-remote-auto-start-switch"
+          />
+        }
+        testId="settings-remote-auto-start"
+      />
+      <SettingRow
+        title={codexRemoteIdleCloseText.title}
+        description={snapshot.idleCloseHours ? null : codexRemoteIdleCloseText.neverHint}
+        control={
+          <Segment
+            label={codexRemoteIdleCloseText.title}
+            options={idleCloseOptions.map((option) => ({ ...option, disabled: !snapshot.available || Boolean(busy) }))}
+            value={snapshot.idleCloseHours ? String(snapshot.idleCloseHours) : 'never'}
+            activation="manual"
+            onChange={(value) => {
+              const hours = Number(value)
+              void run('idle-close', () => api.setCodexRemoteIdleClose(isRemoteIdleCloseHours(hours) ? hours : null))
+            }}
+            testId="settings-remote-idle-close-choice"
+          />
+        }
+        testId="settings-remote-idle-close"
+      />
     </Card>
   )
 }
@@ -243,7 +326,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate }: 
  * 卡头、说明、干活的文件夹，再一个渠道一块（填凭据、打开遥控、配对）。
  * 操作的返回值和 state-changed 事件都是整份快照，按 revision 只收新的那份（newerRemoteSnapshot）。
  */
-export function CodexRemoteCard({ api, navigate }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void }) {
+export function CodexRemoteCard({ api, navigate, onOpenHelp }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void; onOpenHelp?: () => void }) {
   const load = useCallback(() => api.getCodexRemoteState(), [api])
   const resource = useResource(load)
   const { setData } = resource
@@ -278,6 +361,7 @@ export function CodexRemoteCard({ api, navigate }: { api: V2Bridge; navigate?: (
       run={run}
       error={<ResultNotice error={operation.error} detail={operation.detail} />}
       navigate={navigate}
+      onOpenHelp={onOpenHelp}
     />
   )
 }

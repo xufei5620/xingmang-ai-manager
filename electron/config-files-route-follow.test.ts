@@ -125,11 +125,11 @@ describe('provider route follow', () => {
     saveProviderConfig('claude', 'sk-route-fixture', 'fixture-model', 'reset', r, {}, primary)
     const [settings] = providerConfigPaths('claude', r)
     const directory = path.dirname(settings)
-    const backupsBefore = fs.readdirSync(directory).filter((name) => name.endsWith('.bak')).sort()
+    const backupsBefore = fs.readdirSync(directory).filter((name) => name.includes('.bak.')).sort()
     const plan = planProviderRouteFollow('claude', 'solov', direct.claude, r)
     if (plan.status !== 'rewrite') throw new Error(plan.status)
     applyProviderRouteFollow('claude', plan, r)
-    expect(fs.readdirSync(directory).filter((name) => name.endsWith('.bak')).sort()).toEqual(backupsBefore)
+    expect(fs.readdirSync(directory).filter((name) => name.includes('.bak.')).sort()).toEqual(backupsBefore)
 
     const next = planProviderRouteFollow('claude', 'solov', primary.claude, r)
     if (next.status !== 'rewrite') throw new Error(next.status)
@@ -137,6 +137,35 @@ describe('provider route follow', () => {
     fs.writeFileSync(settings, edited)
     expect(() => applyProviderRouteFollow('claude', next, r)).toThrow('工具配置在改线路时被别的程序改了')
     expect(fs.readFileSync(settings, 'utf8')).toBe(edited)
+  })
+
+  it('keeps the backup when the config was saved by an old Notepad and is not UTF-8 (D78)', () => {
+    const { roots: r } = roots()
+    const [settings] = providerConfigPaths('claude', r)
+    const directory = path.dirname(settings)
+    // 客户用老记事本加了一项中文，存成了 GBK：{"dir":"中文"}。
+    const original = Buffer.concat([
+      Buffer.from(`{\n  "env": {\n    "ANTHROPIC_BASE_URL": "${primary.claude}",\n    "ANTHROPIC_AUTH_TOKEN": "sk-route-fixture"\n  },\n  "dir": "`),
+      Buffer.from([0xd6, 0xd0, 0xce, 0xc4]),
+      Buffer.from('"\n}\n'),
+    ])
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(settings, original)
+
+    const plan = planProviderRouteFollow('claude', 'solov', direct.claude, r)
+    if (plan.status !== 'rewrite') throw new Error(plan.status)
+    applyProviderRouteFollow('claude', plan, r)
+
+    expect(inspectProviderConfig('claude', r, direct).actualBaseUrl).toBe(direct.claude)
+    const backups = fs.readdirSync(directory).filter((name) => name.includes('.bak.'))
+    expect(backups).toHaveLength(1)
+    expect(fs.readFileSync(path.join(directory, backups[0]))).toEqual(original)
+
+    // 写回后已是 UTF-8，再换回去就照旧不留。
+    const back = planProviderRouteFollow('claude', 'solov', primary.claude, r)
+    if (back.status !== 'rewrite') throw new Error(back.status)
+    applyProviderRouteFollow('claude', back, r)
+    expect(fs.readdirSync(directory).filter((name) => name.includes('.bak.'))).toEqual(backups)
   })
 
   it('refuses to write anywhere but the provider config files', () => {

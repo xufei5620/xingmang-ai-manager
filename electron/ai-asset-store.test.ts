@@ -284,7 +284,7 @@ describe('AiAssetStore base64 and ownership', () => {
 
     await expect(store.readOwned(99, asset.assetId)).rejects.toThrow('无权访问')
     await expect(store.readOwned(42, '../secret')).rejects.toThrow('资产标识无效')
-    await expect(store.readOwned(42, 'A'.repeat(43))).rejects.toThrow('不存在或无权访问')
+    await expect(store.readOwned(42, 'A'.repeat(43))).rejects.toThrow('这张图已经不在电脑上了')
   })
 
   it('enforces a bounded base64 decode before persisting', async () => {
@@ -304,7 +304,7 @@ describe('AiAssetStore base64 and ownership', () => {
     expect(fs.existsSync(filePath)).toBe(true)
     await expect(store.removeOwned(42, stored.assetId)).resolves.toBeUndefined()
     expect(fs.existsSync(filePath)).toBe(false)
-    await expect(store.removeOwned(42, stored.assetId)).rejects.toThrow('不存在或无权访问')
+    await expect(store.removeOwned(42, stored.assetId)).rejects.toThrow('这张图已经不在电脑上了')
   })
 
   it('reports an explicit output write-permission failure', async () => {
@@ -336,7 +336,7 @@ describe('AiAssetStore lookup by identifier', () => {
     try {
       const read = new AiAssetStore(storeOptions(outputRoot)).readOwned(42, assetId)
       if (present) await expect(read).resolves.toMatchObject({ bytes: png() })
-      else await expect(read).rejects.toThrow(/^AI 图片资产不存在或无权访问$/)
+      else await expect(read).rejects.toThrow(/^这张图已经不在电脑上了，可能被移走或删掉了。$/)
       return lstatSync.mock.calls.length
     } finally {
       lstatSync.mockRestore()
@@ -381,10 +381,24 @@ describe('AiAssetStore lookup by identifier', () => {
     fs.rmSync(original)
 
     // Not a raw ENOENT carrying the file's path.
-    await expect(store.readOwned(42, stored.assetId)).rejects.toThrow(/^AI 图片资产不存在或无权访问$/)
+    await expect(store.readOwned(42, stored.assetId)).rejects.toThrow(/^这张图已经不在电脑上了，可能被移走或删掉了。$/)
     const restored = writeRawImage(options.outputRoot, '2026-08-01', stored.assetId)
     await expect(store.readOwned(42, stored.assetId)).resolves.toMatchObject({ bytes: png() })
     await expect(store.resolveOwnedFilePath(42, stored.assetId)).resolves.toBe(restored)
+  })
+
+  it('says a picture removed outside the app is gone when it is copied or saved, before touching the clipboard or a save dialog (D37)', async () => {
+    const nativeOperations = { copyImage: vi.fn(), selectSavePath: vi.fn(async () => path.join(temporaryDirectory(), 'saved.png')) }
+    const options = { ...storeOptions(), nativeOperations }
+    const store = new AiAssetStore(options)
+    const stored = await store.storeBase64(42, png().toString('base64'))
+    fs.rmSync(path.join(options.outputRoot, 'user-42', '2026-08-12', stored.fileName))
+
+    const gone = '这张图已经不在电脑上了，可能被移走或删掉了。'
+    await expect(store.copy(42, stored.assetId)).rejects.toThrow(gone)
+    await expect(store.saveAs(42, stored.assetId)).rejects.toThrow(gone)
+    expect(nativeOperations.copyImage).not.toHaveBeenCalled()
+    expect(nativeOperations.selectSavePath).not.toHaveBeenCalled()
   })
 
   it.runIf(process.platform !== 'win32')('still runs the full file checks on a remembered location', async () => {

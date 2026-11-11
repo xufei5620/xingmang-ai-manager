@@ -59,6 +59,8 @@ declare global {
       pair(displayName: string): void
       // 手机微信扫了二维码：挂着的那次查询这时才回「要输数字」。
       weixinScanned(): void
+      // 飞书渠道停在一种毛病上（D23）：主进程推一份带那句话的快照；null = 回到正常的连上 / 没打开。
+      feishuProblem(problem: 'credential' | 'connection-limit' | 'other' | null): void
       // 手机上来了一条，电脑上的 Codex 没起来（YK-5）；false = 后来又起来了。
       codexStartFailed(failed: boolean): void
     }
@@ -82,6 +84,8 @@ const fail = query.get('fail')
 const empty = query.has('empty')
 // 「清除日志」确认以后，再读日志就是空的。
 let logsCleared = false
+// 「清理旧备份」确认以后，再算就只剩最近 10 份。
+let storageBackupsCleaned = false
 
 // 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
 let topupPromotionEnded = false
@@ -171,15 +175,27 @@ const remoteState: {
   enabled: boolean
   pairing: RemoteSnapshot['channels']['feishu']['pairing']
   boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
+  problem: RemoteSnapshot['channels']['feishu']['status'] | null
   codexStartFailed: boolean
+  autoStart: boolean
+  idleCloseHours: 4 | 12 | null
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
   enabled: false,
   pairing: null,
   boundPeer: null,
+  problem: null,
   codexStartFailed: false,
+  autoStart: false,
+  idleCloseHours: null,
 }
+// 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
+const feishuProblemStatuses = {
+  credential: { state: 'needs-login', message: '飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。', problem: 'credential' },
+  'connection-limit': { state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' },
+  other: { state: 'error', message: '没连上，点「重新连接」再试；还不行点「找客服」。', problem: 'other' },
+} as const
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。
 const weixinRemote: { accountLabel: string | null; enabled: boolean; stage: 'idle' | 'code' | 'scanned' } = { accountLabel: null, enabled: false, stage: 'idle' }
 const weixinLoginId = '0f8fad5b-d9cb-469f-a165-70867728950e'
@@ -198,6 +214,8 @@ function remoteSnapshot(): RemoteSnapshot {
     workspaceDirectory: remoteState.workspaceDirectory,
     task: 'idle',
     pendingApprovals: 0,
+    ...(remoteState.autoStart ? { autoStart: true } : {}),
+    ...(remoteState.idleCloseHours ? { idleCloseHours: remoteState.idleCloseHours } : {}),
     ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     channels: {
       feishu: {
@@ -205,7 +223,7 @@ function remoteSnapshot(): RemoteSnapshot {
         hasCredential: remoteState.accountLabel !== null,
         accountLabel: remoteState.accountLabel,
         enabled: remoteState.enabled,
-        status: { state: remoteState.enabled ? 'connected' : 'stopped' },
+        status: remoteState.problem ?? { state: remoteState.enabled ? 'connected' : 'stopped' },
         boundPeer: remoteState.boundPeer,
         pairing: remoteState.pairing,
       },
@@ -240,12 +258,26 @@ window.remoteHarness = {
     remoteState.codexStartFailed = failed
     pushRemoteSnapshot()
   },
+  feishuProblem(problem) {
+    remoteState.problem = problem ? feishuProblemStatuses[problem] : null
+    pushRemoteSnapshot()
+  },
 }
 const codexRemoteMethods = {
   getCodexRemoteState: async () => remoteSnapshot(),
   onCodexRemoteStateChanged: (listener: (snapshot: RemoteSnapshot) => void) => {
     remoteListeners.add(listener)
     return () => { remoteListeners.delete(listener) }
+  },
+  setCodexRemoteAutoStart: async (enabled: boolean) => {
+    record('remote-auto-start', enabled)
+    remoteState.autoStart = enabled
+    return remoteSnapshot()
+  },
+  setCodexRemoteIdleClose: async (hours: 4 | 12 | null) => {
+    record('remote-idle-close', hours)
+    remoteState.idleCloseHours = hours
+    return remoteSnapshot()
   },
   chooseCodexRemoteWorkspace: async () => {
     record('remote-workspace')
@@ -255,8 +287,10 @@ const codexRemoteMethods = {
   saveCodexRemoteFeishuCredentials: async (request: Parameters<V2Bridge['saveCodexRemoteFeishuCredentials']>[0]) => {
     // App Secret 不记：测试只看主进程收到的是哪个应用。
     record('remote-feishu-save', request.appId)
-    if (request.appSecret === 'wrong-secret') throw new Error('App ID 或 App Secret 不对，或者应用被停用了，请在电脑上重新填。')
+    if (request.appSecret === 'wrong-secret') throw new Error('飞书应用的 App ID 或 Secret 不对，到飞书开放平台核对后重新填。')
     remoteState.accountLabel = request.appId
+    // 主进程存好新凭据会重启渠道，原来停着的那种毛病跟着没了。
+    remoteState.problem = null
     return remoteSnapshot()
   },
   clearCodexRemoteCredentials: async (channel: Parameters<V2Bridge['clearCodexRemoteCredentials']>[0]) => {
@@ -270,6 +304,11 @@ const codexRemoteMethods = {
     remoteState.enabled = false
     remoteState.pairing = null
     remoteState.boundPeer = null
+    return remoteSnapshot()
+  },
+  reconnectCodexRemoteChannel: async (channel: Parameters<V2Bridge['reconnectCodexRemoteChannel']>[0]) => {
+    record('remote-reconnect', channel)
+    if (channel === 'feishu' && remoteState.enabled) remoteState.problem = null
     return remoteSnapshot()
   },
   setCodexRemoteChannelEnabled: async (channel: Parameters<V2Bridge['setCodexRemoteChannelEnabled']>[0], enabled: boolean) => {
@@ -703,6 +742,11 @@ const apiMethods = {
   onNodeRuntimeInstallProgress: () => () => undefined,
   onPythonRuntimeInstallProgress: () => () => undefined,
   onCodexDesktopLaunchProgress: () => () => undefined,
+  // 「开发票」只叫主进程开开票窗口，不带参数；invoiceFail 时与主进程那条通道抛错一样。
+  openAccountInvoicePortal: async (...args: unknown[]) => {
+    record('open-invoice-portal', args)
+    if (query.has('invoiceFail')) throw new Error("Error invoking remote method 'account:open-invoice-portal': Error: 没能打开开票中心，请稍后再试；还不行请找客服。")
+  },
   getAccountSession: async () => ({
     authenticated: true,
     ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
@@ -1274,6 +1318,22 @@ const apiMethods = {
       removedFiles: [],
     }
   },
+  // 「星芒占用的空间」（D100）：六行各回各的；storageInstalling 时下载那一行说正在装工具。
+  inspectStorageUsage: async (part: Parameters<V2Bridge['inspectStorageUsage']>[0]) => {
+    record('inspect-storage', part)
+    const megabyte = 1024 * 1024
+    if (part === 'works') return { bytes: 2.1 * 1024 * megabyte }
+    if (part === 'thumbnails') return { bytes: 120 * megabyte }
+    if (part === 'chat-history') return { bytes: 35 * megabyte }
+    if (part === 'logs') return { bytes: 20 * megabyte }
+    if (part === 'backups') return { bytes: 15 * megabyte, backupCount: storageBackupsCleaned ? 10 : 24 }
+    return { bytes: 800 * megabyte, installing: query.has('storageInstalling') }
+  },
+  cleanStorage: async (target: Parameters<V2Bridge['cleanStorage']>[0]) => {
+    record('clean-storage', target)
+    if (target === 'backups') storageBackupsCleaned = true
+    return { freedBytes: 120 * 1024 * 1024, kept: 0 }
+  },
   checkProviderConnection: async (provider: Parameters<V2Bridge['checkProviderConnection']>[0]) => {
     record('check-connection', provider)
     return {
@@ -1578,6 +1638,11 @@ if (query.has('system')) {
     testNotification: async () => {
       record('test-notification')
       return settings.desktopNotifications !== false ? 'requested' : 'disabled'
+    },
+    // fail=notification-settings：系统没让打开通知设置那一页。
+    openNotificationSettings: async () => {
+      record('open-notification-settings')
+      return fail !== 'notification-settings'
     },
     notifyActivity: async (kind, eventKey) => {
       record('activity-notification', { kind, eventKey })

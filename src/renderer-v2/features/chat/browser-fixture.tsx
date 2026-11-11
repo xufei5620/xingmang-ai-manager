@@ -1,6 +1,7 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { AiChatAsset, AiChatGroupSummary, AiChatHistoryFlushRequest, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatGroupSummary, AiChatHistoryFlushRequest, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, AiChatTextFile, XingmangApi } from '../../../../electron/ipc-contract'
+import { missingAiAssetMessages } from '../../../../electron/ai-asset-missing'
 import type { ChatBridge } from './api'
 import { answerHistoryFlushRequests } from './storage'
 import { ChatPage } from './ChatPage'
@@ -24,7 +25,10 @@ let groupOverride: AiChatGroupSummary[] | undefined = query.has('emptyGroups') ?
 let failingPreparation = query.get('prepareFail')
 let groupGate: Promise<void> | undefined
 let releaseGroupGate: (() => void) | undefined
-const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
+// 图片文件在外面被删了（D37）：预览读不出来，复制、另存时主进程那句原话经 IPC 带着通道名交过来。
+const assetGone = query.has('assetGone')
+function assetGoneError(channel: string): Error { return new Error(`Error invoking remote method '${channel}': Error: ${missingAiAssetMessages.image}`) }
+const imageAsset: AiChatAsset = { assetId: 'a'.repeat(43), localUrl: assetGone ? '/assets/brand/v3/fixture-gone.png' : '/assets/brand/v3/symbol-standard.svg', mimeType: 'image/png', fileName: 'fixture.png', width: 288, height: 256 }
 function record(method: string, input?: unknown) { calls.push({ method, input }) }
 function noRecheck() {}
 // Stands in for the main-process history files. IndexedDB survives page.reload()
@@ -98,6 +102,8 @@ async function savedWorkspace(scope = 'xm-account:7') {
   const files = new Map(snapshot.conversations.map((file) => [file.key, file.content]))
   return { ...index, conversations: index.conversations.map((entry: { key: string }) => { try { return JSON.parse(files.get(entry.key) ?? '').conversation } catch { return null } }) }
 }
+// 选文字文件框每次交回什么由测试排好（chatHarness.queueTextFiles），排空了就当客户点了取消。
+const textFilePicks: Array<AiChatTextFile[] | Error> = []
 const bridge: ChatBridge = {
   listAiChatGroups: async () => {
     record('groups')
@@ -113,10 +119,11 @@ const bridge: ChatBridge = {
   generateAiImage: async (input) => { record('image', input); return new Promise<AiChatAsset[]>((resolve, reject) => { images.set(input.requestId, { resolve, reject }) }) },
   cancelAiChat: async (requestId) => { record('cancel', requestId); if (query.has('cancelReject')) { images.get(requestId)?.reject(new Error('request canceled')); await Promise.resolve() } return { canceled: true, mayStillComplete: images.has(requestId) } },
   onAiChatStream: (listener) => { listeners.add(listener); return () => { listeners.delete(listener) } },
-  copyAiChatAsset: async (assetId) => { record('copy-asset', assetId) },
-  saveAiChatAsset: async (assetId) => { record('save-asset', assetId); return { saved: !query.has('saveCancel') } },
+  copyAiChatAsset: async (assetId) => { record('copy-asset', assetId); if (assetGone) throw assetGoneError('chat:copy-asset') },
+  saveAiChatAsset: async (assetId) => { record('save-asset', assetId); if (assetGone) throw assetGoneError('chat:save-asset'); return { saved: !query.has('saveCancel') } },
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
+  pickAiChatTextFiles: async (remainingFiles, remainingChars) => { record('pick-text-files', { remainingFiles, remainingChars }); const next = textFilePicks.shift(); if (next instanceof Error) throw next; return next ?? [] },
   pasteAiChatImage: async () => { record('paste-image'); return query.has('emptyClipboard') ? null : { ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' } },
   readAiChatHistory: async (scope) => { record('read-history', scope); if (heldHistoryReads) await heldHistoryReads; if (failHistoryReads) throw new Error('reparse point'); const { index, conversations } = await historyFiles(scope); return { index, conversations } },
   writeAiChatHistory: (input) => writeHistoryFiles(input),
@@ -138,7 +145,7 @@ function askBeforeQuit(requestId: string): Promise<void> {
   })
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; askBeforeQuit: typeof askBeforeQuit; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; breakConversation: typeof breakConversation; asideFiles: typeof asideFiles; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
+  interface Window { chatHarness: { calls: typeof calls; askBeforeQuit: typeof askBeforeQuit; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; breakConversation: typeof breakConversation; asideFiles: typeof asideFiles; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void; queueTextFiles: (files: AiChatTextFile[] | string) => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -160,6 +167,7 @@ function Fixture() {
     failHistoryReads: (fail) => { failHistoryReads = fail },
     releaseHistoryReads: () => openHistoryReads?.(),
     openParameters: () => setOpenParameters(true),
+    queueTextFiles: (files) => { textFilePicks.push(typeof files === 'string' ? new Error(files) : files) },
   }
   return <ToastProvider testId="chat-toasts"><OnlineStatusContext.Provider value={{ offline: !online, checking: false, recheck: noRecheck }}><ChatPage bridge={bridge as XingmangApi} accountScope={scope} active={active} openParameters={openParameters} onParametersOpened={() => setOpenParameters(false)} /></OnlineStatusContext.Provider></ToastProvider>
 }

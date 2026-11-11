@@ -284,6 +284,8 @@ let releaseScan: () => void = () => undefined
 let startupScan: Promise<void> | null = null
 /** ?launchRemembers：同主进程，打开过一次之后读配置也带着那个目录。 */
 let launchedWorkspace: string | undefined
+// 「新建项目文件夹」在夹具里总是落在这一个（同主进程的 XingmangProjects\my-project）。
+const fixtureStarterWorkspace = 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project'
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
@@ -393,6 +395,10 @@ const methods = {
     settings = { ...settings, claudeWritesInsideProject: enabled }
     const applied = query.get('writeBoundary')
     return { enabled, applied: applied === 'kept' || applied === 'later' ? applied : 'written' as const }
+  },
+  setClaudeCommitAttribution: async (hidden: boolean) => {
+    settings = { ...settings, claudeHidesCommitAttribution: hidden }
+    return { enabled: hidden, applied: 'written' as const }
   },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => {
@@ -544,6 +550,8 @@ const methods = {
   getConfig: async () => {
     const result = structuredClone(config)
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
+    // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
+    if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -605,7 +613,7 @@ const methods = {
   },
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
-    const workspace = options?.createStarter ? 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project' : 'C:\\Selected Project'
+    const workspace = options?.createStarter ? fixtureStarterWorkspace : 'C:\\Selected Project'
     settings = { ...settings, workspace }
     config.workspace = workspace
     return workspace
@@ -626,6 +634,10 @@ const methods = {
     if (query.has('noticeOversized')) throw new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限")
     if (query.has('noticeNative')) return { id: 'native-notice', text: nativeFixtureNotice }
     if (query.has('noticeMarkdown')) return { id: 'markdown-notice', text: '# 服务公告\n\n- 第一项\n- 第二项\n\n**重点提醒**：请查看 [官方说明](https://xm.solov.cc/help)。' }
+    // 公告里的图（D89 a）：官网的一张能下、一张下不下来，外站的一张不该交给主进程。
+    if (query.has('noticeImage')) return { id: 'image-notice', text: query.has('noticeImageHtml')
+      ? '<p>活动海报</p><img src="https://xm.solov.cc/qr.png" alt="官方二维码"><img src="https://xm.solov.cc/missing.png" alt="下不下来"><img src="https://attacker.invalid/qr.png" alt="外部图片">'
+      : '# 活动海报\n\n![官方二维码](https://xm.solov.cc/qr.png)\n\n![下不下来](https://xm.solov.cc/missing.png)\n\n![外部图片](https://attacker.invalid/qr.png)' }
     if (session.siteId === 'solov-api') return query.has('noticeEmpty') ? null : {
       id: 'sub2api-notices', text: '服务通知\n\n套餐更新', entries: [
         { id: '12', title: query.has('noticeLongTitle') ? '服务通知：模型与套餐更新说明 / Service announcement: updated models and subscriptions, pricing details and account usage policies' : '服务通知', text: '**系统升级完成**，请重新读取分组。', read: noticesRead.has('12'), publishedAt: '2026-09-28T12:00:00.000Z' },
@@ -633,6 +645,10 @@ const methods = {
       ],
     }
     return { id: 'local-notice', text: '本地测试公告' }
+  },
+  getAccountNoticeImage: async (url: string) => {
+    if (url === 'https://xm.solov.cc/qr.png') return nativeFixturePng
+    throw new Error("Error invoking remote method 'account:get-notice-image': Error: 公告图片下载失败，服务返回 HTTP 404")
   },
   markAccountNoticeRead: async (_snapshotId: string, entryId: string) => {
     if (query.has('noticeMarkPending')) await new Promise<void>((resolve) => pendingNoticeMarks.set(entryId, resolve))
@@ -672,6 +688,9 @@ const methods = {
     return { id, provider: item.provider, deletedFiles: 1 }
   },
   listBackups: async () => [],
+  // 「备份迁移」最下面的「星芒占用的空间」（D100）一点开这一组就六行各问一次；这里只给个小数，业务回归在 e2e/v2-business。
+  inspectStorageUsage: async (part) => (part === 'backups' ? { bytes: 4096, backupCount: 0 } : part === 'downloads' ? { bytes: 0, installing: false } : { bytes: 4096 }),
+  cleanStorage: async () => ({ freedBytes: 0, kept: 0 }),
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async (_provider, workspace) => {
@@ -679,7 +698,7 @@ const methods = {
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
-      return { rememberedWorkspace: launchedWorkspace }
+      return { rememberedWorkspace: launchedWorkspace, ...(launchedWorkspace === fixtureStarterWorkspace ? { rememberedWorkspaceFresh: true } : {}) }
     }
     // ?launchReadOnly：打开前试写不进去（只读盘），主进程照样打开，带回 workspaceReadOnly（D17）。
     if (query.has('launchReadOnly')) return { workspaceReadOnly: true }
@@ -926,7 +945,7 @@ const methods = {
       await new Promise<void>((resolve) => { releaseImport = resolve })
     }
     const conversation = { ...createConversation(undefined, 'from-old-computer'), title: '旧电脑上的对话', messages: [{ id: 'old-message', role: 'user' as const, content: '旧电脑上问过的话', reasoning: '', status: 'complete' as const, createdAt: 1 }] }
-    return { conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] }
+    return { conversations: exportableConversations({ ...createWorkspace('old-computer'), conversations: [conversation] }), phrases: ['旧电脑上存的一句'], settings: { version: 2 }, conflictingSettings: { version: 2 }, conflictLabels: [] }
   },
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),

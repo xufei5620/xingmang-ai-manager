@@ -25,6 +25,7 @@ import {
   type RemoteInboundText,
   type RemoteInboundUnsupported,
   type RemoteOutbound,
+  type RemoteIdleCloseHours,
   type RemotePeer,
 } from './codex-remote-channel'
 import { emptyChannelSettings, type CodexRemoteStore } from './codex-remote-store'
@@ -32,14 +33,17 @@ import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
   approvalExpiredMessage,
+  approvalExpiringMessage,
   classifyRemoteTurnFailure,
   formatApprovalText,
   formatFileChangeLine,
+  idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
   redactRemoteText,
   remoteDisplayPath,
   remoteMessages,
+  remoteOpenedMessage,
   remoteTurnFailureMessages,
   splitRemoteText,
   staleMessageNotice,
@@ -88,7 +92,10 @@ const pairingQuietMs = 60_000
 const maxPairingFailures = 20
 const approvalTimeoutMinutes = 10
 const approvalTimeoutMs = approvalTimeoutMinutes * 60_000
-const idleTimeoutMs = 4 * 60 * 60_000
+/** 等你同意的还剩这么久就提醒一次（YF-20）：人在路上没看到，到点自动拒绝，这一轮多半就做不下去了。 */
+const approvalReminderMinutesLeft = 3
+const approvalReminderMs = approvalTimeoutMs - approvalReminderMinutesLeft * 60_000
+const hourMs = 60 * 60_000
 const idleRecheckMs = 30 * 60_000
 /** 闲着自动关之前这么久先提醒手机一次（D66 / YKS-19），回什么都会重新起算。 */
 const idleWarningMs = 10 * 60_000
@@ -673,6 +680,18 @@ export function pairingQuietField(pairingStartedAt: number, inboundSeen: RemoteI
   return { quiet: inboundSeen === 'group' ? 'group-only' : 'nothing' }
 }
 
+/**
+ * 托盘「打开手机遥控」能直接打开的渠道（YF-8）：选好了文件夹，渠道有凭据、配对过人，还没开着。
+ * 没配对过的不算：打开以后还得回电脑上点「开始配对」，从托盘开它没用。
+ */
+export function remoteChannelsReadyToEnable(snapshot: Pick<CodexRemoteSnapshot, 'workspaceDirectory' | 'channels'>): RemoteChannelId[] {
+  if (!snapshot.workspaceDirectory) return []
+  return remoteChannelIds.filter((id) => {
+    const channel = snapshot.channels[id]
+    return channel.hasCredential && channel.boundPeer !== null && !channel.enabled
+  })
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
@@ -691,6 +710,12 @@ export class CodexRemoteService {
    * 下次 Codex 起来了、或者遥控全关了就清掉。
    */
   private codexStartFailed = false
+  /**
+   * 「多久没消息就自动关」（YF-10）：null = 不自动关，也是缺省。设置在盘上，这里留一份给同步的 touch 用：
+   * 头一回连渠道前从盘上读，之后只有 setIdleClose 改它（盘上那份也只有它写），免得读到一半被改、拿旧值盖掉新值。
+   */
+  private idleCloseHours: RemoteIdleCloseHours | null = null
+  private idleCloseLoaded = false
   /** 已经叫停、还没真退出的几份 Codex（retireClient）：装、卸 Codex 前也要等它们放开文件。 */
   private readonly retiringClients = new Set<CodexAppServerClient>()
   private secrets: readonly string[] = []
@@ -818,6 +843,8 @@ export class CodexRemoteService {
         : null,
       task,
       pendingApprovals,
+      ...(settings.autoStart ? { autoStart: true } : {}),
+      ...(settings.idleCloseHours ? { idleCloseHours: settings.idleCloseHours } : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
     }
@@ -858,6 +885,35 @@ export class CodexRemoteService {
   }
 
   /**
+   * 卡片上的「重新连接」（0.2.24 D23）：开着、停在出错上的渠道断开重连一次。凭据、绑定的人、配对码都不动，
+   * 手机上也不收「电脑上关了」那句，跟换凭据以后重启渠道是同一条路。没开着就不连：按钮只在开着时才有，
+   * 点下去这一会儿被关掉了就算了。
+   */
+  async reconnectChannel(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
+    const runtime = this.runtimes[channel]
+    if (!runtime.enabled) return this.emit()
+    await this.stopAdapter(runtime)
+    const blocked = await this.startChannel(runtime)
+    if (blocked) throw new Error(blocked)
+    return this.emit()
+  }
+
+  /**
+   * 微信重新扫码，服务端认出是本机原来那份登录、回「这个微信已经连着这台电脑了」（YKS-6）：凭据没换，
+   * saveChannelCredential 那条重启渠道的路不会走。渠道开着、还停在「需要重新登录」时断开重连一次，跟卡片上点
+   * 「重新连接」是同一条路；别的状态不动，扫一次码不把好好的连接断一下。这一下手机遥控被关掉了就不连，也不报错，
+   * 跟换凭据那条一样。
+   */
+  async reconnectIfLoggedOut(channel: RemoteChannelId): Promise<void> {
+    const runtime = this.runtimes[channel]
+    if (this.disposed || !runtime.enabled || runtime.status.state !== 'needs-login') return
+    this.options.log('info', 'remote.channel-relogin-reconnect', { channel })
+    await this.stopAdapter(runtime)
+    await this.startChannel(runtime)
+    await this.emit()
+  }
+
+  /**
    * 能不能开变了（状态文件关掉或放开了手机遥控，remote-features.ts）：现在不能开了，开着的渠道当场停掉，
    * 手机上收到的跟在电脑上点关一样；又能开了不替他打开，只让界面跟上。
    */
@@ -872,6 +928,70 @@ export class CodexRemoteService {
       }
     }
     return this.emit()
+  }
+
+  /**
+   * 托盘里点「打开手机遥控」（YF-8）：齐了的渠道（remoteChannelsReadyToEnable）都打开，跟在设置里一个个点开过同样的检查。
+   * 一个都没打开时 failure 是第一个打不开的原因原句（比如还没装 Codex），托盘那边拿它弹系统通知；
+   * 齐了的一个都没有（刚在设置里解了绑）时什么都不做，只推一份快照让托盘收起这一项。
+   */
+  async enableReadyChannels(): Promise<{ opened: RemoteChannelId[]; failure: string | null }> {
+    if (this.disposed) return { opened: [], failure: null }
+    const ready = remoteChannelsReadyToEnable(await this.snapshot())
+    const opened: RemoteChannelId[] = []
+    let failure: string | null = null
+    for (const id of ready) {
+      try {
+        await this.setChannelEnabled(id, true)
+        opened.push(id)
+      } catch (error) {
+        failure ??= errorMessage(error, '手机遥控没能打开。')
+        this.options.log('warn', 'remote.tray-enable-failed', { channel: id })
+      }
+    }
+    if (!opened.length) await this.emit()
+    return { opened, failure: opened.length ? null : failure }
+  }
+
+  /**
+   * 设置里「打开星芒时自动打开遥控」那个开关（YF-9）。只记下来，不当场开关渠道：开着的照旧开着，关着的等下次打开星芒。
+   */
+  async setAutoStart(enabled: boolean): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (enabled) settings.autoStart = true
+      else delete settings.autoStart
+    })
+    this.options.log('info', 'remote.auto-start-set', { enabled })
+    return this.emit()
+  }
+
+  /**
+   * 设置里「多久没消息就自动关」（YF-10）：null = 不自动关。开着的渠道当场按新的时长从现在重新起算，
+   * 换成不自动关就把计时和「10 分钟后自动关闭」那句提醒一起撤掉。
+   */
+  async setIdleClose(hours: RemoteIdleCloseHours | null): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (hours === null) delete settings.idleCloseHours
+      else settings.idleCloseHours = hours
+    })
+    this.idleCloseHours = hours
+    this.idleCloseLoaded = true
+    for (const runtime of Object.values(this.runtimes)) {
+      if (runtime.enabled) this.touch(runtime)
+    }
+    this.options.log('info', 'remote.idle-close-set', { hours: hours ?? 0 })
+    return this.emit()
+  }
+
+  /**
+   * 打开星芒时（YF-9）：客户自己打开了「打开星芒时自动打开遥控」才替他连，连的跟托盘「打开手机遥控」一样只是
+   * 配对过人的渠道（enableReadyChannels），检查也跟设置里那个开关一样；只认配对的那一个人、改东西要手机上同意都不变。
+   * 打不开（比如还没装 Codex）只记日志：这时没人在看，卡片上开关照旧是关的。
+   */
+  async startOnLaunch(): Promise<void> {
+    if (this.disposed || !(await this.options.store.readSettings()).autoStart) return
+    const { opened, failure } = await this.enableReadyChannels()
+    this.options.log(failure ? 'warn' : 'info', 'remote.auto-started', { opened: opened.length, failed: failure !== null })
   }
 
   /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */
@@ -1087,17 +1207,24 @@ export class CodexRemoteService {
     runtime.status = { state: 'connecting' }
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
+    await this.loadIdleClose()
     await this.refreshSecrets(true)
-    // 读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
+    // 读设置、读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
     if (runtime.adapter !== adapter) return null
     this.touch(runtime)
     this.options.log('info', 'remote.channel-started', { channel: runtime.id })
+    // 这一份连接第一次连上时给手机说一声（YF-11）；断线重连还是这一份，不再说。
+    let announced = false
     try {
       await adapter.start({
         onInbound: (message) => this.onInbound(runtime, adapter, message),
         onStatus: (status) => {
           if (runtime.adapter !== adapter) return
           runtime.status = status
+          if (status.state === 'connected' && !announced) {
+            announced = true
+            void this.announceOpened(runtime, adapter)
+          }
           this.emitSoon()
         },
       })
@@ -1146,6 +1273,18 @@ export class CodexRemoteService {
       this.codexStartFailed = false
       await this.stopCodex()
     }
+  }
+
+  /**
+   * 电脑上打开遥控、连上了（YF-11）：给配对过的人说一声，手机上不用自己发一句试通没通；也顺带是个提醒，
+   * 不是自己开的，手机上看得到。还没配对过的没人可说，等配对成功那句。
+   */
+  private async announceOpened(runtime: ChannelRuntime, adapter: RemoteChannelAdapter): Promise<void> {
+    const [peer, settings] = await Promise.all([this.boundPeer(runtime.id), this.options.store.readSettings()])
+    const workspace = settings.workspaceDirectory
+    if (!peer || !workspace || runtime.adapter !== adapter) return
+    this.options.log('info', 'remote.opened-announced', { channel: runtime.id })
+    await this.sendText(runtime, remoteOpenedMessage(remoteDisplayPath(workspace, this.options.homeDirectory, this.platform)), peer)
   }
 
   private async boundPeer(channel: RemoteChannelId): Promise<RemotePeer | null> {
@@ -1240,8 +1379,25 @@ export class CodexRemoteService {
     turn.stallTimer.unref?.()
   }
 
-  /** 从现在起再闲 delayMs 就自动关；关之前 10 分钟先提醒手机一次（D66 / YKS-19），手机上回什么都会走到这里重新起算。 */
-  private touch(runtime: ChannelRuntime, delayMs = idleTimeoutMs): void {
+  private async loadIdleClose(): Promise<void> {
+    if (this.idleCloseLoaded) return
+    const hours = (await this.options.store.readSettings()).idleCloseHours ?? null
+    if (this.idleCloseLoaded) return
+    this.idleCloseHours = hours
+    this.idleCloseLoaded = true
+  }
+
+  /**
+   * 从现在起再闲 delayMs（缺省是设置里选的时长）就自动关；关之前 10 分钟先提醒手机一次（D66 / YKS-19），
+   * 手机上回什么都会走到这里重新起算。选了「不自动关」（YF-10）就只撤掉手上的计时。
+   */
+  private touch(runtime: ChannelRuntime, delayMs?: number): void {
+    if (this.idleCloseHours === null) {
+      if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
+      runtime.idleTimer = null
+      return
+    }
+    delayMs ??= this.idleCloseHours * hourMs
     if (delayMs > idleWarningMs) this.scheduleIdle(runtime, delayMs - idleWarningMs, () => this.warnIdleClose(runtime))
     else this.scheduleIdle(runtime, delayMs, () => this.closeIdle(runtime))
   }
@@ -1271,8 +1427,10 @@ export class CodexRemoteService {
   }
 
   private closeIdle(runtime: ChannelRuntime): void {
-    this.options.log('info', 'remote.idle-closed', { channel: runtime.id })
-    void this.disableChannel(runtime, remoteMessages.idleClosed).then(() => this.emit()).catch(() => undefined)
+    const hours = this.idleCloseHours
+    if (hours === null) return
+    this.options.log('info', 'remote.idle-closed', { channel: runtime.id, hours })
+    void this.disableChannel(runtime, idleClosedMessage(hours)).then(() => this.emit()).catch(() => undefined)
   }
 
   private async refreshSecrets(force = false): Promise<void> {
@@ -1408,12 +1566,29 @@ export class CodexRemoteService {
         await this.sendText(runtime, remoteMessages.newThread)
         this.emitSoon()
         return
+      case 'close':
+        await this.closeFromPhone(runtime)
+        return
       case 'approval':
         await this.answerApproval(runtime, command.decision, command.approvalId)
         return
       case 'prompt':
         await this.runPrompt(runtime, command.text)
     }
+  }
+
+  /**
+   * 手机上发「关闭遥控」（YF-17）：手机丢了、发现不对劲，换台设备登录同一个账号就能当场关。跟托盘「关掉手机遥控」一样
+   * 开着的渠道全关（同一个人两个渠道都开着时，只关一个等于没关），只是每个配对过的人收到的是「已关闭」那句。
+   * 只认配对过的人（走到这里之前已经核过），要再开只能回电脑上。
+   */
+  private async closeFromPhone(from: ChannelRuntime): Promise<void> {
+    this.options.log('info', 'remote.closed-from-phone', { channel: from.id })
+    for (const id of remoteChannelIds) {
+      const runtime = this.runtimes[id]
+      if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedFromPhone)
+    }
+    await this.emit()
   }
 
   private staleNoticedRecently(runtime: ChannelRuntime): boolean {
@@ -1909,6 +2084,12 @@ export class CodexRemoteService {
         this.emitSoon()
       }, approvalTimeoutMs)
       timer.unref?.()
+      const reminder = setTimeout(() => {
+        if (!this.pending.has(id)) return
+        this.options.log('info', 'remote.approval-reminded', { channel: runtime.id })
+        void this.sendText(runtime, approvalExpiringMessage(id, approvalReminderMinutesLeft))
+      }, approvalReminderMs)
+      reminder.unref?.()
       const entry: PendingApproval = {
         id,
         nonce,
@@ -1918,6 +2099,7 @@ export class CodexRemoteService {
         settle: (value) => {
           if (!this.pending.delete(id)) return
           clearTimeout(timer)
+          clearTimeout(reminder)
           resolve(value)
         },
       }

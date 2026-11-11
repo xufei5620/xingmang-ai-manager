@@ -30,6 +30,10 @@ export interface WeixinLoginDependencies {
   now(): number
   readCredential(): Promise<string | null>
   saveCredential(value: string, accountLabel: string): Promise<void>
+  /**
+   * 服务端认出是本机原来那份登录（already-bound）时调：凭据没换，渠道还停在「需要重新登录」的话要重连一次（YKS-6）。
+   */
+  reconnectIfLoggedOut(): Promise<void>
   /** 把二维码内容画成 data URL。 */
   renderQrCode(content: string): Promise<string>
   log(level: RemoteChannelLogLevel, event: string, detail?: RemoteChannelLogDetail): void
@@ -135,6 +139,16 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
     return finish(login, 'confirmed')
   }
 
+  async function confirmAlreadyBound(login: ActiveLogin): Promise<WeixinLoginSnapshot> {
+    // 重连没成（比如这一下 Codex 被卸了）也算登录好了：登录本身没问题，渠道为什么没连上卡片上另有一句。
+    try {
+      await dependencies.reconnectIfLoggedOut()
+    } catch {
+      dependencies.log('warn', 'weixin-login-reconnect-failed', {})
+    }
+    return finish(login, 'confirmed', '这个微信已经连着这台电脑了')
+  }
+
   async function pollOnce(login: ActiveLogin, signal: AbortSignal): Promise<WeixinLoginSnapshot> {
     const status = await pollWeixinLoginStatus(context(login.origin, signal), login.qrcode, login.pendingVerifyCode)
     if (signal.aborted || active !== login) return snapshot(login)
@@ -160,7 +174,7 @@ export function createWeixinLoginController(dependencies: WeixinLoginDependencie
         return refreshOrFail(login, signal, '二维码过期了，已换了一张，请重新扫', '二维码过期太多次，请重新开始')
       case 'already-bound':
         // 我们带去的就是本机已有的令牌：服务端说这个微信已经连着这台，原来的登录照旧能用。
-        if (login.knownTokens.length > 0) return finish(login, 'confirmed', '这个微信已经连着这台电脑了')
+        if (login.knownTokens.length > 0) return confirmAlreadyBound(login)
         return finish(login, 'failed', genericLoginFailure)
       case 'confirmed':
         return confirm(login, status)

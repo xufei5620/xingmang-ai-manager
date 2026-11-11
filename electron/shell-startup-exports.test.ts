@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseShellStartupExports } from './shell-startup-exports'
+import { parseFishUniversalExports, parseShellStartupExports } from './shell-startup-exports'
 
 const home = '/Users/alex'
 const names = ['ANTHROPIC_API_KEY', 'CLAUDE_CONFIG_DIR', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL']
@@ -291,5 +291,39 @@ describe('parseShellStartupExports', () => {
     it('reads a carriage return as a space, as fish does', () => {
       expect(fish('set -gx CLAUDE_CONFIG_DIR ~/.claude\r\n')).toEqual([{ name: 'CLAUDE_CONFIG_DIR', value: '/Users/alex/.claude' }])
     })
+  })
+})
+
+// SH-12：set -Ux 存进 ~/.config/fish/fish_variables 的那几个，fish 每个窗口都会带上。
+describe('parseFishUniversalExports', () => {
+  it('reads exported universal variables and decodes fish escapes', () => {
+    expect(parseFishUniversalExports([
+      '# This file contains fish universal variable definitions.',
+      '# VERSION: 3.0',
+      'SETUVAR --export ANTHROPIC_API_KEY:sk\\x2dabc\\x5f1',
+      'SETUVAR --export --path CLAUDE_CONFIG_DIR:\\x2fUsers\\x2falex\\x2f\\u4e2d\\x2fclaude',
+      'SETUVAR GEMINI_API_KEY:not\\x2dexported',
+      'SETUVAR fish_color_normal:normal',
+      '',
+    ].join('\n'), names)).toEqual([
+      { name: 'ANTHROPIC_API_KEY', value: 'sk-abc_1' },
+      { name: 'CLAUDE_CONFIG_DIR', value: '/Users/alex/中/claude' },
+    ])
+  })
+
+  it('keeps the name but not the value for a list, a control character or a broken escape', () => {
+    expect(parseFishUniversalExports([
+      'SETUVAR --export ANTHROPIC_API_KEY:a\\x1eb',
+      'SETUVAR --export CLAUDE_CONFIG_DIR:line\\nbreak',
+      'SETUVAR --export GEMINI_API_KEY:bad\\xzz',
+    ].join('\r\n'), names)).toEqual([
+      { name: 'ANTHROPIC_API_KEY', value: null },
+      { name: 'CLAUDE_CONFIG_DIR', value: null },
+      { name: 'GEMINI_API_KEY', value: null },
+    ])
+  })
+
+  it('ignores lines that are not SETUVAR and names it was not asked about', () => {
+    expect(parseFishUniversalExports('SETVAR --export ANTHROPIC_API_KEY:x\nSETUVAR --export OPENAI_API_KEY:x\n', names)).toEqual([])
   })
 })

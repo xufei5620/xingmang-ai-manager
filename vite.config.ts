@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import { createRequire } from 'node:module'
+import { fileURLToPath } from 'node:url'
+import { createThirdPartyCollector } from './scripts/third-party-collector.mjs'
 
 const legacyRequire = createRequire(new URL('./tooling/legacy-renderer/package.json', import.meta.url))
 const requestedRenderer = process.env.XINGMANG_RENDERER?.trim()
@@ -8,9 +10,17 @@ if (requestedRenderer && requestedRenderer !== 'v2' && requestedRenderer !== 'le
   throw new Error(`Unsupported XINGMANG_RENDERER value: ${requestedRenderer}`)
 }
 const renderer = requestedRenderer === 'legacy' ? 'legacy' : 'v2'
+// 随包第三方许可清单要知道界面实际打进了哪些库，后台线程（视频拼片）那一半也要（D97，
+// scripts/third-party-notices.cjs）。只记名单，不往 dist/ 里写任何东西。
+const thirdParty = createThirdPartyCollector({
+  bundle: 'renderer',
+  projectRoot: fileURLToPath(new URL('.', import.meta.url)),
+  expectedOutDir: 'dist',
+  renderer,
+})
 
 export default defineConfig({
-  plugins: [react(), {
+  plugins: [react(), thirdParty.plugin, {
     name: 'xingmang-renderer-entry',
     transformIndexHtml: {
       order: 'pre',
@@ -33,6 +43,7 @@ export default defineConfig({
       if (forbidden.length) throw new Error(`Renderer v2 imports legacy UI: ${forbidden.join(', ')}`)
     },
   }],
+  worker: { plugins: () => [thirdParty.workerPlugin()] },
   define: { __XINGMANG_RENDERER__: JSON.stringify(renderer) },
   base: './',
   resolve: {
