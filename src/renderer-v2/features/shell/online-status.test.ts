@@ -79,6 +79,15 @@ describe('renderer-v2 balance status while offline', () => {
     expect(balanceFailureLabel(false)).toBe('更新失败')
   })
 
+  it('names the day of the last balance update when it was not today', () => {
+    // D60：缩在托盘里过了一夜，昨天读到的余额只写钟点看着像今天。
+    const updated = new Date(2026, 10, 9, 14, 5, 3).getTime()
+    expect(balanceStatusText({ balanceUpdatedAt: updated }, new Date(2026, 10, 9, 20, 0).getTime())).toBe('最后更新于 14:05:03')
+    expect(balanceStatusText({ balanceUpdatedAt: updated }, new Date(2026, 10, 10, 8, 0).getTime())).toBe('最后更新于 昨天 14:05')
+    expect(balanceStatusText({ balanceUpdatedAt: updated, balanceError: '余额暂时没有读到' }, new Date(2026, 10, 12, 8, 0).getTime()))
+      .toBe('更新失败：余额暂时没有读到；最后更新于 11月9日 14:05')
+  })
+
   it('keeps the loading and success wording unchanged when offline', () => {
     expect(balanceStatusText({ balanceLoading: true, offline: true })).toBe('正在刷新余额；余额尚未更新')
     expect(balanceStatusText({ offline: true })).toBe('余额尚未更新')
