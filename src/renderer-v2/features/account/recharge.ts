@@ -287,7 +287,7 @@ export function billingPreferenceNote(preference: AccountSubscriptionBillingPref
 }
 
 /**
- * 买套餐时「账户余额」那一项下面那句，以及够不够付。只有标价是美元时才跟余额比：
+ * 买套餐时「账号余额」那一项下面那句，以及够不够付。只有标价是美元时才跟余额比：
  * 别的币种换算以后台为准，不在这里猜。
  */
 export function balancePurchaseLine(balanceUsd: number | null, plan: Pick<AccountSubscriptionPlan, 'priceAmount' | 'currency'>): { text: string | null; short: boolean } {

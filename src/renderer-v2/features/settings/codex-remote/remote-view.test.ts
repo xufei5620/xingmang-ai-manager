@@ -3,6 +3,7 @@ import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../.
 import {
   boundPeerText,
   newerRemoteSnapshot,
+  pairingAttemptText,
   remoteCardMeta,
   remoteChannelStateLabel,
   remoteChannelStateTone,
@@ -26,6 +27,8 @@ function snapshot(patch: Partial<CodexRemoteSnapshot> = {}): CodexRemoteSnapshot
     ...patch,
   }
 }
+
+const quiet = '机器人还没收到任何消息。'
 
 describe('codex remote view', () => {
   it('keeps the newer snapshot whichever of the reply and the push arrives last', () => {
@@ -63,5 +66,21 @@ describe('codex remote view', () => {
     const boundAt = new Date(2026, 9, 25, 14, 5).getTime()
     expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对')
     expect(boundPeerText({ userIdTail: 'a1b2', boundAt })).toBe('尾号 a1b2 的账号，10 月 25 日 14:05 配对')
+  })
+
+  it('says how many wrong pairing codes came in, and that the code was voided once they ran out', () => {
+    expect(pairingAttemptText(channel(), quiet)).toBeNull()
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1 } }), quiet)).toBeNull()
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, failures: 1 } }), quiet)).toBe('配对码错了 1 次')
+    expect(pairingAttemptText(channel({ pairingLocked: true }), quiet)).toBe('这个码已经作废，请重新开始配对。')
+    // A new code replaces the voided one.
+    expect(pairingAttemptText(channel({ pairing: { code: '000043', expiresAt: 1 }, pairingLocked: true }), quiet)).toBeNull()
+  })
+
+  // YF-2：码挂了 1 分钟还没收到私聊，说可能是哪儿没配好；错码那句优先。
+  it('says why a pairing code got no answer: nothing arrived at all, or only group messages did', () => {
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing' } }), quiet)).toBe(quiet)
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'group-only' } }), quiet)).toBe('收到的是群里的消息，不算。要点开机器人单独私聊它。')
+    expect(pairingAttemptText(channel({ pairing: { code: '000042', expiresAt: 1, quiet: 'nothing', failures: 2 } }), quiet)).toBe('配对码错了 2 次')
   })
 })

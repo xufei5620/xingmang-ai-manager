@@ -14,7 +14,7 @@
 - `tool-installation.ts` — **认「这个工具装在哪、从哪装的、怎么起」的核心**：分清 npm 包与官方原生安装器（首页据此写「官方安装器」还是「其他来源」）、能不能卸、新开和续聊的启动参数；`resolveCliCommand` 在起进程前核原生可执行文件（Windows 走 `trusted-native-cli.ts` 的签名与暂存，Mac 走 codesign 加 `darwin-cli-staging.ts`）。npm 装、更新这一步本身在 `cli-install-service.ts`
 - `cli-install-service.ts` — **装和更新 CLI 的那一整段**（#1070 第 2 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installCli` / `cancelCliInstall` / `cleanupInstallLeftovers`）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、解析和下载卡住就换源、国内镜像下的包要和 npm 官方源的 SHA-512 一致、托管 npm 目录整体替换（换不回去时报 `ManagedNpmRollbackError`）、Grok 的 Windows 原生通道和 Mac / Linux 的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理下了一半的东西。Windows 提权安装、可信路径那几段只搬不改
 - `cli-uninstall-service.ts` — **卸载 CLI 的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `uninstallCli` / `cleanUninstallLeftovers`）：按安装来源定卸法（npm 包、官方安装器装的 Claude Code、Grok 原生程序，Mac 上先核 xAI 签名再删）、要用户自己跑的卸载命令开在不提权的窗口里、卸完核对命令真的没了、记下删不掉的文件供「帮我清理」用（路径只由这里给，不收界面传来的）
-- `runtime-install-service.ts` — **装运行环境的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installNodeRuntime` / `installPythonRuntime` / `installGitRuntime` / `inspectWindowsProcessor` / `restartWindows`）：Node.js 认不得公司证书时换一份、Windows 上看处理器挑安装包（一次启动只问一次）、Mac 上弹苹果自己的 Git 安装窗口（一次只弹一个），装完补 Grok 钩子；有安装、卸载、打开在排队时不发重启。真正下载和核签名在 `node-runtime.ts`、`python-runtime.ts`、`git-runtime-install.ts` 和 Mac / Linux 各自那份；重启那段（`shutdown.exe` 走固定系统路径）只搬不改
+- `runtime-install-service.ts` — **装运行环境的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `installNodeRuntime` / `installPythonRuntime` / `installGitRuntime` / `inspectWindowsProcessor` / `restartWindows`）：Node.js 认不得公司证书时换一份、Windows 上看处理器挑安装包（一次启动只问一次）、Mac 上弹苹果自己的 Git 安装窗口（一次只弹一个），装完补 Grok 钩子；有安装、卸载、打开在排队时不发重启。Mac、Linux 上代装的 Node.js 比钉的版本旧、又正是星芒在用的那份时，`refreshOutdatedManagedNodeRuntime` 在装或更新工具的那个队列任务里静默换新（D86，门面交给 `cli-install-service.ts` 在找 npm 前调）。真正下载和核签名在 `node-runtime.ts`、`python-runtime.ts`、`git-runtime-install.ts` 和 Mac / Linux 各自那份；重启那段（`shutdown.exe` 走固定系统路径）只搬不改
 - `provider-launch-service.ts` — **从星芒打开工具的那一段**（#1070 第 3 步从 `system-service.ts` 原样搬出，`createSystemService` 照旧对外给 `launchProvider`、`launchCodexDesktop` 和 Codex 桌面端中文界面、工作目录信任那几个）：打开前在保存配置那一队里补写目录信任和项目说明（敏感目录不写）、给 CLI 配环境（哪些变量这次不交给工具：`launchExcludedEnvironmentVariables`、Mac 的 `macosShellOverrideVariables`）、Windows 上核命令后开 PowerShell 窗口（管理员身份时终端环境以 `trustedCommandEnvironment` 为底，见 I2 的 `interactiveTerminalEnvironment`）、Mac 开「终端」、Linux 挨个试终端。Windows 提权那几段只搬不改
 - `installation-queue.ts` — **I11 的实现**：安装、卸载、启动这类会原子替换机器级目录的操作排成一队，同一个 key 复用同一个 Promise（双击天然幂等），还在排队的可以随信号直接出队。外部桌面客户端的「打开」是登记过的例外，见 `external-client-runtime.ts`
 - `install-cancellation.ts` — 安装的「取消」：每次安装一个可中止的信号，但原子替换那几段会「封住」，封着时拒绝取消并给出能上屏的中文原因，不默默吞掉；用户取消抛 `InstallCancelledError`，不进异常日志
@@ -38,6 +38,7 @@
 - `claude-native-uninstall.ts` — 卸载 Anthropic 官方安装器装的 Claude Code（`~/.local/bin/claude` 指向 `~/.local/share/claude/versions`）：只认版本号命名的文件；Windows 上 claude.exe 还开着时改得了名删不掉，照实交代并给出手动命令。口径见 `docs/CLI-NATIVE-INSTALLS.md`
 - `uninstall-leftovers.ts` — 卸载没删干净时的「帮我清理」（已知48）：卸载那一刻在主进程记下手动命令里的文件和所在目录的身份，点了以后只删记下的那几个、删前再核一遍；界面只交工具名不交路径（I5）。Mac 上只在除 root 和当前用户外没人能改的目录里删
 - `uninstall-cleanup.ts` — **Windows 卸载程序的收尾一支**：卸载程序删文件前用专用参数再拉起本程序，把系统代理改回去（加速辅助进程已被强杀，代理还指着没人听的端口会让整台电脑断网）、删开机项、收回四家工具配置里的钩子和状态行，勾了就清登录与聊天记录；跑卸载的不是桌面登录的那个人就什么都不动，结果按位写进退出码，从不让卸载卡住
+- `removed-cli-hooks.ts` — 卸载时收回了哪几家工具的提醒设置（钩子、Claude Code 状态行），记在数据目录的 `cli-hooks-removed-by-uninstall.json`；Windows 卸载清理和 Mac「卸载星芒」写，重装后开机由 `config-save-service.ts` 按记录补回、补完划掉。只认这份记录，客户自己删掉的不补
 - `uninstall-cleanup-entry.ts` — 上面那支的入口判定和两个参数名（与 `build/installer.nsh` 由 scripts 测试钉成同一个值）；刻意零 import，`platform/entry.ts` 每次启动最先读它，决定走桌面还是走清理
 
 ## Grok（Windows 原生包）
@@ -61,6 +62,7 @@
 - `workspace-guard.ts` — 判「打开」选的目录是不是主目录、盘根、桌面、下载、文档、系统目录或四家存 Key 的目录：选中它们等于给整台电脑写信任名单和 AGENTS.md，系统目录与存 Key 目录每次都拦。只看路径形状、不读磁盘，判不准按普通目录放行
 - `workspace-config-overrides.ts` — 只看不改：找出项目文件夹里、公司下发的、会盖过当前账号地址或密钥的那几份配置（Claude 项目 env 与管理策略、Codex 强制登录方式、Gemini 换登录方式与文件夹信任），交给打开流程提醒、检查页列项；有界读、不跟链接（I8），结果只有路径和键名，值不出模块（I13）
 - `tool-path-probe.ts` — 「工具同路径」探测：照命令行工具自己（跑在 Node 里，不是 Chromium）连星芒的样子查一条线路通不通，逐地址握手再问 `/api/status`，只靠系统根证书才过的标成「安全软件接管」；总时限、正文上限、不跟重定向、只去本站线路的 origin（I10）。线路选择（`tool-route-*`）用它
+- `workspace-access.ts` — 点「打开」前查一次工作目录：不在或不是文件夹报调用方那句「工作目录不存在」，Mac 上被系统拒绝（EPERM / EACCES，「文件和文件夹」没给星芒授权）改报让客户把星芒和终端两项都打开的那句（D29）
 - `cli-exit-hint.ts` — 终端里 AI 工具退出后、进不去项目文件夹时打给用户看的那几行中文，Windows、macOS、Linux 共用一份
 - `terminal-launcher-files.ts` — 「打开」CLI 用的一次性启动脚本的文件部分，macOS（`macos-platform.ts`）与 Linux（`linux-terminal.ts`）共用：脚本里可能带 Key，只写进本进程 mkdtemp 的私有目录、原子写，用完按身份（连大小、链接数、时间戳一起）核对再删，绝不误删同一路径上别人放的东西
 
@@ -142,7 +144,7 @@
 
 - `macos-platform.ts` — **Mac 上找命令与「打开」工具**：`darwinCommandPathCandidates` 定 node / npm / CLI 的查找顺序（本软件代下的 Node.js 排最后，客户自己的优先）；打开时写一次性启动脚本，交给固定路径的 `/System/Applications/Utilities/Terminal.app`（不按名字交给 LaunchServices，I14 在 Mac 上的对应），脚本里先摘掉指向已关闭本机端口的代理变量；启动脚本的文件部分在 `terminal-launcher-files.ts`
 - `darwin-path-trust.ts` — Mac 的路径信任：问的是「除 root 和当前用户外，有没有别人能改它解析到的东西」，不是 Windows 那个问题；整条祖先链都查，属主压过权限位，admin 组（gid 80）按产品决定算可信。规则见 `.claude/rules/macos-platform.md`（T5）
-- `darwin-cli-staging.ts` — 核过签名的 CLI 经已绑定的文件描述符拷进私有暂存目录、再核一遍才执行，堵住「核完到执行之间被换掉」；终端可能晚一点才真正执行，所以留存到显式释放或进程退出
+- `darwin-cli-staging.ts` — 核过签名的 CLI 经已绑定的文件描述符拷进私有暂存目录、再核一遍才执行，堵住「核完到执行之间被换掉」；交给终端的那份在星芒退出后还留着（终端里的工具还在跑它），下次打开时用 lsof 查过没有进程在跑才删；一次性用途的副本用完即删、退出时也删
 - `macos-code-signing.ts` — Mac 上认可执行文件和应用来源的唯一办法：把钉 Team ID（和 bundle id）的 designated requirement 交给 codesign，只看退出码不看输出，因为 `codesign -dv` 的文字谁都能伪造
 - `macos-claude.ts` / `macos-codex.ts` — 起原生安装的 `claude`（Anthropic Team ID）和 Codex 官方独立安装布局（`CODEX_HOME/packages/standalone/releases/…`，OpenAI Team ID）之前先核签名，Codex 再经私有暂存执行
 - `macos-codex-app.ts` / `macos-executable-architectures.ts` — Mac 上探测、核对、打开 Codex 桌面端（钉 bundle id 与 OpenAI Team ID；深度签名核验另给更宽的时限并缓存一阵，超时降级成可重试而不是「没装」）；后者读 Mach-O / fat 头，认出可执行文件带哪几种架构
@@ -153,6 +155,7 @@
 - `macos-shell-profile.ts` — 让客户自己开的终端也能直接敲 claude / codex / grok：往 `~/.zprofile`（或 bash 登录文件、fish 的 conf.d）末尾追加标记段，只追加不前置，客户自己装的照旧优先；客户删了那几行，开机不再补
 - `shell-startup-exports.ts` — 认 `~/.zshrc` 这类终端设置文件导出了哪些变量（zsh、bash、fish 的写法），只解析、不执行、不跟 `source`；检查页在 Mac 上用它找会让工具绕开当前账号的那几个（已知45）
 - `macos-desktop-app-installer.ts` / `macos-desktop-install-failure.ts` — Mac 上一键装桌面端（OpenCode、Claude Desktop，以及 Codex 桌面端的官方包 ChatGPT）：先从星芒存储桶（`desktop-package-bucket.ts`）下同一个官方包，没走通才问官方 feed（逐跳限定的重定向，feed 只能指向本模块自己会拼出的那个地址）；codesign 钉 Team ID 与 bundle id、spctl 核对公证，全过才放进「应用程序」（不是管理员就放 `~/Applications`）；失败的那几句话主进程与渲染层共用（I6）
+- `macos-launch-guard.ts` — 拒绝以 root 运行（D18；Mac 上本软件从不提权，没有「管理员模式」可退），字和 Linux 那句一样；零 import，`platform/entry.ts` 里跟 `linux-launch-guard.ts` 一起最先判。打开桌面客户端那处的 root 检查只剩兜底
 - `macos-install-location.ts` — 认出是不是直接从磁盘映像或系统的随机隔离副本（App Translocation）里运行：那样加速内核一推出就被杀，提示搬进「应用程序」；纯路径判断，不用挂盘就能单测
 - `macos-uninstall.ts` — 设置里「卸载星芒」的 Mac 版：先收回工具配置里指向 .app 的钩子与状态行，删开机项、托管工具和更新缓存，再把自己移进废纸篓并退出；安装队列有活时不卸（I11），Key 和工具设置照 Windows 的口径保留
 

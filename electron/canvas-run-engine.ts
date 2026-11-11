@@ -8,8 +8,11 @@ import {
   type CanvasRunCacheEntry,
   type CanvasRunCandidate,
   type CanvasRunEvent,
+  type CanvasFramePreparation,
   type CanvasRunGraph,
   type CanvasRunGraphNode,
+  type CanvasRunImageBatch,
+  type CanvasRunImageCandidateCount,
   type CanvasRunNodeKind,
   type CanvasRunNodeRecord,
   type CanvasRunNodeStage,
@@ -19,7 +22,9 @@ import {
   type CanvasRunScope,
   type CanvasRunStatus,
 } from './canvas-run-contract'
-import { computeCanvasNodeFingerprint } from './canvas-fingerprint'
+import { canvasImageCandidateCacheKey, computeCanvasNodeFingerprint } from './canvas-fingerprint'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
+import { createCanvasRelayBillingRecorder, type CanvasRelayBillingRecorder } from './canvas-run-charges'
 
 const DEFAULT_MAX_CONCURRENCY = 20
 const MAXIMUM_ERROR_LENGTH = 300
@@ -59,6 +64,17 @@ type AdoptedAssetProof =
 
 // 选的是 A、缓存里是 B、又证明不了 A 时，宁可停下也不拿 B 往下游交：画面上显示的
 // 是 A，下游悄悄用 B，客户看不出来。这一步什么都没提交，所以不扣费。
+// What a multi-image node does in this run: replay and send the batch, reuse
+// the image the canvas shows, or stop before any request.
+type ImageBatchPlan =
+  | { kind: 'cancelled' }
+  | { kind: 'failed'; errorMessage: string }
+  // remember: also cache it as request 1, which is safe only when every other
+  // request is already cached (otherwise the next run would send the rest
+  // while the canvas says it reuses the image).
+  | { kind: 'adopted'; entry: CanvasRunCacheEntry; remember: boolean }
+  | { kind: 'batch'; hits: Map<CanvasRunImageCandidateCount, CanvasRunCacheEntry> }
+
 function unprovenAdoptedAssetMessage(kind: CanvasRunNodeKind): string {
   return kind === 'video' || kind === 'video-generate'
     ? '找不到你选中的这段视频当初的生成记录，没法确认它跟现在的设置对得上，所以这个节点先停下了，没有扣费。想接着用，请换选这个节点最新生成的那段；想要新视频，在这个节点上点「运行到此」重新生成（会扣费）。'
@@ -104,10 +120,18 @@ export interface CanvasNodeExecutionContext {
   node: CanvasRunGraphNode
   inputs: CanvasNodeInputs
   signal: AbortSignal
+  /** Hand to every paid request this attempt makes; the run's 实扣 is matched by what it records. */
+  billing?: AiRelayBillingObserver
   reportStage?(
     stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>,
     progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
   ): Promise<void>
+  /**
+   * Tells the page a frame is (waiting true) or no longer is (false) waiting
+   * for it to decode (画布完善第 7 条第二步). Each change goes out as a
+   * run-waiting event with every frame the run still waits on.
+   */
+  reportFramePreparation?(preparation: CanvasFramePreparation, waiting: boolean): Promise<void>
 }
 
 export type CanvasNodeExecutor = (
@@ -121,8 +145,21 @@ function isCanvasRunKernelOnlyNodeKind(kind: CanvasRunNodeKind): boolean {
   return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
 }
 
+/**
+ * A frame-extract node has its own executor or none: falling back to the
+ * video executor would turn a local frame into a paid video request.
+ */
+function executorFor(executors: CanvasNodeExecutors, kind: CanvasRunNodeKind): CanvasNodeExecutor {
+  if (kind === 'frame-extract') {
+    const executor = executors['frame-extract']
+    if (!executor) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    return executor
+  }
+  return executors[kind] ?? executors[fallbackExecutorKind(kind)]
+}
+
 function fallbackExecutorKind(kind: CanvasRunNodeKind): 'text' | 'image' | 'video' {
-  if (kind === 'prompt' || kind === 'note' || kind === 'drama-bible' || kind === 'drama-script' || kind === 'drama-parse' || kind === 'drama-shot') return 'text'
+  if (kind === 'prompt' || kind === 'note' || kind === 'drama-bible' || kind === 'drama-script' || kind === 'drama-parse' || kind === 'drama-shot' || kind === 'text-generate') return 'text'
   if (kind === 'image-generate' || kind === 'image-edit' || kind === 'drama-character' || kind === 'drama-scene' || kind === 'drama-prop') return 'image'
   return 'video'
 }
@@ -148,6 +185,12 @@ export interface CanvasRunEngineOptions {
   ) => Promise<CanvasRunAssetOrigin | null>
   admitRecord?: (record: CanvasRunRecord) => Promise<void>
   persistRecord?: (record: CanvasRunRecord) => Promise<void>
+  /**
+   * Saves a snapshot whose only news is a stage or progress change, or the
+   * opening `queued` entries. It may keep the snapshot in memory for a while;
+   * leaving it out sends these through `persistRecord` like everything else.
+   */
+  persistProgress?: (record: CanvasRunRecord) => Promise<void>
   onEvent?: (event: CanvasRunEvent, record: CanvasRunRecord) => void | Promise<void>
 }
 
@@ -347,6 +390,56 @@ function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
     || kind === 'image-edit'
     || kind === 'video-generate'
     || kind === 'drama-parse'
+    || kind === 'text-generate'
+}
+
+/**
+ * How many independent requests this node sends: 2-4 for an image node whose
+ * count the parser passed on, otherwise one. Each request asks for one image.
+ */
+export function canvasRunImageCandidateCount(node: CanvasRunGraphNode): CanvasRunImageCandidateCount {
+  const count = node.data.imageCandidateCount
+  if ((node.kind !== 'image' && node.kind !== 'image-generate' && node.kind !== 'image-edit') || count === undefined) return 1
+  return count === 2 || count === 3 || count === 4 ? count : 1
+}
+
+function imageCandidateIndexes(count: CanvasRunImageCandidateCount): CanvasRunImageCandidateCount[] {
+  return ([1, 2, 3, 4] as const).filter((index) => index <= count)
+}
+
+// 一组没出齐时节点上的那句话。没出来的那几张各自的原因留在各自的记录里，
+// 这里只带第一条，免得一句话太长。
+export function canvasImageBatchFailureMessage(count: number, succeeded: number, reason: string): string {
+  const message = succeeded === 0
+    ? `这次要出 ${count} 张，一张都没出来：${reason}`
+    : `这次要出 ${count} 张，出来 ${succeeded} 张，${count - succeeded} 张没出来：${reason}`
+  return message.slice(0, MAXIMUM_ERROR_LENGTH)
+}
+
+function cachedAttempt(
+  entry: CanvasRunCacheEntry,
+  fingerprint: string,
+  attemptId: string,
+  inputAssetIds: string[],
+  at: Date,
+  imageBatch?: CanvasRunImageBatch,
+): CanvasRunAttempt {
+  return {
+    attemptId,
+    fingerprint,
+    state: 'cached',
+    startedAt: at.toISOString(),
+    completedAt: at.toISOString(),
+    durationMs: 0,
+    cached: true,
+    ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
+    candidates: entry.candidate ? [structuredClone(entry.candidate)] : [],
+    ...(entry.outputText !== undefined ? { outputText: entry.outputText } : {}),
+    ...(entry.candidate?.costQuota !== undefined ? { costQuota: entry.candidate.costQuota } : {}),
+    ...(entry.candidate?.group ? { group: entry.candidate.group } : {}),
+    ...(entry.candidate?.model ? { model: entry.candidate.model } : {}),
+    ...(imageBatch ? { imageBatch } : {}),
+  }
 }
 
 export function canvasRunExclusiveNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): string[] {
@@ -379,7 +472,8 @@ export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope
       skipped.add(nodeId)
       continue
     }
-    if (usesRemoteGeneration(node.kind)) remoteCount += 1
+    // A multi-image node sends one paid request per image.
+    if (usesRemoteGeneration(node.kind)) remoteCount += canvasRunImageCandidateCount(node)
   }
   return remoteCount
 }
@@ -548,9 +642,16 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     }
     appendCanvasRunTimelineEvent(record.events, complete)
     const snapshot = cloneRecord(record)
+    // A video reports progress every few seconds, and several run side by
+    // side; writing the whole run file for each report stalled the main
+    // process (R-1). Only these reports may wait. The running state written
+    // before a paid request, the result and the terminal state still reach
+    // the disk before anything proceeds.
+    const progressOnly = complete.type === 'node-stage' || (complete.type === 'node-state' && complete.state === 'queued')
+    const persist = progressOnly && options.persistProgress ? options.persistProgress : options.persistRecord
     eventQueue = eventQueue.then(async () => {
       try {
-        await options.persistRecord?.(snapshot)
+        await persist?.(snapshot)
         latestPersistenceError = undefined
       } catch (error) {
         // A later snapshot contains the complete event stream, including this
@@ -615,6 +716,24 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     return true
   }
 
+  // Frames the page still has to decode. Every change is sent whole, the way
+  // the web host's run-waiting events are, so a reloaded page reads the
+  // current list from the record and an empty list clears the banner.
+  const framePreparations = new Map<string, CanvasFramePreparation>()
+  async function reportFramePreparation(nodeId: string, preparation: CanvasFramePreparation, waiting: boolean): Promise<void> {
+    if (preparation.nodeId !== nodeId) throw new Error('视频帧不属于这个节点')
+    if (waiting) {
+      if (isTerminalState(nodeRecords.get(nodeId)!.state)) return
+      framePreparations.set(preparation.operationId, structuredClone(preparation))
+    } else if (!framePreparations.delete(preparation.operationId)) {
+      return
+    }
+    const pending = [...framePreparations.values()].map((entry) => structuredClone(entry))
+    if (pending.length) record.framePreparations = pending
+    else delete record.framePreparations
+    await emit({ type: 'run-waiting', waitingForVideo: false, framePreparations: pending })
+  }
+
   for (const nodeId of admitted) await emit({ type: 'node-state', nodeId, state: 'queued' })
 
   let cancellationProjection = Promise.resolve()
@@ -630,6 +749,16 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   const outputs = new Map<string, NodeOutput>()
   const settled = new Map<string, Promise<void>>()
   const semaphore = createSemaphore(options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY)
+  // A stopped request can still be answered after its attempt is recorded, so
+  // each paid attempt's request ids are read once more before the terminal save.
+  const relayBillings: { attempt: CanvasRunAttempt; recorder: CanvasRelayBillingRecorder }[] = []
+  function withRelayBilling(attempt: CanvasRunAttempt, recorder: CanvasRelayBillingRecorder | undefined): CanvasRunAttempt {
+    if (!recorder) return attempt
+    relayBillings.push({ attempt, recorder })
+    const relayBilling = recorder.snapshot()
+    if (relayBilling) attempt.relayBilling = relayBilling
+    return attempt
+  }
 
   function upstreamSettled(nodeId: string): Promise<void>[] {
     return (index.incoming.get(nodeId) ?? [])
@@ -717,6 +846,215 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     }
   }
 
+  // Which requests of a multi-image node are already cached, under one key
+  // per request (canvasImageCandidateCacheKey), and whether the image the
+  // canvas shows decides instead. Mirrors the one-image path below: the
+  // adopted image is only weighed when the cache alone would show something
+  // else (all cached) or nothing (none cached).
+  async function planImageBatch(
+    node: CanvasRunGraphNode,
+    count: CanvasRunImageCandidateCount,
+    fingerprint: string,
+    bypassCache: boolean,
+  ): Promise<ImageBatchPlan> {
+    const hits = new Map<CanvasRunImageCandidateCount, CanvasRunCacheEntry>()
+    if (bypassCache) return { kind: 'batch', hits }
+    if (options.resolveCache) {
+      const seenAssets = new Set<string>()
+      const seenAttempts = new Set<string>()
+      for (const index of imageCandidateIndexes(count)) {
+        let entry: CanvasRunCacheEntry | null
+        try {
+          entry = await raceWithAbort(options.resolveCache(canvasImageCandidateCacheKey(fingerprint, index), node), options.signal)
+        } catch {
+          if (options.signal.aborted) return { kind: 'cancelled' }
+          entry = null
+        }
+        const candidate = entry?.candidate
+        // An image adopted by a one-image run is cached as request 1 and may
+        // also be another request's result. One image never fills two places.
+        if (!entry || !candidate || candidate.asset.kind !== 'image') continue
+        if (seenAssets.has(candidate.asset.assetId) || seenAttempts.has(candidate.attemptId)) continue
+        seenAssets.add(candidate.asset.assetId)
+        seenAttempts.add(candidate.attemptId)
+        hits.set(index, entry)
+      }
+    }
+    const adoptedAssetId = node.data.adoptedAssetId
+    const adoptedCached = [...hits.values()].some((entry) => entry.candidate?.asset.assetId === adoptedAssetId)
+    // Partly cached means more images were asked for than are kept (a larger
+    // count, or a batch that partly failed): the missing requests run and,
+    // like any new paid batch, its first image replaces the one shown.
+    if (!adoptedAssetId || adoptedCached || !options.resolveAssetOrigin || (hits.size > 0 && hits.size < count)) {
+      return { kind: 'batch', hits }
+    }
+    const proof = await inspectAdoptedAsset(node, adoptedAssetId, options.resolveAssetOrigin, fingerprint)
+    if (options.signal.aborted) return { kind: 'cancelled' }
+    if (proof.state === 'proven') return { kind: 'adopted', entry: proof.entry, remember: hits.size === count }
+    if (proof.state === 'unproven' && hits.size === count) return { kind: 'failed', errorMessage: unprovenAdoptedAssetMessage(node.kind) }
+    return { kind: 'batch', hits }
+  }
+
+  // A multi-image node: one independent request per missing image, each with
+  // its own attempt id (and so its own request id), cache entry and failure.
+  // One request failing never stops or repeats another; the node succeeds
+  // only when every image is there.
+  async function runImageBatch(
+    node: CanvasRunGraphNode,
+    count: CanvasRunImageCandidateCount,
+    fingerprint: string,
+    inputs: CanvasNodeInputs,
+    inputAssetIds: string[],
+    hits: ReadonlyMap<CanvasRunImageCandidateCount, CanvasRunCacheEntry>,
+  ): Promise<void> {
+    const nodeId = node.id
+    const nodeRecord = nodeRecords.get(nodeId)!
+    const batchId = randomUUID()
+    function keep(attempt: CanvasRunAttempt): void {
+      nodeRecord.attempts.push(attempt)
+      // The kernel lists a batch in attempt order and falls back to its first
+      // image; the output below falls back the same way.
+      nodeRecord.attempts.sort((left, right) => (left.imageBatch?.index ?? 0) - (right.imageBatch?.index ?? 0))
+    }
+    const cachedAt = now()
+    for (const [index, entry] of hits) {
+      keep(cachedAttempt(entry, fingerprint, entry.candidate!.attemptId, inputAssetIds, cachedAt, { batchId, index, count }))
+    }
+    const missing = imageCandidateIndexes(count).filter((index) => !hits.has(index))
+    if (missing.length > 0) await updateStage(nodeId, 'waiting-slot')
+    // Requests run side by side; only the lowest one still running reports
+    // its stage, so the node does not flicker between theirs.
+    const running = new Set<number>()
+    const leads = (index: number) => Math.min(...running) === index
+    // Every request waits until the running state is on disk, not only the
+    // first one: a crash after a later request went out must still leave a
+    // record that says the node was running and may have been charged.
+    let runningSaved: Promise<boolean> | undefined
+    await Promise.all(missing.map(async (index) => {
+      let release: () => void
+      try {
+        release = await semaphore.acquire(options.signal)
+      } catch {
+        return
+      }
+      const attemptId = randomUUID()
+      const attemptStartedAt = now()
+      const billing = createCanvasRelayBillingRecorder()
+      running.add(index)
+      try {
+        runningSaved ??= updateNode(nodeId, 'running', { attemptId, fingerprint })
+        await runningSaved
+        if (leads(index)) await updateStage(nodeId, 'submitting', attemptId)
+        // Same window as the one-image path: a stop pressed while the stage
+        // was being persisted must not let this request go out.
+        if (options.signal.aborted) throw options.signal.reason ?? new Error('运行已取消')
+        const executor = executorFor(options.executors, node.kind)
+        let releaseStageReporting!: () => void
+        const stageReportingReady = new Promise<void>((resolve) => { releaseStageReporting = resolve })
+        const executorPromise = executor({
+          runId: options.runId,
+          graphRevision: options.graphRevision,
+          attemptId,
+          ownerId: options.ownerId,
+          userId: options.userId,
+          projectId: options.projectId,
+          node,
+          inputs,
+          signal: options.signal,
+          billing: billing.observer,
+          reportStage: async (stage, progress) => {
+            await stageReportingReady
+            if (leads(index)) await updateStage(nodeId, stage, attemptId, progress)
+          },
+        })
+        void executorPromise.catch(() => undefined)
+        if (leads(index)) await updateStage(nodeId, 'processing', attemptId)
+        releaseStageReporting()
+        const result = await raceWithAbort(executorPromise, options.signal)
+        const completedAt = now()
+        const candidates: CanvasRunCandidate[] = (result.assets ?? []).filter((asset) => asset.kind === 'image').map((asset) => ({
+          candidateId: randomUUID(),
+          attemptId,
+          createdAt: completedAt.toISOString(),
+          asset: structuredClone(asset),
+          ...(result.group ? { group: result.group } : {}),
+          ...(result.model ? { model: result.model } : {}),
+          ...(result.costQuota !== undefined ? { costQuota: result.costQuota } : {}),
+        }))
+        if (candidates.length === 0) throw new Error('这一张没有拿到图片')
+        keep(withRelayBilling({
+          attemptId,
+          fingerprint,
+          state: 'succeeded',
+          startedAt: attemptStartedAt.toISOString(),
+          completedAt: completedAt.toISOString(),
+          durationMs: Math.max(0, completedAt.getTime() - attemptStartedAt.getTime()),
+          cached: false,
+          ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
+          candidates,
+          ...(result.costQuota !== undefined ? { costQuota: result.costQuota } : {}),
+          ...(result.group ? { group: result.group } : {}),
+          ...(result.model ? { model: result.model } : {}),
+          imageBatch: { batchId, index, count },
+        }, billing))
+        try {
+          await options.storeCache?.({
+            version: canvasRunContractVersion,
+            fingerprint: canvasImageCandidateCacheKey(fingerprint, index),
+            nodeKind: node.kind,
+            candidate: candidates[0],
+            createdAt: completedAt.toISOString(),
+            lastUsedAt: completedAt.toISOString(),
+          })
+        } catch {
+          // As on the one-image path: the run record keeps the paid image.
+        }
+      } catch (error) {
+        const completedAt = now()
+        const cancelled = options.signal.aborted
+        keep(withRelayBilling({
+          attemptId,
+          fingerprint,
+          state: cancelled ? 'cancelled' : 'failed',
+          startedAt: attemptStartedAt.toISOString(),
+          completedAt: completedAt.toISOString(),
+          durationMs: Math.max(0, completedAt.getTime() - attemptStartedAt.getTime()),
+          cached: false,
+          ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
+          candidates: [],
+          ...(cancelled ? {} : { errorMessage: sanitizeRunError(error) }),
+          ...(node.data.group ? { group: node.data.group } : {}),
+          ...(node.data.model ? { model: node.data.model } : {}),
+          imageBatch: { batchId, index, count },
+        }, billing))
+      } finally {
+        running.delete(index)
+        release()
+      }
+    }))
+    const done = nodeRecord.attempts.filter((attempt) => attempt.state === 'succeeded' || attempt.state === 'cached')
+    if (options.signal.aborted) {
+      await updateNode(nodeId, 'cancelled', { fingerprint })
+      return
+    }
+    if (done.length < count) {
+      const reason = nodeRecord.attempts.find((attempt) => attempt.state === 'failed')?.errorMessage ?? '节点执行失败'
+      await updateNode(nodeId, 'failed', { fingerprint, errorMessage: canvasImageBatchFailureMessage(count, done.length, reason) })
+      return
+    }
+    const candidates = done.flatMap((attempt) => attempt.candidates)
+    const output = candidates.find((candidate) => candidate.asset.assetId === node.data.adoptedAssetId) ?? candidates[0]
+    outputs.set(nodeId, { fingerprint, asset: output.asset })
+    const paid = done.filter((attempt) => !attempt.cached)
+    const costQuota = paid.reduce<number | undefined>((total, attempt) => attempt.costQuota === undefined ? total : (total ?? 0) + attempt.costQuota, undefined)
+    await updateNode(nodeId, paid.length === 0 ? 'cached' : 'succeeded', {
+      attemptId: (paid.at(-1) ?? done[0]).attemptId,
+      fingerprint,
+      candidateIds: candidates.map((candidate) => candidate.candidateId),
+      ...(costQuota !== undefined ? { costQuota } : {}),
+    })
+  }
+
   for (const nodeId of admitted) {
     const node = index.nodesById.get(nodeId)!
     const task = (async () => {
@@ -757,62 +1095,70 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       // 「运行到此」点在哪个节点，那个节点就必须真的跑一遍。上游已固定的
       // 产物仍走缓存，否则下游单独运行会把前面的图再付费生成一次。
       const bypassCache = options.scope.kind === 'to-node' && options.scope.nodeId === nodeId
-      try {
-        cached = !bypassCache && isCanvasNodeCacheEligible(node.kind) && options.resolveCache
-          ? await raceWithAbort(options.resolveCache(fingerprint, node), options.signal)
-          : undefined
-      } catch {
-        if (options.signal.aborted) {
-          await updateNode(nodeId, 'cancelled')
-          return
-        }
-        // Cache is an optimization. A damaged or temporarily unavailable
-        // cache must not abort an explicitly requested run; proceed as a miss.
-        cached = null
-      }
       let reusedAdopted = false
-      const adoptedAssetId = reusesAdoptedAsset(node.kind) ? node.data.adoptedAssetId : undefined
-      if (!bypassCache && adoptedAssetId && options.resolveAssetOrigin && cached?.candidate?.asset.assetId !== adoptedAssetId) {
-        const proof = await inspectAdoptedAsset(node, adoptedAssetId, options.resolveAssetOrigin, fingerprint)
-        if (options.signal.aborted) {
+      let rememberAdopted = true
+      const imageCandidateCount = canvasRunImageCandidateCount(node)
+      if (imageCandidateCount > 1) {
+        const plan = await planImageBatch(node, imageCandidateCount, fingerprint, bypassCache)
+        if (plan.kind === 'cancelled') {
           await updateNode(nodeId, 'cancelled')
           return
         }
-        if (proof.state === 'proven') {
-          cached = proof.entry
-          reusedAdopted = true
-        } else if (proof.state === 'unproven' && cached?.candidate) {
-          await updateNode(nodeId, 'failed', { errorMessage: unprovenAdoptedAssetMessage(node.kind) })
+        if (plan.kind === 'failed') {
+          await updateNode(nodeId, 'failed', { errorMessage: plan.errorMessage })
           return
         }
-        // Outdated: the cache answers for the current inputs, as before.
-        // Unproven with nothing cached: the node runs again, which the run
-        // confirmation already disclosed as a possible charge.
+        if (plan.kind === 'batch') {
+          await runImageBatch(node, imageCandidateCount, fingerprint, collected.inputs, inputAssetIds, plan.hits)
+          return
+        }
+        // The image on the canvas came from these inputs: reuse it as one
+        // cached attempt, exactly as a one-image node would.
+        cached = plan.entry
+        reusedAdopted = true
+        rememberAdopted = plan.remember
+      } else {
+        try {
+          cached = !bypassCache && isCanvasNodeCacheEligible(node.kind) && options.resolveCache
+            ? await raceWithAbort(options.resolveCache(fingerprint, node), options.signal)
+            : undefined
+        } catch {
+          if (options.signal.aborted) {
+            await updateNode(nodeId, 'cancelled')
+            return
+          }
+          // Cache is an optimization. A damaged or temporarily unavailable
+          // cache must not abort an explicitly requested run; proceed as a miss.
+          cached = null
+        }
+        const adoptedAssetId = reusesAdoptedAsset(node.kind) ? node.data.adoptedAssetId : undefined
+        if (!bypassCache && adoptedAssetId && options.resolveAssetOrigin && cached?.candidate?.asset.assetId !== adoptedAssetId) {
+          const proof = await inspectAdoptedAsset(node, adoptedAssetId, options.resolveAssetOrigin, fingerprint)
+          if (options.signal.aborted) {
+            await updateNode(nodeId, 'cancelled')
+            return
+          }
+          if (proof.state === 'proven') {
+            cached = proof.entry
+            reusedAdopted = true
+          } else if (proof.state === 'unproven' && cached?.candidate) {
+            await updateNode(nodeId, 'failed', { errorMessage: unprovenAdoptedAssetMessage(node.kind) })
+            return
+          }
+          // Outdated: the cache answers for the current inputs, as before.
+          // Unproven with nothing cached: the node runs again, which the run
+          // confirmation already disclosed as a possible charge.
+        }
       }
       if (cached && (cached.outputText !== undefined || cached.candidate)) {
-        const completedAt = now()
-        const attempt: CanvasRunAttempt = {
-          attemptId: cached.candidate?.attemptId ?? randomUUID(),
-          fingerprint,
-          state: 'cached',
-          startedAt: completedAt.toISOString(),
-          completedAt: completedAt.toISOString(),
-          durationMs: 0,
-          cached: true,
-          ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
-          candidates: cached.candidate ? [structuredClone(cached.candidate)] : [],
-          ...(cached.outputText !== undefined ? { outputText: cached.outputText } : {}),
-          ...(cached.candidate?.costQuota !== undefined ? { costQuota: cached.candidate.costQuota } : {}),
-          ...(cached.candidate?.group ? { group: cached.candidate.group } : {}),
-          ...(cached.candidate?.model ? { model: cached.candidate.model } : {}),
-        }
+        const attempt = cachedAttempt(cached, fingerprint, cached.candidate?.attemptId ?? randomUUID(), inputAssetIds, now())
         nodeRecords.get(nodeId)!.attempts.push(attempt)
         outputs.set(nodeId, {
           fingerprint,
           ...(cached.outputText !== undefined ? { text: cached.outputText } : {}),
           ...(cached.candidate ? { asset: cached.candidate.asset } : {}),
         })
-        if (reusedAdopted) {
+        if (reusedAdopted && rememberAdopted) {
           try {
             // The next run then hits the ordinary cache, even after the run
             // history that proved this adoption has been evicted.
@@ -839,14 +1185,15 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
       const attemptId = randomUUID()
       const attemptStartedAt = now()
+      const billing = usesRemoteGeneration(node.kind) ? createCanvasRelayBillingRecorder() : undefined
       await updateNode(nodeId, 'running', { attemptId, fingerprint })
       try {
-        const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
+        const executor = executorFor(options.executors, node.kind)
         if (usesRemoteGeneration(node.kind)) await updateStage(nodeId, 'submitting', attemptId)
-        // Persisting running/submitting awaits disk and event projection. A
-        // stop pressed during that window has already fired its abort event,
-        // which executors only subscribe to later, so re-check before any
-        // paid request can be dispatched.
+        // Persisting running awaits disk, and running/submitting both await
+        // event projection. A stop pressed during that window has already
+        // fired its abort event, which executors only subscribe to later, so
+        // re-check before any paid request can be dispatched.
         if (options.signal.aborted) throw options.signal.reason ?? new Error('运行已取消')
         let releaseStageReporting!: () => void
         const stageReportingReady = new Promise<void>((resolve) => { releaseStageReporting = resolve })
@@ -860,9 +1207,14 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           node,
           inputs: collected.inputs,
           signal: options.signal,
+          ...(billing ? { billing: billing.observer } : {}),
           reportStage: async (stage, progress) => {
             await stageReportingReady
             await updateStage(nodeId, stage, attemptId, progress)
+          },
+          reportFramePreparation: async (preparation, waiting) => {
+            await stageReportingReady
+            await reportFramePreparation(nodeId, preparation, waiting)
           },
         })
         // raceWithAbort below observes the outcome, but only after the
@@ -900,7 +1252,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(result.group ? { group: result.group } : {}),
           ...(result.model ? { model: result.model } : {}),
         }
-        nodeRecords.get(nodeId)!.attempts.push(attempt)
+        nodeRecords.get(nodeId)!.attempts.push(withRelayBilling(attempt, billing))
         outputs.set(nodeId, {
           fingerprint,
           ...(result.outputText !== undefined ? { text: result.outputText } : {}),
@@ -931,7 +1283,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       } catch (error) {
         if (options.signal.aborted) {
           const completedAt = now()
-          nodeRecords.get(nodeId)!.attempts.push({
+          nodeRecords.get(nodeId)!.attempts.push(withRelayBilling({
             attemptId,
             fingerprint,
             state: 'cancelled',
@@ -943,12 +1295,12 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             candidates: [],
             ...(node.data.group ? { group: node.data.group } : {}),
             ...(node.data.model ? { model: node.data.model } : {}),
-          })
+          }, billing))
           await updateNode(nodeId, 'cancelled', { attemptId, fingerprint })
         } else {
           const errorMessage = sanitizeRunError(error)
           const completedAt = now()
-          nodeRecords.get(nodeId)!.attempts.push({
+          nodeRecords.get(nodeId)!.attempts.push(withRelayBilling({
             attemptId,
             fingerprint,
             state: 'failed',
@@ -961,7 +1313,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             errorMessage,
             ...(node.data.group ? { group: node.data.group } : {}),
             ...(node.data.model ? { model: node.data.model } : {}),
-          })
+          }, billing))
           await updateNode(nodeId, 'failed', { attemptId, fingerprint, errorMessage })
         }
       } finally {
@@ -981,6 +1333,13 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     cancelled: record.nodes.filter((node) => node.state === 'cancelled').map((node) => node.nodeId),
     cached: record.nodes.filter((node) => node.state === 'cached').map((node) => node.nodeId),
   }
+  for (const { attempt, recorder } of relayBillings) {
+    const relayBilling = recorder.snapshot()
+    if (relayBilling) attempt.relayBilling = relayBilling
+  }
+  // Every frame executor clears its own entry; a finished run waits on nothing.
+  framePreparations.clear()
+  delete record.framePreparations
   const completedAt = now()
   record.status = runStatus(outcome)
   record.completedAt = completedAt.toISOString()

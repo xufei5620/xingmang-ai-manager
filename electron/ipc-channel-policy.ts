@@ -32,7 +32,7 @@ export type IpcLogPolicy = 'normal' | 'quiet-success' | 'secret-input' | 'silent
  *
  * - none：跟账号无关；或者是登录、注册、退出、读登录态、切换已存账号这类本身就在管登录的通道，
  *   不进账号工作，要不要等开机恢复由处理函数自己定。
- * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号上下文已变化，请重试」。
+ * - scoped：在账号工作里跑，换账号要等它跑完才动手；跑完时账号已经换了，结果作废，报「账号刚切换过，请再试一次」。
  * - scoped-may-end-session：同上，但这一下自己就可能结束或换掉登录（改密码、踢掉当前这台设备），
  *   跑完不核对账号换没换。
  * - scoped-queued：要在安装队列里排在别的安装后面（I11）。排着队那段不算账号工作，处理函数交给队列时
@@ -261,6 +261,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:revoke-login-session': { log: 'normal', account: 'scoped-may-end-session' },
   'account:revoke-other-login-sessions': { log: 'normal', account: 'scoped' },
   'canvas:open': { label: '无限画布窗口打开', log: 'normal', account: 'scoped' },
+  'canvas:open-asset-library': { label: '无限画布素材库打开', log: 'normal', account: 'scoped' },
   // get-remembered-login's result and set-remembered-login's input both carry
   // a plaintext password (the 「记住密码」 credential) -- the same dedicated
   // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
@@ -287,6 +288,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // 回的是整段视频的字节，拼一次片要读好几段。
   'video:read-clip': { label: '视频片段读取', log: 'quiet-success', account: 'scoped' },
   'video-studio:store-export': { label: '视频剪辑成片保存', log: 'normal', account: 'scoped' },
+  'video-studio:pick-music': { label: '视频剪辑选配乐', log: 'normal', account: 'scoped' },
+  // 回的是整首歌的字节，同 video:read-clip。
+  'video-studio:read-music': { label: '视频剪辑配乐读取', log: 'quiet-success', account: 'scoped' },
   'video:open': { label: '视频用播放器打开', log: 'normal', account: 'scoped' },
   'video:save-as': { label: '视频另存', log: 'normal', account: 'scoped' },
   // Chat history carries whole conversations and autosaves after every edit:
@@ -294,6 +298,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // (I13). Failures still log, with the Chinese reason only.
   'chat-history:read': { label: '聊天记录读取', log: 'quiet-success', account: 'none' },
   'chat-history:write': { label: '聊天记录保存', log: 'quiet-success', account: 'none' },
+  // 每次退出都有一条，成功了不值得进反馈报告；没回话的那次主进程等满时限照样退，这里也看不到。
+  'chat-history:flushed': { label: '退出前聊天记录保存回执', log: 'quiet-success', account: 'none' },
   'chat-history:export-text': { label: '聊天对话导出', log: 'normal', account: 'none' },
   'data-transfer:export': { label: '聊天记录与设置导出', log: 'normal', account: 'none' },
   'data-transfer:import': { label: '聊天记录与设置导入', log: 'normal', account: 'none' },

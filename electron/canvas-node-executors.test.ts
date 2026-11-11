@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { executeCanvasRun } from './canvas-run-engine'
-import type { CanvasRunGraph } from './canvas-run-contract'
+import type { CanvasRunAsset, CanvasRunGraph } from './canvas-run-contract'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { dramaParseMaximumRequestCount } from '../canvas-v2/src/runtime/run-preflight'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction, type CanvasFrameExtraction } from './canvas-run-preparations'
 
 describe('createCanvasNodeExecutors', () => {
   it('delegates image generation through the injected main-process service', async () => {
@@ -157,6 +159,56 @@ describe('createCanvasNodeExecutors', () => {
       } },
       signal: new AbortController().signal,
     })).rejects.toThrow('不支持图片编辑')
+    expect(edit).not.toHaveBeenCalled()
+  })
+
+  it('sends a masked edit with its one bound source and a mask PNG at the source size', async () => {
+    const edit = vi.fn(async () => [{
+      assetId: 'c'.repeat(43), localUrl: `xingmang-asset://image/${'c'.repeat(43)}`,
+      mimeType: 'image/png' as const, fileName: 'edited.png',
+    }])
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const source = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, width: 64, height: 48 }
+    const imageEditMask = { version: 1 as const, sourceAssetId: source.assetId, width: 64, height: 48, strokes: [{ tool: 'brush' as const, size: 0.2, points: [{ x: 0.5, y: 0.5 }] }] }
+    await executors['image-edit']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'mask-attempt', ownerId: 9, userId: 42,
+      node: { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成红色', model: 'gpt-image-2', imageEditMask } },
+      inputs: { image: source },
+      signal: new AbortController().signal,
+    })
+    expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({
+      requestId: 'canvas-run:mask-attempt', sourceAssetIds: [source.assetId],
+      mask: { width: 64, height: 48, png: expect.any(Function) },
+    }))
+    const input = (edit.mock.calls[0] as unknown as [number, { mask: { png(signal: AbortSignal): Promise<Uint8Array> } }])[1]
+    const png = Buffer.from(await input.mask.png(new AbortController().signal))
+    expect(png.toString('ascii', 12, 16)).toBe('IHDR')
+    expect([png.readUInt32BE(16), png.readUInt32BE(20), png[24], png[25]]).toEqual([64, 48, 8, 6])
+  })
+
+  it('refuses a mask that does not fit its source before paid dispatch', async () => {
+    const edit = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const source = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, width: 64, height: 48 }
+    const other = { ...source, assetId: 'b'.repeat(43) }
+    const imageEditMask = { version: 1 as const, sourceAssetId: source.assetId, width: 64, height: 48, strokes: [{ tool: 'brush' as const, size: 0.2, points: [{ x: 0.5, y: 0.5 }] }] }
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['gpt-image-2.5-flare', { image: source }, '当前模型尚未接通蒙版局部修改'],
+      ['gpt-image-2', { image: other }, '局部修改需要唯一且与蒙版绑定一致的原图'],
+      ['gpt-image-2', { images: [source, other] }, '局部修改需要唯一且与蒙版绑定一致的原图'],
+      ['gpt-image-2', { image: { ...source, width: 128 } }, '原图像素尺寸与蒙版不一致'],
+    ]
+    for (const [model, inputs, message] of cases) {
+      await expect(executors['image-edit']!({
+        runId: 'run', graphRevision: 'revision', attemptId: 'mask-attempt', ownerId: 9, userId: 42,
+        node: { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成红色', model, imageEditMask } },
+        inputs, signal: new AbortController().signal,
+      }), model).rejects.toThrow(message)
+    }
     expect(edit).not.toHaveBeenCalled()
   })
 
@@ -543,6 +595,68 @@ describe('createCanvasNodeExecutors', () => {
     expect(generateVideo).not.toHaveBeenCalled()
   })
 
+  it('sends a text node\'s upstream text and prompt as one user message, with its pictures, and keeps the answer', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('一只坐在窗台上的橘猫，午后阳光')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const picture = { kind: 'image' as const, assetId: 'p'.repeat(43), localUrl: 'xingmang-asset://p', mimeType: 'image/png' }
+    const billing = { onRelayDispatch: vi.fn(), onRelayAnswer: vi.fn() }
+    const result = await executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7, projectId: 'project-1',
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写成生图提示词', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: { text: '一只猫', image: picture, images: [picture, picture] },
+      signal: new AbortController().signal,
+      billing,
+    })
+    expect(result).toEqual({ outputText: '一只坐在窗台上的橘猫，午后阳光', group: 'GPT', model: 'gpt-5.5' })
+    expect(completeOnce).toHaveBeenCalledOnce()
+    const request = completeOnce.mock.calls[0][0]
+    expect(request).toMatchObject({ group: 'GPT', model: 'gpt-5.5', user: '一只猫\n写成生图提示词', images: { assetIds: [picture.assetId, picture.assetId], projectId: 'project-1' }, billing })
+    expect(request.system).toBeUndefined()
+  })
+
+  it('refuses a text node before any paid request when it has nothing to say, a picture its model cannot read, or too many pictures', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('好')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const picture = { kind: 'image' as const, assetId: 'p'.repeat(43), localUrl: 'xingmang-asset://p', mimeType: 'image/png' }
+    function run(data: { prompt: string; model: string; group?: string }, inputs: Record<string, unknown> = {}) {
+      return executors['text-generate']!({
+        runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+        node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { group: 'GPT', ...data } },
+        inputs,
+        signal: new AbortController().signal,
+      })
+    }
+    await expect(run({ prompt: '  ', model: 'gpt-5.5' }, { text: ' ' })).rejects.toThrow('请输入文字提示词或连接上游提示词节点')
+    await expect(run({ prompt: '描述', model: '' })).rejects.toThrow('请选择文字模型')
+    await expect(run({ prompt: '描述', model: 'gemini-3.7-flash' }, { image: picture, images: [picture] }))
+      .rejects.toThrow('当前模型尚未确认支持图片理解，请选择已支持的视觉文字模型或移除图片；不会忽略图片后继续生成')
+    await expect(run({ prompt: '描述', model: 'gpt-5.5' }, { image: picture, images: Array.from({ length: 5 }, () => picture) }))
+      .rejects.toThrow('文字视觉输入最多支持 4 张图片，请减少图片或改用单图输出')
+    expect(completeOnce).not.toHaveBeenCalled()
+    // Text alone needs no picture-reading model.
+    await expect(run({ prompt: '扩写', model: 'gemini-3.7-flash' })).resolves.toMatchObject({ outputText: '好' })
+  })
+
+  it('does not keep a text answer longer than a canvas project can hold', async () => {
+    const completeOnce = vi.fn().mockResolvedValue('字'.repeat(32_001))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    await expect(executors['text-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'write', kind: 'text-generate', definitionVersion: 1, data: { prompt: '写长文', model: 'gpt-5.5', group: 'GPT' } },
+      inputs: {},
+      signal: new AbortController().signal,
+    })).rejects.toThrow('文字结果超过 32000 字上限，请调整生成长度后再运行')
+  })
+
   it('parses drama tables through injected chat completion and retries once', async () => {
     const { danyinTwoShotFixture } = await import('./drama-parse')
     const completeOnce = vi.fn()
@@ -592,5 +706,178 @@ describe('createCanvasNodeExecutors', () => {
       signal: new AbortController().signal,
     })).rejects.toThrow('剧本解析没有返回有效 JSON')
     expect(completeOnce).toHaveBeenCalledTimes(dramaParseMaximumRequestCount)
+  })
+})
+
+describe('canvas node executors relay billing', () => {
+  const imageAsset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png' as const, fileName: 'image.png' }
+  function context(kind: 'image' | 'video' | 'drama-parse', billing?: AiRelayBillingObserver) {
+    return {
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: kind, kind, definitionVersion: 1, data: kind === 'video'
+        ? { prompt: '海浪', model: 'grok-imagine-video', group: '视频模型' }
+        : kind === 'image' ? { prompt: '一只猫', model: 'gpt-image-2', group: '图片模型' } : { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: kind === 'drama-parse' ? { text: '虞晚斜倚锦榻' } : {},
+      signal: new AbortController().signal,
+      ...(billing ? { billing } : {}),
+    }
+  }
+
+  it('hands the attempt billing to the image and video requests and forwards what they report', async () => {
+    const generate = vi.fn(async (_senderId: number, _input: unknown, progress?: { onRelayDispatch?(sent: boolean): void; onRelayAnswer?(id: string | null): void }) => {
+      progress?.onRelayDispatch?.(true)
+      progress?.onRelayAnswer?.('req-image')
+      return [imageAsset]
+    })
+    const generateVideo = vi.fn(async (_senderId: number, _input: unknown, progress?: { onRelayAnswer?(id: string | null): void }) => {
+      progress?.onRelayAnswer?.('req-video')
+      return { assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`, mimeType: 'video/mp4', taskId: 'task' }
+    })
+    const cancel = vi.fn(() => ({ canceled: false, mayStillComplete: false }))
+    const executors = createCanvasNodeExecutors({ imageService: { generate, cancel }, videoService: { generate: generateVideo as never, cancel } })
+    const billing = { onRelayDispatch: vi.fn<(sent: boolean) => void>(), onRelayAnswer: vi.fn<(id: string | null) => void>() }
+    await executors.image(context('image', billing))
+    await executors.video(context('video', billing))
+    expect(billing.onRelayDispatch).toHaveBeenCalledWith(true)
+    expect(billing.onRelayAnswer.mock.calls).toEqual([['req-image'], ['req-video']])
+    // No billing and no stage reporting: the request goes out with no observer, as before.
+    await executors.image(context('image'))
+    expect(generate.mock.calls.at(-1)).toHaveLength(2)
+  })
+
+  it('hands the attempt billing to each drama parse request', async () => {
+    const { danyinTwoShotFixture } = await import('./drama-parse')
+    const completeOnce = vi.fn().mockResolvedValueOnce('这不是表格').mockResolvedValueOnce(JSON.stringify(danyinTwoShotFixture))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const billing = { onRelayDispatch: vi.fn<(sent: boolean) => void>(), onRelayAnswer: vi.fn<(id: string | null) => void>() }
+    await executors['drama-parse']!(context('drama-parse', billing))
+    expect(completeOnce).toHaveBeenCalledTimes(2)
+    expect(completeOnce.mock.calls.every((call) => call[0].billing === billing)).toBe(true)
+  })
+})
+
+// 画布完善第 7 条第二步: the main process does not decode video; it asks the page for the frame.
+describe('canvas frame-extract executor', () => {
+  const videoAsset = { kind: 'video' as const, assetId: 'V'.repeat(43), localUrl: `xingmang-asset://video/${'V'.repeat(43)}`, mimeType: 'video/mp4' }
+  const frameAsset = { kind: 'image' as const, assetId: 'F'.repeat(43), localUrl: `xingmang-asset://image/${'F'.repeat(43)}`, mimeType: 'image/png', width: 8, height: 8 }
+  const imageService = { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) }
+  const frameNode = { id: 'frame', kind: 'frame-extract' as const, definitionVersion: 1, data: { prompt: '', model: '', frameTimestampSeconds: 2.5 } }
+  const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7, projectId: '11111111-1111-4111-8111-111111111111' }
+
+  function png(width: number, height: number): Buffer {
+    const header = Buffer.alloc(33)
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(header, 0)
+    header.writeUInt32BE(13, 8)
+    header.write('IHDR', 12, 'ascii')
+    header.writeUInt32BE(width, 16)
+    header.writeUInt32BE(height, 20)
+    header[24] = 8
+    header[25] = 6
+    return Buffer.concat([header, Buffer.alloc(16)])
+  }
+
+  it('stays refused without a frame extractor, without a video, or for a video the page cannot decode', async () => {
+    const report = vi.fn(async () => undefined)
+    const refused = createCanvasNodeExecutors({ imageService })['frame-extract']!
+    await expect(refused({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report }))
+      .rejects.toThrow('当前不会提交付费请求')
+
+    const frames: CanvasFrameExtraction = {
+      assertDecodableVideo: vi.fn(async () => { throw new Error('视频超过 32 MB，画布抽不了这一帧') }),
+      waitForFrame: vi.fn(async () => frameAsset),
+    }
+    const executor = createCanvasNodeExecutors({ imageService, frames })['frame-extract']!
+    await expect(executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal }))
+      .rejects.toThrow('「视频抽帧」节点桌面版暂不支持')
+    await expect(executor({ ...base, node: frameNode, inputs: {}, signal: new AbortController().signal, reportFramePreparation: report }))
+      .rejects.toThrow('请先给视频抽帧节点连接一段视频')
+    await expect(executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report }))
+      .rejects.toThrow('视频超过 32 MB，画布抽不了这一帧')
+    expect(frames.assertDecodableVideo).toHaveBeenCalledWith(7, videoAsset.assetId)
+    expect(frames.waitForFrame).not.toHaveBeenCalled()
+    expect(report).not.toHaveBeenCalled()
+    expect(imageService.generate).not.toHaveBeenCalled()
+  })
+
+  it('waits for the frame before telling the page, and clears the request whether or not it came back', async () => {
+    const order: string[] = []
+    let answer!: (asset: CanvasRunAsset) => void
+    let refuse!: (error: Error) => void
+    const frames: CanvasFrameExtraction = {
+      assertDecodableVideo: vi.fn(async () => undefined),
+      waitForFrame: vi.fn(() => {
+        order.push('wait')
+        return new Promise<CanvasRunAsset>((resolve, reject) => { answer = resolve; refuse = reject })
+      }),
+    }
+    const report = vi.fn(async (_preparation: unknown, waiting: boolean) => { order.push(waiting ? 'ask' : 'clear') })
+    const executor = createCanvasNodeExecutors({ imageService, frames })['frame-extract']!
+    const preparation = { operationId: 'attempt', nodeId: 'frame', attemptId: 'attempt', sourceAssetId: videoAsset.assetId, timestampSeconds: 2.5 }
+
+    const running = executor({ ...base, node: frameNode, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report })
+    await vi.waitFor(() => expect(order).toEqual(['wait', 'ask']))
+    expect(frames.waitForFrame).toHaveBeenCalledWith({ runId: 'run', userId: 7, projectId: base.projectId, preparation, signal: expect.any(AbortSignal) })
+    answer(frameAsset)
+    await expect(running).resolves.toEqual({ assets: [frameAsset] })
+    expect(order).toEqual(['wait', 'ask', 'clear'])
+    expect(report.mock.calls).toEqual([[preparation, true], [preparation, false]])
+
+    const failing = executor({ ...base, node: { ...frameNode, data: { prompt: '', model: '' } }, inputs: { video: videoAsset }, signal: new AbortController().signal, reportFramePreparation: report })
+    await vi.waitFor(() => expect(report).toHaveBeenCalledTimes(3))
+    expect(report.mock.calls[2]).toEqual([{ ...preparation, timestampSeconds: 0 }, true])
+    refuse(new Error('视频帧没有抽出来：视频读不出来，或者时间点不在视频里'))
+    await expect(failing).rejects.toThrow('视频帧没有抽出来')
+    expect(report.mock.calls[3]).toEqual([{ ...preparation, timestampSeconds: 0 }, false])
+  })
+
+  it('runs a video into a frame node end to end with the frame the page hands back, without a paid request', async () => {
+    const broker = new CanvasRunPreparationBroker()
+    const storeLocalBytes = vi.fn(async () => ({ assetId: frameAsset.assetId, localUrl: frameAsset.localUrl, mimeType: 'image/png' as const, width: 8, height: 8, fileName: 'frame.png' }))
+    const setSource = vi.fn(async () => undefined)
+    const frames = createCanvasFrameExtraction({
+      broker,
+      assets: {
+        readOwnedVideoRange: vi.fn(async () => ({ totalBytes: 1024 })),
+        forProject: vi.fn(async () => ({ images: { storeLocalBytes }, media: { setSource } })),
+      },
+    })
+    const readOwned = vi.fn(async () => ({ asset: videoAsset }))
+    const generateVideo = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService,
+      videoService: { generate: generateVideo, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoGroup: 'grok',
+      assets: { readOwned },
+      frames,
+    })
+    const graph: CanvasRunGraph = {
+      nodes: [
+        { id: 'clip', kind: 'video-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: videoAsset.assetId } },
+        frameNode,
+      ],
+      edges: [{ id: 'e', source: 'clip', sourceHandle: 'out:video', target: 'frame', targetHandle: 'in:video' }],
+    }
+    const asked: unknown[] = []
+    const record = await executeCanvasRun({
+      userId: 7, ownerId: 9, projectId: base.projectId, runId: 'run-frame', graphRevision: 'revision', graph, scope: { kind: 'all' },
+      executors, signal: new AbortController().signal,
+      onEvent: async (event) => {
+        if (event.type !== 'run-waiting' || !event.framePreparations.length) return
+        asked.push(...event.framePreparations)
+        const [preparation] = event.framePreparations
+        await broker.complete(7, { runId: 'run-frame', operationId: preparation.operationId, kind: 'frame', outcome: 'completed', png: png(8, 8) })
+      },
+    })
+    expect(record.status).toBe('succeeded')
+    expect(asked).toEqual([expect.objectContaining({ nodeId: 'frame', sourceAssetId: videoAsset.assetId, timestampSeconds: 2.5 })])
+    expect(record.nodes.find((entry) => entry.nodeId === 'frame')?.state).toBe('succeeded')
+    expect(storeLocalBytes).toHaveBeenCalledTimes(1)
+    expect(setSource).toHaveBeenCalledWith(7, frameAsset.assetId, 'imported')
+    expect(generateVideo).not.toHaveBeenCalled()
+    expect(broker.size()).toBe(0)
+    expect(record).not.toHaveProperty('framePreparations')
   })
 })

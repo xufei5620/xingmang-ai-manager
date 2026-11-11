@@ -240,7 +240,7 @@ test('customer support returns to the default QR and browser destination after h
     await dialog.locator('[data-modal-close]').click()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-support').waitFor()
     const session = await page.evaluate(() => window.xingmang.getAccountSession())
     assert.equal(session.authenticated, false)
@@ -368,6 +368,42 @@ test('external client install failures clear busy state and remain retryable', a
     await page.getByRole('button', { name: '返回', exact: true }).click()
     assert.equal(await row.getByRole('button', { name: '安装', exact: true }).isEnabled(), true)
     assert.equal(await row.getByRole('progressbar').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed Claude Desktop install offers the offline packages first and the Claude site second', async () => {
+  // D64：Claude 官网在国内多半打不开，先给教程站「备用安装包」那一节，官网退到第二个。
+  const page = await open('externalInstallFailure=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    async function failInstall() {
+      await row.getByRole('button', { name: '安装', exact: true }).click()
+      const dialog = page.getByTestId('operation-error')
+      await dialog.getByText('没能装好 Claude Desktop', { exact: true }).waitFor()
+      return dialog
+    }
+    async function openedBy(dialog, label) {
+      const previous = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length)
+      await dialog.getByRole('button', { name: label, exact: true }).click()
+      await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length > count, previous)
+      return await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').at(-1).args[0])
+    }
+    let dialog = await failInstall()
+    // 返回、重试、两个出口、查看日志、复制给客服、找客服一行放不下：折行，不能有哪颗被挤出框外。
+    // 量的是排版宽度，不受弹出动画的缩放影响。
+    const footer = await dialog.locator('footer').evaluate((element) => ({ scroll: element.scrollWidth, client: element.clientWidth, rows: new Set([...element.querySelectorAll('button')].map((button) => button.offsetTop)).size }))
+    assert.ok(footer.scroll <= footer.client, `错误框底部按钮溢出：${JSON.stringify(footer)}`)
+    assert.ok(footer.rows > 1, `七颗按钮应该折成两行：${JSON.stringify(footer)}`)
+    await page.screenshot({ path: path.join(artifacts, 'claude-desktop-install-failed-exits.png') })
+    await expect(dialog.getByTestId('operation-error-body')).toHaveText('先点「重试」；还不行就点「下载离线安装包」，装好后回星芒点「重新检测」。')
+    const exits = await dialog.locator('[data-testid^="operation-error-claudeDesktop"]').allTextContents()
+    assert.deepEqual(exits, ['下载离线安装包', '去 Claude 官网'])
+    assert.equal(await dialog.getByRole('button', { name: '去官网下载', exact: true }).count(), 0)
+    assert.equal(await openedBy(dialog, '下载离线安装包'), 'https://docs-new.solov.cc/guide/manager#offline-packages')
+    await expect(dialog).toHaveCount(0)
+    dialog = await failInstall()
+    assert.equal(await openedBy(dialog, '去 Claude 官网'), 'https://claude.com/download')
     await clean(page)
   } finally { await page.close() }
 })
@@ -527,7 +563,7 @@ test('external client incomplete Claude configuration requires setup before prim
   try {
     const row = page.getByTestId('tool-row-claudeDesktop')
     await row.getByText('待连接', { exact: true }).waitFor()
-    await expect(row).toContainText('第三方推理配置待完善')
+    await expect(row).toContainText('用的是别家的设置，还没填完')
     assert.equal(await row.getByRole('button', { name: '打开', exact: true }).count(), 0)
     await row.getByRole('button', { name: '确认连接', exact: true }).click()
     await page.getByTestId('external-client-dialog').waitFor()
@@ -649,7 +685,7 @@ test('WorkBuddy loses current-account readiness when switching saved accounts on
     const row = page.getByTestId('tool-row-workbuddy')
     // 连上当前账号的卡片左下角写「当前账号」（v4 没有「N 个已连接」那句了），余额卡上不写连接的事。
     assert.equal(await row.getByTestId('tool-workbuddy-source').innerText(), '当前账号')
-    assert.equal(await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
+    assert.equal(await page.getByRole('heading', { name: '账号余额', exact: true }).locator('xpath=ancestor::section[1]').getByText(/已连接|等待连接/).count(), 0)
     const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
     await page.evaluate(() => window.v2Test.holdNextExternalScan())
     const switcher = await openAccountSwitcher(page)
@@ -706,7 +742,7 @@ test('logout retains WorkBuddy local configuration without retaining the signed-
     await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     assert.equal(await row.count(), 0)
     await page.getByTestId('welcome-steps').click()
@@ -1398,6 +1434,33 @@ test('an exported report can be revealed in its folder and says so when it moved
     await reveal.click()
     await health.getByText('导出的文件已经不在原来的位置了，可能被移动或删除。').waitFor()
     await health.getByText('检查报告已导出：C:\\Fixture\\xingmang-diagnostics.txt', { exact: true }).waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an export the chosen folder will not take says to pick another folder or free up the disk, not the install directory (D16)', async () => {
+  const page = await open('allInstalled=1')
+  try {
+    // 开了「受控文件夹访问」的桌面：主进程那句经 IPC 过来，是带着通道名的英文原话。
+    await page.evaluate(() => { window.v2Test.fail = 'exportDiagnostics'; window.v2Test.failMessage = "Error invoking remote method 'diagnostics:export': Error: EPERM: operation not permitted, open 'C:\\Users\\fixture\\Desktop\\.xingmang-diagnostics.txt.tmp'" })
+    await page.getByTestId('nav-health').click()
+    const health = page.getByTestId('page-health')
+    await health.waitFor()
+    await health.getByRole('button', { name: '导出检查报告', exact: true }).click()
+    const healthNotice = health.locator('.v2-business-notice.is-error')
+    await healthNotice.waitFor()
+    assert.match(await healthNotice.innerText(), /这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。/)
+    assert.doesNotMatch(await healthNotice.innerText(), /安装目录/)
+
+    // 设置页「导出聊天记录和设置」时盘满了：不再说安装用的临时文件夹。
+    await page.evaluate(() => { window.v2Test.fail = 'exportAppData'; window.v2Test.failMessage = "Error invoking remote method 'data-transfer:export': Error: ENOSPC: no space left on device, write" })
+    const settings = await openSettingsGroup(page, '备份迁移')
+    await settings.getByTestId('settings-transfer-export').click()
+    const settingsNotice = settings.locator('.v2-business-notice.is-error')
+    await settingsNotice.waitFor()
+    assert.match(await settingsNotice.innerText(), /这块盘满了，清出一些空间，或者换一块盘再导出。/)
+    assert.doesNotMatch(await settingsNotice.innerText(), /临时文件夹|安装目录/)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await clean(page)
   } finally { await page.close() }
@@ -2255,6 +2318,42 @@ test('deleting a session asks first, then removes it from the list and the home 
   } finally { await page.close() }
 })
 
+// 0.2.24 深查 NT-0：记录详情和「彻底删除」两个框开着时，托盘「设置」或一条系统通知把页面换走，
+// 两个框跟着记录页藏起来，浏览器却还当它们是模态框，整个窗口点什么都没反应，只能按 Esc 或重开。
+test('dialogs left open on a page the tray or a notification navigates away from stop blocking the window and come back with the page', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&sessionDelete=1')
+  const modal = () => page.evaluate(() => [...document.querySelectorAll('dialog')].filter((dialog) => dialog.matches(':modal')).map((dialog) => dialog.dataset.testid))
+  try {
+    await page.getByTestId('nav-sessions').click()
+    await page.getByTestId('sessions-view-claude:1').click()
+    await page.getByTestId('session-detail-delete').click()
+    const confirm = page.getByTestId('session-delete-confirm')
+    await confirm.waitFor()
+    assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
+
+    // 托盘「设置」和系统通知点进来都走这一条。
+    await page.evaluate(() => window.v2Test.emit('onNavigate', 'settings'))
+    const settings = page.getByTestId('page-settings')
+    await settings.waitFor()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await modal(), [])
+    const tab = settings.getByRole('tab', { name: '版本更新', exact: true })
+    await tab.click()
+    await expect(tab).toHaveAttribute('aria-selected', 'true')
+
+    // 回到记录页，两个框按原来的上下次序回来，焦点在最上面那个框里，照样能答。
+    await page.getByTestId('nav-sessions').click()
+    await confirm.waitFor()
+    assert.deepEqual(await modal(), ['session-detail-drawer', 'session-delete-confirm'])
+    assert.equal(await page.evaluate(() => document.querySelector('[data-testid="session-delete-confirm"]')?.contains(document.activeElement)), true)
+    await confirm.getByRole('button', { name: '先不删' }).click()
+    await confirm.waitFor({ state: 'hidden' })
+    assert.deepEqual(await modal(), ['session-detail-drawer'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'deleteProviderSession')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('a new user opens a CLI in a folder the app creates and can still pick one from the menu (known 40)', async () => {
   const page = await open('allInstalled=1')
   try {
@@ -2698,7 +2797,7 @@ test('switching the official-installer Claude Code to the app asks first, then u
     const dialog = page.getByTestId('managed-switch-confirm')
     await update.click()
     await dialog.getByText('换成星芒装的 Claude Code？', { exact: true }).waitFor()
-    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账户数据和历史记录会保留，以后在星芒里点一下就能更新。/)
+    assert.match(await dialog.innerText(), /星芒会先把它卸掉，再装上 2\.0\.0。工具配置、账号数据和历史记录会保留，以后在星芒里点一下就能更新。/)
     // 点「取消」什么都不动。
     await dialog.getByRole('button', { name: '取消', exact: true }).click()
     await dialog.waitFor({ state: 'detached' })
@@ -2794,6 +2893,12 @@ test('the leftover dialog cleans up through the main process and says what is st
     // 第一次那个文件还被占着：框留着，红字说还剩几个、接下来怎么办。
     await expect(dialog.getByTestId('manual-uninstall-cleanup-problem'))
       .toHaveText('还有 1 个文件没删掉。关掉所有 Claude Code 窗口后再点一次「帮我清理」；还是不行，请联系客服。')
+    // 红字叫人找客服，框底就给「找客服」：帮助框叠在上面，关掉还回到这个框（D21）。
+    await dialog.getByTestId('manual-uninstall-support').click()
+    const support = page.getByTestId('support-dialog')
+    await support.waitFor()
+    await page.keyboard.press('Escape')
+    await support.waitFor({ state: 'detached' })
     await dialog.getByTestId('manual-uninstall-cleanup').click()
     await waitForToast(page, '清理好了。')
     await dialog.waitFor({ state: 'detached' })
@@ -3033,7 +3138,7 @@ test('an install that finishes while signed out keeps the welcome page and leave
     await row.getByTestId('tool-grok-cancel').waitFor()
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     const scansBefore = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanSystem').length)
     await page.evaluate(() => window.v2Test.releaseInstall())
@@ -3265,7 +3370,7 @@ test('read-only account matches do not survive logout or a late config read when
     // 不是配对去取 Key，所以从退出以后再接着查。
     await page.getByTestId('sidebar-account-open').click()
     await page.getByRole('button', { name: '退出登录', exact: true }).click()
-    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
     await page.getByTestId('welcome-login').waitFor()
     const loggedOut = await page.evaluate(() => window.v2Test.calls.length)
     await page.getByTestId('welcome-steps').click()
@@ -3718,6 +3823,126 @@ test('saved-account switching leaves tools without an account key untouched', as
   } finally { await page.close() }
 })
 
+// 对话页发一张图，出图那一下压着不回（?chatImage），再去个人中心切换账号（D44）。
+async function startHeldChatImage(page) {
+  await page.getByTestId('tool-row-claude').waitFor()
+  await page.getByTestId('nav-chat').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.preparing === 'false')
+  await page.getByTestId('chat-mode').getByRole('button', { name: '生成图片', exact: true }).click()
+  await page.waitForFunction(() => document.querySelector('[data-testid=chat-model]')?.dataset.model === 'gpt-image-2')
+  await page.getByTestId('chat-composer-input').fill('一只橘猫')
+  await page.getByTestId('chat-send').click()
+  await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'generateAiImage'))
+}
+const chatImageSwitchWarning = '对话还在出图，换账号会停掉这张图，可能已经扣费。'
+async function switchCalls(page) { return page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'switchSavedAccount').length) }
+
+test('switching accounts while the chat page draws an image asks first; waiting keeps the account and a finished image no longer asks (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    const row = switcher.getByTestId('saved-account-row-saved-18')
+    await row.getByRole('button', { name: '切换', exact: true }).click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.waitFor()
+    assert.equal(await ask.getAttribute('data-testid'), 'saved-account-switch-image-busy')
+    assert.equal((await ask.locator('.xm-dialog-body').innerText()).trim(), chatImageSwitchWarning)
+    assert.deepEqual(await ask.locator('footer').getByRole('button').allTextContents(), ['等它出完', '仍然切换'])
+    // 默认停在不切的那个按钮上：手快按回车不会把图停掉。
+    assert.equal(await ask.getByRole('button', { name: '等它出完', exact: true }).evaluate((button) => button === document.activeElement), true)
+    await page.screenshot({ path: path.join(artifacts, 'account-switch-chat-image-busy.png') })
+    await ask.getByRole('button', { name: '等它出完', exact: true }).click()
+    await ask.waitFor({ state: 'hidden' })
+    assert.equal(await switchCalls(page), 0)
+    assert.equal(await switcher.isVisible(), true)
+    // 图出完了再点「切换」，直接切，不再问。
+    await page.evaluate(() => window.v2Test.releaseChatImage())
+    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat] .chat-generating') === null)
+    await row.getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    assert.equal(await switchCalls(page), 1)
+    assert.equal(await ask.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('choosing to switch anyway while the chat page draws an image switches the account (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('saved-account-row-saved-18').getByRole('button', { name: '切换', exact: true }).click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.getByRole('button', { name: '仍然切换', exact: true }).click()
+    await page.getByRole('button', { name: /^个人中心：saved-user(，|$)/ }).waitFor()
+    await ask.waitFor({ state: 'detached' })
+    assert.equal(await switchCalls(page), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 去登录另一个账号也会停掉对话页的图：登录框一提交主进程就先停（密码输错也停），所以打开登录框之前问同一句（复查第 7 条）。
+test('adding another account while the chat page draws an image asks first; waiting keeps the login closed (D44)', async () => {
+  const page = await open('savedAccount=1&chatImage=1')
+  try {
+    await startHeldChatImage(page)
+    const switcher = await openAccountSwitcher(page)
+    await switcher.getByTestId('account-add').click()
+    const ask = page.getByRole('dialog', { name: chatImageSwitchWarning, exact: true })
+    await ask.waitFor()
+    assert.equal((await ask.locator('.xm-dialog-body').innerText()).trim(), chatImageSwitchWarning)
+    assert.deepEqual(await ask.locator('footer').getByRole('button').allTextContents(), ['等它出完', '仍然切换'])
+    assert.equal(await ask.getByRole('button', { name: '等它出完', exact: true }).evaluate((button) => button === document.activeElement), true)
+    await ask.getByRole('button', { name: '等它出完', exact: true }).click()
+    await ask.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByTestId('login-dialog').count(), 0)
+    assert.equal(await switcher.isVisible(), true)
+    await switcher.getByTestId('account-add').click()
+    await ask.getByRole('button', { name: '仍然切换', exact: true }).click()
+    await page.getByRole('heading', { name: '登录星芒账号' }).waitFor()
+    await ask.waitFor({ state: 'detached' })
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'loginAccount').length), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 退出登录也会停掉对话页的图：个人中心和命令面板的确认框里补同一句；图出完了再点，一个字不加（复查第 7 条）。
+test('the logout prompt says the chat image stops while one is drawing, from either entry point (D44)', async () => {
+  for (const entry of ['account', 'command']) {
+    const page = await open('chatImage=1')
+    async function logoutDialog() {
+      if (entry === 'account') {
+        await page.getByTestId('sidebar-account-open').click()
+        await page.getByTestId('account-overview-logout').click()
+      } else {
+        await page.keyboard.press('Control+k')
+        await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
+        await page.getByTestId('command-result-account:logout').click()
+      }
+      const dialog = page.getByRole('dialog', { name: '退出登录？', exact: true })
+      await dialog.waitFor()
+      return dialog
+    }
+    try {
+      await startHeldChatImage(page)
+      let dialog = await logoutDialog()
+      await expect(dialog).toContainText(`已配好的工具会保留。${chatImageSwitchWarning}`)
+      await dialog.getByRole('button', { name: '取消', exact: true }).click()
+      await dialog.waitFor({ state: 'hidden' })
+      assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 0)
+      await page.evaluate(() => window.v2Test.releaseChatImage())
+      await page.waitForFunction(() => document.querySelector('[data-testid=page-chat] .chat-generating') === null)
+      dialog = await logoutDialog()
+      await dialog.getByText('已配好的工具会保留。', { exact: true }).waitFor()
+      await expect(dialog).not.toContainText('对话还在出图')
+      await dialog.getByRole('button', { name: '退出登录', exact: true }).click()
+      await page.getByTestId('welcome-login').waitFor()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('read-only account matches switch only explicitly selected CLI providers one at a time', async () => {
   const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
   try {
@@ -4001,11 +4226,11 @@ test('a failed startup environment check stays out of the way while the manual o
     assert.equal(await page.getByTestId('operation-error').count(), 0)
     const reported = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'reportRendererError' && entry.args[0]?.context !== 'account-bootstrap').map((entry) => entry.args[0].context))
     assert.deepEqual(reported, ['renderer-v2 startup check: diagnostics'])
-    // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。
+    // 用户自己走到「检查」页点按钮，同一个失败要照常摆在页面上说清楚。还没查出过结果，页头那颗叫「开始检查」（W33）。
     await page.getByTestId('nav-health').click()
     const health = page.getByTestId('page-health')
     await health.waitFor()
-    await health.getByRole('button', { name: '重新检查', exact: true }).click()
+    await health.locator('.xm-page-head').getByRole('button', { name: '开始检查', exact: true }).click()
     await health.getByText('本机环境检查没有跑完', { exact: true }).waitFor()
     await clean(page)
   } finally { await page.close() }
@@ -4182,7 +4407,7 @@ test('turning the display switch off in settings asks for a relaunch, and later 
     await settings.getByRole('switch', { name: '用显卡加速显示' }).click()
     const hint = page.getByTestId('settings-display-relaunch')
     await hint.waitFor()
-    await hint.getByText('重启软件后生效。', { exact: true }).waitFor()
+    await hint.getByText('重开星芒后生效。', { exact: true }).waitFor()
     const saves = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveSettings').map((entry) => entry.args[0]))
     assert.deepEqual(saves.at(-1), { version: 2, hardwareAcceleration: false })
     await page.getByTestId('settings-display-relaunch-later').click()
@@ -4395,8 +4620,8 @@ test('relay route settings read nothing stored as auto and offer it first with t
     await expectRoute(route, 'auto')
     assert.deepEqual(await route.getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
     assert.deepEqual(await page.getByTestId('settings-relay-route-solov-api').getByRole('button').allTextContents(), ['自动（推荐）', '只用线路1', '只用线路2'])
-    await page.getByText('自动会先走线路2，连不上时改走线路1。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
-    await page.getByText('自动会先走线路1，线路1连不上时改走线路2。保存后重启星芒生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('自动会先走线路2，连不上时改走线路1。重开星芒后生效，不会切换账号。', { exact: true }).waitFor()
+    await page.getByText('自动会先走线路1，线路1连不上时改走线路2。重开星芒后生效，不会切换账号。', { exact: true }).waitFor()
     assert.equal(await page.getByTestId('settings-relay-relaunch').count(), 0)
     await chooseRoute(route, 'primary')
     await page.getByTestId('settings-relay-relaunch').waitFor()
@@ -4695,8 +4920,8 @@ test('the version card names the step that failed and offers that step again', a
 })
 
 // 首页气泡说「下载更新失败」却只给「查看更新」，客户得换页再找按钮。气泡上直接
-// 给那一步的重试，走的和版本更新卡同一套：下载失败先重新查再下，安装失败落到「设置 › 版本更新」
-// 那张卡的重启确认框，检查失败重新查。
+// 给那一步的重试，走的和版本更新卡同一套：下载失败先重新查再下，安装失败就地弹版本更新卡
+// 那个重启确认框（不再先跳到「设置 › 版本更新」，11-10），检查失败重新查。
 test('the update failure bubble retries the failed step without a detour', async () => {
   const page = await open('updateRetryAvailable=1')
   try {
@@ -4728,17 +4953,16 @@ test('the update failure bubble retries the failed step without a detour', async
     await emit('install', 'downloaded', 'UPDATE_ERROR', '更新程序未能启动，已继续打开主程序；可在“检查更新”页重试安装')
     const install = page.getByRole('alert').filter({ hasText: '安装更新失败' })
     await install.getByRole('button', { name: '重新安装', exact: true }).click()
-    const settings = page.getByTestId('page-settings')
-    await settings.getByTestId('page-updates').waitFor()
-    await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
     await page.getByRole('dialog', { name: '重启并安装更新？' }).waitFor()
+    assert.equal(await page.getByTestId('page-settings').isVisible(), false)
+    await page.getByTestId('page-home').waitFor()
     assert.equal(await calls('installUpdate'), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
 // 已知31：版本更新卡确认框里的「重启并安装」让主进程先看有没有工具在装（askIfInstalling），有就先问退出时那一句。
-// 客户在那一句里点了「继续安装」：确认框关掉，不说「安装请求已提交」，新版本留着。
+// 客户在那一句里点了「继续安装」（或者 D10 那一句里点了「等它做完」）：确认框关掉，不说「安装请求已提交」，新版本留着。
 test('the version card asks about running installs before restarting and stays quiet when the user keeps installing (known 31)', async () => {
   const page = await open('installPostponed=1')
   try {
@@ -4754,11 +4978,41 @@ test('the version card asks about running installs before restarting and stays q
     }).toBe(1)
     await restart.click()
     const confirm = page.getByRole('dialog', { name: '重启并安装更新？' })
+    // D9：装完会自己重新打开，不再叫客户「重新打开工具箱」。
+    await confirm.getByText('请先保存当前工作。星芒会先关掉，装好自动重新打开。', { exact: true }).waitFor()
     await confirm.getByRole('button', { name: '重启并安装', exact: true }).click()
     await confirm.waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args)), [[{ askIfInstalling: true }]])
     await restart.waitFor()
     await assertNoToast(page, '安装请求已提交')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 更新清单里是整份 release-notes.md：版本卡只列要装的那一版，一条一行；说明再长也只占卡里一截、
+// 在那一截里自己滚，「重启并安装」不用滑到底去找（yoyo 2026-11-10）。
+test('the version card lists only the pending version one change per line and keeps the install button in view', async () => {
+  const page = await open('')
+  try {
+    const updates = await openVersionCard(page)
+    const changes = Array.from({ length: 40 }, (_, index) => `- 第 ${index + 1} 条改动，说得长一点，在源文件里\n  折了一行。`)
+    const releaseNotesText = ['0.1.32', '', ...changes, '', '0.1.31', '', '- 上一版的改动'].join('\n')
+    const restart = updates.getByRole('button', { name: '重启并安装', exact: true })
+    await expect.poll(async () => {
+      await page.evaluate((notes) => window.v2Test.emit('onUpdateState', {
+        phase: 'downloaded', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: notes,
+        checkedAt: new Date().toISOString(), progress: null, failedStep: null, error: null, development: true,
+      }), releaseNotesText)
+      return restart.count()
+    }).toBe(1)
+    await updates.getByText('v0.1.32 更新内容', { exact: true }).waitFor()
+    const list = updates.getByTestId('updates-new-notes')
+    assert.equal(await list.locator('li').count(), 40)
+    await list.getByText('第 1 条改动，说得长一点，在源文件里折了一行。', { exact: true }).waitFor()
+    assert.equal(await updates.getByText('上一版的改动', { exact: false }).count(), 0)
+    const body = updates.getByTestId('updates-notes-body')
+    assert.ok(await body.evaluate((element) => element.scrollHeight > element.clientHeight + 1), 'long notes scroll inside the card')
+    await expect(restart).toBeInViewport()
     await clean(page)
   } finally { await page.close() }
 })
@@ -4952,6 +5206,89 @@ test('the required-update gate explains a full disk and lets the user retry', as
   } finally { await page.close() }
 })
 
+// RC-01：点过「立即更新」以后那层提示收起了（读到文件里撤掉了最低版本），下好了也不替客户接着重启装；
+// 再盖回来要他自己再点。门里的「立即更新」让主进程先看有没有工具在装（askIfInstalling），客户在那一句里
+// 点了「继续安装」，按钮回到「立即更新」，不卡在「正在重启安装…」。
+test('the required-update gate never restarts on its own once lifted, and asks about running installs first', async () => {
+  const page = await open('installPostponed=1')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    const base = {
+      currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false,
+    }
+    const emit = (patch) => page.evaluate((state) => window.v2Test.emit('onUpdateState', state), { ...base, ...patch })
+    const calls = (method) => page.evaluate((name) => window.v2Test.calls.filter((entry) => entry.method === name).map((entry) => entry.args), method)
+    const gate = page.getByTestId('required-update-gate')
+    const progress = { percent: 40, bytesPerSecond: 1, transferred: 40, total: 100 }
+
+    await emit({ phase: 'available', requiredVersion: '0.1.32' })
+    await gate.getByRole('button', { name: '立即更新', exact: true }).click()
+    await expect.poll(async () => (await calls('downloadUpdate')).length).toBe(1)
+    await emit({ phase: 'downloading', requiredVersion: '0.1.32', progress })
+    await gate.getByTestId('required-update-progress').waitFor()
+    // 下载途中提示收起了，接着下好：不替他装。
+    await emit({ phase: 'downloading', requiredVersion: null, progress })
+    await gate.waitFor({ state: 'detached' })
+    await emit({ phase: 'downloaded', requiredVersion: null })
+    // 再盖回来：等他自己点。
+    await emit({ phase: 'downloaded', requiredVersion: '0.1.32' })
+    const start = gate.getByTestId('required-update-start')
+    await expect(start).toHaveText('立即更新')
+    assert.deepEqual(await calls('installUpdate'), [])
+    await start.click()
+    await expect.poll(() => calls('installUpdate')).toEqual([[{ askIfInstalling: true }]])
+    // 客户选了先让工具装完：按钮回到能点的「立即更新」。
+    await expect(start).toHaveText('立即更新')
+    await expect(start).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 0.2.24 深查 KB-1：Chromium 只让网页连着拦两下 Esc，第三下 <dialog> 就关了；强制更新那层一关，底下必须更新的
+// 旧版本照常能用，要重开软件才回来。焦点在门里也好、掉到页面上也好，连按多少下 Esc 门都在；叠在门上的帮助框
+// 照样按 Esc 关；万一浏览器背着程序把门关了，门马上回来。
+test('the required-update gate stays up however many times Esc is pressed', async () => {
+  const page = await open('')
+  try {
+    await page.getByTestId('page-home').waitFor()
+    await page.evaluate((state) => window.v2Test.emit('onUpdateState', state), {
+      phase: 'available', currentVersion: '0.1.31', availableVersion: '0.1.32', releaseName: null, releaseNotesText: null,
+      checkedAt: new Date().toISOString(), progress: null, error: null, failedStep: null, development: false, requiredVersion: '0.1.32',
+    })
+    const gate = page.getByTestId('required-update-gate')
+    await gate.waitFor()
+    const modal = () => page.evaluate(() => Boolean(document.querySelector('[data-testid="required-update-gate"]')?.matches(':modal')))
+    async function pressEscape() {
+      for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape')
+    }
+
+    await gate.getByTestId('required-update-start').focus()
+    await pressEscape()
+    assert.equal(await modal(), true)
+    // 门里的按钮转圈变灰时，焦点会掉到页面上：门照样在。
+    await page.evaluate(() => { if (document.activeElement instanceof HTMLElement) document.activeElement.blur() })
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true)
+    await pressEscape()
+    assert.equal(await modal(), true)
+
+    // 门里点「找客服」，帮助框叠在门上面：Esc 关的是帮助框，门还在。
+    await gate.getByTestId('required-update-support').click()
+    const support = page.getByTestId('support-dialog')
+    await support.waitFor()
+    await page.keyboard.press('Escape')
+    await support.waitFor({ state: 'detached' })
+    assert.equal(await modal(), true)
+
+    // 浏览器背着程序把门关了：马上回来，回来以后照样按不掉。
+    await page.evaluate(() => document.querySelector('[data-testid="required-update-gate"]').close())
+    await expect.poll(modal).toBe(true)
+    await pressEscape()
+    assert.equal(await modal(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // Mac 自签包每换一版，第一次读登录信息都会弹「登录」钥匙串密码框；重启确认框里
 // 先打招呼，Windows 没有这回事，不许多这一句。
 test('the restart-to-install dialog warns about the keychain prompt on Mac and the consent window on Windows', async () => {
@@ -5041,7 +5378,8 @@ test('a Windows account outside the administrators group is told an administrato
 })
 
 // 0.2.19 把侧栏「更多 › 更新」并进了「设置」最后一项，客户找不到在哪更新（yoyo 2026-10-27「侧栏改」）：下好了
-// 侧栏「设置」上面多一项金色的「重启并安装新版」，状态栏版本号、气泡上的「重启并安装」都直接弹确认框；
+// 侧栏「设置」上面多一项金色的「重启并安装新版」，状态栏版本号、气泡上的「重启并安装」都直接弹确认框，
+// 就在原地弹，不先跳到「设置 › 版本更新」（yoyo 2026-11-10：要跳转、更新说明又长）；
 // 侧栏那项关不掉，气泡关掉满一天再出一次；没开自动下载时气泡上直接给「下载更新」。
 test('a downloaded update is one click from the install confirmation in the sidebar, the status bar and the bubble', async () => {
   const closedAt = new Date('2026-10-27T05:00:00Z')
@@ -5063,13 +5401,15 @@ test('a downloaded update is one click from the install confirmation in the side
     })
     const dialog = page.getByRole('dialog', { name: '重启并安装更新？' })
     const settings = page.getByTestId('page-settings')
-    async function confirmOpensAndClose() {
+    async function confirmOpens() {
       await dialog.waitFor()
-      await expect(settings.getByRole('tab', { name: '版本更新', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await page.getByTestId('page-home').waitFor()
+      assert.equal(await settings.isVisible(), false)
+    }
+    async function confirmOpensAndClose() {
+      await confirmOpens()
       await dialog.getByRole('button', { name: '稍后安装', exact: true }).click()
       await dialog.waitFor({ state: 'detached' })
-      await page.getByTestId('nav-home').click()
-      await page.getByTestId('page-home').waitFor()
     }
     await emit({})
     const entry = page.getByTestId('nav-update')
@@ -5077,8 +5417,8 @@ test('a downloaded update is one click from the install confirmation in the side
     await expect(entry).toHaveAttribute('title', '新版 v0.1.32 已经下好，点一下装上，装好自动打开')
     await expect(page.getByTestId('nav-settings')).toHaveAttribute('aria-label', '设置，有新版本')
     await page.getByTestId('nav-settings-update').waitFor()
-    // 侧栏那一项紧挨在「设置」上面。
-    assert.equal(await page.getByTestId('sidebar-pinned').evaluate((pinned) => [...pinned.querySelectorAll('[data-testid^="nav-"]')].map((item) => item.dataset.testid).join(',')), 'nav-update,nav-settings,nav-settings-update')
+    // 侧栏那一项紧挨在「设置」上面；「充值」钉在它们上面（「充值改」）。
+    assert.equal(await page.getByTestId('sidebar-pinned').evaluate((pinned) => [...pinned.querySelectorAll('[data-testid^="nav-"]')].map((item) => item.dataset.testid).join(',')), 'nav-recharge,nav-update,nav-settings,nav-settings-update')
     await entry.click()
     await confirmOpensAndClose()
 
@@ -5091,7 +5431,12 @@ test('a downloaded update is one click from the install confirmation in the side
     await bubble.getByTestId('update-bubble-install').getByText('重启并安装', { exact: true }).waitFor()
     await bubble.getByRole('button', { name: '查看更新', exact: true }).waitFor()
     await bubble.getByTestId('update-bubble-install').click()
-    await confirmOpensAndClose()
+    await confirmOpens()
+    // 原地这个框装的是同一条：让主进程先看有没有工具在装（已知31），提交了说一句。
+    await dialog.getByRole('button', { name: '重启并安装', exact: true }).click()
+    await dialog.waitFor({ state: 'detached' })
+    await expect.poll(() => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installUpdate').map((entry) => entry.args))).toEqual([[{ askIfInstalling: true }]])
+    await waitForToast(page, '安装请求已提交')
 
     // 气泡关掉一天之内不再出，满一天再出；侧栏那一项一直在。
     await bubble.getByRole('button', { name: '关闭', exact: true }).click()
@@ -5129,7 +5474,7 @@ test('an app already running with administrator rights does not promise a consen
   for (const [query, elevated] of [['desktopOnly=1&elevated=1', true], ['desktopOnly=1', false]]) {
     const page = await open(query)
     try {
-      await expect(page.getByTestId('home-runtime-row-node')).toContainText('未装')
+      await expect(page.getByTestId('home-runtime-row-node')).toContainText('可选 · 未安装')
       const nodeNotice = page.getByTestId('home-runtime-node-elevation')
       await expect(nodeNotice).toContainText('装工具时会自动准备，一般不用单独点。')
       if (elevated) assert.doesNotMatch(await nodeNotice.innerText(), /管理员授权|授权窗口/, query)
@@ -5331,11 +5676,42 @@ test('oversized announcements stay in a safe failure state and offer the allowli
     await page.getByTestId('page-home').waitFor()
     await page.getByRole('button', { name: /^公告/ }).click()
     await page.getByRole('alert').waitFor()
-    await page.getByText('公告包含过大的内嵌媒体，客户端已按安全上限拦截。').waitFor()
+    await page.getByText('这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。').waitFor()
     const siteButton = page.getByTestId('announcement-open-site')
     await siteButton.waitFor()
     await siteButton.click()
     assert.equal((await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'openExternal')?.args[0])), 'https://xm.solov.cc')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// 合集读不出来那句说「可以点「重新读取」，或到官网查看」：铃铛小框和公告大框里，两条路都得真有按钮。
+test('an unreadable announcement collection offers both a retry and the allowlisted site', async () => {
+  const page = await open('noticeCollection=1')
+  const unreadable = { id: 'collection-unreadable', text: '<div data-newapi-collection="v1"><p>格式不认识</p></div>' }
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), unreadable)
+    await page.getByTestId('announcement-open').click()
+    const popover = page.getByTestId('announcement-popover')
+    const popoverAlert = popover.getByRole('alert')
+    await popoverAlert.getByText('公告没读出来，可以点「重新读取」，或到官网查看。', { exact: true }).waitFor()
+    await popoverAlert.getByRole('button', { name: '重新读取', exact: true }).waitFor()
+    const openedSites = () => page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0]))
+    await popoverAlert.getByTestId('announcement-open-site').click()
+    await expect.poll(openedSites).toEqual(['https://xm.solov.cc'])
+    // 小框里点「重新读取」读好了，进大框；大框里再读一次又读不出来，官网按钮也在。
+    await page.evaluate(() => window.v2Test.setNotice(null))
+    await popoverAlert.getByRole('button', { name: '重新读取', exact: true }).click()
+    await popover.getByTestId('announcement-list').getByRole('button', { name: /^图片模型上线/ }).click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), unreadable)
+    await dialog.getByRole('button', { name: '重新读取', exact: true }).click()
+    const dialogAlert = dialog.getByRole('alert')
+    await dialogAlert.getByText('公告没读出来，可以点「重新读取」，或到官网查看。', { exact: true }).waitFor()
+    await dialogAlert.getByTestId('announcement-open-site').click()
+    await expect.poll(openedSites).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc'])
     await clean(page)
   } finally { await page.close() }
 })
@@ -5513,8 +5889,8 @@ test('running desktop offers a real restart and official quotas can be refreshed
   const page = await open('running=1&official=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByRole('button', { name: '重启 Codex', exact: true }).click()
-    await page.getByRole('heading', { name: 'Codex 已在运行' }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: '重开 Codex', exact: true }).click()
+    await page.getByRole('heading', { name: 'Codex 桌面端还开着' }).waitFor({ state: 'hidden' })
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'launchCodexDesktop').args), ['restart'])
     await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
     await page.getByRole('menuitem', { name: 'ChatGPT 账号额度…', exact: true }).click()
@@ -6018,7 +6394,8 @@ test('NewAPI durable read failures preserve details and can be retried without a
     await dialog.getByTestId('announcement-list').waitFor()
     await page.evaluate(() => { window.v2Test.fail = 'syncLocalNoticeReads' })
     await dialog.getByRole('button', { name: '图片模型上线 未读' }).click()
-    await dialog.getByRole('alert').filter({ hasText: '已读状态保存失败' }).waitFor()
+    await dialog.getByRole('alert').filter({ hasText: '没记上已读，下次打开可能还会提醒。' }).waitFor()
+    assert.equal(await dialog.getByText('本地测试操作失败').count(), 0)
     await page.frameLocator('[data-testid="announcement-native-frame"]').getByRole('heading', { name: '图片模型上线亮色详情' }).waitFor()
     await page.evaluate(() => { window.v2Test.fail = '' })
     await dialog.getByRole('button', { name: '重试保存已读' }).click()
@@ -6089,13 +6466,14 @@ test('Sub2API detail stays readable when marking fails and retry only marks that
     const dialog = page.getByRole('dialog', { name: '公告', exact: true })
     await page.evaluate(() => { window.v2Test.fail = 'markAccountNoticeRead' })
     await dialog.getByTestId('announcement-item-12').click()
-    await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+    await dialog.getByRole('alert').getByText('没记上已读，下次打开可能还会提醒。').waitFor()
     await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
     assert.equal(await button.locator('.v2-unread').count(), 0)
     await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
     await dialog.getByRole('button', { name: '服务通知 09-28 未读', exact: true }).waitFor()
     await dialog.getByTestId('announcement-item-12').click()
-    await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+    await dialog.getByRole('alert').getByText('没记上已读，下次打开可能还会提醒。').waitFor()
+    assert.equal(await dialog.getByText('本地测试操作失败').count(), 0)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await dialog.getByRole('button', { name: '重试保存已读', exact: true }).click()
     await dialog.getByRole('alert').waitFor({ state: 'hidden' })
@@ -6281,7 +6659,8 @@ test('Sub2API announcements keep server-read and empty states and recover from r
         await dialog.waitFor({ state: 'hidden' })
         await page.getByTestId('announcement-open').click()
       }
-      await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+      await dialog.getByRole('alert').getByText('公告暂时没读到，过一会儿点铃铛再看。').waitFor()
+      assert.equal(await page.getByText('本地测试操作失败').count(), 0)
       await page.evaluate(() => { window.v2Test.fail = '' })
       await dialog.getByRole('button', { name: '重新读取' }).click()
       await dialog.getByText(query.includes('noticeEmpty') ? '暂无公告' : '服务通知', { exact: true }).waitFor()
@@ -6317,7 +6696,7 @@ test('an obsolete balance rejection stays silent before the session-change event
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
-    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号上下文已变化，请重试"))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号刚切换过，请再试一次"))
     await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
@@ -6646,6 +7025,43 @@ test('Sub2API keeps fractional key limits and changing its password returns to l
   } finally { await page.close() }
 })
 
+// Q1：首页工具区最后一格落到密钥管理最下面「用在别的软件里」，三行地址一行一颗「复制」，
+// 写不进剪贴板时叫客户自己选中；「告诉我们」去反馈表单。历史账号给的是它自己那个站的地址。
+test('the last home tool card lands on the addresses for other apps, each copied on its own (Q1)', async () => {
+  for (const [query, site] of [['', 'https://xm.solov.cc'], ['sub2api=1', 'https://api.solov.cc']]) {
+    const page = await open(query)
+    try {
+      await page.evaluate(() => {
+        window.__copied = []
+        window.__refuseCopy = false
+        Object.defineProperty(navigator, 'clipboard', {
+          configurable: true,
+          value: { writeText: (text) => window.__refuseCopy ? Promise.reject(new Error('Document is not focused.')) : (window.__copied.push(text), Promise.resolve()) },
+        })
+      })
+      const tile = page.getByTestId('home-tools-request')
+      await expect(tile).toContainText('看看怎么用在别的软件里')
+      await tile.click()
+      const card = page.getByTestId('account-other-apps')
+      await expect(card).toBeInViewport()
+      await expect(page.getByTestId('account-tabs').getByRole('tab', { name: '密钥管理', exact: true })).toHaveAttribute('aria-selected', 'true')
+      await expect(card.locator('code')).toHaveText([site, `${site}/v1`, `${site}/v1/chat/completions`])
+      await page.getByTestId('account-other-apps-copy-host').click()
+      await waitForToast(page, '地址已复制')
+      await page.getByTestId('account-other-apps-copy-chat').click()
+      await waitForToast(page, '地址已复制')
+      assert.deepEqual(await page.evaluate(() => window.__copied), [site, `${site}/v1/chat/completions`])
+      await page.evaluate(() => { window.__refuseCopy = true })
+      await page.getByTestId('account-other-apps-copy-v1').click()
+      await waitForToast(page, '没复制上，请选中地址自己复制。')
+      await clean(page)
+      // 反馈页一打开就读运行日志，这份假桥没接那一条，所以先查干净再过去。
+      await page.getByTestId('account-other-apps-request').click()
+      await page.getByTestId('feedback-form').waitFor()
+    } finally { await page.close() }
+  }
+})
+
 
 // 自己点的退出：会话变化的事件比退出的返回先到，不能当成「登录被结束」去提醒（#1098）。
 // 改密码后被登出那条（上面）照样要提醒。个人中心和命令面板两个入口都走这一条。
@@ -6662,7 +7078,8 @@ test('logging out yourself does not warn that the login ended from either entry 
         await page.getByRole('searchbox', { name: '搜索或跳转' }).fill('退出登录')
         await page.getByTestId('command-result-account:logout').click()
       }
-      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出', exact: true }).click()
+      // 两个入口的确认框按钮都写「退出登录」，不写「退出」，免得当成退出星芒（W83）。
+      await page.getByRole('dialog', { name: '退出登录？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
       await page.getByTestId('welcome-login').waitFor()
       await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
       assert.equal(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'logoutAccount').length), 1)
@@ -7098,7 +7515,7 @@ test('explicit automatic key configuration shows the right group and adopts the 
     const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(before.slice(opened).includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
     await openConfigAdvanced(page)
-    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时自动准备/)
     // The automatic key has no models to list until it is written, so the one button saves and then lists them.
     assert.equal((await page.getByTestId('tool-save-config').innerText()).trim(), '保存并检测')
     await page.getByTestId('tool-save-config').click()
@@ -7236,7 +7653,7 @@ test('asks once before opening Codex with the Chinese runtime patch and remember
     assert.doesNotMatch(question, /调试端口/)
     assert.match(question, /关掉 Codex，通道也跟着关上。/)
     // 照实说同机别的程序和账户也连得上（#1067），共用电脑的劝先不用。
-    assert.match(question, /通道开着时，这台电脑上的其他程序和其他账户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
+    assert.match(question, /通道开着时，这台电脑上的其他程序和其他用户也能连上它、控制 Codex；和别人共用这台电脑的，建议选「先不用」。中文只在从星芒打开时生效，直接点 Codex 自己的图标打开还是英文。/)
     assert.doesNotMatch(question, /只有这台电脑自己能连/)
 
     await decline.click()
@@ -7271,6 +7688,18 @@ test('a CLI launch still opens but warns when the project folder overrides the c
   try {
     await page.getByTestId('tool-claude-primary').click()
     await page.getByText('这个项目文件夹里有自己的设置，会让 Claude Code 不用当前账号，余额和用量会对不上。不是你有意这样设的话，换一个文件夹打开就好。', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// D17：文件夹写不进去时照样打开，首页说一句「只能看不能改」。
+test('a CLI launch still opens a folder it cannot write to and says so on the home page', async () => {
+  const page = await open('allInstalled=1&recentWorkspaces=1&launchReadOnly=1')
+  try {
+    await page.getByTestId('tool-claude-primary').click()
+    await page.getByText('这个文件夹只能看不能改，AI 改不了里面的文件，建议换一个。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCli').map((call) => call.args)), [['claude', 'C:\\work\\my-app']])
     await clean(page)
@@ -7441,7 +7870,7 @@ test('ordinary desktop launch preserves the opened app and exposes a Chinese-loc
   const page = await open('localeLaunchWarning=1')
   try {
     await page.getByTestId('tool-codexDesktop-primary').click()
-    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。', { exact: true }).waitFor()
+    await page.getByText('Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。', { exact: true }).waitFor()
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)
@@ -7682,6 +8111,30 @@ test('a failed runtime stage says the tool never started and does not run the CL
   } finally { await page.close() }
 })
 
+// 并发竞态 BF3：新电脑上挨个点两个工具的「安装」，Node.js 还在装时第二个以前立刻变红，说「Node.js 运行环境没装上」。
+// 现在第二个跟着等同一次 Node.js 装完（主进程同一个键复用同一次），再接着装自己。
+test('a second install while Node.js is still being prepared waits for it instead of failing (BF3)', async () => {
+  const page = await open('nodeVersionUnknown=1&codexMissing=1')
+  try {
+    await page.getByTestId('tool-row-codex').getByText('未安装').waitFor()
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor()
+    await page.evaluate(() => window.v2Test.holdNextNodeInstall())
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'installNodeRuntime'))
+    await page.getByTestId('tool-grok-primary').click()
+    await page.getByTestId('tool-row-grok').getByText('正在准备 Node.js 运行环境（1/2）').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.filter((entry) => entry.method === 'installNodeRuntime').length === 2)
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await page.evaluate(() => window.v2Test.releaseNodeInstall())
+    await page.getByTestId('tool-row-codex').getByText('未安装').waitFor({ state: 'detached' })
+    await page.getByTestId('tool-row-grok').getByText('未安装').waitFor({ state: 'detached' })
+    assert.deepEqual((await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'installCli').map((entry) => entry.args[0]))).sort(), ['codex', 'grok'])
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // MSI 回 3010：Windows 要重启才算把 Node.js 装完，这时不接着装工具（会失败），
 // 而是停下来弹「现在重启」（第七批 5 的那个框）。
 test('a runtime stage that needs a Windows restart stops before the CLI install and asks to restart', async () => {
@@ -7732,7 +8185,7 @@ test('a permission failure hands over the install directory instead of offering 
     await page.getByTestId('operation-error-copyPath').click()
     await page.getByTestId('operation-error-copied').waitFor()
     assert.deepEqual(await page.evaluate(() => window.__copied), [target])
-    // 复制不关对话框：后端原话和「查看日志」都还在。
+    // 复制不关对话框：后端原话和「找客服」都还在。
     assert.equal(await dialog.count(), 1)
     await page.getByRole('button', { name: '返回', exact: true }).click()
     await clean(page)
@@ -7781,12 +8234,37 @@ test('a deep link that cannot be read says so and points at the order page (R-B7
   } finally { await page.close() }
 })
 
+// D69：已登录时点开邀请链接只是告诉他邀请码，不是出错：右下角一条普通提示条，不弹报错框。
+test('an invite link opened while signed in shows a plain toast with a copy button instead of an error dialog (D69)', async () => {
+  const page = await open('inviteLink=XM-7K2Q')
+  try {
+    await page.evaluate(() => {
+      window.__copied = []
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: (text) => { window.__copied.push(text); return Promise.resolve() } },
+      })
+    })
+    const toast = page.locator('.xm-toasts .xm-toast').filter({ hasText: '你已经登录了。邀请码 XM-7K2Q 要退出当前账号、注册新账号时才能用。' })
+    await toast.waitFor()
+    assert.equal(await page.getByTestId('operation-error').count(), 0)
+    assert.equal(await page.getByRole('button', { name: '复制给客服' }).count(), 0)
+    // 带按钮的提示条不会自己走（时长在 components.test.tsx 钉住），所以它带着 ×。
+    assert.equal(await toast.getByRole('button', { name: '关闭' }).count(), 1)
+    await toast.getByRole('button', { name: '复制邀请码', exact: true }).click()
+    await waitForToast(page, '邀请码已复制')
+    assert.deepEqual(await page.evaluate(() => window.__copied), ['XM-7K2Q'])
+    await toast.waitFor({ state: 'detached' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第 10 批起 Node.js 没装时在检查页那一行直接「安装 Node.js」，装完首页运行环境卡跟着变。
 test('installing Node.js from the check page updates the home runtime card', async () => {
   const page = await open('desktopOnly=1')
   try {
     const node = page.getByTestId('home-runtime-row-node')
-    await expect(node).toContainText('未装')
+    await expect(node).toContainText('可选 · 未安装')
     await stubHealthReport(page, [{ code: 'RUNTIME_NODE', title: 'Node.js', state: 'fail', summary: '还没装 Node.js', details: { installed: false } }])
     await page.getByTestId('nav-health').click()
     const install = page.getByTestId('maintenance-runtime-action-node')
@@ -8260,7 +8738,7 @@ test('tutorial searches step contents regardless of case and surrounding spaces 
     await expect(explanation.getByText(/刚改过配置，需要重新读取时/)).toBeVisible()
     // 只展开含这个词的那一条补充说明，其余照旧收着；页面翻到命中的那几个字。
     const notes = article.locator('details.v2-tutorial-extra')
-    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 已在运行？'])
+    await expect.poll(() => notes.evaluateAll((items) => items.filter((item) => item.open).map((item) => item.dataset.extraTitle))).toEqual(['提示 Codex 桌面端还开着？'])
     const explanationHit = explanation.locator('mark.v2-tutorial-hit')
     await expect(explanationHit).toHaveText('重新读取时')
     await expect.poll(() => insidePageViewport(explanationHit)).toBe(true)
@@ -9414,6 +9892,77 @@ test('a floating sidebar leaves no window drag region outside it, so clicking th
       await clean(page)
     } finally { await page.close() }
   }
+})
+
+// 窗口把拖动区按文档顺序叠起来：拖动的加上、不拖动的减掉，后来的盖前面的。所以排在按钮后面、又盖在按钮上的
+// 拖动区，会把那颗按钮变回拖窗口的地方，鼠标点下去只当是在拖窗口，按钮收不到。Electron 45 用的 Chromium 152 起
+// 拖动区会传给子元素，CI 上的 Chromium 151 还不传：这里按 152 的规矩自己往上找，两边查的是同一件事。
+function windowDragOverControls(page) {
+  return page.evaluate(() => {
+    function own(element) { return getComputedStyle(element).getPropertyValue('-webkit-app-region') }
+    function region(element) {
+      for (let node = element; node; node = node.parentElement) {
+        const value = own(node)
+        if (value === 'drag' || value === 'no-drag') return value
+      }
+      return 'none'
+    }
+    function name(element) { return element.getAttribute('data-testid') || element.getAttribute('class') || element.tagName.toLowerCase() }
+    const found = []
+    for (const root of document.querySelectorAll('.v2-sidebar, .v2-topbar, .v2-titlebar')) {
+      const clickable = []
+      for (const element of [root, ...root.querySelectorAll('*')]) {
+        const box = element.getBoundingClientRect()
+        // 读屏才用的那种 1×1 的隐藏元素不算点得到的地方。
+        if (box.width < 2 || box.height < 2) continue
+        const value = region(element)
+        // 按钮里面那几层跟着按钮走，记最外面那一层就够了。
+        if (value === 'no-drag') { if (element === root || region(element.parentElement) !== 'no-drag') clickable.push({ element, box }); continue }
+        if (value !== 'drag') continue
+        for (const control of clickable) {
+          if (control.element.contains(element)) continue
+          const overlaps = box.left < control.box.right && control.box.left < box.right && box.top < control.box.bottom && control.box.top < box.bottom
+          if (overlaps) found.push(`${name(element)} over ${name(control.element)}`)
+        }
+      }
+    }
+    return found
+  })
+}
+
+// 2026-11-06 产品负责人在 0.2.23 上报「点头像这边的区域不会跳到个人中心了」：Electron 升到 45（#1508）以后，
+// 账号卡右下角那个铺满整张卡的淡标志跟着侧栏变成了拖动区，排在卡的按钮后面，整张卡点下去都只当是在拖窗口。
+test('nothing laid over a sidebar or top bar control turns it back into a window drag area', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'os=mac' : '')
+    try {
+      await page.getByTestId('page-home').waitFor()
+      const shell = page.locator('.v2-shell')
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell')
+      await page.locator('.v2-account-mark').waitFor({ state: 'attached' })
+      assert.deepEqual(await windowDragOverControls(page), [], `${os}: the expanded sidebar and the top bar`)
+      // 点头像：落在账号卡那颗按钮上，进个人中心。
+      const avatar = await page.locator('.v2-account-entry .v2-local-avatar').boundingBox()
+      const point = { x: avatar.x + avatar.width / 2, y: avatar.y + avatar.height / 2 }
+      assert.equal(await page.evaluate(({ x, y }) => Boolean(document.elementFromPoint(x, y)?.closest('[data-testid="sidebar-account-open"]')), point), true, `${os}: the avatar is part of the account button`)
+      await page.mouse.click(point.x, point.y)
+      await page.getByTestId('page-account').waitFor()
+      await page.getByTestId('sidebar-collapse').click()
+      await expect.poll(() => shell.getAttribute('class')).toBe('v2-shell sidebar-collapsed')
+      assert.deepEqual(await windowDragOverControls(page), [], `${os}: the collapsed sidebar`)
+      await clean(page)
+    } finally { await page.close() }
+  }
+  // 余额没读到时卡底下多一行「更新失败」和刷新键，那一行往上压着卡的按钮。
+  const page = await open('sub2api=1&balancePending=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接"))
+    await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
+    assert.deepEqual(await windowDragOverControls(page), [], 'the account card with its balance failure line')
+    await clean(page)
+  } finally { await page.close() }
 })
 
 // #1133 第 3、4 条：最小窗口选 110% 只剩 970×566 逻辑大小。收成窄条的侧栏一项不少地放得下，不滚、不渐隐

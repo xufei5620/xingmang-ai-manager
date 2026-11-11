@@ -461,7 +461,7 @@ describe('canvas request parser', () => {
 
   it('marks each kernel setting the desktop cannot honour instead of dropping it', () => {
     const cases: Array<[string, Record<string, unknown>, string]> = [
-      ['image-generate', { imageCandidateCount: 2 }, '一次出多张图'],
+      ['video-generate', { imageCandidateCount: 2 }, '一次出多张图'],
       ['video-generate', { videoCandidateCount: 4 }, '一次出多个视频'],
       ['image-generate', { textWebSearch: true }, '联网搜索'],
       // false asks for a silent video; the desktop sends neither, so only
@@ -475,8 +475,7 @@ describe('canvas request parser', () => {
       ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ kind: 'image', sourceNodeId: 'a' }] } }, '视频参考顺序'],
       ['image-edit', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图角色'],
       ['image-generate', { imageOutputIndex: 0 }, '图片处理'],
-      ['frame-extract', { frameTimestampSeconds: 1.5 }, '视频抽帧'],
-      ['image-edit', { imageEditMask: { version: 1, strokes: [] } }, '蒙版局部修改'],
+      ['image-generate', { frameTimestampSeconds: 1.5 }, '视频抽帧'],
       ['image-generate', { commerceTask: { version: 1 } }, '电商创作'],
       ['image-generate', { interiorTask: { version: 1 } }, '室内创作'],
       ['image-generate', { exteriorTask: { version: 1 } }, '室外创作'],
@@ -491,9 +490,24 @@ describe('canvas request parser', () => {
       expect(node.data).toEqual({ prompt: 'p', model: 'm' })
     }
     // Several reasons are each named once, in a fixed order.
-    expect(parseCanvasStartRunInput(kernelNode('image-generate', {
+    expect(parseCanvasStartRunInput(kernelNode('video-generate', {
       tileInput: { columns: 2 }, imageTransform: { kind: 'crop' }, imageCandidateCount: 3,
     })).graph.nodes[0].desktopUnsupported).toBe(`「一次出多张图、图片处理」${kernelRefusal}`)
+  })
+
+  it('hands an image node its count of independent requests and keeps one as the old request', () => {
+    for (const kind of ['image', 'image-generate', 'image-edit']) {
+      for (const count of [2, 3, 4]) {
+        const parsed = parseCanvasStartRunInput(kernelNode(kind, { imageCandidateCount: count })).graph.nodes[0]
+        expect(parsed.desktopUnsupported).toBeUndefined()
+        expect(parsed.data).toEqual({ prompt: 'p', model: 'm', imageCandidateCount: count })
+      }
+      expect(parseCanvasStartRunInput(kernelNode(kind, { imageCandidateCount: 1 })).graph.nodes[0].data)
+        .toEqual({ prompt: 'p', model: 'm' })
+      for (const bad of [0, 5, 2.5, '2']) {
+        expect(() => parseCanvasStartRunInput(kernelNode(kind, { imageCandidateCount: bad }))).toThrow('画布图片生成数量格式错误')
+      }
+    }
   })
 
   it('marks every kernel-only node kind by its name and still refuses unknown kinds', () => {
@@ -502,11 +516,85 @@ describe('canvas request parser', () => {
       expect(node.kind).toBe(kind)
       expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
     }
+    // 画布完善第 6 条: text nodes run on the desktop now; web search still does not.
+    expect(parseCanvasStartRunInput(kernelNode('text-generate', {})).graph.nodes[0].desktopUnsupported).toBeUndefined()
     expect(parseCanvasStartRunInput(kernelNode('text-generate', { textWebSearch: true })).graph.nodes[0].desktopUnsupported)
-      .toBe(`「文字生成」节点${kernelRefusal}`)
+      .toBe(`「联网搜索」${kernelRefusal}`)
     for (const kind of ['image-upscale', 'constructor', '__proto__', 'toString']) {
       expect(() => parseCanvasStartRunInput(kernelNode(kind, {}))).toThrow('类型不受支持')
     }
+  })
+
+  it('hands a frame-extract node its time only while frame extraction is switched on', () => {
+    // Switched off, the node is refused even without a time, so it never
+    // reaches the paid video executor.
+    for (const extra of [{}, { frameTimestampSeconds: 1.5 }]) {
+      const off = parseCanvasStartRunInput(kernelNode('frame-extract', extra), { frameExtract: false }).graph.nodes[0]
+      expect(off.desktopUnsupported).toBe(`「视频抽帧」${kernelRefusal}`)
+      expect(off.data).toEqual({ prompt: 'p', model: 'm' })
+    }
+    // 画布完善第 7 条第二步: the canvas window parses with the desktop's own
+    // switch, which is on now that the kernel decodes the frame.
+    expect(parseCanvasStartRunInput(kernelNode('frame-extract', { frameTimestampSeconds: 1.5 })).graph.nodes[0])
+      .toMatchObject({ data: { prompt: 'p', model: 'm', frameTimestampSeconds: 1.5 } })
+    expect(parseCanvasStartRunInput(kernelNode('frame-extract', {})).graph.nodes[0].desktopUnsupported).toBeUndefined()
+
+    const on = { frameExtract: true }
+    for (const [extra, seconds] of [[{ frameTimestampSeconds: 1.5 }, 1.5], [{}, 0], [{ frameTimestampSeconds: -0 }, 0], [{ frameTimestampSeconds: 86_400 }, 86_400]] as const) {
+      const node = parseCanvasStartRunInput(kernelNode('frame-extract', extra), on).graph.nodes[0]
+      expect(node.desktopUnsupported).toBeUndefined()
+      expect(node.data).toEqual({ prompt: 'p', model: 'm', frameTimestampSeconds: seconds })
+      expect(Object.is(node.data.frameTimestampSeconds, -0)).toBe(false)
+    }
+    // Only the frame node reads a time; anywhere else it is still a setting the desktop cannot honour.
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', { frameTimestampSeconds: 1.5 }), on).graph.nodes[0].desktopUnsupported)
+      .toBe(`「视频抽帧」${kernelRefusal}`)
+    for (const bad of [-1, Number.NaN, 86_401, '1']) {
+      expect(() => parseCanvasStartRunInput(kernelNode('frame-extract', { frameTimestampSeconds: bad }), on)).toThrow('画布抽帧时间格式错误')
+    }
+  })
+
+  it('hands an image-edit node its mask and refuses one anywhere else', () => {
+    const sourceAssetId = 'a'.repeat(43)
+    const mask = { version: 1, sourceAssetId, width: 64, height: 48, strokes: [{ tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }, { tool: 'erase', size: 0.05, points: [{ x: 0.5, y: 0.5 }, { x: 0.6, y: 0.5 }] }] }
+    const parsed = parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask: mask })).graph.nodes[0]
+    expect(parsed.desktopUnsupported).toBeUndefined()
+    expect(parsed.data).toEqual({ prompt: 'p', model: 'm', imageEditMask: mask })
+    // The kernel keeps masks on image-edit nodes only (parseNodeImageEditMask).
+    for (const kind of ['image', 'image-generate', 'video-generate']) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, { imageEditMask: mask }))).toThrow('蒙版局部修改配置只能保存在局部修改图像节点中')
+    }
+  })
+
+  it('refuses a mask outside the kernel limits before it reaches an executor', () => {
+    const stroke = { tool: 'brush', size: 0.1, points: [{ x: 0.5, y: 0.5 }] }
+    const mask = (patch: Record<string, unknown>) => ({ version: 1, width: 64, height: 48, strokes: [stroke], ...patch })
+    const malformed: Array<[unknown, string]> = [
+      ['mask', '局部修改蒙版包含无效或未知参数'],
+      [mask({ apiKey: 'secret' }), '画布蒙版格式错误'],
+      [mask({ url: 'https://evil.test' }), '局部修改蒙版包含无效或未知参数'],
+      [mask({ version: 2 }), '局部修改蒙版尺寸无效'],
+      [mask({ width: 4097 }), '局部修改蒙版尺寸无效'],
+      [mask({ width: 4096, height: 4097 }), '局部修改蒙版尺寸无效'],
+      [mask({ width: 0 }), '局部修改蒙版尺寸无效'],
+      [mask({ sourceAssetId: '../../etc/passwd' }), '局部修改蒙版绑定的原图编号无效'],
+      [mask({ strokes: Array.from({ length: 129 }, () => stroke) }), '局部修改蒙版最多保存 128 条笔画'],
+      [mask({ strokes: [{ ...stroke, points: Array.from({ length: 4097 }, () => ({ x: 0, y: 0 })) }] }), '画布蒙版格式错误'],
+      [mask({ strokes: [{ ...stroke, points: [] }] }), '局部修改蒙版笔画过于复杂'],
+      [mask({ strokes: [{ ...stroke, tool: 'fill' }] }), '局部修改蒙版画笔类型不正确'],
+      [mask({ strokes: [{ ...stroke, size: 0 }] }), '局部修改蒙版笔画坐标或大小不正确'],
+      [mask({ strokes: [{ ...stroke, points: [{ x: 1.5, y: 0 }] }] }), '局部修改蒙版笔画坐标或大小不正确'],
+      [mask({ strokes: [{ ...stroke, points: [{ x: 0, y: 0, z: 1 }] }] }), '局部修改蒙版包含无效或未知参数'],
+      [mask({ strokes: [{ ...stroke, accessToken: 'secret' }] }), '画布蒙版格式错误'],
+    ]
+    for (const [imageEditMask, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask })), JSON.stringify(imageEditMask).slice(0, 80)).toThrow(message)
+    }
+    // 4 096 points in all is the ceiling, spread over strokes; JSON over 64 KB is refused on its own.
+    const spread = Array.from({ length: 4 }, () => ({ ...stroke, points: Array.from({ length: 1024 }, (_, index) => ({ x: index / 1024, y: 0.5 })) }))
+    expect(() => parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask: mask({ strokes: [...spread, stroke] }) }))).toThrow('局部修改蒙版笔画过于复杂')
+    const long = Array.from({ length: 4 }, () => ({ ...stroke, points: Array.from({ length: 1024 }, () => ({ x: 0.123456789012345, y: 0.987654321098765 })) }))
+    expect(() => parseCanvasStartRunInput(kernelNode('image-edit', { imageEditMask: mask({ strokes: long }) }))).toThrow('局部修改蒙版数据超过 64 KB')
   })
 
   it('rejects malformed kernel settings rather than marking them', () => {
@@ -536,8 +624,6 @@ describe('canvas request parser', () => {
       [{ imageOutputIndex: -1 }, '画布图片输出序号格式错误'],
       [{ frameTimestampSeconds: Number.NaN }, '画布抽帧时间格式错误'],
       [{ frameTimestampSeconds: 86_401 }, '画布抽帧时间格式错误'],
-      [{ imageEditMask: 'mask' }, '画布蒙版格式错误'],
-      [{ imageEditMask: { strokes: [{ accessToken: 'secret' }] } }, '画布蒙版格式错误'],
       [{ commerceTask: { prompt: 'bad\0value' } }, '画布电商创作配置格式错误'],
       [{ commerceTask: { prompt: 'x'.repeat(10_001) } }, '画布电商创作配置格式错误'],
       [{ storyboardTask: deep }, '画布故事板配置格式错误'],

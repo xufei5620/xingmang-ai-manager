@@ -12,6 +12,10 @@ button, input, select, textarea { font: inherit; }
 .v2-shell.sidebar-collapsed { grid-template-columns: var(--sidebar-collapsed) minmax(0, 1fr); }
 .v2-sidebar { position: relative; display: flex; flex-direction: column; padding: 10px; min-height: 0; background: var(--rail); box-shadow: inset -1px 0 0 var(--line); -webkit-app-region: drag; }
 .v2-sidebar :is(button, a, input) { -webkit-app-region: no-drag; }
+/* 账号卡整张都不当拖窗口的地方。Electron 45 起（Chromium 152）拖动区会一层层传给里面的元素，卡上排在按钮后面的
+   那几层（右下角铺满整张卡的淡标志、余额没读到那一行）跟着变成拖动区、盖回按钮上，点头像、名字、余额都只当是在
+   拖窗口，进不了个人中心（#1508 把 Electron 43 升到 45 以后出现）。 */
+.v2-account-entry { -webkit-app-region: no-drag; }
 .v2-root[data-os='mac'] .v2-sidebar { padding-top: 42px; }
 .v2-brand { display: flex; align-items: center; gap: 9px; height: 36px; padding: 0 8px; margin-bottom: 8px; flex: none; }
 .v2-brand .xm-logo-wordmark { width: auto; min-width: 0; }
@@ -219,6 +223,7 @@ button, input, select, textarea { font: inherit; }
 .v2-announcement-pop-note { margin: 0; padding: 10px; color: var(--text-3); font-size: 13px; }
 .v2-announcement-popover > .v2-announcement-error { margin: 4px 10px 8px; display: grid; justify-items: start; gap: 6px; font-size: var(--font-small-compact); }
 .v2-announcement-popover > .v2-announcement-error > p { margin: 0; }
+.v2-announcement-popover .v2-announcement-error-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .v2-announcement-popover .v2-announcement-list > li + li { border: 0; }
 .v2-announcement-popover .v2-announcement-row { position: relative; display: block; min-height: 0; padding: 9px 10px 9px 22px; border-radius: 8px; }
 .v2-announcement-popover .v2-announcement-row:hover { background: var(--panel-hover); }

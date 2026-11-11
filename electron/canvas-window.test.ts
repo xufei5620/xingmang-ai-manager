@@ -5,6 +5,7 @@ import path from 'node:path'
 import type { SaveDialogOptions } from 'electron'
 import type { NewApiClientService } from './new-api-client'
 import type { SystemService } from './system-service'
+import type { CanvasProjectWorkspaceStatus } from './canvas-project-store'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -13,6 +14,7 @@ const electronMocks = vi.hoisted(() => ({
   removeAllListeners: vi.fn(),
   showSaveDialog: vi.fn(async () => ({ canceled: true, filePath: undefined })),
   showOpenDialog: vi.fn<() => Promise<{ canceled: boolean; filePaths: string[] }>>(async () => ({ canceled: true, filePaths: [] })),
+  showMessageBox: vi.fn<(...args: unknown[]) => Promise<{ response: number; checkboxChecked: boolean }>>(async () => ({ response: 1, checkboxChecked: false })),
   browserWindowFromWebContents: vi.fn(() => undefined),
   registerFileProtocol: vi.fn(),
   notificationShow: vi.fn(),
@@ -79,6 +81,7 @@ vi.mock('electron', () => ({
   dialog: {
     showSaveDialog: electronMocks.showSaveDialog,
     showOpenDialog: electronMocks.showOpenDialog,
+    showMessageBox: electronMocks.showMessageBox,
   },
   ipcMain: {
     handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
@@ -109,6 +112,7 @@ import {
   canvasHostCancelRequestChannel,
   canvasHostCopyAssetChannel,
   canvasHostCreateProjectChannel,
+  canvasHostCreateProjectInDefaultFolderChannel,
   canvasHostCreatePromptPresetChannel,
   canvasHostDeletePromptPresetChannel,
   canvasHostDuplicateProjectChannel,
@@ -118,11 +122,14 @@ import {
   canvasHostResumeVideoTaskChannel,
   canvasHostListGroupsChannel,
   canvasHostListAssetsChannel,
+  canvasHostGetAssetDetailChannel,
   canvasHostListProjectsChannel,
   canvasHostMarkAssetUsedChannel,
   canvasHostListPromptPresetsChannel,
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
+  canvasHostImportAssetBytesChannel,
+  canvasHostCompleteRunPreparationChannel,
   canvasHostInspectAssetReferencesChannel,
   canvasHostStartRunChannel,
   canvasHostCancelRunChannel,
@@ -140,6 +147,10 @@ import {
   canvasHostDeleteAssetChannel,
   canvasHostRestoreAssetChannel,
   canvasHostPurgeAssetChannel,
+  canvasHostRelinkProjectFolderChannel,
+  canvasHostDeleteProjectChannel,
+  canvasHostGetAccountSummaryChannel,
+  canvasHostGetPriceSnapshotChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostAccountChangedChannel,
@@ -152,7 +163,11 @@ import {
   canvasHostUpdatePromptPresetChannel,
   canvasWindowBackgroundColor,
   canvasWindowLightBackgroundColor,
+  canvasRendererAnswers,
+  canvasProjectDeleteDetail,
+  canvasProjectFolderToTrash,
   createCanvasWindowController,
+  importedCanvasProjectName,
   type CanvasWindowControllerOptions,
 } from './canvas-window'
 
@@ -295,6 +310,8 @@ beforeEach(() => {
   electronMocks.showSaveDialog.mockResolvedValue({ canceled: true, filePath: undefined })
   electronMocks.showOpenDialog.mockClear()
   electronMocks.showOpenDialog.mockResolvedValue({ canceled: true, filePaths: [] })
+  electronMocks.showMessageBox.mockClear()
+  electronMocks.showMessageBox.mockResolvedValue({ response: 1, checkboxChecked: false })
   electronMocks.registerFileProtocol.mockClear()
   electronMocks.notificationShow.mockClear()
   electronMocks.notificationSupported.mockReset()
@@ -326,6 +343,7 @@ describe('createCanvasWindowController', () => {
       canvasHostCancelRequestChannel,
       canvasHostCopyAssetChannel,
       canvasHostCreateProjectChannel,
+      canvasHostCreateProjectInDefaultFolderChannel,
       canvasHostCreatePromptPresetChannel,
       canvasHostDeletePromptPresetChannel,
       canvasHostDuplicateProjectChannel,
@@ -334,11 +352,14 @@ describe('createCanvasWindowController', () => {
       canvasHostGenerateVideoChannel,
       canvasHostResumeVideoTaskChannel,
       canvasHostListAssetsChannel,
+      canvasHostGetAssetDetailChannel,
       canvasHostMarkAssetUsedChannel,
       canvasHostListProjectsChannel,
       canvasHostListPromptPresetsChannel,
       canvasHostPickAssetChannel,
       canvasHostImportAssetFileChannel,
+      canvasHostImportAssetBytesChannel,
+      canvasHostCompleteRunPreparationChannel,
       canvasHostInspectAssetReferencesChannel,
       canvasHostStartRunChannel,
       canvasHostCancelRunChannel,
@@ -357,6 +378,10 @@ describe('createCanvasWindowController', () => {
       canvasHostDeleteAssetChannel,
       canvasHostRestoreAssetChannel,
       canvasHostPurgeAssetChannel,
+      canvasHostRelinkProjectFolderChannel,
+      canvasHostDeleteProjectChannel,
+      canvasHostGetAccountSummaryChannel,
+      canvasHostGetPriceSnapshotChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -373,6 +398,93 @@ describe('createCanvasWindowController', () => {
 
     expect(electronMocks.registerFileProtocol).toHaveBeenCalledTimes(1)
     expect(electronMocks.registerFileProtocol).toHaveBeenCalledWith('xingmang-canvas', expect.any(Function))
+  })
+
+  // yoyo 2026-11-10「素材库放开」：没开项目时只读聊天那个共享库里的图片，能列、能看、能另存，别的照旧拒。
+  it('lets the home page list and save pictures from the shared library without an open project, and nothing more', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const picture = { assetId: 'A'.repeat(43), mediaType: 'image', localUrl: `xingmang-asset://image/${'A'.repeat(43)}`, displayName: '聊天出的图', source: 'generated' }
+    const page = { items: [picture], offset: 0, limit: 24, total: 1, hasMore: false, facets: { tags: [] } }
+    const details: Record<string, unknown> = {
+      ['A'.repeat(43)]: picture,
+      ['B'.repeat(43)]: { ...picture, assetId: 'B'.repeat(43), mediaType: 'video' },
+      ['C'.repeat(43)]: { ...picture, assetId: 'C'.repeat(43), deletedAt: '2026-11-10T01:00:00.000Z' },
+    }
+    const mediaAssets = {
+      listOwnedPage: vi.fn(async () => page),
+      readOwnedDetail: vi.fn(async (_userId: number, assetId: string) => details[assetId]),
+      saveAs: vi.fn(async () => true),
+      rename: vi.fn(), updateMetadata: vi.fn(), markUsed: vi.fn(), softDelete: vi.fn(), copy: vi.fn(), contextMenu: vi.fn(),
+    }
+    const folderMedia = { listOwnedPage: vi.fn(async () => ({ ...page, items: [] })), saveAs: vi.fn(async () => true), readOwnedDetail: vi.fn() }
+    const getAssetLineage = vi.fn(async () => ({}))
+    const listAssetIdsByLineage = vi.fn(async () => [])
+    const controller = createCanvasWindowController(controllerOptions({
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => ({ media: folderMedia })), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+      canvasRuns: { ...controllerOptions().canvasRuns, getAssetLineage, listAssetIdsByLineage } as never,
+    }))
+    await controller.open()
+    const list = electronMocks.handlers.get(canvasHostListAssetsChannel)!
+    const save = electronMocks.handlers.get(canvasHostSaveAssetChannel)!
+    const query = { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', search: '猫', offset: 0, limit: 24 }
+
+    await expect(list(trustedEvent(), query)).resolves.toEqual(page)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledWith(7, { mediaType: 'image', view: 'all', source: 'all', sort: 'created-desc', search: '猫', offset: 0, limit: 24 })
+    // Which run or node made a picture is project history; the home page does not get it.
+    expect(getAssetLineage).not.toHaveBeenCalled()
+    for (const wrong of [
+      { ...query, mediaType: 'all' }, { ...query, mediaType: 'video' }, { ...query, mediaType: undefined },
+      { ...query, view: 'trash' }, { ...query, view: 'favorites' }, { ...query, view: 'recent' },
+      { ...query, runId: 'run-1' }, { ...query, nodeId: 'node-1' }, { ...query, prompt: '一只猫' },
+    ]) {
+      await expect(list(trustedEvent(), wrong), JSON.stringify(wrong)).rejects.toThrow('没打开项目时只能查看素材库里的图片')
+    }
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(listAssetIdsByLineage).not.toHaveBeenCalled()
+
+    await expect(save(trustedEvent(), 'A'.repeat(43))).resolves.toEqual({ saved: true })
+    expect(mediaAssets.saveAs).toHaveBeenCalledWith(7, 'A'.repeat(43), expect.any(Function))
+    await expect(save(trustedEvent(), 'B'.repeat(43))).rejects.toThrow('没打开项目时只能另存素材库里的图片')
+    await expect(save(trustedEvent(), 'C'.repeat(43))).rejects.toThrow('没打开项目时只能另存素材库里的图片')
+    expect(mediaAssets.saveAs).toHaveBeenCalledTimes(1)
+
+    // Everything that changes or reaches further than looking and saving still needs a project.
+    for (const [channel, args] of [
+      [canvasHostRenameAssetChannel, [{ assetId: 'A'.repeat(43), displayName: '新名字' }]],
+      [canvasHostUpdateAssetMetadataChannel, [{ assetId: 'A'.repeat(43), favorite: true }]],
+      [canvasHostMarkAssetUsedChannel, ['A'.repeat(43)]],
+      [canvasHostDeleteAssetChannel, ['A'.repeat(43)]],
+      [canvasHostCopyAssetChannel, ['A'.repeat(43)]],
+      [canvasHostShowAssetMenuChannel, ['A'.repeat(43)]],
+      [canvasHostGetAssetDetailChannel, ['A'.repeat(43)]],
+    ] as const) {
+      await expect(Promise.resolve().then(() => electronMocks.handlers.get(channel)!(trustedEvent(), ...args)), channel).rejects.toThrow('请先选择或新建一个画布项目')
+    }
+    for (const method of ['rename', 'updateMetadata', 'markUsed', 'softDelete', 'copy', 'contextMenu'] as const) expect(mediaAssets[method], method).not.toHaveBeenCalled()
+
+    // With a project open the library is the project's own again, and the same query reads the folder.
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await list(trustedEvent(), { ...query, mediaType: 'video' })
+    expect(folderMedia.listOwnedPage).toHaveBeenCalledTimes(1)
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens the canvas on the home page library, or asks an open canvas to show it', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+
+    await controller.openAssetLibrary()
+    expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=dark&view=assets')
+    expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.showAccountAssets)
+
+    await controller.openAssetLibrary()
+    expect(electronMocks.browserWindowOptions).toHaveLength(1)
+    expect(electronMocks.latestBrowserWindow?.focus).toHaveBeenCalled()
+    expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.showAccountAssets)
+    expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledTimes(1)
   })
 
   it('defines the dark canvas color used before the renderer becomes visible', () => {
@@ -685,6 +797,289 @@ describe('createCanvasWindowController', () => {
     electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
     await handler(trustedEvent(), '副本', content)
     expect(createWithContent).toHaveBeenLastCalledWith(7, '副本', workspace, content, undefined)
+  })
+
+  it('creates a project in its own new folder under the default folder without a folder dialog', async () => {
+    const root = path.join(temporaryDirectory(), '星芒画布')
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const create = vi.fn(async (_userId: number, name: string, selected: string) => ({
+      project: {
+        id: projectId, name, createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+        lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 0, assetCount: 0,
+        workspaceName: path.basename(selected), workspaceConfigured: true, workspaceStatus: 'ready' as const,
+      },
+      content: JSON.stringify({ schemaVersion: 2, name, nodes: [], edges: [] }),
+    }))
+    const projects = { list: vi.fn(async () => []), create, open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => root }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!
+
+    const created = await handler(trustedEvent(), '海报/第一版')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+    expect(create).toHaveBeenCalledWith(7, '海报/第一版', path.join(root, '海报 第一版'))
+    expect(JSON.stringify(created)).not.toContain(root)
+    // The same name again gets a new folder; the first one is never reused.
+    await handler(trustedEvent(), '海报/第一版')
+    expect(create).toHaveBeenLastCalledWith(7, '海报/第一版', path.join(root, '海报 第一版 (2)'))
+    await expect(handler(trustedEvent(), '')).rejects.toThrow('画布项目名称')
+    await expect(handler(trustedEvent(), { name: 'x' })).rejects.toThrow('画布项目名称')
+  })
+
+  it('removes the new folder again when the project cannot be created there', async () => {
+    const root = path.join(temporaryDirectory(), '星芒画布')
+    const projects = { list: vi.fn(async () => []), create: vi.fn(async () => { throw new Error('画布项目已达到数量上限') }), open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => root }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!
+
+    await expect(handler(trustedEvent(), '海报')).rejects.toThrow('画布项目已达到数量上限')
+    expect(fs.readdirSync(root)).toEqual([])
+  })
+
+  it('says to choose a folder when the default folder cannot be made or is not configured', async () => {
+    const blocked = path.join(temporaryDirectory(), 'blocked')
+    fs.writeFileSync(blocked, '')
+    const projects = { list: vi.fn(async () => []), create: vi.fn(), open: vi.fn(), save: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, defaultProjectsDirectory: () => path.join(blocked, '星芒画布') }))
+    await controller.open()
+    await expect(electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!(trustedEvent(), '海报'))
+      .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），可以点「换个位置创建…」自己选文件夹$/)
+    expect(projects.create).not.toHaveBeenCalled()
+    controller.dispose()
+
+    const unconfigured = createCanvasWindowController(controllerOptions({ projects: projects as never }))
+    await unconfigured.open()
+    await expect(electronMocks.handlers.get(canvasHostCreateProjectInDefaultFolderChannel)!(trustedEvent(), '海报'))
+      .rejects.toThrow('换个位置创建…')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  it('asks where a missing project folder is now and only for a project whose folder is missing', async () => {
+    const workspace = temporaryDirectory()
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const summary = {
+      id: projectId, name: '搬走的项目', createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+      lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+      workspaceName: 'old', workspaceConfigured: true, workspaceStatus: 'missing' as CanvasProjectWorkspaceStatus,
+    }
+    const list = vi.fn(async () => [summary])
+    const relinkWorkspace = vi.fn(async (_userId: number, _projectId: string, selected: string) => ({ ...summary, workspaceName: path.basename(selected), workspaceStatus: 'ready' as const }))
+    const forgetProject = vi.fn()
+    const projects = { list, create: vi.fn(), open: vi.fn(), save: vi.fn(), relinkWorkspace }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, projectAssets: { forgetProject } as never }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostRelinkProjectFolderChannel)!
+
+    await expect(handler(trustedEvent(), projectId)).resolves.toBeNull()
+    expect(electronMocks.showOpenDialog).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: '重新选择「搬走的项目」的工作文件夹',
+      properties: ['openDirectory'],
+    }))
+    expect(relinkWorkspace).not.toHaveBeenCalled()
+
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
+    const relinked = await handler(trustedEvent(), projectId)
+    expect(relinkWorkspace).toHaveBeenCalledWith(7, projectId, workspace)
+    expect(forgetProject).toHaveBeenCalledWith(7, projectId)
+    expect(JSON.stringify(relinked)).not.toContain(workspace)
+    expect(relinked).toMatchObject({ workspaceStatus: 'ready', workspaceName: path.basename(workspace) })
+
+    // A project whose folder is still there, or one this account does not have, never gets the dialog.
+    electronMocks.showOpenDialog.mockClear()
+    list.mockResolvedValueOnce([{ ...summary, workspaceStatus: 'ready' as const }])
+    await expect(handler(trustedEvent(), projectId)).rejects.toThrow('项目的工作文件夹还在')
+    await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
+    await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
+    expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  describe('the balance chip', () => {
+    const summary = { siteLabel: '星芒账号', accountLabel: 'yo***3', balanceUsd: 12.4, subscriptionLabel: null, readAt: '2026-11-10T03:00:00.000Z' }
+
+    it('answers with the reader and takes nothing from the page', async () => {
+      const readAccountSummary = vi.fn(async () => summary)
+      const controller = createCanvasWindowController(controllerOptions({ readAccountSummary }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetAccountSummaryChannel)!
+      await expect(handler(trustedEvent(), 'https://attacker.example/', { userId: 1 })).resolves.toEqual(summary)
+      expect(readAccountSummary).toHaveBeenCalledTimes(1)
+      expect(readAccountSummary).toHaveBeenCalledWith()
+    })
+
+    it('tells the canvas nobody is signed in when the host has no reader', async () => {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      await expect(electronMocks.handlers.get(canvasHostGetAccountSummaryChannel)!(trustedEvent())).resolves.toBeNull()
+    })
+
+    it('answers only the canvas window', async () => {
+      const readAccountSummary = vi.fn(async () => summary)
+      const controller = createCanvasWindowController(controllerOptions({ readAccountSummary }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetAccountSummaryChannel)!
+      // The main window has its own balance; this channel is the canvas's only.
+      expect(() => handler(trustedEvent('xingmang://app/index.html'))).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(() => handler(foreignEvent())).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(readAccountSummary).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('the run price list', () => {
+    const snapshot = { models: { 'gpt-image-2': { usd: 0.06 } }, groupRatios: { default: 1 }, readAt: '2026-11-10T03:00:00.000Z' }
+
+    it('answers with the reader and takes nothing from the page', async () => {
+      const readPriceSnapshot = vi.fn(async () => snapshot)
+      const controller = createCanvasWindowController(controllerOptions({ readPriceSnapshot }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetPriceSnapshotChannel)!
+      await expect(handler(trustedEvent(), { model: 'gpt-image-2', usd: 0 })).resolves.toEqual(snapshot)
+      expect(readPriceSnapshot).toHaveBeenCalledTimes(1)
+      expect(readPriceSnapshot).toHaveBeenCalledWith()
+    })
+
+    it('tells the canvas there is no price list when the host has no reader', async () => {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      await expect(electronMocks.handlers.get(canvasHostGetPriceSnapshotChannel)!(trustedEvent())).resolves.toBeNull()
+    })
+
+    it('answers only the canvas window', async () => {
+      const readPriceSnapshot = vi.fn(async () => snapshot)
+      const controller = createCanvasWindowController(controllerOptions({ readPriceSnapshot }))
+      await controller.open()
+      const handler = electronMocks.handlers.get(canvasHostGetPriceSnapshotChannel)!
+      expect(() => handler(trustedEvent('xingmang://app/index.html'))).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(() => handler(foreignEvent())).toThrow('已拒绝来自非画布页面的操作请求')
+      expect(readPriceSnapshot).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('deleting a project', () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+
+    function deletable(workspaceName: string, archived = true) {
+      return {
+        id: projectId, name: '旧海报', createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+        lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+        workspaceName, workspaceConfigured: true, workspaceStatus: 'ready' as CanvasProjectWorkspaceStatus,
+        ...(archived ? { archivedAt: '2026-11-09T01:00:00.000Z' } : {}),
+      }
+    }
+
+    async function deleteController(workspace: string, root: string, archived = true, trashProjectFolder = vi.fn(async (_directory: string) => undefined)) {
+      const list = vi.fn(async () => [deletable(path.basename(workspace), archived)])
+      const remove = vi.fn(async () => ({ project: deletable(path.basename(workspace), archived), workspaceDirectory: workspace }))
+      const forgetProject = vi.fn()
+      const projects = { list, create: vi.fn(), open: vi.fn(), save: vi.fn(), remove, getWorkspaceDirectory: vi.fn(async () => workspace) }
+      const controller = createCanvasWindowController(controllerOptions({
+        projects: projects as never, projectAssets: { forgetProject } as never, defaultProjectsDirectory: () => root, trashProjectFolder,
+      }))
+      await controller.open()
+      return { handler: electronMocks.handlers.get(canvasHostDeleteProjectChannel)!, remove, forgetProject, trashProjectFolder }
+    }
+
+    it('deletes an archived project only after the user says so in the system dialog', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = path.join(root, '旧海报')
+      fs.mkdirSync(workspace, { recursive: true })
+      const { handler, remove, forgetProject, trashProjectFolder } = await deleteController(workspace, root)
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toBeNull()
+      expect(electronMocks.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+        type: 'warning', title: '删除项目', message: '删除「旧海报」？', buttons: ['删除', '取消'], defaultId: 1, cancelId: 1,
+        detail: expect.stringContaining('项目文件夹「星芒画布 › 旧海报」连同里面的图片、视频移到'),
+      }))
+      expect(remove).not.toHaveBeenCalled()
+      expect(trashProjectFolder).not.toHaveBeenCalled()
+
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: true })
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(forgetProject).toHaveBeenCalledWith(7, projectId)
+      expect(trashProjectFolder).toHaveBeenCalledWith(workspace)
+    })
+
+    it('never asks about or deletes a project that is not archived, and refuses a malformed id', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const { handler, remove } = await deleteController(path.join(root, '旧海报'), root, false)
+      electronMocks.showMessageBox.mockResolvedValue({ response: 0, checkboxChecked: false })
+
+      await expect(handler(trustedEvent(), projectId)).rejects.toThrow('请先归档这个项目再删除')
+      await expect(handler(trustedEvent(), '22222222-2222-4222-8222-222222222222')).rejects.toThrow('画布项目不存在')
+      await expect(handler(trustedEvent(), 42)).rejects.toThrow('画布项目标识')
+      expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      expect(remove).not.toHaveBeenCalled()
+    })
+
+    it('leaves a folder the user picked elsewhere where it is', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = temporaryDirectory()
+      const { handler, remove, trashProjectFolder } = await deleteController(workspace, root)
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: false })
+      expect(electronMocks.showMessageBox).toHaveBeenLastCalledWith(expect.objectContaining({
+        detail: `项目从列表里删掉，删了不能撤销。电脑上的文件一个都不删，项目文件夹「${path.basename(workspace)}」留在原处。`,
+      }))
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(trashProjectFolder).not.toHaveBeenCalled()
+    })
+
+    it('still deletes the project when its folder cannot go to the trash', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = path.join(root, '旧海报')
+      fs.mkdirSync(workspace, { recursive: true })
+      const { handler, remove } = await deleteController(workspace, root, true, vi.fn(async () => { throw new Error('trash unavailable') }))
+      electronMocks.showMessageBox.mockResolvedValueOnce({ response: 0, checkboxChecked: false })
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: false })
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(fs.existsSync(workspace)).toBe(true)
+    })
+
+    it.runIf(process.platform !== 'win32')('leaves a folder alone that became a link while the dialog was open', async () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const workspace = path.join(root, '旧海报')
+      fs.mkdirSync(workspace, { recursive: true })
+      const elsewhere = temporaryDirectory()
+      const { handler, remove, trashProjectFolder } = await deleteController(workspace, root)
+      electronMocks.showMessageBox.mockImplementationOnce(async () => {
+        fs.rmSync(workspace, { recursive: true })
+        fs.symlinkSync(elsewhere, workspace)
+        return { response: 0, checkboxChecked: false }
+      })
+
+      await expect(handler(trustedEvent(), projectId)).resolves.toEqual({ projectId, folderMovedToTrash: false })
+      expect(remove).toHaveBeenCalledWith(7, projectId)
+      expect(trashProjectFolder).not.toHaveBeenCalled()
+    })
+
+    it('moves only a project folder directly under the default folder to the trash', () => {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const own = path.join(root, '旧海报')
+      fs.mkdirSync(path.join(own, 'nested'), { recursive: true })
+      fs.writeFileSync(path.join(root, '文件'), '')
+      expect(canvasProjectFolderToTrash(own, root)).toBe(own)
+      expect(canvasProjectFolderToTrash(path.join(own, 'nested'), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(root, root)).toBeNull()
+      expect(canvasProjectFolderToTrash(path.join(root, '文件'), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(path.join(root, '不在了'), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(temporaryDirectory(), root)).toBeNull()
+      expect(canvasProjectFolderToTrash(null, root)).toBeNull()
+      expect(canvasProjectFolderToTrash(own, undefined)).toBeNull()
+      if (process.platform !== 'win32') {
+        fs.symlinkSync(temporaryDirectory(), path.join(root, '链接'))
+        expect(canvasProjectFolderToTrash(path.join(root, '链接'), root)).toBeNull()
+      }
+    })
+
+    it('names the trash the way each system does', () => {
+      const folder = path.join('/docs', '星芒画布', '旧海报')
+      expect(canvasProjectDeleteDetail(folder, '旧海报', 'darwin')).toBe('项目从列表里删掉，删了不能撤销。项目文件夹「星芒画布 › 旧海报」连同里面的图片、视频移到废纸篓，还能从废纸篓里拿回来。')
+      expect(canvasProjectDeleteDetail(folder, '旧海报', 'win32')).toBe('项目从列表里删掉，删了不能撤销。项目文件夹「星芒画布 › 旧海报」连同里面的图片、视频移到回收站，还能从回收站里拿回来。')
+      expect(canvasProjectDeleteDetail(null, undefined, 'linux')).toBe('项目从列表里删掉，删了不能撤销。电脑上的文件一个都不删。')
+    })
   })
 
   it('accepts pretty-printed project JSON and forwards saved node layout and viewport', async () => {
@@ -1033,6 +1428,120 @@ describe('createCanvasWindowController', () => {
     expect(videoAssets.storeLocalFile).not.toHaveBeenCalled()
   })
 
+  it('saves a picture the page drew into the open project library from its bytes alone', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '蒙版项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const stored = { assetId: 'M'.repeat(43), localUrl: `xingmang-asset://image/${'M'.repeat(43)}`, mimeType: 'image/png', width: 1, height: 1, fileName: `xingmang-${'M'.repeat(43)}.png` }
+    const folder = { images: { storeLocalBytes: vi.fn(async () => stored) }, media: { setSource: vi.fn(async () => undefined) } }
+    const aiAssets = { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(), storeLocalBytes: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => folder), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      aiAssets: aiAssets as never,
+    }))
+    await controller.open()
+    const importBytes = electronMocks.handlers.get(canvasHostImportAssetBytesChannel)!
+
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('请先选择或新建一个画布项目')
+    expect(folder.images.storeLocalBytes).not.toHaveBeenCalled()
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).resolves.toEqual(stored)
+    expect(folder.images.storeLocalBytes).toHaveBeenCalledTimes(1)
+    const [userId, bytes] = folder.images.storeLocalBytes.mock.calls[0] as unknown as [number, Buffer]
+    expect(userId).toBe(7)
+    expect(Buffer.isBuffer(bytes) && bytes.equals(projectPng)).toBe(true)
+    expect(folder.media.setSource).toHaveBeenCalledWith(7, stored.assetId, 'imported')
+    expect(aiAssets.storeLocalBytes).not.toHaveBeenCalled()
+  })
+
+  it('refuses paths, non-pictures, oversized sides and a canvas that saves too often on the byte channel', async () => {
+    const stored = { assetId: 'N'.repeat(43), localUrl: `xingmang-asset://image/${'N'.repeat(43)}`, mimeType: 'image/png', fileName: `xingmang-${'N'.repeat(43)}.png` }
+    const aiAssets = { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(), storeLocalBytes: vi.fn(async () => stored) }
+    const controller = createCanvasWindowController(controllerOptions({ aiAssets: aiAssets as never }))
+    await controller.open()
+    const importBytes = electronMocks.handlers.get(canvasHostImportAssetBytesChannel)!
+    const huge = Buffer.from(projectPng)
+    huge.writeUInt32BE(9000, 16)
+
+    await expect(importBytes(trustedEvent(), path.join(temporaryDirectory(), 'mask.png'))).rejects.toThrow('画布图片内容格式错误')
+    await expect(importBytes(trustedEvent(), new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'))).rejects.toThrow('仅支持 PNG、JPEG 或 WebP')
+    await expect(importBytes(trustedEvent(), new Uint8Array(huge))).rejects.toThrow('画布图片边长超过 8192')
+    expect(aiAssets.storeLocalBytes).not.toHaveBeenCalled()
+
+    // The two refused pictures above already used two of the twenty saves.
+    for (let index = 0; index < 18; index += 1) await importBytes(trustedEvent(), new Uint8Array(projectPng))
+    await expect(importBytes(trustedEvent(), new Uint8Array(projectPng))).rejects.toThrow('保存图片太频繁')
+    expect(aiAssets.storeLocalBytes).toHaveBeenCalledTimes(18)
+  })
+
+  it('hands a decoded frame to the run service for this window and account only, after parsing it', async () => {
+    const completePreparation = vi.fn(async () => undefined)
+    const canvasRuns = { ...controllerOptions().canvasRuns, completePreparation }
+    const controller = createCanvasWindowController(controllerOptions({ canvasRuns: canvasRuns as never }))
+    await controller.open()
+    const complete = electronMocks.handlers.get(canvasHostCompleteRunPreparationChannel)!
+
+    await expect(complete(trustedEvent(), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'completed', png: new Uint8Array(projectPng), decodedTimestampSeconds: 1.5 })).resolves.toBeUndefined()
+    const [userId, ownerId, completion] = completePreparation.mock.calls[0] as unknown as [number, number, { png: Buffer; decodedTimestampSeconds: number }]
+    expect(userId).toBe(7)
+    expect(ownerId).toBe(electronMocks.latestWebContents!.id)
+    expect(Buffer.isBuffer(completion.png) && completion.png.equals(projectPng)).toBe(true)
+    expect(completion.decodedTimestampSeconds).toBe(1.5)
+
+    await expect(complete(trustedEvent(), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'completed', png: '/tmp/frame.png' })).rejects.toThrow('视频帧图片内容格式错误')
+    await expect(complete(trustedEvent(), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'failed', message: '<b>page text</b>' })).rejects.toThrow('画布运行准备回执格式错误')
+    expect(() => complete(trustedEvent('https://evil.example/'), { runId: 'run-1', operationId: 'op-1', kind: 'frame', outcome: 'failed' })).toThrow('已拒绝来自非画布页面的操作请求')
+    expect(completePreparation).toHaveBeenCalledTimes(1)
+  })
+
+  it('reads one asset from the library the canvas lists, with its lineage, for the account that asked', async () => {
+    let activeUserId = 7
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const project = { id: projectId, name: '抽帧项目', createdAt: '2026-11-10T00:00:00.000Z', updatedAt: '2026-11-10T00:00:00.000Z' }
+    const row = (assetId: string) => ({ assetId, localUrl: `xingmang-asset://image/${assetId}`, mediaType: 'image', displayName: '一帧', source: 'imported' })
+    const lineage = { runId: 'run-1', nodeId: 'frame', attemptId: 'attempt-1' }
+    let releaseLateRead!: () => void
+    const folder = {
+      media: {
+        readOwnedDetail: vi.fn(async (_userId: number, assetId: string) => {
+          if (assetId === 'Q'.repeat(43)) await new Promise<void>((resolve) => { releaseLateRead = resolve })
+          return row(assetId)
+        }),
+      },
+    }
+    const mediaAssets = { readOwnedDetail: vi.fn(async (_userId: number, assetId: string) => row(assetId)) }
+    const getAssetLineage = vi.fn(async (_userId: number, assetIds: string[]) => (assetIds[0] === 'L'.repeat(43) ? { [assetIds[0]]: lineage } : {}))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      projects: { list: vi.fn(async () => [project]), create: vi.fn(), open: vi.fn(async () => ({ project, content: '{}' })), save: vi.fn() } as never,
+      projectAssets: { forProject: vi.fn(async () => folder), forNewWorkspace: vi.fn(), forgetProject: vi.fn() } as never,
+      mediaAssets: mediaAssets as never,
+      canvasRuns: { ...controllerOptions().canvasRuns, getAssetLineage } as never,
+    }))
+    await controller.open()
+    const detail = electronMocks.handlers.get(canvasHostGetAssetDetailChannel)!
+
+    // No open project: only the home page library's picture listing and save read without one.
+    await expect(detail(trustedEvent(), 'L'.repeat(43))).rejects.toThrow('请先选择或新建一个画布项目')
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await expect(detail(trustedEvent(), 'L'.repeat(43))).resolves.toEqual({ ...row('L'.repeat(43)), lineage })
+    await expect(detail(trustedEvent(), 'P'.repeat(43))).resolves.toEqual(row('P'.repeat(43)))
+    expect(folder.media.readOwnedDetail).toHaveBeenCalledWith(7, 'L'.repeat(43))
+    expect(getAssetLineage).toHaveBeenCalledWith(7, ['L'.repeat(43)])
+
+    // An answer that lands after an account switch is dropped.
+    const pending = detail(trustedEvent(), 'Q'.repeat(43))
+    await vi.waitFor(() => expect(folder.media.readOwnedDetail).toHaveBeenCalledWith(7, 'Q'.repeat(43)))
+    activeUserId = 9
+    controller.setAccountUser(9)
+    releaseLateRead()
+    await expect(pending).rejects.toThrow('账号已切换')
+    // The open project's library answered every read; the account-wide one never did.
+    expect(mediaAssets.readOwnedDetail).not.toHaveBeenCalled()
+  })
+
   it('offers MP4 in the native media picker', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     await controller.open()
@@ -1125,6 +1634,9 @@ describe('createCanvasWindowController', () => {
     const imported = await electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId) as { content: string; importedAssetCount: number }
 
     expect(preview.assetCount).toBe(1)
+    // Without project storage and a default folder the import still replaces the open canvas.
+    expect(preview).not.toHaveProperty('createsProject')
+    expect(imported).not.toHaveProperty('projectId')
     expect(imported.importedAssetCount).toBe(1)
     expect(imported.content).not.toContain(oldAssetId)
     expect(imported.content).toContain(newAssetId)
@@ -1185,6 +1697,289 @@ describe('createCanvasWindowController', () => {
       .rejects.toThrow('账号已切换')
     expect(storeBase64).toHaveBeenCalledTimes(1)
     expect(removeOwned).toHaveBeenCalledWith(7, importedAssetId)
+  })
+
+  it('names an imported project after the package and never after a control character', () => {
+    expect(importedCanvasProjectName('  春季海报  ', '/tmp/a.xingcanvas')).toBe('春季海报')
+    expect(importedCanvasProjectName('第一行\n第二行\u0000', '/tmp/a.xingcanvas')).toBe('第一行 第二行')
+    expect(importedCanvasProjectName('', '/tmp/客户样稿.XINGCANVAS')).toBe('客户样稿')
+    expect(importedCanvasProjectName(42, '/tmp/.xingcanvas')).toBe('导入的项目')
+    expect(importedCanvasProjectName('\n\t', '/tmp/\t.xingcanvas')).toBe('导入的项目')
+    expect(importedCanvasProjectName('图'.repeat(200), '/tmp/a.xingcanvas')).toHaveLength(128)
+  })
+
+  describe('importing a project package as a new project', () => {
+    const openProjectId = '11111111-1111-4111-8111-111111111111'
+    const newProjectId = '33333333-3333-4333-8333-333333333333'
+    const oldAssetId = 'A'.repeat(43)
+    const newAssetId = 'B'.repeat(43)
+
+    function packageFile(assetIds: readonly string[]): string {
+      const projectPath = path.join(temporaryDirectory(), '客户样稿.xingcanvas')
+      fs.writeFileSync(projectPath, buildCanvasProjectPackage(projectWorkflow(assetIds), assetIds.map((assetId) => ({
+        asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png', fileName: `xingmang-${assetId}.png` },
+        bytes: projectPng,
+      }))), 'utf8')
+      return projectPath
+    }
+
+    function summary(id: string, name: string) {
+      return {
+        id, name, createdAt: '2026-11-09T00:00:00.000Z', updatedAt: '2026-11-09T00:00:00.000Z',
+        lastOpenedAt: '2026-11-09T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+        workspaceName: name, workspaceConfigured: true, workspaceStatus: 'ready' as CanvasProjectWorkspaceStatus,
+      }
+    }
+
+    /** A folder's asset store that writes real files, so a rollback can be seen on disk. */
+    function folderAssets(directory: string, storeBase64?: (userId: number, dataUrl: string) => Promise<unknown>) {
+      const images = {
+        ensureOutputDirectory: vi.fn(),
+        storeBase64: vi.fn(storeBase64 ?? (async () => {
+          fs.mkdirSync(path.join(directory, 'assets', 'user-7'), { recursive: true })
+          fs.writeFileSync(path.join(directory, 'assets', 'user-7', `${newAssetId}.png`), projectPng)
+          return { assetId: newAssetId, localUrl: `xingmang-asset://image/${newAssetId}`, mimeType: 'image/png', fileName: `xingmang-${newAssetId}.png` }
+        })),
+        removeOwned: vi.fn(async (_userId: number, assetId: string) => {
+          fs.rmSync(path.join(directory, 'assets', 'user-7', `${assetId}.png`), { force: true })
+        }),
+      }
+      return { images, media: { setSource: vi.fn(async () => undefined) } }
+    }
+
+    async function openedController(
+      createImported: (...args: unknown[]) => Promise<unknown>,
+      overrides: Partial<CanvasWindowControllerOptions> = {},
+      storeBase64?: (directory: string) => (userId: number, dataUrl: string) => Promise<unknown>,
+    ) {
+      const created = projectController(createImported, overrides, storeBase64)
+      await created.controller.open()
+      await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), openProjectId)
+      return created
+    }
+
+    function projectController(
+      createImported: (...args: unknown[]) => Promise<unknown>,
+      overrides: Partial<CanvasWindowControllerOptions> = {},
+      storeBase64?: (directory: string) => (userId: number, dataUrl: string) => Promise<unknown>,
+    ) {
+      const root = path.join(temporaryDirectory(), '星芒画布')
+      const contexts: ReturnType<typeof folderAssets>[] = []
+      const forNewWorkspace = vi.fn((directory: string) => {
+        const context = folderAssets(directory, storeBase64?.(directory))
+        contexts.push(context)
+        return context
+      })
+      const projects = {
+        list: vi.fn(async () => []), create: vi.fn(), createImported: vi.fn(createImported),
+        open: vi.fn(async (_userId: number, id: string) => ({ project: summary(id, id === newProjectId ? '可移植项目' : '在开的项目'), content: projectWorkflow([]) })),
+        save: vi.fn(async (_userId: number, id: string) => summary(id, '在开的项目')),
+      }
+      const aiAssets = { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwned: vi.fn(), readOwned: vi.fn(), storeBase64: vi.fn(), removeOwned: vi.fn() }
+      const controller = createCanvasWindowController(controllerOptions({
+        projects: projects as never,
+        projectAssets: { forNewWorkspace, forProject: vi.fn(async () => folderAssets(temporaryDirectory())), forgetProject: vi.fn() } as never,
+        defaultProjectsDirectory: () => root,
+        aiAssets: aiAssets as never,
+        ...overrides,
+      }))
+      return { controller, root, projects, forNewWorkspace, contexts, aiAssets }
+    }
+
+    it('puts the package into a new project in the default folder and leaves the open project alone', async () => {
+      electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [packageFile([oldAssetId])] })
+      const { root, projects, forNewWorkspace, contexts, aiAssets } = await openedController(async (_userId, name, directory, content) => ({
+        project: summary(newProjectId, String(name)), content, directory,
+      }))
+      const save = electronMocks.handlers.get(canvasHostSaveProjectChannel)!
+
+      const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string; createsProject?: boolean }
+      expect(preview.createsProject).toBe(true)
+      expect(forNewWorkspace).not.toHaveBeenCalled()
+      expect(fs.existsSync(root)).toBe(false)
+
+      const imported = await electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId) as { projectId: string; content: string; importedAssetCount: number }
+      const folder = path.join(root, '可移植项目')
+      expect(forNewWorkspace).toHaveBeenCalledWith(folder)
+      expect(contexts[0]!.images.storeBase64).toHaveBeenCalledWith(7, expect.stringMatching(/^data:image\/png;base64,/))
+      expect(contexts[0]!.media.setSource).toHaveBeenCalledWith(7, newAssetId, 'imported')
+      expect(aiAssets.storeBase64).not.toHaveBeenCalled()
+      expect(projects.createImported).toHaveBeenCalledWith(7, '可移植项目', folder, expect.stringContaining(newAssetId))
+      expect(projects.createImported.mock.calls[0]![3]).not.toContain(oldAssetId)
+      expect(imported).toMatchObject({ projectId: newProjectId, importedAssetCount: 1 })
+      expect(JSON.stringify(imported)).not.toContain(root)
+
+      // The canvas opens the new project itself; until then the one it shows keeps saving.
+      await expect(save(trustedEvent(), openProjectId, projectWorkflow([]))).resolves.toMatchObject({ id: openProjectId })
+      await expect(save(trustedEvent(), newProjectId, projectWorkflow([]))).rejects.toThrow('只能保存当前打开的画布项目')
+      await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), newProjectId)
+      await expect(save(trustedEvent(), newProjectId, projectWorkflow([]))).resolves.toMatchObject({ id: newProjectId })
+      await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId)).rejects.toThrow('预览已失效')
+    })
+
+    it('removes the imported files and the new folder when the project cannot be registered', async () => {
+      electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [packageFile([oldAssetId])] })
+      const { root, contexts } = await openedController(async () => { throw new Error('画布项目已达到数量上限') })
+      const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
+
+      await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId)).rejects.toThrow('画布项目已达到数量上限')
+      expect(contexts[0]!.images.removeOwned).toHaveBeenCalledWith(7, newAssetId)
+      expect(fs.readdirSync(root)).toEqual([])
+    })
+
+    it('stops before registering a project when the account changes during the import', async () => {
+      let userId = 7
+      const getSessionState = vi.fn(() => ({ authenticated: true, account: { userId } }))
+      electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [packageFile([oldAssetId, 'C'.repeat(43)])] })
+      const { root, projects, contexts } = await openedController(async () => { throw new Error('should not register') }, {
+        accountService: { getSessionState } as never,
+      }, (directory) => async () => {
+        userId = 9
+        fs.mkdirSync(path.join(directory, 'assets', 'user-7'), { recursive: true })
+        fs.writeFileSync(path.join(directory, 'assets', 'user-7', `${newAssetId}.png`), projectPng)
+        return { assetId: newAssetId, localUrl: `xingmang-asset://image/${newAssetId}`, mimeType: 'image/png', fileName: 'first.png' }
+      })
+      const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
+
+      await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId)).rejects.toThrow('账号已切换')
+      expect(contexts[0]!.images.storeBase64).toHaveBeenCalledTimes(1)
+      expect(projects.createImported).not.toHaveBeenCalled()
+      expect(contexts[0]!.images.removeOwned).toHaveBeenCalledWith(7, newAssetId)
+      expect(fs.readdirSync(root)).toEqual([])
+    })
+
+    it('says the import did not happen when the default folder cannot be made', async () => {
+      const blocked = path.join(temporaryDirectory(), 'blocked')
+      fs.writeFileSync(blocked, '')
+      electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [packageFile([oldAssetId])] })
+      const { projects, forNewWorkspace } = await openedController(async () => { throw new Error('should not register') }, {
+        defaultProjectsDirectory: () => path.join(blocked, '星芒画布'),
+      })
+      const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
+
+      await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId))
+        .rejects.toThrow(/^没能在「星芒画布」文件夹里建项目（.+），这次没有导入$/)
+      expect(forNewWorkspace).not.toHaveBeenCalled()
+      expect(projects.createImported).not.toHaveBeenCalled()
+    })
+
+    describe('opening a project file the system handed over (double-click, D92)', () => {
+      function importsNewProject(_userId: unknown, name: unknown, directory: unknown, content: unknown) {
+        return Promise.resolve({ project: summary(newProjectId, String(name)), content, directory })
+      }
+
+      function loadedProjectId(window: Record<string, unknown> | null): string | null {
+        const loadURL = window!.loadURL as ReturnType<typeof vi.fn>
+        return new URL(loadURL.mock.calls.at(-1)![0] as string).searchParams.get('project')
+      }
+
+      function latestCloseRequestId(): string | undefined {
+        const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+        return [...send.mock.calls].reverse().find(([channel]) => channel === canvasHostChannels.closeRequested)?.[1].requestId
+      }
+
+      it('imports the file as a new project and opens the canvas on it, without any dialog', async () => {
+        const { controller, root, projects, contexts } = projectController(importsNewProject)
+
+        await expect(controller.openProjectFile(packageFile([oldAssetId]))).resolves.toBe(true)
+        const folder = path.join(root, '可移植项目')
+        expect(projects.createImported).toHaveBeenCalledWith(7, '可移植项目', folder, expect.stringContaining(newAssetId))
+        expect(contexts[0]!.media.setSource).toHaveBeenCalledWith(7, newAssetId, 'imported')
+        expect(electronMocks.browserWindowOptions).toHaveLength(1)
+        expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(newProjectId)
+        expect(electronMocks.showOpenDialog).not.toHaveBeenCalled()
+        expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+      })
+
+      it('lets an open canvas save and close through its own confirmation before switching to the new project', async () => {
+        const { controller, projects } = await openedController(importsNewProject)
+        const firstWindow = electronMocks.latestBrowserWindow!
+
+        const opening = controller.openProjectFile(packageFile([oldAssetId]))
+        await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+        expect(projects.createImported).not.toHaveBeenCalled()
+        expect(electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)).toBe(true)
+
+        await expect(opening).resolves.toBe(true)
+        expect(firstWindow.close).toHaveBeenCalledOnce()
+        expect(projects.createImported).toHaveBeenCalledOnce()
+        expect(electronMocks.latestBrowserWindow).not.toBe(firstWindow)
+        expect(loadedProjectId(electronMocks.latestBrowserWindow)).toBe(newProjectId)
+      })
+
+      it('stays on the open project and imports nothing when the user keeps the canvas open', async () => {
+        const { controller, projects, forNewWorkspace } = await openedController(importsNewProject)
+        const firstWindow = electronMocks.latestBrowserWindow!
+        const shown = (firstWindow.show as ReturnType<typeof vi.fn>).mock.calls.length
+
+        const opening = controller.openProjectFile(packageFile([oldAssetId]))
+        await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+        electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), false)
+
+        await expect(opening).resolves.toBe(false)
+        expect(firstWindow.close).not.toHaveBeenCalled()
+        expect((firstWindow.show as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(shown)
+        expect(forNewWorkspace).not.toHaveBeenCalled()
+        expect(projects.createImported).not.toHaveBeenCalled()
+        expect(electronMocks.browserWindowOptions).toHaveLength(1)
+      })
+
+      it('refuses a broken file before it touches the open canvas', async () => {
+        const { controller, projects } = await openedController(importsNewProject)
+        const broken = path.join(temporaryDirectory(), '坏的.xingcanvas')
+        fs.writeFileSync(broken, '{not json', 'utf8')
+
+        await expect(controller.openProjectFile(broken)).rejects.toThrow('画布项目文件不是有效 JSON')
+        expect(latestCloseRequestId()).toBeUndefined()
+        expect(projects.createImported).not.toHaveBeenCalled()
+      })
+
+      it('checks the path the way it checks a dropped file: absolute, the right kind, one link, no links on the way', async () => {
+        const { controller, projects } = projectController(importsNewProject)
+        const original = packageFile([oldAssetId])
+        const hardLink = path.join(temporaryDirectory(), '硬链接.xingcanvas')
+        fs.linkSync(original, hardLink)
+        const renamed = path.join(temporaryDirectory(), '样稿.json')
+        fs.copyFileSync(original, renamed)
+
+        await expect(controller.openProjectFile('样稿.xingcanvas')).rejects.toThrow('画布项目文件路径无效')
+        await expect(controller.openProjectFile(renamed)).rejects.toThrow('画布项目文件路径无效')
+        await expect(controller.openProjectFile(hardLink)).rejects.toThrow('画布项目文件不安全')
+        expect(projects.createImported).not.toHaveBeenCalled()
+        expect(electronMocks.browserWindowOptions).toHaveLength(0)
+      })
+
+      it.runIf(process.platform !== 'win32')('refuses a file reached through a link', async () => {
+        const { controller, projects } = projectController(importsNewProject)
+        const original = packageFile([oldAssetId])
+        const linkedFolder = path.join(temporaryDirectory(), 'linked')
+        fs.symlinkSync(path.dirname(original), linkedFolder)
+        const linkedFile = path.join(temporaryDirectory(), '链接.xingcanvas')
+        fs.symlinkSync(original, linkedFile)
+
+        await expect(controller.openProjectFile(path.join(linkedFolder, path.basename(original)))).rejects.toThrow('不能经过符号链接或目录联接')
+        await expect(controller.openProjectFile(linkedFile)).rejects.toThrow('不能经过符号链接或目录联接')
+        expect(projects.createImported).not.toHaveBeenCalled()
+      })
+
+      it('needs a signed-in account and does not import for an account that changed while the canvas was closing', async () => {
+        const signedOut = projectController(importsNewProject, {
+          accountService: { getSessionState: vi.fn(() => ({ authenticated: false, account: null })) } as never,
+        })
+        await expect(signedOut.controller.openProjectFile(packageFile([oldAssetId]))).rejects.toThrow('请先登录星芒账号')
+
+        let userId = 7
+        const { controller, projects } = await openedController(importsNewProject, {
+          accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) } as never,
+        })
+        const opening = controller.openProjectFile(packageFile([oldAssetId]))
+        await vi.waitFor(() => expect(latestCloseRequestId()).toBeDefined())
+        userId = 9
+        electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestCloseRequestId(), true)
+        await expect(opening).rejects.toThrow('账号已切换')
+        expect(projects.createImported).not.toHaveBeenCalled()
+      })
+    })
   })
 
   it('publishes run events only to their originating window while its account is still active', async () => {
@@ -1328,11 +2123,13 @@ describe('createCanvasWindowController', () => {
       markUsed: vi.fn(async () => ({ assetId: 'a', lastUsedAt: '2026-08-19T00:00:00.000Z' })),
       softDelete: vi.fn(async () => ({ assetId: 'a', deletedAt: '2026-08-19T00:00:00.000Z' })),
       restore: vi.fn(async () => ({ assetId: 'a' })),
+      readOwnedDetail: vi.fn(async () => ({ assetId: 'a' })),
     }
     const controller = createCanvasWindowController(controllerOptions({ mediaAssets: mediaAssets as never }))
     await controller.open()
 
     for (const channel of [
+      canvasHostGetAssetDetailChannel,
       canvasHostCopyAssetChannel,
       canvasHostSaveAssetChannel,
       canvasHostShowAssetMenuChannel,
@@ -1350,6 +2147,7 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.markUsed).not.toHaveBeenCalled()
     expect(mediaAssets.softDelete).not.toHaveBeenCalled()
     expect(mediaAssets.restore).not.toHaveBeenCalled()
+    expect(mediaAssets.readOwnedDetail).not.toHaveBeenCalled()
   })
 
   it('rejects a completed asset rename when the account changes in flight', async () => {
@@ -1530,6 +2328,15 @@ describe('createCanvasWindowController', () => {
   })
 })
 
+describe('canvasRendererAnswers', () => {
+  it('answers true when the page runs the script, even with an error, and false when it never settles', async () => {
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(async () => 1) }, 50)).toBe(true)
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(async () => { throw new Error('blocked') }) }, 50)).toBe(true)
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(() => new Promise<never>(() => undefined)) }, 50)).toBe(false)
+    expect(await canvasRendererAnswers({ executeJavaScript: vi.fn(() => { throw new Error('destroyed') }) }, 50)).toBe(true)
+  })
+})
+
 describe('canvas close confirmation', () => {
   function latestRequestId(): string {
     const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
@@ -1642,6 +2449,70 @@ describe('canvas close confirmation', () => {
     finish(trustedEvent(), requestId, false)
     expect(await closing).toBe(false)
     expect(cancelTasks(trustedEvent(), requestId)).toBe(false)
+  })
+
+  it('destroys a canvas page that does not answer when the app quits, instead of waiting out the close handshake', async () => {
+    vi.useFakeTimers()
+    try {
+      const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+      const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+      await controller.open()
+      const window = electronMocks.latestBrowserWindow!
+      // A page stuck in a loop never settles the script it is asked to run.
+      ;(electronMocks.latestWebContents!.executeJavaScript as ReturnType<typeof vi.fn>).mockReturnValueOnce(new Promise(() => undefined))
+      let result: boolean | undefined
+      void controller.requestCloseForQuit().then((value) => { result = value })
+      await vi.advanceTimersByTimeAsync(3_999)
+      expect(result).toBeUndefined()
+      await vi.advanceTimersByTimeAsync(1)
+      expect(result).toBe(true)
+      expect(window.destroy).toHaveBeenCalledOnce()
+      expect(electronMocks.latestWebContents!.send).not.toHaveBeenCalledWith(canvasHostChannels.closeRequested, expect.anything())
+      expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'canvas', 'close.unresponsive', '画布没响应，退出时直接关掉', { waitedMs: 4_000 })
+    } finally { vi.useRealTimers() }
+  })
+
+  it('keeps the normal close handshake on quit when the canvas page answers, and waits for the user there', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createCanvasWindowController(controllerOptions())
+      await controller.open()
+      const window = electronMocks.latestBrowserWindow!
+      let result: boolean | undefined
+      void controller.requestCloseForQuit().then((value) => { result = value })
+      await vi.advanceTimersByTimeAsync(0)
+      const requestId = latestRequestId()
+      // The page is showing its running-tasks dialog: no answer yet, and the quit check is long over.
+      await vi.advanceTimersByTimeAsync(10_000)
+      expect(result).toBeUndefined()
+      expect(window.destroy).not.toHaveBeenCalled()
+      electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), requestId, false)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(result).toBe(false)
+      expect(window.destroy).not.toHaveBeenCalled()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('treats a page that answers the quit check with an error as alive', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    ;(electronMocks.latestWebContents!.executeJavaScript as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Script failed to execute'))
+    const closing = controller.requestCloseForQuit()
+    await vi.waitFor(() => expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.closeRequested, expect.anything()))
+    electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestRequestId(), true)
+    expect(await closing).toBe(true)
+    expect(electronMocks.latestBrowserWindow!.destroy).not.toHaveBeenCalled()
+  })
+
+  it('does not run the quit check when no canvas is open or its renderer is already gone', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    expect(await controller.requestCloseForQuit()).toBe(true)
+    await controller.open()
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
+    expect(await controller.requestCloseForQuit()).toBe(true)
+    expect(electronMocks.latestWebContents!.executeJavaScript).not.toHaveBeenCalled()
+    expect(electronMocks.latestBrowserWindow!.destroy).toHaveBeenCalledOnce()
   })
 
   it('invalidates the pending handshake when the renderer crashes', async () => {
@@ -1792,13 +2663,30 @@ describe('canvas close confirmation', () => {
     controller.dispose()
   })
 
-  it('sends only display preferences through initial URL and appearance events', async () => {
-    const controller = createCanvasWindowController(controllerOptions())
+  it('sends only display preferences through initial URL and appearance events, never the stored skin', async () => {
+    // The canvas follows the main window (#1103): an old stored skin such as mist no longer reaches it.
+    const systemService = {
+      readStoredConfig: vi.fn(() => ({ theme: 'dark', uiSkin: 'mist' })),
+      revealApiKey: vi.fn(() => ''),
+    } as unknown as SystemService
+    const controller = createCanvasWindowController(controllerOptions({ systemService }))
     controller.setAppearance({ theme: 'light', uiSkin: 'mist', reducedMotion: true })
     await controller.open()
-    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=light&skin=mist&reducedMotion=1')
-    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: '#f0f6f5' })])
-    controller.setAppearance({ theme: 'dark' })
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=light&reducedMotion=1')
+    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: canvasWindowLightBackgroundColor })])
+    controller.setAppearance({ theme: 'dark', uiSkin: 'aurora' })
+    expect(electronMocks.latestBrowserWindow!.setBackgroundColor).toHaveBeenLastCalledWith(canvasWindowBackgroundColor)
     expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.appearanceChanged, { theme: 'dark', reducedMotion: false })
+  })
+
+  it('opens with the stored dark theme without the stored skin', async () => {
+    const systemService = {
+      readStoredConfig: vi.fn(() => ({ theme: 'dark', uiSkin: 'mist' })),
+      revealApiKey: vi.fn(() => ''),
+    } as unknown as SystemService
+    const controller = createCanvasWindowController(controllerOptions({ systemService }))
+    await controller.open()
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=dark')
+    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: canvasWindowBackgroundColor })])
   })
 })

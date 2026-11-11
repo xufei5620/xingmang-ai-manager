@@ -1,7 +1,15 @@
 import { execFile } from 'node:child_process'
 import net from 'node:net'
 import { promisify } from 'node:util'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
+import {
+  buildPowerShellConstrainedLanguageBranch,
+  buildPowerShellEnvironmentBroadcastStatements,
+  buildPowerShellJsonOutputStatements,
+  powerShellMachineEnvironmentKey,
+  powerShellReadEnvironmentValueFunction,
+  powerShellUserEnvironmentKey,
+} from './powershell-constrained-language'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
@@ -209,14 +217,41 @@ const powerShellNameList = staleProxyVariableNames.map((name) => `"${name}"`).jo
 
 // 读代理设置这条跑在 trustedCommandEnvironment() 下：ConvertTo-Json 要是留给 PowerShell
 // 自己去找模块，就得把系统模块整个扫一遍（CI 上 20 多秒），超过这里的 8 秒，检查页
-// 就读不到代理设置。所以先按名字导入。清除那两条脚本不调任何命令，不用导入。
+// 就读不到代理设置。所以先按名字导入。清除那条脚本在普通模式下不调任何命令，不用导入。
 export const readProxyScopesModules = ['Microsoft.PowerShell.Utility'] as const
 
 export const windowsProxyPowerShellTimeoutMs = 8_000
 
+// 开着应用控制策略（WDAC / AppLocker 一类）的电脑上，PowerShell 跑在受限语言模式里，
+// 下面几条脚本里的 [Environment]::... 和设 UTF-8 输出那句都被拒，第二句就整条结束：
+// 检查页读不到、清不掉旧的代理设置（2026-11-10 Windows CI 锁定实测）。受限模式下改走
+// 注册表命令，原来那几行一个字不动，普通模式照旧走它们。读、删、通知系统都要
+// Microsoft.PowerShell.Management，读的那条还要 Utility 出 JSON。
+export const proxyScopesConstrainedModules = ['Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Management'] as const
+export const clearUserProxyConstrainedModules = ['Microsoft.PowerShell.Management'] as const
+
+function buildReadProxyScopesConstrainedStatements(): string[] {
+  return [
+    buildPowerShellModuleImportStatement(proxyScopesConstrainedModules),
+    ...powerShellReadEnvironmentValueFunction,
+    `$names = @(${powerShellNameList})`,
+    '$user = @{}',
+    '$machine = @{}',
+    'foreach ($name in $names) {',
+    `  $value = Read-XingmangEnvironmentValue '${powerShellUserEnvironmentKey}' $name`,
+    '  if ($value) { $user[$name] = $value }',
+    `  $value = Read-XingmangEnvironmentValue '${powerShellMachineEnvironmentKey}' $name`,
+    '  if ($value) { $machine[$name] = $value }',
+    '}',
+    // 代理地址里可能带中文用户名；受限模式下输出停在控制台代码页，转成 \uXXXX 才不会被读错。
+    ...buildPowerShellJsonOutputStatements('@{ user = $user; machine = $machine } | ConvertTo-Json -Compress'),
+  ]
+}
+
 export function buildReadProxyScopesScript(): string {
   return [
     '$ErrorActionPreference = "Stop"',
+    ...buildPowerShellConstrainedLanguageBranch(buildReadProxyScopesConstrainedStatements()),
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     buildPowerShellModuleImportStatement(readProxyScopesModules),
     `$names = @(${powerShellNameList})`,
@@ -256,14 +291,35 @@ export async function readWindowsProxyScopes(run: PowerShellRunner = runPowerShe
   return parseProxyScopesOutput(await run(buildReadProxyScopesScript(), trustedCommandEnvironment()))
 }
 
+function buildClearUserProxyConstrainedStatements(): string[] {
+  return [
+    buildPowerShellModuleImportStatement(clearUserProxyConstrainedModules),
+    `$allowed = @(${powerShellNameList})`,
+    '$cleared = @()',
+    'foreach ($name in ($env:XINGMANG_CLEAR_PROXY -split ";")) {',
+    '  if (-not ($allowed -contains $name)) { continue }',
+    `  if ($null -ne (Get-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name $name -ErrorAction SilentlyContinue)) {`,
+    `    Remove-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name $name`,
+    '  }',
+    '  $cleared += $name',
+    '}',
+    'if ($cleared.Count -gt 0) {',
+    ...buildPowerShellEnvironmentBroadcastStatements().map((line) => `  ${line}`),
+    '}',
+    '"cleared:" + ($cleared -join ";")',
+  ]
+}
+
 /**
  * 删掉当前 Windows 账号下 `$env:XINGMANG_CLEAR_PROXY` 列出的几个变量。名字经环境
  * 变量传入、不拼进脚本；脚本里再对照固定名单过一遍，名单外的一律不碰。
- * SetEnvironmentVariable 删值时会广播设置变化，之后新开的命令行窗口就看不到它了。
+ * SetEnvironmentVariable 删值时会广播设置变化，之后新开的命令行窗口就看不到它了；
+ * 受限模式下删完由 setx 广播同一个消息。
  */
 export function buildClearUserProxyScript(): string {
   return [
     '$ErrorActionPreference = "Stop"',
+    ...buildPowerShellConstrainedLanguageBranch(buildClearUserProxyConstrainedStatements()),
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     `$allowed = @(${powerShellNameList})`,
     '$cleared = @()',
@@ -317,6 +373,8 @@ export async function clearStaleUserProxyVariables(options: ClearStaleProxyOptio
   const cleared = parseClearUserProxyOutput(await run(buildClearUserProxyScript(), {
     ...trustedCommandEnvironment(),
     XINGMANG_CLEAR_PROXY: targets.join(';'),
+    // 只有受限模式那一段用它（I14：System32 里那一份的绝对路径）。
+    XINGMANG_SETX_EXE: windowsSystemExecutable('setx.exe'),
   }))
   const processEnv = options.processEnv ?? process.env
   for (const name of cleared) {

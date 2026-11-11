@@ -2,7 +2,7 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 
 const {
-  classifyProbe, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
+  probedSites, UNPROBED_SITES, resolveProbeKey, PROVIDER_KEY_VARIABLES, classifyProbe, claudeStreamEvidence, displayOutput, summarize, redact, probeRunners, codexProbeConfigText, pinnedProviders,
   PROBED_PROVIDERS, KEY_VARIABLE,
 } = require('./probe-cli-relay.cjs')
 
@@ -86,6 +86,12 @@ test('each CLI is pointed at its own relay base URL and told which model to use'
   assert.equal(probeRunners.codex.baseUrlFor(site), 'https://relay.invalid/v1')
 
   assert.deepEqual(probeRunners.claude.argv('claude-opus-5').slice(-2), ['--model', 'claude-opus-5'])
+  // Plain -p prints nothing while it retries, so a probe killed at the
+  // timeout left only exit code 143. stream-json reports every retry's status.
+  assert.deepEqual(probeRunners.claude.argv('claude-opus-5').slice(2, 5), ['--output-format', 'stream-json', '--verbose'])
+  // With the default ten retries the relay's own words never reach the
+  // result line before the probe timeout (2026-11-09: nine bare 503s).
+  assert.equal(probeRunners.claude.environment('https://relay.invalid', 'sk-probe', '/tmp/home').CLAUDE_CODE_MAX_RETRIES, '2')
   // Codex takes its model from config.toml, not argv -- that is the file a
   // customer actually gets, so the probe exercises the same request shape.
   assert.equal(probeRunners.codex.argv('gpt-6-astra').includes('gpt-6-astra'), false)
@@ -122,4 +128,81 @@ test('only the tools the list actually pins are probed', () => {
   assert.deepEqual(pinnedProviders(list), ['claude', 'codex'])
   assert.equal(probeRunners.gemini, undefined)
   assert.deepEqual(pinnedProviders({ claude: { recommended: null }, codex: { recommended: null }, gemini: { recommended: null }, grok: { recommended: null } }), [])
+})
+
+const initLine = JSON.stringify({ type: 'system', subtype: 'init', tools: ['Bash'], usage: { input_tokens: 401, output_tokens: 503 }, model: 'claude-opus-5-5' })
+function retryLine(attempt, status, error) {
+  return JSON.stringify({ type: 'system', subtype: 'api_retry', attempt, max_retries: 10, retry_delay_ms: 1000, error_status: status, error })
+}
+
+test('a Claude probe killed while retrying is classified by the status it kept getting back', () => {
+  // 2026-11-09: the first real run ended with exit 143 and no output at all.
+  const output = [initLine, retryLine(1, 401, 'authentication_failed'), retryLine(2, 401, 'authentication_failed')].join('\n')
+  const verdict = classifyProbe({ code: 1, timedOut: true, output })
+  assert.equal(verdict.verdict, 'credential')
+  assert.match(verdict.detail, /HTTP 401 authentication_failed,已重试 2 次/)
+  assert.equal(classifyProbe({ code: 1, timedOut: true, output: [initLine, retryLine(1, 503, 'server_error')].join('\n') }).verdict, 'unreachable')
+  assert.equal(classifyProbe({ code: 1, timedOut: true, output: [initLine, retryLine(1, 429, 'rate_limit')].join('\n') }).verdict, 'quota')
+})
+
+test('the numbers in Claude stream-json bookkeeping are not mistaken for an HTTP status', () => {
+  // The init line carries token counts like 401 and 503; only reported errors count.
+  const verdict = classifyProbe({ code: 1, timedOut: true, output: initLine })
+  assert.equal(verdict.verdict, 'timeout')
+  assert.match(verdict.detail, /120 秒内没答完/)
+  assert.equal(claudeStreamEvidence(initLine), '')
+})
+
+test('a Claude request the relay rejects outright still condemns the version', () => {
+  const result = JSON.stringify({ type: 'result', subtype: 'success', is_error: true, api_error_status: 400, result: 'API Error: 400 Input tag found' })
+  assert.equal(classifyProbe({ code: 1, output: [initLine, result].join('\n') }).verdict, 'rejected')
+  assert.equal(claudeStreamEvidence([initLine, result].join('\n')), 'HTTP 400 API Error: 400 Input tag found')
+})
+
+test('plain-text output and timeouts without any evidence keep their old readings', () => {
+  assert.equal(claudeStreamEvidence('Reading additional input from stdin...'), null)
+  assert.equal(classifyProbe({ code: 1, timedOut: true, output: 'Reading additional input from stdin...' }).verdict, 'timeout')
+  // A clean exit only counts when the process was not killed for running long.
+  assert.equal(classifyProbe({ code: 0, timedOut: true, output: '' }).verdict, 'timeout')
+  assert.equal(summarize([{ verdict: 'ok' }, { verdict: 'timeout' }]).ok, false)
+})
+
+test('the job summary drops the Claude init line but keeps the errors', () => {
+  const shown = displayOutput([initLine, retryLine(1, 401, 'authentication_failed')].join('\n'))
+  assert.equal(shown.includes('"subtype":"init"'), false)
+  assert.match(shown, /api_retry/)
+})
+
+test('the relay message in a Claude result line decides the verdict over the bare status', () => {
+  // new-api answers a key whose group has no Claude channel with a 503.
+  const result = JSON.stringify({ type: 'result', is_error: true, api_error_status: 503, result: 'API Error: 503 当前分组 default 下对于模型 x 无可用渠道' })
+  const output = [initLine, retryLine(1, 503, 'server_error'), result].join('\n')
+  assert.equal(classifyProbe({ code: 1, output }).verdict, 'group')
+})
+
+test('a tool with a key of its own uses it, and every other tool falls back to the shared key', () => {
+  // 2026-11-09: the shared key sat in the GPT group, and Claude was answered
+  // with "分组 GPT 下模型 claude-opus-5-5 无可用渠道".
+  const environment = { XINGMANG_CLI_PATROL_KEY: 'sk-shared', XINGMANG_CLI_PATROL_KEY_CLAUDE: 'sk-claude' }
+  assert.deepEqual(resolveProbeKey('claude', environment), { variable: 'XINGMANG_CLI_PATROL_KEY_CLAUDE', secret: 'sk-claude' })
+  assert.deepEqual(resolveProbeKey('codex', environment), { variable: KEY_VARIABLE, secret: 'sk-shared' })
+  // An unset (or empty, as GitHub passes a missing secret) dedicated key falls back.
+  assert.deepEqual(resolveProbeKey('claude', { XINGMANG_CLI_PATROL_KEY: 'sk-shared', XINGMANG_CLI_PATROL_KEY_CLAUDE: '' }), { variable: KEY_VARIABLE, secret: 'sk-shared' })
+  assert.equal(PROVIDER_KEY_VARIABLES.codex, undefined)
+})
+
+test('the report names the secret that was actually used', () => {
+  const refusal = { code: 1, output: '分组 GPT 下模型 claude-opus-5-5 无可用渠道' }
+  assert.match(classifyProbe(refusal, 'XINGMANG_CLI_PATROL_KEY_CLAUDE').detail, /XINGMANG_CLI_PATROL_KEY_CLAUDE/)
+  assert.match(classifyProbe({ code: 1, output: '401 Invalid API key' }, 'XINGMANG_CLI_PATROL_KEY_CLAUDE').detail, /XINGMANG_CLI_PATROL_KEY_CLAUDE/)
+})
+
+test('the history-account site is listed as untested instead of being probed with a key it cannot accept', () => {
+  // 2026-11-09: every probe against api.solov.cc came back 401 -- the patrol
+  // keys belong to the Xingmang (new-api) account, which that site does not share.
+  const sites = [{ id: 'solov' }, { id: 'solov-api' }]
+  assert.deepEqual(probedSites(sites).map((site) => site.id), ['solov'])
+  assert.match(UNPROBED_SITES['solov-api'], /不测/)
+  // Only that one site is exempt; a new relay site is probed by default.
+  assert.deepEqual(probedSites([{ id: 'solov' }, { id: 'new-site' }]).map((site) => site.id), ['solov', 'new-site'])
 })

@@ -11,7 +11,7 @@ import {
   type RunCommandOptions,
 } from './command-runner'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
-import { downloadWithResume } from './download-retry'
+import { createDownloadDeadline, downloadWithResume } from './download-retry'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
   isTrustedWindowsMachinePath,
@@ -20,6 +20,7 @@ import {
   type WindowsMachinePaths,
 } from './windows-machine-paths'
 import { authenticodeSignatureModules, buildPowerShellModuleImportStatement, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import {
   encodeWindowsPowerShellCommand,
   inspectWindowsElevationCapability,
@@ -91,6 +92,11 @@ export interface NodeRuntimeProcessPlan {
   executable: string
   argv: readonly string[]
   timeoutMs: number
+  /**
+   * Counts only awake time toward timeoutMs (RunCommandOptions.timeoutExcludesSleep). Set on
+   * the long installer runs, so closing the lid while one works does not end it on wake.
+   */
+  timeoutExcludesSleep?: boolean
   acceptedExitCodes: readonly number[]
   env?: NodeJS.ProcessEnv
   trustedPaths?: readonly string[]
@@ -146,6 +152,11 @@ export interface InstallNodeRuntimeOptions {
   onProgress?: (progress: NodeRuntimeInstallProgress) => void
   preferWinget?: boolean
   temporaryDirectoryMode?: 'trusted-only' | 'same-user'
+  /**
+   * 星芒这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）：装安装包时 Windows
+   * 不弹授权窗口，进度那句不说会弹（已知19）。缺省 = 会弹。
+   */
+  processElevated?: boolean
   dependencies?: Partial<NodeRuntimeInstallerDependencies>
   /**
    * 退到下安装包时才借下载专用线路。只有 Windows 这一份认它：winget 自己下载、不走这条线路；
@@ -166,13 +177,6 @@ export interface InstalledNodeRuntimeInspection {
 }
 
 const metadataTimeoutMs = 30_000
-/**
- * #1061 第5条：以前整次下载限死 10 分钟，慢网下到一半到点就掐断，换个源从 0 开始。现在只要还在来数据
- * 就接着下，3 分钟一个字节都没来才停；下得再慢也有个头，30 分钟兜底（I10 的超时还在）。两个数和
- * 装工具时 npm 那一步（npmDownloadStallTimeoutMs / npmDownloadCeilingMs）一样。
- */
-export const nodeDownloadStallTimeoutMs = 3 * 60_000
-export const nodeDownloadCeilingMs = 30 * 60_000
 const wingetTimeoutMs = 15 * 60_000
 const installerTimeoutMs = 15 * 60_000
 const maximumIndexBytes = 4 * 1024 * 1024
@@ -190,16 +194,19 @@ export const windowsRestartStatusModules = ['Microsoft.PowerShell.Utility', 'Mic
 export const appInstallerQueryModules = ['Microsoft.PowerShell.Utility', 'Appx'] as const
 export const nodeRuntimeWindowsProbeTimeoutMs = 10_000
 
+// Written for ConstrainedLanguage too, where an application-control policy runs
+// every -Command (see powershell-constrained-language.ts): a plain array and a
+// hashtable instead of List[string] and [pscustomobject], both refused there.
 export const windowsRestartStatusScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   buildPowerShellModuleImportStatement(windowsRestartStatusModules),
   "$ErrorActionPreference = 'Stop'",
-  '$reasons = [System.Collections.Generic.List[string]]::new()',
+  '$reasons = @()',
   "$componentServicing = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending'",
   "$windowsUpdate = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired'",
-  "if (Test-Path -LiteralPath $componentServicing) { [void]$reasons.Add('Windows 组件更新待重启') }",
-  "if (Test-Path -LiteralPath $windowsUpdate) { [void]$reasons.Add('Windows Update 待重启') }",
-  '[pscustomobject]@{ required = ($reasons.Count -gt 0); reasons = @($reasons) } | ConvertTo-Json -Compress',
+  "if (Test-Path -LiteralPath $componentServicing) { $reasons += 'Windows 组件更新待重启' }",
+  "if (Test-Path -LiteralPath $windowsUpdate) { $reasons += 'Windows Update 待重启' }",
+  ...buildPowerShellJsonOutputStatements('@{ required = ($reasons.Count -gt 0); reasons = @($reasons) } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadSource> = {
@@ -216,23 +223,23 @@ const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadS
 }
 
 export const nodeInstallerSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_MSI_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 export const installedNodeSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_EXE_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 function encodedPowerShellCommand(script: string): string {
@@ -242,7 +249,7 @@ function encodedPowerShellCommand(script: string): string {
 export const appInstallerQueryScript = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   buildPowerShellModuleImportStatement(appInstallerQueryModules),
   `$packages = @(Get-AppxPackage -Name '${appInstallerPackageName}' -ErrorAction Stop | Sort-Object Version -Descending)`,
   'if ($packages.Count -eq 0) {',
@@ -254,11 +261,13 @@ export const appInstallerQueryScript = [
   '}',
   'if ($packages.Count -gt 0) {',
   '  $package = $packages[0]',
-  '  [pscustomobject]@{',
-  '    name = [string]$package.Name',
-  '    packageFamilyName = [string]$package.PackageFamilyName',
-  '    installLocation = [string]$package.InstallLocation',
-  '  } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements([
+    '@{',
+    '    name = [string]$package.Name',
+    '    packageFamilyName = [string]$package.PackageFamilyName',
+    '    installLocation = [string]$package.InstallLocation',
+    '  } | ConvertTo-Json -Compress',
+  ].join('\n')).map((statement) => `  ${statement}`),
   '}',
 ].join('\n')
 
@@ -784,6 +793,7 @@ export function buildNodeRuntimeInstallPlan(
       executable: windowsSystemExecutable('msiexec.exe', process.env, 'win32', machinePaths),
       argv: ['/i', msiPath, '/qn', '/norestart', 'ADDLOCAL=ALL'],
       timeoutMs: installerTimeoutMs,
+      timeoutExcludesSleep: true,
       acceptedExitCodes: [0, 3010],
       env: signatureEnv,
       trustedPaths: [msiPath],
@@ -823,6 +833,7 @@ export function buildNodeRuntimeWingetPlan(
       ...(architecture ? ['--architecture', architecture] : []),
     ],
     timeoutMs: wingetTimeoutMs,
+    timeoutExcludesSleep: true,
     acceptedExitCodes: [0],
   }
 }
@@ -1054,6 +1065,7 @@ async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal)
       env: trustedCommandEnvironment(plan.env ?? process.env, machinePaths, 'win32'),
       trustedOnly: true,
       timeoutMs: plan.timeoutMs,
+      timeoutExcludesSleep: plan.timeoutExcludesSleep,
       acceptedExitCodes: plan.acceptedExitCodes,
       maxOutputBytes: 2 * 1024 * 1024,
       windowsHide: true,
@@ -1078,6 +1090,7 @@ async function defaultRunProcess(
   if (plan.elevation === 'uac') return runUacProcess(plan, signal)
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
+    timeoutExcludesSleep: plan.timeoutExcludesSleep,
     acceptedExitCodes: plan.acceptedExitCodes,
     maxOutputBytes: 2 * 1024 * 1024,
     windowsHide: true,
@@ -1231,50 +1244,6 @@ async function fetchLimitedText(
   )
 }
 
-export interface NodeDownloadDeadline {
-  /** Restarts the stall window, but only when the byte count actually grew. */
-  progressed(transferred: number): void
-  stop(): void
-}
-
-/**
- * downloadWithResume already ends a single request that goes quiet for 45 seconds and
- * resumes it; this watches the download as a whole, so a slow link that keeps delivering
- * is never cut off at a fixed time. The stall window is a backstop for any quiet stretch
- * the per-request timer does not see, and the ceiling bounds a link that trickles just
- * fast enough never to look idle. Neither keeps a broken route alive: a route whose
- * resumes keep failing is still handed back by downloadWithResume after its own few
- * retries, and the caller moves on to the next source as before. Both end the download
- * with the reason the old fixed limit used, so what the customer is told does not change.
- */
-export function createNodeDownloadDeadline(expire: (reason: Error) => void): NodeDownloadDeadline {
-  let stopped = false
-  let transferred = 0
-  let stall = setTimeout(timeOut, nodeDownloadStallTimeoutMs)
-  const ceiling = setTimeout(timeOut, nodeDownloadCeilingMs)
-
-  function stop(): void {
-    stopped = true
-    clearTimeout(stall)
-    clearTimeout(ceiling)
-  }
-
-  function timeOut(): void {
-    stop()
-    expire(new Error('安装包下载超时'))
-  }
-
-  return {
-    progressed(next) {
-      if (stopped || next <= transferred) return
-      transferred = next
-      clearTimeout(stall)
-      stall = setTimeout(timeOut, nodeDownloadStallTimeoutMs)
-    },
-    stop,
-  }
-}
-
 async function downloadMsi(
   dependencies: Pick<NodeRuntimeInstallerDependencies, 'fetch' | 'waitBeforeResume'>,
   url: string,
@@ -1285,7 +1254,8 @@ async function downloadMsi(
   const controller = new AbortController()
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
-  const deadline = createNodeDownloadDeadline((reason) => controller.abort(reason))
+  // #1061 第5条：3 分钟没进展才停，30 分钟兜底；到点的那句还是「安装包下载超时」。
+  const deadline = createDownloadDeadline('安装包下载超时', (reason) => controller.abort(reason))
   const percentOf = (size: number, total: number | null) => total ? Math.min(99, (size / total) * 100) : null
   try {
     throwIfAborted(options.signal)
@@ -1382,6 +1352,17 @@ async function hashFileSha256(filePath: string): Promise<string> {
   return hash.digest('hex')
 }
 
+/**
+ * 装安装包那一步的进度。这时其实在等客户在授权窗口点「是」，那个窗口常常只在任务栏上闪、
+ * 不跳到最前面，写「正在静默安装」客户只会干等（深查 D24）。星芒本身带着管理员权限在跑时
+ * Windows 不弹窗，照旧说原来那句。
+ */
+export function nodeRuntimeMsiInstallingMessage(version: string, processElevated?: boolean): string {
+  return processElevated
+    ? `正在静默安装 Node.js ${version} LTS`
+    : `正在安装 Node.js ${version} LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。`
+}
+
 async function installFromSource(
   source: NodeRuntimeDownloadSource,
   architecture: NodeRuntimeArchitecture,
@@ -1462,7 +1443,7 @@ async function installFromSource(
   report(options, {
     phase: 'installing',
     source: source.id,
-    message: `正在静默安装 Node.js ${release.version} LTS`,
+    message: nodeRuntimeMsiInstallingMessage(release.version, options.processElevated),
     percent: null,
   })
   await verifyMsiBeforeInstall()

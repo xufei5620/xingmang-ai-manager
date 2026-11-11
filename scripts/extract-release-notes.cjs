@@ -29,6 +29,24 @@ function extractReleaseNotes(source, version) {
   return `${body}\n`
 }
 
+// 更新清单（latest.yml、latest-mac.yml、Linux 的那几份）里的 releaseNotes 只带要发的这一版。
+// 原来 electron-builder.config.cjs 用 releaseInfo.releaseNotesFile 指着整份 release-notes.md，
+// electron-builder 把从 0.1.x 起的全部历史（二十多万字）原样写进清单；客户端截前 20000 字，
+// 0.2.22、0.2.23 的版本页把它塞成一整段，要装的那一版后面还接着前几版，「重启并安装」被挤到
+// 最底下（yoyo 2026-11-10「清单改」）。这一节不带版本号那一行：版本页的标题已经写着版本号，
+// 新版界面（release-notes.ts 的 releaseNoteItems）也把没有版本行的说明当成就是这一版。
+//
+// 首节不是这一版时返回 null，由调用方照原来整份写进去：升级冒烟、出测试包会把版本号临时调到
+// 比所有已发版本都高，首节对不上是正常的；真发版有发布前置检查拦着首行必须等于版本号（P-14），
+// 走不到这一步。
+function feedReleaseNotes(source, version) {
+  try {
+    return extractReleaseNotes(source, version).trimEnd()
+  } catch {
+    return null
+  }
+}
+
 function parseArguments(argv) {
   const options = {}
   for (let index = 0; index < argv.length; index += 2) {
@@ -51,7 +69,7 @@ function main(argv = process.argv.slice(2)) {
   process.stdout.write(`已取出 ${options.version} 的更新说明（${notes.split('\n').length - 1} 行）：${options.outputPath}\n`)
 }
 
-module.exports = { extractReleaseNotes, parseArguments, main }
+module.exports = { extractReleaseNotes, feedReleaseNotes, parseArguments, main }
 
 if (require.main === module) {
   try {

@@ -295,6 +295,12 @@ export interface CliLaunchResult {
    */
   configOverrideNotice?: string
   /**
+   * 打开前试写了一次，这个文件夹写不进去（只读盘、没有改的权限）：工具照样打开，首页说一句
+   * 「只能看不能改」（D17）。Windows 上权限类的写不进在打开前已经问过，这里只剩只读盘那种。
+   * 缺省 = 能写或没试写，界面照旧。
+   */
+  workspaceReadOnly?: boolean
+  /**
    * 用户在「这个文件夹不建议打开」那一问里选了不打开（或关掉了对话框），工具
    * 没有启动。界面据此不说「已打开」。缺省 = 打开了，老调用方照旧。
    */
@@ -428,6 +434,11 @@ export interface SystemService {
     ownership?: { source: 'account'; automatic: boolean },
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
+  /**
+   * 切回官方以后再「改用当前账号」时，拿来当原来型号的那个（切回官方前记下的，Codex 还会看星芒存的那份
+   * 当前账号配置）；null = 没有，照旧挑默认。可选 = 旧实现不提供。
+   */
+  relayModelBeforeOfficial?(provider: ProviderId): string | null
   /** 切换失败回滚时把「是否选了官方账号」这个记号恢复成切换前的值；可选 = 旧实现不提供。 */
   setOfficialSourcePreference?(provider: ProviderId, official: boolean): Promise<void>
   /** 把切到当前账号时挪开的官方凭据放回原处；可选 = 旧实现不提供。 */
@@ -444,6 +455,12 @@ export interface SystemService {
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
    */
   autoRepairStaleCliHooks?(): Promise<ProviderId[]>
+  /**
+   * 卸了星芒再装回来：卸载时收回的做完提醒、防睡和状态栏，开机按卸载时留下的记录补回（只补记录里那几样，
+   * 客户自己的设置不动）。这次启动只跑一遍，开机后第一次读配置也会先等它。返回补了哪几家，从不抛错。
+   * 可选 = 旧实现不提供。
+   */
+  restoreCliHooksRemovedByUninstall?(): Promise<ProviderId[]>
   /**
    * 备份恢复成功之后调用；`isAccountKey` 判断一把 Key 是不是当前账号由本软件签发的。
    * `fromBackupsPage`：客户在备份页挑的那一份；缺省 = 切换失败的回滚（恢复切换前那一刻）。
@@ -694,6 +711,11 @@ export interface SystemServiceOptions {
   inspectRunningToolsForRouteHint?: (providers: readonly ProviderId[]) => Promise<RunningToolsReport>
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
+  /**
+   * Windows 上星芒这次本身就带着管理员权限在跑（windows-elevation.ts 的 highIntegrity）：装 Node.js
+   * 时不弹授权窗口，进度那句不说会弹（已知19）。缺省 = 不是。
+   */
+  windowsProcessElevated?: boolean
   platform?: NodeJS.Platform
   providerRoots?: ProviderConfigRoots
   codexEnv?: NodeJS.ProcessEnv
@@ -707,6 +729,8 @@ export interface SystemServiceOptions {
   launchCliPowerShell?: typeof launchCliPowerShell
   /** Test seam: the real one writes the zsh launcher and has `open -a Terminal` run it (macos-platform.ts). */
   launchMacosTerminal?: typeof launchMacosTerminal
+  /** 测试注入：Mac、Linux 打开前在项目文件夹里试写的那一下（documents-fallback.ts 的 probeDirectoryWritable）。 */
+  probeWorkspaceWritable?: (directory: string) => Promise<void>
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
@@ -1155,6 +1179,7 @@ export function createSystemService(
     withCredentialUndo,
     applyXingmangAiSkillForCodexAccount,
     switchToOfficialAccount,
+    relayModelBeforeOfficial,
     adoptRestoredConfig,
     setOfficialSourcePreference,
     alignRestoredAccountSource,
@@ -1174,6 +1199,7 @@ export function createSystemService(
     saveConfig,
     repairCliHooks,
     autoRepairStaleCliHooks,
+    restoreCliHooksRemovedByUninstall,
     toolModelChecker,
     guardCodexModelCatalogAtStartup,
     reclaimRetiredToolIntegrations,
@@ -1193,7 +1219,10 @@ export function createSystemService(
     applyXingmangAiSkillForCodexAccount,
   })
   // 装运行环境和重启 Windows 那一段在 runtime-install-service.ts（#1070 第 3 步）。
-  const { installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime } = createRuntimeInstallService(context, {
+  const {
+    installNodeRuntime, inspectWindowsProcessor, restartWindows, installPythonRuntime, installGitRuntime,
+    refreshOutdatedManagedNodeRuntime,
+  } = createRuntimeInstallService(context, {
     inspectNetworkRegion,
     inspectTool,
     inspectNode,
@@ -1211,6 +1240,7 @@ export function createSystemService(
     invalidateCliUpdateCache,
     installGitRuntime,
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime,
   })
 
   // 卸载命令行工具那一段在 cli-uninstall-service.ts（#1070 第 3 步）。
@@ -1310,7 +1340,9 @@ export function createSystemService(
     serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
     autoRepairStaleCliHooks,
+    restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,
+    relayModelBeforeOfficial,
     setOfficialSourcePreference,
     restoreOfficialCredentials,
     inspectOfficialLogin: (provider) => inspectOfficialLogin(provider, providerRoots),

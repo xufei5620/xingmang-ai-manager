@@ -184,6 +184,8 @@ export function saveConversation(state: ChatWorkspace, conversation: Conversatio
   return changeConversation(state, conversation.id, () => conversation)
 }
 export function isGenerating(conversation: Conversation): boolean { return conversation.messages.some((message) => message.status === 'pending' || message.status === 'streaming') }
+// 出图那一条带着发出时的设置；换账号会把它掐掉、钱可能已经扣了，切换前要先问一句（D44）。出字的不算。
+export function isGeneratingImage(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode === 'image') }
 
 // A stream chunk replaces only the conversation it belongs to, so every other
 // conversation keeps its object identity for the whole answer. Caching the
@@ -355,6 +357,10 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 超时、已生成没下载下来还是没存下来。必须排在下面「超时 / 网络」那条前面，否则会被改成
   // 「请检查网络后重试」，照做就再扣一次钱。
   if (/重复提交/.test(message)) return message
+  // 出图请求根本没发出去（断网、解析不出地址、代理连不上）时，主进程按 network-failure.ts 说清了原因和下一步，
+  // 原样上屏；落到下面按字面猜的几条，「先上网认证」「换个网络」这些出路就丢了（深查 W-1）。
+  const network = matchNetworkFailureMessage(message)
+  if (network) return network
   // 生图被服务端拦下的两句（#1101 第4条）主进程已经说清原因和下一步，原样上屏；不然会落到最后那句
   // 「请稍后重试」，被审核拦下的描述怎么重试都一样。
   if (/参考图太大了|这次的描述或参考图没通过安全审核/.test(message)) return message
@@ -434,3 +440,14 @@ export function completeImages(state: ChatWorkspace, requestId: string, assets: 
 export function shouldSendOnEnter(input: { key: string; shiftKey: boolean; isComposing: boolean; keyCode?: number }, composing = false): boolean {
   return input.key === 'Enter' && !input.shiftKey && !input.isComposing && input.keyCode !== 229 && !composing
 }
+// Excel、WPS 里复制几格表格，剪贴板里除了文字还附一张表格的图。以前一见图就整次拦下当截图贴，
+// 文字被吞（0.2.24 深查剪贴板 J3）。有字就照常贴字，只有纯图片（截图）才交给主进程读图。
+export function shouldPasteScreenshot(clipboard: { items: Iterable<{ kind: string; type: string }>; getData: (format: string) => string }): boolean {
+  if (clipboard.getData('text/plain').trim()) return false
+  return [...clipboard.items].some((item) => item.kind === 'file' && item.type.startsWith('image/'))
+}
+
+// 空白页的示例，点了只填进输入框。不写代码的客户也要看得出还能干什么（Fable 第二轮 Y1）。
+export const chatExamples: readonly string[] = ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
+/** 带「……」的示例是半句话：填进去时去掉省略号，光标停在末尾，客户接着往下打，不用先删掉它。 */
+export function chatExampleDraft(example: string): string { return example.replace(/…+$/, '') }

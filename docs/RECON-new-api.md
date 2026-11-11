@@ -22,6 +22,8 @@
 | CLI Key-列表 | `GET /api/token/` | UserAuth | 含掩码 key，需按 name 反查新记录 id |
 | CLI Key-取明文 | `POST /api/token/:id/key` | UserAuth+限流 | 返回 `key`（前缀 `sk-`） |
 | 分组模型 | `GET /api/user/models?group=` | UserAuth | `data` 是该分组开着的模型名数组（`GetGroupsEnabledModels`）；分组不可用回空数组；不带 `group` 回全部可用分组的并集。不走 CriticalRateLimit |
+| 价目 | `GET /api/pricing` | `HeaderNavModuleAuth("pricing")`：开着时按 TryUserAuth（带登录头就认这个账号），关着时带登录头的请求走 RootAuth，普通账号回 **403**（不是 401，不会被当成登录失效） | `data` 是 `[]Pricing`，已按账号可用分组过滤：`model_name`、`quota_type`（1 按次、0 按 token）、`model_price`（按次的美元价，未乘分组倍率）、`billing_mode`/`billing_expr`（只有 `tiered_expr` 时才有）、`billing_plugin_variants`；顶层 `group_ratio` 是这个账号能用的分组的倍率，已套上用户分组对分组的倍率。画布「预计约 $x」用它（`canvas-price-snapshot.ts`）。2026-11-10 对上游 main 的 `controller/pricing.go`、`middleware/header_nav.go`、`model/pricing.go` 核过，rc.40 的路由和 `group_ratio` 也一样；线上没实测（云端连不上 xm 站） |
+| 用量明细 | `GET /api/log/self` | UserAuth | 分页 `p`/`page_size`（服务端 clamp≤100），可按 `type`（2 消费、6 退款）、`model_name`、`start_timestamp`/`end_timestamp`、`request_id` 筛；每条带 `request_id`、`quota`、`model_name`、`created_at`。中转每个回答都带响应头 `X-Oneapi-Request-Id`（`middleware/request-id.go`），这次请求的消费记录就记在同一个 `request_id` 下；异步任务（视频）的退款和补扣是另起的随机号，对不上原请求。画布跑完对实扣用它（`canvas-run-charges.ts`）：只拿明细不拿合计（`recordsOnly`），按型号和时间窗查、按请求号对。2026-11-10 对上游 main 的 `middleware/request-id.go`、`model/log.go`、`controller/log.go` 核过；线上没实测（云端连不上 xm 站） |
 | 兑换码 | `POST /api/user/topup` | UserAuth | `key`→Redeem，成功返回加值后 quota；受站点「支付合规确认」开关整体拦截 |
 | 充值信息 | `GET /api/user/topup/info` `/topup/self` | UserAuth | 站内定价/记录 |
 | 兑换码管理 | `/api/redemption/*` | **AdminAuth** | 客户端不可查询，只能消费 |

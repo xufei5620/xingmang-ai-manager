@@ -10,8 +10,11 @@ import {
 import { chatKeyQuotaExhaustedMessage } from './account-key-quota'
 import { ChatKeyQuotaExhaustedError, type ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
-import { classifyNetworkFailure, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
+import { classifyNetworkFailure, isHtmlContentType, isJsonContentType, isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, classifySub2apiBillingFailure, extractRelayErrorDetail, relayQuotaFailureMessages } from './relay-quota-failure'
+import { unsentRequestFailure } from './relay-line-fetch'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
+import type { AiRelayBillingObserver } from './ai-operation-progress'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -122,6 +125,14 @@ export interface CompleteAiChatOnceInput {
   messages: readonly AiChatMessage[]
   parameters?: AiChatParameters
   signal?: AbortSignal
+  /** The canvas run's 实扣 bookkeeping (画布完善第 2b 条第 3 步). */
+  billing?: AiRelayBillingObserver
+  /**
+   * Resolves the image ids in `messages` to data URIs (画布完善第 6 条). Called
+   * only once the credential names the account, with that account's user id,
+   * and before anything is sent; a throw stops the request unpaid.
+   */
+  readImages?(userId: number, signal: AbortSignal): Promise<ReadonlyMap<string, string>>
 }
 
 export interface AiChatService {
@@ -427,6 +438,36 @@ function credentialFailure(error: unknown): StreamFailure {
   // 登录状态和 API Key」会让人去改一个本来没坏的 Key。
   if (network) return new StreamFailure('network-error', networkFailureMessages[network])
   return new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
+}
+
+/**
+ * 对话请求没拿到回应：代理没开、解析不出地址、要先上网认证、证书被换，出路各不一样，按 network-failure.ts
+ * 归好的原因说，跟账号、登录那边是同一句（深查 W-2）。认不出的才说笼统那句「无法连接」。
+ */
+function connectionFailure(error: unknown): StreamFailure {
+  const network = classifyNetworkFailure(error)
+  if (network === 'serviceUnavailable') return new StreamFailure('service-unavailable', SAFE_ERROR_MESSAGES['service-unavailable'])
+  return new StreamFailure('network-error', network ? networkFailureMessages[network] : SAFE_ERROR_MESSAGES['network-error'])
+}
+
+/**
+ * 回应头是 200 却不是流：回网页的是半路上别人答的（上网认证页、公司网的拦截页），这次没进到 AI 服务，
+ * 不是服务回了乱码。别的才算「无法识别的数据」（深查 W-2）。
+ */
+function nonStreamAnswerFailure(contentType: string): StreamFailure {
+  if (isHtmlContentType(contentType)) return new StreamFailure('network-error', networkFailureMessages.intercepted)
+  return new StreamFailure('invalid-stream-response', SAFE_ERROR_MESSAGES['invalid-stream-response'])
+}
+
+/**
+ * 回复读到一半读不下去了：读回应正文时抛的错都出在连接上（被掐断、正文没收全），不是服务回了乱码，
+ * 乱码由解析那一步自己报。认得出的按网络原因说；认不出的（正文没收全这类错误码 network-failure.ts 不归类）
+ * 照连接提前断了说，点「重新生成」就好（深查 W-2）。
+ */
+function interruptedStreamFailure(error: unknown): StreamFailure {
+  const network = classifyNetworkFailure(error)
+  if (network && network !== 'serviceUnavailable') return new StreamFailure('network-error', networkFailureMessages[network])
+  return new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
 }
 
 function findFrameDelimiter(value: string): { index: number; length: number } | null {
@@ -848,9 +889,9 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
           redirect: 'manual',
           signal: request.controller.signal,
         })
-      } catch {
+      } catch (error) {
         if (request.completed) return
-        throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
+        throw connectionFailure(error)
       }
       clearTimer(request, 'connectionTimer')
       // 总时长放宽到半小时后，读错误体这一步不能只靠它兜底。
@@ -870,7 +911,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
         await response.body?.cancel().catch(() => undefined)
-        throw new StreamFailure('invalid-stream-response', SAFE_ERROR_MESSAGES['invalid-stream-response'])
+        throw nonStreamAnswerFailure(contentType)
       }
 
       request.phase = 'response-stream'
@@ -881,7 +922,12 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       let receivedDone = false
       try {
         while (!request.completed) {
-          const chunk = await reader.read()
+          let chunk: ReadableStreamReadResult<Uint8Array>
+          try {
+            chunk = await reader.read()
+          } catch (error) {
+            throw interruptedStreamFailure(error)
+          }
           if (request.completed) break
           if (chunk.done) {
             for (const data of parser.finish()) {
@@ -979,21 +1025,41 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
       }
       if (controller.signal.aborted) throw controller.signal.reason
+      // Ids without a reader stay unresolved, and toChatCompletionsWireBody
+      // refuses them rather than send a literal asset id to the relay.
+      let images: ReadonlyMap<string, string> = new Map()
+      if (input.readImages) {
+        try {
+          images = await input.readImages(credential.userId, controller.signal)
+        } catch (error) {
+          if (controller.signal.aborted) throw controller.signal.reason
+          // The reader's own words say which picture and what to do about it.
+          throw new StreamFailure('image-unavailable', error instanceof Error && error.message ? error.message : SAFE_ERROR_MESSAGES['image-unavailable'])
+        }
+      }
+      if (controller.signal.aborted) throw controller.signal.reason
+      const wireBody = JSON.stringify(toChatCompletionsWireBody(body, images))
       armStageTimer('connection-timeout', limits.connectionTimeoutMs)
-      const response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: {
-          Accept: 'text/event-stream',
-          Authorization: `Bearer ${credential.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-        // Canvas text nodes never attach images; an id slipping through must
-        // fail here rather than reach the relay as a literal asset id.
-        body: JSON.stringify(toChatCompletionsWireBody(body, new Map())),
-        credentials: 'omit',
-        redirect: 'manual',
-        signal: controller.signal,
-      })
+      reportRelayDispatch(input.billing, true)
+      let response: Response
+      try {
+        response = await fetchImpl(endpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'text/event-stream',
+            Authorization: `Bearer ${credential.apiKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: wireBody,
+          credentials: 'omit',
+          redirect: 'manual',
+          signal: controller.signal,
+        })
+      } catch (error) {
+        if (unsentRequestFailure(error)) reportRelayDispatch(input.billing, false)
+        throw error
+      }
+      reportRelayAnswer(input.billing, response.headers)
       armStageTimer('idle-timeout', limits.idleTimeoutMs)
       if (!responseOriginIsTrusted(response, baseUrl.origin) || REDIRECT_STATUSES.has(response.status)) {
         await response.body?.cancel().catch(() => undefined)
@@ -1005,7 +1071,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
       if (!contentType.includes('text/event-stream') || !response.body) {
         await response.body?.cancel().catch(() => undefined)
-        throw new StreamFailure('invalid-stream-response', SAFE_ERROR_MESSAGES['invalid-stream-response'])
+        throw nonStreamAnswerFailure(contentType)
       }
       const parser = new BoundedSseParser(limits.eventBytes)
       const streamReader = response.body.getReader()
@@ -1055,7 +1121,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       if (timedOut) throw new Error(SAFE_ERROR_MESSAGES[timedOut])
       if (error instanceof StreamFailure) throw new Error(error.message)
       if (input.signal?.aborted || controller.signal.aborted) throw new Error('已取消')
-      throw new Error(SAFE_ERROR_MESSAGES['network-error'])
+      throw new Error(connectionFailure(error).message)
     } finally {
       clock.clearTimeout(totalTimer)
       if (stageTimer !== null) clock.clearTimeout(stageTimer)

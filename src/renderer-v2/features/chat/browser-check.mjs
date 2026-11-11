@@ -169,7 +169,8 @@ test('legacy read failures cannot establish an empty history via autosave or unm
   const raw = JSON.stringify({ version: 1, userId: '8', data: { messages: [{ id: 'old', role: 'user', content: 'belongs to someone else' }] } })
   const page = await open('strict=1', { [legacyChatKey]: raw })
   try {
-    await page.getByRole('alert').filter({ hasText: '原始记录已保留' }).waitFor()
+    // 原因只进日志，红条一律说同一句（W24）。
+    await page.getByRole('alert').filter({ hasText: '以前的聊天记录暂时读不出来，原文件没动。现在聊的内容不会保存，关掉软件就没了。' }).waitFor()
     await page.getByTestId('chat-composer-input').fill('not persisted')
     await page.waitForTimeout(400)
     assert.equal(await saved(page), null)
@@ -196,6 +197,43 @@ test('a failed save keeps the result in the window, reports it and leaves the sa
     await page.getByTestId('chat-composer-input').fill('saved again')
     await waitSaved(page, (workspace) => workspace.conversations[0].messages.at(-1).content === 'VISIBLE-UNSAVED-RESULT')
     await page.getByRole('alert').filter({ hasText: '聊天记录没有保存到本机' }).waitFor({ state: 'detached' })
+  } finally { await page.close() }
+})
+
+// 主进程每 50 毫秒推一段字，以前「停下 250 毫秒才存」一直被重置，整段说完之前一个字都不存（0.2.24 深查聊天页 C1）。
+test('a reply that keeps streaming is saved every couple of seconds, not only once it ends', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'a long answer please')
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages.length === 2)
+    // Four seconds of chunks with no pause the old 250 ms debounce could catch.
+    await page.evaluate(async (requestId) => {
+      for (let index = 0; index < 80; index += 1) {
+        window.chatHarness.emit({ type: 'content', requestId, content: `chunk-${index} ` })
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+    }, request.requestId)
+    const reply = (await saved(page)).conversations[0].messages[1]
+    assert.equal(reply.status, 'streaming')
+    assert.ok(reply.content.startsWith('chunk-0 chunk-1 '), `saved reply so far: ${JSON.stringify(reply.content.slice(0, 40))}`)
+  } finally { await page.close() }
+})
+
+test('quitting mid-reply saves what has arrived before answering the main process', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'quit while answering')
+    await waitSaved(page, (workspace) => workspace.conversations[0]?.messages.length === 2)
+    await emit(page, { type: 'reasoning', requestId: request.requestId, content: 'THINKING-BEFORE-QUIT' })
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'ARRIVED-BEFORE-QUIT' })
+    // Read straight after the answer, well inside the 250 ms the autosave would still be waiting.
+    const reply = await page.evaluate(async () => {
+      await window.chatHarness.askBeforeQuit('quit-1')
+      return (await window.chatHarness.savedWorkspace('xm-account:7')).conversations[0].messages[1]
+    })
+    assert.equal(reply.content, 'ARRIVED-BEFORE-QUIT')
+    assert.equal(reply.reasoning, 'THINKING-BEFORE-QUIT')
+    assert.deepEqual((await calls(page, 'flushed')).map((call) => call.input), ['quit-1'])
   } finally { await page.close() }
 })
 
@@ -933,6 +971,29 @@ test('a model that reads images takes picked and pasted screenshots and sends th
   } finally { await page.close() }
 })
 
+// Excel and WPS copy cells as text plus a picture of the table. The composer
+// used to take every such paste as a screenshot and drop the text.
+test('pasting spreadsheet cells keeps the text instead of reading a screenshot', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    function pasteCells(element) {
+      const data = new DataTransfer()
+      data.setData('text/plain', '姓名\t金额\n张三\t12\n')
+      data.setData('text/html', '<table><tr><td>姓名</td><td>金额</td></tr></table>')
+      data.items.add(new File([new Uint8Array([1, 2, 3])], 'image.png', { type: 'image/png' }))
+      return element.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    }
+    // A synthetic paste never inserts text, so "not cancelled" is what shows the browser keeps its own paste.
+    assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that cannot read images still gets the text')
+    assert.equal(await page.getByText('当前模型看不了图片').count(), 0)
+    await pickModel(page, 'claude-test')
+    assert.equal(await page.getByTestId('chat-composer-input').evaluate(pasteCells), true, 'a model that reads images still gets the text, not a picture of it')
+    assert.equal((await calls(page, 'paste-image')).length, 0)
+    assert.equal(await page.locator('.chat-draft-image').count(), 0)
+  } finally { await page.close() }
+})
+
 // A long conversation used to re-parse every message's markdown on each key
 // typed into the composer. Counting renders instead of timing them keeps this
 // steady on a slow runner: React's development build stamps actualStartTime on
@@ -976,11 +1037,13 @@ test('an empty chat says where conversations go, and its examples only fill the 
     const empty = page.getByTestId('chat-empty')
     await empty.getByRole('heading', { name: '有什么想问的？', exact: true }).waitFor()
     await empty.getByText('不开终端，直接和模型对话。额度与工具共用同一个账号。', { exact: true }).waitFor()
-    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['用大白话解释什么是 API Key', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
-    await page.getByTestId('chat-example-2').click()
+    assert.deepEqual(await empty.getByRole('button').allTextContents(), ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思'])
+    await page.getByTestId('chat-example-3').click()
     const input = page.getByTestId('chat-composer-input')
-    assert.equal(await input.inputValue(), '帮我写一个批量重命名文件的脚本')
+    // 半句话的示例填进去时不带省略号，光标在末尾，接着打就是客户自己的话。
+    assert.equal(await input.inputValue(), '帮我写一条朋友圈文案，卖的是')
     assert.equal(await input.evaluate((element) => element === document.activeElement), true)
+    await page.waitForFunction(() => { const element = document.querySelector('#chatIn'); return element instanceof HTMLTextAreaElement && element.selectionStart === element.value.length && element.selectionEnd === element.value.length })
     assert.equal((await calls(page, 'start')).length, 0, 'an example is never sent on its own')
     // 输入框里有字了就不再摆例句：再点一颗会把打的字换掉。
     assert.equal(await empty.getByRole('button').count(), 0)
@@ -1026,6 +1089,47 @@ test('history that cannot be read is left alone, and reading it again brings it 
     await waitSaved(page, (workspace) => workspace.conversations.length === 2)
     const merged = await saved(page)
     assert.deepEqual(merged.conversations.map((conversation) => conversation.messages[0].content), ['said meanwhile', 'said before'])
+  } finally { await page.close() }
+})
+
+// 0.2.24 深查聊天页 C2：以前一段对话的文件坏了，整份记录读不出来，以后聊的也全都不存，「重新读取」永远读不出来。
+test('one broken conversation file is set aside on its own while the rest keep loading and saving', async () => {
+  const page = await open()
+  try {
+    for (const [index, prompt] of ['first topic', 'second topic', 'third topic'].entries()) {
+      if (index) await page.getByTestId('chat-conversation-new').click()
+      await ready(page)
+      await page.getByTestId('chat-composer-input').fill(prompt)
+      await page.getByTestId('chat-send').click()
+      await page.waitForFunction((count) => window.chatHarness.calls.filter((item) => item.method === 'start').length === count, index + 1)
+      const request = (await calls(page, 'start')).at(-1).input
+      await emit(page, { type: 'content', requestId: request.requestId, content: `answer to ${prompt}` })
+      await emit(page, { type: 'complete', requestId: request.requestId })
+    }
+    await waitSaved(page, (workspace) => workspace.conversations.length === 3 && workspace.conversations.every((conversation) => conversation.messages.length === 2))
+    const brokenKey = await page.evaluate(() => window.chatHarness.breakConversation(1, 'truncate'))
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await page.getByRole('status').filter({ hasText: '有 1 段对话读不出来，已经单独留着，其余照常。' }).waitFor()
+    assert.equal(await page.getByRole('alert').count(), 0, 'the rest still saves, so there is no red bar')
+    assert.equal(await page.getByTestId('chat-history-reload').count(), 0)
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    const logged = (await calls(page, 'log')).map((call) => call.input)
+    assert.ok(logged.some((entry) => entry.context === 'chat-history' && entry.level === 'warn' && entry.message.includes(`c-${brokenKey}.json 读不出来`)), JSON.stringify(logged))
+
+    // Saving goes on, and the broken file is moved aside exactly as it was instead of being deleted.
+    await page.getByTestId('chat-composer-input').fill('typed after the broken file')
+    await waitSaved(page, (workspace) => workspace.conversations.length === 2 && JSON.stringify(workspace).includes('typed after the broken file'))
+    const aside = await page.evaluate(() => window.chatHarness.asideFiles())
+    assert.deepEqual(aside.map((file) => file.key), [brokenKey])
+    assert.throws(() => JSON.parse(aside[0].content), 'the copy kept aside is the truncated file, untouched')
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await page.locator('.chat-conversation-select').nth(1).waitFor()
+    assert.equal(await page.locator('.chat-conversation-select').count(), 2)
+    assert.equal(await page.getByText('读不出来', { exact: false }).count(), 0, 'once set aside it is not reported again')
   } finally { await page.close() }
 })
 
@@ -1131,6 +1235,28 @@ test('the conversation list groups by day, finds by title and clears everything 
   } finally { await page.close() }
 })
 
+test('a conversation that could not be saved says whether to pick another folder or free up the disk', async () => {
+  // D16：没权限、盘满了跟设置页导出同一套说法；认不出原因的照旧说可以重试。
+  const expected = {
+    denied: '这个位置不让星芒存文件，换个文件夹（比如「下载」）再导出。',
+    full: '这块盘满了，清出一些空间，或者换一块盘再导出。',
+    other: '这段对话没有导出成功，可以重试',
+  }
+  const state = storedWorkspace()
+  state.conversations[0].messages = [{ id: 'm1', role: 'user', content: '你好', status: 'complete', createdAt: 1 }, { id: 'm2', role: 'assistant', content: '你好呀', reasoning: '', status: 'complete', createdAt: 2 }]
+  for (const [failure, banner] of Object.entries(expected)) {
+    const page = await open(`exportFail=${failure}`, { [storedChatKey]: JSON.stringify(state) })
+    try {
+      await ready(page)
+      await page.getByTestId('chat-conversation-export').click()
+      await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'export-text'))
+      const shown = page.locator('.chat-banner[data-tone="bad"] > span')
+      await shown.waitFor()
+      assert.equal(await shown.innerText(), banner)
+    } finally { await page.close() }
+  }
+})
+
 test('a message typed while offline stays in the composer and goes out from the banner once the network is back', async () => {
   const page = await open()
   try {
@@ -1166,7 +1292,7 @@ test('the parameters dialog starts every slider at the model default, explains b
     assert.equal(await dialog.locator('.xm-slider b').nth(1).textContent(), '0.95')
     await page.getByTestId('chat-parameter-maxTokens').fill('1.5')
     await page.getByTestId('chat-parameters-apply').click()
-    await dialog.getByText('最大输出 Token 要填整数，比如 4096', { exact: true }).waitFor()
+    await dialog.getByText('要填整数，比如 4096（不填就是不限）', { exact: true }).waitFor()
     await page.getByTestId('chat-parameters-reset').click()
     assert.deepEqual(await dialog.locator('.xm-slider b').allTextContents(), ['默认', '默认', '默认', '默认'])
     assert.equal(await page.getByTestId('chat-parameter-maxTokens').inputValue(), '')

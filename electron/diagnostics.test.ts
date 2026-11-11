@@ -27,7 +27,7 @@ import {
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
   runDiagnostics,
-  windowsProxySettingsOutcome,
+  proxySettingsOutcome,
   type DiagnosticItem,
   type DiagnosticsReport,
   type DiagnosticsScanSnapshot,
@@ -121,7 +121,6 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
     fetch: async () => statusJson(),
     clashConfigPaths: [],
     env: {},
-    inspectProxyVariables: async () => [],
     // 绝不对生产站点真的握手（T12）。
     probeNodeTls: async () => ({ outcome: 'ok', version: 'v22.19.0' }),
   }
@@ -1442,18 +1441,40 @@ describe('diagnostics', () => {
       const report = await runDiagnostics(input)
       const item = overrideItem(report)
 
-      expect(item?.state).toBe('warn')
-      expect(item?.summary).toContain('ANTHROPIC_BASE_URL')
-      expect(item?.summary).toContain('ANTHROPIC_AUTH_TOKEN')
-      expect(item?.summary).toContain('等 4 项')
+      // 这四个都盖不过写入的配置，是「正常」；名字只进导出报告，检查页不上屏（yoyo 11-06「体检改」）。
+      expect(item).toEqual({
+        code: 'PROVIDER_ENVIRONMENT_OVERRIDE',
+        title: '电脑里另外设过的工具地址或密钥',
+        state: 'pass',
+        summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+        // 大小写不敏感：Windows 上 `openai_api_key` 与大写是同一个变量。
+        details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code）、ANTHROPIC_AUTH_TOKEN（Claude Code）、OPENAI_BASE_URL（Codex CLI）、OPENAI_API_KEY（Codex CLI）' },
+        durationMs: expect.any(Number),
+      })
+      expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
+    })
+
+    it('names a variable that takes a CLI off the account on screen, and every other one it found alongside', async () => {
+      const home = temporaryHome()
+      const input = dependencies(home)
+      input.env = {
+        ANTHROPIC_BASE_URL: 'https://gateway.example.com',
+        ANTHROPIC_AUTH_TOKEN: 'sk-must-not-leak-token',
+        OPENAI_BASE_URL: 'https://gateway.example.com/v1',
+        ANTHROPIC_API_KEY: 'sk-must-not-leak-key',
+      }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item?.state).toBe('fail')
       expect(item?.details).toMatchObject({
         count: 4,
         variable1: 'ANTHROPIC_BASE_URL（Claude Code）',
         variable2: 'ANTHROPIC_AUTH_TOKEN（Claude Code）',
-        variable3: 'OPENAI_BASE_URL（Codex CLI）',
-        // 大小写不敏感：Windows 上 `openai_api_key` 与大写是同一个变量。
-        variable4: 'OPENAI_API_KEY（Codex CLI）',
+        variable3: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+        variable4: 'OPENAI_BASE_URL（Codex CLI）',
       })
+      expect(item?.details).not.toHaveProperty('reportOnlyVariables')
       expect(JSON.stringify(item)).not.toMatch(/must-not-leak|gateway\.example\.com/)
     })
 
@@ -1800,21 +1821,27 @@ describe('diagnostics', () => {
       })
     })
 
-    // 这些实测盖不过写入的配置：留在需留意，不在开机时打扰。
+    // 这些实测盖不过写入的配置（2026-11-06 用 Codex 0.164～0.167、Claude Code 2.1.310 重测过）：算正常，
+    // 不挂在「需要处理」里，Windows 上也不给一键删除——它可能是客户给别的程序用的。
     it.each([
-      ['ANTHROPIC_BASE_URL', 'https://gateway.example.com'],
-      ['ANTHROPIC_AUTH_TOKEN', 'sk-shell'],
-      ['OPENAI_BASE_URL', 'https://gateway.example.com/v1'],
-      ['OPENAI_API_KEY', 'sk-shell'],
-    ])('keeps %s as only worth a look because the written configuration still wins', async (name, value) => {
+      ['ANTHROPIC_BASE_URL', 'https://gateway.example.com', 'Claude Code'],
+      ['ANTHROPIC_AUTH_TOKEN', 'sk-shell', 'Claude Code'],
+      ['OPENAI_BASE_URL', 'https://gateway.example.com/v1', 'Codex CLI'],
+      ['OPENAI_API_KEY', 'sk-shell', 'Codex CLI'],
+    ])('passes %s because the written configuration still wins', async (name, value, tool) => {
       const home = temporaryHome()
       const input = dependencies(home)
       input.env = { [name]: value }
 
-      expect(overrideItem(await runDiagnostics(input))).toMatchObject({
-        state: 'warn',
-        summary: `电脑里另外设了 ${name}，可能会盖过当前账号的设置`,
-      })
+      for (const platform of ['win32', 'darwin', 'linux'] as const) {
+        const item = overrideItem(await runDiagnostics({ ...input, platform }))
+        expect(item, platform).toMatchObject({
+          state: 'pass',
+          summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+          details: { reportOnlyVariables: `${name}（${tool}）` },
+        })
+        expect(item?.details?.fix, platform).toBeUndefined()
+      }
     })
 
     // Gemini CLI 下线（2026-10-14）：星芒不再管它的账号，它的变量不报、不给一键删除。
@@ -1855,11 +1882,8 @@ describe('diagnostics', () => {
 
           expect(item).toMatchObject({
             state: 'pass',
-            details: {
-              count: 2,
-              variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
-              variable2: 'OPENAI_BASE_URL（Codex CLI，已指向当前账号）',
-            },
+            summary: '电脑里另外设的工具地址也指向当前账号，不影响使用',
+            details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）、OPENAI_BASE_URL（Codex CLI，已指向当前账号）' },
           })
           expect(item?.details?.fix).toBeUndefined()
         }
@@ -1873,22 +1897,25 @@ describe('diagnostics', () => {
         expect(environmentAccountBaseUrls(directSite, undefined)).toEqual([directSite.providerBaseUrls])
       })
 
-      // 剩下的地址变量都盖不过写入的配置（breaksAccount 为 false），所以报出来是「需留意」，照样给一键删除。
-      it('flags an address on direct once auto has moved to the default line', async () => {
+      // 剩下的地址变量都盖不过写入的配置（breaksAccount 为 false）：不指向当前账号也算正常，只是说法不同，
+      // 也不给一键删除。
+      it('no longer calls an address on direct the current account once auto has moved to the default line', async () => {
         const item = overrideItem(await runDiagnostics(onRoute('primary', true, { ANTHROPIC_BASE_URL: 'https://xm-direct.solov.cc' })))
 
         expect(item).toMatchObject({
-          state: 'warn',
-          details: { count: 1, variable1: 'ANTHROPIC_BASE_URL（Claude Code）', fix: 'clear-user-overrides' },
+          state: 'pass',
+          summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+          details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code）' },
         })
+        expect(item?.details?.fix).toBeUndefined()
       })
 
-      it('keeps flagging the default line for someone who fixed the direct line', async () => {
+      it('no longer calls the default line the current account for someone who fixed the direct line', async () => {
         const fixed = overrideItem(await runDiagnostics(onRoute('direct', false, { ANTHROPIC_BASE_URL: 'https://xm.solov.cc' })))
         const direct = overrideItem(await runDiagnostics(onRoute('direct', false, { ANTHROPIC_BASE_URL: 'https://xm-direct.solov.cc' })))
 
-        expect(fixed).toMatchObject({ state: 'warn', details: { variable1: 'ANTHROPIC_BASE_URL（Claude Code）', fix: 'clear-user-overrides' } })
-        expect(direct).toMatchObject({ state: 'pass' })
+        expect(fixed).toMatchObject({ state: 'pass', details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code）' } })
+        expect(direct).toMatchObject({ state: 'pass', details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）' } })
       })
     })
 
@@ -1927,11 +1954,7 @@ describe('diagnostics', () => {
       expect(overrideItem(report)).toMatchObject({
         state: 'pass',
         summary: '电脑里另外设的工具地址也指向当前账号，不影响使用',
-        details: {
-          count: 2,
-          variable1: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）',
-          variable2: 'OPENAI_BASE_URL（Codex CLI，已指向当前账号）',
-        },
+        details: { reportOnlyVariables: 'ANTHROPIC_BASE_URL（Claude Code，已指向当前账号）、OPENAI_BASE_URL（Codex CLI，已指向当前账号）' },
       })
     })
 
@@ -1949,9 +1972,11 @@ describe('diagnostics', () => {
       redirected.env = { CODEX_HOME: path.join(home, 'elsewhere') }
       redirected.providerRoots = { userHome: home, codexHome: path.join(home, 'elsewhere') }
 
+      // 星芒的配置就写在它指的地方（codex-home.ts），盖不过当前账号。
       expect(overrideItem(await runDiagnostics(redirected))).toMatchObject({
-        state: 'warn',
-        details: { count: 1, variable1: 'CODEX_HOME（Codex CLI）' },
+        state: 'pass',
+        summary: '电脑里另外设的工具地址或密钥盖不过当前账号的设置，不影响使用',
+        details: { reportOnlyVariables: 'CODEX_HOME（Codex CLI）' },
       })
     })
 
@@ -2005,7 +2030,26 @@ describe('diagnostics', () => {
       expect(overrideItem(await runDiagnostics(input))?.state).toBe('warn')
     })
 
-    it('mentions other overriding variables after the ignored CODEX_HOME', async () => {
+    it('mentions a variable that takes a CLI off the account after the ignored CODEX_HOME', async () => {
+      const home = temporaryHome()
+      const input = ignoredCodexHomeInput(home, '.codex')
+      input.env = { ...input.env, ANTHROPIC_API_KEY: 'sk-must-not-leak' }
+
+      const item = overrideItem(await runDiagnostics(input))
+
+      expect(item).toMatchObject({
+        state: 'fail',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；电脑里另外设了 ANTHROPIC_API_KEY，会让 Claude Code 不用当前账号的设置。删掉它们再重新打开工具就好；不会删请在「反馈与客服」页导出报告发给客服',
+        details: {
+          count: 2,
+          variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
+          variable2: 'ANTHROPIC_API_KEY（Claude Code，会绕开当前账号）',
+        },
+      })
+      expect(JSON.stringify(item)).not.toContain('must-not-leak')
+    })
+
+    it('keeps the variables that cannot override the account off screen after the ignored CODEX_HOME', async () => {
       const home = temporaryHome()
       const input = ignoredCodexHomeInput(home, '.codex')
       input.env = { ...input.env, OPENAI_API_KEY: 'sk-must-not-leak' }
@@ -2014,13 +2058,14 @@ describe('diagnostics', () => {
 
       expect(item).toMatchObject({
         state: 'warn',
-        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它；电脑里另外设了 OPENAI_API_KEY，可能会盖过当前账号的设置',
+        summary: '电脑里有一个 Codex 的设置写得不对，软件已经忽略它',
         details: {
-          count: 2,
+          count: 1,
           variable1: 'CODEX_HOME（Codex CLI，写得不对，已忽略）',
-          variable2: 'OPENAI_API_KEY（Codex CLI）',
+          reportOnlyVariables: 'OPENAI_API_KEY（Codex CLI）',
         },
       })
+      expect(item?.details).not.toHaveProperty('variable2')
       expect(JSON.stringify(item)).not.toContain('must-not-leak')
     })
   })
@@ -3311,18 +3356,18 @@ describe('operatingSystemSummary', () => {
   })
 })
 
-describe('windowsProxySettingsOutcome', () => {
+describe('proxySettingsOutcome', () => {
   const closedOnly = async () => false
   const openOnly = async () => true
   const noScopes = async () => null
 
   it('passes when no proxy is set', async () => {
-    expect(await windowsProxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
+    expect(await proxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
       .toEqual({ state: 'pass', summary: '没有另外设过代理' })
   })
 
   it('offers to clear a current-user proxy that points at a closed local port', async () => {
-    const outcome = await windowsProxySettingsOutcome(
+    const outcome = await proxySettingsOutcome(
       { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' },
       closedOnly,
       async () => ({ user: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' }, machine: {} }),
@@ -3337,7 +3382,7 @@ describe('windowsProxySettingsOutcome', () => {
   })
 
   it('explains that a machine-wide setting needs an administrator and offers no button', async () => {
-    const outcome = await windowsProxySettingsOutcome(
+    const outcome = await proxySettingsOutcome(
       { HTTPS_PROXY: 'http://127.0.0.1:7890' },
       closedOnly,
       async () => ({ user: {}, machine: { HTTPS_PROXY: 'http://127.0.0.1:7890' } }),
@@ -3348,7 +3393,7 @@ describe('windowsProxySettingsOutcome', () => {
   })
 
   it('still reports a closed proxy when the settings cannot be read', async () => {
-    const outcome = await windowsProxySettingsOutcome(
+    const outcome = await proxySettingsOutcome(
       { HTTPS_PROXY: 'http://127.0.0.1:7890' },
       closedOnly,
       async () => { throw new Error('powershell missing') },
@@ -3358,7 +3403,7 @@ describe('windowsProxySettingsOutcome', () => {
   })
 
   it('passes when the local proxy is running', async () => {
-    expect(await windowsProxySettingsOutcome({ HTTP_PROXY: 'http://127.0.0.1:7890' }, openOnly, noScopes)).toEqual({
+    expect(await proxySettingsOutcome({ HTTP_PROXY: 'http://127.0.0.1:7890' }, openOnly, noScopes)).toEqual({
       state: 'pass',
       summary: '电脑里设了代理（本机 7890 端口），工具会通过它联网。',
       details: { HTTP_PROXY: '本机 7890 端口（开着）' },
@@ -3366,11 +3411,61 @@ describe('windowsProxySettingsOutcome', () => {
   })
 
   it('warns gently about a proxy on another machine without echoing its address', async () => {
-    const outcome = await windowsProxySettingsOutcome({ HTTPS_PROXY: 'http://proxy.corp.example:8080' }, closedOnly, noScopes)
+    const outcome = await proxySettingsOutcome({ HTTPS_PROXY: 'http://proxy.corp.example:8080' }, closedOnly, noScopes)
     expect(outcome).toEqual({
       state: 'warn',
       summary: '电脑里设了代理，工具会通过它联网。如果工具连不上，先确认这个代理能用。',
       details: { HTTPS_PROXY: '别的机器' },
+    })
+  })
+
+  it('offers no button for a closed proxy when it is not told where the setting lives', async () => {
+    const outcome = await proxySettingsOutcome({ http_proxy: 'http://127.0.0.1:7890' }, closedOnly)
+    expect(outcome).toEqual({
+      state: 'warn',
+      summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。',
+      details: { HTTP_PROXY: '本机 7890 端口（没开）' },
+    })
+  })
+
+  // yoyo 11-06「体检改」：Mac、Linux 以前只数设了几个，代理好好开着也亮黄灯，详情里列着「HTTP_PROXY (process)」。
+  describe.each(['darwin', 'linux'] as const)('in the full check on %s', (platform) => {
+    function proxyItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+      return report.items.find((item) => item.code === 'PROXY_ENVIRONMENT')
+    }
+    function input(env: NodeJS.ProcessEnv, open: boolean) {
+      const readProxyScopes = vi.fn(async () => null)
+      const probeLoopbackProxy = vi.fn(async () => open)
+      return { input: { ...dependencies(temporaryHome()), platform, env, readProxyScopes, probeLoopbackProxy }, readProxyScopes, probeLoopbackProxy }
+    }
+    const proxies = { HTTP_PROXY: 'http://user:secret@127.0.0.1:7890', HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' }
+
+    it('passes a local proxy that is running', async () => {
+      const { input: running, readProxyScopes, probeLoopbackProxy } = input(proxies, true)
+      const item = proxyItem(await runDiagnostics(running))
+      expect(item).toMatchObject({
+        state: 'pass',
+        summary: '电脑里设了代理（本机 7890 端口），工具会通过它联网。',
+        details: { HTTP_PROXY: '本机 7890 端口（开着）', HTTPS_PROXY: '本机 7890 端口（开着）' },
+      })
+      // 同一个端口只试一次；Windows 那份读设置的办法这里不用。
+      expect(probeLoopbackProxy).toHaveBeenCalledTimes(1)
+      expect(readProxyScopes).not.toHaveBeenCalled()
+      expect(JSON.stringify(item)).not.toContain('secret')
+    })
+
+    it('says a closed local proxy is bypassed and offers no button', async () => {
+      const item = proxyItem(await runDiagnostics(input(proxies, false).input))
+      expect(item).toMatchObject({
+        state: 'warn',
+        summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。',
+      })
+      expect(item?.details).not.toHaveProperty('fix')
+    })
+
+    it('does not count a setting that only keeps requests off the proxy', async () => {
+      const item = proxyItem(await runDiagnostics(input({ NO_PROXY: 'localhost', FTP_PROXY: 'http://127.0.0.1:21' }, false).input))
+      expect(item).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
     })
   })
 })

@@ -28,6 +28,7 @@ import type { RemoteFeatureGate } from './remote-feature-gate'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
+import type { AiAudioAssetStore } from './ai-audio-asset-store'
 import type { AiVideoAssetStore } from './ai-video-asset-store'
 import type { AiVideoService } from './ai-video-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
@@ -51,6 +52,7 @@ import type { DiagnosticFixKind, DiagnosticFixResult } from './diagnostic-fixes'
 import type { PaymentWindowController } from './payment-window'
 import type { AccountStartupGate } from './account-startup-gate'
 import type { AiChatHistoryStore } from './ai-chat-history-store'
+import type { ChatHistoryFlush } from './chat-history-flush'
 import type { ChatAttachmentService } from './ai-chat-attachments'
 import { isRecord } from './input-guards'
 import {
@@ -109,9 +111,9 @@ export interface IpcRegistrationOptions {
   // 当前账号的 AI 作品实际存在哪（「文档」不让写时是主目录下的 XingmangAI）；检查页
   // 「打开文件夹」用。main.ts 传启动时定下的位置；省略 = 这颗按钮打不开 AI 作品那一个。
   aiOutputDirectory?: () => string
-  // 「搬到新电脑」和「导出这段对话」的保存框默认落在桌面；main.ts 传 app.getPath('desktop')。
-  // 省略 = 主目录下的 Desktop。
-  desktopDirectory?: () => string
+  // 「搬到新电脑」和「导出这段对话」的保存框默认落在「下载」（D16）；main.ts 传 app.getPath('downloads')。
+  // 省略 = 主目录下的 Downloads。
+  downloadsDirectory?: () => string
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
   backupStore: ConfigBackupStore
@@ -229,6 +231,8 @@ export interface IpcRegistrationOptions {
   // has to depend on canvas-window.ts's full surface just to delegate one
   // button click.
   openCanvasWindow(): Promise<void>
+  // Same delegation for the canvas home page's read-only library (「看全部作品」).
+  openCanvasAssetLibrary(): Promise<void>
   // Backing store for the "记住密码" credential (account-credential-store.ts,
   // safeStorage-encrypted). Optional the same way accountService is: main.ts
   // always passes the real store; when absent (tests that predate it), the
@@ -266,10 +270,14 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   chatHistory?: AiChatHistoryStore
+  // 退出前问聊天页要的那一次存盘，回执交给它（chat-history-flush.ts）。缺省 = 回执不理。
+  chatHistoryFlush?: Pick<ChatHistoryFlush, 'acknowledge'>
   chatAttachments?: ChatAttachmentService
   // 视频剪辑页出视频片段；片段和拼好的成片都放进这个全局作品库（画布的全局素材也是它）。
   videoService?: Pick<AiVideoService, 'generate' | 'resumeRequest' | 'cancel' | 'cancelSender' | 'cancelAll'>
   videoAssets?: Pick<AiVideoAssetStore, 'readOwned' | 'storeComposed' | 'resolveOwnedFilePath' | 'saveAs'>
+  // 视频剪辑的配乐：客户选的歌存进这个作品库的音频那一格，拼片时再按编号读回来。
+  audioAssets?: Pick<AiAudioAssetStore, 'storeLocalFile' | 'readOwned'>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
   // Bundled 星芒AI skill: login copies the template into user skill roots and
   // writes the image-group key into config.json. Optional so existing IPC

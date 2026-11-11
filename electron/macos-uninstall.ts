@@ -21,7 +21,8 @@ export interface MacUninstallDependencies {
   installationBusy(): boolean
   /** 改之前按「保存配置」同一份备份，「设置 › 备份迁移」里能找回。 */
   backupCliConfigs(): Promise<void>
-  removeCliHooks(): boolean
+  /** 收回时顺手记下收回了哪几家（removed-cli-hooks.ts），重装回来开机补回。 */
+  removeCliHooks(): boolean | Promise<boolean>
   removeLoginItem(): boolean
   removeManagedTools(): Promise<boolean>
   trashItem(target: string): Promise<void>
@@ -139,10 +140,11 @@ export function removeMacLoginItem(app: Pick<App, 'setLoginItemSettings' | 'getL
 }
 
 /**
- * 「连同星芒替你装的命令行工具一起删」：Mac 上星芒装的 CLI、Node 和 Grok 全在
+ * 「连同星芒替你装的命令行工具一起删」：Mac 上星芒装的 Claude Code、Codex CLI 和 Node 都在
  * ~/Library/Application Support/XingMangAI 下（managed-cli-paths.ts），客户自己装的不在这里，
- * 一个都不碰。根目录被换成链接时拒绝，不跟过去删（I8）；里面 npm 的 bin 链接由 rm
- * 按链接本身删掉，不跟随。
+ * 一个都不碰。Grok 不在这里：它装在 ~/.grok（macos-grok.ts），客户自己用官方脚本装的也在那儿、
+ * 分不出是谁装的，所以这一步不删它，界面那句提醒指客户去首页卡片上卸（AppUninstall.tsx）。
+ * 根目录被换成链接时拒绝，不跟过去删（I8）；里面 npm 的 bin 链接由 rm 按链接本身删掉，不跟随。
  */
 export async function removeMacManagedTools(
   root: string = managedProductRoot(process.env, 'darwin'),

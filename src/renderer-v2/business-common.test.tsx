@@ -92,6 +92,17 @@ describe('renderer-v2 result notice lead', () => {
     expect(renderToStaticMarkup(<ResultNotice error={error} />)).toContain('<strong>写不进安装目录</strong>')
   })
 
+  it('tells an export to pick another folder or free up the disk, never the install directory', () => {
+    // D16：检查报告、反馈报告、聊天记录导出时存的是客户选的位置。上屏是兜底句，原话在 detail 里。
+    const error = '操作没有成功，请重试；还不行，到「反馈与客服」页把报告发给客服。'
+    const denied = renderToStaticMarkup(<ResultNotice error={error} detail="EPERM: operation not permitted, open '本机路径'" target="export" />)
+    expect(denied).toContain('<strong>这个位置不让星芒存文件</strong>，换个文件夹（比如「下载」）再导出。')
+    expect(denied).not.toContain('安装目录')
+    const full = renderToStaticMarkup(<ResultNotice error={error} detail="ENOSPC: no space left on device, write" target="export" />)
+    expect(full).toContain('<strong>这块盘满了</strong>，清出一些空间，或者换一块盘再导出。')
+    expect(full).not.toContain('临时文件夹')
+  })
+
   it('falls back to the sentence itself when the catalog does not know it', () => {
     expect(resultNoticeLead('这一步没做完')).toBe('这一步没做完')
   })
@@ -156,9 +167,9 @@ describe('renderer-v2 list empty states', () => {
 
   // 每处空着时说自己的去处，不再都是「从页面上的添加入口开始。」
   it('lets a page name its own empty title and next step', () => {
-    const markup = renderToStaticMarkup(<ListState page="health" noun="检查结果" emptyDescription="点右上角「重新检查」。" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
+    const markup = renderToStaticMarkup(<ListState page="health" noun="检查结果" emptyDescription="点右上角「开始检查」。" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
     expect(markup).toContain('还没有检查结果')
-    expect(markup).toContain('点右上角「重新检查」。')
+    expect(markup).toContain('点右上角「开始检查」。')
     expect(markup).not.toContain('从页面上的添加入口开始。')
     const titled = renderToStaticMarkup(<ListState page="mcp" noun="外接工具" emptyTitle="还没有添加连接" loading={false} error="" count={0} retry={() => undefined}>{null}</ListState>)
     expect(titled).toContain('还没有添加连接')

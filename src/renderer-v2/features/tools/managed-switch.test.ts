@@ -24,7 +24,7 @@ describe('managed switch confirmation', () => {
   it('uses the approved wording with the version filled in', () => {
     expect(managedSwitchConfirmation('2.1.277')).toEqual({
       title: '换成星芒装的 Claude Code？',
-      body: '这台电脑上的 Claude Code 是官方安装器装的，星芒没法直接更新它。点「换成星芒装的」，星芒会先把它卸掉，再装上 2.1.277。工具配置、账户数据和历史记录会保留，以后在星芒里点一下就能更新。',
+      body: '这台电脑上的 Claude Code 是官方安装器装的，星芒没法直接更新它。点「换成星芒装的」，星芒会先把它卸掉，再装上 2.1.277。工具配置、账号数据和历史记录会保留，以后在星芒里点一下就能更新。',
       okLabel: '换成星芒装的',
     })
   })

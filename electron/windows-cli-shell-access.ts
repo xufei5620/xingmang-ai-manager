@@ -4,7 +4,15 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { readBoundedUtf8File } from './bounded-file'
 import { cliCatalog, type ProviderId } from './catalog'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
+import {
+  buildPowerShellConstrainedLanguageBranch,
+  buildPowerShellEnvironmentBroadcastStatements,
+  powerShellMachineEnvironmentKey,
+  powerShellReadEnvironmentValueFunction,
+  powerShellUserEnvironmentKey,
+} from './powershell-constrained-language'
+import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { assertNoReparseComponents } from './safe-local-data'
 import type { CliInstallation, CliInstallSource } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -108,6 +116,125 @@ export function pathListIncludesDirectory(pathValue: string | undefined, directo
   return pathValue.split(';').some((entry) => normalizedWindowsDirectory(entry) === target)
 }
 
+// Where an application-control policy (WDAC, AppLocker) runs PowerShell in
+// ConstrainedLanguage, both PATH scripts below were refused at their second
+// line, the UTF-8 one, and every [IO.Path], [Environment] and RegistryKey call
+// after it is refused too (Windows runner under the system lockdown,
+// 2026-11-10): the CLI was installed, but a terminal the user opened later did
+// not find it by name. The statements below are what those scripts run there
+// instead; the FullLanguage lines after them are untouched. Every command they
+// call is in Microsoft.PowerShell.Management.
+export const userPathConstrainedModules = ['Microsoft.PowerShell.Management'] as const
+
+const userPathConstrainedFunctions: readonly string[] = [
+  // [Environment]::ExpandEnvironmentVariables, as Windows expands: %NAME% is
+  // replaced when NAME is set in this process, and an unknown %NAME% is left as
+  // written, its closing % starting the next search.
+  'function Expand-XingmangReferences([string]$text) {',
+  "  $result = ''",
+  '  $rest = $text',
+  '  while ($true) {',
+  "    $start = $rest.IndexOf('%', [System.StringComparison]::Ordinal)",
+  '    if ($start -lt 0) { break }',
+  "    $end = $rest.IndexOf('%', $start + 1, [System.StringComparison]::Ordinal)",
+  '    if ($end -lt 0) { break }',
+  '    $name = $rest.Substring($start + 1, $end - $start - 1)',
+  '    $item = $null',
+  "    if ($name) { $item = Get-Item -LiteralPath ('Env:' + $name) -ErrorAction SilentlyContinue }",
+  '    if ($null -ne $item) {',
+  '      $result += $rest.Substring(0, $start) + [string]$item.Value',
+  '      $rest = $rest.Substring($end + 1)',
+  '    } else {',
+  '      $result += $rest.Substring(0, $end)',
+  '      $rest = $rest.Substring($end)',
+  '    }',
+  '  }',
+  '  return $result + $rest',
+  '}',
+  // [IO.Path]::GetFullPath(...).TrimEnd("\") for the absolute paths PATH
+  // holds, in string operations alone: quotes trimmed, / read as \, empty and
+  // . segments dropped, .. taking the segment before it, no trailing \.
+  // One difference: Windows PowerShell's GetFullPath also turns an 8.3 name
+  // such as RUNNER~1 into the long one, and nothing allowed here does (seen on
+  // the Windows runner). The folder the app hands over is the npm prefix,
+  // normally the long spelling under %APPDATA% or ProgramData, so the most it
+  // costs is a second entry next to a short-spelled one the user wrote, or one
+  // left behind on removal.
+  'function ConvertTo-XingmangDirectory([string]$value) {',
+  "  $text = $value.Trim() -replace '^\"+', '' -replace '\"+$', ''",
+  "  $text = $text.Replace('/', '\\')",
+  "  $prefix = ''",
+  "  if ($text.StartsWith('\\\\', [System.StringComparison]::Ordinal)) { $prefix = '\\\\'; $text = $text.Substring(2) } elseif ($text.StartsWith('\\', [System.StringComparison]::Ordinal)) { $prefix = '\\'; $text = $text.Substring(1) }",
+  '  $parts = @()',
+  "  foreach ($part in ($text -split '\\\\')) {",
+  "    if ($part -eq '' -or $part -eq '.') { continue }",
+  "    if ($part -eq '..') { if ($parts.Count -gt 1) { $parts = @($parts[0..($parts.Count - 2)]) }; continue }",
+  '    $parts += $part',
+  '  }',
+  "  return $prefix + ($parts -join '\\')",
+  '}',
+  'function Test-XingmangIsTarget([string]$entry) {',
+  '  if (-not $entry.Trim()) { return $false }',
+  '  return ((ConvertTo-XingmangDirectory (Expand-XingmangReferences $entry.Trim())) -ieq $target)',
+  '}',
+  // The user PATH as stored, %USERPROFILE%\... and all. The registry provider
+  // expands REG_EXPAND_SZ against this process's environment, and the
+  // DoNotExpandEnvironmentNames read the FullLanguage lines make is refused
+  // here. Windows leaves a %NAME% it cannot resolve as written, though, so with
+  // every variable taken out of this process for that one read, the value
+  // comes back exactly as stored. They are all put back before anything else
+  // runs, and nothing is written from inside this function.
+  'function Read-XingmangStoredUserPath {',
+  "  $saved = @(Get-ChildItem -Path 'Env:')",
+  '  try {',
+  "    foreach ($variable in $saved) { Remove-Item -LiteralPath ('Env:' + $variable.Key) }",
+  `    $item = Get-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name 'Path' -ErrorAction SilentlyContinue`,
+  '  } finally {',
+  "    foreach ($variable in $saved) { Set-Item -LiteralPath ('Env:' + $variable.Key) -Value $variable.Value }",
+  '  }',
+  '  if ($null -eq $item) { return $null }',
+  '  return $item.Path',
+  '}',
+  // Keeps the kind as the FullLanguage lines do: REG_SZ stays REG_SZ, anything
+  // else is written as REG_EXPAND_SZ. reg.exe names the kind in plain ASCII
+  // whatever the console code page does to the value after it. Its path is
+  // System32's, resolved by the main process (I14).
+  'function Get-XingmangUserPathKind {',
+  "  $query = & { $ErrorActionPreference = 'Continue'; & $env:XINGMANG_REG_EXE query 'HKCU\\Environment' /v Path 2>$null }",
+  "  if ($LASTEXITCODE -ne 0) { throw ('reg query exited with ' + $LASTEXITCODE) }",
+  "  if (@($query | Where-Object { $_ -match '^\\s*Path\\s+REG_SZ(\\s|$)' }).Count -gt 0) { return 'String' }",
+  "  return 'ExpandString'",
+  '}',
+]
+
+function buildEnsureUserPathConstrainedStatements(): string[] {
+  return [
+    buildPowerShellModuleImportStatement(userPathConstrainedModules),
+    ...powerShellReadEnvironmentValueFunction,
+    ...userPathConstrainedFunctions,
+    '$target = ConvertTo-XingmangDirectory $env:XINGMANG_ADD_PATH',
+    "if (-not $target) { throw 'Invalid directory' }",
+    'function Test-XingmangListsTarget([string]$value) {',
+    '  foreach ($entry in ($value -split ";")) { if (Test-XingmangIsTarget $entry) { return $true } }',
+    '  return $false',
+    '}',
+    `$machine = Read-XingmangEnvironmentValue '${powerShellMachineEnvironmentKey}' 'Path'`,
+    '$stored = Read-XingmangStoredUserPath',
+    '$raw = ""',
+    '$kind = "ExpandString"',
+    'if ($null -ne $stored) {',
+    '  $raw = [string]$stored',
+    '  $kind = Get-XingmangUserPathKind',
+    '}',
+    'if ((Test-XingmangListsTarget $machine) -or (Test-XingmangListsTarget $raw)) { "present"; return }',
+    "$next = if ($raw.Trim()) { ($raw -replace ';+$', '') + ';' + $target } else { $target }",
+    `if (-not (Test-Path -LiteralPath '${powerShellUserEnvironmentKey}')) { $null = New-Item -Path '${powerShellUserEnvironmentKey}' }`,
+    `$null = New-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name 'Path' -Value $next -PropertyType $kind -Force`,
+    ...buildPowerShellEnvironmentBroadcastStatements(),
+    '"added"',
+  ]
+}
+
 /**
  * Appends `$env:XINGMANG_ADD_PATH` to the current user's PATH unless the user
  * or machine PATH already lists it. It reads the raw registry value so entries
@@ -115,11 +242,13 @@ export function pathListIncludesDirectory(pathValue: string | undefined, directo
  * would store the expanded text as REG_SZ and silently freeze them. The final
  * `SetEnvironmentVariable` on a throwaway name exists only for its
  * WM_SETTINGCHANGE broadcast, so terminals opened from now on see the change
- * without signing out.
+ * without signing out. Under ConstrainedLanguage the statements above do the
+ * same with registry cmdlets, reg.exe and setx.exe.
  */
 export function buildEnsureUserPathScript(): string {
   return [
     '$ErrorActionPreference = "Stop"',
+    ...buildPowerShellConstrainedLanguageBranch(buildEnsureUserPathConstrainedStatements()),
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     '$target = [IO.Path]::GetFullPath($env:XINGMANG_ADD_PATH).TrimEnd("\\")',
     'function Test-ListsTarget([string]$value) {',
@@ -165,6 +294,14 @@ export interface EnsureUserPathOptions {
   runPowerShell?: (script: string, env: NodeJS.ProcessEnv) => Promise<string>
 }
 
+/** The two System32 programs only the ConstrainedLanguage statements call (I14). */
+function constrainedLanguageExecutables(): NodeJS.ProcessEnv {
+  return {
+    XINGMANG_REG_EXE: windowsSystemExecutable('reg.exe'),
+    XINGMANG_SETX_EXE: windowsSystemExecutable('setx.exe'),
+  }
+}
+
 async function runPowerShellScript(script: string, env: NodeJS.ProcessEnv): Promise<string> {
   const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
     '-NoLogo',
@@ -199,8 +336,31 @@ export async function ensureDirectoryOnWindowsUserPath(
   const stdout = await run(buildEnsureUserPathScript(), {
     ...trustedCommandEnvironment(),
     XINGMANG_ADD_PATH: directory,
+    ...constrainedLanguageExecutables(),
   })
   return parseEnsureUserPathOutput(stdout)
+}
+
+function buildRemoveUserPathConstrainedStatements(): string[] {
+  return [
+    buildPowerShellModuleImportStatement(userPathConstrainedModules),
+    ...userPathConstrainedFunctions,
+    '$target = ConvertTo-XingmangDirectory $env:XINGMANG_REMOVE_PATH',
+    "if (-not $target) { throw 'Invalid directory' }",
+    '$stored = Read-XingmangStoredUserPath',
+    'if ($null -eq $stored) { "absent"; return }',
+    '$raw = [string]$stored',
+    '$kept = @()',
+    '$removed = $false',
+    'foreach ($entry in ($raw -split ";")) {',
+    '  if (Test-XingmangIsTarget $entry) { $removed = $true } else { $kept += $entry }',
+    '}',
+    'if (-not $removed) { "absent"; return }',
+    '$kind = Get-XingmangUserPathKind',
+    `$null = New-ItemProperty -LiteralPath '${powerShellUserEnvironmentKey}' -Name 'Path' -Value ($kept -join ";") -PropertyType $kind -Force`,
+    ...buildPowerShellEnvironmentBroadcastStatements(),
+    '"removed"',
+  ]
 }
 
 /**
@@ -209,11 +369,12 @@ export async function ensureDirectoryOnWindowsUserPath(
  * keeps its kind, so the entries that stay keep their `%USERPROFILE%\...` form;
  * entries are expanded only to compare them, so the directory goes however it
  * was written. Nothing is written when no entry matches, and the machine PATH
- * is never touched.
+ * is never touched. Under ConstrainedLanguage the statements above do the same.
  */
 export function buildRemoveUserPathScript(): string {
   return [
     '$ErrorActionPreference = "Stop"',
+    ...buildPowerShellConstrainedLanguageBranch(buildRemoveUserPathConstrainedStatements()),
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     '$target = [IO.Path]::GetFullPath($env:XINGMANG_REMOVE_PATH).TrimEnd("\\")',
     'function Test-IsTarget([string]$entry) {',
@@ -272,6 +433,7 @@ export async function removeDirectoryFromWindowsUserPath(
   const stdout = await run(buildRemoveUserPathScript(), {
     ...trustedCommandEnvironment(),
     XINGMANG_REMOVE_PATH: directory,
+    ...constrainedLanguageExecutables(),
   })
   return parseRemoveUserPathOutput(stdout)
 }

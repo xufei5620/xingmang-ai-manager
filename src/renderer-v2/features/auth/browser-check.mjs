@@ -116,7 +116,7 @@ test('registration status read retries once, names proxy software, and explains 
   const page = await open('scenario=register&statusFail=timeout&statusFailures=2')
   try {
     await page.getByTestId('register-status-loading').filter({ hasText: '正在再试一次' }).waitFor()
-    await page.getByTestId('register-status-error').filter({ hasText: '开着别的加速器、翻墙或代理软件的话先关掉' }).waitFor()
+    await page.getByTestId('register-status-error').filter({ hasText: '开着加速器或代理软件的话先关掉' }).waitFor()
     assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov')
     assert.equal(await page.getByTestId('register-submit').isDisabled(), true)
     await page.getByTestId('register-submit-hint').filter({ hasText: '要先连上账号服务' }).waitFor()
@@ -147,7 +147,6 @@ test('registration preserves its completed result when the following real login 
     // v4：「获取验证码」放在邮箱框里面的右端。
     assert.equal(await page.getByTestId('register-email').locator('xpath=..').getByTestId('register-send-code').count(), 1)
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.getByText('请先点「获取验证码」，再填写邮件中的验证码', { exact: true }).waitFor()
@@ -157,7 +156,6 @@ test('registration preserves its completed result when the following real login 
     assert.equal(await page.getByTestId('register-send-code').isDisabled(), true)
     await page.getByTestId('register-user').fill('fixture-member')
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.getByText('请填写邮件中的验证码', { exact: true }).waitFor()
@@ -325,6 +323,27 @@ test('recovery remembers nothing and hands over to the login form when it cannot
     assert.equal(await page.getByTestId('login-account').inputValue(), 'person@example.test')
     assert.equal(await page.getByTestId('login-password').inputValue(), 'my-own-password')
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset', 'reset', 'login', 'change-password', 'login'])
+  } finally { await page.close() }
+})
+
+test('Esc pressed while a login is pending keeps the dialog, so a failed login still shows its error', async () => {
+  const page = await open('pending=login&fail=1')
+  try {
+    await page.getByTestId('login-account').fill('fixture-member')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    assert.equal(await page.getByTestId('login-account').isDisabled(), true)
+    const dialog = page.getByTestId('login-dialog')
+    // Everything in the dialog is disabled while it waits, so focus has dropped out onto the page.
+    assert.equal(await dialog.evaluate((element) => element.contains(document.activeElement)), false)
+    for (let press = 0; press < 6; press += 1) await page.keyboard.press('Escape')
+    assert.equal(await dialog.evaluate((element) => element.open), true)
+    await page.evaluate(() => window.authHarness.release('login'))
+    await page.getByTestId('auth-error').waitFor()
+    assert.equal(await page.getByTestId('auth-error').isVisible(), true)
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-password')
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['login'])
   } finally { await page.close() }
 })
 
@@ -517,8 +536,8 @@ test('a failed switch keeps the step and offers the matching way out', async () 
   } finally { await page.close() }
 })
 
-// 已知29：写不进配置文件时不再叫人去查安装目录，按钮照旧。
-test('a switch that cannot write the config file says what to close and keeps the same buttons', async () => {
+// 已知29：写不进配置文件时不再叫人去查安装目录。出口按「写不进」那一类走，D14 起是「找客服」。
+test('a switch that cannot write the config file says what to close and offers support', async () => {
   const page = await open('scenario=guide&installed=1&runtime=1&unknown=1&switchable=1&switchDenied=1')
   try {
     await page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.copiedSupport = value } } }))
@@ -530,8 +549,8 @@ test('a switch that cannot write the config file says what to close and keeps th
     assert.equal(await page.getByTestId('guide-error').textContent(), '改用当前账号没有成功：写不进配置文件。常见是安全软件拦了，或者这个文件正被别的程序占着。关掉正在用这个工具的窗口后点「再试一次」，还不行就点「复制给客服」发给客服。')
     assert.equal((await page.getByTestId('guide-retry').textContent())?.trim(), '再试一次')
     assert.equal((await page.getByTestId('guide-copy-support').textContent())?.trim(), '复制给客服')
-    assert.equal((await page.getByTestId('guide-exit-log').textContent())?.trim(), '查看日志')
-    assert.equal(await page.getByTestId('guide-exit-support').count(), 0)
+    assert.equal((await page.getByTestId('guide-exit-support').textContent())?.trim(), '找客服')
+    assert.equal(await page.getByTestId('guide-exit-log').count(), 0)
     const failure = JSON.parse(await page.evaluate(() => document.documentElement.dataset.guideFailure ?? '{}'))
     assert.equal(failure.reason, '写不进配置文件')
     assert.match(failure.detail, /EPERM/)
@@ -936,7 +955,6 @@ test('registration fills the username from the email until the user edits it', a
     await page.getByTestId('register-invite').fill('6B4j')
     await page.getByTestId('register-code').fill('123456')
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
@@ -998,7 +1016,6 @@ test('a taken username points at the username field instead of a generic failure
     await page.getByTestId('register-email').fill('common@example.test')
     await page.getByTestId('register-code').fill('123456')
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.getByText('这个用户名已经有人用了，换一个试试', { exact: true }).waitFor()
@@ -1028,7 +1045,7 @@ test('a network failure on login names proxy software and offers retry and suppo
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
-    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。开着别的加速器、翻墙或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '连不上账号服务。开着加速器或代理软件的话先关掉；还不行就换一个网络（例如手机热点）再试一次。' }).waitFor()
     assert.equal(await page.getByTestId('auth-exit-forgot').count(), 0)
     await page.getByTestId('auth-exit-help').click()
     assert.equal((await calls(page)).filter((item) => item.method === 'help').length, 1)
@@ -1058,7 +1075,7 @@ test('a refused Mac keychain explains the prompt and offers to reopen the app', 
     await windows.getByTestId('login-password').fill('fixture-password')
     await windows.getByTestId('auth-agree').check()
     await windows.getByTestId('login-submit').click()
-    await windows.getByTestId('auth-error').filter({ hasText: '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；还不行点「找客服」。' }).waitFor()
+    await windows.getByTestId('auth-error').filter({ hasText: '这台电脑上存的登录信息暂时读不出来，原来的没动。请完全退出星芒再打开；还不行点「找客服」。' }).waitFor()
     assert.equal(await windows.getByTestId('auth-exit-relaunch').count(), 0)
     await windows.getByTestId('auth-exit-help').waitFor()
   } finally { await windows.close() }
@@ -1107,7 +1124,6 @@ test('an email that is already registered offers to log in with it', async () =>
     await page.getByTestId('register-email').fill('fixture@example.test')
     await page.getByTestId('register-code').fill('123456')
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.getByTestId('auth-error').filter({ hasText: '该邮箱已被注册' }).waitFor()
@@ -1124,7 +1140,6 @@ test('pending registration blocks close and mode changes then focuses the passwo
     await page.getByTestId('register-code').fill('123456')
     await page.getByTestId('register-user').fill('fixture-member')
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     assert.equal(await page.getByTestId('register-cancel').isDisabled(), true)
@@ -1148,7 +1163,6 @@ test('registration authenticates through a separate login request before reporti
     await page.getByTestId('register-code').fill('123456')
     await page.getByTestId('register-user').fill('fixture-member')
     await page.getByTestId('register-password').fill('fixture-password')
-    await page.getByTestId('register-password-confirm').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('register-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
@@ -1156,6 +1170,57 @@ test('registration authenticates through a separate login request before reporti
     assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: 'fixture-member', password: 'fixture-password', siteId: 'solov' })
     assert.equal((await calls(page)).find((item) => item.method === 'notice').input, '注册成功，已自动登录')
   } finally { await page.close() }
+})
+
+test('registering without ticking the agreement asks once in a prompt and goes on from 同意并注册', async () => {
+  const page = await open('scenario=register')
+  try {
+    assert.equal(await page.getByTestId('register-password-confirm').count(), 0)
+    await page.getByTestId('register-email').fill('fixture@example.test')
+    await page.getByTestId('register-code').fill('123456')
+    await page.getByTestId('register-user').fill('fixture-member')
+    // The fields come first: a missing password is pointed out without the prompt.
+    await page.getByTestId('register-submit').click()
+    await page.getByText('密码至少 8 位', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('register-agree-prompt').count(), 0)
+    await page.getByTestId('register-password').fill('fixture-password')
+    await page.getByTestId('register-submit').click()
+    const prompt = page.getByTestId('register-agree-prompt')
+    await prompt.waitFor()
+    assert.equal((await prompt.getByRole('heading').innerText()).trim(), '注册前请阅读并同意《用户协议》和《隐私政策》。')
+    assert.equal(await page.getByText('请先同意用户协议和隐私政策').count(), 0)
+    assert.deepEqual(await calls(page), [])
+    // 取消 sends nothing and leaves the box unticked.
+    await prompt.getByRole('button', { name: '取消' }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="register-agree-prompt"]') === null)
+    assert.equal(await page.getByTestId('auth-agree').isChecked(), false)
+    assert.deepEqual(await calls(page), [])
+    // Reading an agreement from the prompt comes back to the prompt with the form intact.
+    await page.getByTestId('register-submit').click()
+    await prompt.waitFor()
+    await page.getByTestId('register-agree-terms').click()
+    await page.getByRole('heading', { name: 'Test Agreement' }).waitFor()
+    await page.getByTestId('legal-document-close').click()
+    await prompt.waitFor()
+    assert.equal(await page.getByTestId('register-password').inputValue(), 'fixture-password')
+    await prompt.getByRole('button', { name: '同意并注册' }).click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['register', 'login', 'authenticated', 'notice'])
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'register').input, { email: 'fixture@example.test', username: 'fixture-member', password: 'fixture-password', verificationCode: '123456' })
+  } finally { await page.close() }
+  // 同意并注册 ticks the box for real: when the automatic login falls back to the login form, it is already agreed there.
+  const fallback = await open('scenario=register&fail=1')
+  try {
+    await fallback.getByTestId('register-email').fill('fixture@example.test')
+    await fallback.getByTestId('register-code').fill('123456')
+    await fallback.getByTestId('register-user').fill('fixture-member')
+    await fallback.getByTestId('register-password').fill('fixture-password')
+    await fallback.getByTestId('register-submit').click()
+    await fallback.getByTestId('register-agree-prompt').getByRole('button', { name: '同意并注册' }).click()
+    await fallback.getByTestId('login-dialog').waitFor()
+    assert.equal(await fallback.getByTestId('auth-agree').isChecked(), true)
+    assert.deepEqual((await calls(fallback)).map((item) => item.method), ['register', 'login'])
+  } finally { await fallback.close() }
 })
 
 test('recovery requests block closing and focus each next field only after completion', async () => {
@@ -1450,7 +1515,7 @@ test('a pending explicit login locks its source and 2FA retains its source witho
     assert.equal(await page.getByTestId('login-cancel').isDisabled(), true)
     await page.keyboard.press('Enter')
     await page.evaluate(() => window.authHarness.release('login'))
-    await page.getByTestId('auth-error').filter({ hasText: '两步验证' }).waitFor()
+    await page.getByTestId('auth-error').filter({ hasText: '双重验证' }).waitFor()
     assert.equal(await page.getByTestId('login-password').inputValue(), 'test-password')
     assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
     await page.getByTestId('auth-open-website').click()
@@ -1636,7 +1701,7 @@ test('password fields warn while Caps Lock is on and stop warning once it is off
   } finally { await page.close() }
 })
 
-test('the historical account source and the registration passwords carry the same Caps Lock warning', async () => {
+test('the historical account source and the registration password carry the same Caps Lock warning', async () => {
   const page = await open()
   try {
     await chooseAccountSource(page, '历史账号')
@@ -1652,13 +1717,10 @@ test('the historical account source and the registration passwords carry the sam
     await registration.getByTestId('register-password').focus()
     await typeWithCapsLock(registration, 'register-password', true)
     await registration.getByTestId('register-password-caps').waitFor()
-    await registration.getByTestId('register-password-confirm').focus()
-    await typeWithCapsLock(registration, 'register-password-confirm', true)
-    await registration.getByTestId('register-password-confirm-caps').waitFor()
-    // Each field answers for itself: the one being left stops warning, and the
-    // one taking focus warns again from its own first key.
+    // Leaving the field stops the warning, and coming back warns again from its own first key.
+    await registration.getByTestId('register-user').focus()
+    await registration.waitForFunction(() => document.querySelector('[data-testid="register-password-caps"]') === null)
     await registration.getByTestId('register-password').focus()
-    await registration.waitForFunction(() => document.querySelector('[data-testid="register-password-confirm-caps"]') === null)
     await typeWithCapsLock(registration, 'register-password', true)
     await registration.getByTestId('register-password-caps').waitFor()
   } finally { await registration.close() }

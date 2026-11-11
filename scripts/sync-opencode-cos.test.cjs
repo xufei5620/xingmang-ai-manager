@@ -5,7 +5,7 @@ const fs = require('node:fs/promises')
 const os = require('node:os')
 const path = require('node:path')
 const {
-  FEED_URL, ASSET_HOSTS, LATEST_KEY, CONTENT_TYPE, VERIFICATION, MIN_PACKAGE_BYTES,
+  FEED_URL, RETIRED_FEED_URL, ASSET_HOSTS, LATEST_KEY, CONTENT_TYPE, VERIFICATION, MIN_PACKAGE_BYTES,
   packageSourceUrl, packageKey, validateHop, parseFeed, validateLatest, resolveAssetUrl, darwinOpenCodeRequirement, requestHead, inspectPackage,
   synchronizeOpenCode, createRuntimeDependencies, safeOpenCodeSyncFailure,
 } = require('./sync-opencode-cos.cjs')
@@ -21,15 +21,15 @@ function clone(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value))
 }
 
-function feed(version) {
-  return {
-    version,
-    platforms: {
-      'darwin-aarch64': { url: packageSourceUrl(version, 'macos-arm64'), signature: 'minisign' },
-      'darwin-x86_64': { url: packageSourceUrl(version, 'macos-x64'), signature: 'minisign' },
-      'windows-x86_64': { url: `https://github.com/anomalyco/opencode/releases/download/v${version}/opencode-desktop-windows-x64.exe` },
-    },
-  }
+/** latest-mac.yml as OpenCode's finalize-latest-yml.ts writes it (1.19.5 is the first release with no latest.json). */
+function feed(version, files = ['opencode-desktop-mac-arm64.zip', 'opencode-desktop-mac-arm64.dmg', 'opencode-desktop-mac-x64.zip', 'opencode-desktop-mac-x64.dmg']) {
+  return [
+    `version: ${version}`,
+    'files:',
+    ...files.flatMap(function (file) { return [`  - url: ${file}`, `    sha512: ${Buffer.from(file).toString('base64')}`, '    size: 150173778'] }),
+    "releaseDate: '2026-10-28T05:59:42.651Z'",
+    '',
+  ].join('\n')
 }
 
 function assetFor(url) {
@@ -58,10 +58,10 @@ function createFixture() {
       if (fixture.redirects.has(url)) return fixture.redirects.get(url)
       return { status: 302, location: assetFor(url) }
     },
-    async fetchJson(input) {
-      assert.match(input.url, /latest\.json/)
+    async fetchText(input) {
+      assert.match(input.url, /latest-mac\.yml/)
       assert.deepEqual(input.allowedHosts, ASSET_HOSTS)
-      return fixture.feed ? clone(fixture.feed) : feed(fixture.version)
+      return fixture.feed ?? feed(fixture.version)
     },
     async downloadResource(input) {
       fixture.downloads.push(clone({ ...input, onProgress: undefined }))
@@ -109,19 +109,25 @@ function createFixture() {
   return fixture
 }
 
-test('the feed may only name the package URL this version builds for each Mac chip', () => {
+test('the version comes from the one top-level line of a latest-mac.yml that lists both Mac chips\' zips', () => {
   assert.equal(parseFeed(feed('1.18.34')), '1.18.34')
-  for (const mutate of [
-    (value) => { value.version = 'v1.18.34' },
-    (value) => { value.version = '1.18.34-beta' },
-    (value) => { value.platforms['darwin-aarch64'].url = 'https://evil.invalid/opencode.app.tar.gz' },
-    (value) => { value.platforms['darwin-x86_64'].url = packageSourceUrl('1.18.33', 'macos-x64') },
-    (value) => { delete value.platforms['darwin-x86_64'] },
-    (value) => { value.platforms = [] },
+  assert.equal(parseFeed(feed('1.19.5')), '1.19.5')
+  assert.equal(parseFeed(feed('1.19.5').replace(/\n/g, '\r\n')), '1.19.5')
+  assert.equal(parseFeed(feed('1.19.5').replace('version: 1.19.5', "version: '1.19.5'")), '1.19.5')
+  assert.equal(parseFeed(feed('1.19.5', ['https://github.com/anomalyco/opencode/releases/download/v1.19.5/opencode-desktop-mac-arm64.zip', 'opencode-desktop-mac-x64.zip'])), '1.19.5')
+  for (const value of [
+    feed('v1.18.34'),
+    feed('1.18.34-beta'),
+    feed('1.18.34', ['opencode-desktop-mac-arm64.zip']),
+    feed('1.18.34', ['opencode-desktop-mac-arm64.dmg', 'opencode-desktop-mac-x64.dmg']),
+    feed('1.18.34', ['https://evil.invalid/opencode-desktop-mac-arm64.zip', 'opencode-desktop-mac-x64.zip']),
+    feed('1.18.34', ['https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-desktop-mac-arm64.zip', 'opencode-desktop-mac-x64.zip']),
+    `version: 1.18.35\n${feed('1.18.34')}`,
+    feed('1.18.34').replace('version: 1.18.34', '  version: 1.18.34'),
+    '',
+    { version: '1.18.34', platforms: { 'darwin-aarch64': { url: packageSourceUrl('1.18.34', 'macos-arm64') }, 'darwin-x86_64': { url: packageSourceUrl('1.18.34', 'macos-x64') } } },
   ]) {
-    const value = feed('1.18.34')
-    mutate(value)
-    assert.throws(() => parseFeed(value), /latest\.json/)
+    assert.throws(() => parseFeed(value), (error) => /latest-mac\.yml/.test(error.message) && safeSyncFailure(error).code === 'metadata-invalid')
   }
   assert.equal(packageSourceUrl('1.18.34', 'macos-arm64'), 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-desktop-mac-arm64.app.tar.gz')
   assert.equal(packageKey('macos-x64', 'b'.repeat(64)), `xingmang/offline/opencode/macos-x64/sha256-${'b'.repeat(64)}/opencode-desktop-mac-x64.app.tar.gz`)
@@ -143,8 +149,8 @@ test('every hop stays on this repository\'s release paths or GitHub\'s asset hos
 
   const fixture = createFixture()
   assert.equal(await resolveAssetUrl(FEED_URL, fixture.dependencies), assetFor(FEED_URL))
-  const tag = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest.json'
-  fixture.redirects.set(FEED_URL, { status: 302, location: '/anomalyco/opencode/releases/download/v1.18.34/latest.json' })
+  const tag = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest-mac.yml'
+  fixture.redirects.set(FEED_URL, { status: 302, location: '/anomalyco/opencode/releases/download/v1.18.34/latest-mac.yml' })
   assert.equal(await resolveAssetUrl(FEED_URL, fixture.dependencies), assetFor(tag))
 
   fixture.redirects.set(FEED_URL, { status: 302, location: 'https://evil.invalid/latest.json' })
@@ -210,6 +216,27 @@ test('an unchanged release with intact objects means no download and no write; a
   assert.equal(fixture.pointers.length, 3)
 })
 
+test('a pointer written while the feed was latest.json still counts, and the first release without it replaces it', async () => {
+  const fixture = createFixture()
+  fixture.version = '1.19.4'
+  await fixture.run()
+  // What the bucket held from 2026-10-27 on: 1.19.4, filed under the retired feed.
+  fixture.latest.source.feedUrl = RETIRED_FEED_URL
+  assert.equal(validateLatest(fixture.latest, fixture.store.publicUrl).version, '1.19.4')
+  const unchanged = await fixture.run()
+  assert.equal(unchanged.changed, false)
+  assert.equal(fixture.latest.source.feedUrl, RETIRED_FEED_URL)
+
+  fixture.version = '1.19.5'
+  const updated = await fixture.run()
+  assert.equal(updated.changed, true)
+  assert.equal(fixture.latest.version, '1.19.5')
+  assert.deepEqual(fixture.latest.source, { feedUrl: FEED_URL })
+  assert.deepEqual(fixture.downloads.slice(-2).map(function (download) { return new URL(download.url).searchParams.get('name') }),
+    ['v1.19.5/opencode-desktop-mac-arm64.app.tar.gz', 'v1.19.5/opencode-desktop-mac-x64.app.tar.gz'])
+  assert.equal(fixture.heads.some(function (url) { return url.endsWith('/latest.json') }), false)
+})
+
 test('a package the client would refuse is never uploaded and the diagnostic leaks nothing', async () => {
   const refused = createFixture()
   refused.inspectionError = true
@@ -230,7 +257,7 @@ test('a package the client would refuse is never uploaded and the diagnostic lea
   const mislabelled = createFixture()
   mislabelled.bundleVersion = '1.18.33'
   await assert.rejects(mislabelled.run(), (error) => {
-    assert.match(error.message, /版本和 latest\.json 不一致/)
+    assert.match(error.message, /版本和 latest-mac\.yml 不一致/)
     assert.equal(safeOpenCodeSyncFailure(error).stage, 'verify-package')
     assert.deepEqual(safeOpenCodeSyncFailure(error).failure, { code: 'package-identity-mismatch',
       observed: { expectedVersion: '1.18.34', packageVersion: '1.18.33', bundleIdentifier: 'ai.opencode.desktop' } })
@@ -239,7 +266,7 @@ test('a package the client would refuse is never uploaded and the diagnostic lea
   assert.equal(mislabelled.publications.length, 0)
 
   const badFeed = createFixture()
-  badFeed.feed = { version: '1.18.34', platforms: { 'darwin-aarch64': { url: 'https://evil.invalid/x.tar.gz' } } }
+  badFeed.feed = feed('1.18.34', ['opencode-desktop-mac-arm64.zip'])
   await assert.rejects(badFeed.run(), (error) => safeOpenCodeSyncFailure(error).stage === 'source-feed')
   assert.equal(badFeed.downloads.length, 0)
 })

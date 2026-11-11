@@ -372,6 +372,34 @@ export type CanvasRunEvent = CanvasRunEventBase & (
   }
 )
 
+/**
+ * 跑完以后宿主对出来的实扣（桌面仓画布完善第 2b 条第 3 步）：宿主到这个账号自己的用量记录里按请求号
+ * 对出每次尝试扣了多少，运行结束几秒后单独推一次。不进 `events`，老宿主不推，老内核收到也不认。
+ */
+export interface CanvasRunAttemptCharge {
+  /** settled：这次尝试发出去的请求都对上了；unmatched：有没对上的，写「待核对」。 */
+  state: 'settled' | 'unmatched'
+  /** 对上的那几笔一共多少美元；没扣就是 0。 */
+  usd: number
+  /** 站点事后还可能退补（视频）。 */
+  approximate?: true
+}
+
+export interface CanvasRunCharge {
+  state: 'settled' | 'unmatched'
+  usd: number
+  /** 没对上的付费尝试有几次。 */
+  unmatchedAttempts: number
+  approximate?: true
+  checkedAt: string
+}
+
+export interface CanvasRunChargeEvent extends CanvasRunEventBase {
+  type: 'run-charge'
+  charge: CanvasRunCharge
+  attempts: Array<{ nodeId: string; attemptId: string; charge: CanvasRunAttemptCharge }>
+}
+
 export type CanvasRunNodeState =
   | 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed'
   | 'skipped' | 'cancelled' | 'cached' | 'interrupted'
@@ -403,6 +431,15 @@ export interface CanvasFramePreparation {
   sourceAssetId: string
   timestampSeconds: number
 }
+
+/**
+ * A frame the kernel decoded for a host that asked it to (`completeRunPreparation`):
+ * the ids the host handed out and the PNG, or a bare failure. No path, name,
+ * type or message: the host names the reason on the node itself.
+ */
+export type CanvasRunPreparationCompletion =
+  | { runId: string; operationId: string; kind: 'frame'; outcome: 'completed'; png: Blob; decodedTimestampSeconds?: number }
+  | { runId: string; operationId: string; kind: 'frame'; outcome: 'failed' }
 
 export interface CanvasRunRecord {
   /** Set by the server from the owner/project-bound Agent turn record. */
@@ -472,9 +509,13 @@ export interface CanvasRunRecord {
       model?: string
       /** Owner-scoped durable job ID, never an upstream task identifier. */
       videoTaskId?: string
+      /** The host's settled charge for this attempt; desktop only, filled a few seconds after the run. */
+      charge?: CanvasRunAttemptCharge
     }>
   }>
   events: CanvasRunEvent[]
+  /** The host's settled charge for the whole run; desktop only, filled a few seconds after the run. */
+  charge?: CanvasRunCharge
 }
 
 export interface CanvasProjectPreview {
@@ -502,6 +543,52 @@ export interface CanvasProjectImportProgress {
   completed: number
   total: number
   bytesUploaded: number
+}
+
+export interface CanvasProjectDeleteResult {
+  projectId: string
+  /** The host moved the project folder to the system trash; otherwise every file stays where it was. */
+  folderMovedToTrash: boolean
+}
+
+/**
+ * What the balance chip shows. The host builds it from the account it already
+ * knows about and never puts an email, a user id or a token in it.
+ */
+export interface CanvasAccountSummary {
+  /** Which account this is, in the words the host uses to customers (desktop: 星芒账号 / 历史账号). */
+  siteLabel: string
+  /** A display name the host already masked; null when it has nothing to show. */
+  accountLabel: string | null
+  /** Balance in US dollars, the unit the desktop main window shows. Null while the host has not read it. */
+  balanceUsd: number | null
+  /** One line about a usable subscription, written by the host; null or missing when there is none. */
+  subscriptionLabel?: string | null
+  /** When the host read the balance (ISO time); null while it has not. */
+  readAt: string | null
+}
+
+/** One model's price for one generation, before the group ratio. */
+export interface CanvasModelPrice {
+  /** US dollars at ratio 1. */
+  usd: number
+  /** The host's estimate rather than the exact charge (the charge depends on what the request ends up producing). */
+  approximate?: boolean
+}
+
+/**
+ * What the run preflight prices with. The host fills it from its own price
+ * list; the kernel multiplies and never sends the result anywhere. Models the
+ * host cannot price per generation (priced by tokens, say) are left out and
+ * show as 价格未知.
+ */
+export interface CanvasPriceSnapshot {
+  /** By model name. */
+  models: Record<string, CanvasModelPrice>
+  /** The ratio this account pays in each group, by group name. */
+  groupRatios: Record<string, number>
+  /** When the host read its price list (ISO time). */
+  readAt: string
 }
 
 export interface CanvasStoredProjectSummary {
@@ -593,6 +680,12 @@ export interface CanvasHostBridge {
   exportLayerPsd?(input: { recipe: ImageLayerRecipe; sourceAssetIds: string[]; name: string }, signal?: AbortSignal): Promise<{ fileName: string; byteSize: number; layerCount: number; groupCount?: number }>
   /** Renders a flattened annotation over one owned, unchanged base image; does not save it. */
   readVideoForFramePreview?(assetId: string, signal?: AbortSignal): Promise<Blob>
+  /**
+   * Takes back a frame listed in a run-waiting event's framePreparations
+   * (desktop): with it the kernel decodes the frame with browser-frame.ts and
+   * hands it here. A host without it decodes frames itself (web).
+   */
+  completeRunPreparation?(input: CanvasRunPreparationCompletion): Promise<void>
   renderImageAnnotation?(input: { sourceAssetId: string; recipe: ImageLayerRecipe }, signal?: AbortSignal): Promise<{ blob: Blob; width: number; height: number }>
   importLayerPsd?(document: BrowserImportedLayerPsd, signal: AbortSignal, onProgress?: (completed: number, total: number) => void): Promise<CanvasImageAssetSummary[]>
   importColorLutFile?(file: File, signal?: AbortSignal): Promise<AssetColorLutSource>
@@ -724,6 +817,35 @@ export interface CanvasHostBridge {
   listProjects(): Promise<CanvasStoredProjectSummary[]>
   listProjectPage?(query: CanvasProjectQuery): Promise<CanvasProjectPage>
   createProject(name: string, initialWorkflowContent?: string, options?: { sourceProjectId: string }): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> } | null>
+  /**
+   * A blank project in the host's own folder for canvas projects, without
+   * asking where. The project center then offers "create elsewhere", which is
+   * createProject. Null when the host made nothing.
+   */
+  createProjectInDefaultFolder?(name: string): Promise<{ project: CanvasStoredProjectSummary; content: string } | null>
+  /**
+   * Asks the user where the folder of a project marked missing is now, and
+   * binds the project to it. Null when the user cancels.
+   */
+  relinkProjectFolder?(projectId: string): Promise<CanvasStoredProjectSummary | null>
+  /**
+   * Deletes an archived project. The host asks the user itself (a system
+   * confirmation that says what happens to the project folder) and decides
+   * what happens to the folder; the canvas only names the project. Null when
+   * the user cancels.
+   */
+  deleteProject?(projectId: string): Promise<CanvasProjectDeleteResult | null>
+  /**
+   * The account the canvas spends from and its balance, for the balance chip.
+   * Read-only and without arguments; null while nobody is signed in. Hosts may
+   * answer from a recent read instead of asking their server every time.
+   */
+  getAccountSummary?(): Promise<CanvasAccountSummary | null>
+  /**
+   * The price list for 「预计约 $x」 in the run preflight. Read-only and without
+   * arguments; null when the host cannot price this account at all.
+   */
+  getPriceSnapshot?(): Promise<CanvasPriceSnapshot | null>
   createTemplateProject?(input: { operationId: string; content: string }): Promise<{ project: CanvasStoredProjectSummary; content: string }>
   inspectProjectCreation?(input: { operationId: string; creationDigest: string }): Promise<CanvasProjectCreationReceipt>
   openProject(projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> }>
@@ -736,11 +858,17 @@ export interface CanvasHostBridge {
   duplicateProject(projectId: string, name: string): Promise<{ project: CanvasStoredProjectSummary; content: string; projectProvenance?: Array<{ name: string; license: string; notice?: string }> } | null>
   setProjectArchived(projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary>
   onAccountChange(listener: (change: CanvasAccountChange) => void): () => void
-  onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
+  onRunEvent(listener: (event: CanvasRunEvent | CanvasRunChargeEvent) => void): () => void
   onThemeChange(listener: (theme: 'light' | 'dark') => void): () => void
   onAppearanceChange(listener: (appearance: CanvasAppearance) => void): () => void
   onCloseRequested(listener: (request: { requestId: string }) => void): () => void
   onCloseCancelled(listener: (request: { requestId: string }) => void): () => void
+  /**
+   * The host asks for the read-only account library while the page is already
+   * open, the same as loading it with `?view=assets`. Carries nothing; the
+   * kernel ignores it while a project is open or opening.
+   */
+  onShowAccountAssets?(listener: () => void): () => void
   finishClose(requestId: string, allowed: boolean): Promise<boolean>
   cancelCloseTasks(requestId: string): Promise<boolean>
 }

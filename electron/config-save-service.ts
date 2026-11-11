@@ -48,6 +48,7 @@ import {
   codexOfficialAliasPending,
   fillRelayTemplateDefaults,
   inspectCodexModelCatalogOnDisk,
+  inspectManagedCliHookParts,
   inspectManagedCliHookTargets,
   inspectRetiredGeminiIntegrations,
   managedGlobalResponseLanguagePresent,
@@ -55,10 +56,12 @@ import {
   type NativeConfigSummary,
   planProviderModelReplace,
   planProviderPickerRefresh,
+  providerConfigPaths,
   relayTemplateDefaultsPending,
   relayTemplateRevision,
   removeRetiredGeminiIntegrations,
   restoreCodexOfficialAlias,
+  restoreManagedCliHooks,
   type RetiredGeminiIntegrations,
   rewriteManagedCliHooks,
   saveProviderConfig,
@@ -76,6 +79,13 @@ import {
   relaySiteEndpointIdForBaseUrl,
   relaySiteForProviderBaseUrl,
 } from './relay-sites'
+import {
+  planRemovedCliHooksRestore,
+  readRemovedCliHooks,
+  type RemovedCliHooks,
+  removedCliHooksContent,
+  replaceRemovedCliHooks,
+} from './removed-cli-hooks'
 import { emptyRunningToolsReport, type RunningToolsReport } from './running-tools'
 import type { AppConfigSummary, CodexReadinessStatus, ConfigSavePayload, ToolStatus } from './system-service'
 import { modelAccessCacheKey, sameNativeConfigSnapshot, type ServiceContext } from './system-service-context'
@@ -738,6 +748,77 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     })
   }
 
+  // 卸载时收回的提醒设置，这次启动只补一遍：开机那次和开机后第一次读配置共用，谁先到谁跑。
+  let removedCliHooksRestore: Promise<ProviderId[]> | null = null
+  function restoreCliHooksRemovedByUninstall(): Promise<ProviderId[]> {
+    removedCliHooksRestore ??= restoreRemovedCliHooks().catch(() => [])
+    return removedCliHooksRestore
+  }
+
+  /**
+   * 卸载星芒时收回了哪几家的提醒设置（removed-cli-hooks.ts 那份记录），重装回来开机按记录补回：做完、出错时的
+   * 提醒，干活时不让电脑睡着，Claude Code 的状态栏。只补记录里那几样、只补进当时收回的那份文件；客户自己设过的
+   * 状态栏、Codex notify 不顶掉。补上了、或者已经有了就从记录里划掉，这台电脑现在写不出来的留到下次开机。
+   * 不看账号：补的只是卸载时收走的那几行。修不好只记日志，从不抛错。
+   */
+  async function restoreRemovedCliHooks(): Promise<ProviderId[]> {
+    const dataDirectory = serviceOptions.managerDataDirectory
+    if (!dataDirectory) return []
+    let entries: RemovedCliHooks[]
+    try {
+      entries = await readRemovedCliHooks(dataDirectory)
+    } catch (error) {
+      runtimeLog?.log('warn', 'config', 'cli-hooks.restore-record-unreadable', '卸载时收回的提醒设置记录读不了，这次不补', { reason: credentialFailureReason(error) })
+      return []
+    }
+    if (!entries.length) return []
+    const cliHook = await resolveCliHookInvocation()
+    const claudeStatusLineCommand = await resolveClaudeStatusLineCommand('claude')
+    const restored: ProviderId[] = []
+    const remaining: RemovedCliHooks[] = []
+    for (const entry of entries) {
+      const { provider } = entry
+      const step = planRemovedCliHooksRestore({
+        entry,
+        currentConfigPath: providerConfigPaths(provider, providerRoots)[0],
+        present: inspectManagedCliHookParts(provider, providerRoots),
+        hooksWritable: cliHook !== undefined && (provider !== 'grok' || grokCliHookCommand(cliHook) !== null),
+        statusLineWritable: provider === 'claude' && Boolean(claudeStatusLineCommand),
+        platform,
+      })
+      if (!step.restore.length) {
+        if (step.keep) remaining.push(step.keep)
+        continue
+      }
+      try {
+        const result = await serializeConfigWrite(async () => restoreManagedCliHooks(provider, providerRoots, { parts: step.restore, cliHook, claudeStatusLineCommand }))
+        if (step.keep) remaining.push(step.keep)
+        // 没写文件 = 客户已经有自己的状态栏或 notify，照样划掉，只是不算补过。
+        if (result.files.length) {
+          restored.push(provider)
+          runtimeLog?.log('info', 'config', 'cli-hooks.restored', '重装后把卸载时收回的提醒设置补回来了', { provider, parts: step.restore })
+        }
+      } catch (error) {
+        // 这次没写成的几样原样留着，下次开机再补。
+        remaining.push({ ...entry, parts: [...step.restore, ...(step.keep?.parts ?? [])] })
+        runtimeLog?.log('warn', 'config', 'cli-hooks.restore-failed', '重装后补回提醒设置没成功，下次开机再试', {
+          provider,
+          parts: step.restore,
+          reason: credentialFailureReason(error),
+        })
+      }
+    }
+    if (removedCliHooksContent(remaining) !== removedCliHooksContent(entries)) {
+      try {
+        await replaceRemovedCliHooks(dataDirectory, remaining)
+      } catch (error) {
+        // 记录没划掉也不要紧：下次开机看到已经有了，照样划掉不补。
+        runtimeLog?.log('warn', 'config', 'cli-hooks.restore-record-update-failed', '卸载时收回的提醒设置记录没更新成', { reason: credentialFailureReason(error) })
+      }
+    }
+    return restored
+  }
+
   /**
    * 开机后第一次读配置时，把本账号写的、指向旧位置的钩子和状态行直接改好（卸载后换文件夹重装、
    * 挪了软件、换装了 Node.js 之后），不用客户去首页点「修好它」。每个账号只查一遍、每家只试一次；
@@ -750,6 +831,8 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
   }
 
   async function repairStaleAccountCliHooks(): Promise<ProviderId[]> {
+    // 卸了重装回来，先把卸载时收回的补上，首页这次读到的就是补完的样子（Windows 上 Grok 不会先冒出「补上」）。
+    await restoreCliHooksRemovedByUninstall()
     const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     // 每个账号这次启动只查一遍：读配置很频繁，不能每次都去翻四家的文件（Windows 上还要读注册表）。
     // Grok 换了命令行这种开着软件时才发生的事，交给打开 Grok 前那一道（repairGrokHooksBeforeLaunch）。
@@ -1374,5 +1457,5 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     return pending.length ? { filled: result.filled, pending } : { filled: result.filled }
   }
 
-  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, autoRepairStaleCliHooks, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
+  return { refreshGrokHooksForShellChange, addMissingGrokHooks, takeBackUnreadableCodexModelCatalog, forgetCodexModelCatalogReaders, rememberedWorkspaceFor, repairGrokHooksBeforeLaunch, buildConfigSummary, inspectCodexReadiness, revealApiKey, saveConfig, repairCliHooks, autoRepairStaleCliHooks, restoreCliHooksRemovedByUninstall, toolModelChecker, guardCodexModelCatalogAtStartup, reclaimRetiredToolIntegrations, fillToolTemplateDefaultsThenSyncPickers, stopTemplateFillWaits }
 }

@@ -71,6 +71,32 @@ export const updateNetworkFailureMessages: Readonly<Record<NetworkFailureReason,
 }
 
 /**
+ * 电脑设的代理要账号密码（公司网的认证代理、Mac 上勾了「代理服务器要求密码」）。星芒不接代理的认证、
+ * 也不存代理密码（D32 定了不做输入框），Chromium 就把认证取消掉，请求照样失败，归类仍是 proxy：改不改
+ * 直连、重不重发都跟代理连不上一样走。只是说法要换：代理开着，是它要密码，叫客户去开代理软件、关系统
+ * 代理都说错了（深查 PX-11）。
+ *
+ * 不进上面两张表：那两张按归类一一对应，这句是 proxy 里的一种。主进程认出来就用它，渲染层按
+ * isProxyAuthFailure 认回来。
+ */
+export const proxyAuthRequiredMessage = '电脑设置的代理要账号密码，星芒现在用不了它，请联系管理员或换个网络。'
+
+/**
+ * HTTP 407：代理要账号密码。星芒的服务自己从不回它。Electron 45 实测（沙箱里起一个回 407 的代理）：
+ * 走 https 时 net.fetch 先交出一个 407 的回应，读正文才报 net::ERR_TUNNEL_CONNECTION_FAILED，那个错误码
+ * 跟「代理开着、回绝了这个地址」是同一个，只有调用方手里的状态码分得清。
+ */
+export const proxyAuthRequiredStatus = 407
+
+// Chromium's own spellings of "the proxy wanted credentials": a challenge with
+// a scheme it cannot answer, or no Proxy-Authenticate header at all, rejects
+// with ERR_PROXY_AUTH_UNSUPPORTED (seen in Electron 45.1.0);
+// ERR_PROXY_AUTH_REQUESTED(_WITH_NO_CONNECTION) is the tunnel-auth code; and
+// ERR_UNEXPECTED_PROXY_AUTH is a 407 that came back on a connection that was
+// not going through a proxy, i.e. a transparent proxy on the network.
+const proxyAuthCodePattern = /ERR_PROXY_AUTH_(?:UNSUPPORTED|REQUESTED)|ERR_UNEXPECTED_PROXY_AUTH/i
+
+/**
  * 装工具前到 npm 官方源核对安装清单那一步没连上时，主进程那句里的固定一段（#1057 第5b条）。这一步
  * 只能走官方源，换国内镜像绕不过去；渲染层认这一段出「连不上 npm 官方源」，两边用这一个常量。
  */
@@ -219,6 +245,7 @@ export function networkFailureCode(error: unknown): string | null {
  */
 export function networkFailureReasonForMessage(text: unknown): NetworkFailureReason | null {
   if (typeof text !== 'string' || !text) return null
+  if (text.includes(proxyAuthRequiredMessage)) return 'proxy'
   return reasons.find((reason) => text.includes(networkFailureMessages[reason])) ?? null
 }
 
@@ -248,9 +275,71 @@ export function isTlsHandshakeFailure(error: unknown): boolean {
   return matchingPattern(text) === handshakeFailurePattern
 }
 
+/**
+ * proxy 那一类里，是不是「代理要账号密码」：Chromium 的那几个错误码，或者主进程已经写好的那句（跨过 IPC
+ * 以后只剩它）。407 的那种错误里看不出来（见 proxyAuthRequiredStatus），手里有回应的调用方自己看状态码。
+ * 主进程写好的别的中文按不是算，跟 isTlsHandshakeFailure 一样不拿后面挂的现场去猜。
+ */
+export function isProxyAuthFailure(error: unknown): boolean {
+  const text = collectFailureText(error)
+  if (!text) return false
+  if (text.includes(proxyAuthRequiredMessage)) return true
+  return !networkFailureReasonForMessage(text) && proxyAuthCodePattern.test(text)
+}
+
+/**
+ * 这次失败该给客户看的那句：代理要账号密码时是 proxyAuthRequiredMessage，别的照 networkFailureMessages。
+ * 认不出是网络问题返回 null。
+ */
+export function resolveNetworkFailureMessage(error: unknown): string | null {
+  const reason = classifyNetworkFailure(error)
+  if (!reason) return null
+  return reason === 'proxy' && isProxyAuthFailure(error) ? proxyAuthRequiredMessage : networkFailureMessages[reason]
+}
+
+// The only reaction to an unreachable proxy is taking the updater session off
+// the user's proxy, so the match must never be made against free text: a
+// release note, a mirror's HTML error page or a manifest field that merely
+// mentions the code would otherwise be enough to bypass a proxy the user
+// deliberately configured.
+//
+// Electron's net module (lib/common/api/net-client-request.ts, which
+// electron-updater's executor uses for both the check and the download, and
+// which session.fetch rejects with as well) does not attach a code: it rejects
+// with `new Error('net::ERR_PROXY_CONNECTION_FAILED')` and builder-util-runtime
+// passes that error through untouched. Running Electron 45.1.0 +
+// electron-updater 6.8.9 against a closed proxy port gives a plain Error whose
+// only own keys are `stack` and `message`, for checkForUpdates, downloadUpdate
+// and session.fetch alike. So the message is accepted, but only when it is the
+// whole message of an Error -- exactly what Electron constructs -- never when
+// the code appears inside a longer text. The structured `code` is still
+// accepted for errors that do carry one.
+const PROXY_CONNECTION_FAILED_CODE = 'ERR_PROXY_CONNECTION_FAILED'
+const PROXY_CONNECTION_FAILED_NET_MESSAGE = `net::${PROXY_CONNECTION_FAILED_CODE}`
+
+/**
+ * 更新会话（检查更新、下载更新、服务状态文件）撞上「系统代理指着的代理软件没在听」时，只认这一种才改直连再试一次。
+ * 和上面 classifyNetworkFailure 的 proxy 那类不是一回事：那边按文本归类、给客户看一句话，这里决定绕不绕开客户的代理，
+ * 所以只认 Electron 原样抛出的那种。
+ */
+export function isProxyConnectionFailure(error: unknown): boolean {
+  // electron-updater wraps executor failures, so follow a bounded cause chain
+  // rather than only inspecting the outermost error.
+  let candidate: unknown = error
+  for (let depth = 0; depth < 4 && candidate !== null && candidate !== undefined; depth += 1) {
+    const code = (candidate as { code?: unknown }).code
+    if (typeof code === 'string' && code.toUpperCase() === PROXY_CONNECTION_FAILED_CODE) return true
+    if (candidate instanceof Error && candidate.message === PROXY_CONNECTION_FAILED_NET_MESSAGE) return true
+    candidate = (candidate as { cause?: unknown }).cause
+  }
+  return false
+}
+
 /** 渲染层用：认出主进程那句话就原样上屏，认不出来交还给调用方兜底。 */
 export function matchNetworkFailureMessage(text: unknown): string | null {
-  const reason = networkFailureReasonForMessage(typeof text === 'string' ? text : text instanceof Error ? text.message : '')
+  const message = typeof text === 'string' ? text : text instanceof Error ? text.message : ''
+  if (message.includes(proxyAuthRequiredMessage)) return proxyAuthRequiredMessage
+  const reason = networkFailureReasonForMessage(message)
   return reason ? networkFailureMessages[reason] : null
 }
 

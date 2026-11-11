@@ -1,20 +1,33 @@
 import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from './ai-image-service'
 import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-protocol'
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
+import { assertCanvasImageEditMaskInput, buildCanvasImageMaskPng } from './canvas-image-mask'
+import { assertCanvasTextImageInput } from './canvas-text-image-input'
+import type { CanvasFrameExtraction } from './canvas-run-preparations'
 import type {
+  CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
   CanvasNodeExecutors,
 } from './canvas-run-engine'
-import type { AiOperationProgressObserver } from './ai-operation-progress'
+import type { AiOperationProgressObserver, AiOperationProgressUpdate, AiRelayBillingObserver } from './ai-operation-progress'
 import { parseDramaTablesJson } from './drama-parse'
 import { dramaParseSystemPrompt } from './drama-parse-prompt'
 
 export interface CanvasTextCompletionInput {
   group: string
   model: string
-  system: string
+  /** Left out for a text-generate node: the user's own words are the whole request. */
+  system?: string
   user: string
+  /**
+   * Pictures the model reads with the user message (画布完善第 6 条): canvas
+   * asset ids, read from the account's own store only once the credential
+   * names that account.
+   */
+  images?: { assetIds: readonly string[]; projectId?: string }
   signal: AbortSignal
+  /** The attempt's 实扣 bookkeeping; hand it to the request. */
+  billing?: AiRelayBillingObserver
 }
 
 export interface CanvasTextCompletionService {
@@ -105,12 +118,36 @@ function imageResult(
   }
 }
 
+/**
+ * What a paid request reports back to the run: its stages when the run shows
+ * them, and the relay's request id for the run's 实扣. Undefined when the run
+ * wants neither, so the request goes out exactly as it did before.
+ */
+function requestObserver(
+  reportStage: CanvasNodeExecutionContext['reportStage'],
+  billing: AiRelayBillingObserver | undefined,
+  withProgress = false,
+): AiOperationProgressObserver | undefined {
+  if (!reportStage && !billing) return undefined
+  return {
+    onStage: reportStage ?? (() => undefined),
+    ...(reportStage && withProgress ? { onProgress: (update: AiOperationProgressUpdate) => reportStage('processing', update) } : {}),
+    ...(billing ? {
+      onRelayDispatch: (sent: boolean) => billing.onRelayDispatch?.(sent),
+      onRelayAnswer: (relayRequestId: string | null) => billing.onRelayAnswer?.(relayRequestId),
+    } : {}),
+  }
+}
+
 // addEventListener('abort') never fires for a signal that is already
 // aborted, so a stop that lands before an executor starts would otherwise
 // slip through and submit a paid generation request.
 function throwIfCancelled(signal: AbortSignal): void {
   if (signal.aborted) throw signal.reason ?? new Error('运行已取消')
 }
+
+/** What a canvas project can hold as a node's text result (canvas-project-package.ts). */
+export const maximumCanvasTextOutputLength = 32_000
 
 export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
@@ -120,9 +157,11 @@ export function createCanvasNodeExecutors(options: {
   imageGroup?: string
   videoGroup?: string
   textGroup?: string
+  /** Frame-extract nodes run only with it (画布完善第 7 条第二步); without it they stay refused. */
+  frames?: CanvasFrameExtraction
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
-  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
     const group = node.data.group || options.imageGroup || '图片模型'
@@ -147,15 +186,16 @@ export function createCanvasNodeExecutors(options: {
           ? { quality: node.data.quality }
           : {}),
       }
-      const assets = reportStage
-        ? await options.imageService.generate(ownerId, input, { onStage: reportStage })
+      const observer = requestObserver(reportStage, billing)
+      const assets = observer
+        ? await options.imageService.generate(ownerId, input, observer)
         : await options.imageService.generate(ownerId, input)
       return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
@@ -169,6 +209,11 @@ export function createCanvasNodeExecutors(options: {
     )]
     if (sourceAssetIds.length === 0) throw new Error('请连接至少一张已保存到本地资产库的参考图片')
     if (sourceAssetIds.length > 4) throw new Error('图片编辑最多支持 4 张参考图片')
+    const mask = node.data.imageEditMask
+    // Checked again here, after the kernel's preflight, because the request
+    // goes out whatever the canvas checked: a mask drawn on another image, or
+    // on an image since swapped, fails before anything is paid.
+    if (mask) assertCanvasImageEditMaskInput(mask, node.data.model, inputs.images ?? (inputs.image ? [inputs.image] : []))
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -181,6 +226,7 @@ export function createCanvasNodeExecutors(options: {
         model: node.data.model,
         prompt,
         sourceAssetIds,
+        ...(mask ? { mask: { width: mask.width, height: mask.height, png: (maskSignal: AbortSignal) => buildCanvasImageMaskPng(mask, maskSignal) } } : {}),
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
@@ -192,8 +238,9 @@ export function createCanvasNodeExecutors(options: {
           ? { quality: node.data.quality }
           : {}),
       }
-      const assets = reportStage
-        ? await options.imageService.edit(ownerId, input, { onStage: reportStage })
+      const observer = requestObserver(reportStage, billing)
+      const assets = observer
+        ? await options.imageService.edit(ownerId, input, observer)
         : await options.imageService.edit(ownerId, input)
       return imageResult(assets, group, node.data.model)
     } finally {
@@ -236,7 +283,7 @@ export function createCanvasNodeExecutors(options: {
     const owned = await options.assets.readOwned(userId, assetId, 'audio')
     return { assets: [{ kind: 'audio', ...owned.asset }] }
   }
-  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
+  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     if (!options.videoService) throw new Error('视频生成能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
@@ -280,11 +327,9 @@ export function createCanvasNodeExecutors(options: {
           ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
         }),
       }
-      const asset = reportStage
-        ? await options.videoService.generate(ownerId, input, {
-          onStage: reportStage,
-          onProgress: (update) => reportStage('processing', update),
-        })
+      const observer = requestObserver(reportStage, billing, true)
+      const asset = observer
+        ? await options.videoService.generate(ownerId, input, observer)
         : await options.videoService.generate(ownerId, input)
       return {
         assets: [{
@@ -303,7 +348,33 @@ export function createCanvasNodeExecutors(options: {
   const unsupported: CanvasNodeExecutors['image-edit'] = async () => {
     throw new Error('该节点能力尚未接入，当前不会提交付费请求')
   }
-  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal }) => {
+  // 画布完善第 7 条第二步：主进程不解视频，只核对视频是这个账号的、页面解得动，再请页面抽出那一帧交回来。
+  // 不发任何付费请求；等的这段时间节点显示「处理中」，画布顶上写「正在准备视频帧图片」。
+  const frameExtract: CanvasNodeExecutors['image-edit'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportFramePreparation }) => {
+    const frames = options.frames
+    if (!frames || !reportFramePreparation) throw new Error('「视频抽帧」节点桌面版暂不支持，本次没有提交任何付费请求')
+    const video = inputs.video
+    if (!video) throw new Error('请先给视频抽帧节点连接一段视频')
+    await frames.assertDecodableVideo(userId, video.assetId)
+    throwIfCancelled(signal)
+    // The web host names the operation after the attempt too; the kernel checks they match.
+    const preparation = {
+      operationId: attemptId,
+      nodeId: node.id,
+      attemptId,
+      sourceAssetId: video.assetId,
+      timestampSeconds: node.data.frameTimestampSeconds ?? 0,
+    }
+    const frame = frames.waitForFrame({ runId, userId, ...(projectId ? { projectId } : {}), preparation, signal })
+    void frame.catch(() => undefined)
+    try {
+      await reportFramePreparation(preparation, true)
+      return { assets: [await frame] }
+    } finally {
+      await reportFramePreparation(preparation, false)
+    }
+  }
+  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal, billing }) => {
     const script = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim()
     if (!script) throw new Error('请先连接或粘贴剧本文本')
     if (!options.completeText) throw new Error('剧本解析服务未就绪')
@@ -323,6 +394,7 @@ export function createCanvasNodeExecutors(options: {
           system: dramaParseSystemPrompt,
           user: script,
           signal,
+          ...(billing ? { billing } : {}),
         })
       } catch (error) {
         if (signal.aborted) throw error
@@ -344,6 +416,31 @@ export function createCanvasNodeExecutors(options: {
       throw failure(error)
     }
   }
+  // 画布完善第 6 条：文字生成节点。跟网页版服务端同一个做法（xingmang-canvas
+  // lib/canvas-runs.ts）：上游文字和节点自己的提示词按行拼起来，原样作为一条用户消息
+  // 发出，不加系统提示；连了图片就一起给模型看。结果超过 32000 字不收，跟画布能存的
+  // 文字结果一样长。
+  const textGenerate: CanvasNodeExecutors['text-generate'] = async ({ projectId, node, inputs, signal, billing }) => {
+    const prompt = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n')
+    if (!prompt.trim()) throw new Error('请输入文字提示词或连接上游提示词节点')
+    if (!options.completeText) throw new Error('文字生成服务未就绪')
+    const group = node.data.group || options.textGroup || ''
+    if (!group) throw new Error('请先在「生成配置」中选择文字分组')
+    const model = node.data.model.trim()
+    if (!model) throw new Error('请选择文字模型')
+    const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    assertCanvasTextImageInput(model, images.length)
+    const outputText = await options.completeText.completeOnce({
+      group,
+      model,
+      user: prompt,
+      ...(images.length ? { images: { assetIds: images.map((asset) => asset.assetId), ...(projectId ? { projectId } : {}) } } : {}),
+      signal,
+      ...(billing ? { billing } : {}),
+    })
+    if (outputText.length > maximumCanvasTextOutputLength) throw new Error('文字结果超过 32000 字上限，请调整生成长度后再运行')
+    return { outputText, group, model }
+  }
   const dramaText: CanvasNodeExecutors['drama-bible'] = async ({ node, inputs }) => ({
     outputText: [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim(),
   })
@@ -360,10 +457,11 @@ export function createCanvasNodeExecutors(options: {
   return {
     text, prompt: text, image: imageOrEdit, 'image-generate': imageOrEdit,
     video, 'video-generate': video, 'image-edit': imageEdit,
-    'frame-extract': unsupported, 'video-input': videoInput,
+    'frame-extract': options.frames ? frameExtract : unsupported, 'video-input': videoInput,
     'image-input': imageInput, 'audio-input': audioInput, router: passThrough, gallery: passThrough, output: passThrough,
     group: passThrough, note: text,
     'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,
     'drama-character': dramaAsset, 'drama-scene': dramaAsset, 'drama-prop': dramaAsset,
+    'text-generate': textGenerate,
   }
 }

@@ -223,9 +223,16 @@ jobs:
       # version is unchanged and otherwise from GitHub with bounded, spaced
       # retries (scripts/ci-ensure-electron-binary.cjs). The cached folder is
       # @electron/get's own default for the runner's OS, not one passed in:
-      # electron-builder downloads Electron through the same library into the
+      # electron-builder looks for Electron through the same library in the
       # same folder, so the packaging steps later in windows-package and
-      # macos-test reuse this zip instead of fetching it again. Only a push to
+      # macos-test take this runner's zip from it. Until 2026-11 they still
+      # fetched SHASUMS256.txt from GitHub on every run (that file never enters
+      # the cache) and went red on its 504s; electron-builder.config.cjs now
+      # checks the zip against the locked package's checksums.json instead.
+      # macos-test and linux-test also put the other architecture's zip in their
+      # entry, which the packaging-only jobs read; anything still downloaded
+      # during packaging gets the retries widened in
+      # scripts/patch-builder-fetch-compat.cjs. Only a push to
       # main writes the cache, right after the download: a pull request's cache
       # can be read by that pull request alone, so a copy per pull request would
       # only crowd the npm caches out of the repository's 10 GB, and saving
@@ -484,16 +491,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
-      # The same three Electron steps as windows-test.
+      # The same three Electron steps as windows-test, plus one: the cache here
+      # holds both architectures' zips. This job packages both, and
+      # macos-release-rehearsal and macos-intel read the same entry, so none of
+      # them fetches Electron from GitHub once main has saved it. On #1600,
+      # macos-intel, which had no cache, went red when GitHub answered 504 for
+      # the darwin-arm64 zip for over four minutes (CI-1). The key names the
+      # architectures rather than runner.arch so the Intel runner can read it.
       - name: Restore the Electron download for this version
         id: electron-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/Library/Caches/electron
-          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+          key: electron-${{ runner.os }}-arm64-x64-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Install the Electron binary before any test loads it
         timeout-minutes: 20
         run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Put the Intel Electron zip in the same download cache
+        # Same retries and bound as the install above; on a cache hit it only
+        # checks the zip against checksums.json.
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs --zip x64
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -594,6 +612,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 读 macos-test 在 main 上存下的那份 Electron 压缩包（M 芯片版和 Intel 版都在，见
+      # CI-1）。只读不写：这个作业不装测试用的二进制，electron-builder 用缓存里的包之前
+      # 照样按锁文件钉住的 checksums.json 核对；没命中（main 还没存过的新 Electron）时
+      # 打包现下，靠打包器放宽到约 4 分钟的重试兜住 504。
+      - name: Restore the Electron download macos-test keeps for this version
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-arm64-x64-${{ hashFiles('node_modules/electron/package.json') }}
       # 与 publish-release.yml 同样的先后：暂存工具用的是主进程里那套安全读写与内核
       # 校验，所以它跑之前必须先有 dist-electron；少了这一步它会在第一秒就报
       # 「请先编译主进程」。
@@ -652,6 +679,15 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # 同 macos-release-rehearsal：读 macos-test 存下的两个架构的 Electron 压缩包，只读。
+      # #1600 上这个作业没有缓存，GitHub 对 darwin-arm64 压缩包连着回了四分多钟 504，
+      # 打包器重试六次全被挡（CI-1）。键里写的是架构名，不是 runner.arch，所以 Intel
+      # 机器读得到 Apple 芯片机器存的那份。
+      - name: Restore the Electron download macos-test keeps for this version
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/Library/Caches/electron
+          key: electron-${{ runner.os }}-arm64-x64-${{ hashFiles('node_modules/electron/package.json') }}
       # --ci-temporary-signing 不替调用方编译（见 package-for-testing.yml 那一步的说明），
       # macos-test 是靠 test:mac:dev-origin 顺带编译的，这里没有那一步。
       - run: npm run compile
@@ -691,16 +727,20 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
-      # The same three Electron steps as windows-test.
+      # The same three Electron steps as windows-test, plus the arm64 zip, so
+      # the entry also serves linux-package on its arm64 runner (CI-1).
       - name: Restore the Electron download for this version
         id: electron-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/electron
-          key: electron-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('node_modules/electron/package.json') }}
+          key: electron-${{ runner.os }}-arm64-x64-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Install the Electron binary before any test loads it
         timeout-minutes: 20
         run: node scripts/ci-ensure-electron-binary.cjs
+      - name: Put the arm64 Electron zip in the same download cache
+        timeout-minutes: 20
+        run: node scripts/ci-ensure-electron-binary.cjs --zip arm64
       - name: Save the Electron download for later runs
         if: github.event_name == 'push' && steps.electron-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -905,6 +945,18 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      # The Electron zips linux-test keeps for this version, both
+      # architectures (CI-1). Read only: this job never installs the binary the
+      # tests load, so it has nothing of its own to write back, and
+      # electron-builder checks whatever it finds here against the locked
+      # checksums.json before using it. On a miss (a new Electron that main has
+      # not cached yet) the build downloads the zip with the packager's widened
+      # retries.
+      - name: Restore the Electron download linux-test keeps for this version
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/electron
+          key: electron-${{ runner.os }}-arm64-x64-${{ hashFiles('node_modules/electron/package.json') }}
       - name: Build the deb for this runner's architecture
         # Compile, then electron-builder's xz-compressed deb. A few minutes;
         # the bound names this step if a download it makes ever hangs.
@@ -973,8 +1025,9 @@ jobs:
     needs: changes
     if: needs.changes.outputs.cliVersions == 'true'
     runs-on: ubuntu-latest
-    # One install plus one real request per pinned CLI per relay site. Two
-    # probed CLIs and two sites is four requests, each bounded at two minutes.
+    # One install plus one real request per pinned CLI per probed relay site.
+    # Two CLIs against solov is two requests (the history-account site is not
+    # probed, see UNPROBED_SITES), each bounded at two minutes.
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -988,6 +1041,8 @@ jobs:
       - name: Probe every pinned CLI version against every relay site
         env:
           XINGMANG_CLI_PATROL_KEY: ${{ secrets.XINGMANG_CLI_PATROL_KEY }}
+          # new-api 的令牌一把只属于一个分组；Claude 单独一把，没配就退回上面那把。
+          XINGMANG_CLI_PATROL_KEY_CLAUDE: ${{ secrets.XINGMANG_CLI_PATROL_KEY_CLAUDE }}
         run: node scripts/probe-cli-relay.cjs
 
   audit:

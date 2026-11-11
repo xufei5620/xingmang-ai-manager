@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type FocusEvent, type MouseEvent, type ReactNode } from 'react'
 import { ArrowRight, ArrowUpRight, Bell, CircleHelp, CreditCard, Download, Gauge, LogOut, Moon, PanelLeft, Play, RefreshCw, Search, SlidersHorizontal, Sparkles, Sun, Zap, type LucideIcon } from 'lucide-react'
-import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
+import { Button, Coachmark, Dialog, Input, Logo, Tooltip, focusable } from '../../ui'
 import { shellNavigation, shellTour, type ShellNavigationEntry } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
 import { accountTabs, type SettingsItem, type UpdateSidebarEntry } from '../../registry/business'
@@ -124,6 +124,13 @@ const actionIcons: Partial<Record<string, LucideIcon>> = {
   'action:recharge': CreditCard, 'action:usage': Gauge, 'action:check': Zap, 'action:help': CircleHelp, 'action:chat-parameters': SlidersHorizontal, 'account:logout': LogOut,
 }
 const toolActionIcons: Partial<Record<CommandAction, LucideIcon>> = { openTool: Play, installTool: Download, configureTool: SlidersHorizontal }
+
+// 按「/」跳到的搜索框：只找正文里看得见、点得着的那个。聊天页去过一次就一直挂在正文最前面、只是藏起来，
+// 它的「搜索对话」排第一；取第一个就永远是它，focus() 一个藏起来的框不起作用，别的页按「/」也就没反应了。
+function pageSearchField(main: HTMLElement | null) {
+  if (!main) return null
+  return focusable(main).find((element): element is HTMLInputElement => element instanceof HTMLInputElement && element.matches('input[type="search"], input[aria-label*="搜索"]')) ?? null
+}
 
 function useNarrowWindow() {
   const [narrow, setNarrow] = useState(() => typeof matchMedia !== 'undefined' && matchMedia(narrowWindowQuery).matches)
@@ -288,9 +295,10 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
         event.preventDefault(); openCommand()
       }
-      if (event.key === '/' && event.target instanceof Element && !event.target.closest('input, textarea, [contenteditable="true"]')) {
-        const field = viewport.current?.querySelector<HTMLInputElement>('input[type="search"], input[aria-label*="搜索"]')
-        if (field) { event.preventDefault(); field.focus() }
+      // 菜单按字母跳转也收「/」：它处理过（defaultPrevented）或焦点还在菜单、列表里就不管，不然焦点被拽走、菜单还开着。
+      if (event.key === '/' && !event.defaultPrevented && event.target instanceof Element && !event.target.closest('input, textarea, [contenteditable="true"], [role="menu"], [role="listbox"]')) {
+        const field = pageSearchField(viewport.current)
+        if (field) { field.focus(); if (document.activeElement === field) event.preventDefault() }
       }
     }
     document.addEventListener('keydown', keydown)
@@ -459,9 +467,11 @@ export function Shell({ activePage, accountTab, account, platform, adapter, them
               {entries.map((entry) => entry === 'recharge' ? rechargeButton() : navButton(entry))}
             </div>
           })}</div>
-          {/* 「设置」不跟着滚：屏幕矮时上面那段先收缩，它始终露在外面。「更多」里的几页在 v4 各有了去处
-              （游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），「更多」跟着去掉了（第 10 批）。 */}
+          {/* 「充值」和「设置」不跟着滚：屏幕矮时上面那段先收缩，这两项始终露在外面；有新版本时那项金色的更新入口夹在中间，
+              仍紧挨「设置」上面。「更多」里的几页在 v4 各有了去处（游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），
+              「更多」跟着去掉了（第 10 批）。 */}
           <div className="v2-sidebar-pinned" data-testid="sidebar-pinned">
+            {entryVisible('recharge') && rechargeButton()}
             {updateEntry && updateButton(updateEntry)}
             {navButton('settings')}
           </div>

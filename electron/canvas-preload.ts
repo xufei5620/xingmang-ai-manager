@@ -18,6 +18,7 @@ const channels = {
   saveAsset: 'canvas-host:save-asset',
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
+  getAssetDetail: 'canvas-host:get-asset-detail',
   renameAsset: 'canvas-host:rename-asset',
   updateAssetMetadata: 'canvas-host:update-asset-metadata',
   markAssetUsed: 'canvas-host:mark-asset-used',
@@ -27,6 +28,8 @@ const channels = {
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
+  importAssetBytes: 'canvas-host:import-asset-bytes',
+  completeRunPreparation: 'canvas-host:complete-run-preparation',
   listPromptPresets: 'canvas-host:list-prompt-presets',
   createPromptPreset: 'canvas-host:create-prompt-preset',
   updatePromptPreset: 'canvas-host:update-prompt-preset',
@@ -44,10 +47,16 @@ const channels = {
   renameProject: 'canvas-host:rename-project',
   duplicateProject: 'canvas-host:duplicate-project',
   setProjectArchived: 'canvas-host:set-project-archived',
+  createProjectInDefaultFolder: 'canvas-host:create-project-in-default-folder',
+  relinkProjectFolder: 'canvas-host:relink-project-folder',
+  deleteProject: 'canvas-host:delete-project',
+  getAccountSummary: 'canvas-host:get-account-summary',
+  getPriceSnapshot: 'canvas-host:get-price-snapshot',
   runEvent: 'canvas-host:run-event',
   accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
   appearanceChanged: 'canvas-host:appearance-changed',
+  showAccountAssets: 'canvas-host:show-account-assets',
   closeRequested: 'canvas-host:close-requested',
   closeCancelled: 'canvas-host:close-cancelled',
   finishClose: 'canvas-host:finish-close',
@@ -64,25 +73,26 @@ const capabilities = deepFreeze({
     'text', 'prompt', 'note', 'image', 'image-generate', 'image-edit', 'video', 'video-generate',
     'image-input', 'video-input', 'audio-input', 'router', 'gallery', 'output', 'group',
     'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
+    'text-generate', 'frame-extract',
   ],
   features: {
-    quote: false,
-    accountSummary: false,
-    imageEditMask: false,
-    textGenerate: false,
+    quote: true,
+    accountSummary: true,
+    imageEditMask: true,
+    textGenerate: true,
     textWebSearch: false,
     imageTools: false,
-    frameExtract: false,
+    frameExtract: true,
     scenarioTemplates: false,
     routerStrategy: false,
     generateAudio: false,
     referenceOrder: false,
     cloud: false,
     agentExecution: false,
-    byteUpload: false,
+    byteUpload: true,
     promptPresetGroups: false,
   },
-  imageCandidates: { maximum: 1 },
+  imageCandidates: { maximum: 4 },
   videoCandidates: { maximum: 1 },
   promptPresetNameMaxLength: 160,
   imageResolutions: {
@@ -196,6 +206,9 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   saveAsset: (assetId: string) => invoke(channels.saveAsset, assetId),
   showAssetMenu: (assetId: string) => invoke(channels.showAssetMenu, assetId),
   listAssets: (query?: unknown) => invoke(channels.listAssets, query),
+  // One asset as the library lists it. The kernel also passes an AbortSignal;
+  // it does not cross the isolation boundary, so only the id is sent.
+  getAssetDetail: (assetId: string) => invoke(channels.getAssetDetail, assetId),
   renameAsset: (input: unknown) => invoke(channels.renameAsset, input),
   updateAssetMetadata: (input: unknown) => invoke(channels.updateAssetMetadata, input),
   markAssetUsed: (assetId: string) => invoke(channels.markAssetUsed, assetId),
@@ -204,10 +217,44 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   purgeAsset: (assetId: string, currentProjectContent: string) => invoke(channels.purgeAsset, assetId, currentProjectContent),
   inspectAssetReferences: (assetId: string, currentProjectContent: string) => invoke(channels.inspectAssetReferences, assetId, currentProjectContent),
   pickAsset: () => invoke(channels.pickAsset),
-  importAssetFile: (file: File) => {
+  importAssetFile: async (file: File) => {
     const filePath = webUtils.getPathForFile(file)
-    if (!filePath) return Promise.reject(new Error('无法读取拖入的本地文件'))
-    return invoke(channels.importAssetFile, filePath)
+    if (filePath) return invoke(channels.importAssetFile, filePath)
+    // A picture the page drew itself (the mask editor's black-and-white PNG)
+    // has no path. Only its bytes cross, and the main process decides from
+    // the file header what it is; the page's name and type are not sent.
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('无法读取拖入的本地文件')
+    if (file.size > 20 * 1024 * 1024) throw new Error('画布图片超过 20 MB，没有保存')
+    return invoke(channels.importAssetBytes, new Uint8Array(await file.arrayBuffer()))
+  },
+  // 画布完善第 7 条第二步：抽帧节点要的那段视频。画布本来就能按这个地址读自己账号的视频（预览、播放），
+  // 这里不开新通道，只是替内核读出来、限 32 MB（内核解码器的上限）。不接 AbortSignal：它过不了隔离边界。
+  readVideoForFramePreview: async (assetId: string) => {
+    if (typeof assetId !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(assetId)) throw new Error('视频素材标识格式错误')
+    const response = await fetch(`xingmang-asset://video/${assetId}`, { cache: 'no-store', redirect: 'error' })
+    if (!response.ok) throw new Error('视频读不出来，请确认素材还在')
+    const declared = Number(response.headers.get('content-length'))
+    if (Number.isFinite(declared) && declared > 32 * 1024 * 1024) throw new Error('视频超过 32 MB，画布抽不了这一帧')
+    const blob = await response.blob()
+    if (blob.size > 32 * 1024 * 1024) throw new Error('视频超过 32 MB，画布抽不了这一帧')
+    return blob.type === 'video/mp4' ? blob : new Blob([blob], { type: 'video/mp4' })
+  },
+  // The frame the kernel decoded for a frame-extract node. Only the PNG bytes
+  // and the ids the main process handed out cross; a failure carries no text.
+  completeRunPreparation: async (input: unknown) => {
+    if (!input || typeof input !== 'object') throw new Error('画布运行准备回执格式错误')
+    const { runId, operationId, kind, outcome, png, decodedTimestampSeconds } = input as Record<string, unknown>
+    if (outcome === 'failed') return invoke(channels.completeRunPreparation, { runId, operationId, kind, outcome })
+    if (!(png instanceof Blob)) throw new Error('视频帧图片内容格式错误')
+    if (png.size > 20 * 1024 * 1024) throw new Error('视频帧图片超过 20 MB，没有保存')
+    return invoke(channels.completeRunPreparation, {
+      runId,
+      operationId,
+      kind,
+      outcome,
+      png: new Uint8Array(await png.arrayBuffer()),
+      ...(decodedTimestampSeconds !== undefined ? { decodedTimestampSeconds } : {}),
+    })
   },
   listPromptPresets: () => invoke(channels.listPromptPresets),
   createPromptPreset: (input: unknown) => invoke(channels.createPromptPreset, input),
@@ -233,6 +280,12 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   renameProject: (projectId: string, name: string) => invoke(channels.renameProject, projectId, name),
   duplicateProject: (projectId: string, name: string) => invoke(channels.duplicateProject, projectId, name),
   setProjectArchived: (projectId: string, archived: boolean) => invoke(channels.setProjectArchived, projectId, archived),
+  createProjectInDefaultFolder: (name: string) => invoke(channels.createProjectInDefaultFolder, name),
+  relinkProjectFolder: (projectId: string) => invoke(channels.relinkProjectFolder, projectId),
+  deleteProject: (projectId: string) => invoke(channels.deleteProject, projectId),
+  // Takes nothing from the page, so the page cannot steer what the main process reads.
+  getAccountSummary: () => invoke(channels.getAccountSummary),
+  getPriceSnapshot: () => invoke(channels.getPriceSnapshot),
   onAccountChange: (listener: (change: { userId: number | null; previousUserId: number | null; siteId?: 'solov' | 'solov-api' }) => void) => subscribeAccountChange(listener),
   finishClose: (requestId: string, allowed: boolean) => invoke(channels.finishClose, requestId, allowed),
   cancelCloseTasks: (requestId: string) => invoke(channels.cancelCloseTasks, requestId),
@@ -253,6 +306,13 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channels.runEvent, wrapped)
     return () => ipcRenderer.removeListener(channels.runEvent, wrapped)
+  },
+  // Carries nothing: the main window asked for the account library while the
+  // canvas was already open, and the page decides whether it can show it.
+  onShowAccountAssets: (listener: () => void) => {
+    const wrapped = () => listener()
+    ipcRenderer.on(channels.showAccountAssets, wrapped)
+    return () => ipcRenderer.removeListener(channels.showAccountAssets, wrapped)
   },
   onThemeChange: (listener: (theme: 'light' | 'dark') => void) => {
     const wrapped = (_event: unknown, payload: unknown) => {

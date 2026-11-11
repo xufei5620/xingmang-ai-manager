@@ -1,7 +1,8 @@
 import { isClaudeDesktopInstallFailureMessage } from '../../electron/claude-desktop-install-failure'
-import { isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
+import { isCodexDesktopFirewallOffInstallFailure, isCodexDesktopInstallFailureMessage, isCodexDesktopNoStoreInstallFailure, isCodexDesktopUnsupportedInstallFailure } from '../../electron/codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from '../../electron/codex-desktop-known-issues'
 import { configLinkRefusalIn } from '../../electron/config-link-refusal'
+import { configWriteBlockerIn } from '../../electron/config-write-blocker'
 import { extensionCommandFailureInMessage } from '../../electron/extension-command-failure'
 import { isMacosDesktopInstallFailure, isMacosDesktopSystemTooOld } from '../../electron/macos-desktop-install-failure'
 import { classifyNetworkFailure, isTlsHandshakeFailure, networkFailureReasonForMessage, officialRegistryUnreachableMarker, toolCertificateFailureForMessage } from '../../electron/network-failure'
@@ -12,7 +13,7 @@ import { errors } from './registry/errors'
 import { feedbackInstallLogSection } from './registry/business'
 
 export type OperationErrorKey = keyof typeof errors
-export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopDownload'
+export type OperationActionId = 'retry' | 'log' | 'support' | 'relogin' | 'recharge' | 'network' | 'repair' | 'copyPath' | 'backups' | 'replaceNode' | 'openStore' | 'resetCodexDesktop' | 'useCodexCli' | 'installGuide' | 'claudeDesktopOfflinePackages' | 'claudeDesktopDownload'
 export interface OperationAction { id: OperationActionId; label: string }
 /**
  * 这次失败要写的是什么；缺省 = 只按原话认（旧行为）。
@@ -20,8 +21,11 @@ export interface OperationAction { id: OperationActionId; label: string }
  * （改用当前账号、重新写入密钥、保存配置、恢复备份、扩展页……）时，多半是安全软件
  * 拦了或者文件正被别的程序占着，安装目录跟它没关系（已知29）。原话里分不出是哪一种：
  * 路径上屏前都换成了「本机路径」，只有调用方知道自己在写什么。
+ *
+ * 'export'：导出检查报告、反馈报告、聊天记录、单段对话，存的是客户在保存框里选的位置。
+ * 开了 Windows「受控文件夹访问」时的桌面、写保护的 U 盘、盘满了，都跟安装目录没关系（D16）。
  */
-export type OperationTarget = 'config'
+export type OperationTarget = 'config' | 'export'
 export interface OperationErrorHint {
   key: Exclude<OperationErrorKey, 'unknown'>
   title: string
@@ -57,14 +61,16 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 开头直接取那边的常量）。那句话后半截已经说了是哪一种原因，这里只配按钮，其中
   //「去微软商店装」是这一类才有的出口。排在前面是因为它会说到「连不上」「Windows
   // 拒绝了这次安装」，不能被下面的 timeout、permission 抢走。
-  // 同一类里两种不给「去微软商店装」的：Windows 太旧（商店里的那一版同样装不上，
-  // 重试也没用），和这台电脑压根没有微软商店（按钮按了打不开，第二十一批 2）。
+  // 同一类里三种不给「去微软商店装」的：Windows 太旧（商店里的那一版同样装不上，
+  // 重试也没用），Windows 防火墙服务停着（哪一路装都卡在登记防火墙规则那一步，重试也没用，
+  // 2026-11-06 客户日志），和这台电脑压根没有微软商店（按钮按了打不开，第二十一批 2）。
   { key: 'codexDesktopTooOld', match: (message) => isCodexDesktopUnsupportedInstallFailure(message) },
+  { key: 'codexDesktopFirewallOff', match: (message) => isCodexDesktopFirewallOffInstallFailure(message) },
   { key: 'codexDesktopInstallNoStore', match: (message) => isCodexDesktopNoStoreInstallFailure(message) },
   { key: 'codexDesktopInstallFailed', match: (message) => isCodexDesktopInstallFailureMessage(message) },
   // Windows 上 Claude Desktop 一键安装没装上（系统自带的安装组件、Claude 官网的离线安装包，
   // 主进程 claude-desktop-install-failure.ts 写好的整句）。同 Codex 那一类，那句话会说
-  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「去官网下载」。
+  //「连不上」「Windows 拒绝了这次安装」，所以排在 timeout、permission 前面；出口是「下载离线安装包」和「去 Claude 官网」。
   { key: 'claudeDesktopInstallFailed', match: (message) => isClaudeDesktopInstallFailureMessage(message) },
   // Mac 上一键装桌面端没装成（主进程 macos-desktop-install-failure.ts 写好的整句，认法也
   // 取那边的）。那句话已经说了下一步，这里配「看安装指南」：照教程自己从官网下载安装
@@ -152,6 +158,11 @@ const rules: Array<{ key: OperationErrorKey; match: (message: string) => boolean
   // 工具的配置文件本身是链接（dotfiles 工具做的符号链接、硬链接，#1100 第2条）。主进程那句已经写明是哪个文件、
   // 该换成什么，这里只给标题和按钮。排在 folderRelocated 之前：那条说的是被搬走的文件夹，客户去「检查」页找不到这个文件。
   { key: 'configLink', match: (message) => configLinkRefusalIn(message) !== null },
+  // 写工具配置没权限、主进程已经查出是哪一种的（config-write-blocker.ts，D15）：设置文件夹归管理员（Mac、Linux）、
+  // 文件被设成只读（Windows）。原话里还带着错误码 EACCES、EPERM，排在 permission 前面，不然又被说成安全软件拦了、
+  // 文件被占着，叫人关窗口重试。主进程只在写配置时这么说，所以不看调用方说没说写的是配置。
+  { key: 'configAdminOwned', match: (message) => configWriteBlockerIn(message) === 'adminOwned' },
+  { key: 'configReadOnly', match: (message) => configWriteBlockerIn(message) === 'readOnly' },
   // safe-local-data 的写入校验（I8）拒绝经过目录联接的路径：「C 盘搬家」工具把
   // 用户文件夹或软件数据文件夹挪走之后，写 Key、存设置都会撞上这句。它看起来像
   // 权限问题，其实改权限、关杀毒都没用，所以排在 permission 之前单独认。
@@ -200,10 +211,24 @@ function networkFailure(message: string): boolean {
 
 export function classifyOperationError(message: string, target?: OperationTarget): OperationErrorKey {
   const key = rules.find((rule) => rule.match(message))?.key ?? 'unknown'
-  if (target !== 'config') return key
   // 写的是工具的配置文件时，磁盘满说的是配置所在的那块盘（一般是系统盘），不是安装目录，
   // 也没有安装目录可复制（#1100 第6条）。
-  return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
+  if (target === 'config') return key === 'permission' ? 'configPermission' : key === 'diskFull' ? 'configDiskFull' : key
+  // 导出时下一步是换个位置再存，不是去看安装目录、清系统盘的临时文件夹（D16）。
+  if (target === 'export') return key === 'permission' ? 'exportPermission' : key === 'diskFull' ? 'exportDiskFull' : key
+  return key
+}
+
+/**
+ * 导出存不进去时上屏的那一整句（D16）：目录里标题和正文连起来就是批的字。聊天页的红条
+ * 只有一行字、不走 ResultNotice，用它接上跟别的导出同样的两种说法。认法同 ResultNotice
+ * （presentOperationFailure：先看上屏那句，认不出再看脱过路径的原话）；既不是没权限
+ * 也不是盘满时返回 null，调用点留自己原来那句。
+ */
+export function exportFailureSentence(failure: { message: string; detail?: string | undefined }): string | null {
+  const hint = presentOperationFailure({ ...failure, target: 'export' })
+  if (!hint || (hint.key !== 'exportPermission' && hint.key !== 'exportDiskFull')) return null
+  return `${hint.title}，${hint.body}`
 }
 
 // 「重新写入密钥」这件事交给 perform 的动作名：错误框、「复制给客服」里都照它写，下面那张表也按它认。
@@ -233,7 +258,7 @@ export function operationTargetOf(action: string): OperationTarget | undefined {
  * 起按普通权限运行，诊断页还把「以管理员身份运行」标成风险；Windows 上提权
  * 重试等于换一套安装事务（落点从用户 npm 目录变成 ProgramData），而 npm 会
  * 执行 registry 上的包脚本，把它交给提权令牌正是可信路径那套规矩拒绝的事；
- * macOS 从不提权。permission 这一类的下一步是看目录、看日志，不是提权。
+ * macOS 从不提权。permission 这一类的下一步是看目录、重试、找客服，不是提权。
  */
 const actionIds: Record<string, OperationActionId | undefined> = {
   重试: 'retry',
@@ -262,8 +287,10 @@ const actionIds: Record<string, OperationActionId | undefined> = {
   '改用 Codex 命令行版': 'useCodexCli',
   // 只有 Mac 上一键装桌面端没装成那一类会出这颗：打开教程里「Mac 上装桌面端」那一章。
   看安装指南: 'installGuide',
-  // 只有 Windows 上 Claude Desktop 没装上那一类会出这颗：打开 Claude 官网的下载页。
-  去官网下载: 'claudeDesktopDownload',
+  // 只有 Windows 上 Claude Desktop 没装上那一类会出这两颗（D64）：Claude 官网在国内多半打不开，
+  // 先给教程站「备用安装包」那一节（包来自国内存储桶），官网退到第二个。
+  下载离线安装包: 'claudeDesktopOfflinePackages',
+  '去 Claude 官网': 'claudeDesktopDownload',
 }
 
 /**

@@ -135,6 +135,13 @@ test('every macOS build explains each privacy prompt in plain Chinese', () => {
   ]) assert.deepEqual(loadConfig(mode).mac.extendInfo, expected)
 })
 
+test('macOS opens canvas project files in the app, named the way the import dialog names them', () => {
+  // D92：双击 .xingcanvas 直接在画布里打开。name 是访达「种类」一栏的字；星芒自己定义的类型，所以是 Owner。
+  for (const mode of [{}, { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' }]) {
+    assert.deepEqual(loadConfig(mode).mac.fileAssociations, [{ ext: 'xingcanvas', name: '星芒画布项目', role: 'Editor', rank: 'Owner' }])
+  }
+})
+
 test('current package builds embed the new R2 update feed by default', () => {
   assert.equal(loadConfig().publish.url, NEW_UPDATE_URL)
 })

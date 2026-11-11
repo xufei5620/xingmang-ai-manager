@@ -224,12 +224,15 @@ export function createServiceContext(store: AppSettingsStore, serviceOptions: Sy
   /**
    * 电脑里留着指向本机某个没开的代理的设置时，这一次不带它（第十六批 5）。只减不增：
    * 开着的、指向别的机器的照旧带上；探测出错时原样返回，不挡住打开和安装。
+   * from 只进日志：'system-proxy' = 这几条是照系统代理设置替 npm 补上的（resolveSubprocessProxyEnvironment），
+   * 缺省 = 星芒自己的环境里本来就有的。客户日志里见到连不上本机代理时，靠它分清是哪一种。
    */
-  async function withoutDeadLoopbackProxies(env: NodeJS.ProcessEnv, provider: ProviderId): Promise<NodeJS.ProcessEnv> {
+  async function withoutDeadLoopbackProxies(env: NodeJS.ProcessEnv, provider: ProviderId, from?: 'system-proxy'): Promise<NodeJS.ProcessEnv> {
     const bypass = await bypassClosedLoopbackProxies(env, probeLoopbackProxyForService)
     if (bypass.dropped.length) {
       runtimeLog?.log('info', 'network', 'proxy-env.bypassed', '电脑里设的本机代理没开，这一次不带它', {
         provider,
+        ...(from ? { from } : {}),
         ...describeDroppedProxies(bypass.dropped),
       })
     }

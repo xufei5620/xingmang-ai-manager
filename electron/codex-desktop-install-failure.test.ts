@@ -5,6 +5,7 @@ import {
   codexDesktopInstallFailedPrefix,
   codexDesktopInstallFailureReasons,
   codexDesktopTechnicalWords,
+  isCodexDesktopFirewallOffInstallFailure,
   isCodexDesktopInstallFailureMessage,
   isCodexDesktopNoStoreInstallFailure,
   isCodexDesktopUnsupportedInstallFailure,
@@ -17,12 +18,28 @@ import {
   toCodexDesktopInstallFailure,
 } from './codex-desktop-service'
 
+// 2026-11-06 客户日志里 codex-desktop-appx.ts 抛出的原话（只把用户名换掉）。PowerShell 按控制台
+// 宽度折行，「windows.firewallRules」被折成了两半。
+const firewallOffRaw = [
+  'Add-AppxPackage 安装失败：Add-AppxPackage : 部署失败，原因是 HRESULT: 0x80073CF6, 无法注册包。\r\n',
+  'AppxManifest.xml(38,6): 错误 0x800706D9: 无法注册 OpenAI.Codex_26.1103.3517.0_x64__2p2nqsd0c76g0 程序包，因为在注册 windows.firewallRu\r\n',
+  'les 扩展时遇到以下错误: 终结点映射器中没有更多的终结点可用。\r\n',
+  '。请重试，如果问题仍然存在，请联系程序包发布者。\r\n',
+  "+ ... e = 'Stop'; Add-AppxPackage -Path 'C:\\Users\\someone\\AppData\\Local\\Temp\\x ...\r\n",
+  '    + FullyQualifiedErrorId : DeploymentError,Microsoft.Windows.Appx.PackageManager.Commands.AddAppxPackageCommand',
+].join('')
+
 // 每一类都用 codex-desktop-service.ts / codex-desktop-appx.ts 真会抛出的原话。
 const samples: Record<CodexDesktopInstallFailureReason, string[]> = {
   // 推测的原话：安装包要求的系统版本比这台电脑高时 Windows 的报法（真机待核）。
   unsupported: [
     'Add-AppxPackage 安装失败：部署失败，HRESULT: 0x80073CFD，无法满足安装的先决条件。Windows cannot install package OpenAI.Codex because this package is not compatible with the device. The package requires OS version 10.0.19041.0 or higher on the Windows.Desktop device family.',
     'Add-AppxPackage 安装失败：部署失败，原因是 HRESULT: 0x80073CFD，此程序包要求 Windows.Desktop 设备系列上的 OS 版本 10.0.19041.0 或更高版本。',
+  ],
+  firewallOff: [
+    firewallOffRaw,
+    // 英文系统上同一个错误的说法。
+    'Add-AppxPackage 安装失败：Deployment failed with HRESULT: 0x80073CF6, Package could not be registered. error 0x800706D9: While processing the request, the system failed to register the windows.firewallRules extension due to the following error: There are no more endpoints available from the endpoint mapper.',
   ],
   blocked: [
     'Add-AppxPackage 安装失败：部署失败，HRESULT: 0x80073CF3，程序包无法进行更新、相关性或冲突验证。',
@@ -79,6 +96,43 @@ describe('Codex Desktop install failure wording', () => {
     expect(buildCodexDesktopInstallFailureMessage('damaged', { storeTried: false, updating: false })).not.toContain('原来那一版')
     expect(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: false, updating: true })).not.toContain('原来那一版')
     expect(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: false, updating: false })).toContain('装到一半')
+    expect(buildCodexDesktopInstallFailureMessage('firewallOff', { storeTried: true, updating: true })).not.toContain('原来那一版')
+  })
+
+  it('blames the stopped Windows Firewall service, not the store, when the firewall rules cannot be registered', () => {
+    // 2026-11-06 那一次：桶过期跳过、商店没新版、官网的包下好核过，交给 Windows 时卡在登记防火墙规则。
+    const raw = new Error(firewallOffRaw)
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店里暂时还没有更新的版本', storeExitCode: '0x8a15002b', updating: true, officialPackage: true,
+      bucketFailure: '存储桶清单超过 24 小时没和官方核对过（上次是 2026-11-04T14:30:12.285Z），桶里的可能不是最新版',
+    })
+    expect(failure.message).toBe(`Codex 桌面端没装上：${codexDesktopInstallFailureReasons.firewallOff}`)
+    expect(isCodexDesktopFirewallOffInstallFailure(failure.message)).toBe(true)
+    expect(failure.message).not.toMatch(/微软商店这次没装上|微软商店里还没有新版|官网|不让装（/)
+    expect(failure).toMatchObject({ reason: 'firewallOff', storeExitCode: '0x8a15002b' })
+    // 日志里那句原话照旧带着三路各自的经过。
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(
+      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过（上次是 2026-11-04T14:30:12.285Z），桶里的可能不是最新版），微软商店这次没装上（商店里暂时还没有更新的版本），OpenAI 官网的离线安装包也没装上：${firewallOffRaw}`,
+    )
+    // 这台电脑没有商店、或者是首次安装，说法也一样。
+    for (const context of [{ storeTried: false, storeUnavailable: true, updating: false }, { storeTried: false, updating: false, officialTried: true }]) {
+      expect(buildCodexDesktopInstallFailureMessage('firewallOff', context)).toBe(failure.message)
+    }
+    // 别的 Windows 拒装照旧是 blocked。
+    expect(isCodexDesktopFirewallOffInstallFailure(buildCodexDesktopInstallFailureMessage('blocked', { storeTried: true, updating: false }))).toBe(false)
+  })
+
+  it('says the store has nothing newer yet rather than that it failed', () => {
+    const raw = new Error(samples.unreachable[0])
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店里暂时还没有更新的版本', storeExitCode: '0x8a15002b', updating: true,
+    })
+    expect(failure.message).toBe('Codex 桌面端没装上：微软商店里还没有新版，国内下载线路这会儿连不上。原来那一版照常能用。')
+    // 商店真出了错（别的退出码、超时）照旧说没装上。
+    for (const storeExitCode of ['0x8a150049', null]) {
+      expect(toCodexDesktopInstallFailure(raw, { storeFailure: '商店那边没说原因', storeExitCode, updating: true }).message)
+        .toBe('Codex 桌面端没装上：微软商店这次没装上，国内下载线路这会儿连不上。原来那一版照常能用。')
+    }
   })
 
   it('keeps the raw failure, the store exit code and the cause for the runtime log', () => {
@@ -166,6 +220,22 @@ describe('Codex Desktop install failure wording', () => {
     expect(failure.message).not.toContain('存储桶')
     expect((failure as CodexDesktopInstallFailure).detail).toBe(
       `存储桶这一路没走通（存储桶清单返回 HTTP 404），微软商店这次没装上（连不上微软商店），国内镜像也没装上：${samples.unreachable[0]}`,
+    )
+  })
+
+  it('names the bucket package in the log when the build from an old index downloaded but would not install', () => {
+    const raw = new Error(samples.blocked[0])
+    const failure = toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false,
+      officialFailure: 'OpenAI 官网连接或下载超时', bucketFailure: '存储桶清单超过 24 小时没和官方核对过', bucketStale: true, bucketPackage: true,
+    })
+    // The customer sentence is the one the mirror would have got; the route only shows in the log.
+    expect(failure.message).toBe(toCodexDesktopInstallFailure(raw, {
+      storeFailure: '商店那边没说原因', storeExitCode: '0x8a150049', updating: false, officialFailure: 'OpenAI 官网连接或下载超时',
+    }).message)
+    expect(failure.message).not.toContain('存储桶')
+    expect((failure as CodexDesktopInstallFailure).detail).toBe(
+      `存储桶这一路没走通（存储桶清单超过 24 小时没和官方核对过），微软商店这次没装上（商店那边没说原因），OpenAI 官网的离线安装包也没下成（OpenAI 官网连接或下载超时），存储桶里的离线安装包也没装上：${samples.blocked[0]}`,
     )
   })
 

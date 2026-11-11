@@ -1,22 +1,41 @@
 import { useState } from 'react'
-import { ArrowDown, ArrowUp, ChevronDown, Clapperboard, Download, Film, FolderOpen, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2 } from 'lucide-react'
+import { ArrowDown, ArrowUp, Brush, ChevronDown, Clapperboard, Download, FilePlus, Film, FolderOpen, ImagePlus, Music, Play, Plus, RefreshCw, RotateCcw, Sparkles, Square, Trash2, Wand2, X } from 'lucide-react'
 import { videoStudioPlanLimits } from '../../../../electron/video-studio-plan'
 import { BrandIcon, Button, Card, ChoiceMenu, Confirm, Empty, Input, Notice, PageHead, Pill, Progress, Select, Switch, Textarea } from '../../ui'
 import { dollars } from '../../business-common'
+import { formatClockTime } from '../../calendar-time'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { chatModelVendor, chatModelVendors, pickChatGroup, type ChatCatalogEntry, type ChatSite } from '../chat/state'
+import { isVideoStudioCaptionPosition, isVideoStudioCaptionSize, videoStudioCaptionPositions, videoStudioCaptionSizes } from './captions'
 import {
   canAddVideoStudioShot,
+  canStartVideoStudioProject,
   isVideoStudioShotBusy,
+  isVideoStudioShotDrawing,
+  isVideoStudioProjectEmpty,
+  maxVideoStudioDrafts,
   videoStudioAspectNames,
+  videoStudioCaptionPositionNames,
+  videoStudioCaptionSizeNames,
+  videoStudioClipSoundNames,
+  videoStudioClipSounds,
+  videoStudioCommonSeconds,
+  videoStudioDraftName,
+  videoStudioDraftProgress,
   videoStudioFitNames,
   videoStudioReadyToCompose,
   videoStudioSecondsChoices,
   videoStudioShotCounts,
+  videoStudioShotSeconds,
+  videoStudioTransitionNames,
+  videoStudioTotalSeconds,
+  videoStudioTrimOptions,
   videoStudioUnconfirmedIndexes,
+  type VideoStudioDraft,
   type VideoStudioShot,
+  type VideoStudioTrimSide,
 } from './project'
-import { isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, videoStudioAspects, videoStudioFits, videoStudioResolutions } from './timeline'
+import { formatVideoStudioDuration, isVideoStudioAspect, isVideoStudioFit, isVideoStudioResolution, isVideoStudioTransition, videoStudioAspects, videoStudioFits, videoStudioResolutions, videoStudioTransitions } from './timeline'
 import { useVideoStudio, type VideoStudioBridge, type VideoStudioController, type VideoStudioOptions } from './useVideoStudio'
 import './video-studio.css'
 
@@ -36,7 +55,7 @@ export interface VideoStudioPageProps {
 }
 
 const pageLead = '说一句想拍什么，AI 写好分镜、一段一段生成，再在这台电脑上拼成一条带字幕的视频。'
-type Confirmation = { kind: 'generate', ids: string[] } | { kind: 'plan' } | { kind: 'reset' } | { kind: 'remove', id: string }
+type Confirmation = { kind: 'generate', ids: string[] } | { kind: 'draw', id: string } | { kind: 'plan' } | { kind: 'reset' } | { kind: 'remove', id: string } | { kind: 'drop-draft', id: string }
 
 export function VideoStudioPage({ bridge, accountScope, site, access, active = true, onLogin, onOpenAccount, options }: VideoStudioPageProps) {
   if (access !== 'ready') {
@@ -63,6 +82,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
   const { project } = studio
   const { settings, shots, exported } = project
   const generating = shots.some(isVideoStudioShotBusy)
+  const drawing = shots.some(isVideoStudioShotDrawing)
   const composing = studio.composeState.phase !== 'idle'
   const missing = shots.filter((shot) => !shot.clip).length
   const quotaAction = /余额|额度/.test(studio.error) && onOpenAccount
@@ -73,19 +93,31 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
     setConfirmation(null)
     if (!current) return
     if (current.kind === 'generate') studio.generate(current.ids)
+    if (current.kind === 'draw') void studio.drawShotImage(current.id)
     if (current.kind === 'plan') void studio.writePlan()
     if (current.kind === 'reset') studio.reset()
     if (current.kind === 'remove') studio.removeShot(current.id)
+    if (current.kind === 'drop-draft') studio.removeDraft(current.id)
   }
   const writePlan = () => { if (shots.some((shot) => shot.clip)) setConfirmation({ kind: 'plan' }); else void studio.writePlan() }
   const confirmCount = confirmation?.kind === 'generate' ? confirmation.ids.length : 0
   const regenerating = confirmation?.kind === 'generate' && confirmation.ids.some((id) => shots.find((shot) => shot.id === id)?.clip)
   // 上次提交没收到答复的那几段：钱可能已经扣了，再生成可能多扣一次，确认框要另外说清（#1489 N2）。
   const unconfirmed = confirmation?.kind === 'generate' ? videoStudioUnconfirmedIndexes(project, confirmation.ids) : []
+  // 各镜单独定了时长、长短不一时，分镜卡和确认框不说「每段 S 秒」，改说一共多少秒。
+  const commonSeconds = videoStudioCommonSeconds(project)
+  const confirmShots = confirmation?.kind === 'generate' ? shots.filter((shot) => confirmation.ids.includes(shot.id)) : []
+  const confirmSeconds = confirmShots.length ? videoStudioCommonSeconds(project, confirmShots) : null
+  const drawIndex = confirmation?.kind === 'draw' ? shots.findIndex((shot) => shot.id === confirmation.id) : -1
+  const redrawing = drawIndex >= 0 && Boolean(shots[drawIndex].image)
 
   return <section className="v2-page video-studio" data-page-id="video" data-testid="page-video">
     <PageHead title="视频剪辑" lead={pageLead}
-      actions={(shots.length > 0 || settings.idea) && <Button icon={RotateCcw} disabled={studio.busy} onClick={() => setConfirmation({ kind: 'reset' })} testId="video-reset">重新开始</Button>} />
+      actions={(shots.length > 0 || settings.idea) && <>
+        <Button icon={FilePlus} disabled={studio.busy || !canStartVideoStudioProject(studio.drafts, project)} onClick={studio.startNewProject} testId="video-new"
+          title={studio.drafts.length >= maxVideoStudioDrafts ? `草稿箱满了（最多 ${maxVideoStudioDrafts} 份），先删掉几份不要的` : '把这一份放进草稿箱，再从头做一条新的'}>新建一条</Button>
+        <Button icon={RotateCcw} disabled={studio.busy} onClick={() => setConfirmation({ kind: 'reset' })} testId="video-reset">重新开始</Button>
+      </>} />
     {studio.error && <Notice tone="bad" title="没有完成" body={studio.error} onDismiss={() => studio.setError('')}
       actions={quotaAction ? <Button size="sm" variant="primary" onClick={() => onOpenAccount?.(/额度上限/.test(studio.error) ? 'keys' : 'recharge')}>{/额度上限/.test(studio.error) ? '去调额度' : '去充值'}</Button> : undefined} testId="video-error" />}
     {studio.notice && <Notice tone="accent" title="提示" body={studio.notice} onDismiss={() => studio.setNotice('')}
@@ -109,26 +141,30 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         <div className="video-studio-models">
           <ModelPicker studio={studio} kind="text" />
           <ModelPicker studio={studio} kind="video" />
+          <ModelPicker studio={studio} kind="image" />
         </div>
       </div>
       <div className="video-studio-actions">
         {studio.planning
           ? <Button icon={Square} onClick={() => void studio.stopPlan()} testId="video-plan-stop">停止</Button>
-          : <Button variant="primary" icon={Wand2} disabled={!settings.idea.trim() || generating || composing} onClick={writePlan} testId="video-plan">{shots.length ? '重新写分镜' : '写分镜'}</Button>}
+          : <Button variant="primary" icon={Wand2} disabled={!settings.idea.trim() || generating || drawing || composing} onClick={writePlan} testId="video-plan">{shots.length ? '重新写分镜' : '写分镜'}</Button>}
         {studio.planning && <span className="video-studio-hint" role="status">AI 正在写分镜…</span>}
         <small className="video-studio-hint">写分镜按文字模型的用量计费；之后每生成一段视频单独计费。</small>
       </div>
     </Card>
 
-    {shots.length > 0 && <Card title={project.title || '分镜'} meta={`${shots.length} 个镜头 · 每段 ${settings.secondsPerShot} 秒 · 共约 ${shots.length * settings.secondsPerShot} 秒`} testId="video-shots"
+    {shots.length > 0 && <Card title={project.title || '分镜'} meta={[`${shots.length} 个镜头`, commonSeconds === null ? '' : `每段 ${commonSeconds} 秒`, `共约 ${videoStudioTotalSeconds(project)} 秒`].filter(Boolean).join(' · ')} testId="video-shots"
       actions={generating
         ? <Button icon={Square} onClick={() => void studio.stopGenerating()} testId="video-generate-stop">停止生成</Button>
-        : missing > 0 && <Button variant="primary" icon={Sparkles} disabled={studio.planning || composing} onClick={() => confirmGenerate(shots.filter((shot) => !shot.clip).map((shot) => shot.id))} testId="video-generate-all">{missing === shots.length ? `生成全部 ${missing} 段` : `生成剩下的 ${missing} 段`}</Button>}>
+        : missing > 0 && <Button variant="primary" icon={Sparkles} disabled={studio.planning || composing || drawing} onClick={() => confirmGenerate(shots.filter((shot) => !shot.clip).map((shot) => shot.id))} testId="video-generate-all">{missing === shots.length ? `生成全部 ${missing} 段` : `生成剩下的 ${missing} 段`}</Button>}>
       <ol className="video-studio-shots">
-        {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} locked={studio.planning || composing}
+        {shots.map((shot, index) => <ShotRow key={shot.id} shot={shot} index={index} total={shots.length} captions={settings.captions} seconds={videoStudioShotSeconds(shot, settings)} videoModel={settings.videoModel} locked={studio.planning || composing}
           onEdit={(patch) => studio.editShot(shot.id, patch)} onMove={(offset) => studio.moveShot(shot.id, offset)}
           onRemove={() => shot.clip ? setConfirmation({ kind: 'remove', id: shot.id }) : studio.removeShot(shot.id)}
-          onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)} />)}
+          onGenerate={() => confirmGenerate([shot.id])} onOpen={() => shot.clip && void studio.openClip(shot.clip.assetId)}
+          onPickImage={() => void studio.pickShotImage(shot.id)} onRemoveImage={() => studio.removeShotImage(shot.id)}
+          canDraw={Boolean(settings.imageModel && settings.imageGroup)} onDraw={() => setConfirmation({ kind: 'draw', id: shot.id })} onStopDrawing={() => void studio.stopDrawing(shot.id)}
+          onTrim={(side, seconds) => studio.setShotTrim(shot.id, side, seconds)} onSeconds={(seconds) => studio.setShotSeconds(shot.id, seconds)} />)}
       </ol>
       {canAddVideoStudioShot(project) && <Button variant="ghost" icon={Plus} disabled={studio.planning || composing} onClick={studio.addShot} testId="video-shot-add">加一个镜头</Button>}
     </Card>}
@@ -139,7 +175,18 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
           onChange={(event) => { const resolution = Number(event.target.value); if (isVideoStudioResolution(resolution)) studio.changeSettings({ resolution }) }} testId="video-resolution" />
         <Select label="画面对不上时" value={settings.fit} disabled={composing} options={videoStudioFits.map((fit) => ({ value: fit, label: videoStudioFitNames[fit] }))}
           onChange={(event) => { if (isVideoStudioFit(event.target.value)) studio.changeSettings({ fit: event.target.value }) }} testId="video-fit" />
+        <Select label="镜头之间" value={settings.transition} disabled={composing} options={videoStudioTransitions.map((transition) => ({ value: transition, label: videoStudioTransitionNames[transition] }))}
+          onChange={(event) => { if (isVideoStudioTransition(event.target.value)) studio.changeSettings({ transition: event.target.value }) }} testId="video-transition" />
+        <div className="video-studio-switch"><Switch label="结尾淡出" description="最后一秒画面和声音慢慢淡掉" checked={settings.fadeOut} disabled={composing} onChange={(fadeOut) => studio.changeSettings({ fadeOut })} testId="video-fade-out" /></div>
+        {/* 关了「加字幕」就不印字幕，这两项也不用出来。 */}
+        {settings.captions && <>
+          <Select label="字幕大小" value={settings.captionSize} disabled={composing} options={videoStudioCaptionSizes.map((size) => ({ value: size, label: videoStudioCaptionSizeNames[size] }))}
+            onChange={(event) => { if (isVideoStudioCaptionSize(event.target.value)) studio.changeSettings({ captionSize: event.target.value }) }} testId="video-caption-size" />
+          <Select label="字幕位置" value={settings.captionPosition} disabled={composing} options={videoStudioCaptionPositions.map((position) => ({ value: position, label: videoStudioCaptionPositionNames[position] }))}
+            onChange={(event) => { if (isVideoStudioCaptionPosition(event.target.value)) studio.changeSettings({ captionPosition: event.target.value }) }} testId="video-caption-position" />
+        </>}
       </div>
+      <MusicRow studio={studio} disabled={composing} />
       <ComposeProgress studio={studio} />
       <div className="video-studio-actions">
         {composing
@@ -155,25 +202,35 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
         </button>
         <div className="video-studio-result-copy">
           <strong>{project.title || '成片'}</strong>
-          <small>{[exported.durationSeconds ? `${formatSeconds(exported.durationSeconds)}` : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存进 AI 作品文件夹'}</small>
+          <small>{[exported.durationSeconds ? formatVideoStudioDuration(exported.durationSeconds) : '', exported.width && exported.height ? `${exported.width} × ${exported.height}` : ''].filter(Boolean).join(' · ') || '已存进 AI 作品文件夹'}</small>
           <div className="video-studio-result-actions">
             <Button size="sm" icon={Play} onClick={() => void studio.openClip(exported.assetId)} testId="video-result-open">用播放器打开</Button>
-            <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId)} testId="video-result-save">另存为</Button>
+            <Button size="sm" icon={Download} onClick={() => void studio.saveClip(exported.assetId, project.title)} testId="video-result-save">另存为</Button>
             <Button size="sm" icon={FolderOpen} onClick={() => void studio.openFolder()} testId="video-result-folder">打开文件夹</Button>
           </div>
         </div>
       </div>}
     </Card>}
 
+    {studio.drafts.length > 0 && <Card title="草稿箱" meta={`${studio.drafts.length} 份`} testId="video-drafts">
+      <ul className="video-studio-drafts">
+        {studio.drafts.map((draft, index) => <DraftRow key={draft.id} draft={draft} index={index} disabled={studio.busy} stashes={!isVideoStudioProjectEmpty(project)}
+          onOpen={() => studio.openDraft(draft.id)} onRemove={() => setConfirmation({ kind: 'drop-draft', id: draft.id })} />)}
+      </ul>
+    </Card>}
+
     {active && confirmation && <Confirm testId="video-confirm"
-      title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : '删掉这个镜头？'}
+      title={confirmation.kind === 'generate' ? regenerating ? '重新生成这一段？' : `生成 ${confirmCount} 段视频？` : confirmation.kind === 'draw' ? redrawing ? '再画一张？' : '画一张镜头图？' : confirmation.kind === 'plan' ? '重新写分镜？' : confirmation.kind === 'reset' ? '重新开始？' : confirmation.kind === 'drop-draft' ? '删掉这份草稿？' : '删掉这个镜头？'}
       body={confirmation.kind === 'generate'
-        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、每段 ${settings.secondsPerShot} 秒，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        ? <><p>{regenerating ? '会再扣一次费，新片段生成好以后换掉现在这一段；旧的那段还在 AI 作品文件夹里。' : `用「${settings.videoModel}」生成 ${confirmCount} 段、${confirmSeconds === null ? `共 ${confirmShots.reduce((total, shot) => total + videoStudioShotSeconds(shot, settings), 0)} 秒` : `每段 ${confirmSeconds} 秒`}，每段单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p>{unconfirmed.length > 0 && <p data-testid="video-confirm-unconfirmed">{unconfirmedWarning(unconfirmed, confirmCount)}</p>}<p>一段要几分钟。中途停下的话，已经交给服务端的那几段照样生成、照样扣费。</p></>
+        // yoyo 2026-11-09 批的字（「画图改」）。
+        : confirmation.kind === 'draw' ? <><p>{redrawing ? '会再扣一次费，新图画好以后换掉现在这一张；旧的那张还在 AI 作品文件夹里。' : `用「${settings.imageModel}」按第 ${drawIndex + 1} 个镜头的画面描述画一张图，单独计费。${balance ? `当前余额 ${dollars(balance.displayAmount)}。` : ''}`}</p><p>中途停下的话，已经交给服务端的这一张照样扣费。</p></>
         : confirmation.kind === 'plan' ? <p>现在的镜头和片段会换成新写的分镜。生成过的片段还在 AI 作品文件夹里，这里不再列出。</p>
         : confirmation.kind === 'reset' ? <p>想法、分镜和片段都从这一页清掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
+        : confirmation.kind === 'drop-draft' ? <p>这份分镜从草稿箱里拿掉。生成过的片段和拼好的成片还在 AI 作品文件夹里。</p>
         : <p>这个镜头和它的片段从分镜里拿掉，片段还在 AI 作品文件夹里。</p>}
-      okLabel={confirmation.kind === 'generate' ? regenerating ? '重新生成' : '开始生成' : confirmation.kind === 'plan' ? '重新写' : confirmation.kind === 'reset' ? '重新开始' : '删掉'}
-      danger={confirmation.kind === 'reset' || confirmation.kind === 'remove' || unconfirmed.length > 0}
+      okLabel={confirmation.kind === 'generate' ? regenerating ? '重新生成' : '开始生成' : confirmation.kind === 'draw' ? redrawing ? '再画一张' : '开始画' : confirmation.kind === 'plan' ? '重新写' : confirmation.kind === 'reset' ? '重新开始' : '删掉'}
+      danger={confirmation.kind === 'reset' || confirmation.kind === 'remove' || confirmation.kind === 'drop-draft' || unconfirmed.length > 0}
       // 同聊天页重新生成「上次请求可能仍在服务端处理」那一下：先勾「我已了解影响」才能点。
       requireAck={unconfirmed.length > 0}
       onOk={runConfirmation} onClose={() => setConfirmation(null)} />}
@@ -183,7 +240,7 @@ function VideoStudioWorkspace({ bridge, accountScope, site, active, onOpenAccoun
 /** 确认框里那句「可能多扣一次」。indexes 是这几段在分镜里的位置（从 0 数），total 是这次要生成几段。 */
 function unconfirmedWarning(indexes: readonly number[], total: number): string {
   const subject = total === 1 ? '这一段' : indexes.length === total ? '这几段' : `其中第 ${indexes.map((index) => index + 1).join('、')} 段`
-  return `${subject}上次提交时没收到服务端答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
+  return `${subject}上次提交时没收到星芒的答复：钱可能已经扣了，片段却拿不回来。再生成会重新计费，可能多扣一次。`
 }
 
 function secondsOptions(model: string, current: number) {
@@ -192,17 +249,20 @@ function secondsOptions(model: string, current: number) {
   return all.map((seconds) => ({ value: String(seconds), label: `${seconds} 秒` }))
 }
 
-function formatSeconds(seconds: number): string {
-  const whole = Math.round(seconds)
-  return whole >= 60 ? `${Math.floor(whole / 60)} 分 ${whole % 60} 秒` : `${whole} 秒`
+const modelPickerNames: Record<'text' | 'video' | 'image', { title: string, menu: string, empty: string }> = {
+  text: { title: '写分镜', menu: '写分镜的模型', empty: '暂无可用的文字模型' },
+  video: { title: '出视频', menu: '出视频的模型', empty: '暂无可用的视频模型' },
+  // 菜单名用批过的「画镜头图」，空表那句同对话页出图（ChatPage 的「暂无可用的图片模型」），不另加新字。
+  image: { title: '画镜头图', menu: '画镜头图', empty: '暂无可用的图片模型' },
 }
 
-function ModelPicker({ studio, kind }: { studio: VideoStudioController, kind: 'text' | 'video' }) {
+function ModelPicker({ studio, kind }: { studio: VideoStudioController, kind: 'text' | 'video' | 'image' }) {
   const { settings } = studio.project
   const catalog: ChatCatalogEntry[] = studio.catalogs[kind]
-  const model = kind === 'text' ? settings.textModel : settings.videoModel
-  const group = kind === 'text' ? settings.textGroup : settings.videoGroup
+  const model = kind === 'text' ? settings.textModel : kind === 'video' ? settings.videoModel : settings.imageModel
+  const group = kind === 'text' ? settings.textGroup : kind === 'video' ? settings.videoGroup : settings.imageGroup
   const mode = kind === 'text' ? 'text' : 'image'
+  const names = modelPickerNames[kind]
   const preparing = studio.catalogLoading || Object.values(studio.preparations).some((preparation) => preparation.phase === 'loading')
   const label = model || (preparing ? '正在读取模型' : '暂无可用模型')
   const billing = (entry: ChatCatalogEntry) => entry.model === model && entry.groups.includes(group) ? group : pickChatGroup(entry.groups, { current: group, mode, groups: studio.groups, site: studio.site })
@@ -210,15 +270,17 @@ function ModelPicker({ studio, kind }: { studio: VideoStudioController, kind: 't
   const select = (value: string) => {
     const entry = catalog.find((item) => item.model === value)
     if (!entry) return
-    if (kind === 'text') studio.selectTextModel(entry.model, billing(entry)); else studio.selectVideoModel(entry.model, billing(entry))
+    if (kind === 'text') studio.selectTextModel(entry.model, billing(entry))
+    else if (kind === 'video') studio.selectVideoModel(entry.model, billing(entry))
+    else studio.selectImageModel(entry.model, billing(entry))
   }
-  const empty = preparing ? '正在读取模型' : studio.catalogError || (kind === 'text' ? '暂无可用的文字模型' : '暂无可用的视频模型')
+  const empty = preparing ? '正在读取模型' : studio.catalogError || names.empty
   const sections = vendors.length
     ? vendors.map(({ vendor, entries }) => ({ label: vendor, value: model, options: entries.map((entry) => ({ value: entry.model, label: entry.model, hint: `${billing(entry)}分组` })), onChange: select }))
     : [{ label: '模型', value: '', options: [], empty, onChange: () => undefined }]
   return <div className="video-studio-model">
-    <span>{kind === 'text' ? '写分镜' : '出视频'}</span>
-    <ChoiceMenu label={kind === 'text' ? '写分镜的模型' : '出视频的模型'} align="start" testId={`video-${kind}-model-menu`}
+    <span>{names.title}</span>
+    <ChoiceMenu label={names.menu} align="start" testId={`video-${kind}-model-menu`}
       anchor={<Button size="sm" iconRight={ChevronDown} disabled={studio.busy} title={[group, model].filter(Boolean).join(' · ') || undefined} data-model={model} data-group={group} testId={`video-${kind}-model`}><span aria-hidden="true"><BrandIcon model={model} size={16} /></span><span className="video-studio-model-name">{label}</span></Button>}
       sections={sections} actions={[{ label: '刷新模型', icon: RefreshCw, loading: preparing, keepOpen: true, onSelect: () => void studio.refreshModels(), testId: `video-${kind}-model-refresh` }]} />
   </div>
@@ -231,12 +293,17 @@ function ClipThumbnail({ src }: { src: string }) {
 }
 
 const stageNames: Record<NonNullable<VideoStudioShot['stage']>, string> = { processing: '生成中', downloading: '正在下载', saving: '正在保存' }
+// yoyo 2026-11-09 批的字（「画图改」）。
+const drawTip = '按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费'
 
-function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemove, onGenerate, onOpen }: {
-  shot: VideoStudioShot, index: number, total: number, captions: boolean, locked: boolean
+function ShotRow({ shot, index, total, captions, seconds, videoModel, locked, canDraw, onEdit, onMove, onRemove, onGenerate, onOpen, onPickImage, onRemoveImage, onDraw, onStopDrawing, onTrim, onSeconds }: {
+  shot: VideoStudioShot, index: number, total: number, captions: boolean, seconds: number, videoModel: string, locked: boolean, canDraw: boolean
   onEdit(patch: Partial<Pick<VideoStudioShot, 'prompt' | 'caption'>>): void, onMove(offset: -1 | 1): void, onRemove(): void, onGenerate(): void, onOpen(): void
+  onPickImage(): void, onRemoveImage(): void, onDraw(): void, onStopDrawing(): void, onTrim(side: VideoStudioTrimSide, seconds: number): void, onSeconds(seconds: number): void
 }) {
-  const busy = isVideoStudioShotBusy(shot)
+  // 画着图的这一镜和出着视频一样：画面描述、图、出视频、删都先不让动，画好的图才对得上这一镜。
+  const drawing = isVideoStudioShotDrawing(shot)
+  const busy = isVideoStudioShotBusy(shot) || drawing
   const status = shot.status === 'queued' ? <Pill tone="neutral">排队中</Pill>
     : shot.status === 'generating' ? <Pill tone="accent" dot>{shot.delayed ? '排队较久' : stageNames[shot.stage ?? 'processing']}{shot.progress !== undefined && shot.stage !== 'saving' ? ` ${shot.progress}%` : ''}</Pill>
     : shot.status === 'failed' ? <Pill tone="bad">没生成出来</Pill>
@@ -244,12 +311,43 @@ function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemov
   return <li className="video-studio-shot" data-status={shot.status} data-testid={`video-shot-${index}`}>
     {shot.clip
       ? <button type="button" className="video-studio-thumb" onClick={onOpen} aria-label={`用播放器打开第 ${index + 1} 段`} title="用播放器打开"><ClipThumbnail src={shot.clip.thumbnailUrl} /><Play size={18} aria-hidden="true" /><b>{index + 1}</b></button>
-      : <div className="video-studio-thumb is-empty" aria-hidden="true"><b>{index + 1}</b></div>}
+      // 还没生成片段时，选好的图就放在这里（yoyo 2026-11-09 批的字「图开头改」：选好以后左边的小图换成这张图）。
+      : shot.image
+        ? <div className="video-studio-thumb is-still" aria-hidden="true" data-testid={`video-shot-image-thumb-${index}`}><ClipThumbnail src={shot.image.url} /><b>{index + 1}</b></div>
+        : <div className="video-studio-thumb is-empty" aria-hidden="true"><b>{index + 1}</b></div>}
     <div className="video-studio-shot-body">
       <Textarea label={`第 ${index + 1} 个镜头 · 画面`} value={shot.prompt} rows={3} maxLength={videoStudioPlanLimits.maximumPromptLength} disabled={busy || locked}
         onChange={(event) => onEdit({ prompt: event.target.value })} testId={`video-shot-prompt-${index}`} />
       {captions && <Input label="字幕" value={shot.caption} maxLength={videoStudioPlanLimits.maximumCaptionLength} disabled={locked} placeholder="这一镜不要字幕就空着"
         onChange={(event) => onEdit({ caption: event.target.value })} testId={`video-shot-caption-${index}`} />}
+      <div className="video-studio-shot-image">
+        {drawing
+          ? <>
+            <Pill tone="accent" dot>正在画图</Pill>
+            <Button size="sm" variant="ghost" icon={Square} onClick={onStopDrawing} testId={`video-shot-draw-stop-${index}`}>停止画图</Button>
+          </>
+          : shot.image
+          ? <>
+            {/* 已经生成过片段时左边是片段，选的图在这里留一张小的，看得出用的是哪张。 */}
+            {shot.clip && <span className="video-studio-shot-image-preview" aria-hidden="true" data-testid={`video-shot-image-preview-${index}`}><ClipThumbnail src={shot.image.url} /></span>}
+            <Button size="sm" variant="ghost" icon={ImagePlus} disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-change-${index}`}>换一张</Button>
+            <Button size="sm" variant="ghost" icon={X} disabled={busy || locked} onClick={onRemoveImage} testId={`video-shot-image-remove-${index}`}>不用这张图</Button>
+            <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked || !canDraw} onClick={onDraw} testId={`video-shot-draw-${index}`}>再画一张</Button>
+          </>
+          : <>
+            <Button size="sm" variant="ghost" icon={ImagePlus} title="生成时从这张图动起来，适合商品图、人物照片" disabled={busy || locked} onClick={onPickImage} testId={`video-shot-image-${index}`}>用一张图开头</Button>
+            <Button size="sm" variant="ghost" icon={Brush} title={drawTip} disabled={busy || locked || !canDraw} onClick={onDraw} testId={`video-shot-draw-${index}`}>让 AI 画一张</Button>
+          </>}
+      </div>
+      {/* 这一镜出多长（重新生成才用上），生成好以后再加剪头剪尾。 */}
+      <div className="video-studio-shot-length">
+        <Select label="时长" value={String(seconds)} disabled={busy || locked} options={secondsOptions(videoModel, seconds)}
+          onChange={(event) => onSeconds(Number(event.target.value))} testId={`video-shot-seconds-${index}`} />
+        {shot.clip && (['start', 'end'] as const).map((side) => <Select key={side} label={side === 'start' ? '开头剪掉' : '结尾剪掉'} value={String((side === 'start' ? shot.trimStart : shot.trimEnd) ?? 0)} disabled={busy || locked}
+          options={videoStudioTrimOptions(shot, side, seconds).map((trim) => ({ value: String(trim), label: trim ? `${trim} 秒` : '不剪' }))}
+          onChange={(event) => onTrim(side, Number(event.target.value))} testId={`video-shot-trim-${side}-${index}`} />)}
+      </div>
+      {shot.drawError && !drawing && <p className="video-studio-shot-error" role="alert" data-testid={`video-shot-draw-error-${index}`}>{shot.drawError}</p>}
       {shot.status === 'failed' && shot.error && <p className="video-studio-shot-error" role="alert">{shot.error}</p>}
       {shot.status === 'generating' && shot.progress !== undefined && <Progress value={shot.progress} label={`第 ${index + 1} 段生成进度`} />}
     </div>
@@ -263,6 +361,38 @@ function ShotRow({ shot, index, total, captions, locked, onEdit, onMove, onRemov
       </div>
     </div>
   </li>
+}
+
+/** 草稿箱的一行：名字、做到哪、什么时候放进来的，「接着做」和删掉。手上有事在跑时不能换，删别的草稿不碍事。 */
+function DraftRow({ draft, index, disabled, stashes, onOpen, onRemove }: { draft: VideoStudioDraft, index: number, disabled: boolean, stashes: boolean, onOpen(): void, onRemove(): void }) {
+  const when = formatClockTime(draft.savedAt, Date.now())
+  return <li className="video-studio-draft" data-testid={`video-draft-${index}`}>
+    <div className="video-studio-draft-copy">
+      <strong>{videoStudioDraftName(draft.project)}</strong>
+      <small>{[videoStudioDraftProgress(draft.project), when ?? ''].filter(Boolean).join(' · ')}</small>
+    </div>
+    <div className="video-studio-draft-tools">
+      <Button size="sm" disabled={disabled} title={stashes ? '现在这一份会先放进草稿箱' : undefined} onClick={onOpen} testId={`video-draft-open-${index}`}>接着做</Button>
+      <Button size="sm" variant="ghost" icon={Trash2} aria-label="删掉这份草稿" title="删掉这份草稿" onClick={onRemove} testId={`video-draft-remove-${index}`} />
+    </div>
+  </li>
+}
+
+// 配乐：歌名、换一首、不用配乐，和有歌时片段原声放多大。没选歌时只有「加配乐」一个按钮。
+function MusicRow({ studio, disabled }: { studio: VideoStudioController, disabled: boolean }) {
+  const music = studio.project.music
+  if (!music) {
+    return <div className="video-studio-music" data-testid="video-music">
+      <Button size="sm" icon={Music} title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG" disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-add">加配乐</Button>
+    </div>
+  }
+  return <div className="video-studio-music" data-testid="video-music">
+    <span className="video-studio-music-name" title={music.name} data-testid="video-music-name"><Music size={14} aria-hidden="true" /><span>{music.name}</span></span>
+    <Button size="sm" variant="ghost" icon={RefreshCw} disabled={disabled} onClick={() => void studio.pickMusic()} testId="video-music-change">换一首</Button>
+    <Button size="sm" variant="ghost" icon={X} disabled={disabled} onClick={studio.removeMusic} testId="video-music-remove">不用配乐</Button>
+    <Select label="片段原声" value={music.clipSound} disabled={disabled} options={videoStudioClipSounds.map((sound) => ({ value: sound, label: videoStudioClipSoundNames[sound] }))}
+      onChange={(event) => { const sound = videoStudioClipSounds.find((candidate) => candidate === event.target.value); if (sound) studio.setClipSound(sound) }} testId="video-clip-sound" />
+  </div>
 }
 
 function ComposeProgress({ studio }: { studio: VideoStudioController }) {

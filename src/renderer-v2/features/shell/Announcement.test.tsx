@@ -4,21 +4,48 @@ import {
   AnnouncementContent,
   PromoBar,
   PromoCard,
+  announcementErrorOffersSite,
   announcementTextPreview,
   formatAnnouncementError,
+  formatAnnouncementLoadError,
   isSafeNativeAnnouncementCssValue,
   isSafeNativeAnnouncementSelector,
   safeAnnouncementHref,
   safeAnnouncementImage,
 } from './Announcement'
+import { AnnouncementCollectionError } from './newapi-announcements'
 
 describe('renderer-v2 announcement error mapping', () => {
   it('turns the bounded-response failure into an actionable, non-raw message', () => {
     const result = formatAnnouncementError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限"))
     expect(result).toEqual({
       responseTooLarge: true,
-      message: '公告包含过大的内嵌媒体，客户端已按安全上限拦截。可打开官网查看完整公告。',
+      message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
     })
+  })
+
+  it('shows one plain sentence when a notice read fails and leaves the raw reason to the log', () => {
+    const plain = { responseTooLarge: false, message: '公告暂时没读到，过一会儿点铃铛再看。' }
+    expect(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取失败，服务返回 HTTP 502"))).toEqual(plain)
+    expect(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: upstream connect error or disconnect/reset before headers"))).toEqual(plain)
+    expect(formatAnnouncementLoadError(null)).toEqual(plain)
+    expect(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限"))).toEqual({
+      responseTooLarge: true,
+      message: '这条公告里的图片或视频太大，这里显示不了，可以到官网看完整公告。',
+    })
+    expect(formatAnnouncementLoadError(new AnnouncementCollectionError())).toEqual({
+      responseTooLarge: false,
+      collectionUnreadable: true,
+      message: '公告没读出来，可以点「重新读取」，或到官网查看。',
+    })
+  })
+
+  it('offers the official site only when the message points the customer there', () => {
+    // 合集读不出来那句说「或到官网查看」，得跟公告太大一样摆出去官网的按钮；只说「暂时没读到」的不摆。
+    expect(announcementErrorOffersSite(formatAnnouncementLoadError(new AnnouncementCollectionError()))).toBe(true)
+    expect(announcementErrorOffersSite(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限")))).toBe(true)
+    expect(announcementErrorOffersSite(formatAnnouncementLoadError(new Error("Error invoking remote method 'account:get-notice': Error: 公告读取失败，服务返回 HTTP 502")))).toBe(false)
+    expect(announcementErrorOffersSite(formatAnnouncementError(new Error('网络暂时不可用')))).toBe(false)
   })
 
   it('keeps ordinary failures distinguishable and retryable', () => {

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import { createAwakeDeadline } from './awake-deadline'
 
 /**
  * 大安装包（Codex 桌面端、Node.js、Git、Python）下到一半网络断了，以前直接换下一条
@@ -59,6 +60,56 @@ export class DownloadStalledError extends Error {
   constructor() {
     super('下载中途没有新数据，网络可能断了')
     this.name = 'DownloadStalledError'
+  }
+}
+
+/**
+ * 整份安装包的时限。以前整次下载限死 10 分钟，慢网下到一半到点就掐断，换个源从 0 开始。现在只要
+ * 还在来数据就接着下，3 分钟一个字节都没来才停；下得再慢也有个头，30 分钟兜底（I10 的超时还在）。
+ * Node.js 先改（#1061 第5条），Git 和 Python 后跟上（深查 D-1）。两个数和装工具时 npm 那一步
+ * （npmDownloadStallTimeoutMs / npmDownloadCeilingMs）一样。
+ */
+export const downloadStallTimeoutMs = 3 * 60_000
+export const downloadCeilingMs = 30 * 60_000
+
+export interface DownloadDeadline {
+  /** Restarts the stall window, but only when the byte count actually grew. */
+  progressed(transferred: number): void
+  stop(): void
+}
+
+/**
+ * downloadWithResume already ends a single request that goes quiet for 45 seconds and
+ * resumes it; this watches the download as a whole, so a slow link that keeps delivering
+ * is never cut off at a fixed time. The stall window is a backstop for any quiet stretch
+ * the per-request timer does not see, and the ceiling bounds a link that trickles just
+ * fast enough never to look idle. Neither keeps a broken route alive: a route whose
+ * resumes keep failing is still handed back by downloadWithResume after its own few
+ * retries, and the caller moves on to the next source as before. Both end the download
+ * with `timeoutMessage`, which each caller sets to the words its old fixed limit used,
+ * so what the customer is told does not change. Both count only the time this computer was
+ * awake (awake-deadline.ts): closing the lid mid-download used to expire them the moment it
+ * reopened, while the network was still coming back, and the next source started from zero.
+ */
+export function createDownloadDeadline(
+  timeoutMessage: string,
+  expire: (reason: Error) => void,
+  now?: () => number,
+): DownloadDeadline {
+  let transferred = 0
+  const deadline = createAwakeDeadline(
+    { stallMs: downloadStallTimeoutMs, ceilingMs: downloadCeilingMs, now },
+    () => expire(new Error(timeoutMessage)),
+  )
+  return {
+    progressed(next) {
+      if (next <= transferred) return
+      transferred = next
+      deadline.progressed()
+    },
+    stop() {
+      deadline.stop()
+    },
   }
 }
 

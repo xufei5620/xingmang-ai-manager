@@ -26,6 +26,10 @@ const {
 
 const INSTALL_DIRECTORY = `/opt/${PACKAGE_NAME}`
 const DESKTOP_FILE = `/usr/share/applications/${PACKAGE_NAME}.desktop`
+// 双击画布项目文件（.xingcanvas）在星芒里打开：electron-builder 按 linux.fileAssociations 写的
+// MIME 类型说明，postinst 跑 update-mime-database 让系统认得它。
+const MIME_PACKAGE_FILE = `/usr/share/mime/packages/${PACKAGE_NAME}.xml`
+const CANVAS_PROJECT_MIME_TYPE = 'application/x-xingcanvas'
 const DPKG_DEB = '/usr/bin/dpkg-deb'
 const ELF_MACHINES = Object.freeze({ 62: 'x64', 183: 'arm64' })
 // Libraries the Electron binary links against or Chromium opens at start-up
@@ -44,17 +48,19 @@ const SANDBOX_DISABLING = /no-sandbox|disable-gpu-sandbox|disable-setuid-sandbox
 const ALLOWED_PAYLOAD_ROOTS = Object.freeze([
   `.${INSTALL_DIRECTORY}/`,
   '.' + DESKTOP_FILE,
+  '.' + MIME_PACKAGE_FILE,
   './usr/share/icons/hicolor/',
   `./usr/share/doc/${PACKAGE_NAME}/`,
 ])
 // Parent directories every payload root needs; they are listed as entries too.
-const ALLOWED_PAYLOAD_DIRECTORIES = Object.freeze(['./', './opt/', './usr/', './usr/share/', './usr/share/applications/', './usr/share/icons/', './usr/share/doc/'])
+const ALLOWED_PAYLOAD_DIRECTORIES = Object.freeze(['./', './opt/', './usr/', './usr/share/', './usr/share/applications/', './usr/share/icons/', './usr/share/doc/', './usr/share/mime/', './usr/share/mime/packages/'])
 const REQUIRED_PAYLOAD_FILES = Object.freeze([
   `.${INSTALL_DIRECTORY}/${PACKAGE_NAME}`,
   `.${INSTALL_DIRECTORY}/chrome-sandbox`,
   `.${INSTALL_DIRECTORY}/resources/app.asar`,
   `.${INSTALL_DIRECTORY}/resources/package-type`,
   '.' + DESKTOP_FILE,
+  '.' + MIME_PACKAGE_FILE,
 ])
 
 function parseControlFields(text) {
@@ -226,6 +232,18 @@ function assertDesktopEntry(text) {
   if (!mimeTypes.includes('x-scheme-handler/xingmang')) {
     throw new Error('菜单文件没有登记 xingmang:// 链接，网页上的「打开星芒」按钮会没有反应')
   }
+  if (!mimeTypes.includes(CANVAS_PROJECT_MIME_TYPE)) {
+    throw new Error(`菜单文件没有登记 ${CANVAS_PROJECT_MIME_TYPE}，双击画布项目文件不会用星芒打开`)
+  }
+}
+
+function assertMimePackage(text) {
+  const source = String(text)
+  const declaration = /<mime-type type="application\/x-xingcanvas">([\s\S]*?)<\/mime-type>/.exec(source)
+  if (!declaration) throw new Error(`${MIME_PACKAGE_FILE} 没有声明 ${CANVAS_PROJECT_MIME_TYPE}`)
+  if (!/<glob pattern="\*\.xingcanvas"\s*\/>/.test(declaration[1])) {
+    throw new Error(`${MIME_PACKAGE_FILE} 里的 ${CANVAS_PROJECT_MIME_TYPE} 没有认 .xingcanvas 文件`)
+  }
 }
 
 function elfArchitecture(header) {
@@ -329,6 +347,7 @@ async function verifyLinuxDeb(releaseDirectory, { version, arch, release = false
       throw new Error('postrm 里出现了关闭沙箱的参数')
     }
     assertDesktopEntry(fs.readFileSync(path.join(payloadDirectory, DESKTOP_FILE), 'utf8'))
+    assertMimePackage(fs.readFileSync(path.join(payloadDirectory, MIME_PACKAGE_FILE), 'utf8'))
     const installRoot = path.join(payloadDirectory, INSTALL_DIRECTORY)
     for (const binary of [PACKAGE_NAME, 'chrome-sandbox']) {
       const actual = elfArchitecture(readElfHeader(path.join(installRoot, binary)))
@@ -383,6 +402,7 @@ module.exports = {
   INSTALL_DIRECTORY,
   assertControlFields,
   assertDesktopEntry,
+  assertMimePackage,
   assertPackagedMetadata,
   assertPayloadEntries,
   assertPostinst,

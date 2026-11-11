@@ -7,8 +7,10 @@ import { resolveRelocatedPath } from './relocated-folders'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata, inspectWaveDurationSeconds } from './media-container-metadata'
 import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
+import { OwnedAssetLocator } from './ai-asset-locator'
 
 const FILE_LABEL = 'AI 音频资产'
+const MISSING_ASSET_MESSAGE = 'AI 音频资产不存在或无权访问'
 // 另存出去的是用户自己的文件，不是本程序的私有数据：权限位照原来 writeFile 在常见 umask
 // 下的结果给 0o644，不用原子写默认的 0o600。
 const SAVED_COPY_FILE_MODE = 0o644
@@ -132,9 +134,11 @@ export class AiAudioAssetStore {
   private readonly randomBytes: (size: number) => Buffer
   private readonly maximumAudioBytes: number
   private readonly nativeOperations: AiAudioAssetStoreOptions['nativeOperations']
+  private readonly locator: OwnedAssetLocator
 
   constructor(options: AiAudioAssetStoreOptions) {
     this.outputRoot = path.resolve(options.outputRoot)
+    this.locator = new OwnedAssetLocator({ outputRoot: this.outputRoot, extensions: ['mp3', 'wav', 'ogg', 'm4a'], label: FILE_LABEL })
     this.now = options.now ?? (() => new Date())
     this.randomBytes = options.randomBytes ?? nodeRandomBytes
     this.maximumAudioBytes = options.maximumAudioBytes ?? DEFAULT_MAXIMUM_AUDIO_BYTES
@@ -184,6 +188,7 @@ export class AiAudioAssetStore {
       if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error('AI 音频资产标识冲突，请重试')
       throw new Error('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
     }
+    this.locator.remember(userId, assetId, filePath)
     return {
       assetId,
       localUrl: `xingmang-asset://audio/${assetId}`,
@@ -199,7 +204,7 @@ export class AiAudioAssetStore {
       if (!existing.bytes.equals(bytes)) throw new Error('AI 音频内容摘要冲突')
       return existing.asset
     } catch (error) {
-      if (error instanceof Error && error.message === 'AI 音频资产不存在或无权访问') return null
+      if (error instanceof Error && error.message === MISSING_ASSET_MESSAGE) return null
       throw error
     }
   }
@@ -207,36 +212,24 @@ export class AiAudioAssetStore {
   async readOwned(userId: number, assetId: string): Promise<AiAudioOwnedAssetRead> {
     assertUserId(userId)
     assertAssetId(assetId)
-    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
-    let entries: fs.Dirent[]
+    const filePath = await this.locateOwned(userId, assetId)
+    let bytes: Buffer
     try {
-      assertNoReparseComponents(accountRoot, FILE_LABEL)
-      entries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
-    } catch { throw new Error('AI 音频资产不存在或无权访问') }
-    if (entries.length > 4_096) throw new Error('AI 音频资产目录条目过多')
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(entry.name)) continue
-      assertNoReparseComponents(path.join(accountRoot, entry.name), FILE_LABEL)
-      for (const extension of ['mp3', 'wav', 'ogg', 'm4a']) {
-        const fileName = `xingmang-${assetId}.${extension}`
-        const filePath = path.join(accountRoot, entry.name, fileName)
-        try {
-          const bytes = await readBoundedAudio(filePath, this.maximumAudioBytes)
-          const inspection = inspectAudio(bytes)
-          return {
-            asset: {
-              assetId,
-              localUrl: `xingmang-asset://audio/${assetId}`,
-              mimeType: inspection.mimeType,
-              fileName,
-              ...inspectAudioMetadata(bytes, inspection.mimeType),
-            },
-            bytes,
-          }
-        } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
-      }
+      bytes = await readBoundedAudio(filePath, this.maximumAudioBytes)
+    } catch (error) {
+      throw this.missingIfGone(assetId, error)
     }
-    throw new Error('AI 音频资产不存在或无权访问')
+    const inspection = inspectAudio(bytes)
+    return {
+      asset: {
+        assetId,
+        localUrl: `xingmang-asset://audio/${assetId}`,
+        mimeType: inspection.mimeType,
+        fileName: path.basename(filePath),
+        ...inspectAudioMetadata(bytes, inspection.mimeType),
+      },
+      bytes,
+    }
   }
 
   /**
@@ -247,38 +240,39 @@ export class AiAudioAssetStore {
   async resolveOwnedFilePath(userId: number, assetId: string): Promise<string> {
     assertUserId(userId)
     assertAssetId(assetId)
-    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
-    let entries: fs.Dirent[]
+    const filePath = await this.locateOwned(userId, assetId)
+    let stats: fs.Stats
     try {
-      assertNoReparseComponents(accountRoot, FILE_LABEL)
-      entries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
-    } catch { throw new Error('AI 音频资产不存在或无权访问') }
-    if (entries.length > 4_096) throw new Error('AI 音频资产目录条目过多')
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(entry.name)) continue
-      assertNoReparseComponents(path.join(accountRoot, entry.name), FILE_LABEL)
-      for (const extension of ['mp3', 'wav', 'ogg', 'm4a']) {
-        const filePath = path.join(accountRoot, entry.name, `xingmang-${assetId}.${extension}`)
-        let stats: fs.Stats
-        try {
-          stats = await fs.promises.lstat(filePath)
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
-          throw error
-        }
-        if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
-          throw new Error('AI 音频资产必须是单链接普通文件')
-        }
-        return filePath
-      }
+      assertNoReparseComponents(path.dirname(filePath), FILE_LABEL)
+      stats = await fs.promises.lstat(filePath)
+    } catch (error) {
+      throw this.missingIfGone(assetId, error)
     }
-    throw new Error('AI 音频资产不存在或无权访问')
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+      throw new Error('AI 音频资产必须是单链接普通文件')
+    }
+    return filePath
+  }
+
+  /** Where the file is; every caller still runs the full file checks on it. */
+  private async locateOwned(userId: number, assetId: string): Promise<string> {
+    const filePath = await this.locator.locate(userId, assetId)
+    if (!filePath) throw new Error(MISSING_ASSET_MESSAGE)
+    return filePath
+  }
+
+  /** A located file that vanished before it was opened is a missing asset, not a raw file-system error. */
+  private missingIfGone(assetId: string, error: unknown): unknown {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return error
+    this.locator.forget(assetId)
+    return new Error(MISSING_ASSET_MESSAGE)
   }
 
   async removeOwned(userId: number, assetId: string): Promise<void> {
     const filePath = await this.resolveOwnedFilePath(userId, assetId)
     await readBoundedAudio(filePath, this.maximumAudioBytes)
     await removeSafeDataFile(filePath, FILE_LABEL)
+    this.locator.forget(assetId)
   }
 
   async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
@@ -288,6 +282,7 @@ export class AiAudioAssetStore {
       mediaType: 'audio',
       filePattern: /^xingmang-([A-Za-z0-9_-]{43})\.(mp3|wav|ogg|m4a)$/,
       label: FILE_LABEL,
+      onFile: (assetId, filePath) => this.locator.remember(userId, assetId, filePath),
     })
   }
 
@@ -360,13 +355,13 @@ export class AiAudioAssetStore {
 
   async revealInFolder(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {
     if (!this.nativeOperations) throw new Error('当前环境不支持在文件夹中定位')
-    const owned = await this.readOwned(userId, assetId)
-    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
-    const dateEntries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
-    const entry = dateEntries.find((candidate) => candidate.isDirectory() && DATE_DIRECTORY_PATTERN.test(candidate.name) && fs.existsSync(path.join(accountRoot, candidate.name, owned.asset.fileName)))
-    if (!entry) throw new Error('AI 音频资产不存在或无权访问')
+    await this.readOwned(userId, assetId)
+    // The path handed to the OS gets the same checks as every other one,
+    // instead of a second pass over the date folders with a synchronous
+    // exists check in each.
+    const filePath = await this.resolveOwnedFilePath(userId, assetId)
     await authorize?.()
-    await this.nativeOperations.revealInFolder(path.join(accountRoot, entry.name, owned.asset.fileName))
+    await this.nativeOperations.revealInFolder(filePath)
   }
 
   async contextMenu(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {

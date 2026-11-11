@@ -1,7 +1,8 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import type { AiChatAsset, AiChatGroupSummary, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
+import type { AiChatAsset, AiChatGroupSummary, AiChatHistoryFlushRequest, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatPreparedGroup, AiChatStreamEvent, XingmangApi } from '../../../../electron/ipc-contract'
 import type { ChatBridge } from './api'
+import { answerHistoryFlushRequests } from './storage'
 import { ChatPage } from './ChatPage'
 import { ToastProvider } from '../../ui'
 import { OnlineStatusContext, useBrowserOnline } from '../shell/useOnlineStatus'
@@ -32,6 +33,13 @@ function noRecheck() {}
 let failHistoryWrites = false
 // 主进程读记录失败（比如被别的程序占着）；之后能读了，「重新读取」才读得出来。
 let failHistoryReads = query.has('historyReadFail')
+// 导出这段对话存不进去时主进程交过来的原话（经 IPC 带着通道名，D16）：没权限、盘满了、别的。
+const exportFailures: Record<string, string> = {
+  denied: "Error invoking remote method 'chat-history:export-text': Error: EPERM: operation not permitted, open 'C:\\Users\\fixture\\Desktop\\.今天聊的.txt.tmp'",
+  full: "Error invoking remote method 'chat-history:export-text': Error: ENOSPC: no space left on device, write",
+  other: "Error invoking remote method 'chat-history:export-text': Error: 聊天对话导出文件写入被系统占用，请稍后重试",
+}
+const exportFailure = exportFailures[query.get('exportFail') ?? '']
 // 读记录一直不回（比如磁盘正忙）：第一次进聊天页先看到「正在加载页面」，放行以后才出现输入框。
 let openHistoryReads: (() => void) | undefined
 const heldHistoryReads = query.has('historyReadHold') ? new Promise<void>((resolve) => { openHistoryReads = resolve }) : undefined
@@ -43,12 +51,23 @@ function historyDatabase(): Promise<IDBDatabase> {
     request.onerror = () => reject(request.error)
   })
 }
-async function historyFiles(scope: string): Promise<AiChatHistorySnapshot> {
+// aside 是主进程挪进备份文件夹的那几个读不出来的对话文件（electron/ai-chat-history-store.ts 的 setAside）。
+interface FixtureHistory extends AiChatHistorySnapshot { aside?: AiChatHistorySnapshot['conversations'] }
+async function historyFiles(scope: string): Promise<FixtureHistory> {
   const database = await historyDatabase()
   return new Promise((resolve, reject) => {
     const request = database.transaction('files').objectStore('files').get(scope)
     request.onsuccess = () => resolve(request.result ?? { index: null, conversations: [] })
     request.onerror = () => reject(request.error)
+  })
+}
+async function putHistoryFiles(scope: string, history: FixtureHistory): Promise<void> {
+  const database = await historyDatabase()
+  await new Promise<void>((resolve, reject) => {
+    const transaction = database.transaction('files', 'readwrite')
+    transaction.objectStore('files').put(history, scope)
+    transaction.oncomplete = () => resolve()
+    transaction.onerror = () => reject(transaction.error)
   })
 }
 async function writeHistoryFiles(input: AiChatHistoryWrite): Promise<void> {
@@ -57,20 +76,27 @@ async function writeHistoryFiles(input: AiChatHistoryWrite): Promise<void> {
   const files = new Map(current.conversations.map((file) => [file.key, file.content]))
   for (const file of input.put) files.set(file.key, file.content)
   const conversations = input.keys.map((key) => ({ key, content: files.get(key) ?? '' }))
-  const database = await historyDatabase()
-  await new Promise<void>((resolve, reject) => {
-    const transaction = database.transaction('files', 'readwrite')
-    transaction.objectStore('files').put({ index: input.index, conversations }, input.scope)
-    transaction.oncomplete = () => resolve()
-    transaction.onerror = () => reject(transaction.error)
-  })
+  const aside = [...(current.aside ?? []), ...(input.setAside ?? []).flatMap((key) => files.has(key) ? [{ key, content: files.get(key)! }] : [])]
+  await putHistoryFiles(input.scope, { index: input.index, conversations, ...(aside.length ? { aside } : {}) })
 }
+// 弄坏第 position 段对话的文件：写成半截，或者整个删掉（杀毒软件隔离、客户自己清掉一部分）。
+async function breakConversation(position: number, how: 'truncate' | 'remove', scope = 'xm-account:7'): Promise<string> {
+  const current = await historyFiles(scope)
+  const key: string = JSON.parse(current.index ?? '{}').conversations[position].key
+  const conversations = how === 'remove'
+    ? current.conversations.filter((file) => file.key !== key)
+    : current.conversations.map((file) => file.key === key ? { key, content: file.content.slice(0, Math.floor(file.content.length / 2)) } : file)
+  await putHistoryFiles(scope, { ...current, conversations })
+  return key
+}
+async function asideFiles(scope = 'xm-account:7') { return (await historyFiles(scope)).aside ?? [] }
 async function savedWorkspace(scope = 'xm-account:7') {
   const snapshot = await historyFiles(scope)
   if (snapshot.index === null) return null
   const index = JSON.parse(snapshot.index)
-  const files = new Map(snapshot.conversations.map((file) => [file.key, JSON.parse(file.content).conversation]))
-  return { ...index, conversations: index.conversations.map((entry: { key: string }) => files.get(entry.key)) }
+  // 弄坏的那段（breakConversation）在挪走之前还在索引里，读成 null。
+  const files = new Map(snapshot.conversations.map((file) => [file.key, file.content]))
+  return { ...index, conversations: index.conversations.map((entry: { key: string }) => { try { return JSON.parse(files.get(entry.key) ?? '').conversation } catch { return null } }) }
 }
 const bridge: ChatBridge = {
   listAiChatGroups: async () => {
@@ -92,13 +118,27 @@ const bridge: ChatBridge = {
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
   pickAiChatImages: async (remaining) => { record('pick-images', remaining); return query.has('pickCancel') ? [] : [{ ...imageAsset, assetId: `p${String(calls.length).padStart(42, '0')}`, fileName: 'picked.png' }] },
   pasteAiChatImage: async () => { record('paste-image'); return query.has('emptyClipboard') ? null : { ...imageAsset, assetId: `v${String(calls.length).padStart(42, '0')}`, fileName: 'pasted.png' } },
-  readAiChatHistory: async (scope) => { record('read-history', scope); if (heldHistoryReads) await heldHistoryReads; if (failHistoryReads) throw new Error('reparse point'); return historyFiles(scope) },
+  readAiChatHistory: async (scope) => { record('read-history', scope); if (heldHistoryReads) await heldHistoryReads; if (failHistoryReads) throw new Error('reparse point'); const { index, conversations } = await historyFiles(scope); return { index, conversations } },
   writeAiChatHistory: (input) => writeHistoryFiles(input),
-  exportAiChatConversation: async (input) => { record('export-text', input); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Desktop\\${input.title}.txt` } },
+  exportAiChatConversation: async (input) => { record('export-text', input); if (exportFailure) throw new Error(exportFailure); return query.has('exportCancel') ? null : { outputPath: `C:\\Users\\fixture\\Downloads\\${input.title}.txt` } },
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
+  reportRendererError: async (payload) => { record('log', payload) },
+}
+// 退出前主进程那一问（electron/chat-history-flush.ts）：App 一挂上就接着，这里在模块里接，聊天页换账号、卸下都还在。
+const flushListeners = new Set<(request: AiChatHistoryFlushRequest) => void>()
+const flushAnswers = new Map<string, () => void>()
+answerHistoryFlushRequests({
+  onAiChatHistoryFlushRequested: (listener) => { flushListeners.add(listener); return () => { flushListeners.delete(listener) } },
+  confirmAiChatHistoryFlushed: async (requestId) => { record('flushed', requestId); flushAnswers.get(requestId)?.(); flushAnswers.delete(requestId) },
+})
+function askBeforeQuit(requestId: string): Promise<void> {
+  return new Promise((resolve) => {
+    flushAnswers.set(requestId, resolve)
+    for (const listener of flushListeners) listener({ requestId })
+  })
 }
 declare global {
-  interface Window { chatHarness: { calls: typeof calls; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
+  interface Window { chatHarness: { calls: typeof calls; askBeforeQuit: typeof askBeforeQuit; emit: (event: AiChatStreamEvent) => void; completeImage: (requestId: string) => void; failImage: (requestId: string) => void; finishPreparation: () => void; switchScope: (id: number) => void; resetGroupFailure: () => void; setActive: (active: boolean) => void; setGroups: (names: string[]) => void; failGroupList: () => void; failPreparation: (group: string | null) => void; deferGroupList: () => void; releaseGroupList: () => void; savedWorkspace: typeof savedWorkspace; breakConversation: typeof breakConversation; asideFiles: typeof asideFiles; failHistoryWrites: (fail: boolean) => void; failHistoryReads: (fail: boolean) => void; releaseHistoryReads: () => void; openParameters: () => void } }
 }
 function Fixture() {
   const [scope, setScope] = useState(query.has('sub2api') ? 'api-account:7' : 'xm-account:7')
@@ -107,13 +147,15 @@ function Fixture() {
   const [openParameters, setOpenParameters] = useState(query.has('openParameters'))
   // context.setOffline() 翻的是 navigator.onLine；App 里同一个信号交给 OnlineStatusContext。
   const online = useBrowserOnline()
-  window.chatHarness = { calls, emit: (event) => { for (const listener of listeners) listener(event) }, completeImage: (id) => images.get(id)?.resolve([imageAsset]), failImage: (id) => images.get(id)?.reject(new Error('network error')), finishPreparation: () => { for (const item of preparations) item.resolve({ group: item.group, models: ['gpt-test', 'gpt-image-2'], keyCreated: false }) }, switchScope: (id) => { userId = id; setScope(`xm-account:${id}`) }, resetGroupFailure: () => { failedGroupList = false }, setActive,
+  window.chatHarness = { calls, askBeforeQuit, emit: (event) => { for (const listener of listeners) listener(event) }, completeImage: (id) => images.get(id)?.resolve([imageAsset]), failImage: (id) => images.get(id)?.reject(new Error('network error')), finishPreparation: () => { for (const item of preparations) item.resolve({ group: item.group, models: ['gpt-test', 'gpt-image-2'], keyCreated: false }) }, switchScope: (id) => { userId = id; setScope(`xm-account:${id}`) }, resetGroupFailure: () => { failedGroupList = false }, setActive,
     setGroups: (names) => { groupOverride = names.map((name) => ({ name, description: name, ratio: 1 })) },
     failGroupList: () => { failedGroupList = true },
     failPreparation: (group) => { failingPreparation = group },
     deferGroupList: () => { groupGate = new Promise<void>((resolve) => { releaseGroupGate = resolve }) },
     releaseGroupList: () => { releaseGroupGate?.(); groupGate = undefined; releaseGroupGate = undefined },
     savedWorkspace,
+    breakConversation,
+    asideFiles,
     failHistoryWrites: (fail) => { failHistoryWrites = fail },
     failHistoryReads: (fail) => { failHistoryReads = fail },
     releaseHistoryReads: () => openHistoryReads?.(),

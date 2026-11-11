@@ -42,10 +42,37 @@ describe('parseAccountKeyCreateInput', () => {
     }
   })
 
+  const tooLong = '密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。'
+
   it('applies the xm site name limit unless the key is for the legacy account site', () => {
     const name = 'n'.repeat(51)
-    expect(() => parseAccountKeyCreateInput({ ...valid, name })).toThrow('密钥名称格式错误')
+    expect(parseAccountKeyCreateInput({ ...valid, name: 'n'.repeat(50) }).name).toBe('n'.repeat(50))
+    expect(() => parseAccountKeyCreateInput({ ...valid, name })).toThrow(tooLong)
     expect(parseAccountKeyCreateInput({ ...valid, name }, true).name).toBe(name)
+    // The legacy account site keeps its own limit and its own wording.
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: 'n'.repeat(101) }, true)).toThrow('密钥名称格式错误')
+  })
+
+  it('counts the xm site name limit in UTF-8 bytes, so 16 Chinese characters fit and 17 do not', () => {
+    expect(parseAccountKeyCreateInput({ ...valid, name: '星'.repeat(16) }).name).toBe('星'.repeat(16))
+    expect(parseAccountKeyCreateInput({ ...valid, name: `${'星'.repeat(16)}ab` }).name).toBe(`${'星'.repeat(16)}ab`)
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: '星'.repeat(17) })).toThrow(tooLong)
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: `${'x'.repeat(47)}😀` })).toThrow(tooLong)
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: `${'星'.repeat(17)}\0` })).toThrow(tooLong)
+    // Surrounding spaces are trimmed before sending, so they do not count.
+    expect(parseAccountKeyCreateInput({ ...valid, name: ` ${'星'.repeat(16)} ` }).name).toBe('星'.repeat(16))
+    // The legacy account site keeps its own limit.
+    expect(parseAccountKeyCreateInput({ ...valid, name: '星'.repeat(17) }, true).name).toBe('星'.repeat(17))
+  })
+
+  it('keeps the generic wording for every malformed name that is not too long, and accepts exactly what it did before', () => {
+    for (const name of [undefined, null, 42, '', '   ', 'a\0b', ' '.repeat(60)]) {
+      expect(() => parseAccountKeyCreateInput({ ...valid, name })).toThrow('密钥名称格式错误')
+    }
+    // Padding is trimmed before the byte count, but the raw-length cap still
+    // applies afterwards, so a padded name that fits once trimmed is rejected
+    // exactly as before -- only the too-long wording changed, not the limit.
+    expect(() => parseAccountKeyCreateInput({ ...valid, name: ` ${'n'.repeat(50)} ` })).toThrow('密钥名称格式错误')
   })
 
   it('allows a fractional quota only for the legacy account site, and never a zero limit there', () => {

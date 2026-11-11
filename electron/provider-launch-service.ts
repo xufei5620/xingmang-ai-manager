@@ -36,7 +36,8 @@ import {
   trustCodexWorkspace,
   trustManagedWorkspace,
 } from './config-files'
-import { toolLaunchFailureMessage } from './failure-wording'
+import { inspectWorkspaceWritable, shouldNoteReadOnlyWorkspace } from './documents-fallback'
+import { errorCodeOf, toolLaunchFailureMessage } from './failure-wording'
 import { type LinuxTerminalAttempt, LinuxTerminalLaunchError } from './linux-terminal'
 import type { MacosTerminalLaunchPlan } from './macos-platform'
 import { ensureProjectInstructions, readProjectInstructionsTemplate } from './project-instructions'
@@ -60,7 +61,8 @@ import {
   inspectWorkspaceConfigOverrides,
   launchOverrideNotice,
 } from './workspace-config-overrides'
-import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
+import { assertWorkspaceDirectory } from './workspace-access'
+import { claudeProjectSettingsFiles, classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 
 /**
  * The color layer must sit on top of a caller-selected base. An elevated
@@ -257,6 +259,27 @@ export function writeQueuedWithin<T>(
   })
 }
 
+/**
+ * 文件夹里有没有 Claude Code 只在答了信任之后才照着做的那几份项目设置（claudeProjectSettingsFiles，D4）。
+ * 只认「确实没有」（ENOENT，或 .claude 是个文件时的 ENOTDIR）；看不了的（没权限、读到一半出错）一律按
+ * 带着算：多看一次 CLI 自己的英文提问，比替客户信任一个看不清的文件夹便宜。一个一个看，看到一份就停。
+ */
+export async function workspaceCarriesClaudeProjectSettings(
+  workspace: string,
+  lstat: (file: string) => Promise<unknown> = (file) => fs.promises.lstat(file),
+): Promise<boolean> {
+  for (const segments of claudeProjectSettingsFiles) {
+    try {
+      await lstat(path.join(workspace, ...segments))
+      return true
+    } catch (error) {
+      const code = errorCodeOf(error)
+      if (code !== 'ENOENT' && code !== 'ENOTDIR') return true
+    }
+  }
+  return false
+}
+
 /** 打开工具要用、但归别处管的几样，由 createSystemService 传进来。 */
 export interface ProviderLaunchServiceDependencies {
   /** 起 CLI 子进程用的环境（providerCommandEnvironment）。 */
@@ -390,9 +413,7 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
     if (!canLaunchManagedProvider(nativeConfig)) {
       throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
-    if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
-      throw new Error('工作目录不存在，请重新选择')
-    }
+    assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
     // 从星芒打开的窗口读的是现在的配置：之前标的「需重开生效」说的不是它了（C19 另按「开着」算 Gemini）。
     toolLaunchedAt.set(provider, Date.now())
     toolRouteRestartPending.delete(provider)
@@ -413,13 +434,24 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         kind: workspaceSensitivity,
       })
     }
+    const workspaceReadOnly = shouldNoteReadOnlyWorkspace(workspaceSensitivity, platform)
+      && await workspaceRefusesWrites(provider, workspace)
     // 目录是用户刚在本软件的对话框里亲自选的，再让他去读一遍 CLI 自己的英文
     // 信任问答没有意义，所以打开之前先把这一项写进 CLI 的配置。写不进去
     // （文件损坏、只读、主目录被重定向）绝不能挡住打开：CLI 自己还会问一次。
+    // 例外是文件夹里已经带着 Claude Code 自己的项目设置（D4）：那是别人写好、答了信任就会自动
+    // 执行的东西，信任那一问交还给 Claude Code 自己。
     if (!workspaceSensitivity) {
       try {
-        const trust = await writeBeforeLaunch(() => trustManagedWorkspace(provider, providerRoots, workspace))
-        if (trust.changed) {
+        const leaveFolderTrustToCli = provider === 'claude' && await workspaceCarriesClaudeProjectSettings(workspace)
+        if (leaveFolderTrustToCli) {
+          runtimeLog?.log('info', 'config', 'workspace.trust.left-to-cli', `${definition.name} 打开的文件夹自带项目设置，不替客户写入信任`, {
+            provider,
+          })
+        }
+        const trust = await writeBeforeLaunch(() => trustManagedWorkspace(provider, providerRoots, workspace, { leaveFolderTrustToCli }))
+        // 留给 CLI 问的那种只补了首启向导，不能记成「已信任」。
+        if (trust.changed && !leaveFolderTrustToCli) {
           runtimeLog?.log('info', 'config', 'workspace.trust.written', `${definition.name} 已信任所选工作目录`, {
             provider,
           })
@@ -476,7 +508,10 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         })
       }
     }
-    const launchResult = inspectLaunchConfigOverrides(provider, workspace, nativeConfig)
+    const launchResult: CliLaunchResult = {
+      ...inspectLaunchConfigOverrides(provider, workspace, nativeConfig),
+      ...(workspaceReadOnly ? { workspaceReadOnly } : {}),
+    }
     const accountMode = providerAccountMode(nativeConfig)
     const excludedVariables = launchExcludedEnvironmentVariables(provider, accountMode)
     // Grok 按 PATH 挑跑钩子的 shell：补上注册表里新加的那几段，与 expectedGrokWindowsShell 推的是同一份 PATH。
@@ -618,6 +653,20 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
         detail: attempt.detail,
       })),
     }
+  }
+
+  // 光盘、只读挂载的共享盘、没有改的权限的文件夹，工具照样起得来，AI 一改文件就是一串英文报错（D17）。
+  // 打开前试写一次，写不进不拦，打开后首页说一句。Windows 不走这里：同样这些文件夹在 cli:launch 那一步
+  // 已经试写过（ipc/handlers/launch.ts 的 launchIfWritable）。
+  async function workspaceRefusesWrites(provider: ProviderId, workspace: string): Promise<boolean> {
+    const startedAt = Date.now()
+    const writability = await inspectWorkspaceWritable(workspace, serviceOptions.probeWorkspaceWritable ? { probe: serviceOptions.probeWorkspaceWritable } : {})
+    const refused = writability === 'denied' || writability === 'read-only'
+    // 不记路径（I13）：客服要的是结果和耗时，跟 Windows 那一条同名。
+    runtimeLog?.log(refused ? 'warn' : 'info', 'config', 'workspace.write-check', refused
+      ? '选中的文件夹写不进去，照常打开，打开后在首页提醒'
+      : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    return refused
   }
 
   /**

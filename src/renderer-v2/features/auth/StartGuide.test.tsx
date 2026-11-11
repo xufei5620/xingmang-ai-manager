@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { configWriteBlockerMessage } from '../../../../electron/config-write-blocker'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
 import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
 
@@ -108,10 +109,23 @@ describe('renderer-v2 start guide first run', () => {
     // 「打开」照样能点，只是不再抢主按钮。
     expect(markup).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-open-tool"/)
     expect(markup).not.toMatch(/data-testid="guide-open-tool"[^>]*disabled/)
+    // D47：下面的结果卡跟着说先充值，不再两句叫人去打开。
+    expect(markup).toContain('设置已读到。')
+    expect(markup).toContain('>先充值<')
+    expect(markup).toContain('充值后回来点「打开」就能用。')
+    expect(markup).not.toContain('打开工具试一次')
     stubResumedGuide('chat', 'ready')
     const chat = render([guideTool()], { onFailureAction: () => undefined, walletEmpty: true })
     expect(chat).toContain('data-testid="guide-wallet-empty"')
     expect(chat).toMatch(/class="[^"]*xm-btn-secondary[^"]*"[^>]*data-testid="guide-chat"/)
+  })
+
+  // W9：自称一律「星芒」。
+  it('opens the chat route with 星芒 as the name of the app', () => {
+    stubResumedGuide('chat', 'ready')
+    const markup = render([guideTool()])
+    expect(markup).toContain('从一个问题开始，慢慢熟悉星芒。')
+    expect(markup).not.toContain('AI 工作台')
   })
 
   it('keeps the ready wording when the empty wallet is not what the tool spends', () => {
@@ -367,10 +381,10 @@ describe('guide install failure wording', () => {
 
   it('keeps the next step the main process wrote when the official registry check could not connect', () => {
     const network = guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ENOTFOUND）。换个网络（比如手机热点）后再试。'), 'Claude Code')
-    expect(network.message).toBe('Claude Code 没装上（连不上 npm 官方源）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
-    expect(network.reason).toBe('连不上 npm 官方源')
+    expect(network.message).toBe('Claude Code 没装上（连不上工具的官方下载站）。换个网络（比如手机热点）后再试。点「再试一次」，还不行就点「需要帮助」。')
+    expect(network.reason).toBe('连不上工具的官方下载站')
     expect(guideInstallFailure(new Error('Claude Code 安装失败：装之前要先到 npm 官方源核对安装清单，这一步没连上（错误码 ECONNRESET）。到「设置 › 网络加速」开启加速后再试。'), 'Claude Code').message)
-      .toBe('Claude Code 没装上（连不上 npm 官方源）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
+      .toBe('Claude Code 没装上（连不上工具的官方下载站）。到「设置 › 网络加速」开启加速后再试。点「再试一次」，还不行就点「需要帮助」。')
   })
 })
 
@@ -418,6 +432,16 @@ describe('guide step failure wording', () => {
     expect(guideStepFailure(new Error('切换前的备份没有完成，已取消切换，配置没有改动：EACCES: permission denied'), '改用当前账号', true).reason).toBe('写不进配置文件')
     // 装东西的几步照旧是安装目录。
     expect(guideStepFailure(new Error('EPERM: operation not permitted'), '准备环境', true).reason).toBe('写不进安装目录')
+  })
+
+  it('tells a switch refused by a root-owned settings folder or a read-only file what it really is (D15)', () => {
+    // 主进程查出是哪一种时（config-files-context.ts 的 explainConfigWriteFailure）那半句，经 account-source-switch 包一层。
+    const adminOwned = guideStepFailure(new Error(`Claude Code 改用当前账号没有完成：${configWriteBlockerMessage('adminOwned', 'EACCES')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    expect(adminOwned.message).toBe('改用当前账号没有成功：写不进配置文件。这个工具的设置文件夹归电脑管理员所有，多半是以前用管理员身份运行过它，星芒改不了。点「复制给客服」，客服会教你一步改回来。')
+    expect(adminOwned.reason).toBe('写不进配置文件')
+    const readOnly = guideStepFailure(new Error(`Codex CLI 改用当前账号没有完成：${configWriteBlockerMessage('readOnly', 'EPERM')}。已恢复到切换前的配置。`), '改用当前账号', true)
+    expect(readOnly.message).toBe('改用当前账号没有成功：写不进配置文件。这个文件被设成了只读，星芒没动它。要让星芒写进去，先取消只读。')
+    expect(readOnly.reason).toBe('写不进配置文件')
   })
 
   it('puts the linked config file and what to do about it on the red line instead of the folded raw text', () => {
@@ -629,10 +653,11 @@ describe('guide switch failure exits', () => {
     expect(guideFailureExits(new Error('something odd'))).toEqual([])
   })
 
-  it('keeps the same buttons when the switch could not write the config file (known 29)', () => {
-    // 改的只是那句话：按钮照旧是「再试一次」「复制给客服」和这里的「查看日志」，不多出「找客服」。
+  it('offers 找客服 when the switch could not write the config file (known 29, D14)', () => {
+    // 已知29 改的只是那句话。出口按「写不进」那一类的按钮走：D14 把它换成「重试、复制路径、找客服」，
+    // 引导里「重试」是「再试一次」、「复制路径」不出，剩下「找客服」。
     expect(guideFailureExits(new Error("Claude Code 改用当前账号没有完成：EPERM: operation not permitted, open 'C:\\Users\\alice\\.claude\\settings.json'。已恢复到切换前的配置。")))
-      .toEqual([{ id: 'log', label: '查看日志' }])
+      .toEqual([{ id: 'support', label: '找客服' }])
   })
 })
 
@@ -646,6 +671,20 @@ describe('guide connect step after the account key was not written', () => {
   function buttonClass(markup: string, testId: string): string {
     return new RegExp(`<button class="([^"]*)"[^>]*data-testid="${testId}"`).exec(markup)?.[1] ?? ''
   }
+
+  // W81 W82：「下一步」灰着时悬停说还差什么；那颗配置按钮叫「去连好」。
+  it('says what is missing on the grey next button and names the configure button plainly', () => {
+    stubResumedGuide('claude', 'connect')
+    const markup = render([guideTool({ configured: false, source: 'none' })])
+    expect(markup).toMatch(/<button title="先把上面那项连好"[^>]*data-testid="guide-next"[^>]*disabled/)
+    expect(markup).toMatch(/data-testid="guide-config"[^>]*>.*?<span>去连好<\/span>/)
+    expect(markup).not.toContain('去完成连接配置')
+    // 连好了就不灰，也不挂这句。
+    const connected = render([guideTool()])
+    expect(connected).not.toContain('先把上面那项连好')
+    // 正忙着的时候灰着是别的原因，不说这句。
+    expect(render([guideTool({ configured: false, source: 'none' })], { busy: true })).not.toContain('先把上面那项连好')
+  })
 
   it('says why with the home banner sentence and makes resync the main button', () => {
     stubResumedGuide('claude', 'connect')

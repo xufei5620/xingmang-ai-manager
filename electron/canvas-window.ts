@@ -9,8 +9,10 @@ import {
   Notification,
   protocol,
   type IpcMainInvokeEvent,
+  type MessageBoxOptions,
   type OpenDialogOptions,
   type SaveDialogOptions,
+  type WebContents,
 } from 'electron'
 import {
   canvasPackagedBaseUrl,
@@ -29,7 +31,7 @@ import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { createRendererCrashRecovery, type RendererCrashRecovery } from './renderer-crash-recovery'
-import { canvasHostChannels, type CanvasAppearance } from './canvas-contract'
+import { canvasHostChannels, type CanvasAccountSummary, type CanvasAppearance, type CanvasPriceSnapshot, type CanvasProjectDeleteResult, type CanvasProjectImportResult } from './canvas-contract'
 import {
   createLinuxRendererSandboxGate,
   linuxRendererSandboxRefusalMessage,
@@ -63,12 +65,15 @@ import type { AiVideoAssetStore } from './ai-video-asset-store'
 import type { AiVideoService } from './ai-video-service'
 import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
+import { parseCanvasRunPreparationCompletion } from './canvas-run-preparations'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
+import { claimCanvasDefaultProjectFolder, describeCanvasDefaultProjectFolderFailure, releaseCanvasDefaultProjectFolder, releaseCanvasDefaultProjectFolderTree } from './canvas-default-project-folder'
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
-import type { CanvasProjectAssetManager } from './canvas-project-asset-manager'
+import type { CanvasProjectAssetContext, CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { CanvasGenerationAdmission } from './canvas-generation-admission'
+import { assertCanvasUploadedImage, CanvasByteUploadAdmission, parseCanvasUploadedImageBytes } from './canvas-byte-upload'
 import {
   buildCanvasProjectPackage,
   createCanvasProjectPreviewId,
@@ -102,6 +107,7 @@ export const canvasHostCopyAssetChannel = canvasHostChannels.copyAsset
 export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
 export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
 export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
+export const canvasHostGetAssetDetailChannel = canvasHostChannels.getAssetDetail
 export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
 export const canvasHostUpdateAssetMetadataChannel = canvasHostChannels.updateAssetMetadata
 export const canvasHostMarkAssetUsedChannel = canvasHostChannels.markAssetUsed
@@ -111,6 +117,8 @@ export const canvasHostPurgeAssetChannel = canvasHostChannels.purgeAsset
 export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspectAssetReferences
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
+export const canvasHostImportAssetBytesChannel = canvasHostChannels.importAssetBytes
+export const canvasHostCompleteRunPreparationChannel = canvasHostChannels.completeRunPreparation
 export const canvasHostListPromptPresetsChannel = canvasHostChannels.listPromptPresets
 export const canvasHostCreatePromptPresetChannel = canvasHostChannels.createPromptPreset
 export const canvasHostUpdatePromptPresetChannel = canvasHostChannels.updatePromptPreset
@@ -128,10 +136,16 @@ export const canvasHostSaveProjectChannel = canvasHostChannels.saveProject
 export const canvasHostRenameProjectChannel = canvasHostChannels.renameProject
 export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicateProject
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
+export const canvasHostCreateProjectInDefaultFolderChannel = canvasHostChannels.createProjectInDefaultFolder
+export const canvasHostRelinkProjectFolderChannel = canvasHostChannels.relinkProjectFolder
+export const canvasHostDeleteProjectChannel = canvasHostChannels.deleteProject
+export const canvasHostGetAccountSummaryChannel = canvasHostChannels.getAccountSummary
+export const canvasHostGetPriceSnapshotChannel = canvasHostChannels.getPriceSnapshot
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
 export const canvasHostAppearanceChangedChannel = canvasHostChannels.appearanceChanged
+export const canvasHostShowAccountAssetsChannel = canvasHostChannels.showAccountAssets
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
@@ -140,6 +154,54 @@ const maximumBodyLength = 2_000
 const canvasNotificationIntervalMs = 5_000
 const defaultCanvasProjectFileName = 'xingmang-project.xingcanvas'
 const canvasProjectFileFilter = { name: '星芒画布项目', extensions: ['xingcanvas'] }
+
+interface PendingCanvasProjectImport {
+  previewId: string
+  userId: number
+  parsed: ParsedCanvasProjectPackage
+  /** Imported as a new project in the default folder, leaving the open one alone. */
+  createsProject: boolean
+  projectName: string
+}
+
+/**
+ * The folder deleting a project may move to the trash: only a project's own
+ * folder directly under the default projects folder, the kind creating and
+ * importing make there. A folder the user picked elsewhere may hold their
+ * own files next to the project, so it is never touched, and neither is a
+ * link or anything that is not a directory.
+ */
+export function canvasProjectFolderToTrash(workspaceDirectory: string | null, defaultProjectsDirectory: string | undefined): string | null {
+  if (!workspaceDirectory || !defaultProjectsDirectory) return null
+  const folder = path.resolve(workspaceDirectory)
+  if (path.dirname(folder) !== path.resolve(defaultProjectsDirectory)) return null
+  try {
+    return fs.lstatSync(folder).isDirectory() ? folder : null
+  } catch {
+    return null
+  }
+}
+
+/** What the confirmation says happens to the files, in the words of each system's trash. */
+export function canvasProjectDeleteDetail(folderToTrash: string | null, workspaceName: string | undefined, platform: NodeJS.Platform): string {
+  const trash = platform === 'darwin' ? '废纸篓' : '回收站'
+  if (folderToTrash) return `项目从列表里删掉，删了不能撤销。项目文件夹「星芒画布 › ${path.basename(folderToTrash)}」连同里面的图片、视频移到${trash}，还能从${trash}里拿回来。`
+  return `项目从列表里删掉，删了不能撤销。电脑上的文件一个都不删${workspaceName ? `，项目文件夹「${workspaceName}」留在原处` : ''}。`
+}
+
+/**
+ * The new project's name: the package's own workflow name, else the file's
+ * name without its extension. The package comes from anyone, so control
+ * characters become spaces here instead of failing the import at the very end.
+ */
+export function importedCanvasProjectName(workflowName: unknown, filePath: string): string {
+  function cleaned(value: string): string {
+    return value.replace(/[\x00-\x1f\x7f]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 128).trim()
+  }
+  const named = typeof workflowName === 'string' ? cleaned(workflowName) : ''
+  if (named) return named
+  return cleaned(path.basename(filePath).replace(/\.xingcanvas$/i, '')) || '导入的项目'
+}
 
 export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
@@ -159,20 +221,61 @@ export interface CanvasWindowControllerOptions {
   aiAssets: AiAssetStore
   videoAssets?: AiVideoAssetStore
   audioAssets?: AiAudioAssetStore
-  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'purge'>
+  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'readOwnedDetail' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'purge'>
   promptPresets: CanvasPromptPresetStore
   canvasRuns: CanvasRunService
   projects?: CanvasProjectStore
   projectAssets?: CanvasProjectAssetManager
+  /**
+   * The folder new projects go into without a folder dialog (Documents/星芒画布).
+   * Left out, creating in the default folder is refused and the canvas still
+   * creates through the folder dialog.
+   */
+  defaultProjectsDirectory?: () => string
+  /** Moves a deleted project's own folder to the system trash (shell.trashItem in production). */
+  trashProjectFolder?: (directory: string) => Promise<void>
+  /**
+   * The balance chip's answer (createCanvasAccountSummaryReader in production).
+   * Left out, the canvas is told nobody is signed in and shows no chip.
+   */
+  readAccountSummary?: () => Promise<CanvasAccountSummary | null>
+  /**
+   * The run preflight's price list (createCanvasPriceSnapshotReader in
+   * production). Left out, the canvas is told there is none and says 价格未知.
+   */
+  readPriceSnapshot?: () => Promise<CanvasPriceSnapshot | null>
   externalShell?: ExternalShellLauncher
   closeRequestTimeoutMs?: number
+  /** How long quitting waits for the canvas page to answer at all before treating it as hung. Defaults to 4 seconds. */
+  quitResponseTimeoutMs?: number
   /** Test seam; production starts a probe renderer on Linux and answers sandboxed elsewhere. */
   inspectRendererSandbox?: () => Promise<LinuxRendererSandboxVerdict>
+}
+
+/** What the first load of the canvas page opens on; a crash reload drops it and returns to the home page. */
+interface CanvasLaunchRoute {
+  projectId?: string
+  assetLibrary?: boolean
 }
 
 export interface CanvasWindowController {
   /** Opens the canvas window, or focuses it if already open. Idempotent under rapid repeat calls (in-flight creation is reused, never doubled). */
   open(): Promise<void>
+  /**
+   * Opens a canvas project file the system handed to the main process (a
+   * double-click on a .xingcanvas file, D92): imports it as a new project in
+   * the default folder and shows the canvas on it. An open canvas goes through
+   * its own close confirmation first; resolves false when the user stayed on
+   * it, and rejects when the file cannot be opened. Calls run one at a time.
+   */
+  openProjectFile(filePath: string): Promise<boolean>
+  /**
+   * Shows the read-only account library on the canvas home page (the main
+   * window's 「看全部作品」). A closed canvas opens with `?view=assets`; an open
+   * one is focused and asked to show it, which the page ignores while a
+   * project is open.
+   */
+  openAssetLibrary(): Promise<void>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
@@ -180,10 +283,36 @@ export interface CanvasWindowController {
   setAccountUser(userId: number | null): void
   /** Resolves only after renderer confirmation and the native closed event. */
   requestClose(): Promise<boolean>
+  /**
+   * requestClose() for quitting the app: a canvas page that does not answer at
+   * all is destroyed and counts as closed, so a hung canvas cannot hold the quit.
+   */
+  requestCloseForQuit(): Promise<boolean>
   /** Closes the canvas window if one is open; a no-op otherwise. */
   closeIfOpen(): void
   /** Removes every IPC handler this controller registered. */
   dispose(): void
+}
+
+/**
+ * Whether the page in `contents` still runs script. A page stuck in a loop
+ * neither answers nor fails, so the timer decides; a page that answers with an
+ * error is still alive and keeps the normal close handshake.
+ */
+export function canvasRendererAnswers(contents: Pick<WebContents, 'executeJavaScript'>, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(false), timeoutMs)
+    function answered(): void {
+      clearTimeout(timer)
+      resolve(true)
+    }
+    try {
+      contents.executeJavaScript('1').then(answered, answered)
+    } catch {
+      // Thrown synchronously: the contents are gone, which requestClose() handles.
+      answered()
+    }
+  })
 }
 
 function senderUrlOf(event: IpcMainInvokeEvent): string {
@@ -224,19 +353,17 @@ async function probeSandboxedRendererStatus(): Promise<string | null> {
   }
 }
 
+// The canvas's own background before it paints: the main window's light
+// background, and the obsidian one the canvas falls back to in dark.
 export const canvasWindowBackgroundColor = '#0b0c10'
-export const canvasWindowLightBackgroundColor = '#faf7ee'
+export const canvasWindowLightBackgroundColor = '#fbfaf6'
 
 export function canvasWindowBackgroundForTheme(theme: AppTheme): string {
   return theme === 'light' ? canvasWindowLightBackgroundColor : canvasWindowBackgroundColor
 }
 
 export function canvasWindowBackgroundForAppearance(appearance: CanvasAppearance): string {
-  const colors = {
-    light: { dawn: '#faf7ee', obsidian: '#f7f3e9', mist: '#f0f6f5', aurora: '#f3f1fb' },
-    dark: { dawn: '#0c172b', obsidian: '#0b0c10', mist: '#0c1a1e', aurora: '#120f22' },
-  }
-  return colors[appearance.theme][appearance.uiSkin ?? (appearance.theme === 'light' ? 'dawn' : 'obsidian')]
+  return canvasWindowBackgroundForTheme(appearance.theme)
 }
 
 /**
@@ -277,9 +404,10 @@ export function createCanvasWindowController(
   let pendingOpen: Promise<void> | null = null
   const storedSettings = options.systemService.readStoredConfig()
   let currentTheme: AppTheme = storedSettings.theme
+  // 画布跟主窗口一个颜色（#1103）：不再把存着的皮肤（老版本默认雾青 mist）交给画布，画布按深浅色自己选，
+  // 浅色是主窗口那套、深色是黑金 obsidian（内核在桌面上不套网页的默认配色）。
   let currentAppearance: CanvasAppearance = {
     theme: currentTheme,
-    ...(storedSettings.uiSkin ? { uiSkin: storedSettings.uiSkin } : {}),
     reducedMotion: storedSettings.reducedMotion === true,
   }
   let currentAccountUserId: number | null | undefined
@@ -295,9 +423,10 @@ export function createCanvasWindowController(
     window: BrowserWindow; requestId: string; authorized: boolean
     promise: Promise<boolean>; resolve(result: boolean): void; timer: ReturnType<typeof setTimeout>
   } | null = null
-  const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
+  const pendingProjects = new Map<number, PendingCanvasProjectImport>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
   const generationAdmission = new CanvasGenerationAdmission()
+  const byteUploadAdmission = new CanvasByteUploadAdmission()
   let lastCanvasNotificationAt = Number.NEGATIVE_INFINITY
 
   function assertCanvasAccountId(userId: number | null): number | null {
@@ -394,6 +523,27 @@ export function createCanvasWindowController(
     return promise
   }
 
+  // 退出软件时先看画布页面还回不回话。卡死但没崩的画布不会触发 render-process-gone，rendererReady 还是 true，
+  // 关闭请求发过去没人回，要白等 60 秒再按取消算，软件就退不掉了（退出改成先关画布之前，这种画布至少能随软件直接销毁）。
+  // 没回话就跟上面处理失效画布一样直接销毁、照常退出；回了话就照常走关闭确认，正弹着「还有进行中的任务」的框也一直等用户点。
+  async function requestCloseForQuit(): Promise<boolean> {
+    const window = canvasWindow
+    if (pendingClose || disposed || !window || window.isDestroyed() || rendererUnavailable || !rendererReady || window.webContents.isDestroyed()) {
+      return requestClose()
+    }
+    const requestedTimeout = options.quitResponseTimeoutMs ?? 4_000
+    const timeout = Number.isFinite(requestedTimeout) ? Math.max(100, Math.min(requestedTimeout, 30_000)) : 4_000
+    if (await canvasRendererAnswers(window.webContents, timeout)) return requestClose()
+    if (window.isDestroyed()) return true
+    options.runtimeLog.log('warn', 'canvas', 'close.unresponsive', '画布没响应，退出时直接关掉', { waitedMs: timeout })
+    try { window.destroy() } catch (error) {
+      options.runtimeLog.log('warn', 'canvas', 'close.unresponsive-destroy-failed', '没响应的画布窗口无法销毁', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+    return true
+  }
+
   function activeProjectId(ownerId: number, userId: number): string | undefined {
     if (!options.projects) return undefined
     const active = activeProjects.get(ownerId)
@@ -404,6 +554,25 @@ export function createCanvasWindowController(
   async function activeAssetContext(ownerId: number, userId: number) {
     const projectId = activeProjectId(ownerId, userId)
     return projectId ? options.projectAssets?.forProject(userId, projectId) : undefined
+  }
+
+  // 项目中心（没打开项目）的素材库，yoyo 2026-11-10 亲手打的「素材库放开」：没开项目时只读聊天那个共享库里的
+  // 图片，能列出、能看、能另存，不能改名、收藏、回收、删除。所以这里只放开列出和另存两件，而且只认图片、
+  // 只看没进回收站的、不按运行或节点去找；别的素材操作照旧要先打开项目。打开着项目（哪怕是换号前那个
+  // 账号的）不算项目中心，照旧走 activeProjectId 的拒绝。
+  function projectCenterAssetLibrary(ownerId: number): boolean {
+    return Boolean(options.projects) && !activeProjects.has(ownerId)
+  }
+
+  function assertProjectCenterAssetQuery(query: ReturnType<typeof parseCanvasAssetQuery>): void {
+    if (query.mediaType !== 'image' || (query.view !== undefined && query.view !== 'all') || query.runId || query.nodeId || query.prompt) {
+      throw new Error('没打开项目时只能查看素材库里的图片')
+    }
+  }
+
+  async function assertProjectCenterImage(userId: number, assetId: string): Promise<void> {
+    const asset = await options.mediaAssets.readOwnedDetail(userId, assetId)
+    if (asset.mediaType !== 'image' || asset.deletedAt) throw new Error('没打开项目时只能另存素材库里的图片')
   }
 
   protocol.registerFileProtocol(canvasProtocolScheme, (request, callback) => {
@@ -631,6 +800,121 @@ export function createCanvasWindowController(
     return duplicated
   })
 
+  // 新建项目默认放进「文档 › 星芒画布」，不弹选文件夹的框。画布只给一个名字：文件夹建在哪由主进程定，
+  // 文件夹名由主进程从名字里去掉不能进文件名的字符，每次新建一个，已经在的文件夹不用（canvas-default-project-folder.ts）。
+  registerCanvasHandler(canvasHostCreateProjectInDefaultFolderChannel, async (event, nameInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    if (!options.defaultProjectsDirectory) throw new Error('默认项目文件夹不可用，请点「换个位置创建…」自己选文件夹')
+    const userId = authenticatedCanvasUserId()
+    const name = requiredCanvasString(nameInput, '画布项目名称', 128)
+    let directory: string
+    try {
+      directory = claimCanvasDefaultProjectFolder(options.defaultProjectsDirectory(), name)
+    } catch (error) {
+      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），可以点「换个位置创建…」自己选文件夹`)
+    }
+    let created: Awaited<ReturnType<CanvasProjectStore['create']>>
+    try {
+      created = await options.projects.create(userId, name, directory)
+    } catch (error) {
+      releaseCanvasDefaultProjectFolder(directory)
+      throw error
+    }
+    assertCanvasUserUnchanged(userId)
+    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    return created
+  })
+
+  // 项目文件夹被挪走、改了名，重新选它现在在哪。和新建、复制一样由客户在系统对话框里选，画布只给项目标识；
+  // 只有文件夹已经找不到的项目能换（先查一遍，store 里再查一遍），画布没法把好好的项目改指到别处。
+  registerCanvasHandler(canvasHostRelinkProjectFolderChannel, async (event, projectIdInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
+    if (!project) throw new Error('画布项目不存在')
+    if (project.workspaceStatus !== 'missing') throw new Error('项目的工作文件夹还在，不用重新选择')
+    assertCanvasUserUnchanged(userId)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: `重新选择「${project.name}」的工作文件夹`,
+      buttonLabel: '使用此文件夹',
+      properties: ['openDirectory'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    assertCanvasUserUnchanged(userId)
+    const relinked = await options.projects.relinkWorkspace(userId, projectId, result.filePaths[0])
+    assertCanvasUserUnchanged(userId)
+    options.projectAssets?.forgetProject(userId, projectId)
+    return relinked
+  })
+
+  // 余额条（画布完善第 2b 条）：不收画布任何参数，画布只能问「现在是什么」。读不读站点、多久读一次由
+  // createCanvasAccountSummaryReader 管，画布点得再勤也最多 15 秒读一次。
+  registerCanvasHandler(canvasHostGetAccountSummaryChannel, async (): Promise<CanvasAccountSummary | null> => {
+    return options.readAccountSummary ? options.readAccountSummary() : null
+  })
+
+  // 运行前检查的「预计约 $x」（第 2b 条第 2 步）：同样不收参数。价目由 createCanvasPriceSnapshotReader 读、缓存
+  // 十分钟，读失败一分钟内不再读；扣费照旧由主进程和站点算，不看画布算出来的数。
+  registerCanvasHandler(canvasHostGetPriceSnapshotChannel, async (): Promise<CanvasPriceSnapshot | null> => {
+    return options.readPriceSnapshot ? options.readPriceSnapshot() : null
+  })
+
+  // 删除项目（画布完善第 14 条）：只删已归档的，主进程弹系统确认框，客户点了「删除」才删；画布只给项目标识，
+  // 给不了路径，也绕不过这个框。删的是项目记录；文件夹只有「星芒画布」下面直接那一层（新建、导入时主进程建的）
+  // 才移到回收站，客户自己选的文件夹里可能还有别的东西，一律不动。
+  registerCanvasHandler(canvasHostDeleteProjectChannel, async (event, projectIdInput): Promise<CanvasProjectDeleteResult | null> => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const project = (await options.projects.list(userId)).find((entry) => entry.id === projectId)
+    if (!project) throw new Error('画布项目不存在')
+    if (!project.archivedAt) throw new Error('请先归档这个项目再删除')
+    const folderToTrash = options.trashProjectFolder
+      ? canvasProjectFolderToTrash(await options.projects.getWorkspaceDirectory(userId, projectId), options.defaultProjectsDirectory?.())
+      : null
+    assertCanvasUserUnchanged(userId)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const messageOptions: MessageBoxOptions = {
+      type: 'warning',
+      title: '删除项目',
+      message: `删除「${project.name}」？`,
+      detail: canvasProjectDeleteDetail(folderToTrash, project.workspaceName, process.platform),
+      buttons: ['删除', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true,
+    }
+    const answer = parentWindow
+      ? await dialog.showMessageBox(parentWindow, messageOptions)
+      : await dialog.showMessageBox(messageOptions)
+    if (answer.response !== 0) return null
+    assertCanvasUserUnchanged(userId)
+    await options.projects.remove(userId, projectId)
+    options.projectAssets?.forgetProject(userId, projectId)
+    for (const [senderId, active] of activeProjects) {
+      if (active.userId === userId && active.projectId === projectId) activeProjects.delete(senderId)
+    }
+    // The dialog may have stayed open a long time: look again, so a folder swapped for a link meanwhile is left alone.
+    const confirmedFolder = folderToTrash ? canvasProjectFolderToTrash(folderToTrash, options.defaultProjectsDirectory?.()) : null
+    let folderMovedToTrash = false
+    if (confirmedFolder && options.trashProjectFolder) {
+      try {
+        await options.trashProjectFolder(confirmedFolder)
+        folderMovedToTrash = true
+      } catch (error) {
+        options.runtimeLog.log('warn', 'canvas', 'project.folder.trash.failed', '项目已删除，但项目文件夹没能移到回收站', {
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return { projectId, folderMovedToTrash }
+  })
+
   registerCanvasHandler(canvasHostSetProjectArchivedChannel, async (event, projectIdInput, archivedInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     if (typeof archivedInput !== 'boolean') throw new Error('画布项目归档状态无效')
@@ -740,6 +1024,13 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostSaveAssetChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
+    if (projectCenterAssetLibrary(event.sender.id)) {
+      const assetId = parseCanvasAssetId(assetIdInput)
+      await assertProjectCenterImage(userId, assetId)
+      assertCanvasUserUnchanged(userId)
+      const saved = await options.mediaAssets.saveAs(userId, assetId, () => assertCanvasUserUnchanged(userId))
+      return { saved }
+    }
     const context = await activeAssetContext(event.sender.id, userId)
     const saved = await (context?.media ?? options.mediaAssets).saveAs(
       userId,
@@ -760,6 +1051,15 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostListAssetsChannel, async (event, queryInput) => {
     const userId = authenticatedCanvasUserId()
+    if (projectCenterAssetLibrary(event.sender.id)) {
+      const query = parseCanvasAssetQuery(queryInput)
+      assertProjectCenterAssetQuery(query)
+      // No lineage here: which run or node made a picture is canvas project
+      // history, and the home page library only shows and saves pictures.
+      const assets = await options.mediaAssets.listOwnedPage(userId, { ...query, mediaType: 'image', view: 'all' })
+      assertCanvasUserUnchanged(userId)
+      return assets
+    }
     const context = await activeAssetContext(event.sender.id, userId)
     const { runId, nodeId, ...query } = parseCanvasAssetQuery(queryInput)
     // "Same run" and "same source node" are facts the run store owns, so they
@@ -784,6 +1084,18 @@ export function createCanvasWindowController(
         ...(lineage[asset.assetId] ? { lineage: lineage[asset.assetId] } : {}),
       })),
     }
+  })
+
+  // One asset, read the way the library page lists it (same scope, same
+  // lineage). The kernel checks an output, a picked frame or a reference
+  // against it before placing it; nothing is written.
+  registerCanvasHandler(canvasHostGetAssetDetailChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const asset = await (context?.media ?? options.mediaAssets).readOwnedDetail(userId, parseCanvasAssetId(assetIdInput))
+    const lineage = await options.canvasRuns.getAssetLineage(userId, [asset.assetId])
+    assertCanvasUserUnchanged(userId)
+    return { ...asset, ...(lineage[asset.assetId] ? { lineage: lineage[asset.assetId] } : {}) }
   })
 
   registerCanvasHandler(canvasHostRenameAssetChannel, async (event, input) => {
@@ -934,6 +1246,31 @@ export function createCanvasWindowController(
     }
   }
 
+  /**
+   * A picture the page drew itself (#1397 step one: the mask editor's PNG).
+   * It lands where a dropped picture would: the open project's library, or
+   * the account library for a project without its own folder. No path goes
+   * in or out. Unlike a dropped file this is not rolled back when the account
+   * changes after the write: the store is content-addressed, so the asset it
+   * returns may be a copy the user already had, and the account gate makes an
+   * account change wait for this handler anyway.
+   */
+  async function importCanvasImageBytes(ownerId: number, userId: number, bytes: Buffer) {
+    assertCanvasUploadedImage(bytes)
+    const context = await activeAssetContext(ownerId, userId)
+    assertCanvasUserUnchanged(userId)
+    const asset = await (context?.images ?? options.aiAssets).storeLocalBytes(userId, bytes)
+    assertCanvasUserUnchanged(userId)
+    await (context?.media ?? options.mediaAssets).setSource(userId, asset.assetId, 'imported').catch((error) => {
+      options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '素材已保存，但来源信息保存失败', {
+        assetId: asset.assetId,
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    })
+    assertCanvasUserUnchanged(userId)
+    return asset
+  }
+
   registerCanvasHandler(canvasHostPickAssetChannel, async (event) => {
     const userId = authenticatedCanvasUserId()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
@@ -959,6 +1296,21 @@ export function createCanvasWindowController(
     const filePath = requiredCanvasString(filePathInput, '本地媒体路径', 32_768)
     if (!path.isAbsolute(filePath)) throw new Error('本地媒体路径无效')
     return importCanvasAsset(event.sender.id, userId, filePath)
+  })
+
+  registerCanvasHandler(canvasHostImportAssetBytesChannel, async (event, bytesInput) => {
+    const userId = authenticatedCanvasUserId()
+    const bytes = parseCanvasUploadedImageBytes(bytesInput)
+    return byteUploadAdmission.run(event.sender.id, bytes.length, () => importCanvasImageBytes(event.sender.id, userId, bytes))
+  })
+
+  // 画布完善第 7 条第二步：页面替抽帧节点抽好的那一帧。只认这个窗口自己开的、还在跑的运行里主进程发出去的编号，
+  // 一个编号只收一次（canvas-run-service.ts completePreparation 与 canvas-run-preparations.ts）。
+  registerCanvasHandler(canvasHostCompleteRunPreparationChannel, async (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const completion = parseCanvasRunPreparationCompletion(input)
+    await options.canvasRuns.completePreparation(userId, event.sender.id, completion)
+    assertCanvasUserUnchanged(userId)
   })
 
   registerCanvasHandler(canvasHostStartRunChannel, async (event, input) => {
@@ -1039,13 +1391,16 @@ export function createCanvasWindowController(
     const parsed = parseCanvasProjectPackage(await readBoundedUtf8File(filePath, maximumCanvasProjectBytes, '画布项目导入文件'))
     assertCanvasUserUnchanged(userId)
     const previewId = createCanvasProjectPreviewId()
-    pendingProjects.set(event.sender.id, { previewId, userId, parsed })
+    // 有默认项目文件夹时导入成一个新项目（画布完善第 16 条），现在打开的项目不动；没有时照旧换掉当前画布。
+    const createsProject = Boolean(options.projects && options.projectAssets && options.defaultProjectsDirectory)
+    pendingProjects.set(event.sender.id, { previewId, userId, parsed, createsProject, projectName: importedCanvasProjectName(parsed.workflow.name, filePath) })
     return {
       previewId, name: path.basename(filePath), workflowName: String(parsed.workflow.name),
       nodeCount: (parsed.workflow.nodes as unknown[]).length,
       edgeCount: (parsed.workflow.edges as unknown[]).length,
       assetCount: parsed.assets.length,
       warnings: parsed.warnings,
+      ...(createsProject ? { createsProject: true } : {}),
     }
   })
 
@@ -1056,6 +1411,7 @@ export function createCanvasWindowController(
     if (!pending || pending.previewId !== previewId) throw new Error('画布项目预览已失效，请重新选择文件')
     pendingProjects.delete(event.sender.id)
     if (pending.userId !== userId) throw new Error('星芒账号已切换，请重新选择画布项目')
+    if (pending.createsProject) return importAsNewProject(userId, pending)
     const imported: string[] = []
     const mappings = new Map<string, string>()
     const context = await activeAssetContext(event.sender.id, userId)
@@ -1086,6 +1442,109 @@ export function createCanvasWindowController(
     }
   })
 
+  // 导入成新项目：文件夹跟「创建」一样建在「文档 › 星芒画布」下面（不带 recursive、同名加「 (2)」，不会用已经在的文件夹），
+  // 素材先放进新文件夹，最后才登记项目；中途出错就删掉刚放进去的素材和空文件夹，项目中心里不会多出一个半成品。
+  // 这里不换当前项目：画布拿到 projectId 以后自己走「打开项目」，打不开时原来那个项目照旧能保存。
+  async function importAsNewProject(userId: number, pending: Pick<PendingCanvasProjectImport, 'parsed' | 'projectName'>): Promise<CanvasProjectImportResult> {
+    const projects = options.projects
+    const projectAssets = options.projectAssets
+    const projectsDirectory = options.defaultProjectsDirectory
+    if (!projects || !projectAssets || !projectsDirectory) throw new Error('导入成新项目暂时不可用，请重新选择文件')
+    let directory: string
+    try {
+      directory = claimCanvasDefaultProjectFolder(projectsDirectory(), pending.projectName)
+    } catch (error) {
+      throw new Error(`没能在「星芒画布」文件夹里建项目（${describeCanvasDefaultProjectFolderFailure(error)}），这次没有导入`)
+    }
+    const imported: string[] = []
+    const mappings = new Map<string, string>()
+    let context: CanvasProjectAssetContext | undefined
+    let created: Awaited<ReturnType<CanvasProjectStore['createImported']>>
+    try {
+      context = projectAssets.forNewWorkspace(directory)
+      for (const entry of pending.parsed.assets) {
+        assertCanvasUserUnchanged(userId)
+        const asset = await context.images.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
+        imported.push(asset.assetId)
+        await context.media.setSource(userId, asset.assetId, 'imported').catch((error) => {
+          options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '项目素材已导入，但来源信息保存失败', {
+            assetId: asset.assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        })
+        mappings.set(entry.assetId, asset.assetId)
+      }
+      assertCanvasUserUnchanged(userId)
+      created = await projects.createImported(userId, pending.projectName, directory, remapCanvasProjectWorkflow(pending.parsed.workflow, mappings))
+    } catch (error) {
+      const images = context?.images
+      if (images) await Promise.all(imported.map((assetId) => images.removeOwned(userId, assetId).catch(() => undefined)))
+      releaseCanvasDefaultProjectFolderTree(directory)
+      throw error
+    }
+    assertCanvasUserUnchanged(userId)
+    return {
+      content: created.content,
+      warnings: pending.parsed.warnings,
+      importedAssetCount: imported.length,
+      projectId: created.project.id,
+    }
+  }
+
+  // 双击打开的画布项目文件（D92）。路径是系统交给主进程的，从没经过画布页面，所以这不是 I15 说的由渲染层给路径的通道；
+  // 读之前照拖放进来的素材那样严查（绝对路径、路径上没有链接和联接、单链接普通文件），readBoundedUtf8File 读的时候再以 open + fstat 复核。
+  async function readLaunchedCanvasProjectFile(filePath: string): Promise<ParsedCanvasProjectPackage> {
+    if (!path.isAbsolute(filePath) || filePath.includes('\0') || path.extname(filePath).toLowerCase() !== '.xingcanvas') {
+      throw new Error('画布项目文件路径无效')
+    }
+    assertNoReparseComponents(filePath, '画布项目导入文件')
+    const source = await fs.promises.lstat(filePath, { bigint: true })
+    if (!source.isFile() || source.isSymbolicLink() || source.nlink !== 1n) throw new Error('画布项目文件不安全')
+    return parseCanvasProjectPackage(await readBoundedUtf8File(filePath, maximumCanvasProjectBytes, '画布项目导入文件'))
+  }
+
+  // 跟画布里「导入工作流」一样导入成新项目（同一个 importAsNewProject），再把画布开在这个项目上。
+  // 文件先读、先查，坏文件不会让开着的画布关掉。画布开着就先走它自己的关闭确认：有任务在跑会问，
+  // 没有就存好直接关，换项目不丢正在画的东西；用户在那里点了取消，就留在原来的项目上，这个文件不导入。
+  async function openLaunchedProjectFile(filePath: string): Promise<boolean> {
+    if (disposed) throw new Error('画布宿主已关闭')
+    const userId = authenticatedCanvasUserId()
+    if (!options.projects || !options.projectAssets || !options.defaultProjectsDirectory) throw new Error('导入成新项目暂时不可用，请重新选择文件')
+    const parsed = await readLaunchedCanvasProjectFile(filePath)
+    assertCanvasUserUnchanged(userId)
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed() && !await requestClose()) {
+      if (canvasWindow && !canvasWindow.isDestroyed()) await open()
+      return false
+    }
+    if (disposed) return false
+    assertCanvasUserUnchanged(userId)
+    const pending = { parsed, projectName: importedCanvasProjectName(parsed.workflow.name, filePath) }
+    const imported = options.accountWork
+      ? await options.accountWork.run(() => importAsNewProject(userId, pending))
+      : await importAsNewProject(userId, pending)
+    if (disposed) return false
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      // 导入这一会儿里又从主窗口打开了画布：不再关它，新项目就在项目中心里。
+      await open()
+      return true
+    }
+    pendingOpen = createWindow({ projectId: imported.projectId }).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+    return true
+  }
+
+  let projectFileQueue: Promise<unknown> = Promise.resolve()
+
+  function openProjectFile(filePath: string): Promise<boolean> {
+    const next = projectFileQueue.then(() => openLaunchedProjectFile(filePath))
+    projectFileQueue = next.catch(() => undefined)
+    return next
+  }
+
   const unsubscribeRunEvents = options.canvasRuns.subscribe(({ event, userId, ownerId }) => {
     if (!canvasWindow || canvasWindow.isDestroyed()) return
     if (canvasWindow.webContents.id !== ownerId) return
@@ -1104,7 +1563,7 @@ export function createCanvasWindowController(
     }
   }
 
-  function canvasEntryUrl(): string {
+  function canvasEntryUrl(launch: CanvasLaunchRoute = {}): string {
     // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
     // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
     // path 404s in its router; the protocol handler's catch-all still serves
@@ -1112,12 +1571,15 @@ export function createCanvasWindowController(
     const canvasUrl = new URL(canvasPackagedBaseUrl)
     canvasUrl.searchParams.set('theme', currentTheme)
     if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
-    if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
     if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
+    // 内核开机时读 ?project= 直接打开这个项目（canvas-v2 App.tsx 的 initialRoute），双击项目文件就靠它。
+    if (launch.projectId) canvasUrl.searchParams.set('project', launch.projectId)
+    // 内核在项目中心直接弹出只读素材库（主窗口「看全部作品」）；带了项目时内核按项目开，不看它。
+    else if (launch.assetLibrary) canvasUrl.searchParams.set('view', 'assets')
     return canvasUrl.href
   }
 
-  async function createWindow(): Promise<void> {
+  async function createWindow(launch: CanvasLaunchRoute = {}): Promise<void> {
     assertCanvasDistPresent()
     const sandbox = await inspectRendererSandbox()
     if (sandbox.kind !== 'sandboxed') {
@@ -1200,6 +1662,7 @@ export function createCanvasWindowController(
       options.videoService.cancelSender(senderId)
       options.canvasRuns.cancelOwner(senderId)
       generationAdmission.releaseOwner(senderId)
+      byteUploadAdmission.releaseOwner(senderId)
       pendingProjects.delete(senderId)
       activeProjects.delete(senderId)
       crashRecovery.dispose()
@@ -1297,7 +1760,8 @@ export function createCanvasWindowController(
     })
 
     try {
-      await window.loadURL(canvasEntryUrl())
+      // Only the first load opens the project; a crash reload above rebuilds the URL without it.
+      await window.loadURL(canvasEntryUrl(launch))
     } catch (error) {
       rendererReady = false
       markRendererUnavailable('画布主页面加载失败', error)
@@ -1306,23 +1770,41 @@ export function createCanvasWindowController(
     }
   }
 
+  async function open(): Promise<void> {
+    if (disposed) throw new Error('画布宿主已关闭')
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      if (canvasWindow.isMinimized()) canvasWindow.restore()
+      canvasWindow.show()
+      canvasWindow.focus()
+      canvasCrashRecovery?.handleReopen(canvasWindow.webContents.isCrashed())
+      return
+    }
+    if (!pendingOpen) {
+      pendingOpen = createWindow().finally(() => {
+        pendingOpen = null
+      })
+    }
+    await pendingOpen
+  }
+
+  async function openAssetLibrary(): Promise<void> {
+    if (disposed) throw new Error('画布宿主已关闭')
+    if (pendingOpen) await pendingOpen.catch(() => undefined)
+    if (canvasWindow && !canvasWindow.isDestroyed()) {
+      await open()
+      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.webContents.send(canvasHostShowAccountAssetsChannel)
+      return
+    }
+    pendingOpen = createWindow({ assetLibrary: true }).finally(() => {
+      pendingOpen = null
+    })
+    await pendingOpen
+  }
+
   return {
-    async open() {
-      if (disposed) throw new Error('画布宿主已关闭')
-      if (canvasWindow && !canvasWindow.isDestroyed()) {
-        if (canvasWindow.isMinimized()) canvasWindow.restore()
-        canvasWindow.show()
-        canvasWindow.focus()
-        canvasCrashRecovery?.handleReopen(canvasWindow.webContents.isCrashed())
-        return
-      }
-      if (!pendingOpen) {
-        pendingOpen = createWindow().finally(() => {
-          pendingOpen = null
-        })
-      }
-      await pendingOpen
-    },
+    open,
+    openProjectFile,
+    openAssetLibrary,
     setTheme(theme) {
       currentTheme = theme
       currentAppearance = { ...currentAppearance, theme }
@@ -1332,13 +1814,14 @@ export function createCanvasWindowController(
     },
     setAppearance(appearance) {
       currentTheme = appearance.theme
-      currentAppearance = { theme: appearance.theme, ...(appearance.uiSkin ? { uiSkin: appearance.uiSkin } : {}), reducedMotion: appearance.reducedMotion === true }
+      currentAppearance = { theme: appearance.theme, reducedMotion: appearance.reducedMotion === true }
       if (!canvasWindow || canvasWindow.isDestroyed()) return
       canvasWindow.setBackgroundColor(canvasWindowBackgroundForAppearance(currentAppearance))
       canvasWindow.webContents.send(canvasHostAppearanceChangedChannel, currentAppearance)
     },
     setAccountUser,
     requestClose,
+    requestCloseForQuit,
     closeIfOpen() {
       void requestClose()
     },

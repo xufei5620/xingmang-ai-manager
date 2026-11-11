@@ -89,6 +89,6 @@ export function ToolConversationsDialog(props: ToolConversationsDialogProps) {
               title={recentResumeHint(session)} onClick={() => void resume(session)} testId={`tool-conversation-resume-${session.id}`}>接着聊</Button>
           </span>
         </div>)}</div></>
-          : <div className="v2-home-recent-empty">还没有对话记录。打开工具聊过之后，最近的会话会出现在这里。</div>}
+          : <div className="v2-home-recent-empty">还没有对话。打开工具聊过之后，最近的对话会出现在这里。</div>}
   </Dialog>
 }

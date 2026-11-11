@@ -3,7 +3,8 @@ import type { AiAssetMetadata, AiAssetStore, AiOwnedAssetRead, AiStoredAsset } f
 import type { AiAudioAssetStore, AiAudioOwnedAssetRead } from './ai-audio-asset-store'
 import type { AiAssetMetadataStore } from './ai-asset-metadata-store'
 import { createAiMediaAssetService, type AiMediaAssetService } from './ai-media-asset-service'
-import type { AiStoredVideoAsset, AiVideoAssetStore, AiVideoOwnedAssetRead } from './ai-video-asset-store'
+import type { AiStoredVideoAsset, AiVideoAssetStore, AiVideoOwnedAssetRead, AiVideoOwnedRangeRead } from './ai-video-asset-store'
+import type { ByteRange } from './byte-range'
 import type { CanvasProjectStore } from './canvas-project-store'
 
 const projectIdPattern = /^[a-f0-9-]{36}$/
@@ -68,17 +69,39 @@ export class CanvasProjectAssetManager {
     if (existing) return existing
     const pending = this.projects.getUsableWorkspaceDirectory(userId, projectId).then((workspaceDirectory) => {
       if (!workspaceDirectory) return this.global
-      const context = this.createContext(this.realmId === 'api-account'
-        ? path.join(workspaceDirectory, 'assets', 'realms', 'api-account')
-        : path.join(workspaceDirectory, 'assets'))
-      context.images.ensureOutputDirectory()
-      return context
+      return this.forWorkspace(workspaceDirectory)
     }).catch((error) => {
       this.contexts.delete(key)
       throw error
     })
     this.contexts.set(key, pending)
     return pending
+  }
+
+  /**
+   * The asset stores of a folder that is not a project yet. Importing a
+   * project package as a new project fills its folder first and registers the
+   * project last, so a failed import leaves no half-made project in the list.
+   * Not remembered: the project registered afterwards goes through forProject().
+   */
+  forNewWorkspace(workspaceDirectory: string): CanvasProjectAssetContext {
+    if (typeof workspaceDirectory !== 'string' || !path.isAbsolute(workspaceDirectory)) throw new Error('画布项目工作文件夹无效')
+    return this.forWorkspace(workspaceDirectory)
+  }
+
+  private forWorkspace(workspaceDirectory: string): CanvasProjectAssetContext {
+    const context = this.createContext(this.realmId === 'api-account'
+      ? path.join(workspaceDirectory, 'assets', 'realms', 'api-account')
+      : path.join(workspaceDirectory, 'assets'))
+    context.images.ensureOutputDirectory()
+    return context
+  }
+
+  /** Drops the remembered folder of a project bound to another folder, so the next use reads the new one. */
+  forgetProject(userId: number, projectId: string): void {
+    assertUserId(userId)
+    assertProjectId(projectId)
+    this.contexts.delete(`${userId}:${projectId}`)
   }
 
   async prepareProject(userId: number, projectId?: string): Promise<void> {
@@ -192,6 +215,45 @@ export class CanvasProjectAssetManager {
         const context = await this.forProject(userId, project.id)
         const owned = await this.readFromContext(context, userId, assetId, kind)
         this.remember(userId, kind, assetId, project.id, context)
+        return owned
+      } catch {
+        // A missing workspace or non-matching asset does not hide assets in
+        // the remaining user-owned projects.
+      }
+    }
+    throw new Error('AI 素材不存在或无权访问')
+  }
+
+  /**
+   * A byte range of an owned video for the asset protocol, found through the
+   * same global-then-project search as `readOwned`; the store re-verifies the
+   * file before reading only the range `select` picks.
+   */
+  async readOwnedVideoRange(
+    userId: number,
+    assetId: string,
+    select: (totalBytes: number) => ByteRange | null,
+  ): Promise<AiVideoOwnedRangeRead> {
+    assertUserId(userId)
+    const cachedProjectId = this.locations.get(locationKey(userId, 'video', assetId))
+    if (cachedProjectId !== undefined) {
+      const context = cachedProjectId === null ? this.global : await this.forProject(userId, cachedProjectId)
+      return context.videos.readOwnedRange(userId, assetId, select)
+    }
+    try {
+      const owned = await this.global.videos.readOwnedRange(userId, assetId, select)
+      this.locations.set(locationKey(userId, 'video', assetId), null)
+      return owned
+    } catch {
+      // Fall through to the user's project workspaces, exactly as readOwned does.
+    }
+    const projects = await this.projects.list(userId)
+    for (const project of projects) {
+      if (!project.workspaceConfigured) continue
+      try {
+        const context = await this.forProject(userId, project.id)
+        const owned = await context.videos.readOwnedRange(userId, assetId, select)
+        this.remember(userId, 'video', assetId, project.id, context)
         return owned
       } catch {
         // A missing workspace or non-matching asset does not hide assets in

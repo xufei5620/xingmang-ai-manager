@@ -37,7 +37,23 @@ export const UI_DESIGN_WIDTH_DIP = 1280
 // lower, but never below 0.85.
 export const UI_AUTO_MIN_ZOOM = 0.9
 export const UI_MIN_ZOOM = 0.85
-export const UI_MAX_ZOOM = 1.25
+// Two ceilings for the same reason in the other direction (D79, 2026-11-10).
+// The automatic factor still stops at 1.25, so a user on "自动" sees exactly
+// what they saw before. The final clamp used to be 1.25 as well, which
+// swallowed the 110% multiplier on any window wider than about 1455 DIP: a
+// maximized 1080p desktop already sits at 1.25, so 110% changed nothing.
+// The final ceiling is the automatic one times the 110% multiplier, so that
+// step is always 10% larger than automatic at every width.
+export const UI_AUTO_MAX_ZOOM = 1.25
+export const UI_MAX_ZOOM = 1.375
+
+// 第一次打开（没记过窗口位置）的两条下限（D80，2026-11-10）。以前初始宽 = 工作区宽 × 0.8、
+// 工作区不到 1280×720 才最大化：1366×768、1280×800 这类最常见的便宜笔记本开出来只有 1093、1024 宽，
+// 缩放落到下限 0.9，逻辑宽不到 1280，侧栏收成只有图标的窄条，右边还空着一大块。
+// 1152 × 0.9 正好是 1280 逻辑宽，侧栏能展开；工作区宽不到 1440 时 × 0.8 够不着 1152，
+// 干脆最大化，还原时也至少有 1152 宽。记过窗口位置的人走上面那条分支，一个数都不变。
+const FIRST_RUN_MIN_WIDTH = 1152
+const FIRST_RUN_MAXIMIZE_BELOW_WIDTH = 1440
 
 const MAX_WINDOW_DIMENSION = 32_768
 const MAX_WINDOW_COORDINATE = 1_000_000
@@ -99,7 +115,7 @@ export function resolveWindowPlacement(
   // large user layout when it still fits the selected display.
   const width = state
     ? clamp(state.bounds.width, minimumSize.width, area.width)
-    : clamp(Math.round(area.width * 0.8), minimumSize.width, Math.min(1440, area.width))
+    : clamp(Math.round(area.width * 0.8), Math.min(FIRST_RUN_MIN_WIDTH, area.width), Math.min(1440, area.width))
   const height = state
     ? clamp(state.bounds.height, minimumSize.height, area.height)
     : clamp(Math.round(area.height * 0.85), minimumSize.height, Math.min(900, area.height))
@@ -115,7 +131,7 @@ export function resolveWindowPlacement(
       height,
     },
     minimumSize,
-    maximized: state?.maximized ?? (area.width < 1280 || area.height < 720),
+    maximized: state?.maximized ?? (area.width < FIRST_RUN_MAXIMIZE_BELOW_WIDTH || area.height < 720),
     restored: state !== undefined,
   }
 }
@@ -170,6 +186,80 @@ export function resolveRecoveredWindowBounds(
   }
 }
 
+// 显示器之间按 DIP 换算后可能差一两个点的缝，不算露在屏幕外面。
+const COVERAGE_TOLERANCE = 2
+
+function containsPoint(area: WindowBounds, x: number, y: number): boolean {
+  return x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.height
+}
+
+// 把窗口按各块工作区的边切成小格，每一格都落在某块工作区里，窗口才算整个看得见。
+// 显示器最多几块，格子数可以忽略。
+function isCoveredByWorkAreas(bounds: WindowBounds, areas: readonly WindowBounds[]): boolean {
+  const right = bounds.x + bounds.width
+  const bottom = bounds.y + bounds.height
+  const xs = new Set([bounds.x, right])
+  const ys = new Set([bounds.y, bottom])
+  for (const area of areas) {
+    for (const x of [area.x, area.x + area.width]) if (x > bounds.x && x < right) xs.add(x)
+    for (const y of [area.y, area.y + area.height]) if (y > bounds.y && y < bottom) ys.add(y)
+  }
+  const columns = [...xs].sort((a, b) => a - b)
+  const rows = [...ys].sort((a, b) => a - b)
+  for (let i = 1; i < columns.length; i += 1) {
+    if (columns[i] - columns[i - 1] <= COVERAGE_TOLERANCE) continue
+    const x = (columns[i - 1] + columns[i]) / 2
+    for (let j = 1; j < rows.length; j += 1) {
+      if (rows[j] - rows[j - 1] <= COVERAGE_TOLERANCE) continue
+      const y = (rows[j - 1] + rows[j]) / 2
+      if (!areas.some((area) => containsPoint(area, x, y))) return false
+    }
+  }
+  return true
+}
+
+/**
+ * 拔掉外接屏或者改了系统缩放，系统会把窗口挪到剩下那块屏上，但大小（DIP）照旧：
+ * 1440×900 的窗口落到 1280×672 的笔记本工作区里，底部压在任务栏后面，右上角的
+ * 关闭键跑到屏幕外。标题栏还抓得住，`resolveRecoveredWindowBounds` 不会管它。
+ *
+ * 只认「比它所在那块屏的工作区还大、而且确实有一截露在所有工作区外面」：跨两块屏
+ * 摆的大窗口整个都在工作区里，不动；大小放得下、只是被用户拖到边上的，也不动。
+ * 收小时不小于窗口的最小尺寸（系统也不让），放不下就贴住左上角，标题栏总在屏幕里。
+ * `bounds` 是还原状态下的实际位置，最大化、全屏的窗口由调用方挡掉。返回 null 表示
+ * 不用动；完全不在任何一块屏上的窗口也返回 null，交给 `resolveRecoveredWindowBounds`。
+ */
+export function resolveFittedWindowBounds(
+  bounds: WindowBounds,
+  minimumSize: { width: number; height: number },
+  displays: readonly WindowDisplay[],
+): WindowBounds | null {
+  const available = displays.filter((display) => parseBounds(display.workArea))
+  let display: WindowDisplay | undefined
+  let visibleArea = 0
+  for (const candidate of available) {
+    const area = intersectionArea(bounds, candidate.workArea)
+    if (area > visibleArea) {
+      display = candidate
+      visibleArea = area
+    }
+  }
+  if (!display) return null
+  const area = display.workArea
+  if (bounds.width <= area.width && bounds.height <= area.height) return null
+  if (isCoveredByWorkAreas(bounds, available.map((candidate) => candidate.workArea))) return null
+  const width = Math.max(minimumSize.width, Math.min(bounds.width, area.width))
+  const height = Math.max(minimumSize.height, Math.min(bounds.height, area.height))
+  const fitted = {
+    x: Math.max(area.x, Math.min(bounds.x, area.x + area.width - width)),
+    y: Math.max(area.y, Math.min(bounds.y, area.y + area.height - height)),
+    width,
+    height,
+  }
+  const unchanged = fitted.x === bounds.x && fitted.y === bounds.y && fitted.width === bounds.width && fitted.height === bounds.height
+  return unchanged ? null : fitted
+}
+
 /**
  * Uses the complete WebContents width in DIP, before browser zoom.
  *
@@ -183,9 +273,28 @@ export function resolveRecoveredWindowBounds(
  */
 export function calculateUiZoom(contentWidthDip: number, scale: AppUiScale = 'auto'): number {
   if (!Number.isFinite(contentWidthDip) || contentWidthDip <= 0) return 1
-  const automatic = clamp(contentWidthDip / UI_DESIGN_WIDTH_DIP, UI_AUTO_MIN_ZOOM, UI_MAX_ZOOM)
+  const automatic = clamp(contentWidthDip / UI_DESIGN_WIDTH_DIP, UI_AUTO_MIN_ZOOM, UI_AUTO_MAX_ZOOM)
   const multiplier = scale === '90' ? 0.9 : scale === '110' ? 1.1 : 1
   return Math.round(clamp(automatic * multiplier, UI_MIN_ZOOM, UI_MAX_ZOOM) * 10_000) / 10_000
+}
+
+/** 「大字」「界面缩放」两项和「定过没有」的记录，字段与 AppSettings 同名。 */
+export interface TextSizePreferences {
+  largeText?: boolean
+  uiScale?: AppUiScale
+  textSizeChosen?: boolean
+}
+
+/**
+ * Windows「设置 › 辅助功能 › 文本大小」调大以后（`systemTextScale` 是那个百分比，读不到为 null），
+ * 系统弹框和托盘菜单的字都跟着大，界面里的网页内容不吃这一项。客户没定过字的大小（没开关过
+ * 「大字」，缩放还是「自动」）时，替他打开一次「大字」（D81）；之后由他自己在设置里开关。
+ * 只开「大字」、不动缩放：大字只放大说明文字和小字，布局和侧栏宽窄都不变。
+ */
+export function shouldFollowSystemTextSize(preferences: TextSizePreferences, systemTextScale: number | null): boolean {
+  if (systemTextScale === null || systemTextScale <= 100) return false
+  if (preferences.textSizeChosen === true || preferences.largeText === true) return false
+  return preferences.uiScale === undefined || preferences.uiScale === 'auto'
 }
 
 export function resolveCloseAction(

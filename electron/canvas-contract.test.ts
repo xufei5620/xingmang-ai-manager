@@ -10,15 +10,33 @@ import { parseCanvasPromptPresetInput, parseCanvasStartRunInput, parseCanvasVide
 // that no longer exists.
 describe('desktop canvas capabilities', () => {
   it('lists exactly the node kinds that have a working executor', () => {
-    const executors = createCanvasNodeExecutors({ imageService: { generate: async () => [], cancel: () => ({ canceled: false, mayStillComplete: false }) } })
-    // frame-extract has an entry only to fail it with a reason.
-    const working = Object.keys(executors).filter((kind) => kind !== 'frame-extract').sort()
-    expect([...desktopCanvasCapabilities.executableNodeKinds].sort()).toEqual(working)
+    // bootstrap/ai-services.ts always hands the executors a frame extractor;
+    // without one frame-extract has an entry only to fail it with a reason.
+    const frames = { assertDecodableVideo: async () => undefined, waitForFrame: async () => { throw new Error('unused') } }
+    const executors = createCanvasNodeExecutors({ imageService: { generate: async () => [], cancel: () => ({ canceled: false, mayStillComplete: false }) }, frames })
+    expect([...desktopCanvasCapabilities.executableNodeKinds].sort()).toEqual(Object.keys(executors).sort())
   })
 
-  it('switches off every feature the desktop does not have yet', () => {
-    expect(Object.values(desktopCanvasCapabilities.features).every((enabled) => enabled === false)).toBe(true)
-    expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(1)
+  it('switches on the balance chip, the run quote, masked edits, text nodes, page-drawn pictures and frame extraction and off every feature the desktop does not have yet', () => {
+    // 画布完善第 2b 条: the chip reads canvas-host:get-account-summary, the quote
+    // canvas-host:get-price-snapshot. 第 5 条: an image-edit node's mask rides
+    // canvas-host:start-run and goes out as the edits request's mask PNG
+    // (canvas-image-mask.ts). 第 6 条: text-generate nodes run through the chat
+    // service (canvas-node-executors.ts). 第 7 条第一步: the mask editor's PNG
+    // goes back through canvas-host:import-asset-bytes (canvas-byte-upload.ts).
+    // 第 7 条第二步: the kernel decodes the frame a frame-extract node waits on
+    // and hands it back through canvas-host:complete-run-preparation
+    // (canvas-run-preparations.ts). The rest stays off.
+    const { accountSummary, quote, imageEditMask, textGenerate, byteUpload, frameExtract, ...rest } = desktopCanvasCapabilities.features
+    expect(accountSummary).toBe(true)
+    expect(quote).toBe(true)
+    expect(imageEditMask).toBe(true)
+    expect(textGenerate).toBe(true)
+    expect(byteUpload).toBe(true)
+    expect(frameExtract).toBe(true)
+    expect(Object.values(rest).every((enabled) => enabled === false)).toBe(true)
+    // Image nodes send 2-4 independent one-image requests (canvas-run-engine.ts).
+    expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(4)
     expect(desktopCanvasCapabilities.videoCandidates.maximum).toBe(1)
   })
 

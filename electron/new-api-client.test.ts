@@ -7,10 +7,12 @@ import {
   findCliKeyIdByName,
   findNewestUsableCliKeyByGroup,
   isChatKeyName,
+  knownCliKeyForRecord,
   loginIssuanceLimitMessage,
   loginRateLimitedMessage,
   loginSessionLimitMessage,
   hasExhaustedCappedCliKey,
+  hasStoppedCliKey,
   NewApiAuthenticationError,
   NewApiLoginRejectedError,
   NewApiNetworkError,
@@ -38,6 +40,7 @@ import {
   parseCliKeySecret,
   parseCodexStartupTicket,
   parseGroupModels,
+  parseModelPricing,
   parseLoginResponseData,
   parseLoginSessions,
   parsePaymentForm,
@@ -55,8 +58,8 @@ import {
 } from './new-api-client'
 import { buildAccountKeyName, managedCliKeyProfiles } from './catalog'
 import { createRelayEndpointRoutingSnapshot } from './relay-sites'
-import { networkFailureMessages } from './network-failure'
-import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
+import { networkFailureMessages, proxyAuthRequiredMessage } from './network-failure'
+import { buildManagedCliKeyLimitUpdate, managedKeyStoppedMessage, resolveManagedCliKeyLimits } from './account-key-quota'
 import { matchAccountErrorMessage } from '../src/renderer-v2/features/auth/account-errors'
 import { classifyOperationError } from '../src/renderer-v2/operation-error'
 import { noteRequestDiagnostics, requestDiagnosticsOf } from './request-diagnostics'
@@ -867,6 +870,38 @@ describe('login failures', () => {
     expect((error as Error).message).toContain(networkFailureMessages[reason])
     expect(String(error)).not.toContain('private-password')
     expect(client.isAuthenticated()).toBe(false)
+  })
+
+  // 代理要账号密码（D32）：Electron 45 走 https 时先交出代理回的 407，读正文才报 ERR_TUNNEL_CONNECTION_FAILED；
+  // 认证方式它不认、或者代理连认证方式都没说时，直接报 ERR_PROXY_AUTH_UNSUPPORTED（沙箱里实测的两种形状）。
+  function proxyAuthAnswer(): Response {
+    const body = new ReadableStream<Uint8Array>({ pull(controller) { controller.error(new Error('net::ERR_TUNNEL_CONNECTION_FAILED')) } })
+    return new Response(body, { status: 407, headers: { 'Proxy-Authenticate': 'Basic realm="corp"' } })
+  }
+
+  it.each([
+    ['a 407 answer whose body then fails', () => vi.fn<NewApiFetch>().mockImplementation(async () => proxyAuthAnswer())],
+    ['a challenge Chromium cannot answer', () => vi.fn<NewApiFetch>().mockRejectedValue(new Error('net::ERR_PROXY_AUTH_UNSUPPORTED'))],
+  ])('says the proxy wants a user name and password for %s, still as a proxy failure', async (_label, makeFetch) => {
+    const fetchImpl = makeFetch()
+    const retryOffProxy = vi.fn(async () => false)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, retryOffProxy })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((cause: unknown) => cause)
+    expect(error).toBeInstanceOf(NewApiNetworkError)
+    expect(error).toMatchObject({ reason: 'proxy' })
+    expect((error as Error).message).toBe(`${proxyAuthRequiredMessage}（账号登录请求失败）`)
+    expect((error as Error).message).not.toContain(networkFailureMessages.proxy)
+    // 归类没变：照旧问一句要不要改直连再发。
+    expect(retryOffProxy).toHaveBeenCalledWith(expect.objectContaining({ reason: 'proxy' }))
+  })
+
+  it('keeps the proxy-down wording when the proxy refused the tunnel without asking for a password', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(new Error('net::ERR_TUNNEL_CONNECTION_FAILED'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'x' }).catch((cause: unknown) => cause)
+    expect(error).toMatchObject({ reason: 'proxy' })
+    expect((error as Error).message).toContain(networkFailureMessages.proxy)
+    expect((error as Error).message).not.toContain(proxyAuthRequiredMessage)
   })
 
   it('names the timeout rather than leaving an aborted login unexplained', async () => {
@@ -2275,6 +2310,22 @@ describe('getUsage', () => {
     expect(Object.fromEntries(statUrl.searchParams)).toEqual({ type: '2', start_timestamp: '1700000000', end_timestamp: '1700086400' })
   })
 
+  it('asks only the records endpoint when the caller wants the records alone', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: {
+      items: [{ id: 3, created_at: 1_700_000_100, type: 2, model_name: 'gpt-image-2', quota: 30_000, request_id: 'req-1' }], total: 1, page: 1, page_size: 100,
+    } }))
+
+    const page = await client.getUsage({ type: 2, startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400, modelName: 'gpt-image-2', page: 1, pageSize: 100, recordsOnly: true })
+
+    expect(page).toMatchObject({ total: 1, records: [{ requestId: 'req-1', quota: 30_000, type: 2 }], stats: { quota: 0, rpm: null, tpm: null } })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const listUrl = new URL(String(fetchImpl.mock.calls[0][0]))
+    expect(listUrl.pathname).toBe('/api/log/self')
+    expect(Object.fromEntries(listUrl.searchParams)).toEqual({ p: '1', page_size: '100', type: '2', start_timestamp: '1700000000', end_timestamp: '1700086400', model_name: 'gpt-image-2' })
+  })
+
   it('rejects Sub2API-only usage filters instead of silently widening a NewAPI query', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
@@ -2744,6 +2795,76 @@ describe('listGroupModels', () => {
   })
 })
 
+describe('getModelPricing', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.getModelPricing()).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('reads the price list with the session, so the ratios are this account\'s', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      data: [{ model_name: 'gpt-image-2', quota_type: 1, model_price: 0.06, model_ratio: 0, enable_groups: ['图片模型'] }],
+      group_ratio: { 图片模型: 0.8 },
+      usable_group: { 图片模型: '图片模型' },
+    }))
+
+    await expect(client.getModelPricing()).resolves.toEqual({
+      models: [{ model: 'gpt-image-2', quotaType: 1, modelPrice: 0.06, expressionPriced: false }],
+      groupRatios: { 图片模型: 0.8 },
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(new URL(String(url)).pathname).toBe('/api/pricing')
+    expect(init?.method).toBe('GET')
+    expect(init?.headers).toMatchObject({ Authorization: 'Bearer test-access-token-abc', 'New-Api-User': '42' })
+  })
+
+  it('accepts a long price list that would not fit the usual response limit', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    const data = Array.from({ length: 1500 }, (_, index) => ({ model_name: `model-${index}`, quota_type: 1, model_price: 0.01, description: 'x'.repeat(400) }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, data, group_ratio: {} }))
+    const pricing = await client.getModelPricing()
+    expect(pricing.models).toHaveLength(1500)
+  })
+})
+
+describe('parseModelPricing', () => {
+  it('keeps what it understands and skips the rest', () => {
+    const pricing = parseModelPricing([
+      { model_name: ' a ', quota_type: 1, model_price: 0.1 },
+      { model_name: 'a', quota_type: 1, model_price: 0.2 },
+      { model_name: 'tokens', quota_type: 0, model_price: 0, model_ratio: 2 },
+      { model_name: 'expr', quota_type: 1, model_price: 0, billing_expr: 'p * 2' },
+      { model_name: 'plugin', quota_type: 1, model_price: 0, billing_plugin_variants: [{ plugin_key: 'x' }] },
+      { model_name: 'a\nb', quota_type: 1, model_price: 0.1 },
+      { model_name: 'nan', quota_type: 1, model_price: Number.NaN },
+      { model_name: 3 }, null,
+    ], { group_ratio: { default: 1, vip: 0.5, auto: 'auto', bad: -1, '': 1 } })
+    expect(pricing).toEqual({
+      models: [
+        { model: 'a', quotaType: 1, modelPrice: 0.1, expressionPriced: false },
+        { model: 'tokens', quotaType: 0, modelPrice: 0, expressionPriced: false },
+        { model: 'expr', quotaType: 1, modelPrice: 0, expressionPriced: true },
+        { model: 'plugin', quotaType: 1, modelPrice: 0, expressionPriced: true },
+      ],
+      groupRatios: { default: 1, vip: 0.5 },
+    })
+  })
+
+  it('refuses a list that is not a list, and reads no ratios when there are none', () => {
+    expect(() => parseModelPricing({}, {})).toThrow('价目响应格式异常')
+    expect(parseModelPricing([], null)).toEqual({ models: [], groupRatios: {} })
+  })
+})
+
 describe('parseGroupModels', () => {
   it('keeps unique non-empty model names', () => {
     expect(parseGroupModels(['a', ' a ', 'b', '', null, 'x'.repeat(201)])).toEqual(['a', 'b'])
@@ -2857,7 +2978,17 @@ describe('createKey', () => {
       unlimitedQuota: true,
       expiredTime: -1,
     }))
-      .rejects.toThrow('密钥名称不能超过 50 个字符')
+      .rejects.toThrow('密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('counts the name cap in UTF-8 bytes as the server does, so a 17-character Chinese name never reaches it', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    const input = { group: 'default', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }
+    await expect(client.createKey({ ...input, name: '星'.repeat(17) })).rejects.toThrow('密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。')
+    await expect(client.updateKey({ ...input, id: 7, name: '星'.repeat(17) })).rejects.toThrow('密钥名称太长了，中文最多 16 个字，英文和数字最多 50 个。')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
@@ -3442,6 +3573,126 @@ describe('provisionCliKey with a used-up per-key cap', () => {
   })
 })
 
+// 0.2.24 深查 D3：工具那把 Key 在网页上停用了、到期了，以前会悄悄换一把不限额、永不过期的新 Key，
+// 客户设的到期日和停用等于没设。被删掉、分组改名的照旧换新（#1074）。
+describe('provisionCliKey with a tool key stopped on the web', () => {
+  const name = managedCliKeyProfiles.codex.keyName
+  const names = [name, 'tester-codex-pro']
+  const now = 1_800_000_000
+  const enabled = { id: 7, name: 'tester-codex-pro', group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+  const disabled = { ...enabled, status: 2 }
+
+  function listing(items: unknown[]): Response {
+    return jsonResponse({ success: true, message: '', data: { total: items.length, items } })
+  }
+
+  it('recognizes a disabled or expired key under this name and group', () => {
+    expect(hasStoppedCliKey([disabled], names, 'codex-pro', 0, now)).toBe(true)
+    expect(hasStoppedCliKey([{ ...enabled, status: 3 }], names, 'codex-pro', 0, now)).toBe(true)
+    expect(hasStoppedCliKey([{ ...disabled, name }], names, 'codex-pro', 0, now)).toBe(true)
+    // 到期了、服务端还没来得及把状态改成「已过期」的，同样算。
+    expect(hasStoppedCliKey([{ ...enabled, expired_time: now }], names, 'codex-pro', 0, now)).toBe(true)
+    expect(hasStoppedCliKey([{ ...enabled, expired_time: now + 60 }], names, 'codex-pro', 0, now)).toBe(false)
+    expect(hasStoppedCliKey([enabled], names, 'codex-pro', 0, now)).toBe(false)
+    // 额度用完归 hasExhaustedCappedCliKey 管，说的是另一句话。
+    expect(hasStoppedCliKey([{ ...enabled, status: 4, unlimited_quota: false }], names, 'codex-pro', 0, now)).toBe(false)
+    expect(hasStoppedCliKey([disabled], ['someone-else'], 'codex-pro', 0, now)).toBe(false)
+    expect(hasStoppedCliKey([disabled], names, 'vip', 0, now)).toBe(false)
+  })
+
+  it('counts only stopped keys newer than the key that would be reused', () => {
+    expect(hasStoppedCliKey([disabled], names, 'codex-pro', 6, now)).toBe(true)
+    expect(hasStoppedCliKey([disabled], names, 'codex-pro', 7, now)).toBe(false)
+    expect(hasStoppedCliKey([{ ...disabled, id: 'broken' }], names, 'codex-pro', 8, now)).toBe(true)
+  })
+
+  it.each([
+    ['disabled', { status: 2 }],
+    ['marked expired', { status: 3, expired_time: 1_700_000_000 }],
+    ['past its expiry', { expired_time: 1_700_000_000 }],
+  ])('stops with the decided sentence instead of signing a new key when the tool key is %s', async (_label, change) => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([{ ...enabled, ...change }]))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
+    expect(managedKeyStoppedMessage).toBe('这个工具的密钥已经停用或到期，软件不会自动换一把新的。到星芒网页的「令牌管理」里重新启用，或者在「个人中心 › 密钥管理」把它撤销后再试。')
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('does not fall back to an older usable key of the same tool', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([{ ...enabled, id: 5, name }, disabled]))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' })).rejects.toThrow(managedKeyStoppedMessage)
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('reuses a usable key newer than the stopped one', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([disabled, { ...enabled, id: 8 }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-newer-usable-value' } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 8, name: 'tester-codex-pro', key: 'sk-newer-usable-value' })
+    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/token/8/key`)
+  })
+
+  it('still signs a key when the stopped one was left behind in another group', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const old = { ...disabled, group: 'vip' }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([old]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([old, { ...enabled, id: 9 }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-moved-group-value' } }))
+
+    await expect(client.provisionCliKey({ name, group: 'codex-pro' }))
+      .resolves.toEqual({ id: 9, name: 'tester-codex-pro', key: 'sk-moved-group-value' })
+  })
+
+  it('leaves the replacement of a key the user revoked alone', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const created = { ...enabled, id: 12, expired_time: 1_900_000_000 }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([disabled]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([disabled, created]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-revoked-replacement' } }))
+
+    await expect(client.provisionCliKey({
+      name, group: 'codex-pro', fresh: true, unlimitedQuota: true, remainQuota: 0, expiredTime: 1_900_000_000,
+    })).resolves.toEqual({ id: 12, name: 'tester-codex-pro', key: 'sk-revoked-replacement' })
+  })
+
+  it('leaves AI chat keys to the chat side', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    const stoppedChat = { ...disabled, id: 6, name: 'tester-codex-pro-对话' }
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([stoppedChat]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([stoppedChat, { ...enabled, id: 10, name: 'tester-codex-pro-对话' }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-chat-value' } }))
+
+    await expect(client.provisionCliKey({ name: 'xingmang-chat-abc', group: 'codex-pro', purpose: 'chat' }))
+      .resolves.toEqual({ id: 10, name: 'tester-codex-pro-对话', key: 'sk-chat-value' })
+  })
+})
+
 describe('provisionCliKey naming', () => {
   it('names a key created in a group after the account username and that group', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
@@ -3671,6 +3922,106 @@ describe('provisionCliKey reuse stays on its own side', () => {
 
     await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro' }))
       .resolves.toEqual({ id: 3, name: 'tester-codex-pro', key: 'sk-tool-capped' })
+  })
+})
+
+// 0.2.24 深查 R1：取明文跟登录共用按 IP 的严格限流，画图技能每次开机都取一次。本机加密缓存里已经知道
+// 明文的那把，服务端这次挑出来复用的又正好是它、掩码也对得上，就直接用缓存的，不再取。
+describe('provisionCliKey with plaintexts this machine already holds', () => {
+  const usable = { group: 'codex-pro', status: 1, remain_quota: 0, unlimited_quota: true, expired_time: -1 }
+  const secret = 'sk-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefWXYZ'
+  const mask = 'AbCd**********WXYZ'
+
+  function listing(items: unknown[]): Response {
+    return jsonResponse({ success: true, message: '', data: { total: items.length, items } })
+  }
+
+  it('checks a cached plaintext against the mask of the very record it was picked for', () => {
+    const match = { id: 6, name: 'tester-codex-pro' }
+    const records = [{ ...usable, ...match, key: mask }]
+    expect(knownCliKeyForRecord(records, match, [{ id: 6, key: secret }])).toBe(secret)
+    // 列表里带不带 sk- 前缀都认。
+    expect(knownCliKeyForRecord([{ ...records[0], key: `sk-${mask}` }], match, [{ id: 6, key: secret }])).toBe(secret)
+    expect(knownCliKeyForRecord(records, match, [{ id: 7, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord(records, match, [{ id: 6, key: 'sk-AbCd-0000-0000-0000-0000-XYZW' }])).toBeNull()
+    expect(knownCliKeyForRecord(records, match, [{ id: 6, key: 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcdefWXYZ' }])).toBeNull()
+    expect(knownCliKeyForRecord([{ ...records[0], key: '' }], match, [{ id: 6, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord([{ ...records[0], key: 'AbCd****WXYZ' }], match, [{ id: 6, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord([{ ...records[0], id: 9 }], match, [{ id: 6, key: secret }])).toBeNull()
+    expect(knownCliKeyForRecord(records, match, undefined)).toBeNull()
+  })
+
+  it('hands back the cached plaintext of the key it picks without revealing it again', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([
+        { ...usable, id: 6, name: 'tester-codex-pro', key: mask },
+        { ...usable, id: 9, name: 'tester-codex-pro-对话', key: 'Zzzz**********zzzz' },
+      ]))
+
+    await expect(client.provisionCliKey({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: 'codex-pro',
+      knownKeys: [{ id: 3, key: 'sk-other-tool-secret-123456' }, { id: 6, key: secret }],
+    })).resolves.toEqual({ id: 6, name: 'tester-codex-pro', key: secret })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls.some(([url]) => /\/api\/token\/\d+\/key$/.test(String(url)))).toBe(false)
+  })
+
+  it('reveals again when the key it picks is not the cached one or does not match its mask', async () => {
+    for (const knownKeys of [
+      // 网页上停用、删掉或换了新的：服务端挑的是另一把。
+      [{ id: 5, key: secret }],
+      // 编号碰巧一样，明文却不是这把（另一个站的、缓存坏了）。
+      [{ id: 6, key: 'sk-QqQqEfGhIjKlMnOpQrStUvWxYz0123456789abcdefQqQq' }],
+    ]) {
+      const fetchImpl = vi.fn<NewApiFetch>()
+      const client = await authenticatedClient(fetchImpl)
+      fetchImpl
+        .mockResolvedValueOnce(usableGroupsResponse())
+        .mockResolvedValueOnce(listing([{ ...usable, id: 6, name: 'tester-codex-pro', key: mask }]))
+        .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-revealed-again' } }))
+
+      await expect(client.provisionCliKey({ name: managedCliKeyProfiles.codex.keyName, group: 'codex-pro', knownKeys }))
+        .resolves.toEqual({ id: 6, name: 'tester-codex-pro', key: 'sk-revealed-again' })
+      expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/token/6/key`)
+    }
+  })
+
+  it('still stops at a used-up cap and still creates a fresh key when asked, whatever it knows', async () => {
+    const capped = vi.fn<NewApiFetch>()
+    const cappedClient = await authenticatedClient(capped)
+    capped
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([
+        { ...usable, id: 4, name: 'tester-codex-pro', unlimited_quota: false, remain_quota: 0, key: 'Cccc**********cccc' },
+        { ...usable, id: 3, name: 'tester-codex-pro', key: mask },
+      ]))
+    await expect(cappedClient.provisionCliKey({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: 'codex-pro',
+      knownKeys: [{ id: 3, key: secret }],
+    })).rejects.toThrow('这个工具的额度用完了')
+
+    const fresh = vi.fn<NewApiFetch>()
+    const freshClient = await authenticatedClient(fresh)
+    fresh
+      .mockResolvedValueOnce(usableGroupsResponse())
+      .mockResolvedValueOnce(listing([{ ...usable, id: 6, name: 'tester-codex-pro', key: mask }]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: true }))
+      .mockResolvedValueOnce(listing([
+        { ...usable, id: 6, name: 'tester-codex-pro', key: mask },
+        { ...usable, id: 8, name: 'tester-codex-pro', key: 'Ffff**********ffff' },
+      ]))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-fresh-secret' } }))
+    await expect(freshClient.provisionCliKey({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: 'codex-pro',
+      fresh: true,
+      knownKeys: [{ id: 6, key: secret }],
+    })).resolves.toEqual({ id: 8, name: 'tester-codex-pro', key: 'sk-fresh-secret' })
   })
 })
 

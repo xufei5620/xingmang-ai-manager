@@ -4,6 +4,7 @@ import { activeProviderIds } from './catalog'
 import { isCliModelName, type CliModelHint, type CliModelHints } from './cli-model-defaults'
 import { isRecord } from './input-guards'
 import { accountGroupRoles, isManagedCliGroupName, type AccountGroupHints } from './managed-cli-groups'
+import { isProxyConnectionFailure } from './network-failure'
 import { remoteFeatureIds, resolveRemoteFeatureId, type RemoteFeatureId } from './remote-features'
 
 /**
@@ -158,6 +159,13 @@ export interface ReleaseGuard {
   /** 这份出自哪一版状态文件（ServiceStatus.updatedAt）；缺省 = 那份没写，比不出新旧。 */
   updatedAt?: string
 }
+
+/**
+ * 远程关功能、已知问题提示、充值方式开关这三样（D83）：跟撤回名单一样，读成功一次就记在电脑上
+ * （service-switches-store.ts），重开软件时状态文件还没读到、或者一直读不到，也照记下的这份办，读成功的那次再换。
+ * 记的是没按版本、平台筛过的原样，用的时候按这一版、这种安装包再筛：升了级的电脑照样只认管到它的那几条。
+ */
+export type ServiceSwitches = Pick<ServiceStatus, 'knownIssues' | 'paymentMethodsOff' | 'featuresOff'>
 
 // 一份只写着几个开关的 JSON 远用不到这么大；上限是给「这个地址被换成了别的东西」
 // 准备的，免得把一整张网页读进内存再去解析。
@@ -552,6 +560,27 @@ function readFeaturesOff(value: unknown): ServiceFeatureOff[] | null {
   return switches.length ? switches : null
 }
 
+/** 从读成功的这份里取出要记在电脑上的三样；文件里没写的那一样不带。 */
+export function pickServiceSwitches(status: ServiceStatus): ServiceSwitches {
+  return {
+    ...(status.knownIssues ? { knownIssues: status.knownIssues } : {}),
+    ...(status.paymentMethodsOff ? { paymentMethodsOff: status.paymentMethodsOff } : {}),
+    ...(status.featuresOff ? { featuresOff: status.featuresOff } : {}),
+  }
+}
+
+/** 记在本地的那三样（service-switches-store.ts），按状态文件的同一套口径重新校验：写错的那一条丢掉。 */
+export function parseServiceSwitches(value: Record<string, unknown>): ServiceSwitches {
+  const knownIssues = readKnownIssues(value.knownIssues)
+  const paymentMethodsOff = readPaymentMethodsOff(value.paymentMethodsOff)
+  const featuresOff = readFeaturesOff(value.featuresOff)
+  return {
+    ...(knownIssues ? { knownIssues } : {}),
+    ...(paymentMethodsOff ? { paymentMethodsOff } : {}),
+    ...(featuresOff ? { featuresOff } : {}),
+  }
+}
+
 function switchApplies(scope: ServiceSwitchScope, version: string, here: readonly string[]): boolean {
   if (scope.versions && !scope.versions.includes(version.trim().replace(/^v/i, ''))) return false
   return appliesTo(scope.platforms, here)
@@ -637,6 +666,14 @@ export interface ServiceStatusReaderOptions {
   fetch: (url: string, init: RequestInit) => Promise<Response>
   timeoutMs?: number
   now?: () => Date
+  /**
+   * 系统代理指着一个已经关掉的代理软件（网络层报代理连不上）时：把读状态文件的会话改成直连，再读一次。
+   * 和检查更新、下载更新是同一个办法、同一个会话（updater.ts 的 createSharedDirectRetry），强制更新的最低版本、
+   * 撤回名单、远程开关这时照样读得到。不传＝不重试（旧行为）。
+   */
+  retryWithoutProxy?: () => Promise<void>
+  /** 直连那次读完（成没成都调）把会话改回跟随系统代理；和 retryWithoutProxy 配对。 */
+  restoreProxy?: () => Promise<void>
 }
 
 /**
@@ -647,6 +684,26 @@ export interface ServiceStatusReaderOptions {
  * 认证页之类的拦截会把它换成一张网页，跟着跳过去读到的只会是别人的内容。
  */
 export async function readServiceStatus(options: ServiceStatusReaderOptions): Promise<ServiceStatus | null> {
+  try {
+    return await readServiceStatusOnce(options)
+  } catch (error) {
+    const { retryWithoutProxy, restoreProxy } = options
+    if (!retryWithoutProxy || !isProxyConnectionFailure(error)) return null
+    // 直连只管这一次：读完就改回去，代理软件后来开起来了，下一次照旧走客户的代理。
+    try {
+      await retryWithoutProxy()
+      return await readServiceStatusOnce(options)
+    } catch {
+      return null
+    } finally {
+      // 改回去失败只是少一次改回，不能把这次读到的状态丢掉。
+      try { await restoreProxy?.() } catch { /* keep what was read */ }
+    }
+  }
+}
+
+/** 读一次：网络层的失败原样抛出（调用方要从里面认出代理连不上），回了话但读不成的给 null。 */
+async function readServiceStatusOnce(options: ServiceStatusReaderOptions): Promise<ServiceStatus | null> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? defaultTimeoutMs)
   timer.unref?.()
@@ -663,10 +720,8 @@ export async function readServiceStatus(options: ServiceStatusReaderOptions): Pr
       await response.body?.cancel().catch(() => undefined)
       return null
     }
-    const text = await readBoundedResponseText(response, maxStatusBytes, '服务状态文件')
-    return parseServiceStatusDocument(text, (options.now ?? (() => new Date()))())
-  } catch {
-    return null
+    const text = await readBoundedResponseText(response, maxStatusBytes, '服务状态文件').catch(() => null)
+    return text === null ? null : parseServiceStatusDocument(text, (options.now ?? (() => new Date()))())
   } finally {
     clearTimeout(timer)
   }

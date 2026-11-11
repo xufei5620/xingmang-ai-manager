@@ -30,9 +30,9 @@ function readReleaseNotesVersion(source) {
   return line ?? ''
 }
 
-// electron-builder 的 releaseInfo.releaseNotesFile 指着这份文件,打包时整份原样写进
-// latest.yml 的 releaseNotes,客户端更新页显示的就是它。发版时忘了把「未发布」改成
-// 版本号,付费用户在更新页看到的第一行就是「未发布」,本次的条目还会被读成上一个版本
+// 打包时 electron-builder.config.cjs 从这份文件取出这一版那一节写进 latest.yml 的
+// releaseNotes,客户端更新页显示的就是它;首节对不上这一版时它照旧把整份写进去。
+// 发版时忘了把「未发布」改成版本号,付费用户在更新页看到的第一行就是「未发布」,本次的条目还会被读成上一个版本
 // 的内容 —— 而打包、签名、latest.yml/SHA-512 校验全都会通过,此前没有任何一道门禁
 // 看这份文件一眼(审查总表 P-14)。
 function assertReleaseNotesVersionIsPublishable(signing, source, localVersion) {

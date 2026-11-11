@@ -97,7 +97,8 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 - 备用链 `["claude-opus-5", "claude-sonnet-5-5"]`、主型号和 Opus 5 都回 503 时：依次试 Opus 5.5、Opus 5、
   Sonnet 5.5，Sonnet 答完。三个都回 503 时，前两个各试一次，最后那个照旧重试 10 次、约 181 秒后报错，
   跟没有备用时一样。链里写了主型号本身的，跳过它直接试下一个。
-- 两版行为一样（2.1.310 主请求带工具搜索，工具数 12，与本项无关）。
+- 两版行为一样（2.1.310 主请求带工具搜索，工具数 12，与本项无关）。2026-11-02 在 2.1.316、11-09 在 2.1.319 上重跑第一种
+  （主型号回 503、备用 Sonnet 5.5）：先发 Opus 5.5 一次、再发 Sonnet 5.5 答完，1 秒内退出码 0，与 2.1.310 一样。
 - 交互界面（2.1.302，伪终端里真跑）：主型号回 503 时对话里先出一行 Claude Code 自己的英文
   `Switched to Opus 5 due to high demand for Opus 5.5`，接着是备用型号的回答。
 - **没演过**：中转真实的过载回什么状态码没在线上看过，按 new-api 源码与 `connection-check.ts` 里认「无可用渠道」
@@ -373,12 +374,15 @@ Key 走的型号菜单）不用抬。
 
 | 工具 | `recommended` | `blocked` | 依据 |
 |---|---|---|---|
-| Claude Code | `2.1.310`（2026-10-26） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)`、`[2.1.304, 2.1.305)` | 上游 changelog 三条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.310 的依据见下文（2.1.303 那次核过、没合，并进 2.1.310） |
-| Codex CLI | `0.164.0`（2026-10-26） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0 的依据见下文（0.163.0 核过、没合） |
+| Claude Code | `2.1.319`（2026-11-09） | `[2.1.265, 2.1.268)`、`[2.1.275, 2.1.277)`、`[2.1.304, 2.1.305)` | 上游 changelog 三条网关回归；抬到 2.1.281、2.1.289、2.1.291、2.1.296、2.1.302、2.1.310、2.1.319 的依据见下文（2.1.303、2.1.316 那两次核过、没合，分别并进 2.1.310、2.1.319） |
+| Codex CLI | `0.167.0`（2026-11-09） | `[0.155.0, 0.155.1)` | 上游 release note 与 PR #46467（见上一节）；抬到 0.156.1、0.160.0、0.160.1、0.162.1、0.164.0、0.167.0 的依据见下文（0.163.0、0.166.0 核过、没合） |
 | Gemini CLI | `0.62.0`（2026-10-05） | 无 | 当前 npm `latest`；抬到 0.61.0、0.62.0 的依据见下文。**2026-10-14 下线**：星芒不再装、不再显示它，这一条留着只因为名单要覆盖全部 `ProviderId`（`catalog.ts` 的退役名单），不再抬 |
-| Grok CLI | `1.0.70`（2026-10-26） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70 各一遍，见下文；1.0.62 核过、没合） |
+| Grok CLI | `1.0.77`（2026-11-09） | 无 | 当前 npm `latest` 且是 xAI stable；本地假接口核过接当前账号的四项配置（1.0.44、1.0.46、1.0.52、1.0.62、1.0.70、1.0.77 各一遍，见下文；1.0.62 核过、没合） |
 
-四条 `recommended` 的 `verifiedSites` 目前都是空数组：中转实测所需的仓库 secret 还没配（见下文），所以这几个版本都还**没有**在任何站点上跑过真实请求。跑通之后把站点 id 填进去。
+仓库 secret `XINGMANG_CLI_PATROL_KEY` 2026-11-09 配上了。那天真跑的结果：Codex 0.167.0、Claude Code 2.1.319 都在 `solov` 上通过，所以这两条的 `verifiedSites` 是 `['solov']`；Grok、Gemini 两条还是空数组。
+- Claude Code 第一次用共用那把 Key（GPT 分组），中转答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」；换成 Claude 分组的 `XINGMANG_CLI_PATROL_KEY_CLAUDE` 后通过。
+- `solov-api` 上两家都是 401（Codex 看到的是 `INVALID_API_KEY`）。那是历史账号站 `api.solov.cc`，星芒账号签的 Key 在那边本来就认不了。yoyo 同日定「历史站不测」：探测跳过它（`scripts/probe-cli-relay.cjs` 的 `UNPROBED_SITES`），summary 里写明「未在中转实测」。
+- Grok 不在探测范围里。
 
 **Grok 进名单（2026-09-30）：它发版太密，而接当前账号靠的几项配置都挂在它的键名上。**
 npm 上 9-15 到 9-29 两周发了 1.0.32 → 1.0.45 十几版（1.0.45 只打了 `alpha`），名单为空时客户每点一次
@@ -593,6 +597,52 @@ npm `latest` 是 2.1.310；2.1.304~2.1.310 逐条读过。和接中转有关的�
 `claude doctor` 仍是 `Auto-updates: disabled (set by env: DISABLE_AUTOUPDATER)`；npm 包文件列表与 `install.cjs`
 和 2.1.303 逐字相同。没做的：中转上的真实请求（`verifiedSites` 仍为空），所以中转后面的渠道到底认不认工具搜索还不知道。
 
+**2.1.310 → 2.1.316（2026-11-02 每周巡检，核过、没合，11-09 并进 2.1.319）：没有新回归，又补了几处网关重试。**
+npm `latest` 是 2.1.316（2.1.313 没发到 npm）；2.1.311、2.1.312、2.1.314、2.1.315、2.1.316 逐条读过，没有一条写成网关回归。
+和接中转有关的：
+
+- 2.1.314：*Fixed requests failing when a gateway or cloud provider refuses one of Claude Code's beta headers by name: the
+  request is sent again without it*；*Fixed repeated refused requests behind a gateway that doesn't accept tool search's
+  `tool_reference` blocks: the request is sent again once without tool search, and the session remembers*。
+- 2.1.314：网关后面带点的型号名（如 `claude-opus-4.8`）不再被当成旧型号、算错上下文与输出上限。我们写的型号名是连字符，碰不到。
+- 2.1.316：压缩过的回复被截断或损坏时，部分请求不再一直挂着。
+- 2.1.311：超过 200K 的请求在标准上下文会话里不再报「Usage credits required for 1M context」，改为先压缩再继续；
+  2.1.312：不认识的型号名在被拦下后也会自动换型号（`CLAUDE_CODE_DISABLE_REFUSAL_FALLBACK=1` 可关），我们的型号都认得（推断不触发）。
+- 2.1.311：型号名去掉对它没作用的 `[1m]` 后缀；我们不写这个后缀。
+
+没碰我们写的配置：没有一条改 `permissions.defaultMode`、`permissions.deny`、`skipWebFetchPreflight`、`modelPicker`、
+`effortLevel`、`statusLine`、`DISABLE_AUTOUPDATER`、`fallbackModel`；2.1.314 新加的 `permissions.blockWritesOutsideWorkingDirectories`
+默认不开，我们也不写。
+
+沙箱（做法同上，2.1.310 一起重跑当对照）：`claude -p "hi"` 两版都拿到回复、只带 `Authorization`、请求体字段一样，beta 头只是
+顺序换了；主请求照旧带工具搜索（12 个工具，1 个延迟加载占位）。假接口对工具搜索一律回 400 时，2.1.316 带它试三次（第一次后
+去掉了 `thinking-token-count` beta 再试）、第四次不带它（21 个工具）拿到回复，退出码 0；2.1.310 同样拒法是两次被拒、第三次拿到。
+`--model haiku` 仍发 `claude-haiku-5-5`；`/context` 仍按 `1m` 算；备用型号见上文「第三道保险」；`install.cjs` 和 2.1.310 逐字相同。
+没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
+**2.1.316 → 2.1.319（2026-11-09 每周巡检）：没有网关回归；2.1.314 起有一处非网关回归，2.1.318 修好。**
+npm `latest` 是 2.1.319；2.1.317、2.1.318、2.1.319 逐条读过。和接中转有关的：
+
+- 2.1.317：*Fixed auto mode failing every turn when an LLM gateway set as the base URL answers 403 or 422 to its server-side
+  safety check*。模板写的是 `bypassPermissions`，碰不到；自己选了自动模式的老客户少一种每轮失败。
+- 2.1.319：网关后面关了遥测或功能开关时，自动模式查不了的调用改为问人或拒绝（`CLAUDE_CODE_AUTO_MODE_SERVER=0` 可回旧行为）；
+  同样只影响自动模式。
+- 2.1.318：*Fixed `--continue` sometimes losing the earlier conversation after a malformed tool call's retries ran out (regression in
+  2.1.314)*。不是每次请求都失败，也和接中转无关，不进 `blocked`；上周核过的 2.1.316 正在这个区间里，这次直接越过去。
+- 2.1.319 修了两处 Bash 权限检查能被绕过（`sed` 在接受编辑与自动模式下、精心构造的环境变量前缀），新加默认不开的
+  `permissions.denyInsteadOfPrompting`。
+
+没碰我们写的配置：没有一条改 `permissions.defaultMode`、`permissions.deny`、`skipWebFetchPreflight`、`modelPicker`、
+`effortLevel`、`statusLine`、`DISABLE_AUTOUPDATER`、`fallbackModel`。
+
+`install.cjs` 变了：找原生包时同时看包旁边和包自己的 `node_modules`，同一版本装了两份、或 `package.json` 读不了就让安装失败
+（以前只用 `require.resolve`）。本软件是 `npm install --global --prefix=…`，原生包只装在包自己的 `node_modules` 下；沙箱里在同一个
+前缀先装 2.1.316 再升到 2.1.319，退出码 0，只有一份原生包，`claude --version` 是 2.1.319。
+
+沙箱（做法同上，2.1.316 一起重跑当对照）：`claude -p "hi"` 两版拿到回复、只带 `Authorization`，请求体字段与 beta 头完全一样；
+假接口对工具搜索一律回 400 时 2.1.319 同样被拒三次、第四次不带它（21 个工具）拿到回复；`--model haiku` 仍发 `claude-haiku-5-5`；
+`/context` 仍按 `1m` 算；主型号回 503 时换到备用的 Sonnet 5.5。没做的：中转上的真实请求（`verifiedSites` 仍为空）。
+
 **Codex 0.155.1 → 0.156.1（2026-09-23）：为了 GPT-6 Sol / Luna。** OpenAI 9 月 22 日发布
 `gpt-6-sol` 与 `gpt-6-luna`。Codex 按自带的模型目录（`codex-rs/models-manager/models.json`）决定
 每个模型用哪套系统提示词、哪些工具、支持哪些推理档位，`/model` 菜单也只列这份目录；这两个模型
@@ -733,6 +783,61 @@ Grok：没有可读的变更记录。npm 上 1.0.63~1.0.70 都发了，`latest` 
 
 没做的：两家都没有中转上的真实请求（`verifiedSites` 仍为空）；Grok 1.0.70 Windows 版挑哪个 shell 没有重读二进制字符串。
 
+**Codex 0.164.0 → 0.166.0（2026-11-02 每周巡检，核过、没合，11-09 并进 0.167.0）。** Grok 这周 npm `latest` 与 xAI stable 都还是 1.0.70，不动。
+
+Codex 区间内有 0.165.0（10-27）、0.166.0（10-29）两个正式版，读了 `rust-v0.165.0`、`rust-v0.166.0` 的 release note，没有一条碰
+自定义 `model_providers` / `base_url` / `wire_api` / `requires_openai_auth` / `auth.json`。和本产品有关的：
+
+- 0.165.0：provider 回「型号不存在」不再重试、原样报错；支持的型号默认可在对话中途改推理强度；新装的配置默认用 Memory v2。
+- 0.165.0：新加内置的 Google Vertex AI provider（`model_provider = "gcp"`），我们写的是自己的 `xingmang`，碰不到。
+- 0.166.0：恢复或分叉对话时保留审批与权限设置；推理用量跨恢复与分叉保留；继续对话前先核对线程的 provider（#57840）；
+  模型请求改走统一的运行时认证（#57171、#57607）——沙箱里照旧带 `Authorization`。
+- 没提 `daemon_auto_start`、`--no-daemon`、`check_for_update_on_startup`、`[analytics]`、`prevent_idle_sleep`，沙箱里都照旧。
+
+随包型号名单：`rust-v0.166.0` 的 `models.json` 比 `rust-v0.164.0` 多一个 `gpt-6.1-terra`（`minimal_client_version` 0.153.0，
+资料照 `gpt-6.1-sol` 的样子，上下文 500000），其余 11 个型号逐字相同；`rust-v0.165.0` 与 `rust-v0.166.0` 的 `models.json` 一样。
+`LICENSE`、`NOTICE` 不变。`codex-rs/protocol/src/openai_models.rs` 两版之间只加了带 `serde(default)` 的可选字段（Memento V2
+工具说明、审批与权限的几段可选文案），必填字段与枚举取值不变，`codexModelCatalogEntryProblem` 不用改。tag 与提交号换成
+`rust-v0.166.0`（`6ff1e1ca3b30fc8b914720681fcf5fe62e95f856`），sha256 `1384625c…eb10`。
+
+沙箱（做法同上，0.164.0 一起重跑当对照；仍只测 HTTP 这一路）：两版的 `codex debug models` 都列出新名单的全部 12 个型号；
+`codex exec` 与 `codex --no-daemon exec` 用 `gpt-6.1-sol` 都拿到回复，打到假接口的只有一次 `POST /v1/responses`（带
+`Authorization`，请求字段两版一样），出网代理记下的 `github.com`、`api.github.com`、`chatgpt.com` 两版一样；`gpt-6.1-terra`
+两版也都能 `exec`。手机遥控那一路（`codex app-server --listen stdio://`，照 `codex-remote-service.ts` 发 `initialize`、
+`config/read`、`thread/start`、`turn/start`）两版都走到 `turn/completed`，通知种类一样。
+
+没做的：中转上的真实请求（`verifiedSites` 仍为空）；桌面端自带的 Codex 没拿新名单真跑（新字段都是可选的，按源码推断读得进）。
+
+**Codex 0.166.0 → 0.167.0、Grok 1.0.70 → 1.0.77（2026-11-09 每周巡检）。**
+
+Codex 区间内只有 0.167.0 一个正式版（11-06），读了 `rust-v0.167.0` 的 release note，没有一条碰自定义 `model_providers` /
+`base_url` / `wire_api` / `requires_openai_auth` / `auth.json`。和本产品有关的：
+
+- 换过 model provider 后旧对话仍然列得出来；续不上的可以读记录、起一份草稿到新对话里接着做（#58202）。客户在星芒和官方账号之间
+  切换就是换 provider。
+- 自动压缩把失败回复里保留的输出、缺用量数据的回复也算进去（#58404）。
+- 配置的 TOML 解析收到一处（#58198）、发请求前的认证检查收到一处（#58121）——沙箱里同一份配置照旧读进、照旧带 `Authorization`。
+- `codex agents --no-daemon` 可以直接开命令中心；没提 `daemon_auto_start`、`check_for_update_on_startup`、`[analytics]`、
+  `prevent_idle_sleep`，沙箱里都照旧。
+
+随包型号名单：`rust-v0.167.0` 的 `models.json` 与 `rust-v0.166.0` 逐字相同（sha256 `1384625c…eb10` 不变），`LICENSE`、`NOTICE`
+也一样，只换 tag 与提交号（`086ccc833bc9cf01024ad2dd6af7dbd421b6bf9a`）。`openai_models.rs` 去掉一个不参与读写的内部字段，
+加了可选的 `apps` 文案，必填字段与枚举不变。
+
+沙箱（做法同上，0.166.0 一起重跑当对照，只测 HTTP 一路）：两版 `codex debug models` 都列出 12 个型号；`codex exec` 与
+`codex --no-daemon exec` 用 `gpt-6.1-sol` 都拿到回复，假接口只收到一次 `POST /v1/responses`（带 `Authorization`，请求字段两版一样），
+出网代理记下的 `github.com`、`api.github.com`、`chatgpt.com` 两版一样；手机遥控那一路（`app-server`）两版都走到 `turn/completed`。
+
+Grok：没有可读的变更记录。npm 上 1.0.71～1.0.79 都发了，`latest` 与 xAI stable 都在 1.0.77，所以选它。在 1.0.77 上重跑四项，
+和 1.0.70 逐条相同：有 `allowed_models` 时 `grok models` 只列 `grok`、去掉后多出 `grok-4.6`、`grok-4.5`（K3）；起标题那次请求是
+`relay-x`、去掉 `session_summary` 变回 `grok-4.6`（K4）；`--always-approve` 下 `image_gen` 打到本地 `POST /v1/images/generations`，
+去掉 `[endpoints] xai_api_base_url` 后会话里记的是「no xAI credential available」、不连外网（K1）；一轮 `-p` 触发
+`UserPromptSubmit`、`Stop`×2、`SessionEnd`（钩子）。装插件：不带 `--trust` 退出码 1、什么都不写，带上一次装好并记进
+`[plugins] enabled`。
+
+中转实测：Codex 0.167.0 在 `solov` 上用默认型号真跑通过（`cli-relay-probe`，9665cdf8），`solov-api` 没测成（探测 Key 不是那个站的，401）。没做的：Grok 没有中转上的真实请求；GPT-6.1 Terra 没在中转上单独跑；Grok 1.0.77 的 Windows 包在沙箱里核不了（`x.ai` 被代理拦），
+Windows 版挑哪个 shell 也没重读二进制字符串。
+
 **Gemini CLI 0.60.0 → 0.61.0（2026-09-24）：型号不再被偷换，但换了一种偷换。** 0.60.0 → 0.61.0
 上游只有 8 个提交，和中转有关的是两条：
 
@@ -804,15 +909,16 @@ npm 上的 `stable` 这个 dist-tag **不能用作判断依据**：它曾经指�
 所以 quality 工作流里有一个 `cli-relay-probe` 作业（`scripts/probe-cli-relay.cjs`）：
 
 - **什么时候跑**：PR 改到 `electron/cli-verified-versions.ts` 或本文档时。别的 PR 改不动这个答案，不值得对生产中转发真实请求。
-- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × 两个站点 = 四次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测）。
-  - Claude Code：`claude -p`，凭据走 `ANTHROPIC_AUTH_TOKEN`。
+- **跑什么**：名单里**每一个**填了 `recommended`、且脚本里有探测办法的工具各装一次那个版本，再对 `relay-sites.ts` 里的**每个**中转站点各跑一次最小请求，结论写进 job summary。今天是 Claude Code、Codex 两个工具 × `solov` 一个站点 = 两次真实请求（Grok 还没有探测办法；Gemini CLI 2026-10-14 下线后不再探测；历史账号站 `solov-api` 2026-11-09 定不测，见上文，summary 里照样列出并写明没测）。
+  - Claude Code：`claude -p --output-format stream-json --verbose`，凭据走 `ANTHROPIC_AUTH_TOKEN`。输出格式只改本地打印、不改请求体；用它是因为纯 `-p` 在重试期间什么都不打，被超时杀掉时只剩退出码 143，stream-json 会把每次重试的 HTTP 状态打出来，脚本据此归类。
   - Codex：`codex exec`，配置是一份与 `config-files.ts` 的 `buildCodexRelayConfigTemplate` 同形的 `config.toml`（`wire_api = "responses"`、`model_reasoning_effort = "xhigh"`）。
 - **为什么连接自检不能代替它**：自检只读模型清单，而 CLI 真正打的端点各不相同（Claude 的 `/v1/messages`、Codex 的 `/responses`），请求体更是天差地别。0.155.0 那类回归改的正是请求体。
-- **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key。**探测的工具共用这一把**，不另设第二个 secret。
-  - 但它必须覆盖这几个工具各自的分组（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅`）。只覆盖其中一个分组时，另一个工具会被中转答成「当前分组下无可用渠道」。
+- **密钥**：仓库 secret `XINGMANG_CLI_PATROL_KEY`，一把额度很小的测试 Key，在 GPT 分组。new-api 一把令牌只属于一个分组，所以 Claude 另用 `XINGMANG_CLI_PATROL_KEY_CLAUDE`（Claude 分组，2026-11-09 加）；没配这把时 Claude 退回共用的那把。
+  - 每把 Key 要落在它那个工具的分组里（`catalog.ts` 的 `managedCliKeyProfiles`：`Claude-MAX订阅` / `GPT-中转/订阅`）。分组不对时，中转会答「分组 GPT 下模型 claude-opus-5-5 无可用渠道」这样的话（11-09 第一次真跑，Claude 用 GPT 分组那把就是这样）。
   - 探测脚本把这种回答单独归成 `group` 一类并在 summary 里写清「换一把覆盖该分组的 Key」，**不会**把它误报成「这个版本不能用」。
   - Claude Code 从子进程环境变量拿 Key。Codex 对自定义 model provider **不认** `OPENAI_API_KEY` 环境变量（对 0.155.1 实测：设了这个变量，请求里 `auth.header_attached=false`），只读 `$CODEX_HOME/auth.json`，所以它那一份是以 0600 写进一次性临时 HOME 的，跑完即删。两种路径都不经 argv——argv 在共享主机上是全员可读的。
 - **没有配密钥时**：作业照常通过，但 summary 里明确写「未在中转实测」，并列出这次本该探测的是哪几个工具的哪几个版本。一句诚实的「没验证」比一个看着绿的空作业有用。
+- **子进程的标准输入一律关掉**：2026-11-09 第一次带密钥真跑，四次全部「原因未归类」。原因是脚本没关子进程的标准输入：Codex 0.167.0 的 `exec` 一直停在「Reading additional input from stdin...」直到超时；Claude Code 等 3 秒才放弃。超时现在单独归成 `timeout` 一类，不再报成一个光秃秃的退出码。
 - **结论怎么读**：只有「端点拒绝了 CLI 发出的请求（400 类）」才说明这个版本不能推给客户。分组不对、401/403、额度不足、5xx 是**探测本身坏了**，作业同样变红，但那是去换密钥或等中转恢复，不是去改名单。
 
 跑通之后，把跑通的站点 id 写进对应那条 `recommended` 的 `verifiedSites`。

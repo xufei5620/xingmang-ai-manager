@@ -1,16 +1,19 @@
 import type { PageId } from './pages'
 
-/** 侧栏的一项：一页，或「充值」（个人中心的充值页签，在侧栏单独占一行）。 */
+/** 侧栏的一项：一页，或「充值」（个人中心的充值页签，在侧栏单独占一行，钉在「设置」上面，见 Shell.tsx）。 */
 export type ShellNavigationEntry = PageId | 'recharge'
 export interface ShellNavigationGroup {
   /** 分组小标题；缺省 = 只用一条分隔线隔开。 */
   label?: string
   entries: readonly ShellNavigationEntry[]
 }
+// 这里是会跟着滚的那一列；「充值」「设置」不在里面，钉在它下面、账号卡上面（Shell.tsx）。
+// 2026-11-06 加了画布、视频剪辑以后这列长了两行，窗口矮时最下面一组最先滚出去，
+// 「充值」原来排在那组第一个，跟着看不见（yoyo 回「充值改」）。
 export const shellNavigation: readonly ShellNavigationGroup[] = [
   { entries: ['home', 'chat', 'sessions', 'canvas', 'video'] },
   { label: '扩展', entries: ['featured', 'mcp', 'skills', 'plugins'] },
-  { entries: ['recharge', 'tutorial', 'health', 'feedback'] },
+  { entries: ['tutorial', 'health', 'feedback'] },
 ]
 /** 界面导览三步：没有标题，第一步按系统只写一种快捷键。 */
 export const shellTour = [

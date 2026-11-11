@@ -681,6 +681,33 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
   })
 
+  // D81: large text may be switched on once for a user whose Windows text
+  // size is raised. Any write that names largeText or uiScale -- switching it
+  // off, choosing 自动 again, restoring the default appearance -- records that
+  // a text size was chosen, so a later launch never switches it back on.
+  it('records a chosen text size on any write that names large text or zoom, and keeps it', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ uiSkin: 'mist' }))
+    await updateAppSettings(filePath, { version: 2, theme: 'light', reducedMotion: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('textSizeChosen')
+    await updateAppSettings(filePath, { version: 2, largeText: false })
+    expect(readAppSettings(filePath).textSizeChosen).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).textSizeChosen).toBe(true)
+
+    for (const update of [{ version: 2, largeText: true }, { version: 2, uiScale: 'auto' }, { version: 2, uiScale: '110' }] as const) {
+      expect(mergeAppSettings(settings({ uiSkin: 'mist' }), update).textSizeChosen).toBe(true)
+    }
+  })
+
+  it('reads the chosen text size record only as an explicit true', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), textSizeChosen: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), textSizeChosen: true }), 'utf8')
+    expect(readAppSettings(filePath).textSizeChosen).toBe(true)
+  })
+
   it('rejects malformed persisted notification preferences without discarding other settings', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')
@@ -753,6 +780,27 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('seededToolDefaults')
   })
 
+  // 0.2.24 深查「反复切换」N5：切回官方前记下的型号，每家各记各的，改别的设置时原样留着。
+  it('remembers the relay model per tool before an official switch and drops what it cannot read', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    expect(readAppSettings(filePath)).not.toHaveProperty('relayModelsBeforeOfficial')
+    await updateAppSettings(filePath, { version: 2, relayModelsBeforeOfficial: { grok: 'grok-code-fast' } })
+    await updateAppSettings(filePath, { version: 2, relayModelsBeforeOfficial: { codex: ' gpt-5.4-mini ' } })
+    await updateAppSettings(filePath, { version: 2, closeBehavior: 'tray' })
+    expect(readAppSettings(filePath).relayModelsBeforeOfficial).toEqual({ codex: 'gpt-5.4-mini', grok: 'grok-code-fast' })
+    await updateAppSettings(filePath, { version: 2, relayModelsBeforeOfficial: { grok: 'grok-4' } })
+    expect(readAppSettings(filePath).relayModelsBeforeOfficial).toEqual({ codex: 'gpt-5.4-mini', grok: 'grok-4' })
+
+    fs.writeFileSync(filePath, JSON.stringify({
+      ...settings(),
+      relayModelsBeforeOfficial: { claude: 'claude-sonnet-5', codex: '', grok: 42, cursor: 'x', gemini: 'bad\u0007name' },
+    }), 'utf8')
+    expect(readAppSettings(filePath).relayModelsBeforeOfficial).toEqual({ claude: 'claude-sonnet-5' })
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), relayModelsBeforeOfficial: ['claude-sonnet-5'] }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('relayModelsBeforeOfficial')
+  })
+
   it('keeps the crash reporting notice marker once set without touching the reporting switch', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())
@@ -810,7 +858,8 @@ describe('UI and window preferences', () => {
     const reset = await updateAppSettings(filePath, {
       version: 2, uiSkin: 'auto', reducedMotion: false, uiScale: 'auto', closeBehavior: 'ask', windowState: null,
     })
-    expect(reset).toEqual(settings({ theme: 'light' }))
+    // Choosing 自动 again is still a chosen text size (D81); that record is not a preference to reset.
+    expect(reset).toEqual(settings({ theme: 'light', textSizeChosen: true }))
     expect(readAppSettings(filePath)).toEqual(reset)
   })
 
@@ -822,7 +871,7 @@ describe('UI and window preferences', () => {
       updateAppSettings(filePath, { version: 2, uiSkin: 'obsidian', reducedMotion: true }),
       updateAppSettings(filePath, { version: 2, uiScale: '90' }),
     ])
-    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'obsidian', reducedMotion: true, uiScale: '90', windowState }))
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'obsidian', reducedMotion: true, uiScale: '90', textSizeChosen: true, windowState }))
   })
 
   it('retains confirmed preferences and the valid backup if an appearance update cannot be replaced', async () => {

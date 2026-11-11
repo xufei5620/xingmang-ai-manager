@@ -31,6 +31,7 @@ import {
 } from './macos-desktop-install-failure'
 import { managedProductRoot } from './managed-cli-paths'
 import { fetchWithRedirectAllowlist } from './redirect-allowlist-fetch'
+import { removeTree } from './remove-tree'
 import { ensureTrustedDirectory } from './trusted-temp'
 
 /**
@@ -44,8 +45,9 @@ import { ensureTrustedDirectory } from './trusted-temp'
  *
  * Trust chain, in order:
  * 1. The release feed and the package come only from the vendor's own release
- *    location, with every redirect held to the same allow-list (I10). The feed may only
- *    name the one package URL this module would have built for that version itself.
+ *    location, with every redirect held to the same allow-list (I10). The package URL is
+ *    always the one this module builds for that version itself, and the feed must list
+ *    this Mac's package for that version.
  * 2. The extracted bundle must satisfy a designated requirement pinned to the vendor's
  *    Apple Developer ID team and bundle identifier, decided by codesign's exit status
  *    (macos-code-signing.ts explains why its printed text proves nothing).
@@ -98,8 +100,8 @@ interface MacosDesktopAppSource {
   /** 存储桶里给的是 PKG 时，pkgutil --check-signature 证书链第一张必须是这张。没有就不认 PKG。 */
   installerSigner?: string
   feedUrl(context: MacosDesktopFeedContext): string
-  /** json 先解析再交给 selectRelease，xml 原样交过去。 */
-  feedFormat: 'json' | 'xml'
+  /** json 先解析再交给 selectRelease，xml 和 yaml 原样交过去。 */
+  feedFormat: 'json' | 'xml' | 'yaml'
   /** 拼版本信息地址或挑包要用到这台 Mac 的系统版本。 */
   feedNeedsSystemVersion?: boolean
   archiveFormat: 'tar.gz' | 'zip'
@@ -218,16 +220,27 @@ const stagingDirectoryName = 'DesktopApps'
 const stagingPrefix = 'staging-'
 
 /**
- * OpenCode 发版时在 GitHub Releases 放一份 latest.json，列出各平台的包；Mac 两种芯片
- * 各一个 .app.tar.gz。这里只取版本号，地址自己按版本号拼，再要求 feed 里写的正好是它。
+ * OpenCode 发版时在 GitHub Releases 放一份 latest-mac.yml（electron-updater 的版本信息，它自己升级也问这份），
+ * 列出 Mac 两种芯片的 zip 和 dmg。这里只取版本号，并要求它列着这台 Mac 芯片的 zip，证明这一版确实发了 Mac
+ * 桌面端；下的仍是同一版、同一芯片的 .app.tar.gz（和存储桶里的同一种包），地址自己按版本号拼。
+ * 以前问的 latest.json 是给旧版 Tauri 自动更新用的，OpenCode 1.19.5（2026-10-28）起不再放（它们的
+ * script/publish.ts 写明那份要用已经停用的 Tauri 签名密钥），GitHub 照样跳过去、再回 404。
+ * 同步脚本 scripts/sync-opencode-cos.cjs 的 parseFeed 是同一条规矩。
  */
 function selectOpenCodeRelease(feed: unknown, context: MacosDesktopFeedContext): MacosDesktopRelease | null {
-  if (!isRecord(feed) || !isRecord(feed.platforms) || typeof feed.version !== 'string') return null
-  const version = feed.version
-  if (!/^\d{1,4}\.\d{1,4}\.\d{1,6}$/.test(version)) return null
-  const entry = feed.platforms[context.architecture === 'arm64' ? 'darwin-aarch64' : 'darwin-x86_64']
-  const url = `https://github.com/anomalyco/opencode/releases/download/v${version}/opencode-desktop-mac-${context.architecture}.app.tar.gz`
-  return isRecord(entry) && entry.url === url ? { version, url } : null
+  if (typeof feed !== 'string') return null
+  const lines = feed.split(/\r?\n/)
+  // 顶格的 version 只许一行：两行就不知道该信哪个。
+  const versionLines = lines.filter((line) => line.startsWith('version:'))
+  const version = versionLines.length === 1 ? /^version:[ \t]*(['"]?)(\d{1,4}\.\d{1,4}\.\d{1,6})\1[ \t]*$/.exec(versionLines[0])?.[2] : undefined
+  if (!version) return null
+  const zip = `opencode-desktop-mac-${context.architecture}.zip`
+  const listed = lines.some((line) => {
+    const url = /^[ \t]*-[ \t]+url:[ \t]*(\S+)[ \t]*$/.exec(line)?.[1]
+    return url === zip || url === `https://github.com/anomalyco/opencode/releases/download/v${version}/${zip}`
+  })
+  if (!listed) return null
+  return { version, url: `https://github.com/anomalyco/opencode/releases/download/v${version}/opencode-desktop-mac-${context.architecture}.app.tar.gz` }
 }
 
 /**
@@ -328,20 +341,22 @@ function allowsChatgptUrl(url: URL): boolean {
   return url.hostname === 'persistent.oaistatic.com' && url.pathname.startsWith('/codex-app-prod/') && !url.search
 }
 
-const openCodeFeedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
+const openCodeFeedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest-mac.yml'
 
 const sources: Partial<Record<MacosDesktopAppId, MacosDesktopAppSource>> = {
   // Checked 2026-10-02 by downloading v1.18.34 for both architectures: the feed below
   // and the package names it lists, the redirect to release-assets.githubusercontent.com,
   // bundle ai.opencode.desktop with LSMinimumSystemVersion 12.0, and the Developer ID
-  // "Anomaly Innovations, Inc. (5NZ4Q7NXJ4)" on the main executable.
+  // "Anomaly Innovations, Inc. (5NZ4Q7NXJ4)" on the main executable. Checked again 2026-11-09
+  // against v1.19.5, the first release without latest.json: latest-mac.yml lists both chips' zips,
+  // and both .app.tar.gz files are still published and redirect to release-assets.githubusercontent.com.
   opencode: {
     name: 'OpenCode',
     applicationName: 'OpenCode',
     bundleIdentifier: 'ai.opencode.desktop',
     teamIdentifier: '5NZ4Q7NXJ4',
     feedUrl: () => openCodeFeedUrl,
-    feedFormat: 'json',
+    feedFormat: 'yaml',
     archiveFormat: 'tar.gz',
     // v1.18.34 is 152 MB.
     maximumArchiveBytes: 640 * 1024 * 1024,
@@ -439,7 +454,8 @@ async function fetchFeed(
 ): Promise<unknown> {
   const timeout = AbortSignal.timeout(feedTimeoutMs)
   const response = await fetchMacosDesktopResource(tool, source.feedUrl(context), {
-    headers: { Accept: source.feedFormat === 'json' ? 'application/json' : 'application/xml' },
+    // GitHub 给 latest-mac.yml 的是 application/octet-stream，不按 Accept 换内容。
+    headers: { Accept: source.feedFormat === 'json' ? 'application/json' : source.feedFormat === 'xml' ? 'application/xml' : '*/*' },
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   }, fetchImplementation)
   if (response.status !== 200) {
@@ -447,7 +463,7 @@ async function fetchFeed(
     throw new Error(`版本信息返回 HTTP ${response.status}`)
   }
   const text = await readBoundedResponseText(response, maximumFeedBytes, '版本信息')
-  if (source.feedFormat === 'xml') return text
+  if (source.feedFormat !== 'json') return text
   try {
     return JSON.parse(text) as unknown
   } catch {
@@ -498,7 +514,7 @@ async function createStagingDirectory(environment: NodeJS.ProcessEnv): Promise<s
   await ensureTrustedDirectory(parent, directoryOptions)
   for (const entry of await fs.promises.readdir(parent, { withFileTypes: true })) {
     if (!entry.name.startsWith(stagingPrefix) || !entry.isDirectory()) continue
-    await fs.promises.rm(path.posix.join(parent, entry.name), { recursive: true, force: true })
+    await removeTree(path.posix.join(parent, entry.name))
   }
   const staging = await fs.promises.mkdtemp(path.posix.join(parent, stagingPrefix))
   await fs.promises.chmod(staging, 0o700)
@@ -657,7 +673,7 @@ async function removeInterruptedCopies(destination: string): Promise<void> {
   const prefix = copyNamePrefix(destination)
   for (const entry of await fs.promises.readdir(directory)) {
     if (!entry.startsWith(prefix) || !/^[0-9a-f]{12}$/.test(entry.slice(prefix.length))) continue
-    await fs.promises.rm(path.posix.join(directory, entry), { recursive: true, force: true })
+    await removeTree(path.posix.join(directory, entry))
   }
 }
 
@@ -684,7 +700,7 @@ async function placeBundle(
     if (await lstatOrNull(destination)) throw nameTaken()
     await fs.promises.rename(temporary, destination)
   } finally {
-    await fs.promises.rm(temporary, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(temporary).catch(() => undefined)
   }
 }
 
@@ -713,7 +729,7 @@ async function recoverInterruptedReplacement(destination: string): Promise<boole
     await fs.promises.rename(path.posix.join(directory, backups.shift()!), destination)
     restored = true
   }
-  for (const entry of backups) await fs.promises.rm(path.posix.join(directory, entry), { recursive: true, force: true }).catch(() => undefined)
+  for (const entry of backups) await removeTree(path.posix.join(directory, entry)).catch(() => undefined)
   return restored
 }
 
@@ -768,9 +784,9 @@ async function replaceBundle(
       throw error
     }
     // 删不掉（比如「App 管理」只拦删除）不影响已经换上的新版；下次更新前 recoverInterruptedReplacement 再删。
-    await fs.promises.rm(backup, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(backup).catch(() => undefined)
   } finally {
-    await fs.promises.rm(incoming, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(incoming).catch(() => undefined)
   }
 }
 
@@ -1023,7 +1039,7 @@ async function unpackFromBucket(
     if (options.signal?.aborted) throw error
     const cause = error instanceof DesktopBucketUnavailableError ? error.cause : error
     if (isDiskFull(cause)) throw cause
-    await fs.promises.rm(workDirectory, { recursive: true, force: true }).catch(() => undefined)
+    await removeTree(workDirectory).catch(() => undefined)
     bucket.onFallback?.(describeDesktopBucketFallback(id, error instanceof MacosDesktopInstallError ? error.detail : error))
     return null
   }
@@ -1183,6 +1199,6 @@ export async function installMacosDesktopApp(options: InstallMacosDesktopAppOpti
       : stage === 'download' ? macosDesktopDownloadFailedMessage(source.name) : macosDesktopInstallFailedMessage(source.name)
     throw new MacosDesktopInstallError(message, detail, error)
   } finally {
-    if (staging) await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => undefined)
+    if (staging) await removeTree(staging).catch(() => undefined)
   }
 }

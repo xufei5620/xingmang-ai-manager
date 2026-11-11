@@ -185,7 +185,8 @@ it('routes every Codex-owned surface to one custom root and leaves all sentinels
     inspectCodexDesktop: async () => ({ installed: false, version: null, path: null }),
     inspectProvider: (provider, roots) => inspectProviderConfig(provider, roots),
     clashConfigPaths: [],
-    inspectProxyVariables: async () => [],
+    // 不去试连本机端口：这台机器上的代理开没开和这里要测的无关。
+    probeLoopbackProxy: async () => false,
     fetch: vi.fn(async () => new Response('{}', { status: 200 })),
   })
 

@@ -77,7 +77,7 @@ describe('searchCommands', () => {
     const retired = { settingsItemVisible: (item: { when?: string }) => item.when !== 'acceleration' }
     expect(searchCommands('网络连接', retired).find((item) => item.group === 'settings')).toEqual({ key: 'settings:network', group: 'settings', label: '网络连接', page: 'settings', section: 'network' })
     // 别的行照旧写成「组名 › 行名」。
-    expect(searchCommands('企业证书', retired).find((item) => item.group === 'settings')).toMatchObject({ label: '网络连接 › 企业证书', section: 'certificate' })
+    expect(searchCommands('安全证书', retired).find((item) => item.group === 'settings')).toMatchObject({ label: '网络连接 › 安全证书', section: 'certificate' })
     for (const word of ['加速', '网络加速', '游戏']) {
       expect(searchCommands(word, retired).some((item) => item.page === 'acceleration' || item.section === 'acceleration' || item.section === 'notify-acceleration' || item.section === 'network'), word).toBe(false)
     }
@@ -166,6 +166,7 @@ describe('searchCommands', () => {
     const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
     expect(landing('我的订单')).toEqual({ key: 'account:orders', group: 'account', label: '我的订单', page: 'account', section: 'orders' })
     expect(landing('没到账')).toMatchObject({ section: 'orders' })
+    expect(landing('生成任务')).toEqual({ key: 'account:tasks', group: 'account', label: '生成任务', page: 'account', section: 'tasks' })
     expect(landing('异步任务')).toMatchObject({ section: 'tasks' })
     expect(landing('登录设备')).toMatchObject({ section: 'devices' })
     expect(landing('下线')).toMatchObject({ section: 'devices' })
@@ -176,9 +177,19 @@ describe('searchCommands', () => {
     expect(landing('账号安全')).toMatchObject({ section: 'security' })
   })
 
+  it('finds the addresses for other apps by the words those apps use', () => {
+    const landing = (query: string) => searchCommands(query).find((item) => item.group === 'account')
+    expect(landing('接口地址')).toEqual({ key: 'account:other-apps', group: 'account', label: '用在别的软件里', page: 'account', section: 'other-apps' })
+    expect(landing('Cherry Studio')).toMatchObject({ section: 'other-apps' })
+    expect(landing('沉浸式翻译')).toMatchObject({ section: 'other-apps' })
+    expect(landing('base url')).toMatchObject({ section: 'other-apps' })
+    const noKeys = { accountTabVisible: (tab: string) => !['keys', 'other-apps'].includes(tab) }
+    expect(searchCommands('接口地址', noKeys).some((item) => item.section === 'other-apps')).toBe(false)
+  })
+
   it('leaves out the moved parts the current account cannot use', () => {
     const historical = { accountTabVisible: (tab: string) => !['tasks', 'devices'].includes(tab) }
-    expect(searchCommands('异步任务', historical).some((item) => item.section === 'tasks')).toBe(false)
+    expect(searchCommands('生成任务', historical).some((item) => item.section === 'tasks')).toBe(false)
     expect(searchCommands('登录设备', historical).some((item) => item.section === 'devices')).toBe(false)
     expect(searchCommands('修改密码', { accountTabVisible: () => false }).some((item) => item.section === 'change-password')).toBe(true)
   })

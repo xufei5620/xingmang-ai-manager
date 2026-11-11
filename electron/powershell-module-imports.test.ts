@@ -3,7 +3,7 @@ import { claudeDesktopPowerShellModules, buildClaudeDesktopManifestInspectionScr
 import { claudeDesktopPolicyReadScript } from './claude-desktop-policy'
 import { buildWindowsCliProcessProbeScript, windowsCliProcessProbeModules } from './cli-process-probe'
 import { codexDesktopActivationModules, codexDesktopActivationScript } from './codex-desktop-cdp'
-import { buildClearProviderOverridesScript } from './diagnostic-fixes'
+import { buildClearProviderOverridesScript, clearProviderOverridesConstrainedModules } from './diagnostic-fixes'
 import { buildDiagnosticsCodexDesktopProbeScript, diagnosticsCodexDesktopProbeModules } from './diagnostics'
 import { windowsExternalClientInventoryModules, windowsExternalClientInventoryModulesFor, windowsExternalClientInventoryScript } from './external-client-runtime'
 import {
@@ -26,12 +26,20 @@ import {
   withoutImportedModule,
   type PowerShellImportForm,
 } from './powershell-module-imports.test-support'
-import { installedPythonInspectionScript, pythonInstallerSignatureScript } from './python-runtime'
-import { buildClearUserProxyScript, buildReadProxyScopesScript, readProxyScopesModules } from './stale-proxy-environment'
+import { splitConstrainedLanguageBranch } from './powershell-constrained-language.test-support'
+import { installedPythonInspectionModules, installedPythonInspectionScript, pythonInstallerSignatureScript } from './python-runtime'
+import {
+  buildClearUserProxyScript,
+  buildReadProxyScopesScript,
+  clearUserProxyConstrainedModules,
+  proxyScopesConstrainedModules,
+  readProxyScopesModules,
+} from './stale-proxy-environment'
+import { buildWindowsExecutableProductVersionScript, windowsExecutableProductVersionModules } from './system-scan-service'
 import { nativeCliSignatureScript } from './trusted-native-cli'
 import { buildProtectedDirectoryAclScript, protectedDirectoryAclModules } from './trusted-temp'
 import { uninstallAccountProbeModules, uninstallAccountProbeScript } from './uninstall-cleanup'
-import { buildEnsureUserPathScript, buildRemoveUserPathScript } from './windows-cli-shell-access'
+import { buildEnsureUserPathScript, buildRemoveUserPathScript, userPathConstrainedModules } from './windows-cli-shell-access'
 import { buildCliLaunchPlan, cliLaunchBrokerModules, cliTerminalScriptModules } from './windows-elevation'
 import {
   buildProgramFilesAclProbe,
@@ -79,7 +87,13 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
     'C:\\Program Files\\WindowsApps\\Claude_1.0.0.0_x64__pzs8sxrjxfjjc\\AppxManifest.xml', '1.0.0.0', 'x64',
   ), claudeDesktopPowerShellModules, 'by-name'],
   ['Claude desktop policy reader', claudeDesktopPolicyReadScript, claudeDesktopPowerShellModules, 'by-name'],
-  ['proxy settings reader', buildReadProxyScopesScript(), readProxyScopesModules, 'by-name'],
+  ['proxy settings reader', splitConstrainedLanguageBranch(buildReadProxyScopesScript()).fullLanguage, readProxyScopesModules, 'by-name'],
+  // The branch a ConstrainedLanguage session takes instead of the lines above; it imports for itself.
+  ['proxy settings reader under ConstrainedLanguage', splitConstrainedLanguageBranch(buildReadProxyScopesScript()).branch, proxyScopesConstrainedModules, 'by-name'],
+  ['user proxy clean-up under ConstrainedLanguage', splitConstrainedLanguageBranch(buildClearUserProxyScript()).branch, clearUserProxyConstrainedModules, 'by-name'],
+  ['provider override clean-up under ConstrainedLanguage', splitConstrainedLanguageBranch(buildClearProviderOverridesScript()).branch, clearProviderOverridesConstrainedModules, 'by-name'],
+  ['user PATH update under ConstrainedLanguage', splitConstrainedLanguageBranch(buildEnsureUserPathScript()).branch, userPathConstrainedModules, 'by-name'],
+  ['user PATH removal under ConstrainedLanguage', splitConstrainedLanguageBranch(buildRemoveUserPathScript()).branch, userPathConstrainedModules, 'by-name'],
   ['system proxy switch', windowsSystemProxyScript, windowsSystemProxyModules, 'by-name'],
   ['system proxy switch, compiled fallback', windowsSystemProxyCompiledScript, windowsSystemProxyModules, 'by-name'],
   ['pending restart probe', windowsRestartStatusScript, windowsRestartStatusModules, 'by-name'],
@@ -87,8 +101,9 @@ const scripts: Array<[string, string, readonly string[], PowerShellImportForm]> 
   ['Node.js installer signature check', nodeInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['installed Node.js signature check', installedNodeSignatureScript, authenticodeSignatureModules, 'pinned'],
   ['Python installer signature check', pythonInstallerSignatureScript, authenticodeSignatureModules, 'pinned'],
-  ['installed Python check', installedPythonInspectionScript, authenticodeSignatureModules, 'pinned'],
+  ['installed Python check', installedPythonInspectionScript, installedPythonInspectionModules, 'pinned'],
   ['native CLI signature check', nativeCliSignatureScript, authenticodeSignatureModules, 'by-name'],
+  ['executable product version read', buildWindowsExecutableProductVersionScript(), windowsExecutableProductVersionModules, 'by-name'],
   ['protected directory ACL read-back', buildProtectedDirectoryAclScript(), protectedDirectoryAclModules, 'by-name'],
   ['Program Files ACL probe', decodeEncodedCommand(buildProgramFilesAclProbe(
     'C:\\Program Files\\nodejs\\node.exe', 'C:\\Program Files', machinePaths,
@@ -145,13 +160,14 @@ describe('PowerShell scripts under the trusted environment import their modules'
     expect([...modules].sort()).toEqual(neededModules(script))
   })
 
-  // These call no cmdlet outside the engine core, so they need no import. If one starts to,
-  // this fails and it belongs in the list above with its modules.
+  // In FullLanguage these call no cmdlet outside the engine core, so they need no import. If one
+  // starts to, this fails and it belongs in the list above with its modules. Their
+  // ConstrainedLanguage branches are in that list.
   it.each([
-    ['user proxy clean-up', buildClearUserProxyScript()],
-    ['provider override clean-up', buildClearProviderOverridesScript()],
-    ['user PATH update', buildEnsureUserPathScript()],
-    ['user PATH removal', buildRemoveUserPathScript()],
+    ['user proxy clean-up', splitConstrainedLanguageBranch(buildClearUserProxyScript()).fullLanguage],
+    ['provider override clean-up', splitConstrainedLanguageBranch(buildClearProviderOverridesScript()).fullLanguage],
+    ['user PATH update', splitConstrainedLanguageBranch(buildEnsureUserPathScript()).fullLanguage],
+    ['user PATH removal', splitConstrainedLanguageBranch(buildRemoveUserPathScript()).fullLanguage],
   ])('keeps the %s free of cmdlets that would be autoloaded', (_name, script) => {
     expect(unimportedCmdlets(script, [])).toEqual([])
   })

@@ -539,6 +539,141 @@ describe('readServiceStatus', () => {
   })
 })
 
+describe('readServiceStatus when the system proxy points at a proxy that is not running (PX-1)', () => {
+  const url = 'https://example.test/xingmang-manager/service-status.json'
+  const gate = '{"minimumVersion":"0.2.22","badVersions":["0.2.21"]}'
+  // What session.fetch rejects with when the proxy is not listening, captured from Electron 45.1.0: a plain
+  // Error whose only own keys are `stack` and `message`, no `code`, no `cause`.
+  const proxyConnectionError = () => new Error('net::ERR_PROXY_CONNECTION_FAILED')
+
+  // 记下会话这会儿是哪种连法，每次 fetch 记一笔用的是哪种：system 时代理连不上，direct 时读到文件。
+  function proxiedSession(body = gate) {
+    let mode: 'system' | 'direct' = 'system'
+    const calls: string[] = []
+    const fetch = vi.fn(async () => {
+      calls.push(mode)
+      if (mode === 'system') throw proxyConnectionError()
+      return jsonResponse(body)
+    })
+    const retryWithoutProxy = vi.fn(async () => {
+      calls.push('retryWithoutProxy')
+      mode = 'direct'
+    })
+    const restoreProxy = vi.fn(async () => {
+      calls.push('restoreProxy')
+      mode = 'system'
+    })
+    return { fetch, retryWithoutProxy, restoreProxy, calls, mode: () => mode }
+  }
+
+  it('reads the file directly once and puts the session back on the system proxy', async () => {
+    const session = proxiedSession()
+    expect(Object.getOwnPropertyNames(proxyConnectionError()).sort()).toEqual(['message', 'stack'])
+
+    await expect(readServiceStatus({ url, ...session, now: () => now })).resolves.toMatchObject({
+      minimumVersion: '0.2.22',
+      badVersions: ['0.2.21'],
+    })
+    expect(session.calls).toEqual(['system', 'retryWithoutProxy', 'direct', 'restoreProxy'])
+    expect(session.mode()).toBe('system')
+    expect(session.fetch).toHaveBeenLastCalledWith(url, expect.objectContaining({ redirect: 'error', cache: 'no-store', credentials: 'omit' }))
+  })
+
+  it('still accepts a proxy failure that carries a structured code or sits on the cause chain', async () => {
+    for (const rejection of [
+      Object.assign(new Error('proxy connection failed'), { code: 'ERR_PROXY_CONNECTION_FAILED' }),
+      new TypeError('fetch failed', { cause: proxyConnectionError() }),
+    ]) {
+      const fetch = vi.fn()
+        .mockRejectedValueOnce(rejection)
+        .mockResolvedValueOnce(jsonResponse(gate))
+      const retryWithoutProxy = vi.fn(async () => {})
+      const restoreProxy = vi.fn(async () => {})
+      await expect(readServiceStatus({ url, fetch, retryWithoutProxy, restoreProxy })).resolves.toMatchObject({ minimumVersion: '0.2.22' })
+      expect(retryWithoutProxy).toHaveBeenCalledOnce()
+      expect(restoreProxy).toHaveBeenCalledOnce()
+    }
+  })
+
+  it('gives the direct read a timeout of its own', async () => {
+    const fetch = vi.fn()
+      .mockRejectedValueOnce(proxyConnectionError())
+      .mockImplementationOnce((_url: string, init: RequestInit) => new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')))
+      }))
+    const restoreProxy = vi.fn(async () => {})
+    await expect(readServiceStatus({ url, fetch, timeoutMs: 10, retryWithoutProxy: async () => {}, restoreProxy })).resolves.toBeNull()
+    expect(fetch).toHaveBeenCalledTimes(2)
+    const [firstInit, secondInit] = fetch.mock.calls.map((call) => call[1] as RequestInit)
+    expect(secondInit.signal).not.toBe(firstInit.signal)
+    expect(restoreProxy).toHaveBeenCalledOnce()
+  })
+
+  it('puts the session back even when the direct read fails or switching to direct throws', async () => {
+    const failedDirect = vi.fn(async () => {})
+    await expect(readServiceStatus({
+      url,
+      fetch: vi.fn().mockRejectedValue(proxyConnectionError()),
+      retryWithoutProxy: async () => {},
+      restoreProxy: failedDirect,
+    })).resolves.toBeNull()
+    expect(failedDirect).toHaveBeenCalledOnce()
+
+    const fetch = vi.fn().mockRejectedValue(proxyConnectionError())
+    const failedSwitch = vi.fn(async () => {})
+    await expect(readServiceStatus({
+      url,
+      fetch,
+      retryWithoutProxy: async () => { throw new Error('setProxy failed') },
+      restoreProxy: failedSwitch,
+    })).resolves.toBeNull()
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(failedSwitch).toHaveBeenCalledOnce()
+  })
+
+  it('keeps what the direct read got when putting the session back fails', async () => {
+    const session = proxiedSession()
+    session.restoreProxy.mockRejectedValueOnce(new Error('setProxy failed'))
+    await expect(readServiceStatus({ url, ...session })).resolves.toMatchObject({ minimumVersion: '0.2.22' })
+  })
+
+  it('reads only once when no direct retry was handed in', async () => {
+    const fetch = vi.fn().mockRejectedValue(proxyConnectionError())
+    await expect(readServiceStatus({ url, fetch })).resolves.toBeNull()
+    expect(fetch).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    ['a proxy that is running but refuses the tunnel', new Error('net::ERR_TUNNEL_CONNECTION_FAILED')],
+    ['no network at all', new Error('net::ERR_INTERNET_DISCONNECTED')],
+    ['a longer message that ends with the code', new Error('请求失败 net::ERR_PROXY_CONNECTION_FAILED')],
+    ['a plain object shaped like the Electron error', { message: 'net::ERR_PROXY_CONNECTION_FAILED' }],
+    ['a bare string', 'net::ERR_PROXY_CONNECTION_FAILED'],
+    ['the read timing out', new DOMException('aborted', 'AbortError')],
+  ])('does not leave the system proxy for %s', async (_label, rejection) => {
+    const fetch = vi.fn().mockRejectedValue(rejection)
+    const retryWithoutProxy = vi.fn(async () => {})
+    const restoreProxy = vi.fn(async () => {})
+    await expect(readServiceStatus({ url, fetch, retryWithoutProxy, restoreProxy })).resolves.toBeNull()
+    expect(fetch).toHaveBeenCalledOnce()
+    expect(retryWithoutProxy).not.toHaveBeenCalled()
+    expect(restoreProxy).not.toHaveBeenCalled()
+  })
+
+  it('does not leave the system proxy when the file answered but could not be used', async () => {
+    for (const fetch of [
+      vi.fn(async () => new Response('missing', { status: 404 })),
+      vi.fn(async () => jsonResponse('<html>请先登录</html>')),
+      vi.fn(async () => jsonResponse('x'.repeat(17 * 1024))),
+    ]) {
+      const retryWithoutProxy = vi.fn(async () => {})
+      await expect(readServiceStatus({ url, fetch, retryWithoutProxy, restoreProxy: async () => {} })).resolves.toBeNull()
+      expect(fetch).toHaveBeenCalledOnce()
+      expect(retryWithoutProxy).not.toHaveBeenCalled()
+    }
+  })
+})
+
 describe('createServiceStatusMonitor', () => {
   const maintenance: ServiceStatus = { maintenance: { message: '升级中' } }
   const quiet: ServiceStatus = { maintenance: null }

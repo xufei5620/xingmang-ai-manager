@@ -16,8 +16,8 @@ export function registerUpdateHandlers(ctx: IpcHandlerContext): void {
     options.updaterService.download(parseUpdateDownloadOptions(downloadOptions))
   ))
   registerTrustedHandler('update:install', async (_event, rawOptions: unknown) => {
-    // 重启会打断正在装的工具：客户点了「继续安装」就这次不装，新版本留着（已知31）。只有
-    // 更新页「确认重启安装」要问；「必须更新」那层提示和旧回滚界面不带参数，照旧直接装。
+    // 重启会打断正在装的工具和聊天、视频剪辑、画布在做的事：客户点了「继续安装」「等它做完」就这次不装，新版本留着（已知31、D10）。更新页「确认重启安装」
+    // 和「必须更新」那层提示（含下好后替客户接着装的那一下，RC-01）带参数要问；旧回滚界面不带，照旧直接装。
     const ask = parseUpdateInstallOptions(rawOptions).askIfInstalling === true
     if (ask && options.confirmUpdateInstall && !await options.confirmUpdateInstall()) return { accepted: true, postponed: true }
     return options.updaterService.install()

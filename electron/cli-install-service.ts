@@ -1,5 +1,5 @@
 // 装和更新命令行工具（Claude Code、Codex、Grok）的那一整段（#1070 第 2 步，从 system-service.ts 的 createSystemService
-// 原样搬来）：找 npm（Windows 上没有就先装 Node.js）、按网络挑源、下载卡住就换源、核对国内镜像下的包和 npm 官方源一致、
+// 原样搬来）：找 npm（Windows 上没有就先装 Node.js，Mac / Linux 上代装的旧了先换新）、按网络挑源、下载卡住就换源、核对国内镜像下的包和 npm 官方源一致、
 // 托管目录整体替换、Grok 的原生通道和 Mac / Linux 上的签名核对、装完 Claude Code 顺带装 Git、记更新历史，以及取消和清理
 // 下了一半的东西。
 //
@@ -9,6 +9,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { createAwakeClock } from './awake-deadline'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, type ProviderId } from './catalog'
@@ -328,7 +329,9 @@ export interface NpmDownloadStallWatchOptions {
  * change counts, a shrink included, since npm discarding a broken partial
  * download before its own retry is activity rather than a hang. A measurement
  * that fails counts as activity too: a download is never ended on evidence the
- * watch could not collect.
+ * watch could not collect. The stall window counts only awake time
+ * (awake-deadline.ts): after a sleep it starts over, because npm's connections
+ * died with the sleep and the network is still coming back.
  */
 export function createNpmDownloadStallWatch(
   measureBytes: () => Promise<number>,
@@ -336,19 +339,30 @@ export function createNpmDownloadStallWatch(
 ): NpmDownloadStallWatch {
   const checkIntervalMs = options.checkIntervalMs ?? npmDownloadProgressCheckMs
   const stallTimeoutMs = options.stallTimeoutMs ?? npmDownloadStallTimeoutMs
-  const now = options.now ?? (() => performance.now())
+  const clock = createAwakeClock({ now: options.now, intervalMs: checkIntervalMs })
   const controller = new AbortController()
   let lastBytes: number | null = null
-  let lastChangeAt = now()
+  let lastChangeAt = 0
   let measuring = false
   let stopped = false
   let stalled = false
-  const timer = setInterval(() => { void check() }, checkIntervalMs)
+  const timer = setInterval(() => {
+    // 量着的那一拍也看一眼表：一次量得久，中间的拍子照样在走，睡眠才认得出来。
+    observe()
+    void check()
+  }, checkIntervalMs)
 
   function stop(): void {
     if (stopped) return
     stopped = true
     clearInterval(timer)
+  }
+
+  /** Awake milliseconds so far; a sleep since the last look starts the stall window over. */
+  function observe(): number {
+    const { awakeMs, woke } = clock.read()
+    if (woke) lastChangeAt = awakeMs
+    return awakeMs
   }
 
   async function check(): Promise<void> {
@@ -364,7 +378,8 @@ export function createNpmDownloadStallWatch(
       measuring = false
     }
     if (stopped) return
-    const checkedAt = now()
+    // 量到一半睡着、醒来这次先量完的话，也在这里认出那段睡眠。
+    const checkedAt = observe()
     if (bytes === null || bytes !== lastBytes) {
       if (bytes !== null) lastBytes = bytes
       lastChangeAt = checkedAt
@@ -881,6 +896,11 @@ export interface CliInstallServiceDependencies {
   ) => Promise<GitRuntimeInstallResult>
   /** 装完 Codex 时调：换上的新版读不进随包的型号名单，就把写进去的那份收回。 */
   takeBackUnreadableCodexModelCatalog: (trigger: 'cli-installed') => Promise<void>
+  /**
+   * 找 npm 之前调：Mac、Linux 上代装的 Node.js 比钉的版本旧就顺手换新（D86，runtime-install-service.ts）。
+   * 不往外抛，没换成照旧用原来那份；取消要看 signal。
+   */
+  refreshOutdatedManagedNodeRuntime: (signal?: AbortSignal) => Promise<void>
 }
 
 export function createCliInstallService(context: ServiceContext, dependencies: CliInstallServiceDependencies) {
@@ -900,6 +920,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     invalidateCliUpdateCache,
     installGitRuntime,
     takeBackUnreadableCodexModelCatalog,
+    refreshOutdatedManagedNodeRuntime,
   } = dependencies
 
   function sendInstallProgress(
@@ -973,6 +994,7 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
       await installNodeRuntimeLts({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
+        ...(serviceOptions.windowsProcessElevated ? { processElevated: true } : {}),
         dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (progress.message) sendInstallProgress(target, provider, 'output', progress.message)
@@ -1202,6 +1224,10 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
         }
       }
 
+      // 代装的那份 Node.js 旧了，先换成钉的那版再找 npm（D86），这次装工具就用上新的。Windows 上什么都不做。
+      // 换的时候没人在用：工具的安装、卸载、打开都排在同一个队列里，这会儿只有这一个任务在跑。
+      await refreshOutdatedManagedNodeRuntime(cancellation?.signal)
+      cancellation?.throwIfCancelled()
       // Mac 上客户自己那份 Node.js 太旧时用代下的那份装：npm 用它自带的，跑 npm 的环境也把它
       // 排最前，npm 和工具的安装脚本都靠 `#!/usr/bin/env node` 找 node（第三十四批 A）。
       const nodeDirectories = await preferredNodeDirectories()
@@ -1328,25 +1354,29 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
        */
       // 解析一次就够：加速开关在一次安装中途变化时，换代理反而会让已经建立
       // 的连接和重试落到两条不同的线路上。
+      // 照系统代理补上的这几条同样先试连：代理软件关了、系统设置里还勾着本机端口时，交给 npm 的就是
+      // 一个连不上的地址（Mac 真机日志里的 ECONNREFUSED 127.0.0.1:7890 可能就是这一种，也可能是下面
+      // 那份环境里本来就有的，推测）。它排在后面会盖过环境里那几条，所以单独判，不跟环境合在一起判。
       let npmProxyVariables: NodeJS.ProcessEnv | null = null
       const resolveNpmProxyVariables = async (): Promise<NodeJS.ProcessEnv> => {
         if (!npmProxyVariables) {
-          try { npmProxyVariables = await resolveSubprocessProxyEnvironment() }
+          try { npmProxyVariables = await withoutDeadLoopbackProxies(await resolveSubprocessProxyEnvironment(), provider, 'system-proxy') }
           catch { npmProxyVariables = {} }
         }
         return npmProxyVariables
       }
       // npm 认 https_proxy / http_proxy：电脑里留着指向没开的本机代理时，没开加速就一样
       // 装不上。同一次安装只判断一次，日志也只写一条。Linux 上照着网上教程把
-      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）；
-      // macOS 维持原样。
+      // `export http_proxy=…7890` 写进 ~/.profile 的很常见，同样要绕开（Linux 版拆分 ②）。
+      // Mac 上从访达打开的星芒自己的环境里一般没有这几条，可从终端启动、或者 launchctl 里设过时
+      // 就有，检查页那一行说「从星芒打开的工具会自动绕开它」，装工具也得一样（yoyo 11-06「体检改」）。
       let npmBaseEnvironment: Promise<NodeJS.ProcessEnv> | null = null
       const resolveNpmBaseEnvironment = (trustedOnly: boolean): Promise<NodeJS.ProcessEnv> => {
         if (!npmBaseEnvironment) {
           // 公司或安全软件装在这台电脑上的证书，npm 默认不认（system-certificate-trust.ts）。
           // 管理员身份那条路不加：trustedCommandEnvironment 会把它剥掉，这里也不补回去。
           const base = trustedOnly ? trustedCommandEnvironment() : withSystemCertificateTrust(commandEnvironment(process.env, nodeDirectories))
-          npmBaseEnvironment = platform !== 'darwin' ? withoutDeadLoopbackProxies(base, provider) : Promise.resolve(base)
+          npmBaseEnvironment = withoutDeadLoopbackProxies(base, provider)
         }
         return npmBaseEnvironment
       }
@@ -1388,6 +1418,9 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
           ...(abortSignal ? { signal: abortSignal } : {}),
           cwd,
           timeoutMs,
+          // 解析、下载、装到本机三步的时限都只算醒着的时间：下到 25 分钟合盖 10 分钟，醒来不该当场
+          // 按满 30 分钟掐掉（睡眠深查 G1）。
+          timeoutExcludesSleep: true,
           maxOutputBytes: 8 * 1024 * 1024,
           onOutput: ({ text }) => {
             const message = text.trim()

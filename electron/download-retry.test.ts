@@ -2,9 +2,12 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildResumeHeaders,
+  createDownloadDeadline,
+  downloadCeilingMs,
+  downloadStallTimeoutMs,
   downloadWithResume,
   DownloadStalledError,
   isExpectedContentRange,
@@ -381,5 +384,147 @@ describe('resume headers', () => {
 
   it('exposes a stall as its own error type', () => {
     expect(new DownloadStalledError().message).toContain('没有新数据')
+  })
+})
+
+// 时限按固定间隔看单调时钟（awake-deadline.ts），所以拨的是 setInterval 和 performance.now。
+function useDeadlineClock(): void {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'performance'] })
+}
+
+// #1061 第5条（Node.js）、深查 D-1（Git、Python）：以前满 10 分钟就掐断，换个源从 0 开始；
+// 现在没进展才停，另有 30 分钟兜底。
+describe('download deadline', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it('uses the same limits as the npm download step', () => {
+    expect(downloadStallTimeoutMs).toBe(3 * 60_000)
+    expect(downloadCeilingMs).toBe(30 * 60_000)
+  })
+
+  it('keeps a download that is still receiving bytes alive past the old ten-minute limit', async () => {
+    useDeadlineClock()
+    const expire = vi.fn()
+    const deadline = createDownloadDeadline('下载超时', expire)
+    for (let minute = 1; minute <= 20; minute += 1) {
+      await vi.advanceTimersByTimeAsync(60_000)
+      deadline.progressed(minute * 1024)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    deadline.stop()
+  })
+
+  it('ends the download once no new bytes have arrived for the stall window', async () => {
+    useDeadlineClock()
+    const expire = vi.fn()
+    const deadline = createDownloadDeadline('安装包下载超时', expire)
+    await vi.advanceTimersByTimeAsync(60_000)
+    deadline.progressed(4096)
+    // 字节数没变（续传前后报的同一个数）不算进展。
+    await vi.advanceTimersByTimeAsync(downloadStallTimeoutMs - 1_000)
+    deadline.progressed(4096)
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+  })
+
+  it('still ends a download that trickles forever at the ceiling', async () => {
+    useDeadlineClock()
+    const expire = vi.fn()
+    const deadline = createDownloadDeadline('安装包下载超时', expire)
+    let transferred = 0
+    for (let elapsed = 30_000; elapsed < downloadCeilingMs; elapsed += 30_000) {
+      await vi.advanceTimersByTimeAsync(30_000)
+      transferred += 1
+      deadline.progressed(transferred)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+    await vi.advanceTimersByTimeAsync(downloadStallTimeoutMs)
+    expect(expire).toHaveBeenCalledTimes(1)
+  })
+
+  it('ends with the words each caller already showed customers', async () => {
+    useDeadlineClock()
+    for (const message of ['下载超时', 'Python 安装包下载超时']) {
+      const expire = vi.fn()
+      createDownloadDeadline(message, expire)
+      await vi.advanceTimersByTimeAsync(downloadStallTimeoutMs)
+      expect(expire).toHaveBeenCalledTimes(1)
+      expect(expire.mock.calls[0][0]).toEqual(new Error(message))
+    }
+  })
+
+  // 睡眠深查 G1：Mac、Windows 上计时器睡着那段也算，合盖超过 3 分钟一醒就到点，这时网还没连上。
+  // 合盖用加在单调时钟上的一段跳变来演：跳变以后的第一拍才看得见它，同真机醒来那一刻一样。
+  it('does not end a download on wake when the lid stayed shut longer than the stall window', async () => {
+    useDeadlineClock()
+    let slept = 0
+    const expire = vi.fn()
+    const deadline = createDownloadDeadline('安装包下载超时', expire, () => performance.now() + slept)
+    await vi.advanceTimersByTimeAsync(60_000)
+    deadline.progressed(4096)
+    await vi.advanceTimersByTimeAsync(60_000)
+
+    slept += 10 * 60_000
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(expire).not.toHaveBeenCalled()
+
+    // Woken up, the download gets its whole stall window again, not what was left of it.
+    await vi.advanceTimersByTimeAsync(downloadStallTimeoutMs - 1_000)
+    expect(expire).not.toHaveBeenCalled()
+    deadline.progressed(8192)
+    await vi.advanceTimersByTimeAsync(downloadStallTimeoutMs - 1_000)
+    expect(expire).not.toHaveBeenCalled()
+    deadline.stop()
+  })
+
+  it('still ends a download that never moves again after waking up', async () => {
+    useDeadlineClock()
+    let slept = 0
+    const expire = vi.fn()
+    createDownloadDeadline('安装包下载超时', expire, () => performance.now() + slept)
+    await vi.advanceTimersByTimeAsync(60_000)
+    slept += 10 * 60_000
+    await vi.advanceTimersByTimeAsync(15_000)
+    expect(expire).not.toHaveBeenCalled()
+
+    await vi.advanceTimersByTimeAsync(downloadStallTimeoutMs)
+    expect(expire).toHaveBeenCalledTimes(1)
+    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
+  })
+
+  it('counts only awake time toward the ceiling', async () => {
+    useDeadlineClock()
+    let slept = 0
+    const expire = vi.fn()
+    const deadline = createDownloadDeadline('安装包下载超时', expire, () => performance.now() + slept)
+    let transferred = 0
+    for (let elapsed = 30_000; elapsed < downloadCeilingMs; elapsed += 30_000) {
+      // Twenty minutes asleep a third of the way in: by the wall clock the ceiling passes long
+      // before the download has been given thirty awake minutes.
+      if (elapsed === 10 * 60_000) slept += 20 * 60_000
+      await vi.advanceTimersByTimeAsync(30_000)
+      transferred += 1
+      deadline.progressed(transferred)
+    }
+    expect(expire).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(expire).toHaveBeenCalledTimes(1)
+  })
+
+  it('does nothing once the download has finished', async () => {
+    useDeadlineClock()
+    const expire = vi.fn()
+    const deadline = createDownloadDeadline('安装包下载超时', expire)
+    deadline.stop()
+    deadline.progressed(1)
+    await vi.advanceTimersByTimeAsync(downloadCeilingMs * 2)
+    expect(expire).not.toHaveBeenCalled()
   })
 })

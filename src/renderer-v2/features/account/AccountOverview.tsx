@@ -13,6 +13,7 @@ import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceRunwayEmpty, type BalanceRunway } from '../app/balance-runway'
 import { balanceStatusText } from '../shell/balance-status'
 import { useOnlineStatus } from '../shell/useOnlineStatus'
+import { logoutChatImageNote } from '../../chat-image-work'
 import {
   countAccountKeys,
   inviteRateText,
@@ -124,6 +125,8 @@ export function AccountOverview({
   const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error, offline })
   const operation = useOperation()
   const [logout, setLogout] = useState(false)
+  // 点「退出登录」那一刻对话页还在出图：退出会把那张图停掉，确认框里多说一句（D44）；没在出图是空串。
+  const [logoutImageNote, setLogoutImageNote] = useState('')
   const siteId = accountSiteId(session)
   const supportsUsage = accountSupports(session, 'supportsUsage')
   const supportsBilling = accountSupports(session, 'supportsBilling')
@@ -172,7 +175,7 @@ export function AccountOverview({
       <div className="v2-acct-overview">
         <section className="v2-acct-card is-focus" data-testid="account-overview-balance">
           <div className="v2-acct-card-head">
-            <h2>账户余额</h2>
+            <h2>账号余额</h2>
             {supportsUsage && <MoreLink label="用量账单" onClick={() => onNavigate('usage')} />}
           </div>
           <div className="v2-acct-balance-top">
@@ -245,7 +248,7 @@ export function AccountOverview({
           <p>{accountSources[siteId].label}，在这台电脑上。退出后，配好的工具会保留。</p>
         </div>
         <Button size="sm" icon={Users} onClick={onSwitchAccount} disabled={!onSwitchAccount} testId="account-switch">切换账号</Button>
-        <Button size="sm" variant="danger" icon={LogOut} onClick={() => setLogout(true)} testId="account-overview-logout">退出登录</Button>
+        <Button size="sm" variant="danger" icon={LogOut} onClick={() => { setLogoutImageNote(logoutChatImageNote()); setLogout(true) }} testId="account-overview-logout">退出登录</Button>
       </section>
       <Dialog
         open={logout}
@@ -271,13 +274,14 @@ export function AccountOverview({
                 )
               }
             >
-              退出
+              退出登录
             </Button>
           </>
         }
       >
         <p>已配好的工具会保留。</p>
         {logoutNote && <p data-testid="account-overview-logout-jobs">{logoutNote}</p>}
+        {logoutImageNote && <p data-testid="account-overview-logout-chat-image">{logoutImageNote}</p>}
         <ResultNotice error={operation.error} detail={operation.detail} />
       </Dialog>
     </>

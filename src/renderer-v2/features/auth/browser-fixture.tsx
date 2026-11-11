@@ -64,7 +64,7 @@ const api: AuthApi = {
     if (query.has('changeFail')) throw new Error('修改密码失败：服务暂时不可用')
     if (query.has('changeRefused')) throw new Error("Error invoking remote method 'account:change-password': Error: 请求太频繁，请稍后再试")
     if (accountPassword !== null) accountPassword = input.newPassword
-    if (query.has('changeLost')) { session = null; throw new Error("Error invoking remote method 'account:change-password': Error: 账号上下文已变化，请重试") }
+    if (query.has('changeLost')) { session = null; throw new Error("Error invoking remote method 'account:change-password': Error: 账号刚切换过，请再试一次") }
     return { changed: true }
   },
   getLegal: async (kind) => ({ kind, markdown: '# Test Agreement\n\nLocal fixture content.', fetchedAt: '2026-09-07T00:00:00Z' }),
@@ -76,7 +76,7 @@ function Fixture() {
   const [motion, setMotion] = useState(!query.has('motion'))
   const [theme, setTheme] = useState<'light' | 'dark'>(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark')
   const [signedIn, setSignedIn] = useState(!query.has('loggedOut'))
-  const [tools, setTools] = useState<GuideToolState[]>(['claude', 'codex', 'codexDesktop', 'grok'].map((id) => ({ id: id as GuideToolState['id'], installed: query.has('installed'), configured: query.has('connected'), source: query.has('unknown') ? 'unknown' : query.has('official') ? 'official' : 'account', ...(query.has('unknown') && query.has('switchable') ? { keyState: 'otherSite' as const } : {}), runtimeReady: query.has('runtime'), officialLoginRequired: query.has('officialLoginRequired'), installMode: 'managed', runtimeAutoPrepare: query.has('auto'), ...(query.has('outdated') && id === 'claude' ? { version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: query.has('outdatedManual') ? '该版本不是通过本工具安装的，更新请用它原本的安装方式' : null } } : {}), ...(query.has('keySyncFail') && id === 'claude' ? { configured: false, source: 'none' as const, keySyncFailure: { text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true } } : {}) })))
+  const [tools, setTools] = useState<GuideToolState[]>(['claude', 'codex', 'codexDesktop', 'grok'].map((id) => ({ id: id as GuideToolState['id'], installed: query.has('installed'), configured: query.has('connected'), source: query.has('unknown') ? 'unknown' : query.has('official') ? 'official' : 'account', ...(query.has('unknown') && query.has('switchable') ? { keyState: 'otherSite' as const } : {}), runtimeReady: query.has('runtime'), officialLoginRequired: query.has('officialLoginRequired'), installMode: 'managed', runtimeAutoPrepare: query.has('auto'), ...(query.has('outdated') && id === 'claude' ? { version: '2.1.42', update: { version: '2.1.277', target: '2.1.277', newer: true, knownIssue: false, manualHint: query.has('outdatedManual') ? '这一份不是星芒装的，要更新请用它原来的安装方式' : null } } : {}), ...(query.has('keySyncFail') && id === 'claude' ? { configured: false, source: 'none' as const, keySyncFailure: { text: 'Claude Code：密钥没有写进去，点「重新同步」再试', retry: true } } : {}) })))
   const [resumeScope, setResumeScope] = useState('site:7')
   const [guideVisible, setGuideVisible] = useState(true)
   window.authHarness = { release: (method) => pending.get(method)?.resolve(), reject: (method) => pending.get(method)?.reject(new Error('fixture failed')), endSession: () => { session = null }, switchScope: setResumeScope, reopen: () => setGuideVisible(true), setTool: (tool, patch) => setTools((items) => items.map((item) => item.id === tool ? { ...item, ...patch } : item)) }

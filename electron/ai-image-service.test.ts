@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { chargedAfterStopAssetTag, createAiImageService, type AiImageAssetWriter } from './ai-image-service'
+import { networkFailureMessages } from './network-failure'
 import { relayQuotaFailureMessages } from './relay-quota-failure'
 
 function response(body: unknown, status = 200): Response {
@@ -7,6 +8,17 @@ function response(body: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+// Only the signature and IHDR, which is all inspectAiImage reads for a size.
+function pngHeader(width: number, height: number): Buffer {
+  const bytes = Buffer.alloc(33)
+  Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]).copy(bytes)
+  bytes.writeUInt32BE(13, 8)
+  bytes.write('IHDR', 12, 'ascii')
+  bytes.writeUInt32BE(width, 16)
+  bytes.writeUInt32BE(height, 20)
+  return bytes
 }
 
 function setup(
@@ -203,6 +215,47 @@ describe('AI image service', () => {
     expect(fetchImpl).toHaveBeenCalledOnce()
   })
 
+  // 深查 W-1：两条线路都没走通、请求根本没出这台电脑时，以前也说「结果不明确，请勿立即重复提交」。
+  // Electron's net.fetch rejects with a bare Error carrying only the net:: text (no code, no cause).
+  it.each([
+    ['the name does not resolve', 'net::ERR_NAME_NOT_RESOLVED', networkFailureMessages.dns],
+    ['the connection is refused', 'net::ERR_CONNECTION_REFUSED', networkFailureMessages.refused],
+    ['the computer is offline', 'net::ERR_INTERNET_DISCONNECTED', networkFailureMessages.offline],
+    ['a company proxy refuses the tunnel', 'net::ERR_TUNNEL_CONNECTION_FAILED', networkFailureMessages.proxy],
+    ['the proxy software is not running', 'net::ERR_PROXY_CONNECTION_FAILED', networkFailureMessages.proxy],
+  ])('names the network cause instead of an ambiguous charge when %s before the POST left', async (_label, failure, expected) => {
+    const fetchImpl = vi.fn(async () => { throw new Error(failure) }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const result = service.generate(4, {
+      requestId: `unsent-${failure}`, group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
+    })
+    await expect(result).rejects.toThrow(expected)
+    await expect(result).rejects.not.toThrow(/不明确|重复提交|扣费/)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('names the network cause for an image edit that never left either', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.edit(4, {
+      requestId: 'unsent-edit', group: '生图分组', model: 'gpt-image-2', prompt: '改一下', sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7,
+    })).rejects.toThrow(networkFailureMessages.dns)
+  })
+
+  it.each([
+    ['the connection is reset after it was made', new Error('net::ERR_CONNECTION_RESET')],
+    ['the TLS handshake is cut mid-way', new Error('net::ERR_SSL_PROTOCOL_ERROR')],
+    ['the request times out', new Error('net::ERR_TIMED_OUT')],
+    ['a caller deadline passes', new DOMException('The operation was aborted due to timeout', 'TimeoutError')],
+    ['the network changes mid-request', new Error('net::ERR_NETWORK_CHANGED')],
+  ])('still warns against resubmitting when %s, because the POST may have been charged', async (label, failure) => {
+    const fetchImpl = vi.fn(async () => { throw failure }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, {
+      requestId: `maybe-sent-${label}`, group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
+    })).rejects.toThrow(/结果不明确.*请勿立即重复提交/)
+  })
+
   it('does not let the request timeout interrupt downloading an image that was already generated', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://imgen.x.ai/result.jpg' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl, { timeoutMs: 5 })
@@ -326,6 +379,46 @@ describe('AI image service', () => {
     expect(form.getAll('image').map((value) => (value as File).name)).toEqual(['source-a.png', 'source-b.jpg'])
     expect(assets.readOwned).toHaveBeenNthCalledWith(1, 7, ids[0])
     expect(assets.readOwned).toHaveBeenNthCalledWith(2, 7, ids[1])
+  })
+
+  it('sends a masked edit as one image plus a mask file once the source size matches', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const id = 'a'.repeat(43)
+    vi.mocked(assets.readOwned).mockResolvedValue({
+      asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'source.png' },
+      bytes: pngHeader(64, 48),
+    })
+    const maskBytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2, 3])
+    const png = vi.fn(async () => maskBytes)
+    await service.edit(4, {
+      requestId: 'mask-1', group: '生图分组', model: 'gpt-image-2', prompt: '换成红色',
+      sourceAssetIds: [id], expectedUserId: 7, mask: { width: 64, height: 48, png },
+    })
+    const form = vi.mocked(fetchImpl).mock.calls[0][1]?.body as FormData
+    expect(form.getAll('image')).toHaveLength(1)
+    const mask = form.get('mask') as File
+    expect(mask.name).toBe('mask.png')
+    expect(mask.type).toBe('image/png')
+    expect(new Uint8Array(await mask.arrayBuffer())).toEqual(maskBytes)
+    expect(png).toHaveBeenCalledOnce()
+  })
+
+  it('refuses a masked edit whose source is another size, or has more than one source, before dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    const id = 'a'.repeat(43)
+    // The record says 64 x 48; the bytes going out are 65 x 48, and those are what the relay compares.
+    vi.mocked(assets.readOwned).mockResolvedValue({
+      asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png', fileName: 'source.png', width: 64, height: 48 },
+      bytes: pngHeader(65, 48),
+    })
+    const png = vi.fn(async () => new Uint8Array(8))
+    const input = { requestId: 'mask-2', group: '生图分组', model: 'gpt-image-2', prompt: '换成红色', expectedUserId: 7, mask: { width: 64, height: 48, png } }
+    await expect(service.edit(4, { ...input, sourceAssetIds: [id] })).rejects.toThrow('原图像素尺寸与蒙版不一致')
+    await expect(service.edit(4, { ...input, requestId: 'mask-3', sourceAssetIds: [id, 'b'.repeat(43)] })).rejects.toThrow('局部修改只能用一张原图')
+    expect(png).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('rejects image edits across accounts and invalid asset lists before network dispatch', async () => {
@@ -651,6 +744,23 @@ describe('canvas image service after a stop', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
 
+  it('counts a paid picture still coming in after a stop as pending, so an update restart asks first (D10)', async () => {
+    const { fetchImpl, requests } = heldFetch()
+    const { service, onFinishedAfterStop } = canvasSetup(fetchImpl)
+    expect(service.hasPendingWork()).toBe(false)
+    const pending = service.generate(4, {
+      requestId: 'canvas-run:pending', group: '生图分组', model: 'gpt-image-2', prompt: '一只猫', expectedUserId: 7, projectId,
+    })
+    await vi.waitFor(() => expect(requests).toHaveLength(1))
+    expect(service.hasPendingWork()).toBe(true)
+    service.cancel(4, 'canvas-run:pending', 7)
+    await expect(pending).rejects.toThrow('已停止等待')
+    expect(service.hasPendingWork()).toBe(true)
+    requests[0].resolve(response({ data: [{ b64_json: 'aGVsbG8=' }] }))
+    await vi.waitFor(() => expect(onFinishedAfterStop).toHaveBeenCalled())
+    await vi.waitFor(() => expect(service.hasPendingWork()).toBe(false))
+  })
+
   it('still cancels requests that have not gone out, so nothing is paid for them', async () => {
     const { fetchImpl, requests } = heldFetch()
     const { service, credentials, assets, addTag } = canvasSetup(fetchImpl, { maxActive: 1, maxQueued: 1 })
@@ -783,5 +893,49 @@ describe('chat image service stop behaviour', () => {
     await service.whenIdle()
     expect(assets.storeBase64).not.toHaveBeenCalled()
     expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
+  })
+})
+
+describe('AI image service relay billing', () => {
+  it('reports the request leaving and the request id the relay answered with', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ b64_json: 'aGVsbG8=' }] }), {
+      headers: { 'content-type': 'application/json', 'x-oneapi-request-id': '20261110130000123456789abcdef' },
+    })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    const reports: unknown[] = []
+    await service.generate(4, { requestId: 'billed', group: '生图分组', model: 'gpt-image-2', prompt: '一张图' }, {
+      onStage: () => undefined,
+      onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id) => { reports.push(['answer', id]) },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', '20261110130000123456789abcdef']])
+  })
+
+  it('takes back the dispatch of a request that never left, and reports a refused answer too', async () => {
+    const unsent = vi.fn(async () => { throw new Error('net::ERR_NAME_NOT_RESOLVED') }) as unknown as typeof fetch
+    const reports: unknown[] = []
+    const observer = {
+      onStage: () => undefined,
+      onRelayDispatch: (sent: boolean) => { reports.push(['dispatch', sent]) },
+      onRelayAnswer: (id: string | null) => { reports.push(['answer', id]) },
+    }
+    await expect(setup(unsent).service.generate(4, { requestId: 'unsent', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, observer)).rejects.toThrow(networkFailureMessages.dns)
+    expect(reports).toEqual([['dispatch', true], ['dispatch', false]])
+    reports.length = 0
+    const refused = vi.fn(async () => new Response(JSON.stringify({ error: { message: '图片内容审核未通过' } }), {
+      status: 400, headers: { 'content-type': 'application/json', 'x-oneapi-request-id': 'req-refused' },
+    })) as unknown as typeof fetch
+    await expect(setup(refused).service.generate(4, { requestId: 'refused', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, observer)).rejects.toThrow()
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-refused']])
+  })
+
+  it('never lets a broken billing observer break the request', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, { requestId: 'broken', group: '生图分组', model: 'gpt-image-2', prompt: '图' }, {
+      onStage: () => undefined,
+      onRelayDispatch: () => { throw new Error('boom') },
+      onRelayAnswer: () => { throw new Error('boom') },
+    })).resolves.toHaveLength(1)
   })
 })

@@ -17,8 +17,11 @@ import {
   claudeForeignModelEnvKeys,
   claudeForeignSettingsSnapshotName,
   moveClaudeForeignSettingsAside,
+  recordClaudeFilledDefaults,
   restoreClaudeForeignSettings,
+  withdrawClaudeFilledDefaults,
   planProviderPickerRefresh,
+  restoreManagedCliHooks,
   rewriteManagedCliHooks,
   codexApiKeyAuthSnapshotName,
   codexAuthSnapshotPaths,
@@ -60,6 +63,7 @@ import {
   providerAccountMode,
   providerConfigPaths,
   removeManagedCliHooks,
+  inspectManagedCliHookParts,
   removeRetiredGeminiIntegrations,
   restoreClaudeConsoleKey,
   restoreClaudeConsoleKeyTexts,
@@ -101,6 +105,8 @@ const testModels: Record<ProviderId, string> = {
   gemini: 'gemini-3.5-flash',
   grok: 'grok-4.5',
 }
+// Codex must not send response.interrupt over the relay's WebSocket (see keepCodexRelayResponsesUninterrupted).
+const uninterruptedFeatures = { instant_interrupt: false, defer_mailbox_preemption: true }
 
 function temporaryHome(): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-config-test-'))
@@ -1432,24 +1438,43 @@ describe('native CLI configuration files', () => {
     const windows: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(windows, 'win32')
     expect(windows).toEqual({
-      features: { prevent_idle_sleep: true, daemon_auto_start: false },
+      features: { ...uninterruptedFeatures, prevent_idle_sleep: true, daemon_auto_start: false },
+      suppress_unstable_features_warning: true,
       windows: { sandbox: 'unelevated' },
     })
 
     // [windows] is a Windows-only table; macOS has no elevation prompt to avoid.
     const mac: Record<string, unknown> = {}
     applyCodexRelayMachineDefaults(mac, 'darwin')
-    expect(mac).toEqual({ features: { prevent_idle_sleep: true, daemon_auto_start: false } })
+    expect(mac).toEqual({
+      features: { ...uninterruptedFeatures, prevent_idle_sleep: true, daemon_auto_start: false },
+      suppress_unstable_features_warning: true,
+    })
   })
 
   it('leaves Codex sleep and sandbox choices the user already made', () => {
     const chosen: Record<string, unknown> = {
-      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
+      features: {
+        prevent_idle_sleep: false,
+        daemon_auto_start: true,
+        goals: true,
+        instant_interrupt: true,
+        defer_mailbox_preemption: false,
+        interrupt_on_cancel: true,
+      },
       windows: { sandbox: 'elevated' },
     }
     applyCodexRelayMachineDefaults(chosen, 'win32')
+    // Their own defer_mailbox_preemption = false raises no warning, so nothing gets silenced either.
     expect(chosen).toEqual({
-      features: { prevent_idle_sleep: false, daemon_auto_start: true, goals: true },
+      features: {
+        prevent_idle_sleep: false,
+        daemon_auto_start: true,
+        goals: true,
+        instant_interrupt: true,
+        defer_mailbox_preemption: false,
+        interrupt_on_cancel: true,
+      },
       windows: { sandbox: 'elevated' },
     })
 
@@ -1457,6 +1482,40 @@ describe('native CLI configuration files', () => {
     const scalar: Record<string, unknown> = { features: 'off', windows: 'x' }
     applyCodexRelayMachineDefaults(scalar, 'win32')
     expect(scalar).toEqual({ features: 'off', windows: 'x' })
+  })
+
+  // new-api 的 WebSocket 只认 response.create / response.cancel，response.interrupt 回 400（2026-11-06）。
+  it('keeps Codex from sending the response.interrupt event the relay rejects', () => {
+    const parsed: Record<string, unknown> = { features: { goals: true } }
+    applyCodexRelayMachineDefaults(parsed, 'darwin')
+    expect(asRecord(parsed.features)).toMatchObject({
+      goals: true,
+      instant_interrupt: false,
+      defer_mailbox_preemption: true,
+    })
+    // interrupt_on_cancel (0.167+) is off by default. Spelling it out as false made the
+    // recommended 0.164.0 show an English "1 warning" on its first screen for an unknown key.
+    expect(asRecord(parsed.features)).not.toHaveProperty('interrupt_on_cancel')
+    // defer_mailbox_preemption is an under-development flag: without this Codex prints an
+    // English "Under-development features enabled" line at the start of every conversation.
+    expect(parsed.suppress_unstable_features_warning).toBe(true)
+
+    // A user who wants that warning keeps it.
+    const wantsWarning: Record<string, unknown> = { suppress_unstable_features_warning: false }
+    applyCodexRelayMachineDefaults(wantsWarning, 'darwin')
+    expect(wantsWarning.suppress_unstable_features_warning).toBe(false)
+    expect(asRecord(wantsWarning.features)?.defer_mailbox_preemption).toBe(true)
+
+    // A user who turned the deferral on themselves still gets the warning silenced, since it
+    // is the same under-development flag either way.
+    const ownDeferral: Record<string, unknown> = { features: { defer_mailbox_preemption: true } }
+    applyCodexRelayMachineDefaults(ownDeferral, 'darwin')
+    expect(ownDeferral.suppress_unstable_features_warning).toBe(true)
+
+    // A profile table is the user's own override and stays as written.
+    const profiled: Record<string, unknown> = { profiles: { work: { features: { instant_interrupt: true } } } }
+    applyCodexRelayMachineDefaults(profiled, 'darwin')
+    expect(profiled.profiles).toEqual({ work: { features: { instant_interrupt: true } } })
   })
 
   // 照 rust-v0.160.1 features/src/lib.rs 的 from_sources：[features] 在先，profile 选中的那张盖过它。
@@ -1501,8 +1560,14 @@ describe('native CLI configuration files', () => {
 
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
     const fresh = TOML.parse(fs.readFileSync(configPath, 'utf8'))
-    expect(fresh.features).toEqual({ goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(fresh.features).toEqual({ ...uninterruptedFeatures, goals: true, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(fresh.suppress_unstable_features_warning).toBe(true)
     expect(fresh.windows).toEqual(expectedWindows)
+    // The spelled-out template and the merge path must agree, or a fresh install and a
+    // merged config would behave differently.
+    const reapplied = structuredClone(fresh)
+    applyCodexRelayMachineDefaults(reapplied)
+    expect(reapplied).toEqual(fresh)
 
     const existingRoots = providerRoots(temporaryHome())
     const existingPath = codexConfigSnapshotPaths(existingRoots).active
@@ -1510,7 +1575,8 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(existingPath, '[custom_official]\nenabled = true\n', 'utf8')
     saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', existingRoots, {}, providerBaseUrls)
     const merged = TOML.parse(fs.readFileSync(existingPath, 'utf8'))
-    expect(merged.features).toEqual({ prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(merged.features).toEqual({ ...uninterruptedFeatures, prevent_idle_sleep: true, daemon_auto_start: false })
+    expect(merged.suppress_unstable_features_warning).toBe(true)
     expect(merged.windows).toEqual(expectedWindows)
     expect(merged.custom_official).toEqual({ enabled: true })
   })
@@ -1526,6 +1592,18 @@ describe('native CLI configuration files', () => {
     expect(written.disable_response_storage).toBeUndefined()
     expect(written.network_access).toBeUndefined()
     expect(written.windows_wsl_setup_acknowledged).toBeUndefined()
+  })
+
+  // 0.164.0 把不认识的键挂在第一屏右下角（「⚠ 1 warning」），不只是记日志（2026-11-09 真终端核过）。
+  it('writes no Codex feature the recommended version does not recognize yet', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = codexConfigSnapshotPaths(roots).active
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    const written = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    expect(asRecord(written.features)).not.toHaveProperty('interrupt_on_cancel')
   })
 
   it('clears the Codex settings it used to write once they stop being recognized', () => {
@@ -2757,7 +2835,10 @@ describe('switching a provider back to the official subscription account', () =>
     // Gemini 另有一份「统计开关是星芒写的」记录，重置成官方模板后它没用了，跟着写空。
     const recordPath = path.join(path.dirname(paths[0]), geminiUsageStatisticsRecordName)
     if (provider === 'gemini') expect(fs.readFileSync(recordPath, 'utf8')).toBe('')
-    expect(result.backups.length).toBe(paths.length + (provider === 'gemini' ? 1 : 0))
+    // Claude 同理：快照里记着「不逐条确认」是星芒补的（D5），重置成官方模板后跟着写空。
+    const snapshotPath = path.join(path.dirname(paths[0]), claudeForeignSettingsSnapshotName)
+    if (provider === 'claude') expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+    expect(result.backups.length).toBe(paths.length + 1)
     expect(result.files).not.toContain(credentialPath)
     expect(result.files).not.toContain(historyPath)
   })
@@ -3076,10 +3157,10 @@ describe('switching a provider back to the official subscription account', () =>
     expect(afterEnv.ANTHROPIC_BASE_URL).toBeUndefined()
     expect(afterEnv.MY_OWN_VARIABLE).toBe('keep-me')
     // Claude 的订阅凭据在 .credentials.json / 钥匙串里,本模块从不触碰。
-    expect(after.permissions).toBeDefined()
-    // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉。
-    expect(asRecord(after.permissions)?.deny).toBeUndefined()
-    expect(asRecord(after.permissions)?.defaultMode).toBe('bypassPermissions')
+    // Artifact 对 claude.ai 账号用户是有用的,切回官方来源要把这条 deny 撤掉；
+    // 「不逐条确认」是星芒替这个新客户补的，也撤掉（D5），permissions 空了连键一起删。
+    expect(after.permissions).toBeUndefined()
+    expect(after.skipDangerousModePermissionPrompt).toBeUndefined()
   })
 
   // 全面检测 Q7：照别家中转教程配过 Claude Code 的人，settings.json 里留着的这几项
@@ -3191,7 +3272,12 @@ describe('switching a provider back to the official subscription account', () =>
     const roots = providerRoots(home)
     const [configPath] = providerConfigPaths('claude', roots)
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
-    fs.writeFileSync(configPath, JSON.stringify({ env: { MY_OWN_VARIABLE: 'x' } }, null, 2))
+    // 权限模式客户自己设过，星芒不补，也就没有记号要记。
+    fs.writeFileSync(configPath, JSON.stringify({
+      env: { MY_OWN_VARIABLE: 'x' },
+      permissions: { defaultMode: 'acceptEdits' },
+      skipDangerousModePermissionPrompt: false,
+    }, null, 2))
 
     saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
     switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
@@ -3211,6 +3297,295 @@ describe('switching a provider back to the official subscription account', () =>
     // 本软件自己的选模型菜单写的 ANTHROPIC_DEFAULT_MODEL 不归这张表管。
     const own: Record<string, unknown> = { env: { ANTHROPIC_DEFAULT_MODEL: 'claude-sonnet-5' } }
     expect(moveClaudeForeignSettingsAside(own, null, 'sk-relay')).toBeNull()
+  })
+
+  // 0.2.24 深查「反复切换」N4：官方账号那边客户自己选的型号，接当前账号再切回官方以后还得在。
+  it('puts the official Claude model back after a round trip through the account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    const snapshotPath = path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'opus', theme: 'dark' }, null, 2))
+
+    for (let round = 0; round < 2; round += 1) {
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe(testModels.claude)
+      // Saving again on the account (new key, another model) must not replace the stashed official model.
+      saveProviderConfig('claude', 'sk-relay-2', 'claude-other-model', 'merge', roots, {}, providerBaseUrls)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+      const official = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+      expect(official.model).toBe('opus')
+      expect(official.theme).toBe('dark')
+      expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+    }
+  })
+
+  it('keeps the official Claude model through an account reset and an official reset', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({ model: 'claude-opus-5' }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe(testModels.claude)
+
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls, 'reset')
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBe('claude-opus-5')
+  })
+
+  it('leaves the Claude model unset for the official account when it never had one', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    // 权限模式客户自己设过，快照里不会有「不逐条确认」的记号，只看型号存没存。
+    fs.writeFileSync(configPath, JSON.stringify({
+      theme: 'dark',
+      permissions: { defaultMode: 'default' },
+      skipDangerousModePermissionPrompt: false,
+    }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBeUndefined()
+    expect(fs.existsSync(path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName))).toBe(false)
+  })
+
+  // 0.2.24 深查 D5（反复切换 N7）：接当前账号时星芒补上的「不逐条确认」记在快照里，切回官方只撤这几项。
+  describe('Claude command-confirmation defaults filled by the account', () => {
+    function claudeFiles(home: string) {
+      const roots = providerRoots(home)
+      const [configPath] = providerConfigPaths('claude', roots)
+      return { roots, configPath, snapshotPath: path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName) }
+    }
+
+    function readSettings(configPath: string): Record<string, unknown> {
+      return JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    }
+
+    function writeSettings(configPath: string, settings: Record<string, unknown>): void {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, JSON.stringify(settings, null, 2))
+    }
+
+    it('withdraws both defaults for a customer who never set them, on every round trip', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+
+      for (let round = 0; round < 2; round += 1) {
+        saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+        const relay = readSettings(configPath)
+        expect(asRecord(relay.permissions)?.defaultMode).toBe('bypassPermissions')
+        expect(relay.skipDangerousModePermissionPrompt).toBe(true)
+        expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).filled)
+          .toEqual(['permissions.defaultMode', 'skipDangerousModePermissionPrompt'])
+        // Saving again on the account must keep the marks: the values are still the ones Xingmang wrote.
+        saveProviderConfig('claude', 'sk-relay-2', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+
+        switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+        const official = readSettings(configPath)
+        expect(official).not.toHaveProperty('permissions')
+        expect(official).not.toHaveProperty('skipDangerousModePermissionPrompt')
+        expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+      }
+    })
+
+    it.each([
+      ['a stricter mode', { defaultMode: 'acceptEdits' }, false],
+      ['the same bypass mode', { defaultMode: 'bypassPermissions' }, true],
+    ] as const)('keeps %s the customer set before connecting', (_label, permissions, skipPrompt) => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { permissions: { ...permissions }, skipDangerousModePermissionPrompt: skipPrompt })
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual(permissions)
+      expect(official.skipDangerousModePermissionPrompt).toBe(skipPrompt)
+    })
+
+    it('keeps a mode the customer changed while on the account and withdraws only the untouched one', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      const relay = readSettings(configPath)
+      asRecord(relay.permissions)!.defaultMode = 'plan'
+      writeSettings(configPath, relay)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual({ defaultMode: 'plan' })
+      expect(official).not.toHaveProperty('skipDangerousModePermissionPrompt')
+    })
+
+    it('drops a mark the customer took over while on the account, even if they set the value back later', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      const changed = readSettings(configPath)
+      asRecord(changed.permissions)!.defaultMode = 'plan'
+      writeSettings(configPath, changed)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      const back = readSettings(configPath)
+      asRecord(back.permissions)!.defaultMode = 'bypassPermissions'
+      writeSettings(configPath, back)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      expect(asRecord(readSettings(configPath).permissions)?.defaultMode).toBe('bypassPermissions')
+    })
+
+    it('ignores stale marks when the settings went back to the official account without the snapshot', () => {
+      // 切到当前账号失败按备份退回官方时，备份里没有这份快照，记号还在；客户随后自己开的同一项不能算星芒补的。
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(snapshotPath, 'utf8')).toContain('permissions.defaultMode')
+      writeSettings(configPath, { permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true })
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      expect(fs.readFileSync(snapshotPath, 'utf8')).toBe('')
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual({ defaultMode: 'bypassPermissions' })
+      expect(official.skipDangerousModePermissionPrompt).toBe(true)
+    })
+
+    it('leaves defaults written before the marks existed alone when switching to the official account', () => {
+      // 0.2.24 之前接过星芒的配置：快照里没有记号，分不清是不是客户自己设的，照旧不动。
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact', 'DesignSync'] },
+        skipDangerousModePermissionPrompt: true,
+        model: testModels.claude,
+      })
+      fs.writeFileSync(snapshotPath, JSON.stringify({ version: 1, env: {}, settings: { model: 'opus' } }))
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official.permissions).toEqual({ defaultMode: 'bypassPermissions' })
+      expect(official.skipDangerousModePermissionPrompt).toBe(true)
+      expect(official.model).toBe('opus')
+    })
+
+    it('marks the defaults an account reset fills over an official config that never had them', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { theme: 'dark', skipDangerousModePermissionPrompt: false })
+
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', roots, {}, providerBaseUrls)
+      expect(readSettings(configPath).skipDangerousModePermissionPrompt).toBe(true)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      // The reset overwrote the customer's own false, so only the mode Xingmang added is withdrawn.
+      const official = readSettings(configPath)
+      expect(official).not.toHaveProperty('permissions')
+      expect(official.skipDangerousModePermissionPrompt).toBe(true)
+    })
+
+    it('marks the mode the startup template fill adds so the official switch withdraws it too', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { deny: ['Artifact', 'DesignSync'] },
+        skipDangerousModePermissionPrompt: false,
+        model: testModels.claude,
+      })
+
+      fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+      expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).filled).toEqual(['permissions.defaultMode'])
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      const official = readSettings(configPath)
+      expect(official).not.toHaveProperty('permissions')
+      expect(official.skipDangerousModePermissionPrompt).toBe(false)
+    })
+
+    it('does not touch the snapshot when the startup fill has no confirmation default to add', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { defaultMode: 'default', deny: ['Artifact', 'DesignSync'] },
+        skipDangerousModePermissionPrompt: false,
+      })
+
+      fillRelayTemplateDefaults('claude', roots, providerBaseUrls)
+
+      expect(fs.existsSync(snapshotPath)).toBe(false)
+    })
+
+    it('reads only known marks and withdraws a mark only while the value is still the one written', () => {
+      const snapshot = JSON.stringify({ version: 1, env: {}, settings: {}, filled: ['permissions.defaultMode', 'theme', 7, 'skipDangerousModePermissionPrompt'] })
+      const settings: Record<string, unknown> = {
+        permissions: { defaultMode: 'bypassPermissions', allow: ['Read'] },
+        skipDangerousModePermissionPrompt: 'yes',
+        theme: 'dark',
+      }
+      expect(withdrawClaudeFilledDefaults(settings, snapshot)).toEqual(['permissions.defaultMode'])
+      expect(settings).toEqual({ permissions: { allow: ['Read'] }, skipDangerousModePermissionPrompt: 'yes', theme: 'dark' })
+      expect(withdrawClaudeFilledDefaults({ permissions: 'bypassPermissions' }, snapshot)).toEqual([])
+      expect(withdrawClaudeFilledDefaults(settings, null)).toEqual([])
+    })
+
+    it('keeps the stashed foreign settings when recording or clearing marks', () => {
+      const stashed = JSON.stringify({ version: 1, env: { ANTHROPIC_MODEL: 'glm-4.6' }, settings: { model: 'opus' } })
+      const marked = recordClaudeFilledDefaults(stashed, { skipDangerousModePermissionPrompt: true }, ['skipDangerousModePermissionPrompt'], true)
+      expect(JSON.parse(String(marked))).toEqual({
+        version: 1, env: { ANTHROPIC_MODEL: 'glm-4.6' }, settings: { model: 'opus' }, filled: ['skipDangerousModePermissionPrompt'],
+      })
+      // Nothing new to record and the mark still holds: the snapshot stays as it is.
+      expect(recordClaudeFilledDefaults(marked, { skipDangerousModePermissionPrompt: true }, [], false)).toBeNull()
+      // Coming from the official account clears old marks without dropping what was stashed.
+      expect(JSON.parse(String(recordClaudeFilledDefaults(marked, {}, [], true)))).toEqual(JSON.parse(stashed))
+      expect(recordClaudeFilledDefaults(JSON.stringify({ version: 1, env: {}, settings: {}, filled: ['skipDangerousModePermissionPrompt'] }), {}, [], true)).toBe('')
+    })
+  })
+
+  // 别家中转的型号放回官方账号只会选到官方没有的型号：接当前账号前已经接着别家的，不记它。
+  it('never hands a model chosen on another relay to the official Claude account', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('claude', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, JSON.stringify({
+      env: { ANTHROPIC_AUTH_TOKEN: 'sk-other-relay', ANTHROPIC_BASE_URL: 'https://other.example' },
+      model: 'glm-4.6',
+    }, null, 2))
+
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+    switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).model).toBeUndefined()
+  })
+
+  it('stashes the official Claude model without touching settings and prefers a model set again', () => {
+    const settings: Record<string, unknown> = { model: 'claude-sonnet-5' }
+    const snapshot = moveClaudeForeignSettingsAside(settings, null, 'sk-relay', 'opus')
+    expect(settings).toEqual({ model: 'claude-sonnet-5' })
+    expect(JSON.parse(String(snapshot)).settings).toEqual({ model: 'opus' })
+
+    const official: Record<string, unknown> = {}
+    expect(restoreClaudeForeignSettings(official, snapshot)).toBe(true)
+    expect(official.model).toBe('opus')
+    const changed: Record<string, unknown> = { model: 'haiku' }
+    expect(restoreClaudeForeignSettings(changed, snapshot)).toBe(false)
+    expect(changed.model).toBe('haiku')
+    // Without an official model the snapshot stays as it was.
+    expect(moveClaudeForeignSettingsAside({ model: 'claude-sonnet-5' }, snapshot, 'sk-relay')).toBeNull()
   })
 
   // 从星芒打开 Claude Code 时不交给它的选型号变量（system-service.ts，已知45 跟进），得和接账号时
@@ -3331,8 +3706,8 @@ describe('switching a provider back to the official subscription account', () =>
     switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls)
 
     const after = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    // defaultMode 是星芒替新客户补的，跟着撤掉（D5）；客户自己加的 deny、allow 原样留着。
     expect(asRecord(after.permissions)).toEqual({
-      defaultMode: 'bypassPermissions',
       deny: ['Bash(curl:*)', 'WebFetch'],
       allow: ['Read'],
     })
@@ -3772,6 +4147,30 @@ describe('workspace trust for the directory the user picked', () => {
     expect(asRecord(projects?.['D:\\Work'])?.hasTrustDialogAccepted).toBe(true)
   })
 
+  // D4：文件夹自带 Claude Code 的项目设置时，信任那一问留给 Claude Code 自己。
+  it('skips only the first-run wizard when the folder trust is left to Claude Code', () => {
+    const fresh = trustClaudeWorkspaceInRootConfigText(null, 'D:\\Download\\repo', { leaveFolderTrustToCli: true })
+    expect(fresh.changed).toBe(true)
+    // 连空的项目条目都不建，Claude Code 打开时照常问信任。
+    expect(JSON.parse(fresh.content)).toEqual({ hasCompletedOnboarding: true })
+
+    const existing = JSON.stringify({
+      hasCompletedOnboarding: true,
+      projects: {
+        'D:\\Download\\repo': { allowedTools: ['Bash'] },
+        'D:\\Work': { hasTrustDialogAccepted: true },
+      },
+    })
+    const kept = trustClaudeWorkspaceInRootConfigText(existing, 'D:\\Download\\repo', { leaveFolderTrustToCli: true })
+    expect(kept.changed).toBe(false)
+    expect(JSON.parse(kept.content)).toEqual(JSON.parse(existing))
+  })
+
+  it('still refuses a damaged Claude project record when the folder trust is left to Claude Code', () => {
+    expect(() => trustClaudeWorkspaceInRootConfigText('{"projects": ["D:\\\\Work"]}', 'D:\\Work', { leaveFolderTrustToCli: true }))
+      .toThrow('项目记录已损坏')
+  })
+
   it('trusts an unknown Gemini folder and leaves an existing answer alone', () => {
     const fresh = trustGeminiWorkspaceInTrustedFoldersText('{}', '/home/tester/work')
     expect(fresh.changed).toBe(true)
@@ -3857,6 +4256,21 @@ describe('workspace trust for the directory the user picked', () => {
     const again = trustClaudeWorkspace(roots, path.join(home, 'project'))
     expect(again.changed).toBe(false)
     expect(again.backups).toEqual([])
+  })
+
+  it('writes no Claude folder trust to disk when it is left to Claude Code', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configPath = path.join(home, '.claude.json')
+    fs.writeFileSync(configPath, JSON.stringify({ numStartups: 3 }), 'utf8')
+
+    const result = trustManagedWorkspace('claude', roots, path.join(home, 'project'), { leaveFolderTrustToCli: true })
+    expect(result.changed).toBe(true)
+    expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ numStartups: 3, hasCompletedOnboarding: true })
+
+    // 向导已经跳过、信任又不替他写，就没有要改的了，不再堆备份。
+    expect(trustManagedWorkspace('claude', roots, path.join(home, 'project'), { leaveFolderTrustToCli: true }))
+      .toEqual({ backups: [], files: [], changed: false })
   })
 
   it('creates the Gemini trust file when the CLI has never written one', () => {
@@ -4274,6 +4688,93 @@ describe('hooks and status line pointing at an old location', () => {
     const grok = TOML.parse(fs.readFileSync(providerConfigPaths('grok', roots)[0], 'utf8')) as unknown as GrokConfigShape
     expect(grok.compat).toEqual({ claude: { hooks: false } })
   })
+
+  it('tells our hooks and our Claude Code status line apart', () => {
+    const roots = providerRoots(temporaryHome())
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookParts(provider, roots)).toEqual([])
+    writeAll(roots)
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks', 'statusLine'])
+    for (const provider of ['gemini', 'codex', 'grok'] as const) expect(inspectManagedCliHookParts(provider, roots)).toEqual(['hooks'])
+    rewriteManagedCliHooks('claude', roots, { cliHook: moved })
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+  })
+
+  it('puts back what the uninstaller took, at the new location, and keeps keys and models', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    for (const provider of ['claude', 'gemini', 'codex', 'grok'] as const) removeManagedCliHooks(provider, roots)
+    const restore = { parts: ['hooks', 'statusLine'] as const, cliHook: moved, claudeStatusLineCommand: movedStatusLine }
+
+    const result = restoreManagedCliHooks('claude', roots, restore)
+    expect(result.backups).toHaveLength(1)
+    const claude = JSON.parse(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')) as { env: Record<string, string>, model: string, statusLine: { command: string } }
+    expect(claude.statusLine.command).toBe(movedStatusLine)
+    expect(claude.env.ANTHROPIC_AUTH_TOKEN).toBe('sk-relay')
+    expect(claude.model).toBe(testModels.claude)
+    expect(inspectManagedCliHookTargets('claude', roots).slice(0, 5)).toEqual(Array(5).fill({ nodeExecutable: moved.nodeExecutable, scriptPath: moved.scriptPath }))
+
+    restoreManagedCliHooks('codex', roots, { parts: ['hooks'], cliHook: moved })
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([{ nodeExecutable: moved.nodeExecutable, scriptPath: moved.scriptPath }])
+    restoreManagedCliHooks('grok', roots, { parts: ['hooks'], cliHook: { ...moved, platform: 'linux' } })
+    expect(inspectManagedCliHookTargets('grok', roots)).toHaveLength(6)
+    for (const provider of ['claude', 'codex', 'grok'] as const) expect(inspectProviderConfig(provider, roots).apiKey).toBe('sk-relay')
+
+    // Gemini CLI is retired: nothing is put back there.
+    expect(restoreManagedCliHooks('gemini', roots, { parts: ['hooks'], cliHook: moved })).toEqual({ backups: [], files: [] })
+    expect(inspectManagedCliHookParts('gemini', roots)).toEqual([])
+  })
+
+  it('puts back only the parts it is told to and never pushes out the customer\'s own status line or notify', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    for (const provider of ['claude', 'codex'] as const) removeManagedCliHooks(provider, roots)
+
+    restoreManagedCliHooks('claude', roots, { parts: ['hooks'], cliHook: moved, claudeStatusLineCommand: movedStatusLine })
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    const claudeBefore = fs.readFileSync(claudePath, 'utf8')
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'], cliHook: moved, claudeStatusLineCommand: movedStatusLine }))
+      .toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(claudeBefore)
+
+    const [codexPath] = providerConfigPaths('codex', roots)
+    fs.writeFileSync(codexPath, `notify = ["say", "done"]\n${fs.readFileSync(codexPath, 'utf8')}`, 'utf8')
+    const codexBefore = fs.readFileSync(codexPath, 'utf8')
+    expect(restoreManagedCliHooks('codex', roots, { parts: ['hooks'], cliHook: moved })).toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(codexPath, 'utf8')).toBe(codexBefore)
+  })
+
+  it('leaves entries that are already there alone, even ones pointing at an old location', () => {
+    const roots = providerRoots(temporaryHome())
+    writeAll(roots)
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const before = fs.readFileSync(claudePath, 'utf8')
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'], cliHook: moved, claudeStatusLineCommand: movedStatusLine }))
+      .toEqual({ backups: [], files: [] })
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    for (const provider of ['codex', 'grok'] as const) {
+      expect(restoreManagedCliHooks(provider, roots, { parts: ['hooks'], cliHook: { ...moved, platform: 'linux' } })).toEqual({ backups: [], files: [] })
+    }
+  })
+
+  it('writes nothing when this computer cannot write the hooks, or the config is gone', () => {
+    const roots = providerRoots(temporaryHome())
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'], cliHook: moved, claudeStatusLineCommand: movedStatusLine }))
+      .toEqual({ backups: [], files: [] })
+    writeAll(roots)
+    for (const provider of ['claude', 'codex', 'grok'] as const) removeManagedCliHooks(provider, roots)
+    const read = () => (['claude', 'codex', 'grok'] as const).map((provider) => fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8'))
+    const files = read()
+    expect(restoreManagedCliHooks('claude', roots, { parts: ['hooks', 'statusLine'] })).toEqual({ backups: [], files: [] })
+    expect(restoreManagedCliHooks('codex', roots, { parts: ['hooks'] })).toEqual({ backups: [], files: [] })
+    expect(restoreManagedCliHooks('grok', roots, { parts: ['hooks'], cliHook: { ...moved, platform: 'win32', grokWindowsShell: 'cmd' } }))
+      .toEqual({ backups: [], files: [] })
+    expect(read()).toEqual(files)
+  })
 })
 
 describe('taking back what Xingmang wrote into the retired Gemini CLI', () => {
@@ -4393,6 +4894,8 @@ describe('bringing an older account config up to the current template', () => {
     expect(asRecord(parsed.analytics)?.enabled).toBe(false)
     expect(asRecord(parsed.features)?.prevent_idle_sleep).toBe(false)
     expect(asRecord(parsed.features)?.daemon_auto_start).toBe(false)
+    expect(asRecord(parsed.features)).toMatchObject(uninterruptedFeatures)
+    expect(parsed.suppress_unstable_features_warning).toBe(true)
     expect(asRecord(parsed.windows)?.sandbox).toBe('unelevated')
     expect(asRecord(asRecord(parsed.model_providers)?.XingmangAI)?.supports_websockets).toBe(true)
     expect(parsed.model).toBe('gpt-5.5')

@@ -36,6 +36,7 @@ import type { CanvasAssetSummary } from '../host'
 import {
   availableImageModelPresets,
   availableVideoModelPresets,
+  defaultImageModel,
   defaultImageQuality,
   defaultImageSize,
   imageSizeLabel,
@@ -760,7 +761,7 @@ function GenerationInfoPanel({
         />
       </div>
       {!commerceDerivedSize && selectedModel && fields.includes('imageResolution') && imageResolution.message && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />{imageResolution.message}</p>}
-      {fields.includes('imageCandidateCount') && imageCountChoices.length > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
+      {fields.includes('imageCandidateCount') && imageCountChoices.length > 1 && (data.imageCandidateCount ?? 1) > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
       {isVideo && <VideoParameterFields imageCount={references.filter((item) => item.kind === 'image').length} videoProtocol={videoProtocol} model={selectedModel} data={data} disabled={running || locked || !canRun} compact onChange={(patch) => handlers.onVideoParametersChange?.(id, patch)} onReset={() => handlers.onVideoParametersReset?.(id)} onCandidateCountChange={(count) => handlers.onVideoCandidateCountChange?.(id, count)} candidateCountMaximum={view.capabilities?.videoCandidates.maximum} generateAudioShown={hostFeatureControlShown(view.capabilities, 'generateAudio', data.settings?.generateAudio !== undefined)} />}
       <div className="wf-composer-footer">
         <div className="wf-composer-toolbar">
@@ -1096,7 +1097,7 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
   const videoModels = modelAvailability.connected
     ? availableVideoModelPresets(modelAvailability.videoModels, true, capabilities)
     : availableVideoModelPresets(presetVideoModels, false, capabilities)
-  const selectedModel = data.model || (data.group !== undefined ? '' : textOperation ? modelAvailability.textModel ?? '' : videoOperation ? modelAvailability.videoModel ?? (modelAvailability.connected ? videoModels[0]?.id ?? '' : defaultVideoModel) : modelAvailability.imageModel ?? (modelAvailability.connected ? imageModels[0]?.id ?? '' : imageModelPresets[0].id))
+  const selectedModel = data.model || (data.group !== undefined ? '' : textOperation ? modelAvailability.textModel ?? '' : videoOperation ? modelAvailability.videoModel ?? (modelAvailability.connected ? videoModels[0]?.id ?? '' : defaultVideoModel) : modelAvailability.imageModel ?? (modelAvailability.connected ? imageModels[0]?.id ?? '' : defaultImageModel))
   const commerce = inspectCommerceTaskControls(data.settings, upstreamReferences, selectedModel, data.quality)
   const commerceDerivedSize = commerce.task?.kind === 'material-b'
   const requestedSize = commerceDerivedSize ? commerce.derivedSize : imageOperation ? inspectImageResolutionSelection({ model: selectedModel, size: data.size, imageResolution: data.imageResolution }, capabilities).effectiveSize : videoOperation && modelAvailability.videoProtocol === 'ark-seedance' ? undefined : data.size
@@ -1338,7 +1339,7 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
       {imageOperation && <ExteriorTaskControls settings={data.settings} references={upstreamReferences} prompt={data.prompt} disabled={nodeRunning || locked || disabled || canRun === false} requestCandidateCount={data.imageCandidateCount ?? 1} candidateCount={candidates.filter((entry) => entry.asset.kind === 'image').length} onEdit={handlers.onEditExteriorTask ? () => handlers.onEditExteriorTask?.(id, editorScope) : undefined} onCompare={handlers.onCompareExteriorCandidates ? () => handlers.onCompareExteriorCandidates?.(id, editorScope) : undefined} />}
       {imageOperation && <StoryboardTaskControls settings={data.settings} references={upstreamReferences} prompt={data.prompt} disabled={nodeRunning || locked || disabled || canRun === false} requestCandidateCount={data.imageCandidateCount ?? 1} candidateCount={candidates.filter((entry) => entry.asset.kind === 'image').length} onEdit={handlers.onEditStoryboardTask ? () => handlers.onEditStoryboardTask?.(id, editorScope) : undefined} onCompare={handlers.onCompareStoryboardCandidates ? () => handlers.onCompareStoryboardCandidates?.(id, editorScope) : undefined} />}
       {imageOperation && (() => {
-        const preset = imageModelPreset(selectedModel || imageModelPresets[0].id, capabilities)
+        const preset = imageModelPreset(selectedModel || defaultImageModel, capabilities)
         const resolution = inspectImageResolutionSelection({ model: selectedModel, size: data.size, imageResolution: data.imageResolution }, capabilities)
         const selectedSize = data.size ?? preset.sizes[0] ?? defaultImageSize
         const sizeSupport = resolution.choices.find((choice) => choice.value === '1K')
@@ -1395,7 +1396,7 @@ function NodeShell({ id, data: flowData, kind, selected }: { id: string; data: W
                 </label>
               )}
             </div>
-            {imageCountChoices.length > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
+            {imageCountChoices.length > 1 && (data.imageCandidateCount ?? 1) > 1 && <p className="wf-result-note">{imageCandidateCountNotice(data.imageCandidateCount ?? 1)}</p>}
             {!commerceDerivedSize && selectedModel && resolution.message && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />{resolution.message}</p>}
           </>
         )

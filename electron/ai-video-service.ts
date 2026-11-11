@@ -18,9 +18,11 @@ import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-ta
 import type { AiVideoTaskStore, FinishedAiVideoAsset, StoredAiVideoTask } from './ai-video-task-store'
 import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
+import { reportRelayAnswer, reportRelayDispatch } from './relay-request-id'
 import { aiVideoTaskRecordLostPrefix, aiVideoUnconfirmedSubmissionMessage } from './ai-video-submission'
-import { isServiceUnavailableResponse } from './network-failure'
+import { isServiceUnavailableResponse, networkFailureMessages } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
+import { unsentRequestFailure } from './relay-line-fetch'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const DEFAULT_MAXIMUM_POLL_INTERVAL_MS = 10_000
@@ -292,6 +294,22 @@ function errorDetail(payload: Record<string, unknown>): string {
   return safeUpstreamMessage(upstreamMessage(payload))
 }
 
+/**
+ * 两次查询之间这段时间有多少算进「最多等 30 分钟」。隔得比查询节奏能解释的长很多（超过 3 倍），就是电脑睡着了
+ * （合盖、休眠），只按一轮正常的长短算；时钟往回跳的那一截不算。合盖半小时一醒来就判超时、镜头标红，客户照着
+ * 点重新生成就是同一段付两次钱（0.2.24 深查睡眠 S1）。
+ */
+export function awakeVideoPollSpan(previousAt: number, at: number, expectedMs: number): number {
+  const span = at - previousAt
+  if (!Number.isFinite(span) || span < 0) return 0
+  return span > 3 * expectedMs ? expectedMs : span
+}
+
+/** 等满了也停下时上屏的那句：和查不到进度那条同一句，这单已经扣了钱、服务端多半还在出，不能叫人重来。 */
+function videoPollStoppedError(taskId: string, cause?: unknown): Error {
+  return new Error(`暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 ${taskId}）。`, cause === undefined ? undefined : { cause })
+}
+
 export function delayVideoPoll(milliseconds: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(signal.reason)
   return new Promise<void>((resolve, reject) => {
@@ -515,11 +533,15 @@ export function createAiVideoService(options: {
     signal: AbortSignal,
     progress?: AiOperationProgressObserver,
   ): Promise<Record<string, unknown>> {
-    const startedAt = Date.now()
+    // 只算醒着等的时间（awakeVideoPollSpan）；到了时限也先查完这一轮再停，查到出好了就照常拿回来。
+    let waited = 0
+    let checkedAt = Date.now()
     let interval = pollIntervalMs
     let failingSince: number | undefined
     for (;;) {
-      if (Date.now() - startedAt > maximumWaitMs) throw new Error('已停止等待视频生成；服务端任务已保留，可在下次启动时继续查询')
+      const at = Date.now()
+      waited += awakeVideoPollSpan(checkedAt, at, interval + requestTimeoutMs)
+      checkedAt = at
       let payload: Record<string, unknown>
       try {
         payload = await queryTask(task.taskId, apiKey, signal)
@@ -534,7 +556,7 @@ export function createAiVideoService(options: {
           // 这时上屏的原话（「视频服务暂时不可用，请稍后重试」「视频接口请求超时」、英文的 fetch failed）
           // 都在叫客户重来，可这单已经提交、服务端多半还在生成，重来就是再付一次钱（#1076 第2条）。
           // 换成同一句，原话挂在 cause 上进日志。终态的错（failed、cancelled、JSON 4xx）不走这里。
-          throw new Error(`暂时查不到视频进度，服务端可能仍在生成，请勿重复提交；下次启动会继续查询（任务 ${task.taskId}）。`, { cause: error })
+          throw videoPollStoppedError(task.taskId, error)
         }
         await delayVideoPoll(interval, signal)
         interval = Math.min(maximumPollIntervalMs, interval * 2)
@@ -554,6 +576,8 @@ export function createAiVideoService(options: {
         throw new Error(message)
       }
       if (!['queued', 'in_progress', 'processing', 'submitted'].includes(status)) throw new Error('视频接口返回了未知任务状态')
+      // 本地任务记录留着，下次启动还会续查；页面上那一镜记着请求号，「重新生成」也是先接回。
+      if (waited > maximumWaitMs) throw videoPollStoppedError(task.taskId)
       await delayVideoPoll(interval, signal)
       interval = Math.min(maximumPollIntervalMs, interval * 2)
     }
@@ -741,6 +765,7 @@ export function createAiVideoService(options: {
         throw operation.controller.signal.reason
       }
       operation.dispatched = true
+      reportRelayDispatch(progress, true)
       let submitted: { response: Response; payload?: Record<string, unknown> }
       try {
         const headers: Record<string, string> = {
@@ -765,9 +790,20 @@ export function createAiVideoService(options: {
         })
       } catch (error) {
         if (operation.controller.signal.aborted) throw error
+        // 断网、解析不出地址、连不上、代理回绝：这一单根本没出去，没扣钱。照网络原因说，也不留「结果不明」
+        // 那条记录，不然这一镜一直挂着「结果不明」、重开以后还这么说（深查 W-1）。
+        const unsent = unsentRequestFailure(error)
+        if (unsent) {
+          operation.dispatched = false
+          reportRelayDispatch(progress, false)
+          await forgetSubmission()
+          throw new Error(networkFailureMessages[unsent])
+        }
         throw ambiguousVideoSubmission()
       }
       const { response } = submitted
+      // 提交这一下就是扣费那一下；画布跑完按这个号到用量记录里对实扣（画布完善第 2b 条第 3 步）。
+      reportRelayAnswer(progress, response.headers)
       const payload = submitted.payload
       if (!payload) {
         if (!response.ok && response.status < 500) {

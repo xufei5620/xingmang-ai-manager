@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { gitLinuxInstallCommand } from '../../../electron/git-runtime';
 import { accountTabs, feedbackTabs, macDesktopTutorialTopic, macRuntimeTutorialTopic, settingsGroups, settingsItemLabel, settingsItems, updateFailureLabels, updateLabels, updatesTutorialTopic } from './business';
+import { videoStudioAspectNames, videoStudioClipSoundNames, videoStudioTransitionNames } from '../features/video-studio/project';
 import { linuxUpdateDiskCleanupSteps, macKeychainTutorialTitle, tutorialTopics, tutorialTopicsFor, updateDiskCleanupDetail, updateDiskCleanupSteps, updateDiskCleanupStepsFor, updateDiskCleanupTitle, type TutorialStep } from './tutorials';
 
 function step(topicId: string, action: string): TutorialStep {
@@ -143,6 +144,16 @@ describe('tutorial wording that follows the current app', () => {
     expect(JSON.stringify(tutorialTopicsFor('linux'))).not.toContain('Gemini CLI');
   });
 
+  // 视频剪辑一章（清单第 11 项）：每个按钮都落到视频剪辑页；下拉里的选项名取自页面用的那份，页面按钮名由 VideoStudioPage.test.tsx 核对。
+  it('teaches the video studio on its own page with the choices the page offers', () => {
+    const video = tutorialTopics.find((topic) => topic.id === 'video');
+    expect(video?.category).toBe('tools');
+    for (const entry of video?.steps ?? []) expect(entry.page, entry.action).toBe('video');
+    const text = JSON.stringify(video);
+    for (const name of [videoStudioTransitionNames.fade, ...Object.values(videoStudioClipSoundNames), ...Object.values(videoStudioAspectNames).map((label) => label.split(' ')[0])]) expect(text).toContain(name);
+    for (const os of ['win', 'mac', 'linux'] as const) expect(tutorialTopicsFor(os).map((topic) => topic.id)).toContain('video');
+  });
+
   it('keeps npm and the bare word CLI out of what customers read', () => {
     // keywords only feed the search box, so customers who type「npm」or「CLI」still land on the right chapter.
     const visible = JSON.stringify(tutorialTopics.map(({ keywords: _keywords, ...topic }) => topic));
@@ -160,7 +171,7 @@ describe('tutorial wording that follows the current app', () => {
     const entry = step('trouble', '回首页检查 Codex 打开结果').extra?.find((item) => item.title === '能打开，但还是英文？');
     expect(entry?.detail).toMatch(/^中文界面只在从星芒打开 Codex 时生效。/);
     expect(entry?.detail).toContain('（Mac 上叫 ChatGPT）');
-    expect(entry?.detail).toContain('的星芒图标 →「已安装的工具」→「Codex 桌面端」');
+    expect(entry?.detail).toContain('的星芒图标 ›「已安装的工具」›「Codex 桌面端」');
     expect(entry?.detail.indexOf('从星芒首页点「打开」')).toBeLessThan(entry?.detail.indexOf('「启用中文界面」') ?? -1);
   });
 
@@ -170,9 +181,16 @@ describe('tutorial wording that follows the current app', () => {
     expect(entry.detail).toContain('Work browser access requires an authenticated account');
     expect(entry.title).toContain('提交消息时出错');
     expect(entry.bullets?.[0]).toContain('切到「Codex」');
-    expect(entry.extra?.[0].detail).toContain('「…」→「配置…」里选「ChatGPT 账号」');
+    expect(entry.extra?.[0].detail).toContain('「…」›「配置…」里选「ChatGPT 账号」');
     expect(step('start', '回首页打开 Codex').bullets?.[0]).toContain('切到「Codex」');
     expect(step('launch', '返回首页打开桌面端').bullets?.[0]).toContain('切到「Codex」');
+  });
+
+  // WSL 里敲 claude、codex 读的是 WSL 自己家目录下的配置，星芒写的在 Windows 这一侧（D76）；Linux 版不提 Windows。
+  it('tells Windows users that the tools typed inside WSL need their own setup', () => {
+    const wsl = '星芒管的是 Windows 这一侧；要用 AI 工具请在 Windows 的终端里打开，WSL 里的需要单独配置。';
+    expect(step('messages', '查看余额与额度').bullets).toContain(wsl);
+    expect(JSON.stringify(tutorialTopicsFor('linux'))).not.toContain('WSL');
   });
 });
 
@@ -190,7 +208,7 @@ describe('linux tutorials', () => {
   it('switches accounts on Linux in the same four steps without the Claude Desktop lines or an empty bullet', () => {
     const switching = linux.find((topic) => topic.id === 'switch-account');
     const original = tutorialTopics.find((topic) => topic.id === 'switch-account');
-    expect(switching?.steps.map((entry) => entry.where)).toEqual(['工具箱首页 → 工具卡片左下角', '工具箱首页 → 卡片左下角的小标签，或右下角 … → 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
+    expect(switching?.steps.map((entry) => entry.where)).toEqual(['星芒首页 › 工具卡片左下角', '星芒首页 › 卡片左下角的小标签，或右下角 … › 改用当前账号 / 切回官方账号', 'Claude Code / Codex 窗口', 'Claude Code / Codex 窗口']);
     expect(switching?.steps.map((entry) => entry.bullets?.length)).toEqual(original?.steps.map((entry) => (entry.bullets?.length ?? 0) - (entry.bullets?.filter((bullet) => bullet.startsWith('Claude Desktop')).length ?? 0)));
     expect(switching?.steps[2].detail).toBe('已经打开的工具还记着旧账号，要关掉重开才会换过来。');
   });

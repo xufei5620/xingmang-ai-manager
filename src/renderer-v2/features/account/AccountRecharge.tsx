@@ -472,7 +472,7 @@ export function AccountRecharge({
           if (purchaseLine?.short) throw new Error('余额不够，换一种支付方式')
           await api.purchaseAccountSubscriptionWithBalance(plan.id)
         } else {
-          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前账号暂不支持客户端购买订阅。')
+          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前账号不能在星芒里买订阅。')
           const payMethod = methods.find((item) => item.type === purchaseMethod)
           if (!payMethod || payMethod.provider === 'waffo')
             throw new Error('该支付渠道暂不支持订阅。')
@@ -572,7 +572,7 @@ export function AccountRecharge({
   const purchaseChoices: PayChoice[] = purchase ? [
     ...(purchase.allowBalancePay ? [{
       value: 'balance',
-      label: '账户余额',
+      label: '账号余额',
       description: purchaseLine?.text ?? '',
       leading: <Wallet size={16} />,
       disabled: purchaseLine?.short,
@@ -630,7 +630,7 @@ export function AccountRecharge({
       )}
       <div className="v2-recharge-grid">
         <Card
-          title="充值到账户余额"
+          title="充值到账号余额"
           meta={balance ? `当前余额 ${dollars(balance.displayAmount)}` : undefined}
         >
           {infoFailed ? (

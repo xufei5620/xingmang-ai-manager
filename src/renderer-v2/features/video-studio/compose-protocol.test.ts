@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   addVideoStudioClipBytes,
   maxVideoStudioClipBytes,
+  maxVideoStudioMusicBytes,
   maxVideoStudioTotalBytes,
   parseVideoStudioComposeRequest,
   parseVideoStudioWorkerMessage,
@@ -31,7 +32,7 @@ describe('video studio compose protocol', () => {
   })
 
   it('rejects requests the composer cannot use', () => {
-    expect(() => parseVideoStudioComposeRequest(null)).toThrow('拼片请求的格式不对')
+    expect(() => parseVideoStudioComposeRequest(null)).toThrow('拼的时候出了点问题，请再试一次')
     expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, resolution: 2160 } })).toThrow('成片的画面设置不对')
     expect(() => parseVideoStudioComposeRequest({ clips: [], options })).toThrow('至少要放一段片段才能拼成片')
     expect(() => parseVideoStudioComposeRequest({ clips: [clip(0)], options })).toThrow('第 1 段片段是空的')
@@ -40,8 +41,8 @@ describe('video studio compose protocol', () => {
     expect(() => parseVideoStudioComposeRequest({ clips: [{ ...clip(), trimStart: Number.POSITIVE_INFINITY }], options })).toThrow('第 1 段的剪切时间不对')
     expect(() => parseVideoStudioComposeRequest({ clips: [{ ...clip(), caption: 7 }], options })).toThrow('第 1 段的字幕太长了')
     expect(() => parseVideoStudioComposeRequest({ clips: [{ ...clip(), caption: 'x'.repeat(1001) }], options })).toThrow('第 1 段的字幕太长了')
-    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, encoding: { video: ['h265'] } })).toThrow('指定的编码器不对')
-    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, encoding: { audio: [] } })).toThrow('指定的编码器不对')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, encoding: { video: ['h265'] } })).toThrow('拼的时候出了点问题，请再试一次')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, encoding: { audio: [] } })).toThrow('拼的时候出了点问题，请再试一次')
   })
 
   it('caps the bytes a single clip and the whole request may hold', () => {
@@ -51,6 +52,41 @@ describe('video studio compose protocol', () => {
     const half = { byteLength: maxVideoStudioClipBytes }
     Object.setPrototypeOf(half, ArrayBuffer.prototype)
     expect(() => parseVideoStudioComposeRequest({ clips: [{ data: half }, { data: half }, clip()], options })).toThrow('片段加起来超过 1 GB 了，少放几段再拼')
+  })
+
+  it('carries a song and the two volumes through, and turns away a song or volume it cannot use', () => {
+    const song = new ArrayBuffer(16)
+    const request = parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: song, gain: 0.7, path: 'C:/music.mp3' }, clipGain: 0.35 })
+    expect(request).toEqual({ clips: [clip()], options, encoding: undefined, music: { data: song, gain: 0.7 }, clipGain: 0.35 })
+    expect(request.music?.data).toBe(song)
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options, clipGain: 0 }).clipGain).toBe(0)
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options })).not.toHaveProperty('music')
+
+    const unreadable = '这首歌读不出来，换一首试试（支持 MP3、M4A、WAV、OGG）'
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: new ArrayBuffer(0), gain: 1 } })).toThrow(unreadable)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: new Uint8Array(4), gain: 1 } })).toThrow(unreadable)
+    const big = { byteLength: maxVideoStudioMusicBytes + 1 }
+    Object.setPrototypeOf(big, ArrayBuffer.prototype)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: big, gain: 1 } })).toThrow(unreadable)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: song } })).toThrow('拼的时候出了点问题，请再试一次')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, music: { data: song, gain: 1.5 } })).toThrow('拼的时候出了点问题，请再试一次')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, clipGain: -0.1 })).toThrow('拼的时候出了点问题，请再试一次')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options, clipGain: Number.NaN })).toThrow('拼的时候出了点问题，请再试一次')
+  })
+
+  it('carries the fades between shots and at the end, and turns away a transition it does not know', () => {
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, transition: 'fade', fadeOut: true } }).options).toEqual({ ...options, transition: 'fade', fadeOut: true })
+    // The defaults (a straight cut, no fade at the end) are left out, as before.
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, transition: 'cut', fadeOut: false } }).options).toEqual(options)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, transition: 'wipe' } })).toThrow('成片的画面设置不对')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, fadeOut: 'yes' } })).toThrow('成片的画面设置不对')
+  })
+
+  it('carries the caption size and place, leaves out the defaults and turns away anything else', () => {
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionSize: 'large', captionPosition: 'top' } }).options).toEqual({ ...options, captionSize: 'large', captionPosition: 'top' })
+    expect(parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionSize: 'medium', captionPosition: 'bottom' } }).options).toEqual(options)
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionSize: 'huge' } })).toThrow('成片的画面设置不对')
+    expect(() => parseVideoStudioComposeRequest({ clips: [clip()], options: { ...options, captionPosition: 'left' } })).toThrow('成片的画面设置不对')
   })
 
   it('stops the page reading clips at the same total, with the same words, as the worker', () => {

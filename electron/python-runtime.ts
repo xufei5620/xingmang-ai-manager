@@ -16,10 +16,11 @@ import {
   type NodeRuntimeProcessPlan,
   type SystemWingetResolution,
 } from './node-runtime'
-import { downloadWithResume } from './download-retry'
+import { createDownloadDeadline, downloadWithResume } from './download-retry'
 import { sameLocalPathIdentity } from './path-identity'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { authenticodeSignatureModules, buildPowerShellPinnedModuleImportStatement } from './powershell-module-imports'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import { compareVersionsBy, parsePythonReleaseVersion } from './versions'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
@@ -102,7 +103,6 @@ function releaseFilesUrl(releaseId: number) {
   return `https://www.python.org/api/v2/downloads/release_file/?os=1&release=${releaseId}`
 }
 const metadataTimeoutMs = 30_000
-const downloadTimeoutMs = 10 * 60_000
 const installerTimeoutMs = 15 * 60_000
 const maximumReleaseIndexBytes = 512 * 1024
 const maximumReleaseFilesBytes = 256 * 1024
@@ -113,25 +113,35 @@ function encodedPowerShellCommand(script: string): string {
   return Buffer.from(script, 'utf16le').toString('base64')
 }
 
+// Both checks are written for ConstrainedLanguage too, where an
+// application-control policy runs every -Command and [PSCustomObject] and
+// static .NET calls are refused (see powershell-constrained-language.ts).
 export const pythonInstallerSignatureScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
   buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress'),
 ].join('; ')
 
+/**
+ * Get-Item's VersionInfo is PowerShell's own wrapper around the same
+ * FileVersionInfo.GetVersionInfo call, and unlike calling it directly it is
+ * allowed in ConstrainedLanguage.
+ */
+export const installedPythonInspectionModules = [...authenticodeSignatureModules, 'Microsoft.PowerShell.Management'] as const
+
 export const installedPythonInspectionScript = [
-  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  powerShellUtf8OutputStatement,
   '$ErrorActionPreference = "Stop"',
   "$ProgressPreference = 'SilentlyContinue'",
-  buildPowerShellPinnedModuleImportStatement(authenticodeSignatureModules),
+  buildPowerShellPinnedModuleImportStatement(installedPythonInspectionModules),
   '$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -ErrorAction Stop',
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
-  '$version = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($env:XINGMANG_PYTHON_FILE_PATH).ProductVersion',
-  '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject; version = [string]$version } | ConvertTo-Json -Compress',
+  '$version = (Get-Item -LiteralPath $env:XINGMANG_PYTHON_FILE_PATH -Force).VersionInfo.ProductVersion',
+  ...buildPowerShellJsonOutputStatements('@{ status = [string]$signature.Status; subject = [string]$subject; version = [string]$version } | ConvertTo-Json -Compress'),
 ].join('; ')
 
 function report(options: InstallPythonRuntimeOptions, progress: PythonRuntimeInstallProgress): void {
@@ -282,6 +292,7 @@ export function buildPythonRuntimeWingetPlan(executable: string): NodeRuntimePro
       '--disable-interactivity',
     ],
     timeoutMs: installerTimeoutMs,
+    timeoutExcludesSleep: true,
     acceptedExitCodes: [0],
   }
 }
@@ -328,6 +339,7 @@ export function buildPythonRuntimeInstallPlan(
         'Shortcuts=0',
       ],
       timeoutMs: installerTimeoutMs,
+      timeoutExcludesSleep: true,
       acceptedExitCodes: [0],
       env,
       trustedPaths: [installerPath],
@@ -408,7 +420,8 @@ async function downloadInstaller(
 ): Promise<{ filePath: string; sha256: string }> {
   const filePath = path.join(directory, asset.fileName)
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(new Error('Python 安装包下载超时')), downloadTimeoutMs)
+  // 深查 D-1：和 Node.js 一样 3 分钟没进展才停、30 分钟兜底，不再从开始就掐着 10 分钟；到点的那句不变。
+  const deadline = createDownloadDeadline('Python 安装包下载超时', (reason) => controller.abort(reason))
   const abort = () => controller.abort(options.signal?.reason)
   options.signal?.addEventListener('abort', abort, { once: true })
   const progress = (transferredBytes: number, message: string) => report(options, {
@@ -443,7 +456,10 @@ async function downloadInstaller(
         // 官方发布信息里的大小是可信的总长，没有 Content-Length 时也拿它核对续传。
         return asset.fileSize
       },
-      onProgress: (transferredBytes) => progress(transferredBytes, `正在下载 Python ${asset.version} 官方安装包`),
+      onProgress: (transferredBytes) => {
+        deadline.progressed(transferredBytes)
+        progress(transferredBytes, `正在下载 Python ${asset.version} 官方安装包`)
+      },
       onResume: (transferredBytes) => progress(
         transferredBytes,
         `网络断了一下，正在接着下载 Python ${asset.version} 官方安装包`,
@@ -455,7 +471,7 @@ async function downloadInstaller(
     await fs.promises.rm(filePath, { force: true }).catch(() => undefined)
     throw error
   } finally {
-    clearTimeout(timeout)
+    deadline.stop()
     options.signal?.removeEventListener('abort', abort)
   }
 }
@@ -539,6 +555,7 @@ async function defaultRunProcess(
 ): Promise<CommandResult> {
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
+    timeoutExcludesSleep: plan.timeoutExcludesSleep,
     acceptedExitCodes: plan.acceptedExitCodes,
     maxOutputBytes: 2 * 1024 * 1024,
     windowsHide: true,

@@ -148,7 +148,7 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
   // 返回，打开时会跳过信任写入与 AGENTS.md 生成（workspace-guard.ts）。
   async function pickWorkspace(parentWindow: BrowserWindow | undefined): Promise<string | null> {
     const dialogOptions: OpenDialogOptions = {
-      title: '选择 CLI 工作目录',
+      title: '选一个项目文件夹',
       properties: ['openDirectory', 'createDirectory'],
     }
     for (;;) {
@@ -333,9 +333,16 @@ export function registerLaunchHandlers(ctx: IpcHandlerContext): void {
     const startedAt = Date.now()
     const writability = await inspectWorkspaceWritable(target, options.workspaceWriteCheck ? { probe: options.workspaceWriteCheck.probe } : {})
     // 不记路径（I13）：客服要的是结果和耗时。
-    options.runtimeLog.log(writability === 'denied' ? 'warn' : 'info', 'config', 'workspace.write-check', writability === 'denied'
+    options.runtimeLog.log(writability === 'denied' || writability === 'read-only' ? 'warn' : 'info', 'config', 'workspace.write-check', writability === 'denied'
       ? '选中的文件夹不让写入，打开前先提醒'
-      : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+      : writability === 'read-only'
+        ? '选中的文件夹在只读的盘上，照常打开，打开后在首页提醒'
+        : '打开前试写了选中的文件夹', { provider, result: writability, durationMs: Date.now() - startedAt })
+    // 盘本身只读（光盘、写保护的 U 盘）不是受控文件夹访问，下面那一问的原因对不上：不拦，打开后首页说一句（D17）。
+    if (writability === 'read-only') {
+      const result = await launchProviderWith(provider, target, launchMode, resumeSessionId)
+      return { ...result, workspaceReadOnly: true }
+    }
     if (writability !== 'denied') return launchProviderWith(provider, target, launchMode, resumeSessionId)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const prompt = buildWorkspaceNotWritablePrompt({ allowCreate: launchMode === 'new' })

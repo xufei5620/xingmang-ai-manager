@@ -77,6 +77,7 @@ import { describeProbeFailure } from './probe-failure'
 import { downloadWithResume, DownloadStalledError, type ResumableDownloadOptions } from './download-retry'
 import {
   describeDesktopBucketFallback,
+  DesktopBucketIndexStaleError,
   downloadDesktopBucketPackage,
   measureDesktopDownloadSpeed,
   readDesktopBucketPackage,
@@ -104,6 +105,7 @@ import type {
   UpdateState,
   VersionUpdateStatus,
 } from './system-service'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { powerShellLiteral, resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
@@ -114,6 +116,7 @@ import {
   classifyCodexDesktopInstallFailure,
   codexDesktopNoStoreNotice,
   codexDesktopOfficialPackageFailedNotice,
+  codexDesktopStoreNoUpdateExitCode,
   codexDesktopTechnicalWords,
   isCodexDesktopInstallFailureMessage,
   isPlainCodexDesktopInstallMessage,
@@ -122,6 +125,7 @@ import {
 import { codexDesktopKnownIssueLaunchSentence, resolveCodexDesktopKnownIssue } from './codex-desktop-known-issues'
 import { codexDesktopChineseOffMessage } from './remote-features'
 import { inspectWindowsStoreAvailability } from './windows-store-availability'
+import { assertWorkspaceDirectory } from './workspace-access'
 
 const execFileAsync = promisify(execFile)
 
@@ -673,7 +677,7 @@ export function describeCodexDesktopStoreFailure(error: unknown): string {
   // WinINet timeout, name resolution, connection and connection-reset failures.
   if ([0x80072ee2, 0x80072ee7, 0x80072efd, 0x80072efe, 0x80072eff].includes(exitCode)) return '连不上微软商店'
   // APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE：商店那边还没有比本机更新的版本。
-  if (exitCode === 0x8a15002b) return '商店里暂时还没有更新的版本'
+  if (exitCode === codexDesktopStoreNoUpdateExitCode) return '商店里暂时还没有更新的版本'
   // APPINSTALLER_CLI_ERROR_NO_APPLICATIONS_FOUND：这台电脑所在地区的商店查不到它。
   if (exitCode === 0x8a150014) return '商店里没找到 Codex 桌面端'
   // 认不出的退出码不上屏（客户看了也不知道做什么），原样进日志：见 codexDesktopStoreExitCode。
@@ -683,7 +687,11 @@ export function describeCodexDesktopStoreFailure(error: unknown): string {
 /** 商店那一路的原始退出码，只写进日志，客服查的时候用。 */
 export function codexDesktopStoreExitCode(error: unknown): string | null {
   if (!(error instanceof CommandRunnerError) || error.exitCode === null) return null
-  return `0x${(error.exitCode >>> 0).toString(16)}`
+  return codexDesktopStoreExitCodeText(error.exitCode)
+}
+
+function codexDesktopStoreExitCodeText(exitCode: number): string {
+  return `0x${(exitCode >>> 0).toString(16)}`
 }
 
 /**
@@ -1291,6 +1299,21 @@ export function measureCodexDesktopOfficialSpeed(
   }, fetchImplementation), signal)
 }
 
+/**
+ * 商店、官网之后回头用过期清单那一次（allowStale），桶后面只剩国内镜像：太慢时比的是它，拿主源同一个包测，
+ * 跳转照镜像那一路的规矩核。商店、官网已经试过，再拿官网来比就比错了对象。
+ */
+export function measureCodexDesktopMirrorSpeed(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+  signal: AbortSignal,
+): Promise<DesktopAlternativeSpeed | null> {
+  return measureDesktopDownloadSpeed((probeSignal) => fetchTrustedCodexDesktopResource(codexDesktopMirrorPackageUrls[architecture], {
+    headers: { Accept: 'application/vnd.ms-appx, application/octet-stream' },
+    signal: probeSignal,
+  }, fetchImplementation), signal)
+}
+
 export interface CodexDesktopOfficialDownloadOptions {
   architecture: 'x64' | 'arm64'
   destination: string
@@ -1376,6 +1399,8 @@ export interface CodexDesktopBucketDownloadOptions {
   destination: string
   /** 本机装着的那一版；桶里那一版不比它新就不下。null = 首次安装。 */
   installedVersion: string | null
+  /** 清单过期了也照样下（readDesktopBucketPackage 的 allowStale）。缺省 = 过期就抛 DesktopBucketIndexStaleError。 */
+  allowStale?: boolean
   /** 必填，理由同 CodexDesktopCandidateDownloadOptions.fetchImplementation。 */
   fetchImplementation: typeof fetch
   signal?: AbortSignal
@@ -1396,14 +1421,17 @@ export type CodexDesktopBucketDownloadResult =
  * 第一路：从星芒自己的存储桶下 OpenAI 官方的离线安装包（scripts/sync-chatgpt-official-cos.cjs
  * 搬过去、在 GitHub 的 Windows 机器上验过签名的那一份）。清单里的大小和 SHA-256 绑住下载，
  * 下完再照官网那一路核包身份、发布者、签名，版本还得和清单写的一模一样。读不到清单、没下成、
- * 没过校验都抛错，由调用方照旧走商店、官网、国内镜像；客户点的取消照旧原样抛出。
+ * 没过校验都抛错，由调用方照旧走商店、官网、国内镜像；清单过期抛的是 DesktopBucketIndexStaleError
+ * （allowStale 时不查），调用方据此在商店、官网之后回头再用桶。客户点的取消照旧原样抛出。
  */
 export async function downloadCodexDesktopBucketPackage(
   options: CodexDesktopBucketDownloadOptions,
 ): Promise<CodexDesktopBucketDownloadResult> {
   const { architecture, destination, installedVersion, fetchImplementation, signal } = options
   signal?.throwIfAborted()
-  const release = await readDesktopBucketPackage(`codex-windows-${architecture}`, fetchImplementation, signal)
+  const release = await readDesktopBucketPackage(`codex-windows-${architecture}`, fetchImplementation, signal, {
+    allowStale: options.allowStale === true,
+  })
   if (installedVersion) {
     const comparison = compareWindowsPackageVersions(installedVersion, release.version)
     // 桶是定时从官网同步的，会晚一些：这时多半还是本机这一版，不下，照旧走商店那几路。
@@ -1415,8 +1443,10 @@ export async function downloadCodexDesktopBucketPackage(
     ...(signal ? { signal } : {}),
     ...(options.resumeOptions ? { resumeOptions: options.resumeOptions } : {}),
     onProgress: (progress) => options.onProgress?.(release.version, progress),
-    // 桶太慢时先比一比官网那一路，确实更快才换（#1061 第 6 条）。
-    probeAlternative: (probeSignal) => measureCodexDesktopOfficialSpeed(architecture, fetchImplementation, probeSignal),
+    // 桶太慢时先比一比后面那一路，确实更快才换（#1061 第 6 条）：平常是官网，回头用过期清单时是国内镜像。
+    probeAlternative: (probeSignal) => (options.allowStale ? measureCodexDesktopMirrorSpeed : measureCodexDesktopOfficialSpeed)(
+      architecture, fetchImplementation, probeSignal,
+    ),
   })
   try {
     signal?.throwIfAborted()
@@ -1542,7 +1572,7 @@ export function desktopMirrorUpdateAvailable(
   return comparison === null ? null : comparison < 0
 }
 
-const codexDesktopProbeScriptHeader = '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)'
+const codexDesktopProbeScriptHeader = powerShellUtf8OutputStatement
 
 function codexDesktopStartAppsQuery(): string {
   return "@(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)"
@@ -1605,9 +1635,28 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
           ($pidFamilies[[int]$_.Process.ParentProcessId] -ne $_.PackageFamilyName)
       })`
     : '$toCheck = $candidates'
+  // Where an application-control policy holds PowerShell to ConstrainedLanguage,
+  // the two .NET calls that name this user and session are refused, the whole
+  // segment fails, and the home page could never say 「正在运行」 there
+  // (2026-11-10 customer machine). WMI answers both questions about this very
+  // PowerShell process instead: GetOwnerSid is the same call every candidate's
+  // owner is read with below, so the comparison stays like for like. FullLanguage
+  // keeps the .NET lines untouched. Without a SID the segment fails rather than
+  // compare against nothing: unknown ownership must never become a taskkill
+  // target. The candidate and result objects are hashtables because
+  // ConstrainedLanguage refuses [pscustomobject]@{}; the result keeps its key
+  // order with [ordered], so ConvertTo-Json writes the same JSON as before.
   return String.raw`& {
-    $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') {
+      $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+      $currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
+    } else {
+      $selfProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop
+      $selfOwner = Invoke-CimMethod -InputObject $selfProcess -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop
+      $currentSid = if ($null -ne $selfOwner -and $selfOwner.ReturnValue -eq 0) { [string]$selfOwner.Sid } else { $null }
+      $currentSessionId = $selfProcess.SessionId
+      if (-not $currentSid -or $null -eq $currentSessionId) { throw 'Codex desktop process probe: WMI did not name the owner and session of this PowerShell process' }
+    }
     $targetIds = ${targetIds}
     $candidates = @(Get-CimInstance -ClassName Win32_Process -Filter "SessionId=$currentSessionId${nameFilter}" | ForEach-Object {
       $path = [string]$_.ExecutablePath
@@ -1622,7 +1671,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
       $package = [regex]::Match($path, '(?i)\\WindowsApps\\(?<name>OpenAI\.Codex(?:Beta)?)_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__(?<publisher>[A-Za-z0-9.]+)\\')
       if ($package.Success -and $null -ne $_.SessionId -and $_.SessionId -eq $currentSessionId -and ($null -eq $targetIds -or ($targetIds -contains [int]$_.ProcessId))) {
         $packageFamilyName = $package.Groups['name'].Value + '_' + $package.Groups['publisher'].Value
-        [pscustomobject]@{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
+        @{ Process = $_; Path = $path; PackageFamilyName = $packageFamilyName }
       }
     })
     ${ownerTargets}
@@ -1634,7 +1683,7 @@ function codexDesktopProcessQuery(scope: CodexDesktopProcessScope, processIds?: 
         try { $owner = Invoke-CimMethod -InputObject $process -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop } catch {}
         # Unknown ownership must never become a taskkill target.
         if ($null -ne $owner -and $owner.ReturnValue -eq 0 -and $owner.Sid -eq $currentSid) {
-          [pscustomobject]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
+          [ordered]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }
         }
       }
     })
@@ -1849,7 +1898,9 @@ function codexDesktopPackageProbeStatements(): string[] {
     'if ($null -ne $currentError) {',
     '  $errorMessage = \'读不到这台电脑上 Codex 桌面端的安装信息，请换成当初装它的那个 Windows 账户登录，再打开星芒重试。\'',
     '}',
-    '$packageProbe = [pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
+    // A hashtable, not [pscustomobject]@{}: ConstrainedLanguage refuses that
+    // hashtable-to-object conversion, and ConvertTo-Json writes both the same.
+    '$packageProbe = @{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage }',
   ]
 }
 
@@ -1859,7 +1910,7 @@ export function buildCodexDesktopPackageProbeScript(): string {
     buildPowerShellModuleImportStatement(codexDesktopPackageProbeModules),
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
-    '$packageProbe | ConvertTo-Json -Compress',
+    ...buildPowerShellJsonOutputStatements('$packageProbe | ConvertTo-Json -Compress'),
   ].join('; ')
 }
 
@@ -1906,7 +1957,9 @@ export function buildCodexDesktopCombinedProbeScript(): string {
     '$ErrorActionPreference = "Stop"',
     ...codexDesktopPackageProbeStatements(),
     '} catch { $packageError = $_.Exception.Message }',
-    '[pscustomobject]@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6',
+    // 受限语言模式下 [pscustomobject]@{} 被拒，最后这句一失败整条就是退出码 1、结果全丢
+    // （2026-11-10 客户电脑），所以用普通哈希表，JSON 照样是同一个对象。
+    ...buildPowerShellJsonOutputStatements('@{ startApps = $startApps; startAppsError = $startAppsError; processes = $processes; processesError = $processesError; package = $packageProbe; packageError = $packageError } | ConvertTo-Json -Compress -Depth 6'),
   ].join('\n')
 }
 
@@ -2321,6 +2374,13 @@ export interface CodexDesktopInstallAttempt {
   officialPackage?: boolean
   /** 第一路（星芒自己的存储桶）没走通的原因，只进日志。缺省 = 没走那一路、走通了或桶里那一版不比本机新。 */
   bucketFailure?: string | null
+  /**
+   * 第一路没用桶只是因为清单过期（DesktopBucketIndexStaleError）：商店、官网都没装上时回头再用它，
+   * 排在国内镜像前面。缺省 = 没过期，或者桶因为别的原因没走通，不回头。
+   */
+  bucketStale?: boolean
+  /** 这次装的是过期清单里的那一版（已经下好、核过）。缺省 = 不是。 */
+  bucketPackage?: boolean
 }
 
 type CodexDesktopStoreOutcome = Pick<CodexDesktopInstallAttempt, 'storeFailure' | 'storeUnavailable' | 'storeInstallerMissing'>
@@ -2400,12 +2460,15 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
   const official = attempt.officialFailure ? `${codexDesktopOfficialPackageFailedNotice}（${attempt.officialFailure}），` : ''
   // 存储桶那一路没走通不上屏（客户看不出换了路），只记在日志里那句原话的最前面。
   const bucket = attempt.bucketFailure ? `存储桶这一路没走通（${attempt.bucketFailure}），` : ''
-  // 官网的包下好、核过却装不上时不再换国内镜像重下，这时失败的是官网那一份。
-  const route = attempt.officialPackage ? 'OpenAI 官网的离线安装包' : '国内镜像'
+  // 官网的包或回头用的桶里那一版下好、核过却装不上时不再换国内镜像重下，这时失败的是那一份。
+  const route = attempt.officialPackage
+    ? 'OpenAI 官网的离线安装包'
+    : attempt.bucketPackage ? '存储桶里的离线安装包' : '国内镜像'
   const detail = `${bucket}${store || official ? `${store}${official}${route}也没装上：${raw}` : raw}`
   return new CodexDesktopInstallFailure(
     buildCodexDesktopInstallFailureMessage(reason, {
       storeTried: attempt.storeFailure !== null,
+      storeNoUpdate: attempt.storeExitCode === codexDesktopStoreExitCodeText(codexDesktopStoreNoUpdateExitCode),
       storeUnavailable: attempt.storeUnavailable === true,
       officialTried: Boolean(attempt.officialFailure),
       updating: attempt.updating,
@@ -2418,10 +2481,27 @@ export function toCodexDesktopInstallFailure(error: unknown, attempt: CodexDeskt
  * 存储桶的包下好、核过，交给 Windows 却没装上以后，要不要照旧走商店、官网、国内镜像。商店和侧载
  * 是两种装法，这台电脑不让侧载时商店往往还装得上，所以默认接着走，同存储桶上线前一样。客户自己
  * 取消、取消了授权、盘满了这几样，换一路也救不了，原样交出。
+ *
+ * Windows 防火墙服务停着（firewallOff）也原样交出：官网、国内镜像装的是同一个官方包，商店用的也是
+ * 同一个安装引擎（推测，没在真机上演过），都卡在登记防火墙规则那一步。以前接着走，客户要多等商店
+ * 一趟、再从官网下一遍几百兆，最后看到的还是同一句话。
+ *
+ * staleRetry 是商店、官网之后回头用过期清单的那一次：商店已经试过，剩下的国内镜像和它是同一种装法、
+ * 同一个官方包，也原样交出（同官网那一路）。
  */
-export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown): boolean {
-  if (isInstallCancelledError(error)) return false
-  return !isPlainCodexDesktopInstallMessage(error instanceof Error ? error.message : String(error))
+export function shouldContinueAfterCodexDesktopBucketInstall(error: unknown, staleRetry = false): boolean {
+  if (staleRetry || isInstallCancelledError(error)) return false
+  const message = error instanceof Error ? error.message : String(error)
+  if (classifyCodexDesktopInstallFailure(message) === 'firewallOff') return false
+  return !isPlainCodexDesktopInstallMessage(message)
+}
+
+/**
+ * 第一路存储桶没走通以后，商店、官网都没装上时要不要回头再用它（排在国内镜像前面）。只有清单过期这一样：
+ * 包本身没毛病，只是可能落后官方。读不到、下载或核对没过、交给 Windows 没装上的，再试一次也一样，不回头。
+ */
+export function shouldRetryCodexDesktopBucketWhenStale(error: unknown): boolean {
+  return error instanceof DesktopBucketIndexStaleError
 }
 
 /**
@@ -2622,7 +2702,7 @@ export function withCodexDesktopDarwinUpdate(status: DesktopAppStatus, latestVer
  * 看不懂；原话现在只进运行日志（system-service 接的 withCodexDesktopCdpFailureReport 和
  * withCodexDesktopLocaleFailureReport）。这条路只在 Windows 上走，首页「打开」在 Codex 开着时会问要不要重启。
  */
-export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重启 Codex」试一次。'
+export const codexDesktopChineseUnverifiedMessage = 'Codex 已经打开，但这次没换成中文界面。先保存手头的工作，再在首页点「打开」，选「重开 Codex」试一次。'
 
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
@@ -2674,7 +2754,8 @@ export interface CodexDesktopServiceOptions {
   resolveStoreInstaller?: (signal?: AbortSignal) => Promise<SystemWingetResolution>
   /**
    * Windows 上先从星芒自己的腾讯云存储桶下 Codex 桌面端（国内快、不用加速），桶不行再照旧走商店、
-   * 官网、国内镜像（yoyo 2026-10-10）。缺省 = 不走桶（测试与旧调用方照旧），生产由 system-service 打开。
+   * 官网、国内镜像（yoyo 2026-10-10）；桶只是清单过期的，排到官网后面、国内镜像前面再用。
+   * 缺省 = 不走桶（测试与旧调用方照旧），生产由 system-service 打开。
    */
   bucketDownloads?: DesktopBucketOptions
   /**
@@ -2773,7 +2854,7 @@ function runWithoutDownloadRoute<T>(operation: () => Promise<T>): Promise<T> {
 /**
  * 打开 Codex 桌面端分两段（#1085）：start 做到发出启动请求为止，算账号工作；它交回来的那段只等本机的
  * Codex 进程起来、给它换中文，Windows 上最长一分多钟，换账号、退出不陪它等。start 跑的时候开始换账号，
- * 照旧报「账号上下文已变化，请重试」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
+ * 照旧报「账号刚切换过，请再试一次」，但启动请求已经发出去了：先把窗口等完再报，安装队列不能趁 Codex
  * 还在起来就放别的安装、卸载进来换同一个包（I11）。
  */
 export async function launchThenWaitOutsideAccountWork<T>(
@@ -3198,7 +3279,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       contentLength: downloaded.contentLength,
       onElevationRequired: () => sendCodexDesktopInstallProgress(target, {
         phase: 'installing', percent: null,
-        message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
+        message: '接下来 Windows 会弹出授权窗口，上面写的是「Windows PowerShell」，这是星芒在调用系统自带的安装工具，点「是」继续。',
       }),
     })
     const installedPackage = await verifyInstalledCodexDesktop(downloaded.version)
@@ -3216,17 +3297,24 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   /**
    * 第一路：星芒自己的存储桶，和官网同一个包，国内直连就快，不接下载线路。桶里那一版不比本机新、
-   * 读不到清单、下载或核对没过，都返回 null，由调用方照旧走商店、官网、国内镜像，原因只进日志。
+   * 读不到清单、清单过期、下载或核对没过，都返回 null，由调用方照旧走商店、官网、国内镜像，原因只进日志。
    * 下好、核过却没装上时多半也返回 null，见 shouldContinueAfterCodexDesktopBucketInstall。
+   *
+   * allowStale：只因清单过期没用上的桶，商店、官网都没装上以后回头再走一次（排在国内镜像前面）。这时桶里
+   * 那一版也许不是官方最新的，但比本机新就比第三方镜像可靠：包和官网是同一个，签名同样核过。这一次交给
+   * Windows 没装上就不再换国内镜像：商店已经试过了，镜像那份是同一种装法，重下一遍也一样装不上。
    */
   async function installCodexDesktopFromBucket(
     target: RendererMessageTarget,
     attempt: CodexDesktopInstallAttempt,
     architecture: 'x64' | 'arm64',
     currentPackage: CodexDesktopPackageEntry | null,
+    allowStale: boolean,
     cancellation?: InstallCancellationHandle,
   ): Promise<CodexDesktopInstallResult | null> {
     if (!bucketDownloads) return null
+    // 回头那一次在商店、官网后面，开头交代前面几路怎么了，和国内镜像那一路同一句话。
+    const notice = allowStale ? describeCodexDesktopStoreNotice(attempt) : ''
     let temporaryDirectory: string | null = null
     try {
       let packagePath: string
@@ -3239,19 +3327,20 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           architecture,
           destination: packagePath,
           installedVersion: currentPackage?.version ?? null,
+          allowStale,
           fetchImplementation: downloadFetch,
           ...(cancellation ? { signal: cancellation.signal } : {}),
           onVersion: (version) => sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent: 0,
-            message: `正在从国内镜像下载 Codex 桌面端 ${version}（0%）`,
+            message: `${notice}正在从国内镜像下载 Codex 桌面端 ${version}（0%）`,
           }),
           onProgress: (version, { percent, resuming }) => sendCodexDesktopInstallProgress(target, {
             phase: 'downloading',
             percent,
             message: resuming
               ? `网络断了一下，正在从国内镜像接着下载 Codex 桌面端 ${version}（已下 ${percent}%）`
-              : `正在从国内镜像下载 Codex 桌面端 ${version}（${percent}%）`,
+              : `${notice}正在从国内镜像下载 Codex 桌面端 ${version}（${percent}%）`,
           }),
           onValidating: () => sendCodexDesktopInstallProgress(target, {
             phase: 'validating',
@@ -3264,10 +3353,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         if (isInstallCancelledError(error)) throw error
         cancellation?.throwIfCancelled()
         attempt.bucketFailure = (error instanceof Error ? error.message : String(error)) || '下载或校验失败'
+        if (!allowStale) attempt.bucketStale = shouldRetryCodexDesktopBucketWhenStale(error)
         bucketDownloads.onFallback?.(describeDesktopBucketFallback(`codex-windows-${architecture}`, error))
         return null
       }
       if (downloaded.status === 'not-newer') return null
+      if (allowStale) attempt.bucketPackage = true
       try {
         return await installDownloadedCodexDesktopPackage(target, packagePath, {
           version: downloaded.version,
@@ -3275,7 +3366,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           contentLength: downloaded.download.size,
         }, currentPackage, cancellation)
       } catch (error) {
-        if (!shouldContinueAfterCodexDesktopBucketInstall(error)) throw error
+        if (!shouldContinueAfterCodexDesktopBucketInstall(error, allowStale)) throw error
         // 交给 Windows 装的那一步封存了取消；换下一路时又能取消了。
         cancellation?.unseal()
         attempt.bucketFailure = (error instanceof Error ? error.message : String(error)) || '安装没有完成'
@@ -3585,7 +3676,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       await reloadDownloadProxyConfig().catch(() => undefined)
     }
     // 先从星芒自己的存储桶下；没走通（或桶里不比本机新）才照旧走商店、官网、国内镜像。
-    const bucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, cancellation)
+    const bucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, false, cancellation)
     if (bucketResult) return bucketResult
     cancellation?.throwIfCancelled()
     invalidateCodexDesktopManifestCache()
@@ -3629,6 +3720,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         target, attempt, architecture, currentPackage, manifestBundle.officialVersion, cancellation,
       )
       if (officialResult) return officialResult
+    }
+    // 桶只是清单过期才没用上的：商店、官网都没装上（或者官网说没有更新的版本），国内镜像之前回头用它，
+    // 比本机新才装。官网的包下好、核过却被 Windows 拒装时上面已经直接报错，走不到这里。
+    if (attempt.bucketStale) {
+      const staleBucketResult = await installCodexDesktopFromBucket(target, attempt, architecture, currentPackage, true, cancellation)
+      if (staleBucketResult) return staleBucketResult
+      cancellation?.throwIfCancelled()
     }
     const mirrorCandidates = manifestBundle.mirrorCandidates
     const mirrorCandidate = mirrorCandidates[0] ?? null
@@ -4045,11 +4143,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
       const workspace = store.read().workspace
-      try {
-        if (!fs.statSync(workspace).isDirectory()) throw new Error('not a directory')
-      } catch {
-        throw new Error('工作目录不存在，请重新选择')
-      }
+      assertWorkspaceDirectory(workspace, platform, '工作目录不存在，请重新选择')
       // 已经开着的 Codex 收不到启动参数（LaunchServices 只把链接交过去），那时只照旧连加速。
       const startupRoute = await prepareStartupBeforeLaunch(!desktopApp.running)
       const appArguments = startupRoute.kind === 'none' ? [] : [formatCodexStartupMacArgument(startupRoute.hostResolverRules)]

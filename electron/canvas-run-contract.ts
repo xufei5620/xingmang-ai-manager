@@ -7,6 +7,7 @@ export type CanvasRunNodeKind =
   | 'frame-extract' | 'router' | 'gallery' | 'output' | 'group' | 'note'
   | 'drama-bible' | 'drama-script' | 'drama-parse'
   | 'drama-character' | 'drama-scene' | 'drama-prop' | 'drama-shot'
+  | 'text-generate'
   | CanvasRunKernelOnlyNodeKind
 
 /**
@@ -16,7 +17,6 @@ export type CanvasRunNodeKind =
  * paid request (#1392). Each label is the kernel's own node title.
  */
 export const canvasRunKernelOnlyNodeLabels = {
-  'text-generate': '文字生成',
   'image-crop': '裁剪图片',
   'image-collage': '拼图',
   'image-grid-split': '宫格裁剪',
@@ -70,7 +70,50 @@ export interface CanvasRunGraphNode {
     videoResolution?: '480p' | '720p'
     videoAspectRatio?: '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
     promptOptimization?: boolean
+    /**
+     * Image kinds only, 2-4. The desktop sends this many independent requests
+     * that each ask for one image (upstream n stays 1); absent means one.
+     */
+    imageCandidateCount?: CanvasRunImageCandidateCount
+    /**
+     * image-edit only: repaint just the painted part of the one source image
+     * (画布完善第 5 条). Parsed with the kernel's limits; absent means a plain
+     * edit, exactly as before.
+     */
+    imageEditMask?: CanvasImageEditMask
+    /**
+     * frame-extract only, seconds into the source video (画布完善第 7 条第二步).
+     * Kept only while the desktop runs frame-extract nodes; absent on every
+     * other node, so their fingerprints stay as they were.
+     */
+    frameTimestampSeconds?: number
   }
+}
+
+export type CanvasRunImageCandidateCount = 1 | 2 | 3 | 4
+
+export interface CanvasImageEditMaskPoint { x: number; y: number }
+export interface CanvasImageEditMaskStroke { tool: 'brush' | 'erase'; size: number; points: CanvasImageEditMaskPoint[] }
+/** Strokes in 0-1 coordinates over a width x height image (xingmang-canvas image-tools/image-edit-mask.ts). */
+export interface CanvasImageEditMask {
+  version: 1
+  /** The image the mask was drawn on; a run refuses any other source. */
+  sourceAssetId?: string
+  width: number
+  height: number
+  strokes: CanvasImageEditMaskStroke[]
+}
+
+/**
+ * One request of a multi-image node. Every request of the same run shares the
+ * batchId and the node's fingerprint; index counts from 1. The kernel shows the
+ * candidates of the latest batch together (xingmang-canvas
+ * runtime/image-candidate-batch.ts).
+ */
+export interface CanvasRunImageBatch {
+  batchId: string
+  index: CanvasRunImageCandidateCount
+  count: CanvasRunImageCandidateCount
 }
 
 export interface CanvasRunGraphEdge {
@@ -139,6 +182,44 @@ export interface CanvasRunAttempt {
   costQuota?: number
   group?: string
   model?: string
+  imageBatch?: CanvasRunImageBatch
+  /** What the relay answered this attempt's paid requests with; absent when none left. */
+  relayBilling?: CanvasRunRelayBilling
+  /** Filled in a few seconds after the run, once the account's usage records are checked. */
+  charge?: CanvasRunAttemptCharge
+}
+
+/**
+ * 实扣的底账（画布完善第 2b 条第 3 步）：这次尝试发出去的付费请求，站点回了哪些请求号。
+ * 用量记录按请求号记每一笔扣费，跑完拿它去对。请求号不敏感，客服对账就用它。
+ */
+export interface CanvasRunRelayBilling {
+  /** The relay's request ids, in the order the answers came back. */
+  requestIds: string[]
+  /** A request left and no answer came back (stopped, timed out, connection lost): it may have been charged. */
+  unanswered?: true
+  /** An answer came back without a usable request id. */
+  unidentified?: true
+}
+
+/** What one attempt actually cost, matched against the account's usage records. */
+export interface CanvasRunAttemptCharge {
+  /** settled: every request it sent is accounted for; unmatched: some could not be matched, shown as 待核对. */
+  state: 'settled' | 'unmatched'
+  /** Dollars of the requests that matched; 0 when nothing was charged. */
+  usd: number
+  /** The relay may still adjust it afterwards (video). */
+  approximate?: true
+}
+
+/** The run's 实扣: the sum over its paid attempts. Never an estimate passed off as a charge. */
+export interface CanvasRunCharge {
+  state: 'settled' | 'unmatched'
+  usd: number
+  /** Paid attempts that could not be matched. */
+  unmatchedAttempts: number
+  approximate?: true
+  checkedAt: string
 }
 
 export interface CanvasRunNodeRecord {
@@ -190,7 +271,39 @@ export interface CanvasRunTerminalEvent extends CanvasRunEventBase {
   outcome: CanvasRunOutcome
 }
 
-export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunTerminalEvent
+/**
+ * A frame the page must decode for a frame-extract node (画布完善第 7 条第二步).
+ * The kernel extracts it with its own browser decoder and hands the PNG back
+ * through canvas-host:complete-run-preparation; only operations listed here
+ * are accepted, once each. Same shape as the web host's run-waiting payload.
+ */
+export interface CanvasFramePreparation {
+  operationId: string
+  nodeId: string
+  attemptId: string
+  sourceAssetId: string
+  timestampSeconds: number
+}
+
+/** Sent whenever the set of frames the run is waiting on changes; an empty list means none. */
+export interface CanvasRunWaitingEvent extends CanvasRunEventBase {
+  type: 'run-waiting'
+  waitingForVideo: false
+  framePreparations: CanvasFramePreparation[]
+}
+
+export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunWaitingEvent | CanvasRunTerminalEvent
+
+/**
+ * Published (not kept in `events`) once a finished run's charges are checked.
+ * The kernel drops events of runs it no longer tracks, so a kernel that does
+ * not know this type ignores it; it reads `charge` from the record instead.
+ */
+export interface CanvasRunChargeEvent extends CanvasRunEventBase {
+  type: 'run-charge'
+  charge: CanvasRunCharge
+  attempts: { nodeId: string; attemptId: string; charge: CanvasRunAttemptCharge }[]
+}
 
 export interface CanvasRunOutcome {
   succeeded: string[]
@@ -216,6 +329,9 @@ export interface CanvasRunRecord {
   outcome?: CanvasRunOutcome
   nodes: CanvasRunNodeRecord[]
   events: CanvasRunEvent[]
+  /** Frames the page still has to hand back; left out when none. */
+  framePreparations?: CanvasFramePreparation[]
+  charge?: CanvasRunCharge
 }
 
 export interface CanvasRunCacheEntry {

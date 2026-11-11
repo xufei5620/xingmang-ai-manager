@@ -26,6 +26,31 @@ export function parseAiVideoAssetId(value: unknown): string {
   return value
 }
 
+// 文件名里 Windows 不认的字、控制字符和改写显示方向的那几个（防「片名.mp4」显示成别的扩展名）。
+const unsafeFileNameCharacters = /[\u0000-\u001f\u007f<>:"/\\|?*\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+// Windows 的保留名：点前面那一截是它们的，整个文件名都不能用（CON.mp4 也不行）。
+const reservedWindowsFileNames = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
+export const maximumVideoSaveNameLength = 80
+
+/**
+ * 另存成片时系统对话框里默认的文件名（视频剪辑页传片名）。它只是对话框的默认值，存到哪儿仍由用户在系统对话框里点、
+ * 落盘照旧走原子写；这里只收一个干净的文件名：路径分隔符和 Windows 不认的字换成空格，去掉首尾的点和空白，
+ * 最长 80 个字，接上 .mp4。洗完是空的、是 Windows 保留名就不用（交回 undefined，用作品库里原来的名字）。
+ */
+export function parseVideoSaveName(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || value.length > 200) throw new Error('另存的文件名格式错误')
+  const cleaned = value.replace(unsafeFileNameCharacters, ' ').replace(/\s+/g, ' ').replace(/^[\s.]+|[\s.]+$/g, '')
+  const name = Array.from(cleaned).slice(0, maximumVideoSaveNameLength).join('').replace(/[\s.]+$/, '')
+  if (!name || reservedWindowsFileNames.test(name.split('.')[0].trim())) return undefined
+  return `${name}.mp4`
+}
+
+export function parseAiAudioAssetId(value: unknown): string {
+  if (typeof value !== 'string' || !assetIdPattern.test(value)) throw new Error('音频编号格式错误')
+  return value
+}
+
 function wholeNumberBetween(value: unknown, minimum: number, maximum: number, message: string): number {
   if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < minimum || value > maximum) throw new Error(message)
   return value

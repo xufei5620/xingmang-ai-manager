@@ -121,7 +121,7 @@ export function useToolLaunch(options: ToolLaunchOptions) {
       let config = await toolsApi.readConfig()
       if (!launchIsCurrent(epoch)) return null
       let tool = presentTools({ ...current, config }).find((entry) => entry.id === id)
-      if (!tool) throw new Error('当前平台暂不支持打开这个工具')
+      if (!tool) throw new Error('这台电脑上打不开这个工具')
       if (tool.error) throw new Error(tool.error)
       if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
       // Shortcuts, tray actions and the records page share this entry, including

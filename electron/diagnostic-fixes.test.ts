@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { windowsSystemExecutable } from './command-runner'
 import {
   buildClearProviderOverridesScript,
   clearUserProviderOverrides,
@@ -149,20 +150,22 @@ describe('clearable environment overrides', () => {
 
 describe('clearUserProviderOverrides', () => {
   it('passes the names through the environment, not the script, and drops only user-only values from this process', async () => {
-    const seen: Array<{ script: string; names: string | undefined }> = []
+    const seen: Array<{ script: string; names: string | undefined; setx: string | undefined }> = []
     const processEnv: NodeJS.ProcessEnv = { ANTHROPIC_API_KEY: 'sk-x', OPENAI_BASE_URL: 'https://machine.example' }
     const result = await clearUserProviderOverrides({
       names: ['ANTHROPIC_API_KEY', 'OPENAI_BASE_URL', 'PATH'],
       platform: 'win32',
       processEnv,
       run: async (script, env) => {
-        seen.push({ script, names: env.XINGMANG_CLEAR_OVERRIDES })
+        seen.push({ script, names: env.XINGMANG_CLEAR_OVERRIDES, setx: env.XINGMANG_SETX_EXE })
         return 'cleared:ANTHROPIC_API_KEY;OPENAI_BASE_URL\nmachine:OPENAI_BASE_URL\n'
       },
     })
     expect(seen).toHaveLength(1)
     expect(seen[0].names).toBe('ANTHROPIC_API_KEY;OPENAI_BASE_URL')
     expect(seen[0].script).not.toContain('sk-')
+    // Only the ConstrainedLanguage branch runs it, by System32's absolute path (I14).
+    expect(seen[0].setx).toBe(windowsSystemExecutable('setx.exe'))
     expect(result).toEqual({ kind: 'clear-user-overrides', fixed: 2, machineRemaining: true })
     expect(processEnv).toEqual({ OPENAI_BASE_URL: 'https://machine.example' })
   })

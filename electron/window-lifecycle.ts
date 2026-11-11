@@ -24,13 +24,20 @@ export interface WindowLifecycleOptions {
    */
   onHiddenToTray?(): void
   /**
-   * 「直接退出」偏好和托盘 / 菜单「退出」放行前的最后一次确认：有安装正在跑时
-   * 拦一下，或者问一句要不要顺手装上已经下载好的更新。缺省 = 旧行为，不确认。
+   * 「直接退出」偏好和托盘 / 菜单「退出」放行前的最后一次确认：有安装正在跑、
+   * 聊天还在回复时拦一下，或者问一句要不要顺手装上已经下载好的更新。缺省 = 旧行为，不确认。
    * 「每次询问」那条路径不走这里：它自己的对话框已经写了「强制退出不等待任务
-   * 完成」，再弹一次是重复。**一次退出最多只问一句**，所以两件事合在同一个
-   * 回调里由调用方排序，不是两个钩子各弹各的框。
+   * 完成」，再弹一次是重复。被拦过的人不再被问更新，所以几件事合在同一个
+   * 回调里由调用方排序，不是几个钩子各弹各的框。
    */
   confirmQuit?(): QuitConfirmation | Promise<QuitConfirmation>
+  /**
+   * 退出放行前先让开着的画布按它自己的关窗流程收尾：存下最后不到一秒的改动；还有在生成的，
+   * 画布自己问一句（返回画布 / 停止本地任务并保存 / 等待完成后关闭）。返回 false = 用户回了画布，
+   * 这次退出作废，画布窗口已经回到前面。排在 confirmQuit 前面：画布不开着时它不弹也不等。
+   * 关机时不调，没人回答（#1368 第 9 条）。缺省 = 旧行为，画布直接被关掉。
+   */
+  closeCanvas?(): Promise<boolean>
   /**
    * 拉起已经下载好的更新的安装器，只在 confirmQuit 选了 'install-update' 之后
    * 调用。安装器自己会让程序退出，所以它必须在 quitting 置位之后才跑，否则那次
@@ -107,7 +114,7 @@ export interface WindowLifecycle {
   abortUpdateQuit(): void
   /**
    * 系统要关机 / 重启 / 注销（Mac 的 powerMonitor 'shutdown'：只在系统发出关机通知时才有，
-   * Command + Q 不发）。之后一分钟内开始的退出和 Windows 关机一样不问、不装；系统来让程序
+   * ⌘Q 不发）。之后一分钟内开始的退出和 Windows 关机一样不问、不装；系统来让程序
    * 退出时，开着的询问框、确认框不等回答；退出时正在等安装器的也立刻不等了。拖住退出，
    * 系统会说本程序取消了关机。
    */
@@ -223,10 +230,23 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       return 'quit-requested'
     })
   }
+  // 画布收尾出错不能否决用户已经做出的退出选择；Mac 关机时系统来让程序退出，画布里开着的框也不等。
+  const canvasClosed = async (): Promise<boolean> => {
+    if (!options.closeCanvas || systemShuttingDown()) return true
+    try {
+      return await answerUnlessPowerOff(options.closeCanvas(), true)
+    } catch (error) {
+      reportError(error)
+      return true
+    }
+  }
   const confirmedQuit = async (): Promise<WindowCloseResult> => {
     // 关机 / 重启 / 注销时不问也不装：Windows 只给几秒钟，拦住它只会让系统强杀这个进程；
     // Mac 的确认框没人回答就拦住了关机，安装器在本进程里准备，也会被关机一起结束。
     // 下好的更新留到下次打开再装。
+    if (systemShuttingDown()) return performQuit()
+    if (!await canvasClosed()) return 'cancelled'
+    if (disposed) return 'cancelled'
     if (systemShuttingDown() || !options.confirmQuit) return performQuit()
     let confirmation: QuitConfirmation
     try {
@@ -256,6 +276,8 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
       : Promise.resolve()
     if (explicitQuit || decision === 'quit') {
       await rememberChoice
+      if (!await canvasClosed()) return 'cancelled'
+      if (disposed) return 'cancelled'
       return performQuit()
     }
     if (decision === 'cancel') return cancelled()

@@ -6,12 +6,16 @@ import {
   type CanvasRenameAssetInput,
   type CanvasStartRunInput,
   type CanvasUpdateAssetMetadataInput,
+  desktopCanvasCapabilities,
 } from './canvas-contract'
 import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
+import { parseCanvasImageEditMask } from './canvas-image-mask'
 import {
   canvasRunKernelOnlyNodeLabels,
+  type CanvasImageEditMask,
   type CanvasRunGraph,
+  type CanvasRunImageCandidateCount,
   type CanvasRunKernelOnlyNodeKind,
   type CanvasRunNodeKind,
   type CanvasRunScope,
@@ -247,7 +251,7 @@ export function parseCanvasVideoTaskId(value: unknown): string {
 const canvasNodeKinds = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
-  'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot',
+  'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot', 'text-generate',
   ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
 
@@ -310,6 +314,10 @@ function optionalCandidateCount(value: unknown, label: string): number | undefin
   return value as number
 }
 
+function runsImageCandidates(kind: CanvasRunNodeKind): boolean {
+  return kind === 'image' || kind === 'image-generate' || kind === 'image-edit'
+}
+
 function optionalBoolean(value: unknown, label: string): boolean | undefined {
   if (value === undefined) return undefined
   if (typeof value !== 'boolean') throw new Error(`${label}格式错误`)
@@ -330,10 +338,12 @@ function referenceSlotCount(value: unknown, label: string, maximum: number, budg
  * undefined when every kernel field is absent or equal to what the desktop
  * already does. The wording names what the user switched on, never a field.
  */
-function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }): string | undefined {
+function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): string | undefined {
   const reasons: string[] = []
+  // Image kinds run 2-4 independent requests (canvas-run-engine.ts); the
+  // kernel never sends a count for any other kind.
   const imageCandidates = optionalCandidateCount(data.imageCandidateCount, '画布图片生成数量')
-  if (imageCandidates !== undefined && imageCandidates > 1) reasons.push('一次出多张图')
+  if (imageCandidates !== undefined && imageCandidates > 1 && !runsImageCandidates(kind)) reasons.push('一次出多张图')
   const videoCandidates = optionalCandidateCount(data.videoCandidateCount, '画布视频生成数量')
   if (videoCandidates !== undefined && videoCandidates > 1) reasons.push('一次出多个视频')
   if (optionalBoolean(data.textWebSearch, '画布联网搜索开关') === true) reasons.push('联网搜索')
@@ -367,10 +377,13 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
     if (typeof data.frameTimestampSeconds !== 'number' || !Number.isFinite(data.frameTimestampSeconds) || data.frameTimestampSeconds < 0 || data.frameTimestampSeconds > 86_400) {
       throw new Error('画布抽帧时间格式错误')
     }
-    reasons.push('视频抽帧')
+    // A frame-extract node is the only one the desktop decodes a frame for.
+    if (kind !== 'frame-extract' || !options.frameExtract) reasons.push('视频抽帧')
   }
+  // Without its own executor a frame-extract node would otherwise fall back to
+  // the paid video executor (canvas-run-engine.ts executorFor refuses too).
+  if (kind === 'frame-extract' && !options.frameExtract) reasons.push('视频抽帧')
   const structured: Array<[string, string, string]> = [
-    ['imageEditMask', '画布蒙版', '蒙版局部修改'],
     ['commerceTask', '画布电商创作配置', '电商创作'],
     ['interiorTask', '画布室内创作配置', '室内创作'],
     ['exteriorTask', '画布室外创作配置', '室外创作'],
@@ -388,6 +401,18 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
   if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
   if (reasons.length === 0) return undefined
   return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次没有提交任何付费请求`
+}
+
+/**
+ * The mask of a masked edit (画布完善第 5 条), image-edit nodes only, as the
+ * kernel stores it there (parseNodeImageEditMask). It is paid for and changes
+ * the request, so unlike the fields above it is parsed in full and passed on.
+ */
+function optionalImageEditMask(kind: CanvasRunNodeKind, value: unknown, budget: { remaining: number }): CanvasImageEditMask | undefined {
+  if (value === undefined) return undefined
+  if (kind !== 'image-edit') throw new Error('蒙版局部修改配置只能保存在局部修改图像节点中')
+  assertBoundedKernelValue(value, '画布蒙版', budget)
+  return parseCanvasImageEditMask(value)
 }
 
 function optionalCanvasString(value: unknown, label: string, maximum: number): string | undefined {
@@ -575,7 +600,15 @@ function parseRunScope(value: unknown): CanvasRunScope {
   throw new Error('画布运行范围格式错误')
 }
 
-export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
+export interface CanvasStartRunParseOptions {
+  /** Whether frame-extract nodes run; the canvas window passes desktopCanvasCapabilities.features.frameExtract. */
+  frameExtract: boolean
+}
+
+export function parseCanvasStartRunInput(
+  value: unknown,
+  options: CanvasStartRunParseOptions = { frameExtract: desktopCanvasCapabilities.features.frameExtract },
+): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
   // The kernel's agent panel starts runs on the user's behalf from a cloud
   // conversation the desktop does not have. Refuse it by name instead of the
@@ -599,7 +632,12 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     ], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
-    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget)
+    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options)
+    // Range-checked by kernelFieldsUnsupported above; kept only where it runs.
+    const frameTimestampSeconds = kind === 'frame-extract' && options.frameExtract
+      ? (typeof entry.data.frameTimestampSeconds === 'number' ? entry.data.frameTimestampSeconds : 0)
+      : undefined
+    const imageEditMask = optionalImageEditMask(kind, entry.data.imageEditMask, kernelFieldBudget)
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
     const prompt = canvasPrompt(entry.data.prompt, '画布节点提示词', 100_000)
@@ -627,6 +665,10 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     if (videoAspectRatio && !['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'].includes(videoAspectRatio)) throw new Error('画布 MiniMax 视频比例不受支持')
     const promptOptimization = entry.data.promptOptimization
     if (promptOptimization !== undefined && typeof promptOptimization !== 'boolean') throw new Error('画布 MiniMax 提示词优化开关格式错误')
+    // Already range-checked by kernelFieldsUnsupported above.
+    const imageCandidateCount = runsImageCandidates(kind) && typeof entry.data.imageCandidateCount === 'number' && entry.data.imageCandidateCount > 1
+      ? entry.data.imageCandidateCount as CanvasRunImageCandidateCount
+      : undefined
     return {
       id: requiredCanvasString(entry.id, '画布节点标识', 256),
       kind,
@@ -646,6 +688,9 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
         ...(videoResolution ? { videoResolution: videoResolution as CanvasRunGraph['nodes'][number]['data']['videoResolution'] } : {}),
         ...(videoAspectRatio ? { videoAspectRatio: videoAspectRatio as CanvasRunGraph['nodes'][number]['data']['videoAspectRatio'] } : {}),
         ...(typeof promptOptimization === 'boolean' ? { promptOptimization } : {}),
+        ...(imageCandidateCount ? { imageCandidateCount } : {}),
+        ...(imageEditMask ? { imageEditMask } : {}),
+        ...(frameTimestampSeconds !== undefined ? { frameTimestampSeconds: Object.is(frameTimestampSeconds, -0) ? 0 : frameTimestampSeconds } : {}),
       },
     }
   })

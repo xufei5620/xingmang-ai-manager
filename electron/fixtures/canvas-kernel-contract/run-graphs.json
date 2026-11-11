@@ -139,7 +139,7 @@
         }
       },
       "expect": {
-        "refusal": "「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求"
+        "refusal": null
       }
     },
     {
@@ -182,7 +182,7 @@
         }
       },
       "expect": {
-        "refusal": "「文字生成」节点桌面版暂不支持，本次没有提交任何付费请求"
+        "refusal": "「联网搜索」桌面版暂不支持，本次没有提交任何付费请求"
       }
     },
     {
@@ -242,7 +242,67 @@
         }
       },
       "expect": {
-        "refusal": "「蒙版局部修改」桌面版暂不支持，本次没有提交任何付费请求"
+        "refusal": null
+      }
+    },
+    {
+      "name": "image edit mask on an image node",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "image-generate",
+              "data": {
+                "prompt": "改背景",
+                "model": "gpt-image-2",
+                "group": "图片模型",
+                "imageEditMask": {
+                  "version": 1,
+                  "width": 64,
+                  "height": 48,
+                  "strokes": [
+                    {
+                      "tool": "brush",
+                      "size": 0.1,
+                      "points": [
+                        {
+                          "x": 0.5,
+                          "y": 0.5
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "all"
+        }
+      },
+      "expect": {
+        "parseError": "蒙版局部修改配置只能保存在局部修改图像节点中"
       }
     },
     {

@@ -37,22 +37,25 @@ vi.mock('./desktop-package-bucket', async (importOriginal) => {
   return { ...original, downloadDesktopBucketPackage: vi.fn(original.downloadDesktopBucketPackage) }
 })
 
-const feedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
-const pinnedFeedUrl = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest.json'
+const feedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest-mac.yml'
+const pinnedFeedUrl = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest-mac.yml'
+// OpenCode stopped publishing the Tauri latest.json with 1.19.5 (2026-10-28); GitHub still redirects to it, then 404s.
+const retiredFeedUrl = 'https://github.com/anomalyco/opencode/releases/latest/download/latest.json'
+const pinnedRetiredFeedUrl = 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/latest.json'
 const packageUrl = (architecture: string) => `https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-desktop-mac-${architecture}.app.tar.gz`
 const assetUrl = (name: string) => `https://release-assets.githubusercontent.com/github-production-release-asset/1/${name}?sp=r&sig=abc`
 const archiveBytes = Buffer.alloc(256 * 1024, 3)
 
-function feed(overrides: Record<string, unknown> = {}) {
-  return JSON.stringify({
-    version: '1.18.34',
-    platforms: {
-      'darwin-aarch64': { url: packageUrl('arm64'), signature: 'x' },
-      'darwin-x86_64': { url: packageUrl('x64'), signature: 'x' },
-      'windows-x86_64': { url: 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-desktop-win-x64.exe', signature: 'x' },
-    },
-    ...overrides,
-  })
+/** latest-mac.yml as OpenCode's finalize-latest-yml.ts writes it: the electron-updater zips and dmgs of both chips. */
+function feed(options: { version?: string, files?: readonly string[] } = {}) {
+  const files = options.files ?? ['opencode-desktop-mac-arm64.zip', 'opencode-desktop-mac-arm64.dmg', 'opencode-desktop-mac-x64.zip', 'opencode-desktop-mac-x64.dmg']
+  return [
+    `version: ${options.version ?? '1.18.34'}`,
+    'files:',
+    ...files.flatMap((file) => [`  - url: ${file}`, `    sha512: ${Buffer.from(file).toString('base64')}`, '    size: 150173778']),
+    "releaseDate: '2026-10-28T05:59:42.651Z'",
+    '',
+  ].join('\n')
 }
 
 function redirect(location: string): Response {
@@ -71,8 +74,9 @@ function fakeNetwork(options: FakeNetworkOptions = {}) {
     requested.push(url)
     expect(init?.redirect).toBe('manual')
     if (url === feedUrl) return redirect(pinnedFeedUrl)
-    if (url === pinnedFeedUrl) return redirect(assetUrl('latest.json'))
-    if (url === assetUrl('latest.json')) return new Response(options.feedBody ?? feed())
+    if (url === pinnedFeedUrl) return redirect(assetUrl('latest-mac.yml'))
+    if (url === assetUrl('latest-mac.yml')) return new Response(options.feedBody ?? feed(), { headers: { 'content-type': 'application/octet-stream' } })
+    if (url === retiredFeedUrl) return redirect(pinnedRetiredFeedUrl)
     if (url.endsWith('.app.tar.gz')) return redirect(assetUrl(path.posix.basename(url)))
     if (url.startsWith(assetUrl('opencode-desktop-mac-').split('?')[0])) {
       if (options.failPackage) throw new TypeError('fetch failed')
@@ -251,7 +255,7 @@ describe('macOS desktop app installer', () => {
     const network = fakeNetwork()
     const response = await fetchMacosDesktopResource('opencode', feedUrl, {}, network.fetch)
     expect(response.status).toBe(200)
-    expect(network.requested).toEqual([feedUrl, pinnedFeedUrl, assetUrl('latest.json')])
+    expect(network.requested).toEqual([feedUrl, pinnedFeedUrl, assetUrl('latest-mac.yml')])
 
     const elsewhere = (async () => redirect('https://example.com/opencode.tar.gz')) as typeof globalThis.fetch
     await expect(fetchMacosDesktopResource('opencode', packageUrl('arm64'), {}, elsewhere)).rejects.toThrow('example.com')
@@ -341,6 +345,15 @@ describe('macOS desktop app installer', () => {
     expect(f.progress.slice(-2)).toEqual(['正在检查下载下来的安装包是不是完整的官方版', '正在放进「应用程序」'])
   })
 
+  it.skipIf(process.platform === 'win32')('installs a release that ships latest-mac.yml but no latest.json, like OpenCode 1.19.5', async () => {
+    const f = setup({ feedBody: feed({ version: '1.19.5' }) })
+    const installed = await installMacosDesktopApp(f.options)
+    expect(installed).toEqual({ version: '1.19.5', path: path.posix.join(f.applications, 'OpenCode.app') })
+    expect(f.requested.slice(0, 3)).toEqual([feedUrl, pinnedFeedUrl, assetUrl('latest-mac.yml')])
+    expect(f.requested).toContain('https://github.com/anomalyco/opencode/releases/download/v1.19.5/opencode-desktop-mac-arm64.app.tar.gz')
+    expect(f.requested.some((url) => url.endsWith('/latest.json') || url.endsWith('.zip'))).toBe(false)
+  })
+
   it.skipIf(process.platform === 'win32')('picks the Intel package on an Intel Mac', async () => {
     const f = setup({}, {}, { architecture: 'x64' })
     await installMacosDesktopApp(f.options)
@@ -367,7 +380,7 @@ describe('macOS desktop app installer', () => {
   })
 
   it.skipIf(process.platform === 'win32')('refuses a feed that points the package anywhere but its fixed release address', async () => {
-    const f = setup({ feedBody: feed({ platforms: { 'darwin-aarch64': { url: 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/other.tar.gz' } } }) })
+    const f = setup({ feedBody: feed({ files: ['opencode-desktop-mac-x64.zip', 'https://github.com/anomalyco/opencode/releases/download/v1.18.34/other.zip'] }) })
     const error = await failure(installMacosDesktopApp(f.options))
     expect(error.message).toBe('OpenCode 没装好，请再点一次「安装」。')
     expect(error.detail).toContain('没有这台 Mac 能用的安装包')
@@ -1451,7 +1464,7 @@ describe('measuring the vendor route on a Mac', () => {
     expect(speed).toEqual({ bytesPerMs: expect.any(Number), totalBytes: archiveBytes.byteLength })
     expect(speed?.bytesPerMs).toBeGreaterThan(0)
     expect(network.requested).toEqual([
-      feedUrl, pinnedFeedUrl, assetUrl('latest.json'), packageUrl('arm64'), assetUrl('opencode-desktop-mac-arm64.app.tar.gz'),
+      feedUrl, pinnedFeedUrl, assetUrl('latest-mac.yml'), packageUrl('arm64'), assetUrl('opencode-desktop-mac-arm64.app.tar.gz'),
     ])
   })
 
@@ -1466,8 +1479,33 @@ describe('measuring the vendor route on a Mac', () => {
     expect(speed?.bytesPerMs).toBeLessThanOrEqual(archiveBytes.byteLength / 200)
   })
 
+  it('takes the version only from a latest-mac.yml that lists this Mac\'s zip, and never asks for the retired latest.json', async () => {
+    const zips = ['opencode-desktop-mac-arm64.zip', 'opencode-desktop-mac-x64.zip']
+    for (const [body, accepted] of [
+      [feed(), true],
+      [feed({ files: ['https://github.com/anomalyco/opencode/releases/download/v1.18.34/opencode-desktop-mac-arm64.zip'] }), true],
+      [feed().replace('version: 1.18.34', "version: '1.18.34'"), true],
+      [feed().replace(/\n/g, '\r\n'), true],
+      [feed({ files: ['opencode-desktop-mac-x64.zip', 'opencode-desktop-mac-arm64.dmg'] }), false],
+      [feed({ files: ['https://github.com/anomalyco/opencode/releases/download/v1.18.33/opencode-desktop-mac-arm64.zip'] }), false],
+      [feed({ files: ['https://example.com/opencode-desktop-mac-arm64.zip'] }), false],
+      [feed({ version: 'v1.18.34', files: zips }), false],
+      [feed({ version: '1.18.34-beta.1', files: zips }), false],
+      [`version: 1.18.35\n${feed()}`, false],
+      [feed().replace('version: 1.18.34', '  version: 1.18.34'), false],
+      [JSON.stringify({ version: '1.18.34', platforms: { 'darwin-aarch64': { url: packageUrl('arm64') } } }), false],
+      ['', false],
+    ] as const) {
+      const network = fakeNetwork({ feedBody: body })
+      const speed = await measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)
+      expect({ body, accepted: speed !== null }).toEqual({ body, accepted })
+      expect(network.requested.includes(packageUrl('arm64'))).toBe(accepted)
+      expect(network.requested.some((url) => url.endsWith('/latest.json'))).toBe(false)
+    }
+  })
+
   it('cannot measure when the feed offers nothing for this Mac, and asks for no package', async () => {
-    const network = fakeNetwork({ feedBody: feed({ platforms: {} }) })
+    const network = fakeNetwork({ feedBody: feed({ files: [] }) })
     await expect(measureMacosDesktopVendorSpeed('opencode', { architecture: 'arm64', systemVersion: null }, network.fetch, signal)).resolves.toBeNull()
     expect(network.requested.some((url) => url.includes('.app.tar.gz'))).toBe(false)
   })

@@ -25,12 +25,16 @@ import {
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { claudePlatformSwitches } from './workspace-config-overrides'
+import { readRemovedCliHooks, rememberRemovedCliHooks, removedCliHooksRecordPath } from './removed-cli-hooks'
+import { removeCliHooksRememberingRestore } from './uninstall-cleanup'
 import type { NodeRuntimeInstallResult } from './node-runtime'
 import {
   claudeForeignModelEnvKeys,
   codexAuthSnapshotPaths,
   codexConfigSnapshotPaths,
   defaultCodexRelayProvider,
+  inspectManagedCliHookParts,
+  inspectManagedCliHookTargets,
   inspectProviderConfig,
   providerConfigPaths,
   saveProviderConfig,
@@ -4772,6 +4776,43 @@ describe('npm install progress reporting', () => {
     expect(inspectWindowsProcessor).toHaveBeenCalledTimes(1)
   })
 
+  it.runIf(process.platform === 'win32')('tells the Node.js installer only when the app itself already runs elevated', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-elevated-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn(async (): Promise<NodeRuntimeInstallResult> => ({
+      installed: true,
+      action: 'installed',
+      method: 'msi',
+      source: 'official',
+      version: 'v24.19.0',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+      systemRestartRequired: false,
+    }))
+    function serviceFor(windowsProcessElevated?: boolean) {
+      return createSystemService(
+        new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+        {
+          platform: 'win32',
+          windowsExecutionMode: 'same-user',
+          ...(windowsProcessElevated === undefined ? {} : { windowsProcessElevated }),
+          findExecutable: async () => null,
+          inspectWindowsRestartRequired: async () => ({ required: false, reasons: [] }),
+          inspectWindowsProcessor: async () => 'x64' as const,
+          installNodeRuntime,
+        },
+      )
+    }
+
+    await serviceFor(true).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ processElevated: true }))
+    await serviceFor(false).installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+    await serviceFor().installNodeRuntime(target)
+    expect(installNodeRuntime).toHaveBeenLastCalledWith(expect.not.objectContaining({ processElevated: true }))
+  })
+
   it.runIf(process.platform === 'win32')('keeps an outdated Node.js on its own build when replacing it on an ARM laptop', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-arm-old-node-runtime-'))
     temporaryDirectories.push(directory)
@@ -5369,6 +5410,114 @@ describe('reminder settings fixed on their own after startup', () => {
   })
 })
 
+// 0.2.24 深查「安装卸载」第 1 条：卸了再装回来，卸载时收回的做完提醒、防睡和状态栏开机按记录补回。
+describe('reminder settings put back after uninstalling and reinstalling', () => {
+  async function reinstalledFixture(options: { node?: boolean } = {}) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-reinstalled-hooks-'))
+    temporaryDirectories.push(directory)
+    const roots = { userHome: directory, codexHome: path.join(directory, '.codex') }
+    const managerDataDirectory = path.join(directory, 'manager')
+    fs.mkdirSync(managerDataDirectory)
+    const oldHook = {
+      nodeExecutable: process.execPath,
+      scriptPath: path.join(directory, 'old install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs'),
+      eventsDirectory: path.join(managerDataDirectory, 'cli-events'),
+      platform: 'linux' as const,
+    }
+    const oldStatusLine = `"${process.execPath}" "${path.join(directory, 'old install', 'bundled-catalog', 'cli-status-line', 'xingmang-statusline.cjs')}"`
+    saveProviderConfig('claude', 'sk-relay', 'claude-opus-4-6', 'reset', roots, {}, providerBaseUrls, oldStatusLine, undefined, oldHook)
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.5', 'reset', roots, {}, providerBaseUrls, undefined, undefined, oldHook)
+    // What the uninstaller does before the files go.
+    await removeCliHooksRememberingRestore(managerDataDirectory, roots)
+    const cliHookScriptPath = path.join(directory, 'new install', 'bundled-catalog', 'cli-hooks', 'xingmang-hook.cjs')
+    const claudeStatusLineScriptPath = path.join(directory, 'new install', 'bundled-catalog', 'cli-status-line', 'xingmang-statusline.cjs')
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const service = createService({
+      platform: 'linux',
+      providerRoots: roots,
+      managerDataDirectory,
+      cliHookScriptPath,
+      claudeStatusLineScriptPath,
+      findExecutable: vi.fn(async (command: string) => command === 'node' && options.node !== false ? process.execPath : null),
+      getExternalClientAccountId: () => null,
+      runtimeLog: runtimeLog as unknown as SystemServiceOptions['runtimeLog'],
+    })
+    return { service, roots, managerDataDirectory, cliHookScriptPath, claudeStatusLineScriptPath, runtimeLog }
+  }
+
+  it('puts back the hooks and status line the uninstaller took, at the new location, once', async () => {
+    const { service, roots, managerDataDirectory, cliHookScriptPath, claudeStatusLineScriptPath, runtimeLog } = await reinstalledFixture()
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual([])
+    expect(inspectManagedCliHookParts('codex', roots)).toEqual([])
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks', 'statusLine'])
+    const claudeTargets = inspectManagedCliHookTargets('claude', roots)
+    expect(claudeTargets.slice(0, 5).map((target) => target.scriptPath)).toEqual(Array(5).fill(cliHookScriptPath))
+    expect(claudeTargets[5].scriptPath).toBe(claudeStatusLineScriptPath)
+    expect(inspectManagedCliHookTargets('codex', roots)).toEqual([{ nodeExecutable: process.execPath, scriptPath: cliHookScriptPath }])
+    expect(inspectProviderConfig('claude', roots).apiKey).toBe('sk-relay')
+    expect(inspectProviderConfig('codex', roots).apiKey).toBe('sk-relay')
+    expect(fs.existsSync(removedCliHooksRecordPath(managerDataDirectory))).toBe(false)
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'config', 'cli-hooks.restored', expect.any(String), { provider: 'claude', parts: ['hooks', 'statusLine'] })
+
+    // Only once per launch, and the record is gone for the next one.
+    const claudeBefore = fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
+    expect(fs.readFileSync(providerConfigPaths('claude', roots)[0], 'utf8')).toBe(claudeBefore)
+  })
+
+  it('does not bring back reminders the customer removed without a record from the uninstaller', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture()
+    fs.rmSync(removedCliHooksRecordPath(managerDataDirectory))
+    const files = (['claude', 'codex'] as const).map((provider) => fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8'))
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect((['claude', 'codex'] as const).map((provider) => fs.readFileSync(providerConfigPaths(provider, roots)[0], 'utf8'))).toEqual(files)
+  })
+
+  it('does not push out a status line the customer set up after uninstalling', async () => {
+    const { service, roots } = await reinstalledFixture()
+    const [claudePath] = providerConfigPaths('claude', roots)
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual(['claude', 'codex'])
+    expect((JSON.parse(fs.readFileSync(claudePath, 'utf8')) as { statusLine: unknown }).statusLine).toEqual({ type: 'command', command: '~/.claude/line.sh' })
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks'])
+  })
+
+  it('settles a status line the customer replaced without writing or counting it', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture()
+    const [claudePath] = providerConfigPaths('claude', roots)
+    fs.rmSync(removedCliHooksRecordPath(managerDataDirectory))
+    await rememberRemovedCliHooks(managerDataDirectory, [{ provider: 'claude', parts: ['statusLine'], configPath: claudePath }])
+    const settings = JSON.parse(fs.readFileSync(claudePath, 'utf8')) as Record<string, unknown>
+    settings.statusLine = { type: 'command', command: '~/.claude/line.sh' }
+    fs.writeFileSync(claudePath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+    const before = fs.readFileSync(claudePath, 'utf8')
+
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect(fs.readFileSync(claudePath, 'utf8')).toBe(before)
+    expect(fs.existsSync(removedCliHooksRecordPath(managerDataDirectory))).toBe(false)
+  })
+
+  it('keeps the record for the next launch while this computer cannot write the hooks', async () => {
+    const { service, roots, managerDataDirectory } = await reinstalledFixture({ node: false })
+    const record = await readRemovedCliHooks(managerDataDirectory)
+    expect(await service.restoreCliHooksRemovedByUninstall!()).toEqual([])
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual([])
+    await expect(readRemovedCliHooks(managerDataDirectory)).resolves.toEqual(record)
+  })
+
+  it('puts them back before the first read of the config after startup, signed in or not', async () => {
+    const { service, roots } = await reinstalledFixture()
+    expect(await service.autoRepairStaleCliHooks!()).toEqual([])
+    expect(inspectManagedCliHookParts('claude', roots)).toEqual(['hooks', 'statusLine'])
+    expect(inspectManagedCliHookParts('codex', roots)).toEqual(['hooks'])
+  })
+})
+
 describe('shouldAutoRepairCliHooks', () => {
   it('only fixes stale hooks in the account\'s own config that were not tried yet this launch', () => {
     expect(shouldAutoRepairCliHooks({ stale: true, ownership: 'account', attempted: false })).toBe(true)
@@ -5791,6 +5940,22 @@ describe('Darwin Codex Desktop integration', () => {
       isDestroyed: () => false,
       send: vi.fn(),
     })).rejects.toThrow('工作目录不存在，请重新选择')
+    expect(execute).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
+  })
+
+  it('tells a Mac user to grant folder access when the stored workspace cannot be looked at (D29)', async () => {
+    const { service, workspace, execute, release } = await createDarwinService()
+    const statSync = fs.statSync
+    vi.spyOn(fs, 'statSync').mockImplementation(((target: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (target === workspace) throw Object.assign(new Error(`EPERM: operation not permitted, stat '${workspace}'`), { code: 'EPERM' })
+      return statSync(target, options)
+    }) as typeof fs.statSync)
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('Mac 没允许星芒打开这个文件夹。打开「系统设置 › 隐私与安全性 › 文件和文件夹」，把「星芒AI管理工具」和「终端」两项都打开，再点一次「打开」。')
     expect(execute).not.toHaveBeenCalled()
     expect(release).not.toHaveBeenCalled()
   })
@@ -7021,6 +7186,42 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
     expect(JSON.parse(fs.readFileSync(trustedFolders, 'utf8'))).toEqual({ [workspace]: 'TRUST_FOLDER' })
   })
 
+  // D4（0.2.24 深查安全.md 新-1）：网上下载的项目自带 hooks 之类，替客户答了信任它们一启动就会跑。
+  it.each([
+    [['.claude', 'settings.json']],
+    [['.claude', 'settings.local.json']],
+    [['.mcp.json']],
+  ])('leaves the Claude trust question to the CLI when the folder already carries %j', async (segments) => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-carried-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'downloaded-repo')
+    fs.mkdirSync(path.join(workspace, '.claude'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, ...segments), JSON.stringify({ hooks: {} }))
+    const log = vi.fn()
+
+    await expect(launchService(userHome, 'claude', { log }).launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    expect(claudeConfig).toEqual({ hasCompletedOnboarding: true })
+    const events = log.mock.calls.map((call) => call[2])
+    expect(events).toContain('workspace.trust.left-to-cli')
+    expect(events).not.toContain('workspace.trust.written')
+  })
+
+  it('still trusts a folder whose .claude holds nothing Claude Code runs on trust', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-trust-own-'))
+    temporaryDirectories.push(userHome)
+    const workspace = path.join(userHome, 'project')
+    fs.mkdirSync(path.join(workspace, '.claude', 'commands'), { recursive: true })
+    fs.writeFileSync(path.join(workspace, 'CLAUDE.md'), '# 我的项目\n')
+
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace)).rejects.toThrow('未检测到 Claude Code')
+
+    const claudeConfig = JSON.parse(fs.readFileSync(path.join(userHome, '.claude.json'), 'utf8')) as Record<string, unknown>
+    const projects = claudeConfig.projects as Record<string, Record<string, unknown>>
+    expect(projects[workspace].hasTrustDialogAccepted).toBe(true)
+  })
+
   // #1085：换账号时还排着队的「打开」直接出队，一行都不跑；轮到它执行时才交给账号工作。
   it('runs a launch inside the queued account work, and not at all once that work was called off', async () => {
     const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-launch-account-work-'))
@@ -7031,7 +7232,7 @@ describe('trusting the workspace the user picked before opening a CLI', () => {
 
     const calledOff = accountWork.queue()
     accountWork.abortQueued()
-    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号上下文已变化')
+    await expect(launchService(userHome, 'claude').launchProvider('claude', workspace, 'new', null, calledOff)).rejects.toThrow('账号刚切换过')
     expect(fs.existsSync(path.join(userHome, '.claude.json'))).toBe(false)
 
     const work = accountWork.queue()
@@ -7123,9 +7324,11 @@ describe('opening a CLI on Linux', () => {
     launchLinuxTerminal: NonNullable<SystemServiceOptions['launchLinuxTerminal']>,
     runtimeLog?: SystemServiceOptions['runtimeLog'],
     account: Partial<NativeConfigInspection> = {},
+    extra: Partial<SystemServiceOptions> = {},
   ) {
     return createService({
       platform: 'linux',
+      ...extra,
       ...(runtimeLog ? { runtimeLog } : {}),
       providerRoots: { userHome, codexHome: path.join(userHome, '.codex') },
       inspectProviderConfig: vi.fn(() => ({
@@ -7180,6 +7383,69 @@ describe('opening a CLI on Linux', () => {
     expect(plan).toMatchObject({ executable: '/opt/xm/npm/bin/claude', workspace, title: 'Claude Code · 星芒AI' })
     expect(plan?.env).toMatchObject({ FORCE_COLOR: '3', NODE_USE_SYSTEM_CA: expect.any(String) })
     expect(log).toHaveBeenCalledWith('info', 'system', 'terminal.opened', expect.stringContaining('GNOME 终端'), expect.objectContaining({ terminal: 'gnome-terminal' }))
+  })
+
+  // D17：只读盘、没有改的权限的文件夹照样打开，结果里带上「写不进去」，首页说一句。
+  it.runIf(process.platform !== 'win32')('still opens a folder it cannot write to and reports that for the home page', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-readonly-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const log = vi.fn()
+    const probeWorkspaceWritable = vi.fn(async () => { throw Object.assign(new Error('EROFS: read-only file system'), { code: 'EROFS' }) })
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, { log }, {}, { probeWorkspaceWritable }).launchProvider('claude', workspace))
+      .resolves.toMatchObject({ workspaceReadOnly: true })
+
+    expect(probeWorkspaceWritable).toHaveBeenCalledWith(workspace)
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith('warn', 'config', 'workspace.write-check', expect.any(String), expect.objectContaining({ provider: 'claude', result: 'read-only' }))
+    const entry = log.mock.calls.find((call) => call[2] === 'workspace.write-check')
+    expect(JSON.stringify(entry)).not.toContain(userHome)
+  })
+
+  it.runIf(process.platform !== 'win32')('treats a folder without write permission the same way', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-denied-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const probeWorkspaceWritable = vi.fn(async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) })
+
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable }).launchProvider('claude', workspace))
+      .resolves.toMatchObject({ workspaceReadOnly: true })
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it.runIf(process.platform !== 'win32')('says nothing extra when the folder takes the probe or the probe fails for another reason', async () => {
+    const { userHome, workspace } = project('xingmang-linux-open-writable-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+
+    // 不注入：真在临时文件夹里试写一次，写完不留东西。
+    const opened = await linuxLaunchService(userHome, launchLinuxTerminal).launchProvider('claude', workspace)
+    expect(opened).not.toHaveProperty('workspaceReadOnly')
+    expect(fs.readdirSync(workspace).filter((name) => name.startsWith('.write-check-'))).toEqual([])
+
+    const full = vi.fn(async () => { throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' }) })
+    await expect(linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable: full }).launchProvider('claude', workspace))
+      .resolves.not.toHaveProperty('workspaceReadOnly')
+  })
+
+  it.runIf(process.platform !== 'win32')('does not probe the home folder the user was already warned about', async () => {
+    const { userHome } = project('xingmang-linux-open-home-')
+    const launchLinuxTerminal = vi.fn<NonNullable<SystemServiceOptions['launchLinuxTerminal']>>(async () => ({
+      terminal: { id: 'gnome-terminal', label: 'GNOME 终端', executable: '/usr/bin/gnome-terminal' },
+      attempts: [],
+    }))
+    const probeWorkspaceWritable = vi.fn(async () => undefined)
+
+    await linuxLaunchService(userHome, launchLinuxTerminal, undefined, {}, { probeWorkspaceWritable }).launchProvider('claude', userHome)
+    expect(probeWorkspaceWritable).not.toHaveBeenCalled()
+    expect(launchLinuxTerminal).toHaveBeenCalledTimes(1)
   })
 
   // 已知45 跟进、#1081：用星芒账号时，客户环境里的 Key、配置目录和选型号的变量不交给 Claude Code；交给已经

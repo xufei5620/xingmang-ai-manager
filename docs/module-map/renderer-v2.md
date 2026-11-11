@@ -195,15 +195,16 @@
 ## features/video-studio/ 视频剪辑（侧栏「视频剪辑」页和它的拼片引擎）
 - `features/video-studio/README.md` — 页面的流程和工程怎么存；拼片引擎的约定：输入输出、编码先后、字节转移给后台线程、上限。
 - `features/video-studio/VideoStudioPage.tsx` / `video-studio.css` — 「视频剪辑」页（经 `pages-business.tsx` 懒加载）：想法、分镜、拼成一条视频三张卡；没登录、历史账号各一个空状态；要花钱的先弹确认。片段用缩略图代表，点了交给系统播放器（主窗口 CSP 不放 `media-src`）。
-- `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、拼片、按账号存工程；停下时说清哪几段已经交给服务端、照样扣费。
-- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例）、`localStorage` 存取与逐字段校验（缩略图只认作品库的地址）。
+- `features/video-studio/useVideoStudio.ts` — 页面的状态：读各分组的模型、写分镜、同时最多 3 段的出片队列和进度、让 AI 画镜头图（走对话页出图那条 `chat:generate-image`，停下走 `chat:cancel`）、拼片、按账号存工程和草稿箱（手上有事在跑时不换，换回来的草稿里没等到的片段照重开页面那样接回）；停下时说清哪几段已经交给服务端、照样扣费。
+- `features/video-studio/project.ts` — 纯函数：工程的形状与默认值、分镜落成镜头、排序增删、出片段的请求（Grok 给宽高、MiniMax 给画面比例；镜头选了图就带上，Grok 当第一帧、MiniMax 换成图生视频）、镜头图的多选分配、AI 画镜头图的请求（尺寸跟画面比例走，按 720p 算）和迟到结果的认领、每段剪头剪尾的可选几档（剪完至少留 1 秒）、每镜单独定的时长（换视频模型时一起挪到能出的一档）、配乐和片段原声的两路音量、草稿箱（新建、换出换进、删，最多 20 份，另存一格）、`localStorage` 存取与逐字段校验（缩略图只认作品库的地址）。
 - `features/video-studio/compose-client.ts` — 页面这一头：`composeInVideoStudioWorker` 每次新开一个后台线程拼片，取消就直接关掉线程；回包按白名单读。
 - `features/video-studio/compose-worker.ts` — 后台线程本身，一个线程只拼一次。
 - `features/video-studio/compose.ts` — 用 mediabunny（MPL-2.0）读片段、逐帧画到 OffscreenCanvas 上烧字幕、WebCodecs 编码、写 MP4；画面一段接一段、每段画完接这一段的声音。
 - `features/video-studio/compose-protocol.ts` — 后台线程两头的消息格式与解析，片段字节与总量的上限。
-- `features/video-studio/timeline.ts` — 纯计算：成片尺寸（清晰度是短边）、每段的取材起点与成片帧位；48 kHz 能被 24/25/30 整除，画面和声音不会错开。
-- `features/video-studio/captions.ts` — 字幕断行（汉字按字、英文按词、标点不上行首）、字号与位置、白字黑描边。
+- `features/video-studio/timeline.ts` — 纯计算：成片尺寸（清晰度是短边）、每段的取材起点与成片帧位、每段两头淡入淡出几帧和某一刻亮多少（画面和原声共用）；48 kHz 能被 24/25/30 整除，画面和声音不会错开。
+- `features/video-studio/captions.ts` — 字幕断行（汉字按字、英文按词、标点不上行首）、字号与位置（小 / 中 / 大，底部 / 中间 / 顶部）、白字黑描边。
 - `features/video-studio/pcm.ts` — 声音拼接：各段重采样成 48 kHz 立体声、只写自己的时间窗、空处补静音（mediabunny 自带的重采样只认第一段的采样率，所以在这里做）。
+- `features/video-studio/music.ts` — 配乐：顺着声音块往下解一首歌、放完从头接、结尾淡出，按音量混进原声并截到 [-1, 1]。
 - `features/video-studio/encoding.ts` — 挑编码器：画面 H.264 → VP9 → AV1，声音 AAC → Opus。
 - `features/video-studio/errors.ts` — 报错上屏一律中文，浏览器的英文错误换成能照着做的话。
 

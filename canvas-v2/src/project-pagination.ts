@@ -65,8 +65,17 @@ export async function loadCanvasProjectPage(
   }
 }
 
-export function canvasProjectStorageCopy(storageMode: 'local' | 'cloud') {
-  return storageMode === 'cloud'
-    ? { introduction: '项目节点与布局会自动云端保存，素材保存在您的账户中', create: '创建项目', duplicate: '创建副本', duplicateHint: '创建独立的云端工作流副本，已有素材仍属于您的账户。', archiveHint: '归档后保留工作流与账户素材，可随时恢复。' }
-    : { introduction: '每个项目使用独立工作文件夹，节点、布局和生成素材会自动保存', create: '选择文件夹并创建', duplicate: '选择文件夹并复制', duplicateHint: '下一步选择一个新的空工作文件夹，项目节点、布局和素材会一并复制。', archiveHint: '归档后保留工作流与本地素材，可随时恢复。' }
+// 新建项目默认放进宿主自己的文件夹（桌面是「文档 › 星芒画布」，Mac 的访达里叫「文稿」），不先弹选文件夹的框；
+// 想放别处点「换个位置创建…」，照旧选文件夹。复制项目还是先选一个新的空文件夹。
+export function canvasDefaultProjectFolderLabel(userAgent: string): string {
+  return /Macintosh|Mac OS X/.test(userAgent) ? '文稿 › 星芒画布' : '文档 › 星芒画布'
+}
+
+/** defaultFolder: where the host creates projects without asking, as canvasDefaultProjectFolderLabel names it. */
+export function canvasProjectStorageCopy(storageMode: 'local' | 'cloud', defaultFolder?: string) {
+  if (storageMode === 'cloud') return { introduction: '项目节点与布局会自动云端保存，素材保存在您的账户中', create: '创建项目', createElsewhere: undefined, emptyHint: '点击右上角「新建项目」，输入名称后创建云端项目。', duplicate: '创建副本', duplicateHint: '创建独立的云端工作流副本，已有素材仍属于您的账户。', archiveHint: '归档后保留工作流与账户素材，可随时恢复。' }
+  const local = { duplicate: '选择文件夹并复制', duplicateHint: '下一步选择一个新的空工作文件夹，项目节点、布局和素材会一并复制。', archiveHint: '归档后保留工作流与本地素材，可随时恢复。' }
+  return defaultFolder
+    ? { ...local, introduction: `项目自动保存在「${defaultFolder}」里，节点、布局和生成素材会自动保存`, create: '创建', createElsewhere: '换个位置创建…', emptyHint: '点击右上角「新建项目」，输入名称就能创建。' }
+    : { ...local, introduction: '每个项目使用独立工作文件夹，节点、布局和生成素材会自动保存', create: '选择文件夹并创建', createElsewhere: undefined, emptyHint: '点击右上角「新建项目」，输入名称后再选择工作文件夹。' }
 }

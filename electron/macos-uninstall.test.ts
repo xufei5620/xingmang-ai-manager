@@ -109,6 +109,15 @@ describe('runMacUninstall', () => {
     expect(lines).toEqual(['backup: disk full', 'cli hooks: locked'])
   })
 
+  it('waits for the hook removal that also writes the reinstall record', async () => {
+    const { calls, dependencies } = fixture({
+      removeCliHooks: async () => { calls.push('hooks'); return false },
+    })
+    const result = await runMacUninstall(dependencies, keepEverything)
+    expect(result).toEqual({ trashed: true, leftovers: ['cli-hooks'] })
+    expect(calls.indexOf('hooks')).toBeLessThan(calls.indexOf('login-item'))
+  })
+
   it('stays open and leaves the login alone when the app runs from a disk image or a translocated copy', async () => {
     for (const executablePath of [
       '/Volumes/星芒AI管理工具/星芒AI管理工具.app/Contents/MacOS/星芒AI管理工具',

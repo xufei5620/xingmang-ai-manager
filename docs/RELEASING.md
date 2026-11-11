@@ -302,13 +302,14 @@ git push origin v0.2.6
 
 这次选了 Windows 或 macOS，它的出包作业没有成功（失败、超时被取消都算），publish 作业就不跑，不会悄悄只发另一个平台、让这个平台的客户收不到这一版（#1090）。Linux 算不算数看下面的开关。
 
-**Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
+**Linux 开关。** Linux 的包每次选 `all` 或 `linux` 都会出（`linux-checks` 和分两片的 `linux-renderer-v2-browser` 先在 x64 上跑一遍类型检查和全部测试，`linux-build` 两个架构各自过 `npm run release:package:linux` 的出包门禁、apt 真装、普通用户真开、卸干净），但**传不传到更新目录和 GitHub Release，看仓库变量 `XINGMANG_PUBLISH_LINUX`**：
 
-- 不是 `true`（包括没建这个变量，现在就是没建）：publish 作业不下载 Linux 的包，客户看不到任何 Linux 的东西；Linux 两个作业红了**不代表这次发布失败**，也不挡 Windows / macOS；只选 `linux` 时 publish 作业整个跳过，不会停下来等批准。Linux 包留在那次运行的 Actions artifact（`linux-release-<架构>-<版本>`）里 14 天，可以下下来装机验收。
+- 不是 `true`（包括没建这个变量）：publish 作业不下载 Linux 的包，客户看不到任何 Linux 的东西；Linux 两个作业红了**不代表这次发布失败**，也不挡 Windows / macOS；只选 `linux` 时 publish 作业整个跳过，不会停下来等批准。Linux 包留在那次运行的 Actions artifact（`linux-release-<架构>-<版本>`）里 14 天，可以下下来装机验收。
 - 是 `true`：Linux 和别的平台一样，这次选了 Linux 而 Linux 作业没有成功（失败、超时被取消都算）就不发；两个架构的清单必须一起到，只到一个就在上传前停下。
 - 打开：仓库 **Settings → Secrets and variables → Actions → Variables → New repository variable**，Name 填 `XINGMANG_PUBLISH_LINUX`，Value 填 `true`（GitHub 比较时不分大小写，`TRUE`、`True` 也算打开）。关掉就删掉它，或改成 `false` 这类不是 true 的值。第一次对外发 Linux 版之前要在真机上过一遍（`docs/LINUX.md`）。已经发过 Windows / macOS 的版本，打开开关后可以在**同一个 commit** 上再点一次 Run workflow、选 `linux` 补发。
 - 打开以后发版尽量选 `all`，让三个平台停在同一个版本。只发一个平台会让别的平台落后，之后要回滚到比落后平台还新的版本时，rollback-release 会在第一步停下（某个平台线上比要退回的版本还旧，见 `docs/SERVICE-STATUS.md`）。
 - Linux 两个作业不读任何 secret、不挂 release 环境，所以不会多一次批准。
+- **代码里的暂停（2026-11-09 yoyo「Linux先不发」起挂着）**：`publish-release.yml` 里 release-tag 判断那一步的 `LINUX_PUBLISH_HOLD` 不为空时，开关开着又选了 `all` 或 `linux`，这次运行在占 tag、出包之前就停下（「Linux 暂停对外发」）。这期间发版选 `both`。11-02 补发 0.2.23 Linux 时这个变量建过、值是 `true`，之后没人删过的话现在还是 `true`。暂停只能关、不能开：解除时删掉那一行和 `scripts/publish-workflow-config.test.cjs` 里钉住它的那条用例，Linux 第一次对外发照旧要先真机过一遍。
 
 这个顺序是发布正确性的一部分，不是风格问题：清单先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。`scripts/publish-workflow-config.test.cjs` 把它钉住了。
 
@@ -420,9 +421,9 @@ git push origin v0.2.6
 
 R2 凭据的**权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除。
 
-工作流这一边由 `scripts/workflow-secret-scope.test.cjs` 钉住（#1090）：读上表这些 secret 的作业必须挂 `environment: release`，读 COS 那两把的必须挂 `cos-sync`；仓库级只许巡检密钥 `XINGMANG_CLI_PATROL_KEY` 和访问统计令牌 `CLOUDFLARE_ANALYTICS_TOKEN` 两把（2026-10-18 定，见 `COLLABORATION.md`「一次性探测工作流」）。新加一把 secret 不登记就过不了 CI。GitHub 上的 secret 实际放在哪一级，门禁看不到，要隔一段时间在设置里核一遍：
+工作流这一边由 `scripts/workflow-secret-scope.test.cjs` 钉住（#1090）：读上表这些 secret 的作业必须挂 `environment: release`，读 COS 那两把的必须挂 `cos-sync`；仓库级只许巡检密钥 `XINGMANG_CLI_PATROL_KEY`、Claude 分组的巡检密钥 `XINGMANG_CLI_PATROL_KEY_CLAUDE`（2026-11-09 加，new-api 一把令牌只属于一个分组）和访问统计令牌 `CLOUDFLARE_ANALYTICS_TOKEN` 三把（2026-10-18 定，见 `COLLABORATION.md`「一次性探测工作流」）。新加一把 secret 不登记就过不了 CI。GitHub 上的 secret 实际放在哪一级，门禁看不到，要隔一段时间在设置里核一遍：
 
-1. **Settings → Secrets and variables → Actions**，看 **Repository secrets** 那一栏：只应该有上面那两把（或更少）。多出来的名字（`R2_`、`CSC_`、`XINGMANG_MAC_`、`XINGMANG_UPDATE_SIGNING_KEY`、`COS_`、`WIN_CSC_` 这些），先确认第 2 步的环境里有同名的一份，再把仓库级这份删掉：只挪不删等于没挪。
+1. **Settings → Secrets and variables → Actions**，看 **Repository secrets** 那一栏：只应该有上面那三把（或更少）。多出来的名字（`R2_`、`CSC_`、`XINGMANG_MAC_`、`XINGMANG_UPDATE_SIGNING_KEY`、`COS_`、`WIN_CSC_` 这些），先确认第 2 步的环境里有同名的一份，再把仓库级这份删掉：只挪不删等于没挪。
 2. **Settings → Environments → release**：Required reviewers 里有批准的人；Deployment branches and tags 只有 `main`；Environment secrets 里有上表九把。**cos-sync**：Deployment branches and tags 只有 `main`（它不设批准人，挡住别的分支全靠这一条）；Environment secrets 里有 `COS_SECRET_ID`、`COS_SECRET_KEY`。
 
 `.p12` 只能从钥匙串里导出、用 GitHub 的 secret 输入框直接粘，**不要经过任何聊天、工单或邮件**：那份私钥泄露等于别人能签出一个客户端会当成「同一发布者」的更新包。`XINGMANG_MAC_SIGNING_SHA256` 填的必须是 2.2 里登记的那张已发布证书的指纹，换一张证书会在签名预检那一步直接失败。
@@ -513,13 +514,14 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 **什么时候查**
 
 - 打开后查一次：主界面出来以后才查，不在启动页等。「启动时检查新版本」默认开，关掉的只是这次检查。8 秒没查完，界面说「网络有点慢……在后台接着查」，请求接着跑；一个字节也收不到满 45 秒才掐掉，下次检查重新发。开机自启那次，等用户第一次打开窗口、或者启动满 3 分钟再查。
-- 运行期间每 3 小时查一次，不管「启动时检查新版本」开没开。已经下好一版（包括装失败）时只看更新目录上有没有比它新的：有、而且「自动更新」开着，就丢掉手里那份、在后台下新的（日志 `download.superseded`）；一样新、没查成，或者正在装、开机装正在倒数、Mac 这次已经交给 Squirrel 装过、跳框正问着装不装，都原样留着手里那份，界面不闪「正在检查」。撤回名单和分批放量照旧管这一次。以前这时干脆不查，一直开着不退出的电脑拿着最早下好的那一版，退出时、强制更新门里装上的还是它，得再升一轮。
+- 运行期间每 3 小时查一次，不管「启动时检查新版本」开没开。已经下好一版（包括装失败）时只看更新目录上有没有比它新的：有、而且「自动更新」开着，就丢掉手里那份、在后台下新的（日志 `download.superseded`）。换之前先量盘，按下载前量盘的同一个算法（安装包的 3 倍、至少 300 MB）不够就不换，手里那份照旧能装（日志 `download.skipped.disk`，深查 Z-1）；手里那份够不上最低版本时照样换。一样新、没查成，或者正在装、开机装正在倒数、Mac 这次已经交给 Squirrel 装过、跳框正问着装不装，都原样留着手里那份，界面不闪「正在检查」。撤回名单和分批放量照旧管这一次。以前这时干脆不查，一直开着不退出的电脑拿着最早下好的那一版，退出时、强制更新门里装上的还是它，得再升一轮。
 - 状态文件（`service-status.json`，见 `docs/SERVICE-STATUS.md`）打开时读一次，之后每 15 分钟一次（维护中 5 分钟）。它把 `minimumVersion` 抬到当前版本以上时，马上补查一次；手里已经下好、却够不上新的最低版本的，也马上看一次更新目录，换下够得上的那一版（「自动更新」关着也换，换完由客户在强制更新门里点「立即更新」下）。
 
 **下载**
 
 - 「自动更新」默认开（只有用户关掉时才写进配置）。开着时，打开时查到的、定时查到的、打开开关时已经查到的新版本都在后台下载；关着时只提示，用户点了才下。Windows 的无签名通道 2026-09-25 起也跟这个开关走。
 - 进度在首页气泡和更新页。每次下完都复核 SHA-512，对不上算下载失败。磁盘不够（安装包的 3 倍、至少 300 MB，不知道包多大按 600 MB）就不下，给「仍要下载」。
+- 下载没下成时：停住、代理连不上当场换直连重下一次。还不行、或者是别的网络失败（断网、连接被重置、换了网络、解析不出、更新服务器回 5xx），「自动更新」开着就隔 5 分钟、15 分钟、45 分钟各自己再查一次、再下一次（日志 `download.retry.scheduled`），补试里检查没查成也接着排；同一个版本三次都不行，回到每 3 小时那一轮。证书被换、本机时间不准、磁盘满、文件被占、更新目录里没有这个包、下好后核对不过，这几种过几分钟还是一样，不补试。补试走的是和定时检查一样的路，撤回名单、分批放量、线路照旧过一遍；到点时客户已经自己点过重新下载、版本被撤回、开关关了，就不动。以前除了当场那一次，别的失败都要等 3 小时从头下（深查 Z-3）。
 - Windows 正式包（无签名通道）复核完 SHA-512 再核发布者签名（见 5「更新包签名」），缺签名或签名不对都算下载失败，不会安装。开发态不做这一步，所以第 7 节的本地更新源不用签名。
 - 分批放量只管自动检查，用户在界面上点的检查不受限；撤回名单里的版本谁都不给，下载中或下好以后被撤回的也收回。
 

@@ -12,6 +12,7 @@ import {
   Mp4OutputFormat,
   Output,
   QUALITY_HIGH,
+  WavOutputFormat,
 } from 'mediabunny'
 import { composeVideoStudio } from './compose'
 import { composeInVideoStudioWorker } from './compose-client'
@@ -27,6 +28,8 @@ interface FixtureClipSpec {
   seconds: number
   color: string
   tone?: { frequency: number, channels: number }
+  /** 正片前面再藏几帧负时间的画面（编辑表那种，播放器不放），声音照样从 0 开始。 */
+  lead?: { seconds: number, color: string }
 }
 
 interface FixtureProbe {
@@ -55,6 +58,12 @@ async function makeClip(spec: FixtureClipSpec): Promise<ArrayBuffer> {
   const audio = spec.tone ? new AudioSampleSource({ codec: 'opus', quality: QUALITY_HIGH }) : null
   if (audio) output.addAudioTrack(audio)
   await output.start()
+  const leadFrames = Math.round((spec.lead?.seconds ?? 0) * spec.frameRate)
+  for (let index = -leadFrames; index < 0; index += 1) {
+    context.fillStyle = spec.lead?.color ?? spec.color
+    context.fillRect(0, 0, spec.width, spec.height)
+    await video.add(index / spec.frameRate, 1 / spec.frameRate)
+  }
   const frames = Math.round(spec.seconds * spec.frameRate)
   for (let index = 0; index < frames; index += 1) {
     context.fillStyle = spec.color
@@ -79,6 +88,29 @@ async function makeClip(spec: FixtureClipSpec): Promise<ArrayBuffer> {
   }
   await output.finalize()
   if (!target.buffer) throw new Error('clip was not written')
+  return target.buffer
+}
+
+// 一首「歌」：WAV，单声道正弦音，44.1 kHz（和成片的 48 kHz 不一样，顺带核对重采样）。
+async function makeSong(seconds: number, frequency = 330): Promise<ArrayBuffer> {
+  const sampleRate = 44_100
+  const target = new BufferTarget()
+  const output = new Output({ format: new WavOutputFormat(), target })
+  const audio = new AudioSampleSource({ codec: 'pcm-s16' })
+  output.addAudioTrack(audio)
+  await output.start()
+  const total = Math.round(seconds * sampleRate)
+  const chunk = sampleRate / 10
+  for (let first = 0; first < total; first += chunk) {
+    const count = Math.min(chunk, total - first)
+    const data = new Float32Array(count)
+    for (let frame = 0; frame < count; frame += 1) data[frame] = 0.5 * Math.sin(2 * Math.PI * frequency * (first + frame) / sampleRate)
+    const sample = new AudioSample({ data, format: 'f32', numberOfChannels: 1, sampleRate, timestamp: first / sampleRate })
+    await audio.add(sample)
+    sample.close()
+  }
+  await output.finalize()
+  if (!target.buffer) throw new Error('song was not written')
   return target.buffer
 }
 
@@ -186,6 +218,7 @@ declare global {
   interface Window {
     videoStudioHarness?: {
       makeClip: typeof makeClip
+      makeSong: typeof makeSong
       sampleClips: typeof sampleClips
       inspect: typeof inspect
       compose: typeof compose
@@ -194,4 +227,4 @@ declare global {
   }
 }
 
-window.videoStudioHarness = { makeClip, sampleClips, inspect, compose, failure }
+window.videoStudioHarness = { makeClip, makeSong, sampleClips, inspect, compose, failure }

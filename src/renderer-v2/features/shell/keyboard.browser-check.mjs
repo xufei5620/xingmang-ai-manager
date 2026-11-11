@@ -13,10 +13,10 @@ before(async () => {
 })
 after(async () => { await browser?.close(); await server?.close() })
 
-async function open() {
+async function open(query = '') {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
-  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html`,
+  await openFixturePage(page, `${origin}/src/renderer-v2/testing/app.html${query ? `?${query}` : ''}`,
     (timeout) => waitForFixtureMount(page, { timeout, what: 'the keyboard fixture', ready: () => Boolean(window.v2Test) && Boolean(document.querySelector('.v2-nav-item')) }),
     { label: 'keyboard fixture' })
   return page
@@ -114,38 +114,56 @@ test('the command palette finds tutorials by the problem and hands unmatched tex
   } finally { await page.close() }
 })
 
+function visibleInSidebar(page, testId) {
+  return page.evaluate((id) => {
+    const element = document.querySelector(`[data-testid="${id}"]`)
+    const nav = document.querySelector('.v2-sidebar-nav')
+    const scroll = document.querySelector('.v2-sidebar-scroll')
+    if (!element || !nav || !scroll) return false
+    const box = element.getBoundingClientRect()
+    const clip = element.closest('.v2-sidebar-scroll') ? scroll.getBoundingClientRect() : nav.getBoundingClientRect()
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
+    return box.top >= clip.top - 1 && box.bottom <= clip.bottom + 1 && Boolean(hit && element.contains(hit))
+  }, testId)
+}
+
 // 「更多」里的几页在 v4 各有了去处（游戏加速、备份、更新并进设置，安装卸载拆到首页和检查页），
-// 「更多」跟着去掉了（第 10 批）；钉在下面的只剩「设置」。
-test('on a short screen Settings stays pinned in view and the list above it scrolls', async () => {
+// 「更多」跟着去掉了（第 10 批）。加了画布、视频剪辑以后，「充值」也钉在下面、「设置」上面（「充值改」）。
+test('on a short screen 充值 and Settings stay pinned in view and the list above them scrolls', async () => {
   const page = await open()
   try {
     // 1280×720 屏幕、1920×1080 开 150% 缩放时，窗口里能给侧栏的高度大约就这么多。
     await page.setViewportSize({ width: 1280, height: 672 })
-    function visibleInSidebar(testId) {
-      return page.evaluate((id) => {
-        const element = document.querySelector(`[data-testid="${id}"]`)
-        const nav = document.querySelector('.v2-sidebar-nav')
-        const scroll = document.querySelector('.v2-sidebar-scroll')
-        if (!element || !nav || !scroll) return false
-        const box = element.getBoundingClientRect()
-        const clip = element.closest('.v2-sidebar-scroll') ? scroll.getBoundingClientRect() : nav.getBoundingClientRect()
-        const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2)
-        return box.top >= clip.top - 1 && box.bottom <= clip.bottom + 1 && Boolean(hit && element.contains(hit))
-      }, testId)
-    }
-    assert.equal(await visibleInSidebar('nav-settings'), true, 'nav-settings is not cut off below the fold')
-    assert.equal(await page.getByTestId('sidebar-pinned').getByTestId('nav-settings').count(), 1, 'nav-settings sits in the pinned part, not the scrolling one')
-    assert.equal(await page.getByTestId('sidebar-pinned').locator('[data-testid^="nav-"]').count(), 1, 'nothing else is pinned')
+    assert.equal(await visibleInSidebar(page, 'nav-settings'), true, 'nav-settings is not cut off below the fold')
+    assert.equal(await visibleInSidebar(page, 'nav-recharge'), true, 'nav-recharge is not cut off below the fold')
+    assert.deepEqual(await page.getByTestId('sidebar-pinned').locator('[data-testid^="nav-"]').evaluateAll((items) => items.map((item) => item.dataset.testid)),
+      ['nav-recharge', 'nav-settings'], '充值 and 设置 sit in the pinned part, nothing else does')
     for (const id of ['nav-more', 'nav-maintenance', 'nav-acceleration', 'nav-backups', 'nav-updates'])
       assert.equal(await page.getByTestId(id).count(), 0, `${id} is gone from the sidebar`)
     // 上面那段放不下了自己滚，下沿渐隐，看得出还有。
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
     await page.getByTestId('sidebar-scroll').evaluate((element) => { element.scrollTop = element.scrollHeight })
     await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'top')
-    assert.equal(await visibleInSidebar('nav-feedback'), true, 'the last page in the list scrolls into view')
-    assert.equal(await visibleInSidebar('nav-settings'), true, 'nav-settings stays in view after scrolling')
+    assert.equal(await visibleInSidebar(page, 'nav-feedback'), true, 'the last page in the list scrolls into view')
+    assert.equal(await visibleInSidebar(page, 'nav-settings'), true, 'nav-settings stays in view after scrolling')
+    assert.equal(await visibleInSidebar(page, 'nav-recharge'), true, 'nav-recharge stays in view after scrolling')
     await clean(page)
   } finally { await page.close() }
+})
+
+// yoyo 2026-11-06 报：加了画布和视频剪辑以后侧栏「充值」容易看不见。原来它排在最下面那组第一个，
+// 窗口逻辑高 586 时 Windows 上半截压在渐隐下，Mac 顶上还要让红黄绿三个点，整个滚了出去。
+test('the 充值 entry stays in view on a short window on both systems', async () => {
+  for (const os of ['windows', 'mac']) {
+    const page = await open(os === 'mac' ? 'os=mac' : '')
+    try {
+      await page.setViewportSize({ width: 1280, height: 586 })
+      await page.waitForFunction(() => document.querySelector('.v2-sidebar-scroll')?.getAttribute('data-fade') === 'bottom')
+      assert.equal(await visibleInSidebar(page, 'nav-recharge'), true, `${os}: nav-recharge is in view and not covered`)
+      assert.equal(await visibleInSidebar(page, 'nav-settings'), true, `${os}: nav-settings is in view and not covered`)
+      await clean(page)
+    } finally { await page.close() }
+  }
 })
 
 test('the command palette has no title bar, stays put while the results change and shows the keys to use', async () => {
@@ -253,6 +271,67 @@ test('switch account found from the command palette lands on the current-login b
     assert.equal(await page.getByTestId('account-tabs').getByRole('tab', { name: '账号概览', exact: true }).getAttribute('aria-selected'), 'true')
     assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'account-switch')
     assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
+  } finally { await page.close() }
+})
+
+// KB-5：聊天页去过一次就藏着挂在正文最前面，它的「搜索对话」永远排第一；原来按「/」取的是它，
+// 聚焦不上又把「/」吞了，别的页按「/」都没反应。
+async function pressSlashFromPage(page) {
+  await page.getByTestId('page-viewport').focus()
+  await page.evaluate(() => {
+    window.slashPrevented = null
+    window.addEventListener('keydown', (event) => { if (event.key === '/') window.slashPrevented = event.defaultPrevented }, { once: true })
+  })
+  await page.keyboard.press('/')
+  return page.evaluate(() => ({
+    testId: document.activeElement?.getAttribute('data-testid') ?? '',
+    label: document.activeElement?.getAttribute('aria-label') ?? '',
+    id: document.activeElement?.id ?? '',
+    value: document.activeElement instanceof HTMLInputElement ? document.activeElement.value : null,
+    prevented: window.slashPrevented,
+  }))
+}
+
+test('pressing / focuses the search box of the page in front, also after the chat page was opened once', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-search').waitFor()
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'chat-conversation-search', label: '搜索对话', id: '', value: '', prevented: true })
+
+    await page.getByTestId('nav-tutorial').click()
+    await page.getByTestId('page-tutorial').waitFor()
+    await page.getByTestId('page-chat').waitFor({ state: 'hidden' })
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'tutorial-search', label: '搜索教程', id: '', value: '', prevented: true })
+
+    await page.getByTestId('nav-settings').click()
+    await page.getByTestId('page-settings').waitFor()
+    const settings = await pressSlashFromPage(page)
+    assert.equal(settings.label, '搜索设置')
+    assert.equal(settings.value, '', 'the / is not typed into the box')
+
+    // 首页没有搜索框：焦点不动，「/」也不吞。
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('page-home').waitFor()
+    assert.deepEqual(await pressSlashFromPage(page), { testId: 'page-viewport', label: '', id: 'v2-main', value: null, prevented: false })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a / typed while a menu is open stays with the menu', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('chat-conversation-search').waitFor()
+    await page.getByTestId('chat-model').click()
+    const menu = page.getByRole('menu', { name: '模型', exact: true })
+    await menu.waitFor()
+    await page.waitForFunction(() => Boolean(document.activeElement?.closest('[role="menu"]')))
+    await page.keyboard.press('/')
+    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest('[role="menu"]'))), true, 'focus is still inside the menu')
+    assert.equal(await menu.isVisible(), true)
+    assert.notEqual(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'chat-conversation-search')
+    await clean(page)
   } finally { await page.close() }
 })
 

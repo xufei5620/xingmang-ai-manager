@@ -7,6 +7,7 @@ import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { scanPowerShell, unbalancedBracket } from './powershell-script-scan.test-support'
+import { buildPowerShellJsonOutputStatements, powerShellUtf8OutputStatement } from './powershell-constrained-language'
 import { AppSettingsStore } from './app-settings'
 import { InstallationQueue } from './installation-queue'
 import { createAccountWorkGate } from './account-work-gate'
@@ -74,8 +75,12 @@ import {
   downloadCodexDesktopPackageFromCandidates,
   downloadCodexDesktopOfficialPackage,
   downloadCodexDesktopBucketPackage,
+  measureCodexDesktopMirrorSpeed,
   measureCodexDesktopOfficialSpeed,
   shouldContinueAfterCodexDesktopBucketInstall,
+  shouldRetryCodexDesktopBucketWhenStale,
+  toCodexDesktopInstallFailure,
+  CodexDesktopInstallFailure,
   buildCodexDesktopOfficialPackageSource,
   codexDesktopOfficialDownloadLimitMs,
   codexDesktopSlowDownloadGraceMs,
@@ -93,9 +98,10 @@ import {
   type CodexDesktopServiceOptions,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
+import { codexDesktopInstallFailureReasons } from './codex-desktop-install-failure'
 import { codexDesktopKnownIssueMarker } from './codex-desktop-known-issues'
 import {
-  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
+  desktopBucketIndexUrl, desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage,
 } from './desktop-package-bucket'
 import { installMacosDesktopApp, MacosDesktopInstallError } from './macos-desktop-app-installer'
 import { isMacosDesktopInstallFailure, macosDesktopNameTakenMessage, macosDesktopUpdateFailedMessage } from './macos-desktop-install-failure'
@@ -1406,6 +1412,42 @@ describe('Codex Desktop Appx probe script', () => {
     expect(script).toContain('$owner.Sid -eq $currentSid')
     expect(script).toContain('$_.SessionId -eq $currentSessionId')
     expect(script).toContain('PackageFamilyName = $packageFamilyName')
+    // Same fields in the same order as the [pscustomobject] it replaced, so
+    // ConvertTo-Json writes the same JSON in FullLanguage.
+    expect(script).toContain('[ordered]@{ ProcessId = $process.ProcessId; ParentProcessId = $process.ParentProcessId; Name = $process.Name; ExecutablePath = $candidate.Path; OwnerSid = $owner.Sid; CurrentOwnerSid = $currentSid; SessionId = $process.SessionId; CurrentSessionId = $currentSessionId; PackageFamilyName = $candidate.PackageFamilyName }')
+  })
+
+  it('names this user and session through WMI where PowerShell is held to ConstrainedLanguage', () => {
+    // 应用控制策略开着的电脑上，WindowsIdentity 和 Process 这两句 .NET 调用被拒，查进程那段整段失败，
+    // 首页认不出「正在运行」（2026-11-10 客户电脑）。受限模式下改问 WMI 这个 PowerShell 进程自己是谁、
+    // 在哪个会话；FullLanguage 照旧走原来那两句。
+    const fullLanguageBranch = /if \(\$ExecutionContext\.SessionState\.LanguageMode -eq 'FullLanguage'\) \{[^}]*\}/g
+    for (const script of [
+      buildCodexDesktopProcessProbeScript('roots'),
+      buildCodexDesktopProcessProbeScript('all', new Set([101])),
+      buildCodexDesktopCombinedProbeScript(),
+    ]) {
+      const scan = scanPowerShell(script)
+      expect(scan.unterminated).toBe(false)
+      expect(unbalancedBracket(scan.code)).toBeNull()
+      const branches = script.match(fullLanguageBranch) ?? []
+      expect(branches.some((branch) => (
+        branch.includes('$currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value')
+        && branch.includes('$currentSessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId')
+      ))).toBe(true)
+      const constrained = script.replace(fullLanguageBranch, '')
+      expect(constrained).toContain('Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop')
+      expect(constrained).toContain('Invoke-CimMethod -InputObject $selfProcess -MethodName GetOwnerSid -OperationTimeoutSec 5 -ErrorAction Stop')
+      expect(constrained).toContain('$selfOwner.ReturnValue -eq 0) { [string]$selfOwner.Sid }')
+      expect(constrained).toContain('$currentSessionId = $selfProcess.SessionId')
+      // Without our own SID, `$owner.Sid -eq $currentSid` must not get to compare against nothing.
+      expect(constrained).toContain('if (-not $currentSid -or $null -eq $currentSessionId) { throw ')
+      // What ConstrainedLanguage refuses is left only inside the FullLanguage branches:
+      // .NET types other than [regex], and the hashtable-to-object conversion.
+      expect(constrained).not.toContain('[pscustomobject]')
+      expect(constrained).not.toContain('[System.')
+      expect(constrained.replace(/\[regex\]::Match\(/g, '')).not.toContain('::')
+    }
   })
 
   it('keeps status and launch scans quiet when the process check fails', async () => {
@@ -1502,6 +1544,26 @@ describe('Codex Desktop Appx probe script', () => {
     expect(combined).toContain('catch { $packageError = $_.Exception.Message }')
     // 嵌套一层后默认的 Depth 2 会把包条目压成字符串
     expect(combined).toContain('ConvertTo-Json -Compress -Depth 6')
+  })
+
+  it('lets the merged and package probes finish where PowerShell is held to ConstrainedLanguage', () => {
+    // 应用控制策略（WDAC、AppLocker 一类）开着的电脑上，-Command 跑在受限语言模式里：
+    // [pscustomobject]@{} 被拒，最后一句一失败整条就按退出码 1 退回，装着的 Codex 桌面端次次
+    // 显示检测失败（2026-11-10 客户电脑）。查包和最后输出这两处不能碰被拒的写法；查进程那段
+    // 见上面 names this user and session through WMI 那条。
+    const combined = buildCodexDesktopCombinedProbeScript()
+    const packageProbe = buildCodexDesktopPackageProbeScript()
+    for (const script of [combined, packageProbe]) {
+      expect(script.startsWith(powerShellUtf8OutputStatement)).toBe(true)
+      expect(script.split(powerShellUtf8OutputStatement).join('')).not.toContain('UTF8Encoding]::new')
+      expect(script).toContain(buildPowerShellJsonOutputStatements('$value')[1])
+      expect(script.trimEnd().endsWith('$xingmangJson')).toBe(true)
+    }
+    expect(packageProbe).not.toContain('[pscustomobject]')
+    const afterProcesses = combined.slice(combined.indexOf('$packageProbe = $null'))
+    expect(afterProcesses.length).toBeGreaterThan(0)
+    expect(afterProcesses).not.toContain('[pscustomobject]')
+    expect(afterProcesses).not.toContain('::')
   })
 
   it('imports the module of every cmdlet the merged probe calls before the first one runs', () => {
@@ -2032,7 +2094,7 @@ describe('Codex Desktop launch queueing', () => {
     await accountWork.whenIdle()
     revision++
     accountWork.abortQueued()
-    await expect(started).rejects.toThrow('账号上下文已变化')
+    await expect(started).rejects.toThrow('账号刚切换过')
     expect(queue.snapshot().pendingKeys).toEqual([])
 
     const next = fixture.service.launchCodexDesktop('open', fixture.target, { accountWork: accountWork.queue() })
@@ -2084,7 +2146,7 @@ describe('Codex Desktop launch queueing', () => {
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(settled).toBe(false)
     showWindow()
-    await expect(launch).rejects.toThrow('账号上下文已变化')
+    await expect(launch).rejects.toThrow('账号刚切换过')
     expect(waited).toBe(true)
   })
 
@@ -3290,8 +3352,48 @@ describe('Codex Desktop from the Xingmang bucket', () => {
         architecture: 'x64', destination: bucketDestination(), installedVersion, fetchImplementation: fetchMock,
       }).catch((error: unknown) => error)
       expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect(shouldRetryCodexDesktopBucketWhenStale(failure)).toBe(true)
       expect((failure as Error).message).toBe(`存储桶清单超过 24 小时没和官方核对过（上次是 ${checkedAt}），桶里的可能不是最新版`)
       expect(requested).toEqual([indexUrl])
+    }
+  })
+
+  it('downloads a build from an index past its day once the store and the official package are behind it', async () => {
+    // Same OpenAI package and the same checks; it may only trail OpenAI, which beats the third-party mirror.
+    const checkedAt = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString()
+    const { requested, fetchMock, version } = bucketFetch({ checkedAt })
+    const destination = bucketDestination()
+    const result = await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination, installedVersion: '26.1002.0.0', allowStale: true, fetchImplementation: fetchMock,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    expect(result).toMatchObject({ status: 'downloaded', version })
+    expect(requested).toEqual([indexUrl, packageUrl(version)])
+    expect(fs.readFileSync(destination).equals(bytes)).toBe(true)
+  })
+
+  it('still leaves a build from an old index alone when it is not newer than the installed one', async () => {
+    const checkedAt = new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString()
+    for (const installedVersion of ['26.1003.4512.0', '26.1004.0.0']) {
+      const { requested, fetchMock } = bucketFetch({ checkedAt })
+      await expect(downloadCodexDesktopBucketPackage({
+        architecture: 'x64', destination: bucketDestination(), installedVersion, allowStale: true, fetchImplementation: fetchMock,
+      })).resolves.toEqual({ status: 'not-newer', version: '26.1003.4512.0' })
+      expect(requested).toEqual([indexUrl])
+    }
+  })
+
+  it('comes back to the bucket later only when its index was old, not when the bucket was broken', () => {
+    expect(shouldRetryCodexDesktopBucketWhenStale(new DesktopBucketIndexStaleError('2026-11-04T14:30:12.285Z'))).toBe(true)
+    for (const failure of [
+      new DesktopBucketUnavailableError('存储桶清单返回 HTTP 404'),
+      new DesktopBucketUnavailableError('读取存储桶清单超时'),
+      new DesktopBucketUnavailableError('存储桶的安装包 SHA-256 和清单不一致'),
+      new Error('安装包版本 26.1003.4513.0 与存储桶清单版本 26.1003.4512.0 不一致'),
+      new Error('Add-AppxPackage 部署失败：0x80073CFF'),
+      'spawn failed',
+    ]) {
+      expect(shouldRetryCodexDesktopBucketWhenStale(failure)).toBe(false)
     }
   })
 
@@ -3361,6 +3463,25 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(official).toEqual([officialUrl])
   })
 
+  it('measures the mirror, not the OpenAI package, when it came back to an old index after the official package', async () => {
+    // Only the mirror is left after this one; the official package already failed.
+    const { fetchMock, version } = bucketFetch({ checkedAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString() })
+    const mirrorUrl = buildCodexDesktopPackageSources('x64')[0].url
+    const measured: string[] = []
+    const fetchImplementation = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).startsWith(desktopPackageBucketOrigin)) return fetchMock(input, init)
+      measured.push(String(input))
+      return new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream', 'Content-Length': String(bytes.byteLength) } })
+    })
+    await downloadCodexDesktopBucketPackage({
+      architecture: 'x64', destination: bucketDestination(), installedVersion: null, allowStale: true, fetchImplementation,
+      inspectPackage: async () => bucketMetadata(version),
+    })
+    const handed = vi.mocked(downloadDesktopBucketPackage).mock.calls.at(-1)?.[2]
+    await expect(handed?.probeAlternative?.(new AbortController().signal)).resolves.toMatchObject({ totalBytes: bytes.byteLength })
+    expect(measured).toEqual([mirrorUrl])
+  })
+
   it('goes on to the Store and the other routes when Windows refuses the verified bucket package', () => {
     // The Store does not sideload, so a machine that blocks sideloading may still get Codex from it.
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'))).toBe(true)
@@ -3368,10 +3489,38 @@ describe('Codex Desktop from the Xingmang bucket', () => {
     expect(shouldContinueAfterCodexDesktopBucketInstall('spawn failed')).toBe(true)
   })
 
+  it('stops after a bucket package from an old index that Windows refused, the Store being already behind it', () => {
+    // Like the official package: the mirror left after it would sideload the same OpenAI package the same way.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 部署失败：0x80073CFF'), true)).toBe(false)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('安装命令完成后仍未检测到 Codex 桌面端'), true)).toBe(false)
+  })
+
   it('stops after the bucket package when another route cannot help either', () => {
     expect(shouldContinueAfterCodexDesktopBucketInstall(new InstallCancelledError())).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('已取消管理员授权，Codex 桌面端安装未开始。'))).toBe(false)
     expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Codex 桌面端安装失败：磁盘空间不足'))).toBe(false)
+  })
+
+  it('stops after the bucket package when the Windows Firewall service is off, instead of downloading it again', () => {
+    // From the 2026-11-06 customer log, wrapped at the console width the way PowerShell printed it.
+    const firewallOff = new Error([
+      'Add-AppxPackage 安装失败：Add-AppxPackage : 部署失败，原因是 HRESULT: 0x80073CF6, 无法注册包。\r\n',
+      'AppxManifest.xml(38,6): 错误 0x800706D9: 无法注册 OpenAI.Codex_26.1103.3517.0_x64__2p2nqsd0c76g0 程序包，因为在注册 windows.firewallRu\r\n',
+      'les 扩展时遇到以下错误: 终结点映射器中没有更多的终结点可用。\r\n',
+    ].join(''))
+    const englishFirewallOff = new Error(
+      'Add-AppxPackage 安装失败：Deployment failed with HRESULT: 0x80073CF6, Package could not be registered. error 0x800706D9: While processing the request, the system failed to register the windows.firewallRules extension due to the following error: There are no more endpoints available from the endpoint mapper.',
+    )
+    // The Store, the official package and the mirror all register the same firewall rules.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(firewallOff)).toBe(false)
+    expect(shouldContinueAfterCodexDesktopBucketInstall(englishFirewallOff)).toBe(false)
+    // Only the firewall code stops it: the same registration failure without it still goes on.
+    expect(shouldContinueAfterCodexDesktopBucketInstall(new Error('Add-AppxPackage 安装失败：部署失败，原因是 HRESULT: 0x80073CF6, 无法注册包。'))).toBe(true)
+    // Handed over as is, it is the firewall card right away, with no Store or official route in it.
+    const failure = toCodexDesktopInstallFailure(firewallOff, { storeFailure: null, storeExitCode: null, updating: true })
+    expect(failure).toBeInstanceOf(CodexDesktopInstallFailure)
+    expect(failure.message).toBe(`Codex 桌面端没装上：${codexDesktopInstallFailureReasons.firewallOff}`)
+    expect(failure).toMatchObject({ reason: 'firewallOff', detail: firewallOff.message })
   })
 })
 

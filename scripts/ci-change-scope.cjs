@@ -42,8 +42,17 @@ const macPackagingFiles = new Set([
   'package-lock.json',
   '.nvmrc',
   'electron-builder.config.cjs',
+  // How electron-builder fetches and checks the Electron zips and its tools:
+  // the checksum table the configuration loads, and the download patch that
+  // npm ci applies (the coverage walk in ci-workflow-config.test.cjs follows
+  // requires, so it reaches the first but not the postinstall patch).
+  'scripts/electron-zip-checksums.cjs',
+  'scripts/patch-builder-fetch-compat.cjs',
+  'scripts/builder-fetch-compat.cjs',
   'e2e/macos-launch-smoke.mjs',
   'scripts/update-release-utils.cjs',
+  'scripts/release-copyright.cjs',
+  'scripts/extract-release-notes.cjs',
   'scripts/linux-artifact-names.cjs',
   'scripts/linux-payload-modes.cjs',
   'scripts/electron-fuse-hardening.cjs',

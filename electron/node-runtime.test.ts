@@ -4,17 +4,15 @@ import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError } from './command-runner'
+import { downloadCeilingMs } from './download-retry'
 import {
   buildNodeRuntimeElevatedInstallScript,
   buildNodeRuntimeInstallPlan,
   buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
-  createNodeDownloadDeadline,
   downloadNodeRuntimePackage,
   fetchTrustedNodeResource,
   installNodeRuntime,
-  nodeDownloadCeilingMs,
-  nodeDownloadStallTimeoutMs,
   nodeRuntimeDownloadSources,
   nodeRuntimeTriesWingetFirst,
   normalizeNodeRuntimeArchitecture,
@@ -25,6 +23,7 @@ import {
   parseNodeShasums,
   parseSystemWingetPackage,
   nodeRuntimeElevationFailureMessage,
+  nodeRuntimeMsiInstallingMessage,
   nodeRuntimeStagingRequiresProtectedDirectory,
   parseWindowsRestartStatus,
   resolveNodeRuntimeBrokerPowerShell,
@@ -232,6 +231,17 @@ describe('Node.js installer routing and process plans', () => {
     const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths, 'b'.repeat(64))
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
+  })
+
+  it('counts only awake time toward the installer runs, not toward the short signature check', () => {
+    // 睡眠深查 G1：装的时候合盖超过 15 分钟，醒来不该按满时限当场掐掉。
+    const plan = buildNodeRuntimeInstallPlan('C:\\Temp\\node.msi', systemPowerShell, true, testMachinePaths, 'b'.repeat(64))
+    expect(plan.msi.timeoutExcludesSleep).toBe(true)
+    expect(plan.signature.timeoutExcludesSleep).toBeUndefined()
+    const winget = buildNodeRuntimeWingetPlan(
+      'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
+    )
+    expect(winget.timeoutExcludesSleep).toBe(true)
   })
 
   it('binds UAC MSI execution to a digest and rechecks the signature in the broker', () => {
@@ -592,6 +602,20 @@ describe('Node.js response URL validation', () => {
   })
 })
 
+// 深查 D24：装安装包那一步其实在等授权窗口，不能写「正在静默安装」让客户干等。
+describe('Node.js MSI installing progress', () => {
+  it('tells the customer a Windows authorization window is coming and where to look for it', () => {
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0')).toBe(
+      '正在安装 Node.js v24.19.0 LTS，Windows 会弹一次授权窗口，请选「是」；没看到窗口，看看任务栏上有没有闪的盾牌图标。',
+    )
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0', false)).toBe(nodeRuntimeMsiInstallingMessage('v24.19.0'))
+  })
+
+  it('keeps the silent-install wording when the app already runs elevated and no window appears', () => {
+    expect(nodeRuntimeMsiInstallingMessage('v24.19.0', true)).toBe('正在静默安装 Node.js v24.19.0 LTS')
+  })
+})
+
 describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
   it('stages the download in the user temp directory when the app is not elevated', () => {
     expect(nodeRuntimeStagingRequiresProtectedDirectory('same-user')).toBe(false)
@@ -839,61 +863,6 @@ describe('Node.js package download deadline', () => {
     vi.useRealTimers()
   })
 
-  it('keeps a download that is still receiving bytes alive past the old ten-minute limit', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    for (let minute = 1; minute <= 20; minute += 1) {
-      await vi.advanceTimersByTimeAsync(60_000)
-      deadline.progressed(minute * 1024)
-    }
-    expect(expire).not.toHaveBeenCalled()
-    deadline.stop()
-  })
-
-  it('ends the download once no new bytes have arrived for the stall window', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    await vi.advanceTimersByTimeAsync(60_000)
-    deadline.progressed(4096)
-    // 字节数没变（续传前后报的同一个数）不算进展。
-    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs - 1_000)
-    deadline.progressed(4096)
-    expect(expire).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(1_000)
-    expect(expire).toHaveBeenCalledTimes(1)
-    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
-  })
-
-  it('still ends a download that trickles forever at the ceiling', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    let transferred = 0
-    for (let elapsed = 30_000; elapsed < nodeDownloadCeilingMs; elapsed += 30_000) {
-      await vi.advanceTimersByTimeAsync(30_000)
-      transferred += 1
-      deadline.progressed(transferred)
-    }
-    expect(expire).not.toHaveBeenCalled()
-    await vi.advanceTimersByTimeAsync(30_000)
-    expect(expire).toHaveBeenCalledTimes(1)
-    expect(expire.mock.calls[0][0]).toEqual(new Error('安装包下载超时'))
-    await vi.advanceTimersByTimeAsync(nodeDownloadStallTimeoutMs)
-    expect(expire).toHaveBeenCalledTimes(1)
-  })
-
-  it('does nothing once the download has finished', async () => {
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const expire = vi.fn()
-    const deadline = createNodeDownloadDeadline(expire)
-    deadline.stop()
-    deadline.progressed(1)
-    await vi.advanceTimersByTimeAsync(nodeDownloadCeilingMs * 2)
-    expect(expire).not.toHaveBeenCalled()
-  })
-
   describe('through the real download', () => {
     const chunkBytes = 64 * 1024
     const chunkEveryMs = 40_000
@@ -943,7 +912,7 @@ describe('Node.js package download deadline', () => {
     }
 
     it('finishes a slow but steady download that takes longer than ten minutes', async () => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-slow-'))
       const target = path.join(directory, 'node.msi')
       const bytes = Buffer.alloc(2 * 1024 * 1024, 5)
@@ -968,7 +937,7 @@ describe('Node.js package download deadline', () => {
     })
 
     it('gives up at the ceiling and removes the partial package', async () => {
-      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
       const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-ceiling-'))
       const target = path.join(directory, 'node.msi')
       // At one chunk every 40 seconds this would need well over the ceiling to finish.
@@ -985,7 +954,7 @@ describe('Node.js package download deadline', () => {
           nodeRuntimeDownloadSources('outside-mainland-china')[0],
           async () => undefined,
         ), () => received)).rejects.toThrow('安装包下载超时')
-        expect(Date.now() - startedAt).toBe(nodeDownloadCeilingMs)
+        expect(Date.now() - startedAt).toBe(downloadCeilingMs)
         expect(received).toBeGreaterThan(0)
         expect(fs.existsSync(target)).toBe(false)
       } finally {

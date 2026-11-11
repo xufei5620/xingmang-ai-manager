@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { AiVideoClip } from '../../../../electron/ipc-contract'
-import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, serializeVideoStudioProject, videoStudioStorageKey, type VideoStudioProject } from './project'
+import { tutorialTopics } from '../../registry/tutorials'
+import { applyVideoStudioPlan, createVideoStudioProject, defaultVideoStudioSettings, maxVideoStudioDrafts, serializeVideoStudioDrafts, serializeVideoStudioProject, videoStudioDraftsStorageKey, videoStudioShotImage, videoStudioStorageKey, type VideoStudioDraft, type VideoStudioProject } from './project'
 import type { VideoStudioBridge, VideoStudioStorage } from './useVideoStudio'
 import { VideoStudioPage, type VideoStudioAccess } from './VideoStudioPage'
 
@@ -20,20 +21,26 @@ const bridge: VideoStudioBridge = {
   openAiVideo: unused,
   saveAiVideo: unused,
   openDiagnosticFolder: unused,
+  pickAiChatImages: unused,
+  pickVideoStudioMusic: unused,
+  readVideoStudioMusic: unused,
+  generateAiImage: unused,
+  cancelAiChat: unused,
 }
 
 function clip(letter: string): AiVideoClip {
   return { assetId: letter.repeat(43), thumbnailUrl: `xingmang-asset://thumb/v2/video/${letter.repeat(43)}`, width: 720, height: 1280, durationSeconds: 12 }
 }
 
-function storageWith(scope: string, project: VideoStudioProject | null): VideoStudioStorage {
+function storageWith(scope: string, project: VideoStudioProject | null, drafts: readonly VideoStudioDraft[] = []): VideoStudioStorage {
   const raw = project ? JSON.stringify(serializeVideoStudioProject(project)) : null
-  return { getItem: (key) => key === videoStudioStorageKey(scope) ? raw : null, setItem: () => undefined }
+  const box = drafts.length ? JSON.stringify(serializeVideoStudioDrafts(drafts)) : null
+  return { getItem: (key) => key === videoStudioStorageKey(scope) ? raw : key === videoStudioDraftsStorageKey(scope) ? box : null, setItem: () => undefined }
 }
 
-function render(access: VideoStudioAccess, project: VideoStudioProject | null = null) {
+function render(access: VideoStudioAccess, project: VideoStudioProject | null = null, drafts: readonly VideoStudioDraft[] = []) {
   return renderToStaticMarkup(<VideoStudioPage bridge={bridge} accountScope="solov:7" site="solov" access={access} onLogin={() => undefined}
-    options={{ storage: storageWith('solov:7', project) }} />)
+    options={{ storage: storageWith('solov:7', project, drafts) }} />)
 }
 
 function plannedProject(): VideoStudioProject {
@@ -108,6 +115,95 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('等片段都生成好再拼。')
   })
 
+  it('offers a picture to start each shot from, and shows the one picked in place of the empty thumbnail', () => {
+    const project = plannedProject()
+    const image = videoStudioShotImage('p'.repeat(43))!
+    const withImages: VideoStudioProject = { ...project, shots: [{ ...project.shots[0], image }, { ...project.shots[1], image }, { ...project.shots[1], id: 'shot-3', image: undefined }] }
+    const markup = render('ready', withImages)
+    // 第一镜已经有片段：左边还是片段，选的图是按钮旁边那张小的。
+    expect(markup).toContain('data-testid="video-shot-image-preview-0"')
+    expect(markup).not.toContain('data-testid="video-shot-image-thumb-0"')
+    // 第二镜还没生成：选的图就在左边那格。
+    expect(markup).toMatch(/data-testid="video-shot-image-thumb-1"[^]*?src="xingmang-asset:\/\/image\/p{43}"/)
+    expect(markup).not.toContain('data-testid="video-shot-image-preview-1"')
+    expect(markup).toMatch(/data-testid="video-shot-image-change-1"[^>]*>[^]*?换一张/)
+    expect(markup).toMatch(/data-testid="video-shot-image-remove-1"[^>]*>[^]*?不用这张图/)
+    expect(markup).toMatch(/title="生成时从这张图动起来，适合商品图、人物照片"[^>]*data-testid="video-shot-image-2"[^>]*>[^]*?用一张图开头/)
+    expect(markup).not.toContain('data-testid="video-shot-image-0"')
+  })
+
+  it('offers to have AI draw each shot picture once there is a picture model, and to draw again over one already there', () => {
+    const project = plannedProject()
+    const image = videoStudioShotImage('p'.repeat(43))!
+    const withImage: VideoStudioProject = { ...project, shots: [project.shots[0], { ...project.shots[1], image }] }
+    const noModel = render('ready', withImage)
+    expect(noModel).toMatch(/<span>画镜头图<\/span>[^]*?data-testid="video-image-model"/)
+    // 还没读到画图模型：按钮在，但是灰的。
+    expect(noModel).toMatch(/<button title="按这一镜的画面描述先画一张图，满意了再拿它生成视频；画图单独计费"[^>]*data-testid="video-shot-draw-0" disabled=""[^>]*>[^]*?让 AI 画一张/)
+    const ready = render('ready', { ...withImage, settings: { ...withImage.settings, imageModel: 'gpt-image-2', imageGroup: '图片模型' } })
+    expect(ready).toMatch(/data-model="gpt-image-2" data-group="图片模型"[^>]*data-testid="video-image-model"/)
+    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-0"[^>]*>[^]*?让 AI 画一张/)
+    expect(ready).toMatch(/<button(?![^>]*disabled)[^>]*data-testid="video-shot-draw-1"[^>]*>[^]*?再画一张/)
+    expect(ready).not.toContain('正在画图')
+    expect(ready).not.toContain('data-testid="video-shot-draw-stop-1"')
+  })
+
+  it('offers to trim the start and end of a shot only once it has a clip, and counts the trimmed seconds off the total', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>开头剪掉<\/label><select[^>]*data-testid="video-shot-trim-start-0"/)
+    expect(plain).toMatch(/<label[^>]*>结尾剪掉<\/label><select[^>]*data-testid="video-shot-trim-end-0"/)
+    expect(plain).toMatch(/data-testid="video-shot-trim-start-0"[^>]*><option value="0" selected="">不剪<\/option><option value="0.5">0.5 秒<\/option><option value="1">1 秒<\/option>/)
+    expect(plain).not.toContain('data-testid="video-shot-trim-start-1"')
+    const trimmed = render('ready', { ...project, shots: [{ ...project.shots[0], trimStart: 1, trimEnd: 0.5 }, project.shots[1]] })
+    expect(trimmed).toMatch(/data-testid="video-shot-trim-start-0"[^]*?<option value="1" selected="">1 秒<\/option>/)
+    expect(trimmed).toMatch(/data-testid="video-shot-trim-end-0"[^]*?<option value="0.5" selected="">0.5 秒<\/option>/)
+    expect(trimmed).toContain('2 个镜头 · 每段 6 秒 · 共约 11 秒')
+  })
+
+  it('lets each shot pick its own length and stops saying every shot is as long once they differ', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>时长<\/label><select[^>]*data-testid="video-shot-seconds-1"[^>]*>[^]*?<option value="6" selected="">6 秒<\/option>/)
+    expect(plain).toContain('2 个镜头 · 每段 6 秒 · 共约 12 秒')
+    const mixed = render('ready', { ...project, shots: [project.shots[0], { ...project.shots[1], seconds: 10 }] })
+    expect(mixed).toMatch(/data-testid="video-shot-seconds-1"[^>]*>[^]*?<option value="10" selected="">10 秒<\/option>/)
+    expect(mixed).toContain('2 个镜头 · 共约 16 秒')
+    expect(mixed).not.toContain('每段 6 秒 ·')
+  })
+
+  it('offers the caption size and place only while captions are on', () => {
+    const project = plannedProject()
+    const plain = render('ready', project)
+    expect(plain).toMatch(/<label[^>]*>字幕大小<\/label><select[^>]*data-testid="video-caption-size"[^>]*><option value="small">小<\/option><option value="medium" selected="">中<\/option><option value="large">大<\/option>/)
+    expect(plain).toMatch(/<label[^>]*>字幕位置<\/label><select[^>]*data-testid="video-caption-position"[^>]*><option value="bottom" selected="">底部<\/option><option value="middle">中间<\/option><option value="top">顶部<\/option>/)
+    const off = render('ready', { ...project, settings: { ...project.settings, captions: false } })
+    expect(off).not.toContain('data-testid="video-caption-size"')
+    expect(off).not.toContain('data-testid="video-caption-position"')
+  })
+
+  it('offers a straight cut or a fade between shots and a fade at the end, both off by default', () => {
+    const plain = render('ready', plannedProject())
+    expect(plain).toMatch(/<label[^>]*>镜头之间<\/label><select[^>]*data-testid="video-transition"[^>]*><option value="cut" selected="">直接切<\/option><option value="fade">淡入淡出<\/option>/)
+    expect(plain).toMatch(/data-testid="video-fade-out"[^]*?aria-checked="false"[^]*?>结尾淡出<\/label><small[^>]*>最后一秒画面和声音慢慢淡掉<\/small>/)
+    const project = plannedProject()
+    const faded = render('ready', { ...project, settings: { ...project.settings, transition: 'fade', fadeOut: true } })
+    expect(faded).toMatch(/<option value="fade" selected="">淡入淡出<\/option>/)
+    expect(faded).toMatch(/data-testid="video-fade-out"[^]*?aria-checked="true"/)
+  })
+
+  it('offers a song under the film, and once one is picked shows its name, change, drop and how loud the clips play', () => {
+    const project = plannedProject()
+    expect(render('ready', project)).toMatch(/title="从电脑里选一首歌当背景音乐，支持 MP3、M4A、WAV、OGG"[^>]*data-testid="video-music-add"[^>]*>[^]*?加配乐/)
+    const markup = render('ready', { ...project, music: { assetId: 'm'.repeat(43), name: '晴天 <live>', clipSound: 'quiet' } })
+    expect(markup).not.toContain('data-testid="video-music-add"')
+    expect(markup).toMatch(/data-testid="video-music-name"[^>]*>[^]*?晴天 &lt;live&gt;/)
+    expect(markup).toMatch(/data-testid="video-music-change"[^>]*>[^]*?换一首/)
+    expect(markup).toMatch(/data-testid="video-music-remove"[^>]*>[^]*?不用配乐/)
+    expect(markup).toMatch(/<label[^>]*>片段原声<\/label><select[^>]*data-testid="video-clip-sound"/)
+    expect(markup).toMatch(/<option value="normal">照常<\/option><option value="quiet" selected="">调小<\/option><option value="off">关掉<\/option>/)
+  })
+
   it('shows the joined film with open, save and open folder once every clip is there', () => {
     const project = plannedProject()
     const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('ab'[index]), status: 'done' })), exported: clip('z') }
@@ -119,5 +215,42 @@ describe('VideoStudioPage', () => {
     expect(markup).toContain('data-testid="video-result-save"')
     expect(markup).toMatch(/data-testid="video-result-folder"[^>]*>[^]*?打开文件夹/)
     expect(markup).toContain('12 秒 · 720 × 1280')
+  })
+
+  it('offers a new film once there is something to keep and lists the draft box under the page', () => {
+    expect(render('ready')).not.toContain('data-testid="video-new"')
+    expect(render('ready')).not.toContain('data-testid="video-drafts"')
+    const project = plannedProject()
+    const markup = render('ready', project, [
+      { id: 'a', savedAt: Date.now(), project: { ...createVideoStudioProject(), settings: { ...defaultVideoStudioSettings(), idea: '海边日落' } } },
+      { id: 'b', savedAt: Date.now(), project: { ...project, exported: clip('z') } },
+    ])
+    expect(markup).toMatch(/title="把这一份放进草稿箱，再从头做一条新的"[^>]*data-testid="video-new"[^>]*>[^]*?新建一条/)
+    expect(markup).toMatch(/data-testid="video-drafts"[^]*?草稿箱[^]*?2 份/)
+    expect(markup).toMatch(/data-testid="video-draft-0"[^]*?海边日落[^]*?还没写分镜 · 今天 \d\d:\d\d/)
+    expect(markup).toMatch(/data-testid="video-draft-1"[^]*?回家的猫[^]*?2 个镜头 · 已生成 1 段 · 已拼成片/)
+    expect(markup).toMatch(/title="现在这一份会先放进草稿箱"[^>]*data-testid="video-draft-open-0"[^>]*>[^]*?接着做/)
+    expect(markup).toMatch(/aria-label="删掉这份草稿"[^>]*title="删掉这份草稿"[^>]*data-testid="video-draft-remove-1"/)
+  })
+
+  it('stops making new films once the draft box is full and says why', () => {
+    const project = plannedProject()
+    const full = Array.from({ length: maxVideoStudioDrafts }, (_, index) => ({ id: `d${index}`, savedAt: Date.now(), project }))
+    expect(render('ready', project, full)).toMatch(new RegExp(`title="草稿箱满了（最多 ${maxVideoStudioDrafts} 份），先删掉几份不要的"[^>]*data-testid="video-new"[^>]*disabled=""`))
+  })
+
+  // 教程「视频剪辑」一章（清单第 11 项）照这一页的字教：页面改了按钮名、忘了改教程，这里会红。
+  it('shows every button and field the video tutorial tells the customer to look for', () => {
+    const topic = tutorialTopics.find((entry) => entry.id === 'video')
+    const quoted = [...JSON.stringify(topic?.steps).matchAll(/「([^」]+)」/g)].map((match) => match[1])
+    expect(quoted.length).toBeGreaterThan(20)
+    const project = plannedProject()
+    const fresh: VideoStudioProject = { ...project, shots: project.shots.map((shot) => ({ ...shot, clip: undefined, status: 'idle' })) }
+    const done: VideoStudioProject = { ...project, shots: project.shots.map((shot, index) => ({ ...shot, clip: clip('ab'[index]), status: 'done' })), music: { assetId: 'm'.repeat(43), name: '晴天', clipSound: 'quiet' }, exported: clip('z') }
+    const markup = [render('ready', fresh), render('ready', project), render('ready', done, [{ id: 'a', savedAt: Date.now(), project: fresh }])].join('')
+    // 这几个只在确认框、生成中、报余额不够时出现，首屏渲染不到；「生成全部 … 段」里的数是现算的。
+    const elsewhere = ['开始生成', '停止生成', '去充值']
+    for (const label of quoted.filter((entry) => !elsewhere.includes(entry))) expect(markup, label).toContain(label.replace(' … ', ' 2 '))
+    expect(render('unsupported')).toContain(topic?.steps[0].extra?.[0].detail ?? '-')
   })
 })

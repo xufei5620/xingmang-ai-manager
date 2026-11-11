@@ -32,18 +32,23 @@ import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
   approvalExpiredMessage,
+  classifyRemoteTurnFailure,
   formatApprovalText,
+  formatFileChangeLine,
   normalizePairingAttempt,
   parseRemoteCommand,
   redactRemoteText,
   remoteDisplayPath,
   remoteMessages,
+  remoteTurnFailureMessages,
   splitRemoteText,
+  staleMessageNotice,
   statusMessage,
   truncateRemoteText,
   turnFailedMessage,
   unknownApprovalMessage,
   whichApprovalMessage,
+  type RemoteFileChangeLine,
 } from './codex-remote-text'
 import { classifyWorkspace, sensitiveWorkspaceLabel } from './workspace-guard'
 import { isRecord } from './input-guards'
@@ -78,13 +83,21 @@ import { isRecord } from './input-guards'
 // - Text that leaves the machine is redacted (I13) and capped.
 
 const pairingTtlMs = 10 * 60_000
+/** 配对码挂了这么久还没收到私聊，电脑卡片上说可能是哪儿没配好（YF-2）。 */
+const pairingQuietMs = 60_000
 const maxPairingFailures = 20
 const approvalTimeoutMinutes = 10
 const approvalTimeoutMs = approvalTimeoutMinutes * 60_000
 const idleTimeoutMs = 4 * 60 * 60_000
 const idleRecheckMs = 30 * 60_000
+/** 闲着自动关之前这么久先提醒手机一次（D66 / YKS-19），回什么都会重新起算。 */
+const idleWarningMs = 10 * 60_000
+/** 起 Codex、开对话超过这么久还没交给 Codex，先跟手机说一声在准备（D66 / YKS-3）。 */
+const codexStartingNoticeMs = 15_000
 const staleBeforeStartMs = 60_000
 const maxMessageAgeMs = 10 * 60_000
+/** 回过一句「这条是 N 分钟前发的」以后，这么久里再来的旧消息算同一批，不再回（noticeStale）。 */
+const staleNoticeQuietMs = 60_000
 /**
  * 电脑上的时间至少快这么多才算「不准」：快不到 1 分钟，开启以后发的消息不会被当成旧的；平台回应里的时间
  * 只到秒，再加上路上的来回，几秒的差也不该算到电脑头上。
@@ -183,6 +196,14 @@ export function belongsToOtherTurn(currentTurnId: string | null, retiredTurnIds:
 /** 渠道开启前 1 分钟以上、或 10 分钟以前发的消息不算：星芒关着时发的指令不该在下次打开时突然执行。 */
 export function isStaleInbound(sentAt: number, channelStartedAt: number, now: number): boolean {
   return sentAt < channelStartedAt - staleBeforeStartMs || sentAt < now - maxMessageAgeMs
+}
+
+/**
+ * 这条旧消息是不是遥控开着的时候发的，只是电脑合盖、断网没及时收到（D66 / YKS-9）。遥控打开以前的不算：
+ * 微信每次打开都从头拉，可能把上次开着时已经执行过的话再送一遍，跟它说「没有执行」就说错了。
+ */
+export function sentWhileOpen(sentAt: number, channelStartedAt: number): boolean {
+  return sentAt >= channelStartedAt - staleBeforeStartMs
 }
 
 /**
@@ -437,15 +458,52 @@ export function inspectCommandDisplay(kind: CommandApprovalKind, params: Record<
 }
 
 /**
+ * 改动内容里加了、删了多少行。对过 Codex rust-v0.167.0 的 item_builders.rs：新建、删除给的是整份内容，
+ * 改给的是不带文件头的统一 diff（挪位置的后面另接一行「Moved to: …」），只数 @@ 之后以 + / - 开头的行。
+ */
+export function countChangedLines(kind: 'add' | 'delete' | 'update', diff: string): { added: number; removed: number } {
+  if (kind !== 'update') {
+    const lines = diff ? diff.split('\n').length - (diff.endsWith('\n') ? 1 : 0) : 0
+    return kind === 'add' ? { added: lines, removed: 0 } : { added: 0, removed: lines }
+  }
+  let added = 0
+  let removed = 0
+  let inHunk = false
+  for (const line of diff.split('\n')) {
+    if (line.startsWith('@@')) inHunk = true
+    else if (inHunk && line.startsWith('+')) added += 1
+    else if (inHunk && line.startsWith('-')) removed += 1
+  }
+  return { added, removed }
+}
+
+/**
+ * Codex fileChange 条目里的一个文件（FileUpdateChange：path、kind、diff）翻成改文件卡片要列的样子，
+ * 路径还是原样，显示时再换 ~。kind 认不出（老版本 Codex）只留路径，diff 不是字符串就不带行数。
+ */
+export function readFileChange(change: unknown): RemoteFileChangeLine | null {
+  if (!isRecord(change) || typeof change.path !== 'string' || !change.path) return null
+  const kind = isRecord(change.kind) ? change.kind : null
+  const type = kind?.type === 'add' || kind?.type === 'delete' || kind?.type === 'update' ? kind.type : null
+  const movePath = type === 'update' ? stringField(kind?.move_path) : null
+  const counts = type && typeof change.diff === 'string' ? countChangedLines(type, change.diff) : null
+  return { path: change.path, kind: type, ...(movePath ? { movePath } : {}), ...(counts ?? {}) }
+}
+
+/**
  * 改文件卡片的正文（#1407）。以前整段拼好再截到上限，路径一长，截掉的正是最后的「另外还有」和「可写范围」，
  * 客户看到半截路径，以为要改的就这些。现在只列整条放得下的文件，其余都算进「另外还有」，「可写范围」整行留在最后。
  * 「可写范围」那一行自己都放不下就返回 null，由调用方不问直接拒，跟显示不全的权限申请一样。
  */
-export function buildFileChangeSummary(params: Record<string, unknown>, changedFiles: readonly string[], options: ApprovalDisplayOptions): string | null {
+export function buildFileChangeSummary(params: Record<string, unknown>, changedFiles: readonly RemoteFileChangeLine[], options: ApprovalDisplayOptions): string | null {
   const grantRoot = stringField(params.grantRoot)
   const tail = grantRoot ? [`可写范围：${displayPath(grantRoot, options)}`] : []
   for (let shown = Math.min(changedFiles.length, maxFileLines); shown >= 0; shown -= 1) {
-    const lines = changedFiles.slice(0, shown).map((file) => displayPath(file, options))
+    const lines = changedFiles.slice(0, shown).map((change) => formatFileChangeLine({
+      ...change,
+      path: displayPath(change.path, options),
+      ...(change.movePath ? { movePath: displayPath(change.movePath, options) } : {}),
+    }))
     if (changedFiles.length > shown) lines.push(`另外还有 ${changedFiles.length - shown} 个文件`)
     const summary = [...lines, ...tail].join('\n')
     // 量的是脱敏以后的长度：手机上显示的就是那个。
@@ -460,7 +518,7 @@ export function buildApprovalRequest(
   nonce: string,
   kind: RemoteApprovalKind,
   params: Record<string, unknown>,
-  changedFiles: readonly string[],
+  changedFiles: readonly RemoteFileChangeLine[],
   options: ApprovalDisplayOptions,
 ): RemoteApprovalRequest {
   const redact = (text: string) => redactRemoteText(text, {
@@ -503,11 +561,26 @@ export function grantRequestedPermissions(requested: RequestedPermissions): Reco
   return granted
 }
 
+/** Codex 报的这一轮出了什么错（TurnError 里分类要用的那几样）。 */
+interface TurnFailure {
+  message: string | null
+  additionalDetails: string | null
+  codexErrorInfo: unknown
+}
+
+function readTurnFailure(error: unknown): TurnFailure | null {
+  if (!isRecord(error)) return null
+  const message = stringField(error.message)
+  const additionalDetails = stringField(error.additionalDetails)
+  if (!message && !additionalDetails && error.codexErrorInfo === undefined) return null
+  return { message, additionalDetails, codexErrorInfo: error.codexErrorInfo }
+}
+
 interface TurnState {
   id: string | null
   finalAnswer: string | null
   lastMessage: string | null
-  error: string | null
+  error: TurnFailure | null
   stoppedByUser: boolean
   /** 上一次有动静起算的「卡死」计时；每条通知、每次问审批都重新起算（noteTurnProgress）。 */
   stallTimer: NodeJS.Timeout | null
@@ -519,18 +592,44 @@ interface ChannelRuntime {
   status: RemoteChannelStatus
   enabled: boolean
   startedAt: number
-  pairing: { code: string; expiresAt: number; failures: number; timer: NodeJS.Timeout } | null
+  pairing: {
+    code: string
+    startedAt: number
+    expiresAt: number
+    failures: number
+    timer: NodeJS.Timeout
+    /** 挂满 pairingQuietMs 时推一份快照，卡片上那句「还没收到消息」才出得来。 */
+    quietTimer: NodeJS.Timeout
+  } | null
+  /** 上一个配对码错满次数作废了，电脑卡片上要说一声，直到重新开始配对、取消或关掉渠道（D66 / YKS-21）。 */
+  pairingLocked: boolean
+  /**
+   * 这次打开以后平台送来过什么（YF-2）：一条都没有、只有群里的、有过私聊。只记有没有，不记谁发的、发了什么；
+   * 只用来在电脑卡片上说配对码为什么没反应，手机那边照旧不回陌生人。
+   */
+  inboundSeen: RemoteInboundSeen
   peer: RemotePeer | null
   replyContext?: string
   seen: Set<string>
   idleTimer: NodeJS.Timeout | null
   inbox: Promise<void>
+  /**
+   * 把话交给 Codex 的那几步（startTurn），一个渠道一次一份。不在收件队列里排（D66 / YKS-3），但前一轮刚被「停止」、
+   * 回执还在路上时，后一轮要等它补完那次打断再交，同一个对话里不会两轮叠在一起。
+   */
+  handoff: Promise<void>
   outbox: Promise<void>
   threadId: string | null
+  /** 原来的对话不是手机上发「新对话」丢的（dropThread）：下次开新对话时先说一声（D66 / YKS-16）。 */
+  threadLost: boolean
+  /** 上一次回「这条是 N 分钟前发的」的时间（noticeStale），0 = 还没回过；收到一条照常处理的消息就清零。 */
+  staleNoticeAt: number
   turn: TurnState | null
   /** 最近结束的几轮的编号（retireTurn）。 */
   retiredTurnIds: string[]
 }
+
+export type RemoteInboundSeen = 'none' | 'group' | 'direct'
 
 interface PendingApproval {
   id: string
@@ -549,15 +648,29 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     enabled: false,
     startedAt: 0,
     pairing: null,
+    pairingLocked: false,
+    inboundSeen: 'none',
     peer: null,
     seen: new Set(),
     idleTimer: null,
     inbox: Promise.resolve(),
+    handoff: Promise.resolve(),
     outbox: Promise.resolve(),
     threadId: null,
+    threadLost: false,
+    staleNoticeAt: 0,
     turn: null,
     retiredTurnIds: [],
   }
+}
+
+/**
+ * 配对码挂满 pairingQuietMs 还没收到过私聊时，快照里带上 quiet（YF-2）：一条都没收到多半是平台后台没配好，
+ * 只收到群里的是发错了地方。收到过私聊（哪怕不是配对码）就不说，错码另有「错了 N 次」。
+ */
+export function pairingQuietField(pairingStartedAt: number, inboundSeen: RemoteInboundSeen, now: number): { quiet?: 'nothing' | 'group-only' } {
+  if (inboundSeen === 'direct' || now - pairingStartedAt < pairingQuietMs) return {}
+  return { quiet: inboundSeen === 'group' ? 'group-only' : 'nothing' }
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -567,7 +680,7 @@ function errorMessage(error: unknown, fallback: string): string {
 export class CodexRemoteService {
   private readonly runtimes: Record<RemoteChannelId, ChannelRuntime>
   private readonly pending = new Map<string, PendingApproval>()
-  private readonly fileChanges = new Map<string, string[]>()
+  private readonly fileChanges = new Map<string, RemoteFileChangeLine[]>()
   /** 上一条审批的编号；null = 这次打开星芒还没从设置里读过。 */
   private lastApprovalNumber: number | null = null
   private revision = 0
@@ -631,7 +744,7 @@ export class CodexRemoteService {
       this.codex = null
       this.fileChanges.clear()
       // 对话开在这一份 Codex 里，它停了就接不上：下一条从新对话开始，同 Codex 意外退出以后。
-      for (const id of remoteChannelIds) this.runtimes[id].threadId = null
+      for (const id of remoteChannelIds) this.dropThread(this.runtimes[id])
       this.options.log('info', 'remote.codex-released', { action })
       await this.retireClient(client)
     }
@@ -674,7 +787,15 @@ export class CodexRemoteService {
               ...(stored.boundPeer.displayName ? { displayName: stored.boundPeer.displayName } : {}),
             }
           : null,
-        pairing: runtime.pairing ? { code: runtime.pairing.code, expiresAt: runtime.pairing.expiresAt } : null,
+        pairing: runtime.pairing
+          ? {
+              code: runtime.pairing.code,
+              expiresAt: runtime.pairing.expiresAt,
+              ...(runtime.pairing.failures > 0 ? { failures: runtime.pairing.failures } : {}),
+              ...pairingQuietField(runtime.pairing.startedAt, runtime.inboundSeen, now),
+            }
+          : null,
+        ...(runtime.pairingLocked ? { pairingLocked: true } : {}),
       }
       const waiting = this.pendingFor(id).length
       pendingApprovals += waiting
@@ -705,7 +826,7 @@ export class CodexRemoteService {
       settings.workspaceDirectory = workspace
     })
     // 新文件夹从新对话开始：旧对话的工作目录还是原来那个。
-    for (const id of remoteChannelIds) this.runtimes[id].threadId = null
+    for (const id of remoteChannelIds) this.dropThread(this.runtimes[id])
     return this.emit()
   }
 
@@ -761,6 +882,7 @@ export class CodexRemoteService {
     const runtime = this.runtimes[channel]
     if (!runtime.enabled) throw new Error('先打开这个渠道，再开始配对。')
     this.clearPairing(runtime)
+    runtime.pairingLocked = false
     // 到点自己收掉，界面上的配对码跟着消失，不用界面自己掐表。
     const timer = setTimeout(() => {
       if (runtime.pairing?.timer !== timer) return
@@ -768,11 +890,18 @@ export class CodexRemoteService {
       this.emitSoon()
     }, pairingTtlMs)
     timer.unref?.()
+    const quietTimer = setTimeout(() => {
+      if (runtime.pairing?.quietTimer === quietTimer) this.emitSoon()
+    }, pairingQuietMs)
+    quietTimer.unref?.()
+    const now = this.now()
     runtime.pairing = {
       code: generatePairingCode(this.options.randomInt ?? cryptoRandomInt),
-      expiresAt: this.now() + pairingTtlMs,
+      startedAt: now,
+      expiresAt: now + pairingTtlMs,
       failures: 0,
       timer,
+      quietTimer,
     }
     this.options.log('info', 'remote.pairing-started', { channel })
     return this.emit()
@@ -780,16 +909,21 @@ export class CodexRemoteService {
 
   async cancelPairing(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     this.clearPairing(this.runtimes[channel])
+    this.runtimes[channel].pairingLocked = false
     return this.emit()
   }
 
   private clearPairing(runtime: ChannelRuntime): void {
-    if (runtime.pairing) clearTimeout(runtime.pairing.timer)
+    if (runtime.pairing) {
+      clearTimeout(runtime.pairing.timer)
+      clearTimeout(runtime.pairing.quietTimer)
+    }
     runtime.pairing = null
   }
 
   async unbind(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
     const runtime = this.runtimes[channel]
+    await this.tellUnbound(runtime)
     await this.forgetPeer(runtime)
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[channel]
@@ -807,7 +941,11 @@ export class CodexRemoteService {
     const runtime = this.runtimes[channel]
     const before = (await this.options.store.readSettings()).channels[channel]
     const sameAccount = value !== null && accountLabel !== null && before?.accountLabel === accountLabel
-    if (!sameAccount) await this.forgetPeer(runtime)
+    if (!sameAccount) {
+      // 换凭据以前说：凭据一换（退出登录是清掉），就发不出去了。
+      await this.tellUnbound(runtime)
+      await this.forgetPeer(runtime)
+    }
     // 退出登录时凭据删不掉（#1407 P3-6）：解绑、停渠道照做，客户点退出就是不想再让手机指挥这台电脑；
     // 账号字样留着，因为凭据还在，卡上照旧有「退出登录」能再点。最后把那句报出去。
     let removeFailure: unknown = null
@@ -938,6 +1076,8 @@ export class CodexRemoteService {
     runtime.enabled = true
     runtime.startedAt = this.now()
     runtime.seen.clear()
+    runtime.staleNoticeAt = 0
+    runtime.inboundSeen = 'none'
     runtime.status = { state: 'connecting' }
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
@@ -980,6 +1120,7 @@ export class CodexRemoteService {
     const wasEnabled = runtime.enabled
     runtime.enabled = false
     this.clearPairing(runtime)
+    runtime.pairingLocked = false
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
     runtime.idleTimer = null
     await this.abandonTurn(runtime)
@@ -993,7 +1134,7 @@ export class CodexRemoteService {
     await this.stopAdapter(runtime)
     runtime.peer = null
     runtime.replyContext = undefined
-    runtime.threadId = null
+    this.dropThread(runtime)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
     if (!remoteChannelIds.some((id) => this.runtimes[id].enabled)) await this.stopCodex()
   }
@@ -1009,6 +1150,30 @@ export class CodexRemoteService {
     runtime.peer = null
     runtime.replyContext = undefined
     runtime.threadId = null
+    // 换了人就是新的人，没有「前面的」可言。
+    runtime.threadLost = false
+  }
+
+  /**
+   * 原来的对话接不上了，又不是手机上发「新对话」丢的（关遥控、换文件夹、Codex 停了或出错）：记下来，
+   * 下次开新对话时先跟手机说一声（D66 / YKS-16）。不然客户接着说「再改一下」，Codex 已经不记得前面了。
+   */
+  private dropThread(runtime: ChannelRuntime): void {
+    if (runtime.threadId) runtime.threadLost = true
+    runtime.threadId = null
+  }
+
+  /**
+   * 解绑、换人、退出登录以前，给原来那个人发一句（D66 / YKS-18）：之后他发的话一律不回，不说他会一直等。
+   * 渠道没开着就发不了，算了；最多等 1.5 秒，电脑上的操作不为一条消息卡住。
+   */
+  private async tellUnbound(runtime: ChannelRuntime): Promise<void> {
+    if (!runtime.enabled || !runtime.adapter) return
+    const peer = await this.boundPeer(runtime.id)
+    if (!peer) return
+    const replyContext = runtime.peer?.userId === peer.userId ? runtime.replyContext : null
+    const sent = this.sendText(runtime, remoteMessages.unbound, peer, replyContext)
+    await Promise.race([sent, new Promise((resolve) => setTimeout(resolve, shutdownSendTimeoutMs).unref?.())])
   }
 
   /** 正在跑的这一轮：等你同意的一律拒绝，再请 Codex 停下。 */
@@ -1066,7 +1231,13 @@ export class CodexRemoteService {
     turn.stallTimer.unref?.()
   }
 
+  /** 从现在起再闲 delayMs 就自动关；关之前 10 分钟先提醒手机一次（D66 / YKS-19），手机上回什么都会走到这里重新起算。 */
   private touch(runtime: ChannelRuntime, delayMs = idleTimeoutMs): void {
+    if (delayMs > idleWarningMs) this.scheduleIdle(runtime, delayMs - idleWarningMs, () => this.warnIdleClose(runtime))
+    else this.scheduleIdle(runtime, delayMs, () => this.closeIdle(runtime))
+  }
+
+  private scheduleIdle(runtime: ChannelRuntime, delayMs: number, fire: () => void): void {
     if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
     runtime.idleTimer = setTimeout(() => {
       runtime.idleTimer = null
@@ -1076,10 +1247,23 @@ export class CodexRemoteService {
         this.touch(runtime, idleRecheckMs)
         return
       }
-      this.options.log('info', 'remote.idle-closed', { channel: runtime.id })
-      void this.disableChannel(runtime, remoteMessages.idleClosed).then(() => this.emit()).catch(() => undefined)
+      fire()
     }, delayMs)
     runtime.idleTimer.unref?.()
+  }
+
+  private warnIdleClose(runtime: ChannelRuntime): void {
+    this.scheduleIdle(runtime, idleWarningMs, () => this.closeIdle(runtime))
+    this.options.log('info', 'remote.idle-closing-soon', { channel: runtime.id })
+    void (async () => {
+      const peer = runtime.peer ?? (await this.boundPeer(runtime.id))
+      if (peer) await this.sendText(runtime, remoteMessages.idleClosingSoon, peer)
+    })().catch(() => undefined)
+  }
+
+  private closeIdle(runtime: ChannelRuntime): void {
+    this.options.log('info', 'remote.idle-closed', { channel: runtime.id })
+    void this.disableChannel(runtime, remoteMessages.idleClosed).then(() => this.emit()).catch(() => undefined)
   }
 
   private async refreshSecrets(force = false): Promise<void> {
@@ -1148,6 +1332,7 @@ export class CodexRemoteService {
 
   private async handleInbound(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {
     if (!runtime.enabled || message.peer.channel !== runtime.id) return
+    this.noteInboundSeen(runtime, message.direct)
     if (!message.direct) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'not-direct' })
       return
@@ -1159,8 +1344,9 @@ export class CodexRemoteService {
     if (now < runtime.startedAt) runtime.startedAt = now
     if (message.sentAt !== undefined && isStaleInbound(message.sentAt, runtime.startedAt, now)) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'stale' })
-      if (message.kind !== 'approval' && isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) {
-        await this.warnClockAhead(runtime, message)
+      if (message.kind !== 'approval') {
+        if (isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) await this.warnClockAhead(runtime, message)
+        else if (sentWhileOpen(message.sentAt, runtime.startedAt)) await this.noticeStale(runtime, message, now - message.sentAt)
       }
       return
     }
@@ -1172,6 +1358,7 @@ export class CodexRemoteService {
     }
     runtime.peer = message.peer
     if (message.replyContext) runtime.replyContext = message.replyContext
+    runtime.staleNoticeAt = 0
     this.touch(runtime)
     if (message.kind === 'unsupported') {
       await this.sendText(runtime, remoteMessages.unsupported)
@@ -1207,6 +1394,8 @@ export class CodexRemoteService {
       case 'new-thread':
         await this.abandonTurn(runtime)
         runtime.threadId = null
+        // 是他自己要的新对话，下次不用再提醒「前面的记不得了」。
+        runtime.threadLost = false
         await this.sendText(runtime, remoteMessages.newThread)
         this.emitSoon()
         return
@@ -1216,6 +1405,10 @@ export class CodexRemoteService {
       case 'prompt':
         await this.runPrompt(runtime, command.text)
     }
+  }
+
+  private staleNoticedRecently(runtime: ChannelRuntime): boolean {
+    return runtime.staleNoticeAt > 0 && Math.abs(this.now() - runtime.staleNoticeAt) < staleNoticeQuietMs
   }
 
   /** 第一次见到这条消息返回 true；见过的（长轮询重连、飞书重投会送重）返回 false。 */
@@ -1250,6 +1443,28 @@ export class CodexRemoteService {
     await this.sendText(runtime, remoteMessages.clockAhead, message.peer, message.replyContext ?? (isBound ? runtime.replyContext : null))
   }
 
+  /**
+   * 遥控开着、电脑合盖或断网时发的消息，回来时已经超过 10 分钟（D66 / YKS-9）：照旧不执行，只给绑定的人回一句，
+   * 免得手机上白等。电脑回来时攒着的几条是一下子送来的，一批只回一句（1 分钟内回过就不再回），说的是
+   * 这一批里第一条的分钟数；陌生人照旧不回，免得拿消息探出这里有个遥控。
+   */
+  private async noticeStale(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundUnsupported, ageMs: number): Promise<void> {
+    if (!this.markSeen(runtime, message.messageId) || this.staleNoticedRecently(runtime)) return
+    const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
+    if (bound?.userId !== message.peer.userId || this.staleNoticedRecently(runtime)) return
+    runtime.staleNoticeAt = this.now()
+    const minutes = Math.max(1, Math.floor(ageMs / 60_000))
+    await this.sendText(runtime, staleMessageNotice(minutes), message.peer, message.replyContext ?? runtime.replyContext)
+  }
+
+  /** 记下这次打开以后收到过哪种消息（YF-2）；配对码正挂着时变了就推一份快照，卡片上那句跟着换或消失。 */
+  private noteInboundSeen(runtime: ChannelRuntime, direct: boolean): void {
+    const next: RemoteInboundSeen = direct ? 'direct' : runtime.inboundSeen === 'none' ? 'group' : runtime.inboundSeen
+    if (next === runtime.inboundSeen) return
+    runtime.inboundSeen = next
+    if (runtime.pairing) this.emitSoon()
+  }
+
   private async tryPair(runtime: ChannelRuntime, message: RemoteInbound): Promise<void> {
     const pairing = runtime.pairing
     // 没在配对、或者不是配对码：不回话，免得别人拿消息探出这里有个遥控。
@@ -1266,12 +1481,16 @@ export class CodexRemoteService {
       this.options.log('warn', 'remote.pairing-mismatch', { channel: runtime.id, failures: pairing.failures })
       if (pairing.failures >= maxPairingFailures) {
         this.clearPairing(runtime)
+        runtime.pairingLocked = true
         this.options.log('warn', 'remote.pairing-locked', { channel: runtime.id })
-        this.emitSoon()
       }
+      // 电脑卡片上跟着显示错了几次、作废了没有（D66 / YKS-21）；手机那边照旧不回。
+      this.emitSoon()
       return
     }
     this.clearPairing(runtime)
+    // 已经绑着别人（电脑上点了「换人」）：先跟原来那个人说一声，再换。
+    await this.tellUnbound(runtime)
     await this.forgetPeer(runtime)
     await this.options.store.updateSettings((settings) => {
       const stored = settings.channels[runtime.id] ?? emptyChannelSettings()
@@ -1344,7 +1563,34 @@ export class CodexRemoteService {
     runtime.turn = turn
     this.noteTurnProgress(runtime)
     this.emitSoon()
-    await this.sendText(runtime, remoteMessages.received)
+    // 原来的对话丢了（不是他自己发的「新对话」），这一条会从新对话开始：收到那句前面先说一声（D66 / YKS-16）。
+    const received = runtime.threadId === null && runtime.threadLost
+      ? `${remoteMessages.threadReset}\n${remoteMessages.received}`
+      : remoteMessages.received
+    await this.sendText(runtime, received)
+    // 起 Codex、开对话不在收件队列里等（D66 / YKS-3）：起 Codex 排在全局的安装队列里，别的工具在装时能等好几分钟，
+    // 这期间手机发的「停止」「状态」得有人理，「停止」靠 turnStillWanted 拦住还没交给 Codex 的这一句。
+    // 这一轮已经登记在 runtime.turn 上，后面再来的话照旧回「还在处理上一条」。
+    void this.startTurn(runtime, turn, workspace, text)
+  }
+
+  private async startTurn(runtime: ChannelRuntime, turn: TurnState, workspace: string, text: string): Promise<void> {
+    const slowNotice = setTimeout(() => {
+      if (turn.id === null && this.turnStillWanted(runtime, turn)) void this.sendText(runtime, remoteMessages.codexStarting)
+    }, codexStartingNoticeMs)
+    slowNotice.unref?.()
+    const handoff = runtime.handoff.then(() => this.handTurnToCodex(runtime, turn, workspace, text))
+    runtime.handoff = handoff.catch(() => undefined)
+    try {
+      await handoff
+    } catch {
+      this.options.log('error', 'remote.inbound-failed', { channel: runtime.id })
+    } finally {
+      clearTimeout(slowNotice)
+    }
+  }
+
+  private async handTurnToCodex(runtime: ChannelRuntime, turn: TurnState, workspace: string, text: string): Promise<void> {
     let client: CodexAppServerClient
     try {
       client = await this.ensureCodex()
@@ -1370,6 +1616,7 @@ export class CodexRemoteService {
         if (!thread) throw new Error('Codex 没有开出新对话')
         if (!this.turnStillWanted(runtime, turn)) return
         runtime.threadId = thread
+        runtime.threadLost = false
       }
       const threadId = runtime.threadId
       const result = await client.request('turn/start', {
@@ -1387,11 +1634,24 @@ export class CodexRemoteService {
     } catch (error) {
       if (runtime.turn !== turn) return
       this.clearTurn(runtime)
-      runtime.threadId = null
-      this.options.log('warn', 'remote.turn-start-failed', { channel: runtime.id })
-      await this.sendText(runtime, turnFailedMessage(truncateRemoteText(errorMessage(error, ''), maxReasonLength)))
+      this.dropThread(runtime)
+      const reply = this.turnFailureReply(runtime, 'remote.turn-start-failed', { message: errorMessage(error, '') || null, additionalDetails: null, codexErrorInfo: undefined })
+      await this.sendText(runtime, reply)
       this.emitSoon()
     }
+  }
+
+  /**
+   * 这一轮没做完时发给手机的那句（D66 / YKS-8）：认得出的余额、登录、对话太长、连不上换成大白话，
+   * 认不出的照旧发原话。原话脱敏、截短后进日志，客服从日志里看得到真正的原因。
+   */
+  private turnFailureReply(runtime: ChannelRuntime, event: string, failure: TurnFailure | null): string {
+    const message = failure?.message ?? ''
+    const classifyText = [message, failure?.additionalDetails ?? ''].filter(Boolean).join('\n')
+    const kind = classifyRemoteTurnFailure(classifyText, failure?.codexErrorInfo)
+    const logged = redactRemoteText(classifyText, this.redaction()).slice(0, maxReasonLength)
+    this.options.log('warn', event, { channel: runtime.id, kind: kind ?? 'other', ...(logged ? { reason: logged } : {}) })
+    return kind ? remoteTurnFailureMessages[kind] : turnFailedMessage(truncateRemoteText(message, maxReasonLength))
   }
 
   private ensureCodex(): Promise<CodexAppServerClient> {
@@ -1464,7 +1724,7 @@ export class CodexRemoteService {
     for (const id of remoteChannelIds) {
       const runtime = this.runtimes[id]
       for (const entry of this.pendingFor(id)) entry.settle('decline')
-      runtime.threadId = null
+      this.dropThread(runtime)
       if (runtime.turn) {
         this.clearTurn(runtime)
         void this.sendText(runtime, turnFailedMessage('电脑上的 Codex 意外退出了，再发一次试试。'))
@@ -1490,7 +1750,10 @@ export class CodexRemoteService {
       if (!item) return
       const itemId = stringField(item.id)
       if (item.type === 'fileChange' && itemId && Array.isArray(item.changes)) {
-        const files = item.changes.flatMap((change) => (isRecord(change) && typeof change.path === 'string' ? [change.path] : []))
+        const files = item.changes.flatMap((change) => {
+          const read = readFileChange(change)
+          return read ? [read] : []
+        })
         if (method === 'item/started') this.fileChanges.set(itemId, files)
         else this.fileChanges.delete(itemId)
       }
@@ -1504,7 +1767,7 @@ export class CodexRemoteService {
     }
     if (!runtime?.turn) return
     if (method === 'error' && params.willRetry !== true && isRecord(params.error)) {
-      runtime.turn.error = stringField(params.error.message)
+      runtime.turn.error = readTurnFailure(params.error)
       return
     }
     if (method === 'turn/completed' && isRecord(params.turn)) this.finishTurn(runtime, params.turn)
@@ -1522,8 +1785,9 @@ export class CodexRemoteService {
     if (turnPayload.status === 'completed') reply = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
     else if (turnPayload.status === 'interrupted') reply = turn.stoppedByUser ? null : remoteMessages.interrupted
     else {
-      const error = isRecord(turnPayload.error) ? stringField(turnPayload.error.message) : null
-      reply = turnFailedMessage(truncateRemoteText(error ?? turn.error ?? '', maxReasonLength))
+      // 回执里带着报错就以它为准，没带用这一轮前面那条 error 通知。
+      const failure = readTurnFailure(turnPayload.error)
+      reply = this.turnFailureReply(runtime, 'remote.turn-failed', failure?.message ? failure : turn.error ?? failure)
     }
     this.options.log('info', 'remote.turn-finished', { channel: runtime.id, status: stringField(turnPayload.status) })
     if (reply) void this.sendText(runtime, reply)

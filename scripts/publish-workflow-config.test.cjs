@@ -13,6 +13,7 @@ const workflow = YAML.parse(source)
 const windowsJob = workflow.jobs['windows-build']
 const macosJob = workflow.jobs['macos-build']
 const linuxChecksJob = workflow.jobs['linux-checks']
+const linuxBrowserJob = workflow.jobs['linux-renderer-v2-browser']
 const linuxBuildJob = workflow.jobs['linux-build']
 const publishJob = workflow.jobs.publish
 const buildJobs = [windowsJob, macosJob]
@@ -300,7 +301,7 @@ test('the Windows build job holds no credentials at all', () => {
 test('the Linux jobs hold no credentials and need no approval', () => {
   // Linux 不签名，出包与测试都用不到任何 secret；挂上 release 环境就会平白多出一次
   // 只有产品所有者能点的批准，而且是在他还没决定发 Linux 的时候。
-  for (const job of [linuxChecksJob, linuxBuildJob]) {
+  for (const job of [linuxChecksJob, linuxBrowserJob, linuxBuildJob]) {
     assert.equal(job.environment, undefined)
     assert.equal(job.permissions, undefined)
     assert.doesNotMatch(YAML.stringify(job), /secrets\./)
@@ -395,7 +396,8 @@ test('the Linux debs go through their own release gate, one native runner per ar
   const build = linuxBuildJob.steps.find((step) => /release:package:linux/.test(String(step.run || '')))
   assert.equal(String(build.run).trim(), 'npm run release:package:linux -- --arch "$PACKAGE_ARCH"')
   assert.equal(linuxBuildJob.env.PACKAGE_ARCH, '${{ matrix.arch }}')
-  assert.equal(linuxBuildJob.needs, 'linux-checks')
+  // 两个测试作业都过了才出包：任何一片失败或超时，linux-build 就跳过。
+  assert.deepEqual(linuxBuildJob.needs, ['linux-checks', 'linux-renderer-v2-browser'])
   // x64 机器装不了 arm64 的包，模拟器里起 Electron 也说明不了真机。
   assert.deepEqual(linuxBuildJob.strategy.matrix.include, [
     { arch: 'x64', runner: 'ubuntu-24.04' },
@@ -404,14 +406,80 @@ test('the Linux debs go through their own release gate, one native runner per ar
   assert.equal(linuxBuildJob.strategy['fail-fast'], false)
   // 第一版 Linux 不带加速：没有 Linux 的加速内核，出包门禁也会把这个变量清掉。
   assert.doesNotMatch(YAML.stringify(linuxBuildJob), /acceleration/i)
-  // release:build:unsigned 里会跑的那几套测试，Linux 在 linux-checks 里跑一遍。
+  // release:build:unsigned 里会跑的那几套测试，Linux 在 linux-checks 里跑一遍；
+  // test:v2:browser 拆在它和 linux-renderer-v2-browser 之间，下一条测试核对两边合起来是整条。
   const checks = linuxChecksJob.steps.map((step) => String(step.run || '').trim())
-  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2:browser', 'npm run test:ui']) {
+  for (const command of ['npm run typecheck', 'npm test', 'npm run test:v2:browser:e2e', 'npm run test:ui']) {
     assert.ok(checks.includes(command), `linux-checks must run ${command}`)
   }
   // 出货渲染层和画布的单测 npm test 已经跑过（ci-workflow-config.test.cjs 钉住），再跑就是第二遍。
   for (const repeat of ['npm run test:v2', 'npm run test:v2:vitest', 'npm run test:canvas']) {
     assert.equal(checks.includes(repeat), false, `linux-checks must not run ${repeat} after npm test`)
+  }
+})
+
+test('the Linux release checks run the whole of test:v2:browser, split across two jobs that run side by side', () => {
+  // 11-02 Linux 补发那次（运行 41408530433），这些套件串在 linux-checks 一个作业里用了
+  // 42.2 分钟，上限 45，其中 test:v2:browser 一条 24 分钟。开着 Linux 时它一超时，选
+  // 「全部平台」的整次发版都发不出去。拆开只是换个地方跑，一个套件都不能少。
+  const scripts = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).scripts
+  const suites = (script) => scripts[script].split(/\s+/).filter((token) => /\.mjs$/.test(token))
+  const checks = linuxChecksJob.steps.map((step) => String(step.run || '').trim())
+  const shardCommands = linuxBrowserJob.strategy.matrix.include.map((entry) => `npm run ${entry.script}`)
+
+  // 整条 test:v2:browser 哪里都不再整跑，否则夹具那半要跑两遍、作业又变回原来那么长。
+  for (const whole of ['npm run test:v2:browser', 'npm run test:v2:browser:fixture']) {
+    assert.equal(checks.includes(whole), false, `linux-checks must not also run ${whole} whole`)
+    assert.equal(shardCommands.includes(whole), false, `linux-renderer-v2-browser must not also run ${whole} whole`)
+  }
+
+  // 夹具那半用的是 PR 上 quality.yml 的 linux-renderer-v2-browser 那几片原样的命令：每一片
+  // 派一次，编号从 1 起不缺号。各片怎么分文件、合起来是不是整条夹具，ci-workflow-config.test.cjs
+  // 已经按同一组脚本核过。
+  const linuxShares = Object.keys(scripts)
+    .filter((name) => /^test:v2:browser:fixture:linux:\d+$/.test(name))
+    .sort((left, right) => Number(left.split(':').at(-1)) - Number(right.split(':').at(-1)))
+  assert.ok(linuxShares.length >= 2)
+  assert.deepEqual(shardCommands, linuxShares.map((name) => `npm run ${name}`))
+  assert.deepEqual(linuxBrowserJob.strategy.matrix.include.map((entry) => entry.shard), linuxShares.map((_, index) => index + 1))
+  const quality = YAML.parse(fs.readFileSync(path.join(root, '.github', 'workflows', 'quality.yml'), 'utf8'))
+  assert.deepEqual(shardCommands, quality.jobs['linux-renderer-v2-browser'].strategy.matrix.include.map((entry) => entry.command))
+  const run = linuxBrowserJob.steps.find((step) => step.env?.FIXTURE_SCRIPT)
+  assert.equal(run.env.FIXTURE_SCRIPT, '${{ matrix.script }}')
+  assert.equal(String(run.run).trim(), 'npm run "$FIXTURE_SCRIPT"')
+  // 一片红了另一片照样跑完，红在哪一片一次看全；linux-build 等的是整个矩阵，挡发版不受影响。
+  assert.equal(linuxBrowserJob.strategy['fail-fast'], false)
+
+  // 两边实际派出去的合起来正好是整条 test:v2:browser：e2e 那半在 linux-checks，夹具那半在各片。
+  const dispatched = [...checks, ...shardCommands]
+    .filter((command) => command.startsWith('npm run test:v2:browser'))
+    .map((command) => command.slice('npm run '.length))
+  const covered = new Set(dispatched.flatMap((script) => suites(script)))
+  assert.deepEqual([...covered].sort(), [...new Set(suites('test:v2:browser'))].sort())
+
+  // 和 linux-checks 一样：这次选了 Linux 才跑、在 tag 占好之后跑、跑在同一种机器上、浏览器
+  // 的系统库先装好、apt 那一步有自己的上限。
+  assert.equal(linuxBrowserJob.if, linuxChecksJob.if)
+  assert.equal(linuxBrowserJob.needs, 'release-tag')
+  assert.equal(linuxBrowserJob['runs-on'], linuxChecksJob['runs-on'])
+  const deps = stepIndex(linuxBrowserJob, /scripts\/ci-install-chromium-deps\.sh/)
+  const browser = stepIndex(linuxBrowserJob, /playwright install chromium/)
+  assert.ok(browser >= 0 && deps > browser && deps < linuxBrowserJob.steps.indexOf(run))
+  const checksDeps = linuxChecksJob.steps[stepIndex(linuxChecksJob, /scripts\/ci-install-chromium-deps\.sh/)]
+  assert.equal(linuxBrowserJob.steps[deps]['timeout-minutes'], checksDeps['timeout-minutes'])
+})
+
+test('the Linux release checks have room to finish before their caps', () => {
+  // 拆开以后 linux-checks 约 22 分钟（typecheck 1.2、npm test 14.5、test:v2:browser:e2e 3.5、
+  // test:ui 1.8），每一片夹具约 10 分钟。上限要盖住 apt 那一步最坏吃满的时间，再留出测试往后
+  // 的增长：只按今天的用时卡死，过几周又会贴着上限。
+  const aptCap = (job) => job.steps[stepIndex(job, /scripts\/ci-install-chromium-deps\.sh/)]['timeout-minutes']
+  assert.ok(linuxChecksJob['timeout-minutes'] >= 22 + aptCap(linuxChecksJob) + 20, String(linuxChecksJob['timeout-minutes']))
+  assert.ok(linuxBrowserJob['timeout-minutes'] >= 10 + aptCap(linuxBrowserJob) + 15, String(linuxBrowserJob['timeout-minutes']))
+  // 也别大到真卡住时白等太久：比 windows-build 的上限短，选「全部平台」时卡住的 Linux 不会
+  // 比 Windows 还晚报出来。
+  for (const job of [linuxChecksJob, linuxBrowserJob]) {
+    assert.ok(job['timeout-minutes'] < windowsJob['timeout-minutes'], String(job['timeout-minutes']))
   }
 })
 
@@ -460,7 +528,7 @@ test('the requested version must match package.json before anything is built', (
 
 test('a single-platform publish does not silently skip the publish job', () => {
   // 被跳过的 needs 默认会把依赖它的作业也跳过，表现是「跑完了但什么都没发」。
-  assert.deepEqual(publishJob.needs, ['release-tag', 'windows-build', 'macos-build', 'linux-checks', 'linux-build'])
+  assert.deepEqual(publishJob.needs, ['release-tag', 'windows-build', 'macos-build', 'linux-checks', 'linux-renderer-v2-browser', 'linux-build'])
   assert.match(String(publishJob.if), /!cancelled\(\)/)
   assert.match(String(publishJob.if), /needs\.release-tag\.result == 'success'/)
   // 只挡 failure 会放过超时（cancelled），见「every platform the run asked for …」那条。
@@ -491,12 +559,12 @@ test('each platform choice builds exactly its own jobs', () => {
   // 原来的写法是「不是 macos 就出 Windows」；多一个 linux 选项后，只选 linux 也会把
   // Windows 和 Mac 一起出一遍，Mac 那一半还要等一次批准。
   const expected = {
-    all: ['windows-build', 'macos-build', 'linux-checks'],
+    all: ['windows-build', 'macos-build', 'linux-checks', 'linux-renderer-v2-browser'],
     // 加 Linux 之前的默认值：照老习惯选它，还是原来的 Windows 与 macOS，不碰 Linux。
     both: ['windows-build', 'macos-build'],
     windows: ['windows-build'],
     macos: ['macos-build'],
-    linux: ['linux-checks'],
+    linux: ['linux-checks', 'linux-renderer-v2-browser'],
   }
   for (const platforms of workflow.on.workflow_dispatch.inputs.platforms.options) {
     const started = Object.entries(workflow.jobs)
@@ -505,7 +573,7 @@ test('each platform choice builds exactly its own jobs', () => {
       .map(([id]) => id)
     assert.deepEqual(started, expected[platforms], platforms)
   }
-  // linux-build 没有自己的 if：linux-checks 被跳过或失败，它就跟着跳过。
+  // linux-build 没有自己的 if：linux-checks 或 linux-renderer-v2-browser 被跳过或失败，它就跟着跳过。
   assert.equal(linuxBuildJob.if, undefined)
 })
 
@@ -556,9 +624,12 @@ test('Linux only reaches customers once the repository switch is on', () => {
   const linuxOk = { 'linux-checks': 'success', 'linux-build': 'success' }
   const linuxBuildRed = { 'linux-checks': 'success', 'linux-build': 'failure' }
   const linuxChecksRed = { 'linux-checks': 'failure', 'linux-build': 'skipped' }
+  // 夹具那两片里有一片红了，linux-build 同样跳过。
+  const linuxBrowserRed = { 'linux-checks': 'success', 'linux-renderer-v2-browser': 'failure', 'linux-build': 'skipped' }
   // 作业超过自己的 timeout-minutes 结束时是 cancelled，不是 failure。
   const linuxChecksTimedOut = { 'linux-checks': 'cancelled', 'linux-build': 'skipped' }
   const linuxBuildTimedOut = { 'linux-checks': 'success', 'linux-build': 'cancelled' }
+  const linuxBrowserTimedOut = { 'linux-checks': 'success', 'linux-renderer-v2-browser': 'cancelled', 'linux-build': 'skipped' }
   const on = { XINGMANG_PUBLISH_LINUX: 'true' }
 
   for (const vars of [{}, { XINGMANG_PUBLISH_LINUX: 'false' }, { XINGMANG_PUBLISH_LINUX: '' }]) {
@@ -568,6 +639,8 @@ test('Linux only reaches customers once the repository switch is on', () => {
     assert.equal(publishes({ ...ok, ...linuxBuildRed }, vars), true, label)
     assert.equal(publishes({ ...ok, ...linuxChecksRed }, vars), true, label)
     assert.equal(publishes({ ...ok, ...linuxChecksTimedOut }, vars), true, label)
+    assert.equal(publishes({ ...ok, ...linuxBrowserRed }, vars), true, label)
+    assert.equal(publishes({ ...ok, ...linuxBrowserTimedOut }, vars), true, label)
     // 只选了 linux：整个发布作业跳过，连批准都不会要。
     assert.equal(publishes(linuxOk, vars, 'linux'), false, label)
   }
@@ -580,10 +653,13 @@ test('Linux only reaches customers once the repository switch is on', () => {
   // 超时也一样挡住：只挡 failure 的话，Windows / macOS 会悄悄不带 Linux 发出去。
   assert.equal(publishes({ ...ok, ...linuxChecksTimedOut }, on), false)
   assert.equal(publishes({ ...ok, ...linuxBuildTimedOut }, on), false)
+  assert.equal(publishes({ ...ok, ...linuxBrowserRed }, on), false)
+  assert.equal(publishes({ ...ok, ...linuxBrowserTimedOut }, on), false)
+  assert.equal(publishes(linuxBrowserRed, on, 'linux'), false)
   assert.equal(publishes(linuxOk, on, 'linux'), true)
   assert.equal(publishes(linuxChecksRed, on, 'linux'), false)
   assert.equal(publishes(linuxBuildTimedOut, on, 'linux'), false)
-  // 只发 Windows 或 macOS（含老的 both）时 Linux 两个作业都是 skipped，不算失败。
+  // 只发 Windows 或 macOS（含老的 both）时 Linux 几个作业都是 skipped，不算失败。
   assert.equal(publishes(ok, on, 'both'), true)
   assert.equal(publishes(ok, {}, 'both'), true)
   assert.equal(publishes({ 'windows-build': 'success' }, on, 'windows'), true)
@@ -654,7 +730,7 @@ function commandLines(script) {
 test('the release tag is reserved before anything is built', () => {
   // 出包作业不等它的话，tag 要到一个多小时之后才建，又回到 0.2.14 的样子。
   assert.equal(tagJob.needs, undefined)
-  for (const job of [windowsJob, macosJob, linuxChecksJob]) {
+  for (const job of [windowsJob, macosJob, linuxChecksJob, linuxBrowserJob]) {
     assert.equal(job.needs, 'release-tag')
     // if 里写了 always() 之类，占 tag 失败了照样出包。
     assert.doesNotMatch(String(job.if), /always\(\)|failure\(\)|cancelled\(\)/)
@@ -804,6 +880,8 @@ function runPlanStep({
   confirm = version,
   platforms = 'all',
   publishLinux = '',
+  // 默认不挂代码里的 Linux 暂停，下面这些用例测的是开关本身；暂停另有一条用例。
+  linuxHold = '',
   ref = 'refs/heads/main',
   tagSha = null,
   annotated = false,
@@ -892,6 +970,7 @@ fi
       CONFIRM_VERSION: confirm,
       PLATFORMS: platforms,
       PUBLISH_LINUX: publishLinux,
+      LINUX_PUBLISH_HOLD: linuxHold,
       DISPATCH_REF: ref,
       SHIPPED_SHA: SHIPPED,
     },
@@ -913,6 +992,41 @@ test('a Linux-only run with Linux publishing off neither checks nor reserves a t
   const on = runPlanStep({ platforms: 'linux', publishLinux: 'TRUE' })
   assert.equal(on.status, 0, on.output)
   assert.deepEqual(on.outputs, { tag: 'v0.2.15', action: 'create' })
+})
+
+test('while Linux is held back in code, a run that would ship Linux stops before any tag is looked at', posixOnly, () => {
+  // yoyo 2026-11-09「Linux先不发」。仓库变量只有能改仓库设置的人能动，代码里的这道暂停只能
+  // 把 Linux 关上：开关开着、这次又选了 Linux，就在占 tag、出包之前停下。解除暂停时删掉
+  // 工作流里那一行和这一条。
+  const hold = planStep.env.LINUX_PUBLISH_HOLD
+  assert.equal(typeof hold, 'string')
+  assert.match(hold, /Linux先不发/)
+  for (const platforms of ['all', 'linux']) {
+    for (const publishLinux of ['true', 'TRUE']) {
+      const run = runPlanStep({ platforms, publishLinux, linuxHold: hold })
+      const label = `${platforms}，开关 ${publishLinux}`
+      assert.notEqual(run.status, 0, label)
+      assert.ok(run.output.includes(`::error::Linux 暂停对外发（${hold}）`), `${label}\n${run.output}`)
+      assert.ok(run.output.includes(`这次又选了 ${platforms}；什么都没动`), `${label}\n${run.output}`)
+      assert.deepEqual(run.outputs, {}, label)
+      assert.equal(run.log, '', label)
+    }
+  }
+  // 不带 Linux 的发布照常占 tag：0.2.24 选 both 就只发 Windows 与 macOS。
+  for (const platforms of ['both', 'windows', 'macos']) {
+    const run = runPlanStep({ platforms, publishLinux: 'true', linuxHold: hold })
+    assert.equal(run.status, 0, `${platforms}\n${run.output}`)
+    assert.deepEqual(run.outputs, { tag: 'v0.2.15', action: 'create' }, platforms)
+  }
+  // 开关关着时 Linux 本来就不上传，选 all 照常发 Windows 与 macOS，只选 linux 照旧只出包。
+  for (const publishLinux of ['', 'false']) {
+    const all = runPlanStep({ platforms: 'all', publishLinux, linuxHold: hold })
+    assert.equal(all.status, 0, all.output)
+    assert.deepEqual(all.outputs, { tag: 'v0.2.15', action: 'create' })
+    const linuxOnly = runPlanStep({ platforms: 'linux', publishLinux, linuxHold: hold })
+    assert.equal(linuxOnly.status, 0, linuxOnly.output)
+    assert.deepEqual(linuxOnly.outputs, { action: 'none' })
+  }
 })
 
 test('the tag is reserved whenever the publish job could run', posixOnly, () => {

@@ -8,7 +8,7 @@
 - `window-lifecycle.ts` — 点关闭时的决策：按「关闭行为」偏好缩到托盘 / 退出 / 询问（可「记住选择」），托盘不可用时不藏窗；退出前只问一句（有安装在跑就拦，或问要不要顺手装已下好的更新），选了装更新先置 quitting 再拉安装器，免得被自己再拦一遍
 - `bootstrap/lifecycle.ts` — 退出清理清单：`main.ts` 只挂一个 `will-quit`，各处用 `quitCleanup.add(名字, 步骤)` 按登记先后排进来，退出时挨个跑、整个退出只跑一次；某一步抛错只记日志（`app.quit-cleanup.failed`，带步骤名），后面的照跑。顺序由 `main.test.ts` 按源码钉住（加速服务在独立加速进程之前），新加一步登记在它该在的位置，别再另挂 `will-quit`
 - `bootstrap/ai-services.ts` — 按账号站点分开的 AI 工作区（#1070 第 5 步从 main.ts 原样搬出）：`createRealmBusinesses` 给星芒账号、历史账号各建一份聊天、画图、视频、画布运行、作品存储和缩略图，第一次用到那个站点才建，之后一直用这一份；画布运行的订阅挂在每个站点上，后建的站点也补挂。main.ts 用 `createRealmServiceDispatch` 把当前站点那份交出去。生成缩略图、缩小聊天里贴的截图都用 `nativeImage` 在主进程里做
-- `bootstrap/acceleration.ts` — 本机加速的接线（#1070 第 5 步从 main.ts 原样搬出），按启动时建的先后三段：`createAccelerationRouting` 建下载线路（装 CLI、下 Node 时临时走加速，用一个只给下载用的网络分区，默认会话不动）和打开 Codex 桌面端时替他连一次的加速、启动线路，系统服务要用，所以最早建；`createAccelerationHost` 收启动一开始就读的加速文件（Promise，建窗口不等它），读完那一刻建宿主（辅助进程、内核、系统代理都归它管，各种失败的原因写进日志），建好马上把上次崩溃没改回的系统代理改回去，安装包里本该有的加速文件读坏了记成「文件坏了」，好让加速页叫客户去看杀毒软件；`createAccelerationServices` 先同步建好加速服务（要用到宿主的操作排着等它）、时长快用完和加速中断的系统通知、加速页和托盘看到的那一套（软件替他在后台连的那一次在这套里看不见）。睡眠唤醒（没有宿主时什么都不做）和退出清理留在 main.ts
+- `bootstrap/acceleration.ts` — 本机加速的接线（#1070 第 5 步从 main.ts 原样搬出），按启动时建的先后三段：`createAccelerationRouting` 建下载线路（装 CLI、下 Node 时临时走加速，用一个只给下载用的网络分区，默认会话不动）和打开 Codex 桌面端时替他连一次的加速、启动线路，系统服务要用，所以最早建；`createAccelerationHostLoader` 定什么时候读加速文件：开机只看一眼上次崩溃有没有留下没改回的系统代理（`hasAccelerationProxyRecoveryRecords`，两次 lstat），有才马上读，没有就等加速服务第一次真要用后端时再读（加速下线以后多数人一次都不读，0.2.24 启动速度深查 S-3），退出时建好了的放掉、没用到的不读；`createAccelerationHost` 收这一次读的结果（Promise，建窗口不等它），读完那一刻建宿主（辅助进程、内核、系统代理都归它管，各种失败的原因写进日志），建好马上把上次崩溃没改回的系统代理改回去，安装包里本该有的加速文件读坏了记成「文件坏了」，好让加速页叫客户去看杀毒软件；`createAccelerationServices` 先同步建好加速服务（要用到宿主的操作排着等它）、时长快用完和加速中断的系统通知、加速页和托盘看到的那一套（软件替他在后台连的那一次在这套里看不见）。睡眠唤醒（没有宿主时什么都不做）和退出清理留在 main.ts
 - `bootstrap/network-routes.ts` — 星芒自己连站点的几条路和两套线路（#1070 第 5 步从 main.ts 原样搬出）：`createNetworkRoutes` 建应用线路（`relay-route-controller.ts`）、代理软件不转发时改走的直连会话和只跟随系统代理的探测会话（`proxy-bypass.ts`）、按线路走的几种 fetch、工具线路（`tool-route-controller.ts`）和线路状态文件，建完就开始查星芒账号的应用线路（历史账号的站等登上了才查），换线路只在是当前账号那个站时叫界面重读；`startToolRouteFollowing` 在系统服务建好以后才挂上工具线路的监听、开始查工具线路，并在唤醒和网络恢复时两套一起重查。退出清理照旧由 main.ts 登记
 - `bootstrap/codex-payload-watch.ts` — Codex 对话太大发不出去时换线路（`codex-payload-limit.ts`）的接线：系统服务和两套线路都建好以后才开始盯会话记录；星芒账号叫工具线路、历史账号叫应用线路，Codex 配置跟过去由系统服务的 `noteCodexPayloadRestart` 提示重开；「新开对话」那条提示放在 main.ts 先建的提示板上，系统服务把它放进设置快照，客户没看着星芒时另发系统通知（归「终端里没回上」开关）
 - `bootstrap/diagnostics.ts` — 检查页和反馈报告（#1070 第 5 步从 main.ts 原样搬出）：`createDiagnostics` 交出 `diagnosticsService`（健康诊断、一键处理、连接自检、Codex 实测、诊断导出），它的 `attachFeedbackDescribers` 给反馈报告挂上「工具环境」「运行环境」「自检结果」三段，只读诊断和扫描上一次留下的结果，生成报告不重跑探测。导出和反馈报告都把本机写着的几把 Key 当敏感值剔掉（I13）。整套检查（`diagnostics.ts` 和它拉进来的各项检查、DNS 查询、就地修复）跑检查、点「点这里就好」时才 `import()`，开机不加载
@@ -17,7 +17,7 @@
 - `quit-blocking-tasks.ts` — 判断哪些排队任务值得在退出前拦一下：只有安装类（CLI、Node/Python/Git、Codex 桌面端、三个外部客户端），因为打断虽不留半成品（I11 原子替换）但白下；启动、卸载不拦。与 `install-keep-awake.ts` 认的是同一批，两边要一起改；另给自动更新算「退出时能不能装」
 - `window-preferences.ts` — 窗口尺寸与缩放的纯函数：UI 设计宽度、自动缩放上下限（v4 起最低 0.9、用户 90% 再低一档但不低于 0.85）、按显示器工作区算初始位置、拔掉显示器后的找回坐标、窗口状态的解析；`app-settings.ts` 与 `platform/zoom.ts` 共用
 - `window-presentation.ts` — 窗口外观与对用户的几句话：Windows/Linux 标题栏覆盖层高度与配色（legacy 36 高 vs v4 并进 44 高顶栏，`platform/renderer-v2.ts` 切到 v4）、启动失败的中文兜底句、资源右键菜单失败弹框、各平台窗口图标文件名
-- `window-recovery.ts` — 窗口停在已拔掉的显示器上时挪回主屏居中（最大化的先还原再挪再最大化）；只在马上要显示时调，对隐藏窗口 `unmaximize()` 在 Windows 上会把它顺手显示出来
+- `window-recovery.ts` — 窗口停在已拔掉的显示器上时挪回主屏居中（最大化的先还原再挪再最大化）；只在马上要显示时调，对隐藏窗口 `unmaximize()` 在 Windows 上会把它顺手显示出来；拔屏或改缩放后窗口比所在那块屏的工作区还大、又有一截露在所有工作区外面时，按工作区收小挪进来（`fitOversizedWindow`，不小于窗口最小尺寸，跨两块屏摆的、最大化的不动）
 - `window-responsiveness.ts` — 页面卡死时弹「等待 / 重新加载」，页面自己缓过来就把弹框收回且绝不重载
 - `renderer-crash-recovery.ts` — 页面进程被回收或崩溃后：一分钟内前两次自动重载，第三次改为问用户（画布窗口不问、停在空白等用户重开）；主窗口与 `canvas-window.ts` 共用
 - `renderer-release.ts` — 主窗口缩在托盘里满 10 分钟就关掉界面进程省内存（`forcefullyCrashRenderer`，窗口本身留着），点托盘或别的入口叫出来时按原地址重新加载。界面没报告过忙闲（legacy 回滚版）、报告手上有事（聊天在生成、视频在做、工具在装、开着对话框）、主进程在退出 / 装东西 / 付款窗口开着时都不关；关着和重新加载那一会儿，托盘、系统通知、深链要的跳页先存着，新界面第一次报告时再发（`platform/renderer-delivery-bridge.ts` 给 platform 那边的「打开某页」用同一条路）。那一声「界面进程没了」由 `main.ts` 的崩溃处理认出来不当崩溃
@@ -41,7 +41,7 @@
 - `diagnostics-redaction.ts` — 检查报告的脱敏和导出（#1070 第 9 步从 `diagnostics.ts` 搬出）：`createDiagnosticsExport` / `redactDiagnosticText` 导出前替换已知 Key 值、密钥样式、URL 与用户目录，导出时邮箱半遮（I13）；各类检查在报告里写路径、网址用的 `pathForDisplay` / `safeUrlForDisplay` 也在这里
 - `diagnostics-system-checks.ts` — 一键检测里「系统与权限」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildSystemChecks`）：星芒版本、操作系统（`operatingSystemSummary` 把内核号说成 Windows 11、macOS 15、Linux 发行版）、Windows ARM 电脑芯片、运行权限（是不是以管理员身份在跑、这个账号能不能提权，启动时那次探测没问出来时照实说）、打开工具用的命令窗口（Windows 的 PowerShell 只认固定解析器给的可信路径，I14；Linux 的终端程序）
 - `diagnostics-tool-checks.ts` — 一键检测里「运行环境与工具」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildToolChecks`）：Node.js、它自带的安装组件、Python、Git、各家命令行工具和 Codex 桌面端装没装、是哪一版（Codex 桌面端单独探时用的 PowerShell 脚本先按名字导入模块），各家工具连接设置是不是连到当前账号（导出的报告里另写工具配置走的是哪条线路、Codex 后台常驻开没开）；一个命令行工具都没装时 Node.js 那两项降成「需留意」（`reconcileNodeRuntimeWithClis`）
-- `diagnostics-network-checks.ts` — 一键检测里「网络与代理」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出）。`buildNetworkChecks`：星芒 AI 网络（向当前站点本来就回 JSON 的公开状态接口 `relayStatusProbeUrl` 发一次请求，认出断网、超时、门户拦截、服务端出错；「自动」先走的那条没查通就改查备用那条并报给线路那边；顺带拿 Date 头比一次系统时间）、安全证书（用跑工具的那个 Node.js 握手两次，见 `certificate-trust-probe.ts`）。`buildProxyChecks`：Clash Verge Rev 的全局接管模式（读配置限大小、YAML 限别名展开）、电脑里的代理设置（Windows 上看本机端口开没开、能不能一键清掉，另问 Chromium 星芒自己走不走系统代理）。两段分开是因为它们在报告里不挨着
+- `diagnostics-network-checks.ts` — 一键检测里「网络与代理」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出）。`buildNetworkChecks`：星芒 AI 网络（向当前站点本来就回 JSON 的公开状态接口 `relayStatusProbeUrl` 发一次请求，认出断网、超时、门户拦截、服务端出错；「自动」先走的那条没查通就改查备用那条并报给线路那边；顺带拿 Date 头比一次系统时间）、安全证书（用跑工具的那个 Node.js 握手两次，见 `certificate-trust-probe.ts`）。`buildProxyChecks`：Clash Verge Rev 的全局接管模式（读配置限大小、YAML 限别名展开）、电脑里的代理设置（三个系统都看本机端口开没开，Windows 上另看能不能一键清掉，另问 Chromium 星芒自己走不走系统代理）。两段分开是因为它们在报告里不挨着
 - `relay-status-probe.ts` — 探线路通不通、检查页「星芒 AI 网络」那一项用的公开状态接口地址（`relayStatusProbeUrl`，按站点的账号后端选 `/api/status` 或 `/api/v1/settings/public`）和一个地址所在站点各条线路的探测地址（`relaySiteStatusProbeUrls`）。开机时线路探测和账号就要用，所以从 `diagnostics-network-checks.ts` 单拿出来、只靠站点表；检查页那一套（`diagnostics.ts` 起）开机不加载，由 `bootstrap/diagnostics.ts` 跑检查时再 `import()`
 - `diagnostics-storage-checks.ts` — 一键检测里「磁盘与文件夹」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildStorageChecks`）：磁盘空间（工具安装目录、软件数据目录所在的盘还剩多少，同一块盘只说一次）、「文档」文件夹能不能写（只在 Windows 上查，写不进时新项目和 AI 作品改放个人文件夹）、AI 作品保存位置、加速用的文件是否完好、文件夹位置（「C 盘搬家」留下的联接：普通权限运行时跟过去读写、只报一句搬到了哪块盘；管理员身份运行或搬到网络盘、共享位置的照 I8 不写，标红）
 - `diagnostics-override-checks.ts` — 一键检测里「电脑里另外设过的设置」那几项（#1070 第 9 步从 `runDiagnostics` 原样搬出，`buildOverrideChecks`）：环境变量里另外设的工具地址和密钥（哪些会盖过当前账号、哪些指的就是当前账号用 `environmentAccountBaseUrls` 判；Mac 上连终端设置文件一起看，Windows 上用户级的能一键清掉，名单 `environmentOverrideNames` / `clearableEnvironmentOverrides` 给 `diagnostic-fixes.ts` 对照；写错被忽略的 `CODEX_HOME` 单独说）、项目文件夹里的设置（`workspace-config-overrides.ts`）、Codex 文件夹里的 `.env`、Claude Code 跑命令前问不问、个人文件夹里早先留下的项目说明和信任设置
@@ -62,6 +62,7 @@
 - `path-identity.ts` — `sameLocalPathIdentity`：跨平台判断两个路径是不是同一个东西（Windows 逐级比 dev/ino/mode 且不分大小写，Mac 认 /var、/tmp、/etc 的 /private 别名）；可信路径、卸载、资产存储等二十多处用它而不是字符串比较
 - `windows-cli-shell-access.ts` — 让客户自己的终端能直接敲 `claude`：删掉 npm 生成的 `.ps1` 启动文件（Windows 默认执行策略会拦它，删了 PowerShell 就落到 `.cmd`，不用放宽执行策略），只认 cmd-shim 指向本包的那份；装完把 npm 目录加进用户 PATH、卸空后撤掉。提权令牌下只碰管理员所有的托管目录，用户可写目录一律不动（I8）；Mac/Linux 的对应动作由宿主注入
 - `windows-live-path.ts` — 读注册表里整台电脑 + 当前账号的 PATH（异步 reg.exe），拼出「现在新开终端会拿到的」PATH；只给推 Grok 跑钩子用哪个 shell、从星芒打开 Grok 时补新段用，不改 `process.env`，不进提权路径解析
+- `windows-taskbar-theme.ts` — 读当前账号的任务栏是不是深色（异步 reg.exe 读 `SystemUsesLightTheme`），给托盘换浅色外圈图标用（D94）；Electron 的 `shouldUseDarkColorsForSystemIntegratedUI` 开机时答的是应用模式、只换任务栏深浅时也不通知，所以自己读
 - `windows-processor.ts` — 认出 ARM 版 Windows：x64 星芒在 ARM 上被模拟时 `process.arch` 和本进程环境变量都报 x64，只有注册表里机器级的那份说真话；另读 PE 头判断某个 exe 是哪种架构，据此选 Node.js 安装包架构；诊断与 `system-service.ts` 用
 - `windows-store-availability.ts` — 问「这台电脑有没有微软商店」（LTSC、精简版、组策略关掉的都没有），只有确定没有时才跳过商店那条安装路；`codex-desktop-service.ts` 用。原名 `windows-store-app-launch.ts`，原先的「内置 Administrator / 关了 UAC 可能打不开」判断已于 2026-10-02 撤掉，文件头写了恢复它的前提
 
@@ -92,10 +93,11 @@
 - `response-body-watch.ts` — 把回应正文包一层，读到一半出错时报给线路判断那一侧，同时原样保留 `url` / `redirected` / `type`（调用方靠它们拒绝被重定向的请求，I10，不照抄等于拆掉那道检查）
 - `download-proxy.ts` — 把 Chromium 对某个 URL 解析出的代理（含 PAC）变成两种形状：给 Electron 网络栈的端点、给 npm 子进程的代理环境变量；主机名严格校验，跨进程的只收回环地址
 - `download-retry.ts` — 大安装包（Codex 桌面端、Node.js、Git、Python、外部客户端）下到一半断了先在同一条线路续传：首个回应仍过调用方的校验、续传必须与声明的字节范围和总长完全一致、每个字节照旧进调用方事后核对的同一个 SHA-256；一个字节都没下到的、用户取消的不重试
+- `awake-deadline.ts` — 睡着那段不算的时限：Mac、Windows 上主进程计时器睡着也走、一醒补触发，这里每 15 秒看一次单调时钟，两次之间隔 60 秒以上当睡眠（只记一个间隔），「多久没进展」从醒来那一刻重算。装工具的 npm 卡住检测、`download-retry.ts` 的整份下载时限、`runCommand` 的 `timeoutExcludesSleep` 都用它（睡眠深查 G1）
 - `network-location-cache.ts` — 合并并缓存「网络位置」（境内/境外，决定安装源顺序）的探测：显式刷新会让旧的在途结果作废重读；`system-service.ts` 用
 
 ## 托盘
-- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问
+- `application-tray.ts` — 系统托盘与右键菜单：账号、余额与订阅剩余、已装工具一键打开、加速一行、更新一项、「暂不让电脑自动睡眠」提示（已知35）、手机遥控开着时的「关掉手机遥控」一项；打开菜单时现读一次会过期的状态，不定时轮询；Linux 上有没有托盘由 `linux-tray-host.ts` 先问；Windows 用多尺寸 ICO（`tray.ico` / `tray-dark.ico`，`scripts/generate-tray-icons.mjs` 生成），任务栏深色时换浅色外圈那份
 - `tray-acceleration.ts` — 托盘里加速那一行状态与连接/断开动作的纯逻辑：不新增第二条连接逻辑（走加速页同一条路、用落了盘的线路偏好）、不新增轮询（剩余时长只按读到的时刻往前推算来显示）、失败不弹窗只换一句短原因
 
 ## 更新与发布
@@ -122,6 +124,7 @@
 - `running-tools.ts` — 换账号后哪几个 CLI / Codex 桌面端还开着（还拿着旧 Key 扣旧账号的钱），只对它们说「关掉重开」；渲染层直接用这里的文案函数，所以只许值引用 catalog 这类零依赖模块，真正的进程检测由调用方注入（I6）
 - `active-identity.ts` — 主进程里的账号身份快照（站点、realm、userId、会话修订号）：发布结果或落盘前核对「还是不是发起时那个账号」，防止登出再登回同一用户后旧请求还能落地；不是 IPC 授权层，也只拷身份字段、不展开会话对象（免得以后带上令牌）
 - `chinese-sentence.ts` — 判断一句报错本身是不是中文：先去掉引号内容和路径（中文用户名、「星芒AI管理工具.app」都在路径里）再看汉字；渲染层与 `updater.ts` 共用，所以零 import（I6）
+- `remove-tree.ts` — 整个删掉一个目录，Electron 里走 `original-fs`：主进程的 fs 把 `*.asar` 当成文件夹，删 ChatGPT.app、Claude.app 这类 Electron 应用的副本会漏掉 `app.asar`、报 ENOTEMPTY；Mac 桌面端安装器删副本、旧版和暂存目录用
 - `async-map.ts` — 限并发的 `mapWithConcurrency`：目录扫描不用 `Promise.all` 一次发几千个 fs 请求，否则 libuv 一口气交回来照样卡住窗口；Codex 与四工具扩展扫描用
 - `content-addressed-asset.ts` — 媒体资产的内容寻址 id（sha256 base64url，按输出根目录 + 账号 + 内容派生，跨账号不撞）；图片、视频、音频三个资产库共用
 - `media-container-metadata.ts` — 不调外部程序、只解析字节读出 MP4/ISO-BMFF 的时长与分辨率和 WAV 时长，box 数量与边界都有上限；视频、音频资产库用

@@ -9,13 +9,16 @@ const {
   appendToUnreleasedSection,
   assertAllCollected,
   assertNoDirectUnreleasedEdit,
+  assertUserItemsFit,
   changedFileStatuses,
   collectChanges,
+  countUserItems,
   parseFragment,
   readFragments,
   readUnreleasedSection,
   sections,
 } = require('./changelog-collect.cjs')
+const { MAX_ITEMS } = require('./bundle-release-notes.cjs')
 
 const script = path.resolve(__dirname, 'changelog-collect.cjs')
 const repositoryRoot = path.resolve(__dirname, '..')
@@ -256,6 +259,63 @@ test('the check reports malformed fragments and leaves the repository alone', ()
     assert.match(result.stderr, /变更分片处理失败/)
     assert.match(result.stderr, /bad\.md:1/)
     assert.equal(fs.readFileSync(path.join(directory, 'CHANGELOG.md'), 'utf8'), changelog)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+// count 条用户条目，每条都带一行续行：续行属于上一条，不能多算。
+function userFragment(count, label = '条目') {
+  const lines = []
+  for (let index = 1; index <= count; index += 1) lines.push(`- ${label}${index}。`, '  续行。')
+  return `## 用户\n\n${lines.join('\n')}\n\n## 开发\n\n- 技术说明。\n`
+}
+
+test('the user entries are counted the way the update page counts them', () => {
+  // 未发布段里原有 1 条，加上两个分片的 3 条；开发条目和续行都不算。
+  const directory = fixture({ 'a.md': userFragment(2), 'b.md': '## 开发\n\n- 只有开发。\n', 'c.md': userFragment(1, '另一条') })
+  try {
+    assert.equal(countUserItems(directory, readFragments(directory)), 4)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('the check refuses user entries that would overflow the update page', () => {
+  // 未发布段里原有 1 条：再加 MAX_ITEMS - 1 条正好放满，再多一条就该报，不能等到发版构建才发现。
+  const full = fixture({ 'full.md': userFragment(MAX_ITEMS - 1) })
+  const over = fixture({ 'full.md': userFragment(MAX_ITEMS - 1), 'one-more.md': userFragment(1, '多出来的') })
+  try {
+    assert.equal(assertUserItemsFit(full, readFragments(full)), MAX_ITEMS)
+    assert.throws(
+      () => assertUserItemsFit(over, readFragments(over)),
+      new RegExp(`已经 ${MAX_ITEMS + 1} 条，装完后的更新页一版最多放 ${MAX_ITEMS} 条`),
+    )
+
+    const passed = run(full, ['--check'])
+    assert.equal(passed.status, 0, passed.stderr)
+    assert.match(passed.stdout, new RegExp(`「## 用户」合计 ${MAX_ITEMS} 条（一版最多 ${MAX_ITEMS} 条）`))
+    const refused = run(over, ['--check'])
+    assert.notEqual(refused.status, 0)
+    assert.match(refused.stderr, /变更分片处理失败/)
+    assert.match(refused.stderr, /并成一条/)
+    assert.match(refused.stderr, /001- 开头的分片/)
+    // 只报不改：并哪几条要人来挑。
+    assert.deepEqual(fs.readdirSync(path.join(over, 'changes', 'unreleased')).sort(), ['README.md', 'TEMPLATE.md.example', 'full.md', 'one-more.md'])
+    assert.equal(fs.readFileSync(path.join(over, 'release-notes.md'), 'utf8'), releaseNotes)
+  } finally {
+    fs.rmSync(full, { recursive: true, force: true })
+    fs.rmSync(over, { recursive: true, force: true })
+  }
+})
+
+test('the check reports the user entry count even without fragments', () => {
+  const directory = fixture()
+  try {
+    const result = run(directory, ['--check'])
+
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stdout, /本次没有分片，「## 用户」合计 1 条/)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })
   }

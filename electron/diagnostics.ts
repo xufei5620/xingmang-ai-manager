@@ -24,11 +24,11 @@ import {
   clockSyncGuidance,
   describeRelayRouteChange,
   parseClashTunConfig,
+  proxySettingsOutcome,
   reconcileCertificateTrustWithNetwork,
   relayNetworkPassSummary,
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
-  windowsProxySettingsOutcome,
 } from './diagnostics-network-checks'
 import { buildDnsChecks } from './diagnostics-dns-check'
 import { buildProxySoftwareChecks } from './diagnostics-proxy-software-check'
@@ -97,11 +97,6 @@ export interface DiagnosticAppInfo {
   name: string
   version: string
   packaged: boolean
-}
-
-export interface ProxyVariableSummary {
-  name: string
-  source: 'process' | 'user' | 'system'
 }
 
 export interface DiagnosticsDependencies {
@@ -226,7 +221,6 @@ export interface DiagnosticsDependencies {
   userDataDirectory?: string
   /** 剩余空间的读取口，测试用它造「够 / 不够 / 读不到」三种盘。 */
   readDiskSpace?: typeof readDiskSpace
-  inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
   /**
    * AI 生成的图片、视频存在哪只有宿主知道；给了才有「AI 作品保存位置」这一项。
    * 宿主真写一个小文件再删掉，resolve 就是写得进，reject 就是写不进。
@@ -384,11 +378,11 @@ export {
   clockSyncGuidance,
   describeRelayRouteChange,
   parseClashTunConfig,
+  proxySettingsOutcome,
   reconcileCertificateTrustWithNetwork,
   relayNetworkPassSummary,
   relaySiteStatusProbeUrls,
   relayStatusProbeUrl,
-  windowsProxySettingsOutcome,
 }
 
 // 「磁盘与文件夹」那几项搬进了 diagnostics-storage-checks.ts（#1070 第 9 步），这里照旧导出。

@@ -70,20 +70,28 @@
 > 2026-08-12（PR #85）起**画布再也拿不到 API Key**：Key 只在主进程按账号和分组解析（`chat-credential-coordinator.ts`），全部 AI 调用、产物下载与落盘都在主进程完成，画布只能经 `canvas-host:*` 通道"请求"。这是 I15 的兑现方式：被投毒的画布连 Key 都摸不到，因为它从来没有过。给画布加任何能力前先回答"画布被供应链投毒后，这个能力能干什么"。画布源码在 `canvas-v2/`，其中 `src/`、`shared/` 是 xingmang-canvas 内核按 tag 同步进来的副本（`KERNEL_SOURCE.json` 记来源，不要在本仓直接改），`dist-canvas/` 是构建产物不入 git（T13）。
 
 ### 画布窗口与宿主桥
-- `canvas-window.ts` — **画布窗口的总控**：独立 `BrowserWindow`，加固与主窗口同级（`sandbox` / `contextIsolation` / `webviewTag:false` / `navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`（I12）；用自己的 `registerCanvasHandler` + `assertTrustedCanvasSender` 注册全部 `canvas-host:*` 通道，只放行画布窗口自身（I4 的登记例外）；文件读写只走原生对话框，项目工作文件夹也由主进程弹框选；Linux 上打开前先确认渲染进程沙箱真的生效（`linux-renderer-sandbox.ts`），崩溃后自动恢复
+- `canvas-window.ts` — **画布窗口的总控**：独立 `BrowserWindow`，加固与主窗口同级（`sandbox` / `contextIsolation` / `webviewTag:false` / `navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`（I12）；用自己的 `registerCanvasHandler` + `assertTrustedCanvasSender` 注册全部 `canvas-host:*` 通道，只放行画布窗口自身（I4 的登记例外）；文件读写只走原生对话框，项目工作文件夹也由主进程弹框选；Linux 上打开前先确认渲染进程沙箱真的生效（`linux-renderer-sandbox.ts`），崩溃后自动恢复；素材操作都要先打开项目，唯一例外是项目中心的只读素材库（yoyo 2026-11-10「素材库放开」）：没开项目时只放开共享库里图片的列出和另存（`projectCenterAssetLibrary`），主窗口经 `canvas:open-asset-library` 调 `openAssetLibrary` 打开它
 - `canvas-contract.ts` — 宿主通道名 `canvasHostChannels` 与各通道入参/返回类型的单一来源（主进程侧），通道清单以它为准
+- `canvas-project-file-launch.ts` — 双击画布项目文件（`.xingcanvas`，D92）时系统交来的路径：认启动参数、`second-instance` 的 argv（Linux 的 `file:` 网址）和 Mac 的 `open-file`，只收绝对路径、只留最近一个、十分钟作废；重开软件时从参数里去掉它；打不开时的报错框字。路径由系统直接给主进程，不经渲染层，不是 I15 的路径例外；真正打开在 `canvas-window.ts` 的 `openProjectFile`（照拖放那套严查后导入成新项目），由 `main.ts` 接线
 - `canvas-preload.ts` — 画布的隔离 preload，暴露 `window.xingmangCanvasHost`，拿不到 `window.xingmang`。通道名是与 `canvas-contract.ts` 有意重复的字面量（I7），由测试钉死；OS 拖放进来的文件路径**只能**由这里的 `webUtils.getPathForFile(File)` 取得，是 I15 唯一的路径例外。由 `canvas-window.ts` 按文件路径加载
 - `canvas-protocol.ts` — `xingmang-canvas://` 协议：穿越与根包含检查全部委托 `resolvePackagedApplicationFile`，SPA 回退也重走同一函数，绝不手工拼路径；与主窗口**不共享 rendererRoot**；CSP 由主进程响应头强制注入（`canvasSecurityResponseHeaders`，连接只放行 `xingmang-asset:`，I15）
 - `canvas-request-parser.ts` — 画布全部入参的字段白名单校验（生图、改图、生视频、素材查询与改名、提示词预设、运行图等），运行图的提示词总量也有上限，防被投毒的画布用超大图拖垮主进程（I5、I15）。由 `canvas-window.ts` 使用；生图入参的 `parseImageGenerateInput` 另给对话页的 `chat:generate-image`（`ipc.ts`）用，两边同一套标准（#1071）；生视频的 `parseVideoGenerateInput` 同理，另给主窗口的 `video:generate`（视频剪辑页）用，只是不收参考视频、参考音频
+- `canvas-account-summary.ts` — 画布顶上余额条的回答（`canvas-host:get-account-summary`，不收参数）：只给账号类型、打码的账号名（邮箱只留第一个字）、余额、读到的时间，不给邮箱、用户编号、密钥；用托盘和余额提醒同一份余额，过了 15 秒才替画布读一次站点，读的时候一次只读一次，读回来换了账号就不要（I15，画布完善第 2b 条）
+- `canvas-price-snapshot.ts` — 画布运行前检查「预计约 $x」用的价目（`canvas-host:get-price-snapshot`，不收参数）：星芒账号读这个账号的 `/api/pricing`，只留按次计价、桌面认得的型号的单价（视频标「估算」）和这个账号各分组的倍率；按 token 计价、按表达式或插件计价的型号不给，画布写「价格未知」。历史账号没有价目，回 `null`。十分钟内只读一次，读失败一分钟内不再读，换了账号读回来的不要；扣费照旧由主进程和站点算，不看画布算出来的数（I15，画布完善第 2b 条）
 - `canvas-generation-admission.ts` — 按画布窗口限流直接生成请求（同时进行数与每分钟发起数），防画布刷请求刷额度；主窗口的 `video:generate` 也套同一份（`ipc/handlers/ai-video.ts`）
+- `canvas-byte-upload.ts` — 画布在页面里画好的图片（蒙版编辑器的黑白蒙版，画布完善第 7 条第一步）走 `canvas-host:import-asset-bytes` 交回主进程：只收一个 `Uint8Array`（不收不回路径），20 MB、长宽 8192 以内，按文件头认 PNG / JPEG / WebP；按画布窗口限流（同时 2 张、每分钟 20 张合计 100 MB）。
 
 ### 运行引擎（都在主进程）
 - `canvas-run-contract.ts` — 画布运行的数据契约：节点种类（含漫剧节点）、运行范围、尝试与候选产物、事件时间线、运行记录
+- `canvas-run-charges.ts` — 画布跑完写「实扣」：运行时每次真发到中转的请求记下回答里的请求号（发了没回答、回答没带号的单独记），运行结束后攒成一批，过 6 秒按型号和时间窗查这个账号自己的消费明细、按请求号对上，乘回美元写进运行记录并推给画布；还没记上就 40 秒时再查最后一次，对不上的记「待核对」，不拿预计冒充实扣。一次最多读 12 页，换了账号不查也不写；只有星芒账号做（画布完善第 2b 条第 3 步）
 - `canvas-run-engine.ts` — DAG 执行引擎 `executeCanvasRun`：按依赖调度、按节点指纹命中缓存、记时间线；挑图、路由、输出和漫剧角色/场景/道具节点**不进缓存**（它们读用户当前绑定的图，换图后命中缓存会一直交出旧图，#541），也刻意不把绑定的图加进指纹，免得升级后全部下游缓存失效重复扣费；生图、生视频节点先认画布上正在用的那张图（`adoptedAssetId`）：运行记录能证明它是同样输入生成的就直接交出它，复制出来的项目按原项目编号重算指纹去比，所以切回旧候选、在副本里运行都不会重新付费（O04、O06），现有指纹一个不改
 - `canvas-run-service.ts` — 运行的启动、取消与发布：同账号同窗口同项目的运行串行、节点加锁，限制并行运行数与单次运行的远程生成上限（防一次点击扣出大额费用），把事件推给画布窗口；推送失败不影响已落盘的运行，也不会重放付费节点
-- `canvas-run-store.ts` — 按账号存运行记录、节点结果缓存与产物来源清单，有保留上限；账号初始化时对账素材（`reconcileAssets`）；`resolveAssetOrigin` 在运行记录里找交出过某张图的那次尝试，给引擎核对「画布上那张图」能不能复用，只在核对通过后才读图
+- `canvas-run-store.ts` — 按账号存运行记录、节点结果缓存与产物来源清单，有保留上限；解析好的状态留在内存里，进度只改内存、最迟 2 秒合并写盘（R-1），文件被别人改过就以文件为准；账号初始化时对账素材（`reconcileAssets`）；`resolveAssetOrigin` 在运行记录里找交出过某张图的那次尝试，给引擎核对「画布上那张图」能不能复用，只在核对通过后才读图
 - `canvas-node-executors.ts` — 把运行引擎的 text / image / video 节点接到主进程的文本补全、图片服务、视频服务上；漫剧解析节点用 `drama-parse-prompt.ts` 发提示、`drama-parse.ts` 校验结果
+- `canvas-run-preparations.ts` — 视频抽帧节点的「页面抽、主进程核对」（画布完善第 7 条第二步）：主进程不解视频，执行器先核对视频是这个账号的、不超过 32 MB（只读文件头），再发 `run-waiting`（带 `framePreparations`）请画布抽那一帧；`CanvasRunPreparationBroker` 只收自己发出去、还在等的那次运行那个编号，同一个账号、一次，PNG 按文件头认、20 MB、边长 4096、1677 万像素以内（跟网页版同一套数）才存进当前项目素材库、来源记「导入」；两分钟没交回来、点停止、页面说抽不出来都让节点失败。画布经 `canvas-host:complete-run-preparation` 交回（只交编号和 PNG 字节，失败不带字），`canvas-run-service.ts` 的 `completePreparation` 另核对是这个窗口这个账号起的运行。抽帧那一步由内核 kernel-v0.1.9 起的 `runtime/host-run-preparations.ts` 做（读视频、解帧、交 PNG），开关 `features.frameExtract` 随它打开；关掉时解析器照旧拒抽帧节点，引擎也不会把它交给生视频执行器
 - `canvas-fingerprint.ts` — 节点指纹与图修订号：规范化 JSON 后算 sha256，指纹包含模型能力与上游交出的文字/产物，决定能不能命中缓存
+- `canvas-image-mask.ts` — 蒙版局部修改（画布完善第 5 条）：按内核同一套上限解析改图节点的蒙版笔画，发之前核对型号、唯一原图和尺寸，按内核同一套几何画成像素，做成透明处重画的 RGBA PNG 随 `/v1/images/edits` 发出（`canvas-image-mask.test.ts` 拿同步进来的内核对拍像素）
+- `canvas-text-image-input.ts` — 文字生成节点连的图片（画布完善第 6 条）：只认内核确认过能看图的型号，按内核同一套上限（4 张、单张 4 MB、合计 8 MB、像素和边长）在发请求前从当前账号的项目素材库读图、转成 data URI；`canvas-text-image-input.test.ts` 拿内核 `runtime/text-image-input.ts` 对拍。
 - `canvas-asset-references.ts` — 查一个素材被哪些运行用作输入或候选，删除素材前给用户看引用
 
 ### 画布项目
@@ -99,7 +107,7 @@
 - `ai-chat-protocol.ts` — AI 请求的协议层：端点（`/v1/chat/completions`、`/v1/images/generations`、`/v1/images/edits`、`/v1/videos`）、各种上限、型号能力表 `resolveAiModelCapability` 与请求体构造；聊天、生图、生视频、画布指纹和执行器都依赖它
 - `ai-chat-service.ts` — 主进程的流式聊天：连接、空闲、总时长三道超时（长思考模型几分钟不出字也不截断，Q43），事件/输出/响应体都有字节上限，按窗口限并发；附图在主进程按账号读回转成 data URI；`completeOnce` 供画布文本节点和视频剪辑页的分镜用，没有窗口、不进并发表，但 `cancelAll`（换账号、退出登录）照样停它。Key 经 `chat-credential-coordinator.ts` 拿，渲染层只发"请求"
 - `ai-image-service.ts` — 生图与改图（multipart `/v1/images/edits`）：用有界队列限并发、可取消，响应体有上限；发请求前先试写保存位置，写不进就在扣费之前停下
-- `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上；同一个任务只查一份、只存一次，视频剪辑页可按原请求号接回（`resumeRequest`）
+- `ai-video-service.ts` — 生视频：提交任务后退避轮询，完成后下载 mp4；下载前做 DNS 检查，拒绝回环、内网、链路本地等地址（只放行 Fake-IP 代理常用的 198.18.0.0/15），任务记进 `ai-video-task-store.ts`，重启或切回账号后能续上；同一个任务只查一份、只存一次，视频剪辑页可按原请求号接回（`resumeRequest`）；轮询最多等 30 分钟只算醒着的时间（`awakeVideoPollSpan`，合盖、休眠那段不算），到了时限先再查一次，还没好才停，停下时说「暂时查不到视频进度…请勿重复提交」（0.2.24 深查睡眠 S1）
 - `ai-video-task-store.ts` — 按账号存进行中的视频任务（模型、分组、所属项目/运行/节点、提示词），有条数上限，供续任务和把提示词写回成品；取回成品时另记一笔「请求号 → 片段」（最近 100 条），视频剪辑页重开时按请求号把片段挂回镜头
 - `ai-chat-history-store.ts` — AI 聊天记录的文件存储（用户数据目录 `chat-history/<scope 的 sha256 前 32 位>/`，一个对话一个文件 + 最后写的 `index.json`）。渲染层负责脱敏与格式校验，这里只做入参校验、按账号串行的原子写、单文件/总量/账号目录数上限（防被攻破的渲染层换 scope 写满磁盘）；对话数上限与渲染层 `storage.ts` 是有意重复
 - `ai-chat-attachments.ts` — 聊天里附带的图片只从系统选文件框和剪贴板在主进程里取，渲染层给不出任何路径或字节（I15 同一思路）；太大的用 nativeImage 压到长边 2048、2 MB 以内，存进本账号的图片素材目录
@@ -108,14 +116,16 @@
 
 ### 素材存储与读取
 - `ai-asset-store.ts` — **图片素材的落盘与读取**（`AiAssetStore`）：按账号存进 `user-<id>/`，素材 id 由内容哈希派生；下载远端图片时只许公网地址、限重定向次数与超时、校验图片魔数（防 SSRF，I10）；提供复制、另存为、在文件夹中显示、右键菜单；`assertWritable` 让生成前先试写
-- `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入。视频剪辑页拼好的成片走 `storeComposed`，和出的片段存在一处
+- `ai-video-asset-store.ts` / `ai-audio-asset-store.ts` — 视频（mp4）与音频素材的落盘与读取，同样按账号、内容哈希定 id，读出时长宽高等元数据；音频只来自用户导入（画布拖进来的，和视频剪辑页「加配乐」选的歌）。视频剪辑页拼好的成片走 `storeComposed`，和出的片段存在一处
 - `video-studio-plan.ts` — 视频剪辑「一句话出片」的分镜：给文字模型的提示词、读回答（多写的镜头只留要的几个，控制字符换空格、超长截断），上限和剪辑页共用一份；零依赖、渲染层能值导入（I6）
 - `ai-asset-index.ts` — 枚举一个账号的全部素材文件而不读任何媒体字节，替代以前"读全文件、最多 500 条"的做法，让搜索和排序面对的是完整结果、只为当前页补元数据
-- `ai-asset-metadata-store.ts` — 素材的逻辑元数据（显示名、收藏、标签、最近使用、来源、生成时的提示词、回收站），每个账号文件夹一个 `asset-metadata.json`，有体积和条数上限；删除是逻辑删除
-- `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）
-- `ai-asset-protocol.ts` — `xingmang-asset://` 协议处理（image / video / audio / thumb）：每次都在最后一次 await 之后重新核对当前账号再返回，响应 `no-store`，支持单段 Range；主窗口（聊天图片）和画布都靠它显示素材，CSP 只放行这个 scheme
+- `ai-asset-locator.ts` — 按编号找作品在哪个日期文件夹：先问记下的位置（存入、找到过、索引列出的），没有再从最新的日期往回、每个候选一次异步 lstat；只答「在哪」，打开文件前的 I8 全套检查仍由各 store 做
+- `ai-asset-metadata-store.ts` — 素材的逻辑元数据（显示名、收藏、标签、最近使用、来源、生成时的提示词、回收站），每个账号文件夹下 `asset-metadata/` 里按作品编号分 16 个分片（0.2.24 起；之前是单个 `asset-metadata.json`，2 MB / 5,000 条就写满，第一次用到时并进分片、原样改名留作 `.migrated-*.bak` 备份），每片 16 MB，加新信息的写入给回收站留出余量；删除是逻辑删除
+- `ai-media-asset-service.ts` — 素材库：把图片/视频/音频三个仓库和元数据合成一个可分页、可搜索、可按收藏/最近/回收站/标签/来源筛选的列表，"找相似"按提示词精确匹配；目前只交给画布窗口用（主窗口那套 IPC 不经过它）。`readOwnedDetail` 按同一套读法读一条（回收站里的也读），给画布的 `canvas-host:get-asset-detail`（批量加入画布、核对蒙版和成品前先读一遍），有种类提示就只翻那一个仓库的索引
+- `ai-asset-protocol.ts` — `xingmang-asset://` 协议处理（image / video / audio / thumb）：每次都在最后一次 await 之后重新核对当前账号再返回，响应 `no-store`，支持单段 Range；视频的 Range 只读要的那一段、一次最多回 8 MB（`maximumVideoRangeBytes`，`AiVideoAssetStore.readOwnedRange` 先照整读那套核对文件，0.2.24 深查 P-3），图片和音频照旧整份读再切；主窗口（聊天图片、视频剪辑看片）和画布都靠它显示素材，CSP 只放行这个 scheme
 - `ai-output-location.ts` — AI 作品保存位置：安装版放「文档/XingmangAI」，「文档」被云盘同步或不让写时改用主目录下的 XingmangAI（`chooseAiOutputRoot`，试写与权限判定在 `documents-fallback.ts`），开发环境用项目下的 output；启动时把老版本放在安装目录旁 output 里的作品搬过来、合并元数据
-- `ai-operation-lifecycle.ts` / `ai-operation-progress.ts` — AI 操作的观察钩子：开始/结束回调（用量统计用，观察失败绝不影响生成结果）与处理中/下载中/保存中的进度阶段
+- `ai-operation-lifecycle.ts` / `ai-operation-progress.ts` — AI 操作的观察钩子：开始/结束回调（用量统计用，观察失败绝不影响生成结果）与处理中/下载中/保存中的进度阶段，以及画布对实扣用的「真发出去没有、回答带的请求号」
+- `relay-request-id.ts` — 从中转的回答里取请求号（`X-Oneapi-Request-Id`，只认 64 字以内的字母数字和 `._:-`），交给上面那个观察钩子；钩子出错一律吞掉，记账失败不影响付过钱的生成
 
 ### 缩略图
 - `asset-thumbnail.ts` / `asset-thumbnail-store.ts` / `asset-thumbnail-service.ts` — 素材缩略图：URL 格式与严格解析（版本号进 URL，升版即整代作废）、磁盘缓存（`<root>/user-<id>/<版本>/`，单张有上限）、生成服务（逐个串行解码免得卡主线程，同一素材的并发请求共用一次生成；视频封面只有 Windows 和 macOS 能取）。`asset-thumbnail.ts` 零依赖、进渲染层（I6）：视频剪辑读回存着的工程时按编号重拼当前版本的地址

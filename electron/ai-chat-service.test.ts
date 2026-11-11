@@ -633,6 +633,74 @@ describe('AI chat streaming service', () => {
     service.dispose()
   })
 
+  it('reads a canvas text node\'s pictures for the credential\'s account and sends them with the prompt', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"一只橘猫"}}]}\n\n'),
+      encoder.encode('data: [DONE]\n\n'),
+    ]))
+    const coordinator = credentialCoordinator()
+    const service = createAiChatService({ credentialCoordinator: coordinator, fetchImpl, emit: vi.fn() })
+    const assetId = 'a'.repeat(43)
+    const readImages = vi.fn(async () => {
+      // Read only once the credential has named the account.
+      expect(coordinator.resolveCredential).toHaveBeenCalled()
+      return new Map([[assetId, 'data:image/png;base64,iVBORw0KGgo=']])
+    })
+    const text = await service.completeOnce({
+      group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述这张图', images: [assetId] }], readImages,
+    })
+    expect(text).toBe('一只橘猫')
+    expect(readImages).toHaveBeenCalledWith(7, expect.any(AbortSignal))
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))
+    expect(body.messages).toEqual([{ role: 'user', content: [
+      { type: 'text', text: '描述这张图' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } },
+    ] }])
+    service.dispose()
+  })
+
+  it('stops a canvas text request unpaid with the reader\'s own words when a picture cannot be read', async () => {
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+    const reports: unknown[] = []
+    await expect(service.completeOnce({
+      group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
+      readImages: async () => { throw new Error('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试') },
+      billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
+    })).rejects.toThrow('视觉图片单张不能超过 4 MB，当前没有提交文字生成；请换小一点的图再试')
+    // An image id nobody resolved never goes out as a literal id either.
+    await expect(service.completeOnce({
+      group: 'GPT', model: 'gpt-5.4', messages: [{ role: 'user', content: '描述', images: ['a'.repeat(43)] }],
+    })).rejects.toThrow()
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(reports).toEqual([])
+    service.dispose()
+  })
+
+  it('reports a completeOnce request leaving and the request id it was answered with', async () => {
+    const fetchImpl = vi.fn<TestFetch>(async () => {
+      const answer = sseResponse([encoder.encode('data: {"choices":[{"delta":{"content":"好"}}]}\n\n'), encoder.encode('data: [DONE]\n\n')])
+      answer.headers.set('x-oneapi-request-id', 'req-parse-1')
+      return answer
+    })
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: vi.fn() })
+    const reports: unknown[] = []
+    await service.completeOnce({
+      group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }],
+      billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
+    })
+    expect(reports).toEqual([['dispatch', true], ['answer', 'req-parse-1']])
+    const offline = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl: vi.fn<TestFetch>(async () => { throw new Error('net::ERR_INTERNET_DISCONNECTED') }), emit: vi.fn() })
+    reports.length = 0
+    await expect(offline.completeOnce({
+      group: 'Gemini', model: 'gpt-5.4', messages: [{ role: 'user', content: '解析' }],
+      billing: { onRelayDispatch: (sent) => { reports.push(['dispatch', sent]) }, onRelayAnswer: (id) => { reports.push(['answer', id]) } },
+    })).rejects.toThrow()
+    expect(reports).toEqual([['dispatch', true], ['dispatch', false]])
+    service.dispose()
+    offline.dispose()
+  })
+
   it('says what went wrong with the network instead of blaming the key when preparing the group fails offline', async () => {
     const coordinator = credentialCoordinator()
     coordinator.resolveCredential = vi.fn(async () => {
@@ -647,6 +715,96 @@ describe('AI chat streaming service', () => {
     await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
       .rejects.toThrow(networkFailureMessages.offline)
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  // 深查 W-2：网断了、被拦到认证页，以前都说「AI 服务返回了无法识别的数据」或笼统一句「无法连接」。
+  it.each([
+    ['the proxy is not running', 'net::ERR_PROXY_CONNECTION_FAILED', networkFailureMessages.proxy],
+    ['the name does not resolve', 'net::ERR_NAME_NOT_RESOLVED', networkFailureMessages.dns],
+    ['a captive portal cancels the redirect', 'Redirect was cancelled', networkFailureMessages.intercepted],
+  ])('names the network cause when the request fails before any answer because %s', async (_label, failure, expected) => {
+    const events: AiChatStreamEvent[] = []
+    // Electron's net.fetch rejects with a bare Error carrying only the net:: text (no code, no cause).
+    const fetchImpl = vi.fn<TestFetch>(async () => { throw new Error(failure) })
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: (_senderId, event) => events.push(event) })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'network-error', message: expected })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(expected)
+    service.dispose()
+  })
+
+  it('keeps the general connection wording for a request failure it cannot classify', async () => {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => { throw new TypeError('fetch failed') })
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: (_senderId, event) => events.push(event) })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'network-error', message: '无法连接 AI 服务，请检查网络后重试' })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow('无法连接 AI 服务，请检查网络后重试')
+    service.dispose()
+  })
+
+  it('says a web page answered when a captive portal returns 200 HTML instead of the stream', async () => {
+    const events: AiChatStreamEvent[] = []
+    const portal = () => new Response('<html><body>请先登录上网认证</body></html>', { status: 200, headers: { 'content-type': 'text/html; charset=utf-8' } })
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl: vi.fn<TestFetch>(async () => portal()), emit: (_senderId, event) => events.push(event) })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'network-error', message: networkFailureMessages.intercepted })])
+    await expect(service.completeOnce({ group: 'default', model: 'gpt-5.4', messages: [{ role: 'user', content: 'hi' }] }))
+      .rejects.toThrow(networkFailureMessages.intercepted)
+
+    // A 200 that is neither a stream nor a web page is still something the service sent and we cannot read.
+    const jsonEvents: AiChatStreamEvent[] = []
+    const json = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => new Response('{"id":"x"}', { status: 200, headers: { 'content-type': 'application/json' } })),
+      emit: (_senderId, event) => jsonEvents.push(event),
+    })
+    json.start(startInput())
+    await json.whenIdle()
+    expect(jsonEvents).toEqual([expect.objectContaining({ code: 'invalid-stream-response', message: 'AI 服务返回了无法识别的数据' })])
+    service.dispose()
+    json.dispose()
+  })
+
+  it.each([
+    ['the connection is reset', 'net::ERR_CONNECTION_RESET', 'network-error', networkFailureMessages.refused],
+    ['the body is cut short', 'net::ERR_INCOMPLETE_CHUNKED_ENCODING', 'stream-closed', 'AI 服务提前结束了本次响应，请重试'],
+  ])('keeps the received text and blames the connection, not the data, when %s mid-reply', async (_label, failure, code, expected) => {
+    const events: AiChatStreamEvent[] = []
+    let pulls = 0
+    const fetchImpl = vi.fn<TestFetch>(async () => new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1
+        if (pulls === 1) controller.enqueue(encoder.encode('data: {"choices":[{"delta":{"content":"前半段"}}]}\n\n'))
+        else controller.error(new Error(failure))
+      },
+    }), { headers: { 'content-type': 'text/event-stream' } }))
+    const service = createAiChatService({ credentialCoordinator: credentialCoordinator(), fetchImpl, emit: (_senderId, event) => events.push(event) })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'delta', content: '前半段' }),
+      expect.objectContaining({ type: 'error', code, message: expected }),
+    ])
+    service.dispose()
+  })
+
+  it('still reports a garbled frame as unreadable data', async () => {
+    const events: AiChatStreamEvent[] = []
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl: vi.fn<TestFetch>(async () => sseResponse([encoder.encode('data: {not json\n\n')])),
+      emit: (_senderId, event) => events.push(event),
+    })
+    service.start(startInput())
+    await service.whenIdle()
+    expect(events).toEqual([expect.objectContaining({ code: 'invalid-stream-response', message: 'AI 服务返回了无法识别的数据' })])
+    service.dispose()
   })
 
   it('stops a completeOnce request while the key is still being prepared, before anything is sent', async () => {

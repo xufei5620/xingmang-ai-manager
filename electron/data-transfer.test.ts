@@ -58,7 +58,7 @@ describe('data transfer file', () => {
       JSON.stringify({ ...valid, settings: { ...valid.settings, crashReporting: 'yes' } }),
       JSON.stringify({ ...valid, conversations: {} }),
       JSON.stringify({ ...valid, conversations: ['text'] }),
-      JSON.stringify({ ...valid, conversations: Array.from({ length: 51 }, () => ({})) }),
+      JSON.stringify({ ...valid, conversations: Array.from({ length: 201 }, () => ({})) }),
     ]
     for (const raw of cases) expect(() => parseDataTransferFile(raw)).toThrow(dataTransferInvalidMessage)
   })
@@ -78,7 +78,8 @@ describe('data transfer file', () => {
     expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }] })
     expect(() => parseDataTransferExportInput(null)).toThrow()
     expect(() => parseDataTransferExportInput({ conversations: [1] })).toThrow()
-    expect(() => parseDataTransferExportInput({ conversations: Array.from({ length: 51 }, () => ({})) })).toThrow()
+    expect(parseDataTransferExportInput({ conversations: Array.from({ length: 200 }, () => ({})) }).conversations).toHaveLength(200)
+    expect(() => parseDataTransferExportInput({ conversations: Array.from({ length: 201 }, () => ({})) })).toThrow()
   })
 })
 

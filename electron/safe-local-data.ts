@@ -82,9 +82,10 @@ export function ensureSafeDataDirectory(requestedDirectory: string, label: strin
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`${label}必须是普通目录`)
 }
 
-export function assertSafeDataFile(requestedPath: string, label: string): boolean {
-  const filePath = resolveRelocatedPath(requestedPath)
-  assertNoReparseComponents(path.dirname(filePath), label)
+// The per-file half of assertSafeDataFile. Its realpath identity check resolves
+// every ancestor too, so a directory swapped for a link after the caller walked
+// it is still refused here.
+function safeDataFileStats(filePath: string, label: string): fs.Stats | null {
   try {
     const stats = fs.lstatSync(filePath)
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
@@ -94,11 +95,32 @@ export function assertSafeDataFile(requestedPath: string, label: string): boolea
     if (!sameLocalPathIdentity(realPath, filePath)) {
       throw new Error(`${label}不能经过符号链接或目录联接`)
     }
-    return true
+    return stats
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     throw error
   }
+}
+
+export function assertSafeDataFile(requestedPath: string, label: string): boolean {
+  const filePath = resolveRelocatedPath(requestedPath)
+  assertNoReparseComponents(path.dirname(filePath), label)
+  return safeDataFileStats(filePath, label) !== null
+}
+
+// assertSafeDataFile for many files of one directory, for a caller that checks
+// them all on every save (chat history: up to 200 conversation files, every
+// couple of seconds while a reply streams). The directory's ancestors are walked
+// once instead of once per file - on Windows that walk is dozens of synchronous
+// lstat calls - and every per-file check above still runs for each file.
+// Returns each file's size, or null where the file does not exist.
+export function assertSafeDataFiles(requestedDirectory: string, names: readonly string[], label: string): Array<number | null> {
+  const directory = resolveRelocatedPath(requestedDirectory)
+  assertNoReparseComponents(directory, label)
+  return names.map((name) => {
+    if (!name || name === '.' || name === '..' || path.basename(name) !== name) throw new Error(`${label}文件名无效`)
+    return safeDataFileStats(path.join(directory, name), label)?.size ?? null
+  })
 }
 
 function validateReadLimit(maximumBytes: number | undefined, label: string): void {

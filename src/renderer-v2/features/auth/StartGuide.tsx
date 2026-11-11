@@ -71,7 +71,7 @@ export interface StartGuideProps {
   onSwitchAccount?: (route: Exclude<GuideRoute, 'chat'>) => Promise<AccountSourceSwitchResult | null>
   /**
    * 第 3 步的「重新同步」：只给这个工具把账号密钥再写一次，跟装完以后那一轮一样。返回 true = 写好了，
-   * 引导替他点「下一步」。缺省 = 不给这颗按钮，写失败时只剩「去完成连接配置」。
+   * 引导替他点「下一步」。缺省 = 不给这颗按钮，写失败时只剩「去连好」。
    */
   onBootstrapRetry?: (route: Exclude<GuideRoute, 'chat'>) => Promise<boolean>
   /** 按钮上的账号名；没登录为 null。 */
@@ -196,7 +196,6 @@ function guideDetail(error: unknown, shown: string): string | undefined {
  */
 export function guideInstallFailure(error: unknown, name: string, canReplaceNode = false, copyable = false): GuideFailure {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
-  if (/运行环境正在准备/.test(message)) return { message: '运行环境还在准备，等它装完再点「再试一次」。' }
   const key = classifyOperationError(message)
   // 这一类重试只会撞同一个错，出路是换 Node.js（第十九批 1）；换完引导接着装。
   if (key === 'toolCertOutdatedNode' && canReplaceNode) {
@@ -570,6 +569,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 余额是 $0 时打开了也用不了：顶上那句换成首页的原话，「去充值」紧跟在下面当主按钮，
   // 不用往下翻（主路卡点 F3）。「打开」照样能点，只是退成次按钮。没试通的改用自己带着出口，不叠这一套。
   const walletFirst = Boolean(showRecharge && result?.walletEmpty && !unverifiedSwitch)
+  // 第 3 步还没连好时「下一步」灰着，悬停说一句还差什么（W81）；正忙着的时候灰着是别的原因，不说这句。
+  const connectPending = step === 'connect' && (!readiness.prepared || !readiness.connected)
   const installing = pending === '安装工具'
   const pause = () => { if (locked) return; if (route) saveProgress(route, step); onBack?.() }
   const footer = <>
@@ -578,7 +579,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     <span className="auth-footer-spacer" />
     <span className="auth-guide-count">第 {currentStep + 1} 步，共 4 步</span>
     {step !== 'choose' && <Button variant="secondary" disabled={locked} onClick={() => { setError(''); move(steps[currentStep - 1].id) }} testId="guide-back">上一步</Button>}
-    {step !== 'ready' && !(step === 'connect' && foreign === 'otherSite') && <Button variant="primary" disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || (step === 'connect' && (!readiness.prepared || !readiness.connected))} onClick={next} testId="guide-next">下一步</Button>}
+    {step !== 'ready' && !(step === 'connect' && foreign === 'otherSite') && <Button variant="primary" disabled={locked || !route || (step === 'prepare' && !readiness.prepared) || connectPending} title={connectPending && !locked ? '先把上面那项连好' : undefined} onClick={next} testId="guide-next">下一步</Button>}
   </>
   return <Dialog open title="新手引导" width={640} testId="onboarding-page" busy={locked} onClose={pause} initialFocus={heading} footer={footer}>
     <div className="auth-guide" data-testid="start-guide" data-guide-step={step} data-guide-route={route ?? ''} aria-busy={locked} data-busy={locked}>
@@ -604,12 +605,12 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           {keySyncFailure && <p className="auth-error" role="alert" data-testid="guide-key-sync-failure">{keySyncFailure.text}</p>}
           {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用当前账号。` : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
           {officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}
-          <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerKeySync && <Button variant="primary" icon={KeyRound} disabled={locked} onClick={retryKeySync} testId="guide-key-sync-retry">重新同步</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || offerKeySync || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
+          <div className="auth-form-actions">{!signedIn && !foreign && !readiness.connected && <Button variant="primary" icon={LogIn} disabled={locked} onClick={onLogin} testId="guide-login">登录账号</Button>}{offerKeySync && <Button variant="primary" icon={KeyRound} disabled={locked} onClick={retryKeySync} testId="guide-key-sync-retry">重新同步</Button>}{offerSwitch && <Button icon={KeyRound} variant={foreign === 'otherSite' ? 'primary' : 'secondary'} loading={pending === '改用当前账号'} disabled={locked} onClick={switchAccount} testId="guide-switch-account">{switchButton}</Button>}{foreign !== 'otherSite' && <><Button icon={Settings} variant={readiness.connected || offerSwitch || offerKeySync || !signedIn ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' && !foreign ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去连好'}</Button><Button variant="ghost" icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></>}</div>
           {!connectCard && result && <GuideResultCard result={result} />}
         </>}
         {(step === 'connect' || step === 'ready') && notPrepared}
         {step === 'ready' && <>
-          {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
+          {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉星芒。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
           {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
           {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
           {result && <GuideResultCard result={result} />}

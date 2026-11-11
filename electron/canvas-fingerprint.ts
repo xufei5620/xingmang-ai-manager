@@ -108,6 +108,12 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       seconds: input.node.data.seconds,
       adoptedAssetId: adoptedAssetIdForFingerprint(input.node),
       ...generationParametersForFingerprint(input.node),
+      // Absent on every node that ran before masks, so their keys stay as
+      // they were; a masked edit never reuses a plain edit's image, or the
+      // other way round, and a new stroke is a new request.
+      imageEditMask: input.node.data.imageEditMask,
+      // Only frame-extract nodes carry it: another second is another frame.
+      frameTimestampSeconds: input.node.data.frameTimestampSeconds,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -119,6 +125,19 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
         asset: stableAsset(entry.asset),
       })),
   })
+}
+
+/**
+ * Cache key of one request in a multi-image node. Request 1 keeps the node's
+ * own fingerprint, so what a one-image run made is reused and every existing
+ * cache stays valid; requests 2-4 each get a key of their own, so a batch keeps
+ * all of its images. The attempts themselves still carry the node fingerprint:
+ * proving an adopted image (resolveAssetOrigin) compares against that.
+ */
+export function canvasImageCandidateCacheKey(fingerprint: string, index: number): string {
+  if (!/^[a-f0-9]{64}$/.test(fingerprint)) throw new Error('画布节点指纹格式错误')
+  if (!Number.isSafeInteger(index) || index < 1 || index > 4) throw new Error('画布图片序号格式错误')
+  return index === 1 ? fingerprint : sha256({ version: 1, fingerprint, imageCandidate: index })
 }
 
 export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
@@ -142,6 +161,9 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         videoResolution: node.data.videoResolution,
         videoAspectRatio: node.data.videoAspectRatio,
         promptOptimization: node.data.promptOptimization,
+        imageCandidateCount: node.data.imageCandidateCount,
+        imageEditMask: node.data.imageEditMask,
+        frameTimestampSeconds: node.data.frameTimestampSeconds,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges

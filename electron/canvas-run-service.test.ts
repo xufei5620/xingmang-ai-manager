@@ -4,6 +4,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import { parseCanvasStartRunInput } from './canvas-request-parser'
+import { canvasRunChargeFirstCheckMs, createCanvasRunChargeChecker } from './canvas-run-charges'
 import { createCanvasRunService } from './canvas-run-service'
 import { CanvasRunStore } from './canvas-run-store'
 import type { CanvasRunAsset, CanvasRunCacheEntry, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
@@ -175,6 +176,62 @@ describe('createCanvasRunService', () => {
     }
   })
 
+  // R-1: with several videos running, each progress report used to rewrite
+  // the whole run file on the main process.
+  it('keeps progress reports off the disk until the next durable step while readers see them at once', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-service-'))
+    try {
+      const store = new CanvasRunStore({
+        rootDirectory: root,
+        assets: {
+          readOwned: async (_userId, assetId) => ({ asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' } }),
+        },
+        deferredWriteDelayMs: 60_000,
+      })
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => { release = resolve })
+      const assetId = 'p'.repeat(43)
+      const service = createCanvasRunService({
+        store,
+        randomUUID: () => 'run-progress',
+        executors: {
+          text: async ({ node }) => ({ outputText: node.data.prompt }),
+          image: async ({ reportStage }) => {
+            await reportStage?.('processing', { value: 30, mode: 'determinate', health: 'normal' })
+            await gate
+            return { assets: [{ kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' }] }
+          },
+          video: async () => ({ assets: [] }),
+        },
+      })
+      const graph: CanvasRunGraph = {
+        nodes: [{ id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: '一只猫', model: 'gpt-image-2', group: '生图分组' } }],
+        edges: [],
+      }
+      const handle = await service.start({
+        userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
+      })
+      function runOnDisk(): CanvasRunRecord | undefined {
+        const state = JSON.parse(fs.readFileSync(path.join(root, 'user-7', 'canvas-runtime.json'), 'utf8')) as { runs: CanvasRunRecord[] }
+        return state.runs.find((run) => run.runId === 'run-progress')
+      }
+      function progressEvents(run: CanvasRunRecord | null | undefined) {
+        return (run?.events ?? []).filter((event) => event.type === 'node-stage' && event.progress === 30)
+      }
+
+      await vi.waitFor(async () => expect(progressEvents(await service.getRun(7, 'run-progress'))).toHaveLength(1))
+      expect(runOnDisk()?.nodes[0].state).toBe('running')
+      expect(progressEvents(runOnDisk())).toHaveLength(0)
+
+      release()
+      await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
+      expect(runOnDisk()?.status).toBe('succeeded')
+      expect(progressEvents(runOnDisk())).toHaveLength(1)
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects stale graph revisions before creating paid work', async () => {
     const graph = workflow()
     const text = vi.fn(async () => ({ outputText: 'hello' }))
@@ -242,6 +299,26 @@ describe('createCanvasRunService', () => {
     await expect(second.promise).resolves.toMatchObject({ status: 'succeeded' })
   })
 
+  it('says whether a run is still going, which restarting to install an update would cut short (D10)', async () => {
+    const graph = workflow()
+    const gate: { finish?: () => void } = {}
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      executors: {
+        text: () => new Promise((resolve) => { gate.finish = () => resolve({ outputText: 'done' }) }),
+        image: async () => ({ assets: [] }),
+        video: async () => ({ assets: [] }),
+      },
+    })
+    expect(service.hasActiveRuns()).toBe(false)
+    const run = await service.start({ userId: 7, ownerId: 10, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    expect(service.hasActiveRuns()).toBe(true)
+    await vi.waitFor(() => expect(gate.finish).toBeDefined())
+    gate.finish?.()
+    await expect(run.promise).resolves.toMatchObject({ status: 'succeeded' })
+    await vi.waitFor(() => expect(service.hasActiveRuns()).toBe(false))
+  })
+
   it('requires the current account when cancelling a run owned by a shared canvas sender', async () => {
     const graph = workflow()
     const store = memoryStore()
@@ -267,6 +344,39 @@ describe('createCanvasRunService', () => {
     expect(service.cancel(handle.runId, 10, 7)).toBe(true)
     release?.()
     await expect(handle.promise).resolves.toMatchObject({ status: 'cancelled' })
+  })
+
+  it('takes a frame back only for a run the same window started under the same account', async () => {
+    const graph = workflow()
+    let release: (() => void) | undefined
+    const complete = vi.fn(async () => undefined)
+    const executors = {
+      text: () => new Promise<{ outputText: string }>((resolve) => { release = () => resolve({ outputText: 'done' }) }),
+      image: async () => ({ assets: [] }),
+      video: async () => ({ assets: [] }),
+    }
+    const service = createCanvasRunService({ store: memoryStore(), randomUUID: () => 'run-frame', executors, preparations: { complete } })
+    const handle = await service.start({ userId: 7, ownerId: 10, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    const completion = { runId: handle.runId, operationId: 'attempt-1', kind: 'frame' as const, outcome: 'failed' as const }
+
+    const refusal = '这一帧不在等待中，可能已经超时或运行已停止'
+    await expect(service.completePreparation(7, 11, completion)).rejects.toThrow(refusal)
+    await expect(service.completePreparation(8, 10, completion)).rejects.toThrow(refusal)
+    await expect(service.completePreparation(7, 10, { ...completion, runId: 'run-other' })).rejects.toThrow(refusal)
+    expect(complete).not.toHaveBeenCalled()
+    await service.completePreparation(7, 10, completion)
+    expect(complete).toHaveBeenCalledWith(7, completion)
+
+    release?.()
+    await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
+    await vi.waitFor(() => expect(service.hasActiveRuns()).toBe(false))
+    await expect(service.completePreparation(7, 10, completion)).rejects.toThrow(refusal)
+    expect(complete).toHaveBeenCalledTimes(1)
+
+    // A service without a broker takes no frames at all.
+    const bare = createCanvasRunService({ store: memoryStore(), executors })
+    await expect(bare.completePreparation(7, 10, completion)).rejects.toThrow(refusal)
   })
 
   it('lets sibling generate nodes run together and only locks the overlapping ones', async () => {
@@ -372,8 +482,41 @@ describe('createCanvasRunService', () => {
     })
     await expect(service.start({
       userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
-    })).rejects.toThrow('最多允许 2 个远程生成节点')
+    })).rejects.toThrow('这次运行最多要生成 3 次，一次运行最多 2 次（一次出几张的按张数算），请分几次运行')
     expect(image).not.toHaveBeenCalled()
+  })
+
+  it('counts every image of a multi-image node toward the per-run limit', async () => {
+    function single(count?: 2 | 3 | 4): CanvasRunGraph {
+      return {
+        nodes: [{
+          id: 'image', kind: 'image-generate', definitionVersion: 1,
+          data: { prompt: '一只猫', model: 'gpt-image-2', group: '生图分组', ...(count ? { imageCandidateCount: count } : {}) },
+        }],
+        edges: [],
+      }
+    }
+    let made = 0
+    const image = vi.fn(async () => {
+      const assetId = `image${++made}`.padEnd(43, 'x')
+      return { assets: [{ kind: 'image' as const, assetId, localUrl: `xingmang-asset://image/${assetId}` }] }
+    })
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      maxRemoteGenerationsPerRun: 3,
+      executors: { text: async () => ({ outputText: '' }), image, video: async () => ({ assets: [] }) },
+    })
+    const four = single(4)
+    await expect(service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(four), graph: four, scope: { kind: 'all' } }))
+      .rejects.toThrow('这次运行最多要生成 4 次，一次运行最多 3 次')
+    expect(image).not.toHaveBeenCalled()
+    const three = single(3)
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(three), graph: three, scope: { kind: 'all' } })
+    await handle.promise
+    expect(image).toHaveBeenCalledTimes(3)
+    // The count is part of the workflow revision: changing it is a new graph.
+    expect(computeCanvasGraphRevision(four)).not.toBe(computeCanvasGraphRevision(three))
+    expect(computeCanvasGraphRevision(single())).not.toBe(computeCanvasGraphRevision(three))
   })
 
   it('refuses a run that reaches a setting the desktop cannot honour before any paid work', async () => {
@@ -386,7 +529,7 @@ describe('createCanvasRunService', () => {
             nodes: [
               { id: 'prompt', kind: 'prompt', definitionVersion: 1, data: { prompt: '一只猫', model: '', imageCandidateCount: undefined } },
               { id: 'image', kind: 'image-generate', definitionVersion: 1, disabled, data: {
-                prompt: '', model: 'gpt-image-2', group: '生图分组', imageCandidateCount: 4,
+                prompt: '', model: 'gpt-image-2', group: '生图分组', imageReferenceOrder: { version: 1, slots: [] },
               } },
               { id: 'compare', kind: 'image-compare', definitionVersion: 1, disabled, data: { prompt: '', model: '' } },
               { id: 'other', kind: 'text', definitionVersion: 1, data: { prompt: '独立分支', model: '' } },
@@ -408,7 +551,7 @@ describe('createCanvasRunService', () => {
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'all' } }))
         .rejects.toThrow('桌面版暂不支持，本次没有提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'to-node', nodeId: 'image' } }))
-        .rejects.toThrow('「一次出多张图」桌面版暂不支持，本次没有提交任何付费请求')
+        .rejects.toThrow('「参考图角色」桌面版暂不支持，本次没有提交任何付费请求')
       await expect(service.start({ userId: 7, ownerId: 9, graphRevision, graph, scope: { kind: 'selection', nodeIds: ['compare'] } }))
         .rejects.toThrow('「图片对比」节点桌面版暂不支持，本次没有提交任何付费请求')
       expect(text).not.toHaveBeenCalled()
@@ -438,5 +581,104 @@ describe('createCanvasRunService', () => {
     } finally {
       fetchSpy.mockRestore()
     }
+  })
+})
+
+describe('createCanvasRunService charges', () => {
+  it('schedules the 实扣 check once the terminal record is saved and publishes what it finds to subscribers', async () => {
+    const graph = workflow()
+    const store = memoryStore()
+    const schedule = vi.fn()
+    const clear = vi.fn()
+    let publishCharge!: Parameters<NonNullable<Parameters<typeof createCanvasRunService>[0]['charges']>>[0]
+    const service = createCanvasRunService({
+      store,
+      randomUUID: () => 'run-1',
+      charges: (publish) => {
+        publishCharge = publish
+        return { schedule, clear }
+      },
+      executors: { text: async () => ({ outputText: 'hello' }), image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
+    })
+    let savedWhenScheduled: string | undefined
+    schedule.mockImplementation(() => { savedWhenScheduled = store.runs[0]?.status })
+    const seen: unknown[] = []
+    service.subscribe(({ event, userId, ownerId }) => { if (event.type === 'run-charge') seen.push({ runId: event.runId, userId, ownerId, usd: event.charge.usd }) })
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await handle.promise
+    expect(schedule).toHaveBeenCalledOnce()
+    expect(schedule.mock.calls[0][0]).toMatchObject({ runId: 'run-1', userId: 7, status: 'succeeded' })
+    expect(schedule.mock.calls[0][1]).toBe(9)
+    expect(savedWhenScheduled).toBe('succeeded')
+    await publishCharge({
+      version: 1, type: 'run-charge', runId: 'run-1', graphRevision: handle.graphRevision, sequence: 99, at: new Date().toISOString(),
+      charge: { state: 'settled', usd: 0.06, unmatchedAttempts: 0, checkedAt: new Date().toISOString() }, attempts: [],
+    }, 7, 9)
+    expect(seen).toEqual([{ runId: 'run-1', userId: 7, ownerId: 9, usd: 0.06 }])
+    service.shutdown()
+    expect(clear).toHaveBeenCalledOnce()
+  })
+
+  it('still checks 实扣 for runs that end after a shutdown, as main shuts it down on every sign-in', async () => {
+    const graph: CanvasRunGraph = {
+      nodes: [{ id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: '一只猫', model: 'gpt-image-2', group: '生图分组' } }],
+      edges: [],
+    }
+    const store = memoryStore()
+    const timers: (() => void)[] = []
+    let clock = Date.now()
+    const readUsage = vi.fn(async () => ({ records: [{ requestId: 'req-1', quota: 30_000, type: 2 }], total: 1 }))
+    let checker!: ReturnType<typeof createCanvasRunChargeChecker>
+    const service = createCanvasRunService({
+      store,
+      charges: (publish) => {
+        checker = createCanvasRunChargeChecker({
+          current: () => ({ userId: 7, key: 'r1:7' }),
+          readUsage,
+          readQuotaPerUnit: async () => 500_000,
+          getRun: (userId, runId) => store.getRun(userId, runId),
+          saveRun: (userId, record) => store.saveRun(userId, record),
+          publish,
+          now: () => clock,
+          setTimer: (callback) => { timers.push(callback); return callback },
+          clearTimer: (timer) => { timers.splice(timers.indexOf(timer as () => void), 1) },
+        })
+        return checker
+      },
+      executors: {
+        text: async () => ({ outputText: '' }),
+        image: async ({ billing }) => {
+          billing?.onRelayDispatch?.(true)
+          billing?.onRelayAnswer?.('req-1')
+          const assetId = 'image1'.padEnd(43, 'x')
+          return { assets: [{ kind: 'image' as const, assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' }], model: 'gpt-image-2', group: '生图分组' }
+        },
+        video: async () => ({ assets: [] }),
+      },
+    })
+    const seen: number[] = []
+    service.subscribe(({ event }) => { if (event.type === 'run-charge') seen.push(event.charge.usd) })
+    // Signing in shuts the service down before the first run (main.ts onChanged).
+    service.shutdown()
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await handle.promise
+    expect(timers).toHaveLength(1)
+    clock += canvasRunChargeFirstCheckMs
+    timers.shift()!()
+    await checker.whenIdle()
+    expect(readUsage).toHaveBeenCalledOnce()
+    expect(seen).toEqual([0.06])
+    expect(store.runs[0].charge).toMatchObject({ state: 'settled', usd: 0.06 })
+  })
+
+  it('never fails a run because its 实扣 could not be scheduled', async () => {
+    const graph = workflow()
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      charges: () => ({ schedule: () => { throw new Error('boom') }, clear: () => undefined }),
+      executors: { text: async () => ({ outputText: 'hello' }), image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
+    })
+    const handle = await service.start({ userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' } })
+    await expect(handle.promise).resolves.toMatchObject({ status: 'succeeded' })
   })
 })

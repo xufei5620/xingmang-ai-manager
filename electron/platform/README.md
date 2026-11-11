@@ -1,7 +1,8 @@
 # Platform zoom
 
 `zoom.ts` names the 1280 DIP algorithm (automatic factor clamped to
-0.9-1.25, final factor to 0.85-1.25 since UI v4.0, plus the
+0.9-1.25, final factor to 0.85-1.375 -- floors since UI v4.0, the 110%
+ceiling since 2026-11-10 -- plus the
 auto/90/100/110 preference) for this layer, but delegates to `calculateUiZoom`
 in `window-preferences.ts`, which is the product's only zoom formula. Two
 appliers write the window zoom on the same events, so a second copy of the

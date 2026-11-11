@@ -5,7 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   describeDesktopBucketFallback, desktopBucketIndexMaximumAgeMs, desktopBucketIndexUrl, desktopBucketResponseTime,
-  desktopPackageBucketOrigin, DesktopBucketUnavailableError, downloadDesktopBucketPackage, fetchDesktopBucketResource,
+  desktopPackageBucketOrigin, DesktopBucketIndexStaleError, DesktopBucketUnavailableError, downloadDesktopBucketPackage, fetchDesktopBucketResource,
   isDesktopAlternativeClearlyFaster, isDesktopBucketDownloadTooSlow, isDesktopBucketIndexStale,
   measureDesktopDownloadSpeed, parseDesktopBucketIndex, readDesktopBucketPackage, validateDesktopBucketUrl,
   type DesktopAlternativeSpeed, type DesktopBucketDownloadProgress, type DesktopBucketPackage, type DesktopBucketPackageId,
@@ -327,6 +327,8 @@ describe('desktop package bucket index requests', () => {
   ] as const)('turns %s into a quiet fallback', async (_label, respond, message) => {
     const failure = await readDesktopBucketPackage('claude-windows-x64', vi.fn<typeof globalThis.fetch>(respond)).catch((error: unknown) => error)
     expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    // Only an old index is worth coming back to later; a broken one stays broken.
+    expect(failure).not.toBeInstanceOf(DesktopBucketIndexStaleError)
     expect((failure as Error).message).toContain(message)
   })
 
@@ -364,9 +366,30 @@ describe('desktop package bucket index requests', () => {
   it('falls back from a Codex entry checked more than a day before the bucket answered', async () => {
     for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
       const failure = await readDesktopBucketPackage(id, indexFetch(checkedCodexIndex('2026-10-17T09:59:59.000Z'))).catch((error: unknown) => error)
+      // Still the plain fallback for the Mac, Claude and OpenCode callers, which check only this class.
       expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+      expect(failure).toBeInstanceOf(DesktopBucketIndexStaleError)
       expect((failure as Error).message).toBe('存储桶清单超过 24 小时没和官方核对过（上次是 2026-10-17T09:59:59.000Z），桶里的可能不是最新版')
     }
+  })
+
+  it('hands over a Codex entry past its day when the caller asks for it anyway', async () => {
+    // Windows comes back for it after the Store and the official package, before the third-party mirror.
+    for (const id of ['codex-windows-x64', 'codex-macos-arm64'] as const) {
+      await expect(readDesktopBucketPackage(id, indexFetch(checkedCodexIndex('2026-10-01T00:00:00.000Z')), undefined, { allowStale: true }))
+        .resolves.toMatchObject({ id, checkedAt: '2026-10-01T00:00:00.000Z' })
+    }
+  })
+
+  it('still refuses a broken index when the caller accepts an old one', async () => {
+    const failure = await readDesktopBucketPackage(
+      'codex-windows-x64',
+      vi.fn<typeof globalThis.fetch>(async () => new Response('missing', { status: 404 })),
+      undefined,
+      { allowStale: true },
+    ).catch((error: unknown) => error)
+    expect(failure).toBeInstanceOf(DesktopBucketUnavailableError)
+    expect((failure as Error).message).toBe('存储桶清单返回 HTTP 404')
   })
 
   // Every index online today was written before the sync learned checkedAt. Calling those stale

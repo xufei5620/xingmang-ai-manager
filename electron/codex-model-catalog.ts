@@ -36,9 +36,9 @@ export const codexModelCatalogFileName = 'xingmang-models.json'
 /** 随包那份官方名单从哪来。换版本时整份照拷、三项一起改，测试按 sha256 钉住。 */
 export const bundledCodexModelCatalogSource = Object.freeze({
   repository: 'openai/codex',
-  tag: 'rust-v0.164.0',
+  tag: 'rust-v0.167.0',
   path: 'codex-rs/models-manager/models.json',
-  sha256: '943ca7fe1d19ed019054158303f0dbbd80b3bef43b3aa425a71aa7cb3fb52c2b',
+  sha256: '1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10',
 })
 
 export const BUNDLED_CODEX_MODEL_CATALOG_RELATIVE_PATH = ['bundled-catalog', 'codex-models', 'models.json'] as const
@@ -106,7 +106,7 @@ function hasInstructions(entry: Record<string, unknown>): boolean {
 
 /**
  * 这一项能不能被 Codex 读进去；能返回 null，不能返回原因。规则来自 openai_models.rs 的
- * 必填字段与固定取值（rust-v0.147.0～rust-v0.164.0 一致）。
+ * 必填字段与固定取值（rust-v0.147.0～rust-v0.167.0 一致）。
  */
 export function codexModelCatalogEntryProblem(entry: unknown): string | null {
   if (!isRecord(entry)) return '不是对象'

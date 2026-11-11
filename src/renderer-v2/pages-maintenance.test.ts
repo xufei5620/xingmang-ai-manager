@@ -27,7 +27,7 @@ describe('paid Codex check in HealthPage', () => {
   it('stays hidden until the page knows Codex is installed and leaves the self-check wording alone', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     expect(markup).not.toContain('health-codex-responses')
-    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的外部客户端也一起测')
+    expect(markup).toContain('确认每个工具都能连上、账号有效；装好的桌面端也一起测')
   })
 })
 
@@ -50,24 +50,34 @@ describe('maintenance pages without the retired Gemini CLI', () => {
   it('lists the shortcuts the app actually answers, in the keys of this computer', () => {
     expect(shortcutRows('mac').map((row) => `${row.keys} ${row.label}`)).toEqual([
       '⌘ K 搜索或跳转',
+      '/ 在有搜索框的页面里直接搜索',
       '⌘ , 打开设置',
       '⌘ 1–4 打开工具',
       '⌘ + / ⌘ - 放大 / 缩小界面',
       '⌘ 0 恢复自动缩放',
+      '⌃ ⌘ F 全屏',
       'Esc 关闭弹窗或菜单',
     ])
     for (const os of ['win', 'linux'] as const) expect(shortcutRows(os).every((row) => !row.keys.includes('⌘'))).toBe(true)
+    for (const os of ['win', 'linux'] as const) expect(shortcutRows(os)).toContainEqual({ keys: 'F11', label: '全屏' })
   })
 })
 
 describe('health page order', () => {
-  it('puts the export next to re-check in the page head and the two explanation cards after the results', () => {
+  it('puts the export next to the check button in the page head and the two explanation cards after the results', () => {
     const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
     const head = markup.indexOf('导出检查报告')
     expect(head).toBeGreaterThan(-1)
-    expect(head).toBeLessThan(markup.indexOf('重新检查'))
-    expect(markup.indexOf('重新检查')).toBeLessThan(markup.indexOf('xm-card-none'))
+    expect(head).toBeLessThan(markup.indexOf('开始检查'))
+    expect(markup.indexOf('开始检查')).toBeLessThan(markup.indexOf('xm-card-none'))
     expect(markup.indexOf('xm-card-none')).toBeLessThan(markup.indexOf('连接自检'))
+  })
+
+  // UI 字表 W33：还一项结果都没有时，页头那颗不叫「重新检查」，跟空状态那句「点右上角「开始检查」。」对得上。
+  it('names the head button 开始检查 before any check has produced results', () => {
+    const markup = renderToStaticMarkup(createElement(HealthPage, { api: {} as V2Bridge }))
+    expect(markup).toContain('开始检查')
+    expect(markup).not.toContain('重新检查')
   })
 
   it('lists problems before warnings before passing items and keeps the order within each', () => {
@@ -130,7 +140,7 @@ describe('feedback and support page', () => {
     expect(markup).toContain('运行日志')
     expect(markup).toContain('描述一下发生了什么')
     expect(markup).toContain('比如：点「打开」后终端闪一下就关了')
-    expect(markup).toContain('微信号或邮箱，方便我们回复你')
+    expect(markup).toContain('微信号或邮箱（会一起复制，发给客服时方便他回你）')
     expect(markup).toContain('已自动隐去密钥和个人路径')
     expect(markup).toContain('复制给客服')
     expect(markup).toContain('data-testid="feedback-support-card"')
@@ -480,7 +490,7 @@ describe('settings page before the settings arrive', () => {
   it('says it is still reading instead of claiming anything is unsupported', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))
     expect(markup).toContain('正在读取设置…')
-    expect(markup).not.toContain('此版本暂不支持')
+    expect(markup).not.toContain('这台电脑上用不了')
     expect(markup).toContain('<span>版本更新</span></button>')
     expect(markup).not.toContain('<span>账号</span></button>')
     expect(markup).toContain('aria-label="搜索设置"')

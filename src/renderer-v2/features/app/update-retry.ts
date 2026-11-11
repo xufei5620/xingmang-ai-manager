@@ -73,28 +73,3 @@ export function updateFailureBubbleQuiet(update: Pick<UpdateSnapshot, 'error'> |
 export function updateFailureTone(update: Pick<UpdateSnapshot, 'error'>): 'bad' | 'warn' {
   return update.error?.code === 'STARTUP_UPDATE_TIMEOUT' ? 'warn' : 'bad'
 }
-
-/**
- * 首页气泡上的「重新安装」要落到版本更新卡的确认框里。页面切换只传页面名，版本更新卡又可能
- * 早就挂着（隐藏而不卸载），所以这里既留一份待取的请求，也通知已经挂着的那一页。
- * 取走即清空：下一次从设置里翻到版本更新卡不会凭空弹框。
- */
-let pendingInstallConfirm = false
-const installConfirmListeners = new Set<() => void>()
-
-export function requestUpdateInstallConfirm(): void {
-  pendingInstallConfirm = true
-  for (const listener of installConfirmListeners) listener()
-}
-
-export function takeUpdateInstallConfirm(): boolean {
-  const pending = pendingInstallConfirm
-  pendingInstallConfirm = false
-  return pending
-}
-
-export function subscribeUpdateInstallConfirm(listener: () => void): () => void {
-  installConfirmListeners.add(listener)
-  if (pendingInstallConfirm) listener()
-  return () => { installConfirmListeners.delete(listener) }
-}

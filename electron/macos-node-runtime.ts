@@ -54,7 +54,8 @@ import { nodeVersionStatus } from './versions'
  * 升级版本：改下面两个常量，跟 linux-node-runtime.ts 一起抬（测试钉住两边同一版）。摘要从
  * https://nodejs.org/dist/<版本>/SHASUMS256.txt.asc 抄 `node-<版本>-darwin-x64.tar.gz` 与
  * `node-<版本>-darwin-arm64.tar.gz` 两行，抄之前先用 https://github.com/nodejs/release-keys
- * 的公钥核过签名（gpgv --keyring pubring.kbx …）。
+ * 的公钥核过签名（gpgv --keyring pubring.kbx …）。抬了以后，已经代装过的电脑在下次装或更新工具时
+ * 顺手换成新钉的这版（D86，runtime-install-service.ts 的 refreshOutdatedManagedNodeRuntime）。
  */
 export const darwinNodeRuntimeVersion = 'v24.22.1'
 const darwinNodeRuntimeSha256: Readonly<Record<NodeRuntimeArchitecture, string>> = {

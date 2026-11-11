@@ -101,6 +101,26 @@ export class DesktopBucketUnavailableError extends Error {
   }
 }
 
+/**
+ * 清单那一条超过 desktopBucketIndexMaximumAgeMs 没和官方核对过：桶里的包本身没毛病，只是可能落后官方。
+ * 单独一类，好让 Windows 装 Codex 桌面端时先走商店和官网，那两路都没装上再回头用它（readDesktopBucketPackage
+ * 的 allowStale）；别处照旧当作桶没走通。
+ */
+export class DesktopBucketIndexStaleError extends DesktopBucketUnavailableError {
+  constructor(checkedAt: string | undefined) {
+    super(describeStaleDesktopBucketIndex(checkedAt))
+    this.name = 'DesktopBucketIndexStaleError'
+  }
+}
+
+export interface ReadDesktopBucketPackageOptions {
+  /**
+   * 清单过期了也照样交出这一条。缺省 = 过期就抛 DesktopBucketIndexStaleError，只有 Windows 装 Codex 桌面端在
+   * 商店、官网都没装上以后才会传 true：这时桶里那一版只要比本机新，就比第三方的国内镜像可靠。
+   */
+  allowStale?: boolean
+}
+
 interface CodexWindowsSpec {
   index: 'codex'
   platformId: 'windows-x64' | 'windows-arm64'
@@ -358,13 +378,14 @@ function abortedBy(signal: AbortSignal | undefined): unknown {
 }
 
 /**
- * 读桶里的清单，挑出这个包。读不到、太慢、格式不对都抛 DesktopBucketUnavailableError；
- * 客户点了取消就原样抛 signal 的 reason。
+ * 读桶里的清单，挑出这个包。读不到、太慢、格式不对都抛 DesktopBucketUnavailableError，Codex 那份过期了是它的
+ * 子类 DesktopBucketIndexStaleError（options.allowStale 时不查）；客户点了取消就原样抛 signal 的 reason。
  */
 export async function readDesktopBucketPackage(
   id: DesktopBucketPackageId,
   fetchImplementation: typeof fetch,
   signal?: AbortSignal,
+  options: ReadDesktopBucketPackageOptions = {},
 ): Promise<DesktopBucketPackage> {
   const timeout = AbortSignal.timeout(indexTimeoutMs)
   try {
@@ -379,12 +400,17 @@ export async function readDesktopBucketPackage(
     const release = parseDesktopBucketIndex(await readBoundedResponseText(response, maximumIndexBytes, '存储桶清单'), id)
     if (!release) throw new Error('存储桶清单里没有这台电脑能用的安装包，或清单格式对不上')
     // 装 Codex 桌面端总是装最新的。Claude 桌面端和 OpenCode 的同步还不写 checkedAt，照旧不看。
-    if (packageSpecs[id].index === 'codex' && isDesktopBucketIndexStale(release.checkedAt, desktopBucketResponseTime(response))) {
-      throw new Error(describeStaleDesktopBucketIndex(release.checkedAt))
+    if (
+      !options.allowStale
+      && packageSpecs[id].index === 'codex'
+      && isDesktopBucketIndexStale(release.checkedAt, desktopBucketResponseTime(response))
+    ) {
+      throw new DesktopBucketIndexStaleError(release.checkedAt)
     }
     return release
   } catch (error) {
     if (signal?.aborted) throw abortedBy(signal)
+    if (error instanceof DesktopBucketIndexStaleError) throw error
     if (timeout.aborted) throw new DesktopBucketUnavailableError('读取存储桶清单超时', error)
     throw new DesktopBucketUnavailableError(error instanceof Error ? error.message : String(error), error)
   }

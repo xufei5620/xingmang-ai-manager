@@ -27,8 +27,11 @@ import { createCanvasNodeExecutors } from '../canvas-node-executors'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from '../canvas-project-asset-manager'
 import { CanvasProjectStore } from '../canvas-project-store'
 import { CanvasPromptPresetStore } from '../canvas-prompt-preset-store'
+import { createCanvasRunChargeChecker } from '../canvas-run-charges'
+import { CanvasRunPreparationBroker, createCanvasFrameExtraction } from '../canvas-run-preparations'
 import { createCanvasRunService } from '../canvas-run-service'
 import { CanvasRunStore } from '../canvas-run-store'
+import { readCanvasTextImages } from '../canvas-text-image-input'
 import { createChatCredentialCoordinator } from '../chat-credential-coordinator'
 import { ChatKeyStore } from '../chat-key-store'
 import { readClipboardPng, writeClipboardPng } from '../clipboard-image'
@@ -151,6 +154,8 @@ export interface RealmBusinessesOptions {
   runtimeLog: RuntimeLogStore
   sessionFetch: typeof fetch
   routedRelayFetch: typeof fetch
+  /** Quota per dollar from the balance main.ts already read; null when it has none yet. */
+  cachedQuotaPerUnit?: () => number | null
 }
 
 export function createRealmBusinesses(options: RealmBusinessesOptions) {
@@ -176,7 +181,7 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const definition = requireSiteRuntimeDefinition(siteId)
     const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
     const accountService = createRealmServiceDispatch(() => {
-      if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
+      if (accounts.getSiteId() !== siteId) throw new Error('账号刚切换过，请再试一次')
       return accounts.client
     })
     const onAiRequestStarted = createAccountUsageTracker({
@@ -539,22 +544,72 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
     const canvasPromptPresets = new CanvasPromptPresetStore({
       rootDirectory: path.join(roots.rootDirectory, 'canvas-content'),
     })
+    // 跑完写实扣只认星芒账号：它的用量记录按请求号记每一笔扣费（画布完善第 2b 条第 3 步）。
+    const canvasRunCharges = siteId === 'solov'
+      ? (publish: Parameters<typeof createCanvasRunChargeChecker>[0]['publish']) => createCanvasRunChargeChecker({
+        current: () => {
+          try {
+            if (accounts.getSiteId() !== siteId) return null
+            const revision = accountService.getSessionRevision!()
+            const state = accountService.getSessionState()
+            const userId = state.authenticated ? state.account?.userId : undefined
+            return typeof userId === 'number' ? { userId, key: `${revision}:${userId}` } : null
+          } catch {
+            return null
+          }
+        },
+        readUsage: async (query) => {
+          const page = await accountService.getUsage({ ...query, type: 2, recordsOnly: true })
+          return { records: page.records.map((record) => ({ requestId: record.requestId, quota: record.quota, type: record.type })), total: page.total }
+        },
+        readQuotaPerUnit: async () => options.cachedQuotaPerUnit?.() ?? (await accountService.getBalance()).quotaPerUnit,
+        getRun: (userId, runId) => canvasRunStore.getRun(userId, runId),
+        saveRun: (userId, record) => canvasRunStore.saveRun(userId, record),
+        publish,
+      })
+      : undefined
+    // 画布完善第 7 条第二步：抽帧节点等页面交回的那一帧。每个账号域一份，换域时跟着运行一起停。
+    const canvasRunPreparations = new CanvasRunPreparationBroker()
     const canvasRuns = createCanvasRunService({
       store: canvasRunStore,
+      ...(canvasRunCharges ? { charges: canvasRunCharges } : {}),
+      preparations: canvasRunPreparations,
       executors: createCanvasNodeExecutors({
         imageService: canvasImageService,
         videoService,
         assets: canvasProjectAssets,
-        completeText: {
-          completeOnce: (input) => chatService.completeOnce({
-            group: input.group,
-            model: input.model,
-            messages: [
-              { role: 'system', content: input.system },
-              { role: 'user', content: input.user },
-            ],
-            signal: input.signal,
+        frames: createCanvasFrameExtraction({
+          broker: canvasRunPreparations,
+          assets: canvasProjectAssets,
+          onSourceError: (error, assetId) => runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '视频帧已保存，但来源信息保存失败', {
+            assetId,
+            reason: error instanceof Error ? error.message : String(error),
           }),
+        }),
+        completeText: {
+          completeOnce: (input) => {
+            const images = input.images
+            return chatService.completeOnce({
+              group: input.group,
+              model: input.model,
+              messages: [
+                ...(input.system ? [{ role: 'system' as const, content: input.system }] : []),
+                { role: 'user', content: input.user, ...(images ? { images: images.assetIds } : {}) },
+              ],
+              signal: input.signal,
+              ...(input.billing ? { billing: input.billing } : {}),
+              // 画布完善第 6 条：文字节点连的图从画布自己的项目素材库读，按凭据给出的那个账号读。
+              ...(images ? {
+                readImages: (userId: number, signal: AbortSignal) => readCanvasTextImages(
+                  (owner, assetId, projectId) => canvasProjectAssets.readImageOwned(owner, assetId, projectId),
+                  userId,
+                  images.assetIds,
+                  images.projectId,
+                  signal,
+                ),
+              } : {}),
+            })
+          },
         },
       }),
     })

@@ -92,11 +92,11 @@ describe('curated extension shelf', () => {
   it('states the exact command, the risk and the disclaimer before anything is installed', () => {
     const markup = renderToStaticMarkup(<CuratedDetails item={item('files')} />)
     expect(markup).toContain('npx -y @modelcontextprotocol/server-filesystem@2026.8.31 {{directory}}')
-    expect(markup).toContain('<dt>提供方</dt><dd>Model Context Protocol 官方</dd>')
+    expect(markup).toContain('<dt>提供方</dt><dd>MCP 官方</dd>')
     expect(markup).toContain('会修改本地文件')
     expect(markup).toContain('改动不进回收站')
     expect(markup).toContain('装到哪里')
-    expect(markup).toContain('用的是本应用装好的运行环境')
+    expect(markup).toContain('用的是星芒装好的运行环境')
     expect(markup).not.toContain('Node.js')
     expect(markup).toContain(curatedDisclaimer)
   })
@@ -371,9 +371,23 @@ describe('Python runtime notice before adding a connection', () => {
     expect(missingBoth?.installPython).toBe(true)
     const pythonOnly = mcpRuntimeNotice('uvx', { python: true, uv: false }, managed)
     expect(pythonOnly?.installPython).toBe(false)
-    expect(pythonOnly?.body).toContain('pip install uv')
     // Python 已经在了，就不该再说「Python 装好之后」。
     expect(pythonOnly?.body).not.toContain('Python 装好之后')
+  })
+
+  // D20：客户不会开命令行敲 pip，缺 uv 时交给客服教，不管 Python 在不在都是同一句，并给「找客服」。
+  it('sends a missing uv to customer support instead of a pip command', () => {
+    const sentence = '这个工具还要一个叫 uv 的小组件，点「找客服」，客服教你装。'
+    for (const python of [true, false]) {
+      for (const management of [managed, external]) {
+        const notice = mcpRuntimeNotice('uvx', { python, uv: false }, management)
+        expect(notice?.body).toContain(sentence)
+        expect(notice?.body).not.toContain('pip')
+        expect(notice?.body).not.toContain('命令行')
+        expect(notice?.support).toBe(true)
+      }
+    }
+    expect(mcpRuntimeNotice('python3', { python: false, uv: false }, managed)?.support).toBe(false)
   })
 
   it('checks a curated entry by its own launch command', () => {

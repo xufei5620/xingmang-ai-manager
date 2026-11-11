@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  isVideoStudioCaptionPosition,
+  isVideoStudioCaptionSize,
   layoutVideoStudioCaption,
   paintVideoStudioCaption,
   splitCaptionUnits,
@@ -46,6 +48,20 @@ describe('video studio captions', () => {
   it('lifts a portrait caption above the platform controls', () => {
     const layout = layoutVideoStudioCaption('竖屏字幕', { width: 720, height: 1280 }, measureByCharacter)
     expect(layout?.baselines).toEqual([1024])
+  })
+
+  it('sets the caption size and place when asked, keeping the old look by default', () => {
+    const frame = { width: 1280, height: 720 }
+    const layout = (style: Parameters<typeof layoutVideoStudioCaption>[3]) => layoutVideoStudioCaption('第一行\n第二行', frame, measureByCharacter, style)
+    expect(layout({})).toEqual(layoutVideoStudioCaption('第一行\n第二行', frame, measureByCharacter))
+    expect(layout({ size: 'medium', position: 'bottom' })?.baselines).toEqual([610, 662])
+    expect(layout({ size: 'small' })?.fontSize).toBe(32)
+    expect(layout({ size: 'large' })?.fontSize).toBe(50)
+    expect(layout({ position: 'top' })?.baselines).toEqual([98, 150])
+    expect(layout({ position: 'middle' })?.baselines).toEqual([348, 400])
+    // A portrait caption at the top steps clear of the status bar and the title.
+    expect(layoutVideoStudioCaption('竖屏字幕', { width: 720, height: 1280 }, measureByCharacter, { position: 'top' })?.baselines).toEqual([200])
+    expect([isVideoStudioCaptionSize('large'), isVideoStudioCaptionSize('huge'), isVideoStudioCaptionPosition('top'), isVideoStudioCaptionPosition('left')]).toEqual([true, false, true, false])
   })
 
   it('shrinks a long caption before cutting it with an ellipsis', () => {

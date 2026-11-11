@@ -59,6 +59,7 @@ import type {
   NewApiLoginSession,
   NewApiLegalDocument,
   NewApiLegalDocumentKind,
+  NewApiModelPricing,
   NewApiPersistableSession,
   NewApiProvisionCliKeyInput,
   NewApiRegisterInput,
@@ -264,6 +265,12 @@ export interface RelayBackendClient {
    * sub2api-relay-backend.ts leaves it out; chat there still lists models through the group's key.
    */
   listGroupModels?(group: string): Promise<string[]>
+  /**
+   * canvas-price-snapshot.ts: per-call prices and this account's group ratios
+   * for 「预计约 $x」 in the canvas run preflight (new-api only; sub2api has no
+   * per-model price list, so its client leaves it out).
+   */
+  getModelPricing?(): Promise<NewApiModelPricing>
   /** ipc.ts: account:copy-key and account:reveal-key; renderer reveal is explicit and short-lived. */
   revealKey(id: number): Promise<string>
   /** ipc.ts: account:revoke-key */

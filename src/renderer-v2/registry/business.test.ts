@@ -51,6 +51,7 @@ describe('account center tabs and landings', () => {
     expect(resolveAccountLanding('switch-account')).toEqual({ tab: 'overview', anchor: 'switch-account' });
     expect(resolveAccountLanding('edit-profile')).toEqual({ tab: 'overview', anchor: 'edit-profile' });
     expect(resolveAccountLanding('keys')).toEqual({ tab: 'keys' });
+    expect(resolveAccountLanding('other-apps')).toEqual({ tab: 'keys', anchor: 'other-apps' });
   });
 
   it('falls back to the overview for names it does not know, including inherited object keys', () => {
@@ -132,7 +133,7 @@ describe('renderer-v2 settings rows registry', () => {
     expect(groupOf('backups')).toBe('backup');
     expect(groupOf('transfer')).toBe('backup');
     expect(groupOf('legal')).toBe('privacy');
-    expect(settingsItemLabel('workspace')).toBe('打开工具时进入的文件夹');
+    expect(settingsItemLabel('workspace')).toBe('工作文件夹');
     expect(settingsItemLabel('language')).toBe('界面语言');
     expect(settingsItemLabel('terminal')).toBe('终端');
     expect(settingsItemLabel('install-location')).toBe('安装位置');
