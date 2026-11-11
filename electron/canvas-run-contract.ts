@@ -129,7 +129,67 @@ export interface CanvasRunGraphNode {
      * an empty order is dropped by the parser for the same reason.
      */
     videoReferenceOrder?: CanvasVideoReferenceOrder
+    /**
+     * Image, image-generate and image-edit nodes (画布完善第 8 条): one scene
+     * task at most, picked from fixed options. The main process writes the
+     * prompt around the user's own words (canvas-scene-tasks.ts); each needs
+     * an imageReferenceOrder that matches it.
+     */
+    commerceTask?: CanvasCommerceTask
+    interiorTask?: CanvasInteriorTask
+    exteriorTask?: CanvasExteriorTask
+    storyboardTask?: CanvasStoryboardTask
   }
+}
+
+export type CanvasCommercePreserve = 'shape' | 'color' | 'logo' | 'composition'
+export type CanvasCommerceView = 'front' | 'back' | 'left' | 'right' | 'three-quarter' | 'top'
+export type CanvasCommerceStyle = 'studio' | 'cinematic' | 'watercolor' | 'ink' | 'oil' | 'pencil' | 'flat' | 'clay' | 'paper' | 'retro' | 'pixel'
+/** The kernel's CommerceTask (xingmang-canvas commerce/commerce-task.ts). */
+export type CanvasCommerceTask = { version: 1; preserve: CanvasCommercePreserve[] } & (
+  | { kind: 'material-a'; strength: number }
+  | { kind: 'material-b'; strength: number; upscale: number }
+  | { kind: 'style-preset'; preset: CanvasCommerceStyle }
+  | { kind: 'style-reference' }
+  | { kind: 'product-view'; view: CanvasCommerceView }
+)
+
+export type CanvasInteriorWeather = 'none' | 'overcast' | 'sunny' | 'rainy'
+export type CanvasInteriorTime = 'none' | 'dawn' | 'noon-sun' | 'noon-overcast' | 'evening' | 'night'
+export type CanvasInteriorExterior = 'none' | 'sea' | 'river' | 'mountain' | 'garden' | 'city' | 'town' | 'snow-mountain' | 'street'
+export type CanvasInteriorFilter = 'none' | 'airy-japanese' | 'cool-nordic' | 'soft-cream' | 'teal-orange' | 'dramatic' | 'film'
+/** The kernel's InteriorTask (interior/interior-task.ts). */
+export interface CanvasInteriorTask {
+  version: 1
+  kind: 'interior-render'
+  addDecor: boolean
+  addPeople: boolean
+  enclosedSpace: boolean
+  interiorLighting: boolean
+  weather: CanvasInteriorWeather
+  time: CanvasInteriorTime
+  exterior: CanvasInteriorExterior
+  filter: CanvasInteriorFilter
+}
+
+export type CanvasExteriorWeather = 'none' | 'overcast' | 'rainy' | 'snowy' | 'sunny'
+export type CanvasExteriorTime = 'none' | 'dawn' | 'noon' | 'evening' | 'night'
+export type CanvasExteriorEnvironment = 'none' | 'jiangnan' | 'urban' | 'coast' | 'mountain-city' | 'historic-city' | 'european-street' | 'river-bank' | 'desert-oasis' | 'tropical' | 'mountain-retreat' | 'market-street' | 'japanese-street'
+export type CanvasExteriorDistant = 'none' | 'sea' | 'river' | 'mountain' | 'forest' | 'city' | 'snow-mountain'
+/** The kernel's ExteriorTask (exterior/exterior-task.ts). */
+export type CanvasExteriorTask = { version: 1 } & (
+  | { kind: 'exterior-render'; addPeople: boolean; motionBlur: boolean; interiorLighting: boolean; lightTemperature: 3000 | 4000 | 6000; weather: CanvasExteriorWeather; time: CanvasExteriorTime; environment: CanvasExteriorEnvironment; distant: CanvasExteriorDistant }
+  | { kind: 'exterior-redraw'; useToneReference: boolean }
+  | { kind: 'landscape-redesign' | 'facade-renovation' | 'exterior-style-transfer' | 'storefront-redesign'; automaticPrompt: boolean }
+)
+
+/** The kernel's StoryboardTask (storyboard/storyboard-task.ts). */
+export interface CanvasStoryboardTask {
+  version: 1
+  kind: 'storyboard'
+  automaticPlot: boolean
+  style: 'white-model' | 'hand-drawn' | 'cinematic' | 'stick-figure'
+  panels: 4 | 9 | 16 | 25
 }
 
 export type CanvasImageTransformKind = 'crop' | 'collage' | 'grid-split' | 'tile' | 'layer'

@@ -33,6 +33,7 @@ import {
   orderCanvasImageReferenceInputs,
   orderCanvasVideoReferences,
 } from './canvas-reference-order'
+import { assertCanvasSceneRunConfiguration, canvasSceneSourceChecks, type CanvasSceneSourceCheck } from './canvas-scene-tasks'
 import type { AiRelayBillingObserver } from './ai-operation-progress'
 import { createCanvasRelayBillingRecorder, type CanvasRelayBillingRecorder } from './canvas-run-charges'
 
@@ -138,6 +139,11 @@ export interface CanvasNodeExecutionContext {
   signal: AbortSignal
   /** Hand to every paid request this attempt makes; the run's 实扣 is matched by what it records. */
   billing?: AiRelayBillingObserver
+  /**
+   * The scene tasks whose pictures must differ by their bytes (画布完善第 8
+   * 条第二步): the executor reads and compares them before the paid request.
+   */
+  sceneSourceChecks?: readonly CanvasSceneSourceCheck[]
   reportStage?(
     stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>,
     progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
@@ -575,6 +581,7 @@ export function canvasRunDesktopUnsupportedReason(graph: CanvasRunGraph, scope: 
     }
     if (node.desktopUnsupported) return node.desktopUnsupported
     try {
+      assertCanvasSceneRunConfiguration(node, graph.edges, index.nodesById)
       assertCanvasImageReferenceRunConfiguration(node, graph.edges, index.nodesById)
     } catch (error) {
       return sanitizeRunError(error)
@@ -672,6 +679,13 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
   if (videos.length > 0) inputs.videos = videos
   if (audios.length > 0) inputs.audios = audios
   return { inputs, fingerprintInputs, mediaSources }
+}
+
+// Only the outgoing edges matter for the graph half: a text node is checked
+// when it writes the prompt of an exterior task or a storyboard downstream.
+function sceneSourceContext(node: CanvasRunGraphNode, index: GraphIndex): Pick<CanvasNodeExecutionContext, 'sceneSourceChecks'> {
+  const checks = canvasSceneSourceChecks(node, index.outgoing.get(node.id) ?? [], index.nodesById)
+  return checks.length > 0 ? { sceneSourceChecks: checks } : {}
 }
 
 /**
@@ -1073,6 +1087,8 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     const nodeId = node.id
     const nodeRecord = nodeRecords.get(nodeId)!
     const batchId = randomUUID()
+    // Worked out once: every request of the batch reads the same pictures.
+    const sceneContext = sceneSourceContext(node, index)
     function keep(attempt: CanvasRunAttempt): void {
       nodeRecord.attempts.push(attempt)
       // The kernel lists a batch in attempt order and falls back to its first
@@ -1125,6 +1141,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           inputs,
           signal: options.signal,
           billing: billing.observer,
+          ...sceneContext,
           reportStage: async (stage, progress) => {
             await stageReportingReady
             if (leads(index)) await updateStage(nodeId, stage, attemptId, progress)
@@ -1252,6 +1269,8 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
 
       const collected = collectInputs(nodeId, index, outputs)
       try {
+        // Checked at run start too; a caller that skips that check still pays nothing.
+        assertCanvasSceneRunConfiguration(node, options.graph.edges, index.nodesById)
         collected.inputs = orderReferenceInputs(node, collected, index)
       } catch (error) {
         await updateNode(nodeId, 'failed', { errorMessage: sanitizeRunError(error) })
@@ -1379,6 +1398,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           inputs: collected.inputs,
           signal: options.signal,
           ...(billing ? { billing: billing.observer } : {}),
+          ...sceneSourceContext(node, index),
           reportStage: async (stage, progress) => {
             await stageReportingReady
             await updateStage(nodeId, stage, attemptId, progress)

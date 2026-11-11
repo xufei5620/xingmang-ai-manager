@@ -131,6 +131,12 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       // (and a role line ahead of the prompt), so that is another request.
       imageReferenceOrder: input.node.data.imageReferenceOrder,
       videoReferenceOrder: input.node.data.videoReferenceOrder,
+      // Same for the four scene tasks: another option is another fixed
+      // sentence in the prompt, so another request.
+      commerceTask: input.node.data.commerceTask,
+      interiorTask: input.node.data.interiorTask,
+      exteriorTask: input.node.data.exteriorTask,
+      storyboardTask: input.node.data.storyboardTask,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -189,6 +195,10 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         imageOutputIndex: node.data.imageOutputIndex,
         imageReferenceOrder: node.data.imageReferenceOrder,
         videoReferenceOrder: node.data.videoReferenceOrder,
+        commerceTask: node.data.commerceTask,
+        interiorTask: node.data.interiorTask,
+        exteriorTask: node.data.exteriorTask,
+        storyboardTask: node.data.storyboardTask,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges
