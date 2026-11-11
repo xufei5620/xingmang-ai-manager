@@ -8,11 +8,11 @@
 |---|---|---|---|---|---|
 | React Flow | `@xyflow/react@12.11.3` | `https://github.com/xyflow/xyflow`，`packages/react` | MIT | 画布视口、节点、连线和控件 | 无上游源码复制；通过公开 API 使用 |
 | Lucide React | `lucide-react@0.468.0` | `https://github.com/lucide-icons/lucide`，`packages/lucide-react` | ISC | 画布工具栏、历史和候选操作图标 | 无上游源码复制；通过公开 API 使用 |
-| React | `react@18.3.1` / `react-dom@18.3.1` | `https://github.com/facebook/react` | MIT | 渲染器 | 无上游源码复制 |
+| React | `react@19.2.8` / `react-dom@19.2.8` | `https://github.com/facebook/react` | MIT | 渲染器 | 无上游源码复制 |
 
 后续新增运行时依赖必须补充精确版本、仓库、子目录许可证例外和用途。直接迁移或改编上游文件时，必须额外记录 commit SHA、原路径、目标路径、版权声明和修改摘要。
 
-上表的 React 版本是 `canvas-v2/package.json` 里写的；画布实际由 `canvas:prepare` 用主仓根目录的依赖构建，跑的是根目录锁定的 `react` / `react-dom` 19.2.8。
+上表的版本就是发出去的版本：画布由 `canvas:prepare` 用主仓根目录的依赖构建。`canvas-v2/package.json` 写的范围跟根目录一样，`canvas-v2/package-lock.json` 由 `scripts/trim-canvas-lockfile.cjs` 从根目录锁文件里原样裁出来（同一版本、npm 官方源、同一份 SHA-512），只给照 `canvas-v2/README.md` 单独装依赖的开发者用，装出来的跟根目录那套审过的一样。根目录升了画布用到的包，`scripts/verify-canvas-provenance.test.cjs` 会红，先把 `canvas-v2/package.json` 的范围改成跟根目录一样，再照提示重新裁一次，上表和 `docs/canvas-third-party.json` 跟着改。
 
 ## 随内核带进来的第三方构建产物
 

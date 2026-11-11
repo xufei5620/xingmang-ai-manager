@@ -121,7 +121,7 @@ node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$RU
 工作流分这几个作业：
 
 0. **release-tag** —— 一开始跑就把这一版的 tag 占在要出包的 commit 上，后面的作业都等它。这个版本号已经从别的 commit 发过、线上已经比它高、或者被撤回，就在这里停下，不出包、不用批（`docs/RELEASING.md`「触发时就占 tag」）。它拿着写权限，所以不装任何依赖。
-1. **windows-build** —— 走 `release:build:unsigned` 的完整发布门禁，带第 4 节的加速线路。不读任何 secret。
+1. **windows-build** —— 走 `release:build:unsigned` 的完整发布门禁，带第 4 节的加速线路。不读任何 secret。出完包用 Windows 自带的 Defender 扫一遍 `Setup.exe` 和 `win-unpacked`（D96）：报毒这个作业就失败，这一版不发；扫描本身起不来只在运行摘要里打黄色警告，不挡发版。
 2. **macos-build** —— 用**已发布的那张签名证书**出双架构包，带加速线路，出完立刻把包启动一遍。它要读 `.p12`，所以挂 `environment: release`，会停下来等第一次 Approve。
 3. **linux-checks / linux-renderer-v2-browser / linux-build** —— 先在 x64 上跑一遍类型检查和全部测试（浏览器测试的夹具那半拆成两片并行跑），再 x64、arm64 各出一个 deb、真装真开。不读 secret、不用批准。传不传出去看仓库变量 `XINGMANG_PUBLISH_LINUX`，没设就只留在 Actions artifact 里，红了也不挡另外两个平台（`docs/RELEASING.md`「Linux 开关」）。
 4. **publish** —— 传 R2，在占好的 tag 上建 Release。同样挂 `environment: release`，等第二次 Approve。

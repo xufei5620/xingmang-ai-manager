@@ -2827,3 +2827,29 @@ describe('provider CLI mutation failures', () => {
     await expect(service.mutate({ provider: 'grok', kind: 'plugin', action: 'uninstall', id: 'demo' })).rejects.toBe(failure)
   })
 })
+
+// 同类对比 备选 5：「也装到别的工具」读的是 Claude Code、Codex 全局那份里原样写的连接，值不回界面。
+describe('ProviderExtensionService.readUserMcpConnection', () => {
+  it('reads a Claude Code connection from ~/.claude.json and a Codex one from config.toml, secrets included', async () => {
+    const home = temporaryDirectory()
+    fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+      mcpServers: { acme: { type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } } },
+      projects: { '/work': { mcpServers: { local: { command: 'local-only' } } } },
+    }))
+    const codexHome = path.join(home, '.codex')
+    fs.mkdirSync(codexHome)
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '[mcp_servers.remote]\nurl = "https://mcp.example.com"\n\n[mcp_servers.remote.http_headers]\nAuthorization = "Bearer secret"\n')
+    const service = new ProviderExtensionService({ homeDirectory: home, codexHome, invoke: async () => '[]' })
+
+    await expect(service.readUserMcpConnection('claude', 'acme')).resolves.toEqual({ type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+    await expect(service.readUserMcpConnection('codex', 'remote')).resolves.toEqual({ type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } })
+    // 项目里那份（local）不是全局那份，不给搬。
+    await expect(service.readUserMcpConnection('claude', 'local')).rejects.toThrow('没有找到这个连接')
+    await expect(service.readUserMcpConnection('claude', 'constructor')).rejects.toThrow('没有找到这个连接')
+  })
+
+  it('does not read Grok connections, whose list carries no environment or headers', async () => {
+    const service = new ProviderExtensionService({ homeDirectory: temporaryDirectory(), invoke: async () => '[]' })
+    await expect(service.readUserMcpConnection('grok', 'acme')).rejects.toThrow('这个工具的连接星芒读不全，请在要装的工具里手动添加。')
+  })
+})

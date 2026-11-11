@@ -896,6 +896,7 @@ const methods = {
   },
   refreshOfficialChatGptUsage: async () => ({ planLabel: 'Plus', renewsAt: null, resetCredits: null, windows: [{ id: 'weekly', label: '周限额', remainingPercent: 72, resetAt: null }], checkedAt: new Date().toISOString() }),
   listAiChatGroups: async () => [{ name: 'fixture-group', description: '本地测试分组', ratio: 1 }],
+  openCanvasAssetLibrary: async () => undefined,
   prepareAiChatGroup: async (group: string) => ({ group, models: query.has('chatImage') ? ['gpt-test', 'gpt-image-2'] : ['gpt-test'], keyCreated: false }),
   generateAiImage: async (input) => {
     // 没开 ?chatImage 的用例不该出图：照旧记成没 mock 的调用，clean() 会报出来。

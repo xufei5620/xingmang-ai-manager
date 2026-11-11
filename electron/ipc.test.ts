@@ -309,6 +309,7 @@ function register(
     list: vi.fn(),
     listAll: vi.fn(),
     mutate: vi.fn(),
+    readUserMcpConnection: vi.fn(),
   }
   const sessionsService = {
     list: vi.fn(),
@@ -5268,6 +5269,42 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  // 同类对比 备选 5：「也装到别的工具」。界面只给名字，连接原样由主进程读出来，再走跟手填添加同一条路。
+  describe('extensions:copy-mcp', () => {
+    it('hands the connection read in the main process to Codex through the same add path, secrets included', async () => {
+      const { extensionService, providerExtensionService } = register()
+      providerExtensionService.readUserMcpConnection.mockResolvedValue({ type: 'stdio', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'codex', name: 'acme' })).resolves.toBeUndefined()
+      expect(providerExtensionService.readUserMcpConnection).toHaveBeenCalledWith('claude', 'acme')
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith({ type: 'stdio', name: 'acme', command: 'npx', args: ['-y', '@acme/mcp'], env: { ACME_TOKEN: 'secret' } })
+      expect(providerExtensionService.mutate).not.toHaveBeenCalled()
+    })
+
+    it('installs into the global layer of Claude Code or Grok through the native add command', async () => {
+      const { providerExtensionService } = register()
+      providerExtensionService.readUserMcpConnection.mockResolvedValue({ type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } })
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await handler(trustedEvent(), { from: 'codex', to: 'grok', name: 'remote' })
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith({
+        provider: 'grok', kind: 'mcp', action: 'install', id: 'remote', source: undefined, scope: 'user',
+        mcp: { type: 'http', url: 'https://mcp.example.com', headers: { Authorization: 'Bearer secret' } },
+      })
+    })
+
+    it('refuses an unknown tool, the same tool on both ends and a missing name before reading anything', async () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:copy-mcp')!
+
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'gemini', name: 'acme' })).rejects.toThrow('外接工具格式错误')
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'claude', name: 'acme' })).rejects.toThrow('外接工具格式错误')
+      await expect(handler(trustedEvent(), { from: 'claude', to: 'codex' })).rejects.toThrow('MCP 名称')
+      expect(providerExtensionService.readUserMcpConnection).not.toHaveBeenCalled()
+    })
+  })
+
   describe('parseProviderExtensionMutation (extensions:mutate)', () => {
     it('accepts a minimal valid mutation without an mcp payload', () => {
       const { providerExtensionService } = register()
@@ -8134,6 +8171,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
+  describe('account:get-price-list', () => {
+    it('turns the account price list into rows at each group ratio, and answers null where the backend has none', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getModelPricing!).mockResolvedValue({
+        models: [{ model: 'gpt-test', quotaType: 0, modelPrice: 0, expressionPriced: false, modelRatio: 1.25, completionRatio: 8, groups: ['GPT'] }],
+        groupRatios: { GPT: 0.5 },
+      })
+      const handler = electronMocks.handlers.get('account:get-price-list')!
+      await expect(handler(trustedEvent())).resolves.toEqual({ rows: [{ model: 'gpt-test', group: 'GPT', kind: 'token', input: 1.25, output: 10 }] })
+
+      const legacy = register()
+      Reflect.deleteProperty(legacy.accountService, 'getModelPricing')
+      await expect(electronMocks.handlers.get('account:get-price-list')!(trustedEvent())).resolves.toBeNull()
+    })
+  })
+
   describe('account:copy-reset-password', () => {
     it('writes the new password to the clipboard verbatim, without logging it or requiring a session', async () => {
       const { runtimeLog } = register()
@@ -9153,6 +9206,7 @@ describe('IPC channel log and account policies', () => {
         'account:get-dashboard',
         'account:get-key-options',
         'account:get-legal-document',
+        'account:get-price-list',
         'account:get-profile',
         'account:get-remembered-login',
         'account:get-session',

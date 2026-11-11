@@ -390,6 +390,16 @@ export type PluginItem = PluginDto
 export type MarketplaceItem = MarketplaceDto
 export type PluginCatalog = PluginCatalogDto
 export type ExtensionMutation = ProviderExtensionMutation
+
+/**
+ * 外接工具页「也装到别的工具」：把 from 里「我的（全局）」那份的这一条连接，原样装进 to 的「我的（全局）」。
+ * 只带名字：连接里的环境变量、请求头由主进程自己读、自己转交，值不过 IPC（I3）。
+ */
+export interface McpCopyInput {
+  from: ProviderId
+  to: ProviderId
+  name: string
+}
 export type ExtensionSnapshot = ProviderExtensionsSnapshot
 export type McpHealthReport = ProviderMcpHealthReport
 export type CodexSetupStatus = MainCodexSetupStatus
@@ -490,6 +500,20 @@ export type AccountManagedCliConfigurationResult = ManagedCliConfigurationOutcom
 export type LegalDocumentKind = NewApiLegalDocumentKind
 export type LegalDocument = NewApiLegalDocument
 export type AccountUsableGroup = NewApiUsableGroup
+/**
+ * One line of the 用量账单 price table, already at this account's ratio for the group.
+ * token: US dollars per million input and output tokens; call: US dollars per call;
+ * tiered: priced in tiers (shown on each call's details), so no single number.
+ */
+export interface AccountPriceRow {
+  model: string
+  group: string
+  kind: 'token' | 'call' | 'tiered'
+  input?: number
+  output?: number
+  perCall?: number
+}
+export interface AccountPriceList { rows: AccountPriceRow[] }
 export type AccountResetPasswordInput = NewApiResetPasswordInput
 export type AccountResetPasswordResult = NewApiResetPasswordResult
 export type AccountProfileDetail = NewApiAccountProfileDetail
@@ -1172,6 +1196,8 @@ export interface XingmangInvokeContract {
     [provider: ProviderId],
     ProviderMcpHealthReport
   >
+  /** 外接工具页「也装到别的工具」（同类对比 备选 5），一次装一个工具。只认 Claude Code、Codex 全局那份里的连接。 */
+  copyMcpToTool: IpcInvokeDefinition<'extensions:copy-mcp', [input: McpCopyInput], void>
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [mode?: import('./relay-backend').RelayNoticeReadMode], import('./relay-backend').RelayNotice | null>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
@@ -1283,6 +1309,8 @@ export interface XingmangInvokeContract {
   >
   getAccountKeys: IpcInvokeDefinition<'account:list-keys', [input: AccountKeysQuery], AccountKeysPage>
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
+  /** 用量账单的价格表；没有按型号价目的账号（历史账号）回 null。 */
+  getAccountPriceList: IpcInvokeDefinition<'account:get-price-list', [], AccountPriceList | null>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
   copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
   /** 找回密码后复制新密码：走主进程写剪贴板，60 秒后自动清掉。 */
@@ -1616,6 +1644,7 @@ export const ipcInvokeChannels = {
   mutateProviderExtension: 'extensions:mutate',
   ensureProviderMarketplace: 'extensions:ensure-marketplace',
   checkProviderMcpHealth: 'extensions:check-mcp-health',
+  copyMcpToTool: 'extensions:copy-mcp',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
   markAccountNoticeRead: 'account:mark-notice-read',
@@ -1663,6 +1692,7 @@ export const ipcInvokeChannels = {
   getAccountTasks: 'account:get-tasks',
   getAccountKeys: 'account:list-keys',
   getAccountUsableGroups: 'account:list-groups',
+  getAccountPriceList: 'account:get-price-list',
   revokeAccountKey: 'account:revoke-key',
   copyAccountKey: 'account:copy-key',
   copyResetPassword: 'account:copy-reset-password',

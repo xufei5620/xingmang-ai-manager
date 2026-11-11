@@ -10,6 +10,8 @@ import { buildTopupBonus } from '../account/topup-bonus'
 // 没有发布时间的旧式系统公告永远不会变成活动卡片，后台里没清掉的旧公告不会跟着变显眼。
 // 标题带「邀请」的（邀请有礼）也算活动：不单独挂大卡片，但和充值活动一起进顶部活动条，
 // 截止时间同样从文字里找，没写按发布后 7 天。
+// 公告里写的日期、钟点都是北京时间（时间数字格式 N-5）：原来按本机时区拼，国外或时区设错的电脑上
+// 卡片比真实截止晚十几个小时才收掉，客户照着去充值，赠送已经没了。
 
 export interface PromoSource { id: string; title: string; text: string; timeline?: TimelineMeta }
 export type PromoKind = 'recharge' | 'invite'
@@ -21,6 +23,9 @@ const yearRolloverSlackMs = 31 * dayMs
 // 写错的年份（比如 2062）会让卡片挂很多年。活动最长按 120 天算，超出就当没写。
 const maximumPromoSpanMs = 120 * dayMs
 const maximumScannedLength = 4_000
+// 北京时间是 UTC+8，没有夏令时。「北京日历」上的年月日时分 = 时刻加 8 小时后按 UTC 读。
+const beijingOffsetMinutes = 8 * 60
+const beijingOffsetMs = beijingOffsetMinutes * 60 * 1000
 
 // 标题里有这些字的是在说服务出了状况或规则变了，就算同时带「活动」「优惠」也不挂活动卡片：
 //「充值活动暂停」「充值优惠调整」挂成促销卡只会让客户以为还能领。
@@ -63,7 +68,11 @@ function plain(text: string): string {
   return text.slice(0, maximumScannedLength).replace(/<[^>]+>/g, ' ').replace(/\*\*|__|`/g, '')
 }
 
-function toLocalEnd(parts: Array<string | undefined>, publishedAt: number): number | null {
+function beijingCalendar(at: number): Date { return new Date(at + beijingOffsetMs) }
+
+function beijingDayNumber(at: number): number { return Math.floor((at + beijingOffsetMs) / dayMs) }
+
+function toBeijingEnd(parts: Array<string | undefined>, publishedAt: number): number | null {
   const [yearText, monthText, dayText, hourText, minuteText] = parts
   const month = Number(monthText)
   const day = Number(dayText)
@@ -74,11 +83,12 @@ function toLocalEnd(parts: Array<string | undefined>, publishedAt: number): numb
   if (hour > 23 || minute > 59) return null
   const second = hasTime ? 0 : 59
   function build(year: number): number | null {
-    const value = new Date(year, month - 1, day, hour, minute, second)
-    return value.getMonth() === month - 1 && value.getDate() === day ? value.getTime() : null
+    const value = Date.UTC(year, month - 1, day, hour, minute, second) - beijingOffsetMs
+    const calendar = beijingCalendar(value)
+    return calendar.getUTCMonth() === month - 1 && calendar.getUTCDate() === day ? value : null
   }
   if (yearText) return build(Number(yearText))
-  const publishedYear = new Date(publishedAt).getFullYear()
+  const publishedYear = beijingCalendar(publishedAt).getUTCFullYear()
   const sameYear = build(publishedYear)
   if (sameYear === null) return build(publishedYear + 1)
   return sameYear < publishedAt - yearRolloverSlackMs ? build(publishedYear + 1) : sameYear
@@ -104,11 +114,11 @@ function resolveDeadlineParts(source: string): Array<string | undefined> | null 
   return trailing ? trailing.slice(1, 6) : null
 }
 
-/** 从正文和附加说明里找活动结束时间，按本机时区；只写日期的算到当天 23:59:59。找不到返回 null。 */
+/** 从正文和附加说明里找活动结束时间，按北京时间，不管这台电脑设的哪个时区；只写日期的算到当天 23:59:59。找不到返回 null。 */
 export function resolvePromoEndsAt(text: string, publishedAt: number): number | null {
   const parts = resolveDeadlineParts(plain(text))
   if (!parts) return null
-  const endsAt = toLocalEnd(parts, publishedAt)
+  const endsAt = toBeijingEnd(parts, publishedAt)
   if (endsAt === null || endsAt <= publishedAt || endsAt - publishedAt > maximumPromoSpanMs) return null
   return endsAt
 }
@@ -143,29 +153,47 @@ export function localDayKey(now: number): string {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`
 }
 
-/** 「10月7日 23:59 结束，还剩 3 天」；没写结束时间的不说具体时刻，免得把估的当成承诺。 */
-export function formatPromoDeadline(promo: Pick<PromoAnnouncement, 'endsAt' | 'endsExplicitly'>, now: number): string | null {
-  if (!promo.endsExplicitly) return null
-  const end = new Date(promo.endsAt)
-  const clock = `${pad(end.getHours())}:${pad(end.getMinutes())}`
-  const startOfToday = new Date(now).setHours(0, 0, 0, 0)
-  const days = Math.floor((new Date(promo.endsAt).setHours(0, 0, 0, 0) - startOfToday) / dayMs)
-  if (days <= 0) return `今天 ${clock} 结束`
-  if (days === 1) return `明天 ${clock} 结束`
-  return `${end.getMonth() + 1}月${end.getDate()}日 ${clock} 结束，还剩 ${days} 天`
+interface DeadlineWording { date: string; clock: string; days: number; zone: string }
+
+/** 这台电脑在那一刻的钟比 UTC 快几分钟（北京是 480）。 */
+function localOffsetMinutesAt(at: number): number { return -new Date(at).getTimezoneOffset() }
+
+// 截止的日子、钟点、还剩几天都照北京日历写。本机钟跟北京一样（香港、新加坡这类同一个钟的也算）
+// 就不提时区，字跟原来一样；不一样的在钟点或日子后面补「（北京时间）」，客户才知道这不是自己的钟。
+function deadlineWording(endsAt: number, now: number, localOffsetMinutes: number): DeadlineWording {
+  const end = beijingCalendar(endsAt)
+  return {
+    date: `${end.getUTCMonth() + 1}月${end.getUTCDate()}日`,
+    clock: `${pad(end.getUTCHours())}:${pad(end.getUTCMinutes())}`,
+    days: beijingDayNumber(endsAt) - beijingDayNumber(now),
+    zone: localOffsetMinutes === beijingOffsetMinutes ? '' : '（北京时间）',
+  }
 }
 
-/** 活动条上的短截止：「10月8日截止，还剩 8 天」；没写截止时间的不显示，免得把估的当成承诺。 */
-export function formatPromoShortDeadline(promo: Pick<PromoAnnouncement, 'endsAt' | 'endsExplicitly'>, now: number, withRemaining: boolean): string | null {
+/**
+ * 「10月7日 23:59 结束，还剩 3 天」；电脑不是北京时间时写「10月7日 23:59（北京时间）结束，还剩 3 天」。
+ * 没写结束时间的不说具体时刻，免得把估的当成承诺。
+ */
+export function formatPromoDeadline(promo: Pick<PromoAnnouncement, 'endsAt' | 'endsExplicitly'>, now: number, localOffsetMinutes = localOffsetMinutesAt(promo.endsAt)): string | null {
   if (!promo.endsExplicitly) return null
-  const end = new Date(promo.endsAt)
-  const startOfToday = new Date(now).setHours(0, 0, 0, 0)
-  const days = Math.floor((new Date(promo.endsAt).setHours(0, 0, 0, 0) - startOfToday) / dayMs)
-  const clock = `${pad(end.getHours())}:${pad(end.getMinutes())}`
-  if (days <= 0) return `今天 ${clock} 截止`
-  if (days === 1) return `明天 ${clock} 截止`
-  const date = `${end.getMonth() + 1}月${end.getDate()}日截止`
-  return withRemaining ? `${date}，还剩 ${days} 天` : date
+  const { date, clock, days, zone } = deadlineWording(promo.endsAt, now, localOffsetMinutes)
+  const ends = `${clock}${zone || ' '}结束`
+  if (days <= 0) return `今天 ${ends}`
+  if (days === 1) return `明天 ${ends}`
+  return `${date} ${ends}，还剩 ${days} 天`
+}
+
+/**
+ * 活动条上的短截止：「10月8日截止，还剩 8 天」；电脑不是北京时间时写「10月8日（北京时间）截止，还剩 8 天」。
+ * 没写截止时间的不显示，免得把估的当成承诺。
+ */
+export function formatPromoShortDeadline(promo: Pick<PromoAnnouncement, 'endsAt' | 'endsExplicitly'>, now: number, withRemaining: boolean, localOffsetMinutes = localOffsetMinutesAt(promo.endsAt)): string | null {
+  if (!promo.endsExplicitly) return null
+  const { date, clock, days, zone } = deadlineWording(promo.endsAt, now, localOffsetMinutes)
+  if (days <= 0) return `今天 ${clock}${zone || ' '}截止`
+  if (days === 1) return `明天 ${clock}${zone || ' '}截止`
+  const deadline = `${date}${zone}截止`
+  return withRemaining ? `${deadline}，还剩 ${days} 天` : deadline
 }
 
 // 网址、域名（带不带 http 都算）。公告正文里常写站点地址，界面上不显示站点名。
