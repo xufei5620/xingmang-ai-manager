@@ -1,7 +1,3 @@
-## 用户
-
-- 设置 › 工具管理里多了「Claude Code 提交代码时不署名」，默认关着：打开以后，Claude Code 替你提交代码和发 PR 时，不再在末尾加上 Claude 的署名。
-
 ## 开发
 
 - 同类对比 备选 6：设置里加一个默认关的开关，开着时星芒往 Claude Code 用户级 `settings.json` 写
