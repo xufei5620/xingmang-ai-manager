@@ -84,13 +84,22 @@ export interface RemoteInboundApproval extends RemoteInboundBase {
   decision: RemoteApprovalDecision
 }
 
+/**
+ * 进度卡上点了「停止」（YF-15，只有能原地更新卡片的渠道有）。nonce 是卡片上按钮原样带回来的
+ * RemoteProgressCard.stopNonce；认不出是 null，底座当上一轮留下的卡片。
+ */
+export interface RemoteInboundStop extends RemoteInboundBase {
+  kind: 'stop'
+  nonce: string | null
+}
+
 /** 收到了渠道转不成文字的东西（图片、文件）。底座回一句「暂时只支持文字」，渠道不用自己回话。 */
 export interface RemoteInboundUnsupported extends RemoteInboundBase {
   kind: 'unsupported'
   messageId: string
 }
 
-export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundUnsupported
+export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundStop | RemoteInboundUnsupported
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 
@@ -132,6 +141,28 @@ export interface RemoteOutboundApproval {
 }
 
 export type RemoteOutbound = RemoteOutboundText | RemoteOutboundApproval
+
+/** 审批卡最后怎么样了（YK-8）：同意了、拒绝了（含「都拒绝」和发「停止」时一起拒掉的）、等到点没回自动拒绝的。 */
+export type RemoteApprovalOutcome = 'accepted' | 'declined' | 'expired'
+
+/** 进度卡上的一步（YF-15）：Codex 计划里的一条，字是 Codex 自己写的（已脱敏、已截短）。 */
+export interface RemoteProgressStep {
+  text: string
+  status: 'completed' | 'inProgress' | 'pending'
+}
+
+/**
+ * 底座发的进度（YF-15，yoyo 2026-11-11「进度改」），跟渠道无关。能原地更新卡片的渠道（飞书）画成一张卡，
+ * 之后每次都更新同一张；没有这个本事的渠道底座改发文字，不会调到 sendProgress。
+ */
+export interface RemoteProgressCard {
+  state: 'running' | 'done' | 'stopped' | 'failed'
+  steps: RemoteProgressStep[]
+  /** 「已经 N 分钟」那一行，只在 running 时有。 */
+  elapsed?: string
+  /** 「停止」按钮里带的随机串，只对这一轮有效，只在 running 时有。 */
+  stopNonce?: string
+}
 
 export type RemoteChannelState =
   | 'stopped'
@@ -175,6 +206,19 @@ export interface RemoteChannelAdapter {
   stop(): Promise<void>
   /** 发一条消息给这个人；replyContext 是这个人最近一条入站消息带来的那个。失败就抛，底座记日志。 */
   send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string): Promise<void>
+  /**
+   * 能原地更新的进度卡（YF-15，飞书有，微信没有）：发出去返回之后更新要用的句柄（飞书的 message_id）。
+   * 两个都有才算有；失败就抛，底座记日志，下一次更新照样带着最新的样子。
+   */
+  sendProgress?(peer: RemotePeer, card: RemoteProgressCard): Promise<string>
+  updateProgress?(handle: string, card: RemoteProgressCard): Promise<void>
+  /**
+   * 能原地改样子的审批卡（YK-8，飞书有，微信没有）：sendApproval 代替 send 发卡，交回句柄；处理过以后
+   * updateApproval 把卡改成「已同意 / 已拒绝 / 没回，已自动拒绝」、去掉按钮。message.text 这时是不带
+   * 「回 同意 N」那句的正文。两个都有才算有；失败就抛，底座记日志，手机上那句文字照样发。
+   */
+  sendApproval?(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string>
+  updateApproval?(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void>
 }
 
 export type RemoteChannelLogLevel = 'info' | 'warn' | 'error'

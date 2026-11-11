@@ -3,7 +3,7 @@ import { redactHomeDirectory } from './startup-log'
 import { isRecord } from './input-guards'
 import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
-import type { RemoteApprovalKind, RemoteApprovalRequest } from './codex-remote-channel'
+import type { RemoteApprovalKind, RemoteApprovalOutcome, RemoteApprovalRequest } from './codex-remote-channel'
 
 // 手机遥控发到聊天里的字、从聊天里认的指令，飞书、微信共用。字都在这一张表里，改字只改这里。
 
@@ -35,7 +35,27 @@ export const remoteMessages = {
   idleClosingSoon: '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。',
   // 手机上发「重试」、这次打开以后还没交给 Codex 过一句时（Fable 手机遥控 YF-22，yoyo 2026-11-11「状态重试改」）。
   nothingToRetry: '还没有可以重发的上一条。直接发要做的事就行。',
+  // 点的是上一轮留下的进度卡上的「停止」（YF-15，yoyo 2026-11-11「进度改」）：这一轮不停。
+  staleProgressCard: '这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。',
 } as const
+
+/** 飞书进度卡的标题（YF-15，yoyo 2026-11-11「进度改」）：做着的时候、做完、停了、没做完。 */
+export const progressCardTitles = {
+  running: 'Codex 正在处理',
+  done: '做完了',
+  stopped: '已停止',
+  failed: '没做完',
+} as const
+
+/** 进度卡上每一步前面的记号（YF-15）：做完、正在做、还没做。 */
+export const progressStepMarks = {
+  completed: '✓',
+  inProgress: '▶',
+  pending: '○',
+} as const
+
+/** 进度卡上「停止」那颗按钮（YF-15）：点了跟发「停止」一样。 */
+export const progressStopButton = '停止'
 
 const retryPreviewLength = 20
 
@@ -215,6 +235,16 @@ export function statusMessage(status: RemoteStatusSummary): string {
   return lines.join('\n')
 }
 
+/**
+ * 没有能原地更新的卡片的渠道（微信）每满 5 分钟发的那句（YF-15，yoyo 2026-11-11「进度改」）。
+ * 步骤是 Codex 计划里正在做的那一步，没报计划就不写「现在这一步」。
+ */
+export function progressTextMessage(runningForMs: number, step: string | null): string {
+  const shown = step ? step.replace(/\s+/g, ' ').trim() : ''
+  const head = `还在做，${remoteRunningForText(runningForMs)}。`
+  return shown ? `${head}现在这一步：${truncateRemoteText(shown, maxStatusStepLength)}` : head
+}
+
 /** 做完小结里「用时」那种写法（YF-16）：45 秒、3 分 20 秒、1 小时 5 分。 */
 export function remoteTookText(ms: number): string {
   const seconds = Math.max(1, Math.round(ms / 1000))
@@ -252,12 +282,23 @@ export function approvalTitle(kind: RemoteApprovalKind): string {
 
 /** 没有按钮的渠道发这一段；有按钮的渠道也把它当卡片正文。 */
 export function formatApprovalText(request: RemoteApprovalRequest): string {
+  return `${formatApprovalBody(request)}\n回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`
+}
+
+/** 审批的正文（要做什么、在哪、为什么），不带「回 同意 N」那句：处理过的卡片只留这些（YK-8，「同意卡改」一并批的）。 */
+export function formatApprovalBody(request: RemoteApprovalRequest): string {
   const lines = [`${approvalTitle(request.kind)}（第 ${request.approvalId} 条）：`]
   if (request.summary) lines.push(request.summary)
   if (request.cwd) lines.push(`在：${request.cwd}`)
   if (request.reason) lines.push(`原因：${request.reason}`)
-  lines.push(`回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`)
   return lines.join('\n')
+}
+
+/** 处理过的审批卡的标题（YK-8，yoyo 2026-11-11「同意卡改」）。 */
+export function approvalOutcomeTitle(outcome: RemoteApprovalOutcome, id: string): string {
+  if (outcome === 'accepted') return `已同意（第 ${id} 条）`
+  if (outcome === 'expired') return `没回，已自动拒绝（第 ${id} 条）`
+  return `已拒绝（第 ${id} 条）`
 }
 
 /** 改文件审批卡上一行说的那个文件，路径已经换成手机上显示的样子。 */

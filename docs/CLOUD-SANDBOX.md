@@ -93,6 +93,7 @@ node node_modules/electron/install.js
 
 - **CI 测的不是你推上去的那个提交，是它和 main 试合出来的树。** `quality.yml` 挂在 `pull_request` 上（11-11 验）。分支落后 main 时，CI 可能红在你根本没改的文件上。最省事的识别办法：把报错栈里的行号拿去和本地文件对，对不上就是落后了。先 `git fetch origin main` 看落后多少，合进来，四道在合并后的树上重跑，再推。别把「同一个失败最多重跑一次」的额度花在这上面。（沿用 09-19）
 - **PR 有合并冲突时，CI 根本不会触发**，也不留任何记录，看起来像 GitHub 排队慢。推完两三分钟还没看到 `quality` 运行，先看 PR 是不是有冲突，有就合 main 解掉再推。不要推空提交去催。（沿用 09-19）
+- **`quality` 运行偶尔停在 queued、一个作业都没派出来，等多久都不会动。** 跟没冲突、没被取消是两回事：运行在列表里、`jobs` 是空的，后来推的别的 PR 都照常跑。这时取消回 409「has not been queued yet」，重跑回 403「already running」，两条路都走不通。办法只有往分支上推一个真改动（合进 main 的新提交，或者把这次踩到的坑补进文档），新的那次照常派作业；不要推空提交，也不要关了 PR 再开。#1806 碰到过，推完 1 小时还是这样，靠补这一条重新推起来的。（11-12）
 - **作业日志用 GitHub 工具的 `get_job_logs` 加 `return_content: true` 看。** 它给的下载链接在容器里被代理拦。最多只回最后 5000 行，`macos-test` 这种更长的日志前半段取不到。（沿用 10-05、10-06）
 - **只在 Windows 上跑的用例（`it.runIf(process.platform === 'win32')`）容器里跑不到。** 想确认它在 CI 上真跑了，看 Windows 作业日志里那个测试文件的那一行，形如 `✓ legacy electron/xxx.test.ts (9 tests | 2 skipped)`，拿跳过数对一下。（沿用 10-06）
 

@@ -22,12 +22,17 @@ import {
   type RemoteChannelLogLevel,
   type RemoteChannelStatus,
   type RemoteInbound,
+  type RemoteApprovalOutcome,
   type RemoteInboundApproval,
+  type RemoteInboundStop,
   type RemoteInboundText,
   type RemoteInboundUnsupported,
   type RemoteOutbound,
+  type RemoteOutboundApproval,
   type RemoteIdleCloseHours,
   type RemotePeer,
+  type RemoteProgressCard,
+  type RemoteProgressStep,
 } from './codex-remote-channel'
 import { emptyChannelSettings, type CodexRemoteStore } from './codex-remote-store'
 import {
@@ -36,15 +41,18 @@ import {
   approvalExpiredMessage,
   approvalExpiringMessage,
   classifyRemoteTurnFailure,
+  formatApprovalBody,
   formatApprovalText,
   formatFileChangeLine,
   idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
+  progressTextMessage,
   redactRemoteText,
   remoteDisplayPath,
   remoteMessages,
   remoteOpenedMessage,
+  remoteRunningForText,
   remoteTurnFailureMessages,
   retryMessage,
   splitRemoteText,
@@ -129,6 +137,18 @@ const farewellTimeoutMs = shutdownSendTimeoutMs
 const turnStallMs = 60 * 60_000
 /** 审批编号最多 4 位：手机上回「同意 12」要好打，飞书按钮和文字指令也只认 4 位以内。 */
 const maxApprovalNumber = 9999
+/**
+ * 长任务的进度（YF-15，yoyo 2026-11-11「进度改」）：飞书在 Codex 报了计划、或者这一轮跑满 2 分钟时发一张卡，
+ * 之后原地更新；换步最快 30 秒更新一次，一直停在同一步就每 5 分钟更新一次时间（飞书免费版接口次数有限）。
+ * 微信没有能更新的卡片，每满 5 分钟发一句。
+ */
+const progressCardFirstMs = 2 * 60_000
+const progressStepGapMs = 30_000
+const progressRefreshMs = 5 * 60_000
+const progressTextEveryMs = 5 * 60_000
+/** 进度卡最多列这么多步、每步最多这么多个字：卡片有大小上限，手机上也看不过来。 */
+const maxProgressSteps = 15
+const maxProgressStepLength = 80
 /** 每个渠道记住最近结束的这么多轮的编号，它们迟到的审批和通知都不认（belongsToOtherTurn）。 */
 const maxRetiredTurns = 16
 /** Codex 起不来、半路退出时，stderr 最后这么多字进日志。 */
@@ -524,6 +544,21 @@ export function currentPlanStep(plan: unknown): string | null {
   return null
 }
 
+/**
+ * turn/plan/updated 送来的整张计划（YF-15），认得出的每一步都留下、按原来的先后；认不出的那条跳过。
+ * 字的脱敏、截短在发出去之前做。
+ */
+export function readPlanSteps(plan: unknown): RemoteProgressStep[] {
+  if (!Array.isArray(plan)) return []
+  const steps: RemoteProgressStep[] = []
+  for (const entry of plan) {
+    if (!isRecord(entry) || typeof entry.step !== 'string' || !entry.step.trim()) continue
+    if (entry.status !== 'completed' && entry.status !== 'inProgress' && entry.status !== 'pending') continue
+    steps.push({ text: entry.step.trim(), status: entry.status })
+  }
+  return steps
+}
+
 /** 记下这一轮真改成了的文件（YF-16）：同一个文件改几次只算一个。 */
 export function noteChangedFiles(turn: { changedFiles: string[] }, files: readonly RemoteFileChangeLine[]): void {
   for (const file of files) {
@@ -638,6 +673,37 @@ interface TurnState {
   stoppedByUser: boolean
   /** 上一次有动静起算的「卡死」计时；每条通知、每次问审批都重新起算（noteTurnProgress）。 */
   stallTimer: NodeJS.Timeout | null
+  /** Codex 最近一次报的整张计划（YF-15）；没报过是空的。 */
+  plan: RemoteProgressStep[]
+  progress: TurnProgress
+}
+
+/** 这一轮发到手机上的进度（YF-15）。 */
+interface TurnProgress {
+  /** 进度卡「停止」按钮里带的随机串，只对这一轮有效。 */
+  nonce: string
+  /** 飞书进度卡的编号；还没发出去是 null。 */
+  handle: string | null
+  /** 发卡、更新卡一个接一个来：先发的更新不会盖掉后来的，最后那次「做完了」总是最后到。 */
+  chain: Promise<void>
+  /** 上一次往队里放发卡、更新的时间，换步时按它限速。 */
+  lastQueuedAt: number
+  /** 下一次发进度的计时和它到点的时间。 */
+  timer: NodeJS.Timeout | null
+  timerAt: number
+  /** 上一次发出去的计划，跟新来的一样就不更新。 */
+  planKey: string
+  /** 这一轮已经有结果了：不再发「正在处理」，最后那次更新排过了。 */
+  ended: boolean
+}
+
+function newTurnProgress(): TurnProgress {
+  return { nonce: generateApprovalNonce(), handle: null, chain: Promise.resolve(), lastQueuedAt: 0, timer: null, timerAt: 0, planKey: '', ended: false }
+}
+
+/** 渠道能不能原地更新进度卡（飞书能，微信不能）。 */
+function progressCards(adapter: RemoteChannelAdapter | null): adapter is RemoteChannelAdapter & Required<Pick<RemoteChannelAdapter, 'sendProgress' | 'updateProgress'>> {
+  return Boolean(adapter?.sendProgress && adapter.updateProgress)
 }
 
 interface ChannelRuntime {
@@ -696,7 +762,13 @@ interface PendingApproval {
   channel: RemoteChannelId
   threadId: string
   timer: NodeJS.Timeout
-  settle(decision: RemoteApprovalDecision): void
+  /** 到点没回的自动拒绝传 expired，卡片上写「没回，已自动拒绝」（YK-8）；别的拒绝写「已拒绝」。 */
+  settle(decision: RemoteApprovalDecision, outcome?: RemoteApprovalOutcome): void
+}
+
+/** 渠道能不能把审批卡改成处理过的样子（YK-8，飞书能，微信不能）。 */
+function approvalCards(adapter: RemoteChannelAdapter | null): adapter is RemoteChannelAdapter & Required<Pick<RemoteChannelAdapter, 'sendApproval' | 'updateApproval'>> {
+  return Boolean(adapter?.sendApproval && adapter.updateApproval)
 }
 
 function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
@@ -1439,7 +1511,7 @@ export class CodexRemoteService {
     const turn = runtime.turn
     if (!turn) return
     turn.stoppedByUser = true
-    this.settleLastRequest(turn, 'stopped')
+    this.settleTurn(runtime, turn, 'stopped')
     this.clearTurn(runtime)
     if (turn.id) this.retireTurn(runtime, turn.id)
     if (turn.id && runtime.threadId && this.codex?.running) {
@@ -1461,6 +1533,12 @@ export class CodexRemoteService {
     return !this.disposed && runtime.enabled && runtime.turn === turn && !turn.stoppedByUser
   }
 
+  /** 这一轮有了结果：记到电脑卡片「最近一次」上，手机上的进度卡也跟着变成做完了、停了或没做完（YF-15）。 */
+  private settleTurn(runtime: ChannelRuntime, turn: TurnState, state: Exclude<CodexRemoteLastRequestSnapshot['state'], 'running'>, reason: string | null = null): void {
+    this.settleLastRequest(turn, state, reason)
+    this.endProgress(runtime, turn, state)
+  }
+
   /** 这一轮有了结果：它还是最近那一条、还没记过结果，才记到「最近一次」上（YF-13）。 */
   private settleLastRequest(turn: TurnState, state: Exclude<CodexRemoteLastRequestSnapshot['state'], 'running'>, reason: string | null = null): void {
     if (this.lastRequest?.turn !== turn || this.lastRequest.state !== 'running') return
@@ -1471,7 +1549,11 @@ export class CodexRemoteService {
   private clearTurn(runtime: ChannelRuntime): void {
     const turn = runtime.turn
     if (turn?.stallTimer) clearTimeout(turn.stallTimer)
-    if (turn) turn.stallTimer = null
+    if (turn?.progress.timer) clearTimeout(turn.progress.timer)
+    if (turn) {
+      turn.stallTimer = null
+      turn.progress.timer = null
+    }
     runtime.turn = null
   }
 
@@ -1487,7 +1569,7 @@ export class CodexRemoteService {
       turn.stallTimer = null
       if (runtime.turn !== turn || this.disposed) return
       this.options.log('warn', 'remote.turn-stalled', { channel: runtime.id })
-      this.settleLastRequest(turn, 'failed', remoteMessages.stalled)
+      this.settleTurn(runtime, turn, 'failed', remoteMessages.stalled)
       void this.abandonTurn(runtime)
         .then(() => this.sendText(runtime, remoteMessages.stalled))
         .then(() => { this.touch(runtime); this.emitSoon() })
@@ -1586,6 +1668,42 @@ export class CodexRemoteService {
     })
   }
 
+  /** 审批卡走能改样子的那条路（YK-8），跟文字排在同一条发件队里，交回卡片编号。 */
+  private deliverApprovalCard(
+    runtime: ChannelRuntime,
+    adapter: RemoteChannelAdapter & Required<Pick<RemoteChannelAdapter, 'sendApproval'>>,
+    peer: RemotePeer,
+    message: RemoteOutboundApproval,
+  ): Promise<string> {
+    const next = runtime.outbox.then(() => adapter.sendApproval(peer, message))
+    runtime.outbox = next.then(() => undefined, () => undefined)
+    return next.catch(() => {
+      this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
+      throw new Error('send failed')
+    })
+  }
+
+  /**
+   * 处理过的审批卡改样子（YK-8）：标题换成结果、按钮去掉，正文去掉「回 同意 N」那句。星芒在退、渠道关了或换了
+   * 一个连接就不改；改不成只记日志，手机上「已同意第 N 条。」那句文字照样发。
+   */
+  private closeApprovalCard(
+    runtime: ChannelRuntime,
+    adapter: RemoteChannelAdapter | null,
+    card: Promise<string | null>,
+    request: RemoteApprovalRequest,
+    outcome: RemoteApprovalOutcome,
+  ): void {
+    if (!approvalCards(adapter)) return
+    void card.then(async (handle) => {
+      if (!handle || this.disposed || runtime.adapter !== adapter) return
+      const text = redactRemoteText(formatApprovalBody(request), this.redaction())
+      await adapter.updateApproval(handle, { kind: 'approval', request, text }, outcome)
+    }).catch(() => {
+      this.options.log('warn', 'remote.approval-card-update-failed', { channel: runtime.id, outcome })
+    })
+  }
+
   private async sendText(
     runtime: ChannelRuntime,
     text: string,
@@ -1628,13 +1746,13 @@ export class CodexRemoteService {
     if (now < runtime.startedAt) runtime.startedAt = now
     if (message.sentAt !== undefined && isStaleInbound(message.sentAt, runtime.startedAt, now)) {
       this.options.log('info', 'remote.dropped', { channel: runtime.id, reason: 'stale' })
-      if (message.kind !== 'approval') {
+      if (message.kind !== 'approval' && message.kind !== 'stop') {
         if (isStaleOnlyByClock(message.sentAt, runtime.startedAt, now, message.clockAheadMs)) await this.warnClockAhead(runtime, message)
         else if (sentWhileOpen(message.sentAt, runtime.startedAt)) await this.noticeStale(runtime, message, now - message.sentAt)
       }
       return
     }
-    if (message.kind !== 'approval' && !this.markSeen(runtime, message.messageId)) return
+    if (message.kind !== 'approval' && message.kind !== 'stop' && !this.markSeen(runtime, message.messageId)) return
     const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
     if (!bound || bound.userId !== message.peer.userId) {
       await this.tryPair(runtime, message)
@@ -1650,6 +1768,10 @@ export class CodexRemoteService {
     }
     if (message.kind === 'approval') {
       await this.answerApprovalCard(runtime, message)
+      return
+    }
+    if (message.kind === 'stop') {
+      await this.stopFromProgressCard(runtime, message)
       return
     }
     const command = parseRemoteCommand(message.text, this.pendingFor(runtime.id).length > 0)
@@ -1883,6 +2005,119 @@ export class CodexRemoteService {
     }
   }
 
+  /** 进度卡上点了「停止」（YF-15）：是这一轮的卡就跟发「停止」一样；上一轮留下的不停这一轮。 */
+  private async stopFromProgressCard(runtime: ChannelRuntime, message: RemoteInboundStop): Promise<void> {
+    const turn = runtime.turn
+    if (!turn) {
+      await this.sendText(runtime, remoteMessages.nothingToStop)
+      return
+    }
+    if (!message.nonce || message.nonce !== turn.progress.nonce) {
+      await this.sendText(runtime, remoteMessages.staleProgressCard)
+      return
+    }
+    this.options.log('info', 'remote.turn-stopped-from-card', { channel: runtime.id })
+    await this.abandonTurn(runtime)
+    await this.sendText(runtime, remoteMessages.interrupted)
+    this.emitSoon()
+  }
+
+  /** 过 delayMs 发一次进度；已经排着更早的那次就不动（YF-15）。 */
+  private scheduleProgress(runtime: ChannelRuntime, turn: TurnState, delayMs: number, keepEarlier = false): void {
+    const progress = turn.progress
+    if (progress.ended || runtime.turn !== turn) return
+    const at = this.now() + delayMs
+    if (keepEarlier && progress.timer && progress.timerAt <= at) return
+    if (progress.timer) clearTimeout(progress.timer)
+    progress.timerAt = at
+    progress.timer = setTimeout(() => {
+      progress.timer = null
+      void this.pushProgress(runtime, turn)
+    }, delayMs)
+    progress.timer.unref?.()
+  }
+
+  /** Codex 报了新计划（YF-15）：还没发卡就现在发；发过了就换步时更新，最快 30 秒一次。 */
+  private noteProgressChange(runtime: ChannelRuntime, turn: TurnState): void {
+    const progress = turn.progress
+    if (progress.ended || !progressCards(runtime.adapter)) return
+    if (progress.handle === null && progress.lastQueuedAt === 0) {
+      void this.pushProgress(runtime, turn)
+      return
+    }
+    if (JSON.stringify(turn.plan) === progress.planKey) return
+    this.scheduleProgress(runtime, turn, Math.max(0, progress.lastQueuedAt + progressStepGapMs - this.now()), true)
+  }
+
+  /** 进度卡长什么样（YF-15）：步骤的字是 Codex 写的，跟别的发出去的字一样先脱敏、截短。 */
+  private progressCard(turn: TurnState, state: RemoteProgressCard['state']): RemoteProgressCard {
+    const redaction = this.redaction()
+    const steps = turn.plan.slice(0, maxProgressSteps).map((step) => ({
+      text: truncateRemoteText(redactRemoteText(step.text, redaction).replace(/\s+/g, ' ').trim(), maxProgressStepLength),
+      status: step.status,
+    }))
+    return state === 'running'
+      ? { state, steps, elapsed: remoteRunningForText(this.now() - turn.startedAt), stopNonce: turn.progress.nonce }
+      : { state, steps }
+  }
+
+  /**
+   * 到点了发一次进度（YF-15）。飞书：头一回发卡，之后更新同一张；微信：没在等你同意时发一句「还在做」。
+   * 发卡、更新都排在这一轮自己的队里，失败只记日志，下一次照样带最新的样子。
+   */
+  private async pushProgress(runtime: ChannelRuntime, turn: TurnState): Promise<void> {
+    const progress = turn.progress
+    const adapter = runtime.adapter
+    const peer = runtime.peer
+    if (progress.ended || runtime.turn !== turn || !adapter || !peer) return
+    if (!progressCards(adapter)) {
+      this.scheduleProgress(runtime, turn, progressTextEveryMs)
+      if (this.pendingFor(runtime.id).length === 0) await this.sendText(runtime, progressTextMessage(this.now() - turn.startedAt, turn.step))
+      return
+    }
+    progress.lastQueuedAt = this.now()
+    this.scheduleProgress(runtime, turn, progressRefreshMs)
+    await this.queueProgress(runtime, turn, async () => {
+      if (progress.ended || runtime.turn !== turn || runtime.adapter !== adapter) return
+      await this.refreshSecrets()
+      if (progress.ended) return
+      progress.planKey = JSON.stringify(turn.plan)
+      const card = this.progressCard(turn, 'running')
+      if (progress.handle) {
+        await adapter.updateProgress(progress.handle, card)
+        return
+      }
+      // 第一张卡跟文字排在同一条发件队里：排在「收到」后面、最后的回答前面。
+      const sent = runtime.outbox.then(() => adapter.sendProgress(peer, card))
+      runtime.outbox = sent.then(() => undefined, () => undefined)
+      progress.handle = await sent
+    })
+  }
+
+  /** 这一轮有了结果（YF-15）：不再发「正在处理」；发过卡的，最后更新成做完了、停了或没做完，按钮去掉。 */
+  private endProgress(runtime: ChannelRuntime, turn: TurnState, state: RemoteProgressCard['state']): void {
+    const progress = turn.progress
+    if (progress.ended) return
+    progress.ended = true
+    if (progress.timer) clearTimeout(progress.timer)
+    progress.timer = null
+    const adapter = runtime.adapter
+    if (!progressCards(adapter)) return
+    void this.queueProgress(runtime, turn, async () => {
+      if (!progress.handle) return
+      await this.refreshSecrets()
+      await adapter.updateProgress(progress.handle, this.progressCard(turn, state))
+    })
+  }
+
+  private queueProgress(runtime: ChannelRuntime, turn: TurnState, work: () => Promise<void>): Promise<void> {
+    const next = turn.progress.chain.then(work).catch(() => {
+      this.options.log('warn', 'remote.progress-failed', { channel: runtime.id })
+    })
+    turn.progress.chain = next
+    return next
+  }
+
   /** lead 是「收到」前面先说的那句，「重试」时说重发的是哪一句（YF-22）。 */
   private async runPrompt(runtime: ChannelRuntime, text: string, lead?: string): Promise<void> {
     if (runtime.turn) {
@@ -1904,6 +2139,8 @@ export class CodexRemoteService {
       error: null,
       stoppedByUser: false,
       stallTimer: null,
+      plan: [],
+      progress: newTurnProgress(),
     }
     runtime.turn = turn
     runtime.lastPrompt = text
@@ -1917,6 +2154,7 @@ export class CodexRemoteService {
       remoteMessages.received,
     ].join('\n')
     await this.sendText(runtime, received)
+    this.scheduleProgress(runtime, turn, progressCards(runtime.adapter) ? progressCardFirstMs : progressTextEveryMs)
     // 起 Codex、开对话不在收件队列里等（D66 / YKS-3）：起 Codex 排在全局的安装队列里，别的工具在装时能等好几分钟，
     // 这期间手机发的「停止」「状态」得有人理，「停止」靠 turnStillWanted 拦住还没交给 Codex 的这一句。
     // 这一轮已经登记在 runtime.turn 上，后面再来的话照旧回「还在处理上一条」。
@@ -1950,7 +2188,7 @@ export class CodexRemoteService {
       this.clearTurn(runtime)
       this.codexStartFailed = true
       // 原因卡片上那条「Codex 没能启动」黄条已经说了，这里不再重复。
-      this.settleLastRequest(turn, 'failed')
+      this.settleTurn(runtime, turn, 'failed')
       await this.sendText(runtime, remoteMessages.codexUnavailable)
       this.emitSoon()
       return
@@ -1988,7 +2226,7 @@ export class CodexRemoteService {
       this.clearTurn(runtime)
       this.dropThread(runtime)
       const { reply, reason } = this.turnFailureReply(runtime, 'remote.turn-start-failed', { message: errorMessage(error, '') || null, additionalDetails: null, codexErrorInfo: undefined })
-      this.settleLastRequest(turn, 'failed', reason)
+      this.settleTurn(runtime, turn, 'failed', reason)
       await this.sendText(runtime, reply)
       this.emitSoon()
     }
@@ -2089,7 +2327,7 @@ export class CodexRemoteService {
       if (turn) {
         this.clearTurn(runtime)
         // 卡片「最近一次」也说没做完，不然它一直停在「正在处理」（YF-13）。
-        this.settleLastRequest(turn, 'failed', codexExitedReason)
+        this.settleTurn(runtime, turn, 'failed', codexExitedReason)
         void this.sendText(runtime, turnFailedMessage(codexExitedReason))
       }
     }
@@ -2133,6 +2371,8 @@ export class CodexRemoteService {
     if (!runtime?.turn) return
     if (method === 'turn/plan/updated') {
       runtime.turn.step = currentPlanStep(params.plan)
+      runtime.turn.plan = readPlanSteps(params.plan)
+      this.noteProgressChange(runtime, runtime.turn)
       return
     }
     if (method === 'error' && params.willRetry !== true && isRecord(params.error)) {
@@ -2154,16 +2394,16 @@ export class CodexRemoteService {
     if (turnPayload.status === 'completed') {
       const answer = turn.finalAnswer ?? turn.lastMessage ?? remoteMessages.emptyAnswer
       reply = `${answer}\n\n${turnSummaryLine(this.now() - turn.startedAt, turn.changedFiles.map(remoteFileName))}`
-      this.settleLastRequest(turn, 'done')
+      this.settleTurn(runtime, turn, 'done')
     } else if (turnPayload.status === 'interrupted') {
       reply = turn.stoppedByUser ? null : remoteMessages.interrupted
-      this.settleLastRequest(turn, 'stopped')
+      this.settleTurn(runtime, turn, 'stopped')
     } else {
       // 回执里带着报错就以它为准，没带用这一轮前面那条 error 通知。
       const failure = readTurnFailure(turnPayload.error)
       const failed = this.turnFailureReply(runtime, 'remote.turn-failed', failure?.message ? failure : turn.error ?? failure)
       reply = failed.reply
-      this.settleLastRequest(turn, 'failed', failed.reason)
+      this.settleTurn(runtime, turn, 'failed', failed.reason)
     }
     this.options.log('info', 'remote.turn-finished', { channel: runtime.id, status: stringField(turnPayload.status) })
     if (reply) void this.sendText(runtime, reply)
@@ -2262,11 +2502,14 @@ export class CodexRemoteService {
     if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
     const nonce = generateApprovalNonce()
     const request = buildApprovalRequest(id, nonce, kind, params, changedFiles, display)
+    // 飞书的审批卡发出去以后记下编号，处理过就改成「已同意 / 已拒绝」的样子（YK-8）。
+    let card: Promise<string | null> | null = null
+    const adapter = runtime.adapter
     const decision = new Promise<RemoteApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return
         this.options.log('info', 'remote.approval-expired', { channel: runtime.id })
-        entry.settle('decline')
+        entry.settle('decline', 'expired')
         void this.sendText(runtime, approvalExpiredMessage(id, approvalTimeoutMinutes))
         this.emitSoon()
       }, approvalTimeoutMs)
@@ -2283,11 +2526,12 @@ export class CodexRemoteService {
         channel: runtime.id,
         threadId,
         timer,
-        settle: (value) => {
+        settle: (value, outcome) => {
           if (!this.pending.delete(id)) return
           clearTimeout(timer)
           clearTimeout(reminder)
           resolve(value)
+          if (card) this.closeApprovalCard(runtime, adapter, card, request, outcome ?? (value === 'accept' ? 'accepted' : 'declined'))
         },
       }
       this.pending.set(id, entry)
@@ -2296,7 +2540,11 @@ export class CodexRemoteService {
     this.emitSoon()
     const text = redactRemoteText(formatApprovalText(request), this.redaction())
     try {
-      await this.deliver(runtime, peer, { kind: 'approval', request, text })
+      if (approvalCards(adapter)) {
+        const sent = this.deliverApprovalCard(runtime, adapter, peer, { kind: 'approval', request, text })
+        card = sent.then((handle) => handle, () => null)
+        await sent
+      } else await this.deliver(runtime, peer, { kind: 'approval', request, text })
     } catch {
       // 问不到人就不能当作同意。
       this.pending.get(id)?.settle('decline')
