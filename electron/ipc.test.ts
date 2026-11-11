@@ -9258,6 +9258,7 @@ describe('IPC channel log and account policies', () => {
         'account:get-dashboard',
         'account:get-key-options',
         'account:get-legal-document',
+        'account:get-notice-image',
         'account:get-price-list',
         'account:get-profile',
         'account:get-remembered-login',
