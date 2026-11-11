@@ -196,6 +196,9 @@ export function nextApprovalNumber(last: number): number {
   return Number.isSafeInteger(last) && last >= 0 && last < maxApprovalNumber ? last + 1 : 1
 }
 
+/** Codex 半路退出时手机上收到的「这一轮没做完：…」里的原因，卡片「最近一次」照抄。 */
+const codexExitedReason = '电脑上的 Codex 意外退出了，再发一次试试。'
+
 /** 只对这一条审批有效的随机串，放进有按钮渠道的按钮里（16 个字符，飞书按钮值里放得下）。 */
 export function generateApprovalNonce(): string {
   return randomBytes(12).toString('base64url')
@@ -2082,9 +2085,12 @@ export class CodexRemoteService {
       const runtime = this.runtimes[id]
       for (const entry of this.pendingFor(id)) entry.settle('decline')
       this.dropThread(runtime)
-      if (runtime.turn) {
+      const turn = runtime.turn
+      if (turn) {
         this.clearTurn(runtime)
-        void this.sendText(runtime, turnFailedMessage('电脑上的 Codex 意外退出了，再发一次试试。'))
+        // 卡片「最近一次」也说没做完，不然它一直停在「正在处理」（YF-13）。
+        this.settleLastRequest(turn, 'failed', codexExitedReason)
+        void this.sendText(runtime, turnFailedMessage(codexExitedReason))
       }
     }
     this.emitSoon()
