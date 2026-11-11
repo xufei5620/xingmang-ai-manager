@@ -836,7 +836,8 @@ const apiMethods = {
     endTimestamp: 2,
     buckets: [],
     models: [],
-    quota: 500,
+    // usageDetail=sub-cent：一天只花 $0.0032，看柱子和日均不再写成 $0.00（D53）。
+    quota: query.get('usageDetail') === 'sub-cent' ? 0.32 : 500,
     count: 11,
     tokens: 2000,
     discardedCount: 0,

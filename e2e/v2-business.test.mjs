@@ -256,6 +256,28 @@ test('the usage range drives the stats, one bar per local day or week and the ca
   } finally { await page.close() }
 })
 
+test('sub-cent calls, bars and the daily average show the fraction of a cent the call details show', async () => {
+  // D53：一次几厘钱的调用以前在明细、柱子、日均上都写成「$0.00」，状态却是「成功」，点进详情又是「$0.0032」。
+  const page = await fixture('page=account&accountTab=usage&usageDetail=sub-cent')
+  try {
+    await page.getByRole('tab', { name: '用量账单', exact: true, selected: true }).waitFor()
+    const stats = page.getByTestId('usage-stats')
+    await stats.getByText('日均 $0.0032', { exact: true }).waitFor()
+    // 七天合计 $0.0224，一分以上照旧两位小数。
+    assert.equal((await stats.innerText()).replace(/\s+/g, ' '), '总花费 $0.02 日均 $0.0032 请求次数 77 处理字数 14,000')
+    const bars = page.locator('.v2-usage-chart-col')
+    assert.equal(await bars.count(), 7)
+    assert.equal(await bars.last().innerText().then((text) => text.replace(/\s+/g, ' ')), '$0.0032 今天')
+    assert.match(await bars.last().getAttribute('title'), /：\$0\.0032$/)
+    const row = usageRow(page)
+    await row.getByText('$0.0032', { exact: true }).waitFor()
+    await row.click()
+    const dialog = page.getByTestId('usage-detail-dialog')
+    await dialog.waitFor()
+    assert.match(await dialog.locator('section[aria-label="计费明细"]').innerText(), /合计\s*\$0\.0032/)
+  } finally { await page.close() }
+})
+
 test('changing the usage range sends the call list back to its first page', async () => {
   const page = await fixture('page=account&accountTab=usage&usagePages=1')
   try {
