@@ -58,7 +58,7 @@ import { createBalanceAlerts, createSpendSpikeRecordStore, readSpendBaseline } f
 import { createEmptyBalanceRecordStore } from './empty-balance-alert'
 import { attachRendererDelivery, detachRendererDelivery } from './platform/renderer-delivery-bridge'
 import { resolveUsableSubscription } from './subscription-summary'
-import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
+import { createApplicationTray, resolveTrayUpdateEntry, trayKeepAwakeLabel, trayRemoteControlOpenFailedTitle, traySubscriptionLabel, type ApplicationTrayController } from './application-tray'
 import { createWindowsTaskbarThemeReader, WINDOWS_SETTING_CHANGE_MESSAGE } from './windows-taskbar-theme'
 import { readWindowsTextScaleFactor } from './windows-text-scale'
 import type { TrayAccelerationCoordinator } from './tray-acceleration'
@@ -202,7 +202,8 @@ import { codexDesktopStoreUrl } from './codex-desktop-install-failure'
 import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failure'
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
-import type { CodexRemoteReleaseAction } from './codex-remote-service'
+import { remoteChannelsReadyToEnable, type CodexRemoteReleaseAction } from './codex-remote-service'
+import type { CodexRemoteSnapshot } from './codex-remote-channel'
 
 guardProcessOutputStreams()
 
@@ -2429,9 +2430,18 @@ if (!hasSingleInstanceLock) {
       updaterService.setIdleInstall(!codexRemote.hasEnabledChannel() && !remoteFeatures.isOff('mac-idle-install')
         && installUnattended(updaterService.getState().installMethod))
     }
-    // 托盘那一项「关掉手机遥控」跟着有没有渠道开着走。状态快照来得勤（每条消息、每次连上断开都有一份），
-    // 只在开关真变了时重建托盘菜单。
+    // 托盘那一项「关掉手机遥控」跟着有没有渠道开着走，「打开手机遥控」跟着都关着时齐没齐走（YF-8）。
+    // 状态快照来得勤（每条消息、每次连上断开都有一份），只在这两样真变了时重建托盘菜单。
     let trayRemoteControlOn = false
+    let trayRemoteControlReady = false
+    const followRemoteForTray = (snapshot: CodexRemoteSnapshot) => {
+      const on = codexRemote.hasEnabledChannel()
+      const ready = remoteChannelsReadyToEnable(snapshot).length > 0
+      if (on === trayRemoteControlOn && ready === trayRemoteControlReady) return
+      trayRemoteControlOn = on
+      trayRemoteControlReady = ready
+      applicationTray?.updateSnapshot()
+    }
     const codexRemote = createCodexRemote({
       managerDataDirectory,
       runtimeLog,
@@ -2446,13 +2456,12 @@ if (!hasSingleInstanceLock) {
         codexRemoteKeepAwake.observe(snapshot)
         sendToMainWindow('onCodexRemoteStateChanged', snapshot)
         refreshIdleInstall()
-        if (codexRemote.hasEnabledChannel() !== trayRemoteControlOn) {
-          trayRemoteControlOn = !trayRemoteControlOn
-          applicationTray?.updateSnapshot()
-        }
+        followRemoteForTray(snapshot)
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
     })
+    // 开机时遥控一个都没开、也还没推过快照：先读一份，托盘才知道该不该出「打开手机遥控」。
+    void codexRemote.snapshot().then(followRemoteForTray).catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.tray-state.failed', cause))
     releaseCodexRemote = (action) => codexRemote.releaseCodex(action)
     // 状态文件关掉、放开了哪样：开着的遥控当场停（设置页跟着换那句话），「下好了」那句和托盘加速那一行跟着改。
     const unsubscribeRemoteFeatureFollowers = remoteFeatures.subscribe(() => {
@@ -3369,6 +3378,7 @@ if (!hasSingleInstanceLock) {
             downloadingUpdate: installKeepAwake.reasons().includes('update-download'),
           }),
           remoteControlOn: codexRemote.hasEnabledChannel(),
+          remoteControlReady: trayRemoteControlReady,
         }
       },
       onOpen: showMainWindow,
@@ -3382,6 +3392,15 @@ if (!hasSingleInstanceLock) {
       onRemoteControlOff: () => {
         runtimeLog.log('info', 'codex-remote', 'remote.tray-off', '托盘里点了关掉手机遥控')
         return codexRemote.disableAllChannels()
+      },
+      // 打不开时窗口多半缩在托盘里、没人看设置页：弹一条系统通知说原因；通知被关掉时 Windows 退到托盘气泡。
+      onRemoteControlOn: async () => {
+        runtimeLog.log('info', 'codex-remote', 'remote.tray-on', '托盘里点了打开手机遥控')
+        const { failure } = await codexRemote.enableReadyChannels()
+        if (!failure) return
+        if (desktopNotifications.announce({ title: trayRemoteControlOpenFailedTitle, body: failure }) !== 'requested') {
+          applicationTray?.showBalloon(trayRemoteControlOpenFailedTitle, failure)
+        }
       },
       // 与更新页「确认重启安装」、IPC update:install 同一条路：先问有没有工具在装，退出交接与安装闸都在 install() 里。
       onInstallUpdate: async () => { if (await confirmUpdateInstall?.() ?? true) updaterService.install() },
