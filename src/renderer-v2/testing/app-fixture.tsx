@@ -672,6 +672,9 @@ const methods = {
     return { id, provider: item.provider, deletedFiles: 1 }
   },
   listBackups: async () => [],
+  // 「备份迁移」最下面的「星芒占用的空间」（D100）一点开这一组就六行各问一次；这里只给个小数，业务回归在 e2e/v2-business。
+  inspectStorageUsage: async (part) => (part === 'backups' ? { bytes: 4096, backupCount: 0 } : part === 'downloads' ? { bytes: 0, installing: false } : { bytes: 4096 }),
+  cleanStorage: async () => ({ freedBytes: 0, kept: 0 }),
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async (_provider, workspace) => {

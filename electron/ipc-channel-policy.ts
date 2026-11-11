@@ -145,6 +145,9 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'backups:inspect': { label: '配置备份详情读取', log: 'normal', account: 'none' },
   'backups:restore': { label: '配置备份恢复', log: 'normal', account: 'none' },
   'backups:delete': { label: '配置备份删除', log: 'normal', account: 'none' },
+  // 打开「备份迁移」那一组就问六次，每次成功都记一条只会刷屏；没算出来的那一行由 storage-usage-service.ts 自己记。
+  'storage:inspect': { label: '星芒占用的空间计算', log: 'quiet-success', account: 'none' },
+  'storage:clean': { label: '星芒占用的空间清理', log: 'normal', account: 'none' },
   // 结果里是登录二维码的图片，扫了它就能把别人的微信连到这台：成功不记（I13）。poll 每四十秒一次，
   // 记了也只会刷屏。失败照记，失败那一行不带入参。
   'codex-remote:weixin-login-start': { label: '手机遥控微信扫码', log: 'quiet-success', account: 'none' },

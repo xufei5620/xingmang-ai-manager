@@ -351,7 +351,7 @@
       }
     },
     {
-      "name": "kernel-only node in scope",
+      "name": "unsupported setting in scope",
       "input": {
         "graph": {
           "nodes": [
@@ -367,10 +367,13 @@
             {
               "id": "target",
               "definitionVersion": 1,
-              "kind": "image-grid-split",
+              "kind": "video-generate",
               "data": {
                 "prompt": "",
-                "model": ""
+                "model": "grok-imagine-video",
+                "group": "视频模型",
+                "seconds": "5",
+                "generateAudio": false
               }
             }
           ],
@@ -389,11 +392,57 @@
         }
       },
       "expect": {
-        "refusal": "「宫格裁剪」节点桌面版暂不支持，本次没有提交任何付费请求"
+        "refusal": "「生成音频设置」桌面版暂不支持，本次没有提交任何付费请求"
       }
     },
     {
-      "name": "kernel-only node outside the scope",
+      "name": "unsupported setting outside the scope",
+      "input": {
+        "graph": {
+          "nodes": [
+            {
+              "id": "prompt-1",
+              "kind": "prompt",
+              "definitionVersion": 1,
+              "data": {
+                "prompt": "一只猫",
+                "model": ""
+              }
+            },
+            {
+              "id": "target",
+              "definitionVersion": 1,
+              "kind": "video-generate",
+              "data": {
+                "prompt": "",
+                "model": "grok-imagine-video",
+                "group": "视频模型",
+                "seconds": "5",
+                "generateAudio": false
+              }
+            }
+          ],
+          "edges": [
+            {
+              "id": "edge-1",
+              "source": "prompt-1",
+              "sourceHandle": "out:text",
+              "target": "target",
+              "targetHandle": "in:text"
+            }
+          ]
+        },
+        "scope": {
+          "kind": "to-node",
+          "nodeId": "prompt-1"
+        }
+      },
+      "expect": {
+        "refusal": null
+      }
+    },
+    {
+      "name": "grid split with the slice it shows",
       "input": {
         "graph": {
           "nodes": [
@@ -412,7 +461,15 @@
               "kind": "image-grid-split",
               "data": {
                 "prompt": "",
-                "model": ""
+                "model": "",
+                "imageTransform": {
+                  "kind": "grid-split",
+                  "rows": 3,
+                  "columns": 3,
+                  "gap": 0,
+                  "padding": 0
+                },
+                "imageOutputIndex": 4
               }
             }
           ],
@@ -427,8 +484,7 @@
           ]
         },
         "scope": {
-          "kind": "to-node",
-          "nodeId": "prompt-1"
+          "kind": "all"
         }
       },
       "expect": {

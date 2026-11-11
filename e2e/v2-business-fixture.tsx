@@ -84,6 +84,8 @@ const fail = query.get('fail')
 const empty = query.has('empty')
 // 「清除日志」确认以后，再读日志就是空的。
 let logsCleared = false
+// 「清理旧备份」确认以后，再算就只剩最近 10 份。
+let storageBackupsCleaned = false
 
 // 只有带 topupBonus 的用例给「20」这一档配 8 折，其余用例的充值页保持原样。
 let topupPromotionEnded = false
@@ -1299,6 +1301,22 @@ const apiMethods = {
       restoredFiles: ['config.toml'],
       removedFiles: [],
     }
+  },
+  // 「星芒占用的空间」（D100）：六行各回各的；storageInstalling 时下载那一行说正在装工具。
+  inspectStorageUsage: async (part: Parameters<V2Bridge['inspectStorageUsage']>[0]) => {
+    record('inspect-storage', part)
+    const megabyte = 1024 * 1024
+    if (part === 'works') return { bytes: 2.1 * 1024 * megabyte }
+    if (part === 'thumbnails') return { bytes: 120 * megabyte }
+    if (part === 'chat-history') return { bytes: 35 * megabyte }
+    if (part === 'logs') return { bytes: 20 * megabyte }
+    if (part === 'backups') return { bytes: 15 * megabyte, backupCount: storageBackupsCleaned ? 10 : 24 }
+    return { bytes: 800 * megabyte, installing: query.has('storageInstalling') }
+  },
+  cleanStorage: async (target: Parameters<V2Bridge['cleanStorage']>[0]) => {
+    record('clean-storage', target)
+    if (target === 'backups') storageBackupsCleaned = true
+    return { freedBytes: 120 * 1024 * 1024, kept: 0 }
   },
   checkProviderConnection: async (provider: Parameters<V2Bridge['checkProviderConnection']>[0]) => {
     record('check-connection', provider)

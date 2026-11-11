@@ -44,7 +44,9 @@ import { createNetworkRoutes, startToolRouteFollowing } from './bootstrap/networ
 import { startCodexPayloadWatch } from './bootstrap/codex-payload-watch'
 import { createCodexPayloadNoticeBoard } from './codex-payload-limit'
 import { createUpdateFeed } from './bootstrap/updates'
-import { installLeftoverStartupDelayMs, sweepInstallLeftovers } from './install-leftovers'
+import { installLeftoverStartupDelayMs, measureInstallLeftovers, sweepInstallLeftovers } from './install-leftovers'
+import { resolveRealmDataRoots } from './realm-data-roots'
+import { createStorageUsageService } from './storage-usage-service'
 import { launchArgumentsRelaunchedWithout } from './launch-argument-relaunch'
 import { createLoginQuietPeriod, hasLoginLaunchArgument, loginQuietPeriodMs, resolveLoginLaunch, shouldRevealInitialWindow, windowsAppUserModelId } from './login-launch'
 import { buildChatReplyQuitPrompt, buildUnfinishedRestartWorkPrompt, confirmQuitInterruptions, confirmUpdateRestart, isRollbackInstall, resolveInstallableUpdateOnQuit, resolveInterruptibleInstallTask, waitForUpdateInstallFailure, type ChatReplyQuitPrompt, type InterruptibleInstallTask, type UnfinishedRestartWork, type UnfinishedRestartWorkPrompt } from './quit-blocking-tasks'
@@ -1311,6 +1313,7 @@ if (!hasSingleInstanceLock) {
       windowsProcessElevated: windowsCliExecution.highIntegrity === true,
       runtimeLog,
       sweepInstallLeftovers,
+      measureInstallLeftovers,
       ...(process.platform === 'win32'
         ? {
             ensureWindowsUserPath: (directory: string) => ensureDirectoryOnWindowsUserPath(directory),
@@ -2471,7 +2474,23 @@ if (!hasSingleInstanceLock) {
     })
     // 复制密钥、新密码用：60 秒自动清，退出前（prepareToQuit）再清一次。
     const sensitiveClipboard = createSensitiveClipboard({ clipboard })
+    // 「设置 › 备份迁移 › 星芒占用的空间」（决定单 D100）：只在客户打开那一组时问，不在后台算。
+    const storageUsage = createStorageUsageService({
+      worksDirectory: () => currentBusiness().aiOutputPlacement.root,
+      thumbnailDirectories: () => (['xm-account', 'api-account'] as const)
+        .map((realm) => resolveRealmDataRoots(managerDataDirectory, realm).assetThumbnailsDirectory),
+      chatHistoryDirectory: path.join(managerDataDirectory, 'chat-history'),
+      logDirectory: runtimeLog.directory,
+      backups: backupStore,
+      downloads: {
+        measure: () => systemService.measureInstallLeftoversNow(),
+        clean: () => systemService.cleanInstallLeftoversNow(),
+        installing: () => resolveInterruptibleInstallTask(systemService.inspectInstallationQueue()) !== null,
+      },
+      log: runtimeLog,
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
+      storageUsage,
       acceleration: userAcceleration,
       sensitiveClipboard,
       codexRemote,
