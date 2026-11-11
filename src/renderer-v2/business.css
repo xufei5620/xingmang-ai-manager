@@ -376,7 +376,7 @@
 /* 「最近一次」下面那句等你同意（YF-13）。 */
 .v2-remote-waiting { color: var(--warn-tx); }
 .v2-remote-folders { display: flex; flex-direction: column; gap: 4px; margin-top: 2px; }
-.v2-remote-folder { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 28px; }
+.v2-remote-folder { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: var(--control-sm); }
 .v2-remote-folder > .xm-mono { min-width: 0; overflow-wrap: anywhere; }
 .v2-remote-folder-actions { display: inline-flex; gap: 4px; }
 .v2-remote-folders-note { color: var(--text-3); font-size: var(--font-small-compact); }
