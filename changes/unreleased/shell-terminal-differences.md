@@ -8,6 +8,9 @@
   三种写法，带 BOM 的 UTF-16（Windows PowerShell 5.1 的 `>` 存出来的）照样读。只在文件里找到的报「需留意」，句子和 Mac
   同一句；进程环境里的照旧「待处理」，两条各报各的；「删掉这几项设置」只挂在「待处理」上（它删不到文件里）。
 - Mac、Linux 的检查页另读 fish 的 `conf.d/*.fish` 和 `set -Ux` 存进的 `fish_variables`（只算带 `--export` 的，SH-12 d）。
+- Mac 点「打开」后等启动脚本真跑起来（最多 20 秒，脚本第一行删掉自己，同 Linux，SH-3）：「终端」开了窗口、脚本却被
+  oh-my-zsh 的更新提问吃掉或被 `.zshrc` 里的 `exec tmux` 顶掉时，不再当成打开成功，报「终端窗口打开了，但工具没有跟着起来……」
+  （yoyo 定的字）、另记一条 `terminal.failed`，没跑的脚本当场删掉，免得窗口迟到时又把工具开起来。
 - Mac 的启动脚本只检查真要写进脚本的那几个变量（SH-11），同 Linux：名单外带 `BASH_FUNC_x%%` 这类怪名字时不再整次打不开。
 - 以管理员身份运行时，推 Windows 版 Grok 拿哪个 shell 跑钩子照它那个窗口收窄过的 PATH 推（`grokShellEnvironment`，SH-10）：
   pwsh 只装在用户目录（商店版、scoop）时不再按 PowerShell 写钩子、让 Grok 用 Git Bash 跑出一行行红字。
