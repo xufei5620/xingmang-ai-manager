@@ -1015,6 +1015,62 @@ test('text files picked in a text conversation go out with the message and stay 
   } finally { await page.close() }
 })
 
+test('a paste past 40000 characters keeps its tail, says how long it is under the composer counting picked files, and greys out sending until it is cut down', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    const input = page.getByTestId('chat-composer-input')
+    // A picked file counts toward the limit too, the same way the message is put together when it goes out.
+    const attached = { name: 'a.txt', size: 30_000, text: 'f'.repeat(30_000), truncated: false }
+    await page.evaluate((file) => window.chatHarness.queueTextFiles([file]), attached)
+    await page.getByTestId('chat-attach-file').click()
+    await page.getByTestId('chat-draft-files').waitFor()
+    const typed = 'y'.repeat(10_000)
+    await input.fill(typed)
+    const together = `<file name="a.txt">\n${attached.text}\n</file>\n\n${typed}`.length
+    assert.ok(together > 40000 && typed.length < 40000)
+    assert.equal(await page.getByTestId('chat-draft-too-long').textContent(), `最多 40000 字，现在 ${together} 字，删掉一些再发。`)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await page.getByTestId('chat-draft-file-remove').click()
+    assert.equal(await page.getByTestId('chat-draft-too-long').count(), 0)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
+    await input.fill('')
+    // An error log whose last line is the one that matters (D42): it used to be cut off silently.
+    const log = 'x'.repeat(44990) + '\n最后一行才是真正的报错'
+    await input.focus()
+    await page.keyboard.insertText(log)
+    assert.equal(await input.inputValue(), log, 'nothing is cut off the end')
+    const notice = page.getByTestId('chat-draft-too-long')
+    assert.equal(await notice.textContent(), `最多 40000 字，现在 ${log.length} 字，删掉一些再发。`)
+    assert.equal(await input.getAttribute('aria-describedby'), await notice.getAttribute('id'))
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await input.press('Enter')
+    await page.getByTestId('chat-send').click({ force: true })
+    assert.equal((await calls(page, 'start')).length, 0, 'neither Enter nor the greyed button sends it')
+    assert.equal(await page.locator('.chat-banner').count(), 0, 'no red bar on top of the sentence under the composer')
+    await input.fill(log.slice(-40000))
+    assert.equal(await notice.count(), 0)
+    assert.equal(await input.getAttribute('aria-describedby'), null)
+    await page.getByTestId('chat-send').click()
+    await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start'))
+    const sent = (await calls(page, 'start'))[0].input
+    assert.equal(sent.messages.at(-1).content, log.slice(-40000))
+    await emit(page, { type: 'content', requestId: sent.requestId, content: 'answer' })
+    await emit(page, { type: 'complete', requestId: sent.requestId })
+    // Editing a sent message and sending it again has the same limit, said the same way under its box.
+    await page.getByRole('button', { name: '编辑后重新发送', exact: true }).click()
+    const edit = page.getByTestId('chat-edit-input')
+    await edit.fill('')
+    await page.keyboard.insertText(log)
+    assert.equal(await edit.inputValue(), log)
+    assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').textContent(), `最多 40000 字，现在 ${log.length} 字，删掉一些再发。`)
+    assert.equal(await page.getByTestId('chat-edit-send').isDisabled(), true)
+    await edit.fill('shorter question')
+    assert.equal(await page.getByTestId('chat-edit-dialog').getByRole('alert').count(), 0)
+    assert.equal(await page.getByTestId('chat-edit-send').isDisabled(), false)
+  } finally { await page.close() }
+})
+
 // Excel and WPS copy cells as text plus a picture of the table. The composer
 // used to take every such paste as a screenshot and drop the text.
 test('pasting spreadsheet cells keeps the text instead of reading a screenshot', async () => {
