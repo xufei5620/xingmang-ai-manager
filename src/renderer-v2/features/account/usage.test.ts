@@ -10,9 +10,11 @@ import {
   sub2ApiFilterId,
   usageCalendarNote,
   usageChartScale,
+  usageCost,
   usageEmptyText,
   usageFailedFree,
   usageHourBlocks,
+  usageQuotaCost,
   usageRangeStart,
   usageSegments,
   usageStatus,
@@ -110,6 +112,33 @@ describe('usage', () => {
     expect(usageChartScale([0.03])).toEqual({ top: 0.03, ticks: [0, 0.01, 0.02, 0.03] })
     expect(usageTickText(1, [0, 0.5, 1])).toBe('$1.0')
     expect(usageTickText(4, [0, 2, 4])).toBe('$4')
+  })
+
+  it('writes sub-cent usage costs out like the call details instead of rounding them to $0.00', () => {
+    // D53：几厘钱的调用以前一整页都是「$0.00」，点进详情又是「$0.0032」。
+    expect(usageCost(0.0032)).toBe('$0.0032')
+    expect(usageCost(0.003215)).toBe('$0.003215')
+    expect(usageCost(0.000002)).toBe('$0.000002')
+    expect(usageCost(0.009998)).toBe('$0.009998')
+    expect(usageCost(-0.0032)).toBe('-$0.0032')
+    // 一分以上、正好是 0、读不到的照旧：两位小数带千分位，读不到写「—」。
+    expect(usageCost(0.01)).toBe('$0.01')
+    expect(usageCost(0.0156)).toBe('$0.02')
+    expect(usageCost(23456.784)).toBe('$23,456.78')
+    expect(usageCost(0)).toBe('$0.00')
+    expect(usageCost(null)).toBe('—')
+    expect(usageCost(Number.NaN)).toBe('—')
+    expect(usageCost(Number.POSITIVE_INFINITY)).toBe('—')
+  })
+
+  it('converts backend quota to the same usage cost and shows a dash without a conversion rate', () => {
+    expect(usageQuotaCost(1600, { quotaPerUnit: 500_000 })).toBe('$0.0032')
+    expect(usageQuotaCost(1, { quotaPerUnit: 500_000 })).toBe('$0.000002')
+    expect(usageQuotaCost(2_500_000, { quotaPerUnit: 500_000 })).toBe('$5.00')
+    expect(usageQuotaCost(0, { quotaPerUnit: 500_000 })).toBe('$0.00')
+    expect(usageQuotaCost(1600, { quotaPerUnit: 0 })).toBe('—')
+    expect(usageQuotaCost(1600, null)).toBe('—')
+    expect(usageQuotaCost(null, { quotaPerUnit: 500_000 })).toBe('—')
   })
 
   it('lists the five costliest models with their share of the spend', () => {

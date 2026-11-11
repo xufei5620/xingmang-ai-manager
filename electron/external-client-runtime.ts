@@ -701,7 +701,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
     if (platform === 'win32') return architecture === 'x64' || (architecture === 'arm64' && tool !== 'workbuddy') ? null : '当前处理器架构没有可用的官方 Windows 安装包'
     // 有核对过的官方 Mac 包的才一键装；root 身份下装出来的应用归 root，客户自己更新不了。
     if (platform === 'darwin') return macosDesktopAppInstallable(tool, architecture) && !runningAsRoot() ? null : 'macOS 请先从客户端官网下载并将应用移入 Applications，然后重新检测'
-    return '工具箱当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
+    return '星芒当前不支持此系统的桌面客户端安装与启动，请使用客户端官网提供的平台安装方案'
   }
   let lastWingetReason: string | null = null
   const resolveWinget = async (): Promise<SystemWingetResolution> => {
