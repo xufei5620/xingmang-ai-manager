@@ -270,9 +270,12 @@ function assertSafeTargetPath(targetPath: string, rootDirectory: string): void {
   assertNoReparseComponents(target, '配置目标')
 }
 
+/** 配置备份放在数据目录下的这个文件夹里。卸载时勾了「同时删掉这台电脑上存的密钥」整个删掉（uninstall-cleanup.ts）。 */
+export const configBackupDirectoryName = 'backups'
+
 function backupRoot(userDataDirectory: string): string {
   if (!userDataDirectory.trim() || userDataDirectory.includes('\0')) throw new Error('userData 目录格式错误')
-  return path.join(path.resolve(userDataDirectory), 'backups')
+  return path.join(path.resolve(userDataDirectory), configBackupDirectoryName)
 }
 
 function backupDirectory(userDataDirectory: string, id: string): string {

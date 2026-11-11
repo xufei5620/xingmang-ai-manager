@@ -2,7 +2,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
 import { loginLaunchArgument } from './login-launch'
-import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { uninstallCleanupArgument, uninstallClearKeysArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 
 export interface ApplicationUrlPolicy {
   rendererRoot: string
@@ -239,6 +239,7 @@ const windowsPackagedLaunchSwitchNames = new Set([
   // customUnInstall in build/installer.nsh.
   uninstallCleanupArgument,
   uninstallClearLoginArgument,
+  uninstallClearKeysArgument,
   // The packaged acceleration worker (acceleration-development-host.ts).
   accelerationWorkerArgument,
   // Electron registers this executable as its toast activator's COM server, and

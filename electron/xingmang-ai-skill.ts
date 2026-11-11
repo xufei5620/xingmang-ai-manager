@@ -1318,6 +1318,33 @@ export async function clearXingmangAiSkillSecrets(userHome: string): Promise<num
   return serializeSkillDirectoryWork(() => clearXingmangAiSkillSecretsInDirectories(userHome))
 }
 
+/**
+ * 还有几份技能配置里留着密钥。clearXingmangAiSkillSecrets 一份写不进去就跳过（退出登录不能因此失败），
+ * 卸载时勾了「同时删掉这台电脑上存的密钥」要知道到底删干净没有，拿它核对。读不出、解析不了的那份
+ * 也算留着：说不准里面有没有。
+ */
+export async function countXingmangAiSkillSecrets(userHome: string): Promise<number> {
+  return serializeSkillDirectoryWork(async () => {
+    let remaining = 0
+    for (const directory of skillDirectoriesForConfig(userHome)) {
+      try {
+        const raw = await readSafeUtf8File(path.join(directory, XINGMANG_AI_CONFIG_FILE), '星芒AI Skill 配置', 16 * 1024)
+        if (!raw) continue
+        const parsed: unknown = JSON.parse(raw)
+        if (!isRecord(parsed)) {
+          remaining += 1
+          continue
+        }
+        const holdsKey = [parsed.apiKey, parsed.codexApiKey].some((value) => typeof value === 'string' && value.trim() !== '')
+        if (holdsKey) remaining += 1
+      } catch {
+        remaining += 1
+      }
+    }
+    return remaining
+  })
+}
+
 async function clearXingmangAiSkillSecretsInDirectories(userHome: string): Promise<number> {
   let cleared = 0
   for (const directory of skillDirectoriesForConfig(userHome)) {

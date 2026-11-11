@@ -8,11 +8,13 @@ param([Parameter(Mandatory = $true)][string]$Installer)
 # cleanup switch directly (tells a broken cleanup apart from an uninstaller
 # that never calls it), with and without the clear-login switch, then through
 # the real silent uninstaller, once plain and once (after reinstalling) with
-# the clear-login switch the uninstall page's checkbox stands for. Each time
-# the proxy must be back to what it was, the journal gone, the login item
-# removed and the updater cache (the installer's copy of itself plus a
-# downloaded update) gone; the saved sign-in must survive unless clearing it
-# was asked for, and the stored CLI keys must survive either way. Once the
+# the clear-login and clear-keys switches the uninstall page's two checkboxes
+# stand for. Each time the proxy must be back to what it was, the journal gone,
+# the login item removed and the updater cache (the installer's copy of itself
+# plus a downloaded update) gone; the saved sign-in must survive unless clearing
+# it was asked for, and the stored keys (the key caches, the config backups and
+# the relay key in a Claude Code config with the .bak copy beside it) must
+# survive unless deleting them was asked for, each switch on its own. Once the
 # updater cache also holds a junction, which must be left alone together with
 # everything behind it.
 #
@@ -77,6 +79,39 @@ function Assert-SignIn([string]$stage, [bool]$expectKept) {
     Check ((Test-Path -LiteralPath $file) -eq $expectKept) "$stage $verb $file"
   }
   foreach ($file in $keptFiles) { Check (Test-Path -LiteralPath $file) "$stage kept $file" }
+}
+
+# What the app leaves on a computer it has handed keys to: the key caches of
+# both account realms, a config backup, and a Claude Code config pointing at
+# the relay as the app writes it, with the .bak copy a second save leaves.
+function Set-KeysStored {
+  foreach ($file in $keyCaches) {
+    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $file) | Out-Null
+    [IO.File]::WriteAllText($file, $relayKey)
+  }
+  New-Item -ItemType Directory -Force -Path $claudeHome | Out-Null
+  $relayConfig = '{"env":{"ANTHROPIC_AUTH_TOKEN":"' + $relayKey + '","ANTHROPIC_BASE_URL":"https://xm.solov.cc"}}'
+  [IO.File]::WriteAllText($claudeSettings, $relayConfig)
+  [IO.File]::WriteAllText($claudeBackup, $relayConfig)
+}
+
+function Get-ClaudeFilesHoldingKey {
+  if (-not (Test-Path -LiteralPath $claudeHome)) { return @() }
+  return @(Get-ChildItem -LiteralPath $claudeHome -File -Force | Where-Object { [IO.File]::ReadAllText($_.FullName).Contains($relayKey) })
+}
+
+function Assert-Keys([string]$stage, [bool]$expectKept) {
+  $verb = if ($expectKept) { 'kept' } else { 'removed' }
+  foreach ($file in $keyCaches + $claudeBackup) {
+    Check ((Test-Path -LiteralPath $file) -eq $expectKept) "$stage $verb $file"
+  }
+  $holding = Get-ClaudeFilesHoldingKey
+  if ($expectKept) {
+    Check ($holding.Count -gt 0) "$stage kept the relay key in the Claude Code config"
+    return
+  }
+  Check ($holding.Count -eq 0) "$stage took the relay key out of every Claude Code config file (left: $(($holding | ForEach-Object Name) -join ', '))"
+  Check (Test-Path -LiteralPath $claudeSettings -PathType Leaf) "$stage left the Claude Code settings file itself in place"
 }
 
 function Install-App {
@@ -183,7 +218,16 @@ $earlierOwnedBypass = '<local>;localhost;127.0.0.1;[::1]'
 # must never go with them.
 $loginRecords = @('account-session.dat', 'saved-accounts.dat', 'realm-accounts-v2.dat', 'account-credentials.dat', 'realms\api-account\account-credentials.dat') |
   ForEach-Object { Join-Path $userData $_ }
-$keptFiles = @('managed-cli-keys.dat', 'settings.json') | ForEach-Object { Join-Path $userData $_ }
+$keptFiles = @('settings.json') | ForEach-Object { Join-Path $userData $_ }
+# What electron/uninstall-cleanup.ts clearStoredKeys deletes in the data
+# directory when the clear-keys switch is given, and only then.
+$keyCaches = @('managed-cli-keys.dat', 'chat-group-keys.dat', 'realms\api-account\managed-cli-keys.dat', 'backups\20261111T010203000Z-0f2a6c1e\manifest.json') |
+  ForEach-Object { Join-Path $userData $_ }
+$relayKey = 'sk-xingmang-smoke-relay-key'
+# The cleanup reads the tool configs under the profile the elevated uninstaller sees.
+$claudeHome = Join-Path $env:USERPROFILE '.claude'
+$claudeSettings = Join-Path $claudeHome 'settings.json'
+$claudeBackup = "$claudeSettings.bak.20261111010203456"
 $runKeyPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $loginItemName = 'com.xingmang.ai.manager'
 # electron/uninstall-cleanup.ts resolveUpdaterCacheDirectory, which follows electron-updater.
@@ -197,6 +241,7 @@ try {
   Check (-not (Test-Path -LiteralPath $journalPath) -and -not (Test-Path -LiteralPath $leasePath)) 'runner starts without a recovery journal'
   Check (-not (Test-Path -LiteralPath $loginRecords[0])) 'runner starts signed out'
   Check (-not (Test-Path -LiteralPath $updaterCache)) 'runner starts without an updater cache'
+  Check (-not (Test-Path -LiteralPath $claudeHome)) 'runner starts without a Claude Code config'
   Install-App
 
   # A distinct "before" proves the cleanup writes back the recorded original,
@@ -208,6 +253,7 @@ try {
   Write-State $before
   Check (Same-State (Read-State) $before) 'original user proxy installed'
   Set-SignedIn
+  Set-KeysStored
 
   # Stage 1: the cleanup entry on its own, so a failure below can be told apart
   # from the uninstaller never reaching it. Without the switch the sign-in stays.
@@ -217,6 +263,7 @@ try {
   Set-JunctionInUpdaterCache
   Invoke-DirectCleanup 'direct cleanup' @('--xingmang-uninstall-cleanup') $true
   Assert-SignIn 'direct cleanup' $true
+  Assert-Keys 'direct cleanup' $true
   Remove-Junction
   Remove-Item -LiteralPath $updaterCache -Recurse -Force
 
@@ -224,20 +271,31 @@ try {
   Set-UpdateDownloaded
   Invoke-DirectCleanup 'direct cleanup with clear-login' @('--xingmang-uninstall-cleanup', '--xingmang-clear-login')
   Assert-SignIn 'direct cleanup with clear-login' $false
+  Assert-Keys 'direct cleanup with clear-login' $true
 
-  # Stage 2: the real uninstaller with the box left unticked, the default.
+  # The clear-keys switch on its own leaves the sign-in alone.
   Set-SignedIn
+  Set-AccelerationLeftOn $exe.FullName $ownedBypass
+  Set-UpdateDownloaded
+  Invoke-DirectCleanup 'direct cleanup with clear-keys' @('--xingmang-uninstall-cleanup', '--xingmang-clear-keys')
+  Assert-SignIn 'direct cleanup with clear-keys' $true
+  Assert-Keys 'direct cleanup with clear-keys' $false
+
+  # Stage 2: the real uninstaller with both boxes left unticked, the default.
+  Set-KeysStored
   Set-AccelerationLeftOn $exe.FullName $ownedBypass
   Set-UpdateDownloaded
   Invoke-Uninstall 'uninstall' @('/S')
   Assert-SignIn 'uninstall' $true
+  Assert-Keys 'uninstall' $true
 
-  # Stage 3: reinstall, then uninstall with the switch a ticked box stands for.
+  # Stage 3: reinstall, then uninstall with the switches both ticked boxes stand for.
   # Only the installer's own copy is in the updater cache this time.
   Install-App
   Set-AccelerationLeftOn $exe.FullName $ownedBypass
-  Invoke-Uninstall 'uninstall with clear-login' @('/S', '--xingmang-clear-login')
-  Assert-SignIn 'uninstall with clear-login' $false
+  Invoke-Uninstall 'uninstall with clear-login and clear-keys' @('/S', '--xingmang-clear-login', '--xingmang-clear-keys')
+  Assert-SignIn 'uninstall with clear-login and clear-keys' $false
+  Assert-Keys 'uninstall with clear-login and clear-keys' $false
 } catch {
   Write-Output $_.ScriptStackTrace
   throw
@@ -245,7 +303,10 @@ try {
   try { Write-State $original } catch { Write-Warning 'could not restore the runner proxy' }
   Remove-ItemProperty -Path $runKeyPath -Name $loginItemName -ErrorAction SilentlyContinue
   Remove-Item -LiteralPath $journalPath, $leasePath -Force -ErrorAction SilentlyContinue
-  Remove-Item -LiteralPath ($loginRecords + $keptFiles) -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath ($loginRecords + $keptFiles + $keyCaches) -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath (Join-Path $userData 'backups') -Recurse -Force -ErrorAction SilentlyContinue
+  # The runner started without one (checked above), so the whole folder is ours.
+  Remove-Item -LiteralPath $claudeHome -Recurse -Force -ErrorAction SilentlyContinue
   # The junction first, so removing the cache can never reach through it.
   try { Remove-Junction } catch { Write-Warning 'could not remove the junction in the updater cache' }
   if (-not (Test-Junction)) { Remove-Item -LiteralPath $updaterCache -Recurse -Force -ErrorAction SilentlyContinue }

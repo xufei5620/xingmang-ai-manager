@@ -3381,12 +3381,15 @@ describe('registerIpcHandlers', () => {
     })
     const handler = electronMocks.handlers.get('window:uninstall-app')!
     await expect(handler(trustedEvent(), { clearLoginRecords: true })).resolves.toEqual({ trashed: true, leftovers: [] })
-    expect(uninstallApp.mock.calls[0][0]).toEqual({ clearLoginRecords: true, removeManagedTools: false })
+    expect(uninstallApp.mock.calls[0][0]).toEqual({ clearLoginRecords: true, removeManagedTools: false, clearStoredKeys: false })
     // 一家没配过不耽误其余几家的备份。
     expect(create.mock.calls.map((call) => call[0])).toEqual([...providerIds])
     await expect(handler(trustedEvent(), { clearLoginRecords: 'yes' })).rejects.toThrow('卸载选项格式错误')
+    await expect(handler(trustedEvent(), { clearStoredKeys: 1 })).rejects.toThrow('卸载选项格式错误')
     await expect(handler(trustedEvent(), null)).rejects.toThrow('卸载选项格式错误')
-    expect(parseAppUninstallRequest({})).toEqual({ clearLoginRecords: false, removeManagedTools: false })
+    // 删密钥默认不勾：渲染层没带这一项（老界面、手机遥控以外的任何调用）就是不删。
+    expect(parseAppUninstallRequest({})).toEqual({ clearLoginRecords: false, removeManagedTools: false, clearStoredKeys: false })
+    expect(parseAppUninstallRequest({ clearStoredKeys: true })).toEqual({ clearLoginRecords: false, removeManagedTools: false, clearStoredKeys: true })
     expect(uninstallApp).toHaveBeenCalledTimes(1)
   })
 

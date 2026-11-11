@@ -5,20 +5,31 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import type { App } from 'electron'
 import { accelerationProxyJournalPath } from './acceleration-development-host'
+import { configBackupDirectoryName } from './backups'
 import { isActiveProviderId, providerIds, type ProviderId } from './catalog'
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
-import { inspectManagedCliHookParts, providerConfigPaths, removeManagedCliHooks } from './config-files'
+import {
+  codexAuthSnapshotPaths,
+  inspectManagedCliHookParts,
+  inspectProviderConfig,
+  providerConfigPaths,
+  removeManagedCliHooks,
+  switchProviderToOfficialAccount,
+} from './config-files'
 import { trustedCommandEnvironment } from './command-runner'
 import { windowsAppUserModelId } from './login-launch'
 import { removeWindowsLoginItem } from './platform/system-service'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
+import { resolveRealmDataRoots, type RealmDataRealm } from './realm-data-roots'
+import { relaySites } from './relay-sites'
 import { configureRelocatedFolderAccess } from './relocated-folders'
 import { rememberRemovedCliHooks, type RemovedCliHooks } from './removed-cli-hooks'
 import { assertNoReparseComponents, removeSafeDataFile } from './safe-local-data'
-import { uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { uninstallClearKeysArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import { buildPowerShellModuleImportStatement } from './powershell-module-imports'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { clearXingmangAiSkillSecrets, countXingmangAiSkillSecrets } from './xingmang-ai-skill'
 
 const execFileAsync = promisify(execFile)
 
@@ -39,6 +50,8 @@ export const uninstallCleanupExitCodes = {
   otherAccount: 32,
   // 有哪家工具配置里的提醒设置（钩子、状态行）没收回来。
   cliHooksRemain: 64,
+  // 勾了「同时删掉这台电脑上存的密钥」，有没删掉的。
+  storedKeysRemain: 128,
 } as const
 
 // 单次 PowerShell 放宽到 90 秒：卸载时 PowerShell 往往是冷启动。以前每条命令还要
@@ -69,7 +82,7 @@ export function hasProxyRecoveryRecords(journalPath: string): boolean {
 // 卸载页「同时清除登录记录和聊天记录」里登录那一半删的就是这几样：能让下一个用这台电脑的人重装后
 // 直接进到这个账号的东西——当前登录态、本机保存的账号、记住的密码（两个站点
 // 各一份）。本机 Key 缓存和 CLI 配置里的 Key 不在其内：退出登录也保留本机 Key，
-// 这里跟它一致。名字与 main.ts、realm-account-vault-file.ts、realm-data-roots.ts
+// 这里跟它一致；要删 Key 是另一个勾（clearStoredKeys）。名字与 main.ts、realm-account-vault-file.ts、realm-data-roots.ts
 // 里的写法一一对应，uninstall-cleanup.test.ts 钉住。
 const loginRecordFileNames = ['account-session.dat', 'saved-accounts.dat', 'realm-accounts-v2.dat', 'account-credentials.dat']
 // 账号库读不出来时恢复代码留下的副本，里面同样是加密的登录态。
@@ -387,6 +400,175 @@ export async function removeCliHooksRememberingRestore(
   return removed
 }
 
+// ---------------------------------------------------------------------------
+// 卸载页勾了「同时删掉这台电脑上存的密钥」才删的几样（决定单 D91）。送人、卖电脑前勾上，下一个用这台
+// 电脑、这个系统账号的人打开工具就花不到原来那个账号的余额。只删认得是星芒写的：
+// - 四家命令行工具配置里星芒中转的那把：配置指着星芒的站点（哪个站、哪条线路都算）才动，照首页「切回
+//   官方账号」那一套收回，Key 和地址一起拿掉；别家中转、官方账号的配置一个字不碰。再删改配置时在原文件
+//   旁边留的 .bak 副本，和 Codex 切回官方账号时暂存那把 Key 的文件。
+// - 画图技能 config.json 里的两把（同退出登录那一步）。
+// - 数据目录里的本机密钥缓存（两个账号域各一份，读坏了挪开的那份也算）和「设置 › 备份迁移」的配置
+//   备份：备份里是整份工具配置，Key 也在里面。
+// 外接的桌面客户端（Claude Desktop、WorkBuddy、OpenCode）这一步不碰。不勾就一样都不动，跟以前一样。
+// ---------------------------------------------------------------------------
+
+/**
+ * 这家工具配置里用的是不是星芒中转：是就给出收回时要认的四个地址，这家那个换成配置里实际写的那个
+ * （线路2、旧别名都一样认，Grok 只拿掉地址完全相同的那张表）；不是（没 Key、别家中转、官方账号）是 null。
+ */
+export function relayBaseUrlsInUse(provider: ProviderId, roots: ProviderConfigRoots): Record<ProviderId, string> | null {
+  for (const site of relaySites) {
+    const inspection = inspectProviderConfig(provider, roots, site.providerBaseUrls)
+    if (inspection.matchesRelay) return { ...site.providerBaseUrls, [provider]: inspection.actualBaseUrl }
+  }
+  return null
+}
+
+/** 这家工具里放着 Key 的文件：它们旁边的 .bak 副本里是同一把。Codex 那个暂存文件只在切回过官方账号时才有。 */
+export function keyBearingConfigFiles(provider: ProviderId, roots: ProviderConfigRoots): string[] {
+  switch (provider) {
+    case 'codex': {
+      const auth = codexAuthSnapshotPaths(roots)
+      return [auth.active, auth.apikey]
+    }
+    case 'claude':
+      return [providerConfigPaths('claude', roots)[0]]
+    case 'gemini':
+      return [providerConfigPaths('gemini', roots)[1]]
+    case 'grok':
+      return [providerConfigPaths('grok', roots)[0]]
+  }
+}
+
+// 改工具配置之前在原文件旁边留的 `<文件名>.bak.<时间>`，同一毫秒的第二份再加 `-1`
+// （config-file-backups.ts 的 uniqueConfigBackupPath）。别的写法不是星芒留的，不删。
+const configFileBackupSuffix = /^\.bak\.\d{17}(?:-\d+)?$/
+
+/** 纯函数：同一个文件夹的文件名里，哪些是 filePath 旁边星芒留的 .bak 副本。 */
+export function configFileBackupPaths(filePath: string, entries: readonly string[]): string[] {
+  const base = path.basename(filePath)
+  return entries
+    .filter((name) => name.startsWith(base) && configFileBackupSuffix.test(name.slice(base.length)))
+    .map((name) => path.join(path.dirname(filePath), name))
+}
+
+function reportStoredKeysFailure(report: ((line: string) => void) | undefined, scope: string, error: unknown): void {
+  try { report?.(`stored keys (${scope}): ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+}
+
+function listDirectory(directory: string): string[] {
+  try {
+    return fs.readdirSync(directory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === 'ENOENT') return []
+    throw error
+  }
+}
+
+// Every file goes through removeSafeDataFile (I8): the Windows uninstaller runs
+// this elevated, so a link, a junction on the way, or a hard-linked file is
+// refused and left in place, never followed into somebody else's file.
+async function removeKeyFiles(files: readonly string[], scope: string, report?: (line: string) => void): Promise<boolean> {
+  let removed = true
+  for (const file of files) {
+    try {
+      await removeSafeDataFile(file, '本机密钥')
+    } catch (error) {
+      removed = false
+      reportStoredKeysFailure(report, scope, error)
+    }
+  }
+  return removed
+}
+
+/** 收回一家工具配置里星芒中转的 Key，再删掉旁边的 .bak 副本。一样失败不耽误另一样。 */
+export async function removeRelayKeyFromConfig(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  report?: (line: string) => void,
+): Promise<boolean> {
+  let removed = true
+  try {
+    const baseUrls = relayBaseUrlsInUse(provider, roots)
+    // 不传写入钩子：保存配置那边的钩子会先在数据目录里备份一份，备份里正是这把 Key。
+    if (baseUrls) switchProviderToOfficialAccount(provider, roots, {}, baseUrls)
+    // 工具自己都读不了的配置认不出是谁的，一个字不改；可里面说不准有星芒那把，不能算删干净了。
+    const after = inspectProviderConfig(provider, roots)
+    if (after.configBroken === true || after.codexAuthBroken === true) throw new Error('配置文件读不懂，没有改')
+    if (relayBaseUrlsInUse(provider, roots)) throw new Error('收回以后配置里还是星芒中转的密钥')
+  } catch (error) {
+    removed = false
+    reportStoredKeysFailure(report, provider, error)
+  }
+  // 切回官方账号刚把那把 Key 暂存进 Codex 的 xingmang-auth-apikey.json（好切回来接着用），改文件时又留了
+  // .bak；它们的名字都是星芒自己起的，跟着一起删。
+  const files = provider === 'codex' ? [codexAuthSnapshotPaths(roots).apikey] : []
+  for (const file of keyBearingConfigFiles(provider, roots)) {
+    try {
+      assertNoReparseComponents(path.dirname(file), '本机密钥')
+      files.push(...configFileBackupPaths(file, listDirectory(path.dirname(file))))
+    } catch (error) {
+      removed = false
+      reportStoredKeysFailure(report, provider, error)
+    }
+  }
+  return await removeKeyFiles(files, provider, report) && removed
+}
+
+const storedKeyRealms: readonly RealmDataRealm[] = ['xm-account', 'api-account']
+// 读不出来的缓存被挪成 `<名字>.corrupt-<毫秒>`（managed-cli-key-store.ts、chat-key-store.ts），
+// 里面同样是加密的 Key。
+const quarantinedKeyCacheSuffix = /^\.corrupt-\d+$/
+
+/** 纯函数：数据目录里的本机密钥缓存，两个账号域各两份，外加读坏了挪开的。entriesOf 给出某个文件夹里的文件名。 */
+export function storedKeyCacheFiles(dataDirectory: string, entriesOf: (directory: string) => readonly string[]): string[] {
+  return storedKeyRealms.flatMap((realm) => {
+    const roots = resolveRealmDataRoots(dataDirectory, realm)
+    const entries = entriesOf(roots.rootDirectory)
+    return [roots.managedCliKeysFile, roots.chatKeysFile].flatMap((file) => {
+      const base = path.basename(file)
+      const quarantined = entries.filter((name) => name.startsWith(base) && quarantinedKeyCacheSuffix.test(name.slice(base.length)))
+      return [file, ...quarantined.map((name) => path.join(roots.rootDirectory, name))]
+    })
+  })
+}
+
+// backups/<编号>/manifest.json 和 files/ 下一层；写到一半的是 backups/.<编号>.<随机>.tmp，同样两层。多留一层余地。
+const configBackupTree: OwnedTree = { report: 'stored keys (config backups)', label: '配置备份', maxDepth: 3 }
+
+/**
+ * 勾选项的全部内容。各样各删各的，一样失败不耽误下一样；返回 false = 有没删掉的，原因写进报告。
+ * 工具配置在前：收回时改配置留下的 .bak 要在同一步里删。
+ */
+export async function clearStoredKeys(
+  dataDirectory: string,
+  roots: ProviderConfigRoots,
+  report?: (line: string) => void,
+): Promise<boolean> {
+  let cleared = true
+  // 下线的 Gemini 也收：配置里那把一样花得到余额，跟收回提醒设置一个口径。
+  for (const provider of providerIds) {
+    if (!await removeRelayKeyFromConfig(provider, roots, report)) cleared = false
+  }
+  try {
+    await clearXingmangAiSkillSecrets(roots.userHome)
+    if (await countXingmangAiSkillSecrets(roots.userHome) > 0) throw new Error('画图技能配置里还留着密钥')
+  } catch (error) {
+    cleared = false
+    reportStoredKeysFailure(report, 'image skill', error)
+  }
+  let cacheFiles: string[] = []
+  try {
+    cacheFiles = storedKeyCacheFiles(dataDirectory, listDirectory)
+  } catch (error) {
+    cleared = false
+    reportStoredKeysFailure(report, 'key cache', error)
+  }
+  if (!await removeKeyFiles(cacheFiles, 'key cache', report)) cleared = false
+  if (!await removeOwnedTree(path.join(dataDirectory, configBackupDirectoryName), 0, configBackupTree, report)) cleared = false
+  return cleared
+}
+
 export interface UninstallCleanupDependencies {
   dataDirectory: string
   // 缺省 = 不问，照旧清理。
@@ -397,6 +579,8 @@ export interface UninstallCleanupDependencies {
   removeCliHooks?: () => boolean | Promise<boolean>
   // 只有卸载页勾了「同时清除登录记录和聊天记录」才给；缺省 = 两样都保留，跟以前一样。
   clearLoginRecords?: () => Promise<boolean>
+  // 只有卸载页勾了「同时删掉这台电脑上存的密钥」才给；缺省 = 密钥都留着，跟以前一样。
+  clearStoredKeys?: () => Promise<boolean>
   // 删掉自动更新留下的安装包；缺省 = 不动（旧行为，测试里用）。
   removeUpdaterCache?: () => Promise<boolean>
   proxyRecordsExist?: (journalPath: string) => boolean
@@ -447,6 +631,16 @@ export async function runUninstallCleanup(dependencies: UninstallCleanupDependen
     } catch (error) {
       code |= codes.cliHooksRemain
       try { dependencies.report?.(`cli hooks: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
+    }
+  }
+  // 紧跟在收回提醒设置后面：那一步改配置时在旁边留了 .bak，里面也是那把 Key，这里一起删。
+  // 同样排在代理还原前面。
+  if (dependencies.clearStoredKeys) {
+    try {
+      if (!await dependencies.clearStoredKeys()) code |= codes.storedKeysRemain
+    } catch (error) {
+      code |= codes.storedKeysRemain
+      try { dependencies.report?.(`stored keys: ${describeCleanupFailure(error)}`) } catch { /* Reporting must not change the result. */ }
     }
   }
   // 也排在代理还原前面：还原可能一直等到超时，删登录记录不该跟着被跳过。
@@ -501,6 +695,9 @@ export function startUninstallCleanup(
     removeCliHooksRememberingRestore(dataDirectory, uninstallProviderConfigRoots(), report),
   // 同上，免得删到跑测试这台电脑上真的更新缓存。
   removeUpdaterCache: () => Promise<boolean> = () => clearUpdaterCache(resolveUpdaterCacheDirectory(), report),
+  // 同上，免得删到跑测试这台电脑上真的密钥。工具配置的位置和收回提醒设置的同一份（不读 CODEX_HOME）。
+  removeStoredKeys: (dataDirectory: string) => Promise<boolean> = (dataDirectory) =>
+    clearStoredKeys(dataDirectory, uninstallProviderConfigRoots(), report),
 ): void {
   // A development build shares the login item's name with the installed app,
   // so running this from a checkout would switch off the real one's autostart.
@@ -522,6 +719,7 @@ export function startUninstallCleanup(
     removeLoginItem: () => removeWindowsLoginItem({ app, executablePath: process.execPath }),
     removeCliHooks: () => removeCliHooks(dataDirectory),
     clearLoginRecords: argv.includes(uninstallClearLoginArgument) ? () => clearLoginAndChatRecords(dataDirectory, report) : undefined,
+    clearStoredKeys: argv.includes(uninstallClearKeysArgument) ? () => removeStoredKeys(dataDirectory) : undefined,
     removeUpdaterCache,
     report,
   }).then(exit, () => exit(uninstallCleanupExitCodes.proxyNotRestored))

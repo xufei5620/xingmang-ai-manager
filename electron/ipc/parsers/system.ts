@@ -12,6 +12,7 @@ export function parseAppUninstallRequest(value: unknown): AppUninstallRequest {
   return {
     clearLoginRecords: optionalBoolean(value.clearLoginRecords, '卸载选项') ?? false,
     removeManagedTools: optionalBoolean(value.removeManagedTools, '卸载选项') ?? false,
+    clearStoredKeys: optionalBoolean(value.clearStoredKeys, '卸载选项') ?? false,
   }
 }
 

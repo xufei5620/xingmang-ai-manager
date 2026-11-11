@@ -140,7 +140,7 @@ import { createPaymentWindowController, resolvePaymentAppLaunchScheme } from './
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import { registerIpcHandlers, type AppWindowMode, type IpcRegistrationOptions } from './ipc'
 import { removeMacLoginItem, removeMacManagedTools, resolveMacAppBundlePath, runMacUninstall } from './macos-uninstall'
-import { clearLoginAndChatRecords, clearUpdaterCache, removeCliHooksRememberingRestore, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
+import { clearLoginAndChatRecords, clearStoredKeys, clearUpdaterCache, removeCliHooksRememberingRestore, resolveUpdaterCacheDirectory } from './uninstall-cleanup'
 import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
@@ -3241,6 +3241,7 @@ if (!hasSingleInstanceLock) {
           await session.defaultSession.clearStorageData({ storages: ['localstorage'] }).catch(() => undefined)
           return clearLoginAndChatRecords(managerDataDirectory, report)
         },
+        clearStoredKeys: () => clearStoredKeys(managerDataDirectory, rootedOptions.system.providerRoots, report),
         quit: () => {
           relaunchRequested = false
           const forceExitTimer = setTimeout(() => app.exit(0), 2_000)

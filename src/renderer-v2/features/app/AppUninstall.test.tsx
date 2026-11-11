@@ -7,11 +7,13 @@ function dialog(overrides: Partial<Parameters<typeof AppUninstallDialog>[0]> = {
     <AppUninstallDialog
       open
       clearRecords={false}
+      clearKeys={false}
       removeTools={false}
       busy={false}
       error=""
       message=""
       onClearRecords={() => undefined}
+      onClearKeys={() => undefined}
       onRemoveTools={() => undefined}
       onConfirm={() => undefined}
       onClose={() => undefined}
@@ -60,12 +62,14 @@ describe('app uninstall row', () => {
 })
 
 describe('app uninstall dialog', () => {
-  it('leaves both extra clean-ups unticked by default', () => {
+  it('leaves every extra clean-up unticked by default', () => {
     const markup = dialog()
     expect(markup).toContain('卸载星芒')
     expect(markup).toContain('工具的配置会保留，Claude Code、Codex 这些工具也会留着，照样能用。卸完星芒会退出。')
     expect(markup).toContain('同时清除登录记录和聊天记录')
+    expect(markup).toContain('同时删掉这台电脑上存的密钥')
     expect(markup).toContain('连同星芒替你装的命令行工具一起删')
+    expect(markup.match(/type="checkbox"/g)).toHaveLength(3)
     expect(markup).not.toContain('卸载并退出')
     expect(markup).not.toMatch(/type="checkbox"[^>]*checked/)
     expect(markup).not.toContain('app-uninstall-remove-tools-warning')
@@ -74,6 +78,16 @@ describe('app uninstall dialog', () => {
   it('shows what the user ticked', () => {
     const markup = dialog({ clearRecords: true, removeTools: true })
     expect(markup.match(/checked=""/g)).toHaveLength(2)
+    expect(dialog({ clearKeys: true }).match(/checked=""/g)).toHaveLength(1)
+  })
+
+  // 决定单 D91 的字：一个勾，默认不勾，下面一行说什么时候勾。
+  it('offers to delete the keys stored on this computer, with when to tick it', () => {
+    const markup = dialog()
+    expect(markup).toContain('data-testid="app-uninstall-clear-keys"')
+    expect(markup).toContain('送人或卖电脑时勾上')
+    expect(markup.indexOf('同时清除登录记录和聊天记录')).toBeLessThan(markup.indexOf('同时删掉这台电脑上存的密钥'))
+    expect(markup.indexOf('同时删掉这台电脑上存的密钥')).toBeLessThan(markup.indexOf('连同星芒替你装的命令行工具一起删'))
   })
 
   // 勾了「连同…一起删」才说会删掉哪些、删前先备份（macos-uninstall.ts 先跑 backupCliConfigs）。
@@ -105,6 +119,13 @@ describe('appUninstallNotice', () => {
     )
     expect(appUninstallNotice({ trashed: false, leftovers: ['cli-hooks', 'records'] })).toContain(
       '另外，有工具里的提醒设置没收回来、登录记录和聊天记录没有清除。',
+    )
+  })
+
+  // 移不进废纸篓时密钥一样没删（程序还开着，登录着的账号会把它写回工具里），要跟登录记录一样说出来。
+  it('says the stored keys were not deleted when the Trash step failed', () => {
+    expect(appUninstallNotice({ trashed: false, leftovers: ['records', 'keys'] })).toContain(
+      '另外，登录记录和聊天记录没有清除、这台电脑上存的密钥没有删掉。',
     )
   })
 })

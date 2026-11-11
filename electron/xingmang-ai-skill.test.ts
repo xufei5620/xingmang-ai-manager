@@ -30,6 +30,7 @@ import {
   assertBundledXingmangAiSkill,
   buildXingmangAiSkillConfig,
   clearXingmangAiSkillSecrets,
+  countXingmangAiSkillSecrets,
   followXingmangAiSkillRoute,
   describeImageMcpWarnings,
   parseXingmangAiSkillConfig,
@@ -662,6 +663,20 @@ describe('xingmang-ai-skill', () => {
       path.join(resolveXingmangAiSkillDirectories(userHome)[0], 'SKILL.md'),
       'utf8',
     )).toContain('星芒AI')
+  })
+
+  // 卸载时「同时删掉这台电脑上存的密钥」拿它核对删干净没有（uninstall-cleanup.ts 的 clearStoredKeys）。
+  it('counts the skill configs that still hold a key, an unreadable one included', async () => {
+    const userHome = await temporaryHome()
+    const { accountService } = loggedInAccount()
+    await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
+    expect(await countXingmangAiSkillSecrets(userHome)).toBe(1)
+
+    await clearXingmangAiSkillSecrets(userHome)
+    expect(await countXingmangAiSkillSecrets(userHome)).toBe(0)
+
+    await writeFile(path.join(resolveXingmangAiSkillDirectories(userHome)[0], XINGMANG_AI_CONFIG_FILE), '{ "apiKey": ')
+    expect(await countXingmangAiSkillSecrets(userHome)).toBe(1)
   })
 
   it('refreshes a previously cleared config on the next login sync', async () => {

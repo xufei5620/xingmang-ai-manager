@@ -30,6 +30,7 @@ const leftoverLabels: Record<AppUninstallLeftover, string> = {
   'login-item': '开机自动打开没关掉',
   tools: '星芒装的命令行工具没删干净',
   records: '登录记录和聊天记录没有清除',
+  keys: '这台电脑上存的密钥没有删掉',
 }
 
 /** 没移到废纸篓时界面要说的话；移走了就不用说，程序马上退出。 */
@@ -45,18 +46,22 @@ export function appUninstallNotice(result: AppUninstallResult): string {
 export function AppUninstallDialog({
   open,
   clearRecords,
+  clearKeys,
   removeTools,
   busy,
   error,
   detail,
   message,
   onClearRecords,
+  onClearKeys,
   onRemoveTools,
   onConfirm,
   onClose,
 }: {
   open: boolean
   clearRecords: boolean
+  /** 同时删掉这台电脑上存的密钥（决定单 D91），默认不勾。 */
+  clearKeys: boolean
   removeTools: boolean
   busy: boolean
   error: string
@@ -64,6 +69,7 @@ export function AppUninstallDialog({
   detail?: string
   message: string
   onClearRecords: (checked: boolean) => void
+  onClearKeys: (checked: boolean) => void
   onRemoveTools: (checked: boolean) => void
   onConfirm: () => void
   onClose: () => void
@@ -102,6 +108,15 @@ export function AppUninstallDialog({
       />
       <Input
         type="checkbox"
+        label="同时删掉这台电脑上存的密钥"
+        hint="送人或卖电脑时勾上"
+        checked={clearKeys}
+        disabled={busy}
+        testId="app-uninstall-clear-keys"
+        onChange={(event) => onClearKeys(event.target.checked)}
+      />
+      <Input
+        type="checkbox"
         label="连同星芒替你装的命令行工具一起删"
         checked={removeTools}
         disabled={busy}
@@ -131,6 +146,7 @@ export function AppUninstallRow({
 }) {
   const [open, setOpen] = useState(false)
   const [clearRecords, setClearRecords] = useState(false)
+  const [clearKeys, setClearKeys] = useState(false)
   const [removeTools, setRemoveTools] = useState(false)
   const operation = useOperation()
   if (!isMac) {
@@ -147,6 +163,7 @@ export function AppUninstallRow({
     if (operation.busy) return
     setOpen(false)
     setClearRecords(false)
+    setClearKeys(false)
     setRemoveTools(false)
     operation.clear()
   }
@@ -166,18 +183,20 @@ export function AppUninstallRow({
       <AppUninstallDialog
         open={open}
         clearRecords={clearRecords}
+        clearKeys={clearKeys}
         removeTools={removeTools}
         busy={operation.busy === 'uninstall-app'}
         error={operation.error}
         detail={operation.detail}
         message={operation.message}
         onClearRecords={setClearRecords}
+        onClearKeys={setClearKeys}
         onRemoveTools={setRemoveTools}
         onClose={close}
         onConfirm={() =>
           void operation.execute(
             'uninstall-app',
-            () => api.uninstallApp({ clearLoginRecords: clearRecords, removeManagedTools: removeTools }),
+            () => api.uninstallApp({ clearLoginRecords: clearRecords, removeManagedTools: removeTools, clearStoredKeys: clearKeys }),
             appUninstallNotice,
           )
         }

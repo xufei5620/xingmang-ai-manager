@@ -5,6 +5,9 @@ export const uninstallCleanupArgument = '--xingmang-uninstall-cleanup'
 // 卸载页勾了「同时清除登录记录和聊天记录」时，卸载程序在上面那个参数后面再带这一个
 // （XINGMANG_CLEAR_LOGIN_ARGUMENT，同样由 scripts 测试钉住）。只跟清理参数一起才有意义。
 export const uninstallClearLoginArgument = '--xingmang-clear-login'
+// 卸载页勾了「同时删掉这台电脑上存的密钥」时同样跟在清理参数后面（XINGMANG_CLEAR_KEYS_ARGUMENT，
+// 同一份测试钉住）。跟上面那个各管各的，两个都勾就两个都带。
+export const uninstallClearKeysArgument = '--xingmang-clear-keys'
 
 export function uninstallCleanupEntryMode(
   argv: readonly string[],

@@ -8,7 +8,8 @@ import { managedProductRoot } from './managed-cli-paths'
 // Mac 上删软件就是把 .app 拖进废纸篓，没有卸载程序替我们收尾。四家工具配置里的钩子、
 // 状态行还指着 .app 里的脚本，文件没了以后每一轮都在终端里报红；Windows 由卸载程序
 // 顺手收回（uninstall-cleanup.ts），这里补上 Mac 那一半：设置里点「卸载星芒」，先收回
-// 这些，再把自己移到废纸篓并退出。Key 和工具设置照 Windows 的口径留着，卸了星芒工具照样能用。
+// 这些，再把自己移到废纸篓并退出。Key 和工具设置照 Windows 的口径留着，卸了星芒工具照样能用；
+// 勾了「同时删掉这台电脑上存的密钥」才删 Key（同 Windows 卸载页那一项）。
 
 export interface MacUninstallDependencies {
   platform: NodeJS.Platform
@@ -33,6 +34,8 @@ export interface MacUninstallDependencies {
   /** 删掉自动更新下好的安装包（~/Library/Caches 下的更新缓存）。 */
   removeUpdaterCache(): Promise<boolean>
   clearLoginRecords(): Promise<boolean>
+  /** 「同时删掉这台电脑上存的密钥」（uninstall-cleanup.ts 的 clearStoredKeys）。跟登录记录一样，挪走程序以后才删。 */
+  clearStoredKeys(): Promise<boolean>
   quit(): void
   report?(line: string): void
 }
@@ -105,10 +108,15 @@ export async function runMacUninstall(
     leftovers.push('tools')
   }
   const bundle = trashableBundle(dependencies)
-  // 程序还在，人也还要看提示：不退出，登录记录也不清（还开着的窗口会把它写回来）。
+  // 程序还在，人也还要看提示：不退出，登录记录和密钥也不删（还开着的窗口会把它写回来，登录着的
+  // 账号会把密钥重新写进工具）。
   const stayOpen = (): AppUninstallResult => ({
     trashed: false,
-    leftovers: request.clearLoginRecords ? [...leftovers, 'records'] : leftovers,
+    leftovers: [
+      ...leftovers,
+      ...(request.clearLoginRecords ? ['records' as const] : []),
+      ...(request.clearStoredKeys ? ['keys' as const] : []),
+    ],
   })
   if (!bundle) return stayOpen()
   // 先断开加速、还原系统代理再挪程序：还原要用的东西可能按安装位置找，挪走以后就找不到了。
@@ -127,6 +135,9 @@ export async function runMacUninstall(
   // 程序确实挪走了才删：挪不动时人还要用它，下好的新版留着照样能装。没删掉只记日志，
   // 不算进 leftovers——那只占地方，不值得在提示里多说一句。
   await attempt(dependencies, 'update cache', () => dependencies.removeUpdaterCache())
+  if (request.clearStoredKeys && !await attempt(dependencies, 'stored keys', () => dependencies.clearStoredKeys())) {
+    leftovers.push('keys')
+  }
   if (request.clearLoginRecords && !await attempt(dependencies, 'login records', () => dependencies.clearLoginRecords())) {
     leftovers.push('records')
   }

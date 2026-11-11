@@ -32,6 +32,7 @@ function fixture(overrides: Partial<MacUninstallDependencies> = {}) {
     abortQuit: () => { calls.push('abort-quit') },
     removeUpdaterCache: async () => { calls.push('update-cache'); return true },
     clearLoginRecords: async () => { calls.push('records'); return true },
+    clearStoredKeys: async () => { calls.push('keys'); return true },
     quit: () => { calls.push('quit') },
     ...overrides,
   }
@@ -83,6 +84,36 @@ describe('runMacUninstall', () => {
       'records',
       'quit',
     ])
+  })
+
+  // 决定单 D91：勾了才删密钥，跟登录记录一样等程序挪进废纸篓以后再删（程序还开着时，登录着的账号会把它写回工具里）。
+  it('deletes the stored keys only when asked, after the app is in the Trash', async () => {
+    const { calls, dependencies } = fixture()
+    const result = await runMacUninstall(dependencies, { clearLoginRecords: false, removeManagedTools: false, clearStoredKeys: true })
+    expect(result).toEqual({ trashed: true, leftovers: [] })
+    expect(calls).toEqual([
+      'backup',
+      'hooks',
+      'login-item',
+      'prepare-quit',
+      'trash:/Applications/星芒AI管理工具.app',
+      'update-cache',
+      'keys',
+      'quit',
+    ])
+    const untouched = fixture()
+    await runMacUninstall(untouched.dependencies, { clearLoginRecords: true, removeManagedTools: true, clearStoredKeys: false })
+    expect(untouched.calls).not.toContain('keys')
+  })
+
+  it('reports stored keys it could not delete and still quits', async () => {
+    for (const clearStoredKeys of [async () => false, async () => { throw new Error('locked') }]) {
+      const lines: string[] = []
+      const { calls, dependencies } = fixture({ clearStoredKeys, report: (line) => { lines.push(line) } })
+      const result = await runMacUninstall(dependencies, { clearLoginRecords: false, removeManagedTools: false, clearStoredKeys: true })
+      expect(result).toEqual({ trashed: true, leftovers: ['keys'] })
+      expect(calls.at(-1)).toBe('quit')
+    }
   })
 
   it('refuses on other platforms, in development and while an installation runs, without touching anything', async () => {
@@ -142,6 +173,14 @@ describe('runMacUninstall', () => {
       expect(calls.slice(-2)).toEqual(['records', 'quit'])
       expect(lines).toEqual(logged)
     }
+  })
+
+  it('leaves the stored keys alone and says so when the app stays open', async () => {
+    const { calls, dependencies } = fixture({ trashItem: async () => { throw new Error('permission denied') } })
+    const result = await runMacUninstall(dependencies, { clearLoginRecords: true, removeManagedTools: false, clearStoredKeys: true })
+    expect(result).toEqual({ trashed: false, leftovers: ['records', 'keys'] })
+    expect(calls).not.toContain('keys')
+    expect(calls).not.toContain('records')
   })
 
   it('stays open when the Trash refuses the app', async () => {

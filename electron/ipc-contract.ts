@@ -276,8 +276,10 @@ export interface AppUninstallRequest {
   clearLoginRecords: boolean
   /** 连同星芒替你装的命令行工具一起删。 */
   removeManagedTools: boolean
+  /** 同时删掉这台电脑上存的密钥（和 Windows 卸载页那一项同一口径）。缺省 = 不删。 */
+  clearStoredKeys?: boolean
 }
-export type AppUninstallLeftover = 'cli-hooks' | 'login-item' | 'tools' | 'records'
+export type AppUninstallLeftover = 'cli-hooks' | 'login-item' | 'tools' | 'records' | 'keys'
 export interface AppUninstallResult {
   /** true = 已移到废纸篓、正在退出；false = 程序还在，界面提示他自己拖。 */
   trashed: boolean

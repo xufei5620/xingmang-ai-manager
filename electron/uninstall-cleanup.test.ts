@@ -9,12 +9,16 @@ import { providerBaseUrls } from './catalog'
 import { inspectManagedCliHookTargets, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import { readRemovedCliHooks, removedCliHooksRecordPath } from './removed-cli-hooks'
 import { activeRelocatedFolderPolicy, setRelocatedFolderPolicy } from './relocated-folders'
-import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { relayProviderBaseUrls } from './relay-sites'
+import { uninstallCleanupArgument, uninstallClearKeysArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { XINGMANG_AI_CONFIG_FILE, XINGMANG_AI_MANAGED_MANIFEST_FILE, parseXingmangAiSkillConfig, resolveXingmangAiSkillDirectories } from './xingmang-ai-skill'
 import {
   chatHistoryDirectoryNames,
   clearChatHistory,
   clearLoginRecords,
+  clearStoredKeys,
   clearUpdaterCache,
+  configFileBackupPaths,
   describeCleanupFailure,
   hasProxyRecoveryRecords,
   inspectUninstallAccount,
@@ -22,9 +26,11 @@ import {
   parseUninstallAccountProbe,
   removeCliHooksFromConfigs,
   removeCliHooksRememberingRestore,
+  relayBaseUrlsInUse,
   resolveUpdaterCacheDirectory,
   runUninstallCleanup,
   startUninstallCleanup,
+  storedKeyCacheFiles,
   uninstallCleanupExitCodes as codes,
   uninstallProviderConfigRoots,
   updaterCacheDirectoryName,
@@ -728,5 +734,260 @@ describe('taking our CLI hooks back on uninstall', () => {
       removeLoginItem: () => true, removeCliHooks,
     })).resolves.toBe(codes.otherAccount)
     expect(removeCliHooks).not.toHaveBeenCalled()
+  })
+})
+
+describe('deleting the keys stored on this computer on uninstall', () => {
+  const relayKey = 'sk-relay-stored-key-0123456789'
+  const imageKey = 'sk-image-stored-key-0123456789'
+
+  // Every file under the folder, as text: a key left anywhere shows up here.
+  function filesHolding(root: string, needle: string, directory = root): string[] {
+    const found: string[] = []
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const child = path.join(directory, entry.name)
+      if (entry.isDirectory()) found.push(...filesHolding(root, needle, child))
+      else if (entry.isFile() && fs.readFileSync(child, 'utf8').includes(needle)) found.push(path.relative(root, child))
+    }
+    return found
+  }
+
+  function relayConfigs(roots: ReturnType<typeof uninstallProviderConfigRoots>, baseUrls: Record<'claude' | 'codex' | 'gemini' | 'grok', string> = providerBaseUrls) {
+    // Saved twice so every key-bearing file also has the .bak copy a second save leaves beside it.
+    for (let round = 0; round < 2; round += 1) {
+      saveProviderConfig('claude', relayKey, 'claude-opus-4-6', 'reset', roots, {}, baseUrls)
+      saveProviderConfig('codex', relayKey, 'gpt-5.5', 'reset', roots, {}, baseUrls)
+      saveProviderConfig('gemini', relayKey, 'gemini-3.5-flash', 'reset', roots, {}, baseUrls)
+      saveProviderConfig('grok', relayKey, 'grok-4', 'reset', roots, {}, baseUrls)
+    }
+  }
+
+  function imageSkill(userHome: string): string {
+    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+    fs.mkdirSync(directory, { recursive: true })
+    // The manifest is what makes the folder ours; a customer's own images folder has none.
+    fs.writeFileSync(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE), '{}')
+    const config = path.join(directory, XINGMANG_AI_CONFIG_FILE)
+    fs.writeFileSync(config, JSON.stringify({ baseUrl: 'https://xm.solov.cc', group: '图片模型', apiKey: imageKey }))
+    return config
+  }
+
+  function keyCaches(dataDirectory: string): string[] {
+    const files = [
+      'managed-cli-keys.dat',
+      'chat-group-keys.dat',
+      'managed-cli-keys.dat.corrupt-1790000000000',
+      path.join('realms', 'api-account', 'managed-cli-keys.dat'),
+      path.join('realms', 'api-account', 'chat-group-keys.dat'),
+      path.join('backups', '20261111T010203000Z-0f2a6c1e', 'manifest.json'),
+      path.join('backups', '20261111T010203000Z-0f2a6c1e', 'files', '000-settings.json'),
+    ].map((name) => path.join(dataDirectory, name))
+    for (const file of files) {
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, relayKey)
+    }
+    return files
+  }
+
+  it('names both account realms\' key caches and the copies moved aside when unreadable', () => {
+    const dataDirectory = temporaryDataDirectory()
+    const apiRealm = path.join(dataDirectory, 'realms', 'api-account')
+    const entries: Record<string, string[]> = {
+      [dataDirectory]: ['managed-cli-keys.dat', 'managed-cli-keys.dat.corrupt-1790000000000', 'chat-group-keys.dat.corrupt-12', 'settings.json', 'account-session.dat', 'managed-cli-keys.dat.corrupt-x', 'managed-cli-keys.dat.bak'],
+      [apiRealm]: ['chat-group-keys.dat.corrupt-3'],
+    }
+    expect(storedKeyCacheFiles(dataDirectory, (directory) => entries[directory] ?? [])).toEqual([
+      path.join(dataDirectory, 'managed-cli-keys.dat'),
+      path.join(dataDirectory, 'managed-cli-keys.dat.corrupt-1790000000000'),
+      path.join(dataDirectory, 'chat-group-keys.dat'),
+      path.join(dataDirectory, 'chat-group-keys.dat.corrupt-12'),
+      path.join(apiRealm, 'managed-cli-keys.dat'),
+      path.join(apiRealm, 'chat-group-keys.dat'),
+      path.join(apiRealm, 'chat-group-keys.dat.corrupt-3'),
+    ])
+  })
+
+  it('recognizes only the .bak copies the config writer itself leaves beside a file', () => {
+    const file = path.join('/home/me/.claude', 'settings.json')
+    expect(configFileBackupPaths(file, [
+      'settings.json', 'settings.json.bak.20261111010203456', 'settings.json.bak.20261111010203456-2',
+      'settings.json.bak', 'settings.json.bak.mine', 'settings.json.bak.2026', 'settings.jsonx.bak.20261111010203456',
+      'other.json.bak.20261111010203456', 'settings.json.xingmang-0f2a.tmp',
+    ])).toEqual([
+      path.join('/home/me/.claude', 'settings.json.bak.20261111010203456'),
+      path.join('/home/me/.claude', 'settings.json.bak.20261111010203456-2'),
+    ])
+  })
+
+  it('takes every relay key off this computer and leaves the sign-in and settings alone', async () => {
+    const userHome = temporaryDataDirectory()
+    const dataDirectory = temporaryDataDirectory()
+    const roots = uninstallProviderConfigRoots(userHome)
+    relayConfigs(roots)
+    expect(filesHolding(userHome, relayKey).some((name) => name.includes('.bak.'))).toBe(true)
+    const skillConfig = imageSkill(userHome)
+    keyCaches(dataDirectory)
+    fs.writeFileSync(path.join(dataDirectory, 'settings.json'), '{}')
+    fs.writeFileSync(path.join(dataDirectory, 'account-session.dat'), 'session')
+
+    await expect(clearStoredKeys(dataDirectory, roots)).resolves.toBe(true)
+
+    expect(filesHolding(userHome, relayKey)).toEqual([])
+    expect(filesHolding(userHome, imageKey)).toEqual([])
+    expect(filesHolding(dataDirectory, relayKey)).toEqual([])
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) expect(relayBaseUrlsInUse(provider, roots)).toBeNull()
+    // Taken back the way the home page's switch to the official account does it, so the
+    // tool's own settings file stays (the Windows smoke checks the same on a real uninstall).
+    expect(fs.statSync(path.join(userHome, '.claude', 'settings.json')).isFile()).toBe(true)
+    expect(fs.existsSync(path.join(dataDirectory, 'backups'))).toBe(false)
+    // The skill itself stays; only its keys go, the same as on sign-out.
+    expect(parseXingmangAiSkillConfig(JSON.parse(fs.readFileSync(skillConfig, 'utf8')))).toEqual({ baseUrl: 'https://xm.solov.cc', group: '图片模型' })
+    // Not part of this box: the sign-in has its own, and settings are no key.
+    expect(fs.readFileSync(path.join(dataDirectory, 'account-session.dat'), 'utf8')).toBe('session')
+    expect(fs.existsSync(path.join(dataDirectory, 'settings.json'))).toBe(true)
+  })
+
+  it('recognizes the second line and the earlier-account site as ours', async () => {
+    for (const baseUrls of [relayProviderBaseUrls('solov', 'direct'), relayProviderBaseUrls('solov-api'), relayProviderBaseUrls('solov-api', 'direct')]) {
+      const userHome = temporaryDataDirectory()
+      const roots = uninstallProviderConfigRoots(userHome)
+      relayConfigs(roots, baseUrls)
+      for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) expect(relayBaseUrlsInUse(provider, roots)).not.toBeNull()
+      await expect(clearStoredKeys(temporaryDataDirectory(), roots)).resolves.toBe(true)
+      expect(filesHolding(userHome, relayKey)).toEqual([])
+    }
+  })
+
+  it('leaves a key the customer set up for another relay in place', async () => {
+    const userHome = temporaryDataDirectory()
+    const roots = uninstallProviderConfigRoots(userHome)
+    const elsewhere = { claude: 'https://relay.example.com', codex: 'https://relay.example.com/v1', gemini: 'https://relay.example.com', grok: 'https://relay.example.com/v1' }
+    saveProviderConfig('claude', 'sk-their-own-relay', 'claude-opus-4-6', 'reset', roots, {}, elsewhere)
+    expect(relayBaseUrlsInUse('claude', roots)).toBeNull()
+
+    await expect(clearStoredKeys(temporaryDataDirectory(), roots)).resolves.toBe(true)
+
+    expect(inspectProviderConfig('claude', roots, elsewhere).apiKey).toBe('sk-their-own-relay')
+    expect(inspectProviderConfig('claude', roots, elsewhere).actualBaseUrl).toBe('https://relay.example.com')
+  })
+
+  it('treats a computer that never stored a key as already clear', async () => {
+    await expect(clearStoredKeys(temporaryDataDirectory(), uninstallProviderConfigRoots(temporaryDataDirectory()))).resolves.toBe(true)
+  })
+
+  // The Windows uninstaller runs this elevated (I8): a key cache hard-linked to a file
+  // elsewhere is refused, and neither copy is touched; the rest still goes.
+  it('refuses a hard-linked key cache and still deletes everything else', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const outside = path.join(temporaryDataDirectory(), 'not-ours.dat')
+    fs.writeFileSync(outside, 'not ours')
+    fs.linkSync(outside, path.join(dataDirectory, 'managed-cli-keys.dat'))
+    fs.writeFileSync(path.join(dataDirectory, 'chat-group-keys.dat'), relayKey)
+    const report = vi.fn()
+
+    await expect(clearStoredKeys(dataDirectory, uninstallProviderConfigRoots(temporaryDataDirectory()), report)).resolves.toBe(false)
+
+    expect(fs.readFileSync(outside, 'utf8')).toBe('not ours')
+    expect(fs.existsSync(path.join(dataDirectory, 'managed-cli-keys.dat'))).toBe(true)
+    expect(fs.existsSync(path.join(dataDirectory, 'chat-group-keys.dat'))).toBe(false)
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('stored keys (key cache): '))
+  })
+
+  it('refuses a config backup folder that is itself a link', async () => {
+    const dataDirectory = temporaryDataDirectory()
+    const elsewhere = temporaryDataDirectory()
+    fs.writeFileSync(path.join(elsewhere, 'manifest.json'), 'not ours')
+    fs.symlinkSync(elsewhere, path.join(dataDirectory, 'backups'), 'junction')
+    const report = vi.fn()
+
+    await expect(clearStoredKeys(dataDirectory, uninstallProviderConfigRoots(temporaryDataDirectory()), report)).resolves.toBe(false)
+
+    expect(fs.readFileSync(path.join(elsewhere, 'manifest.json'), 'utf8')).toBe('not ours')
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('stored keys (config backups): '))
+  })
+
+  it('keeps going after a tool config it cannot read and reports which one', async () => {
+    const userHome = temporaryDataDirectory()
+    const dataDirectory = temporaryDataDirectory()
+    const roots = uninstallProviderConfigRoots(userHome)
+    relayConfigs(roots)
+    // A config the tool itself could not read: nothing of it is rewritten, the others still go.
+    fs.writeFileSync(providerConfigPaths('claude', roots)[0], `{ "env": { "ANTHROPIC_AUTH_TOKEN": "${relayKey}", "ANTHROPIC_BASE_URL": "${providerBaseUrls.claude}" }, `)
+    fs.writeFileSync(path.join(dataDirectory, 'managed-cli-keys.dat'), relayKey)
+    const report = vi.fn()
+
+    await expect(clearStoredKeys(dataDirectory, roots, report)).resolves.toBe(false)
+
+    expect(filesHolding(userHome, relayKey)).toEqual([path.join('.claude', 'settings.json')])
+    expect(fs.existsSync(path.join(dataDirectory, 'managed-cli-keys.dat'))).toBe(false)
+    expect(report).toHaveBeenCalledWith(expect.stringContaining('stored keys (claude): '))
+  })
+
+  it('deletes the keys only when given the step, right after the hooks and before the proxy', async () => {
+    const order: string[] = []
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(),
+      proxyRecordsExist: () => true,
+      removeLoginItem: () => { order.push('login item'); return true },
+      removeCliHooks: () => { order.push('hooks'); return true },
+      clearStoredKeys: async () => { order.push('keys'); return true },
+      clearLoginRecords: async () => { order.push('login records'); return true },
+      recoverProxy: async () => { order.push('proxy') },
+    })).resolves.toBe(0)
+    expect(order).toEqual(['login item', 'hooks', 'keys', 'login records', 'proxy'])
+
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), removeLoginItem: () => true, recoverProxy: async () => undefined, clearStoredKeys: async () => false,
+    })).resolves.toBe(codes.storedKeysRemain)
+
+    const report = vi.fn()
+    const recoverProxy = vi.fn(async () => undefined)
+    await expect(runUninstallCleanup({
+      report,
+      dataDirectory: temporaryDataDirectory(),
+      proxyRecordsExist: () => true,
+      removeLoginItem: () => true,
+      recoverProxy,
+      clearStoredKeys: async () => { throw new Error('本机密钥无法验证路径组件') },
+    })).resolves.toBe(codes.storedKeysRemain)
+    expect(recoverProxy).toHaveBeenCalledTimes(1)
+    expect(report).toHaveBeenCalledWith('stored keys: 本机密钥无法验证路径组件')
+  })
+
+  it('touches no key when another account runs the uninstaller', async () => {
+    const clearStoredKeysStep = vi.fn(async () => true)
+    await expect(runUninstallCleanup({
+      dataDirectory: temporaryDataDirectory(), inspectAccount: async () => 'other', recoverProxy: async () => undefined,
+      removeLoginItem: () => true, clearStoredKeys: clearStoredKeysStep,
+    })).resolves.toBe(codes.otherAccount)
+    expect(clearStoredKeysStep).not.toHaveBeenCalled()
+  })
+
+  it('keeps the keys unless the uninstaller passed the clear-keys switch, and the two switches go separately', async () => {
+    for (const [argv, keysCleared, loginCleared] of [
+      [['C:/App/xingmang.exe', uninstallCleanupArgument], false, false],
+      [['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearLoginArgument], false, true],
+      [['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearKeysArgument], true, false],
+      [['C:/App/xingmang.exe', uninstallCleanupArgument, uninstallClearLoginArgument, uninstallClearKeysArgument], true, true],
+    ] as const) {
+      const dataDirectory = temporaryDataDirectory()
+      fs.writeFileSync(path.join(dataDirectory, 'account-session.dat'), 'session')
+      const app = {
+        isPackaged: true,
+        getPath: vi.fn(() => dataDirectory),
+        setAppUserModelId: vi.fn(),
+        getLoginItemSettings: vi.fn(() => ({ openAtLogin: false })),
+        setLoginItemSettings: vi.fn(),
+      }
+      const removeStoredKeys = vi.fn(async (_dataDirectory: string) => true)
+      const exited = new Promise<number>((resolve) => startUninstallCleanup(app as never, resolve, undefined, argv, sameAccount, noConfigs, noUpdaterCache, removeStoredKeys))
+      await expect(exited).resolves.toBe(0)
+      expect(removeStoredKeys.mock.calls).toEqual(keysCleared ? [[dataDirectory]] : [])
+      expect(fs.existsSync(path.join(dataDirectory, 'account-session.dat'))).toBe(!loginCleared)
+    }
+  })
+
+  it('is wired into the Mac uninstall with the same tool config roots as the hook removal', () => {
+    expect(readMainWiringSource()).toContain('clearStoredKeys: () => clearStoredKeys(managerDataDirectory, rootedOptions.system.providerRoots, report)')
   })
 })

@@ -32,6 +32,10 @@
 # 测试钉住。卸载页勾了「同时清除登录记录和聊天记录」时跟在上面那个参数后面传给程序；静默卸载
 # 没有页面可勾，在卸载程序自己的命令行上带同一个参数，效果等于勾上。
 !define XINGMANG_CLEAR_LOGIN_ARGUMENT "--xingmang-clear-login"
+# 与 uninstall-cleanup-entry.ts 的 uninstallClearKeysArgument 是同一个值，同样由那份测试钉住。
+# 卸载页勾了「同时删掉这台电脑上存的密钥」时跟在清理参数后面；静默卸载同样在卸载程序自己的
+# 命令行上带它。跟上面那个各管各的。
+!define XINGMANG_CLEAR_KEYS_ARGUMENT "--xingmang-clear-keys"
 
 # 装到 Program Files 以外时给安装目录设的权限。
 #
@@ -63,6 +67,9 @@
   # 旧卸载程序，都是保留登录，跟加这个勾选框以前一样。
   Var xingmangClearLogin
   Var xingmangClearLoginCheckbox
+  # 同上："1" 表示要删这台电脑上存的密钥，空串就是留着（决定单 D91，默认不勾）。
+  Var xingmangClearKeys
+  Var xingmangClearKeysCheckbox
 !endif
 
 !ifndef BUILD_UNINSTALLER
@@ -381,14 +388,19 @@
         Return
       ${EndIf}
       Push $R0
+      Push $R1
       DetailPrint "正在还原系统代理，移除开机启动项，并收回写进 AI 工具里的提醒设置。"
-      ClearErrors
+      # 两个勾各带各的参数。$R1 只由这几行的编译期常量拼成，命令行里没有任何外部输入。
+      StrCpy $R1 ""
       ${If} $xingmangClearLogin == "1"
         DetailPrint "正在清除登录记录。"
-        ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT} ${XINGMANG_CLEAR_LOGIN_ARGUMENT}' $R0
-      ${Else}
-        ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT}' $R0
+        StrCpy $R1 " ${XINGMANG_CLEAR_LOGIN_ARGUMENT}"
       ${EndIf}
+      ${If} $xingmangClearKeys == "1"
+        StrCpy $R1 "$R1 ${XINGMANG_CLEAR_KEYS_ARGUMENT}"
+      ${EndIf}
+      ClearErrors
+      ExecWait '"$INSTDIR\${APP_EXECUTABLE_FILENAME}" ${XINGMANG_UNINSTALL_CLEANUP_ARGUMENT}$R1' $R0
       ${If} ${Errors}
         DetailPrint "卸载清理没能启动，可以忽略，不影响卸载。"
       ${ElseIf} $R0 == 32
@@ -398,6 +410,7 @@
         DetailPrint "卸载清理已完成，有几项没清掉，不影响卸载。"
         DetailPrint "（排查用代码：$R0）"
       ${EndIf}
+      Pop $R1
       Pop $R0
     FunctionEnd
 
@@ -507,16 +520,41 @@
       !insertmacro xingmangRestoreShellVarContext
     FunctionEnd
 
-    # 卸载欢迎页上加一个勾选框。欢迎页正文标签占到 175u（MUI2 Welcome.nsh：从 45u
-    # 起 130u 高），整页 193u 高，勾选框放在正文下面、页面底边之内。背景跟欢迎页
-    # 一样是白的，不设就会是一块灰底。
+    # 卸载欢迎页上加两个勾选框。欢迎页正文标签占到 175u（MUI2 Welcome.nsh：从 45u
+    # 起 130u 高），整页 193u 高。两个勾选框要 164u~190u 这一段，先把正文标签按比例
+    # 压到 116u 高（到 161u），免得和勾选框叠在一起：叠着的那块标签重画时会盖住勾选框。
+    # 正文只有几行字（中文系统上约七行，到 100u 上下），压完照样放得下。按它自己现在的
+    # 像素高度算，不管系统缩放是多少。背景跟欢迎页一样是白的，不设就会是一块灰底。
     Function un.xingmangWelcomeShow
-      ${NSD_CreateCheckbox} 120u 178u 195u 12u "同时清除登录记录和聊天记录"
+      Push $R0
+      Push $R1
+      Push $R2
+      Push $R3
+      StrCpy $R0 $mui.WelcomePage.Text
+      System::Call '*(i, i, i, i) p .R1'
+      System::Call 'user32::GetClientRect(p R0, p R1)'
+      System::Call '*$R1(i, i, i .R2, i .R3)'
+      System::Free $R1
+      IntOp $R3 $R3 * 116
+      IntOp $R3 $R3 / 130
+      # SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE：只改大小。
+      System::Call 'user32::SetWindowPos(p R0, p 0, i 0, i 0, i R2, i R3, i 0x16)'
+      Pop $R3
+      Pop $R2
+      Pop $R1
+      Pop $R0
+      ${NSD_CreateCheckbox} 120u 164u 195u 12u "同时清除登录记录和聊天记录"
       Pop $xingmangClearLoginCheckbox
       SetCtlColors $xingmangClearLoginCheckbox "" "${MUI_BGCOLOR}"
       # 从后一页点「上一步」回来，照上次的选择显示。
       ${If} $xingmangClearLogin == "1"
         ${NSD_Check} $xingmangClearLoginCheckbox
+      ${EndIf}
+      ${NSD_CreateCheckbox} 120u 178u 195u 12u "同时删掉这台电脑上存的密钥"
+      Pop $xingmangClearKeysCheckbox
+      SetCtlColors $xingmangClearKeysCheckbox "" "${MUI_BGCOLOR}"
+      ${If} $xingmangClearKeys == "1"
+        ${NSD_Check} $xingmangClearKeysCheckbox
       ${EndIf}
     FunctionEnd
 
@@ -527,6 +565,12 @@
         StrCpy $xingmangClearLogin "1"
       ${Else}
         StrCpy $xingmangClearLogin "0"
+      ${EndIf}
+      ${NSD_GetState} $xingmangClearKeysCheckbox $R0
+      ${If} $R0 == ${BST_CHECKED}
+        StrCpy $xingmangClearKeys "1"
+      ${Else}
+        StrCpy $xingmangClearKeys "0"
       ${EndIf}
       Pop $R0
     FunctionEnd
@@ -663,7 +707,7 @@
   !insertmacro MUI_UNPAGE_WELCOME
 !macroend
 
-# 在模板的 un.onInit 最后执行。静默卸载（/S）不显示欢迎页，想清登录记录只能从
+# 在模板的 un.onInit 最后执行。静默卸载（/S）不显示欢迎页，想清登录记录、删密钥只能从
 # 命令行说；客服远程协助和 CI 冒烟都走这条。
 !macro customUnInit
   Push $R0
@@ -673,6 +717,11 @@
   ${GetOptions} $R0 "${XINGMANG_CLEAR_LOGIN_ARGUMENT}" $R1
   ${IfNot} ${Errors}
     StrCpy $xingmangClearLogin "1"
+  ${EndIf}
+  ClearErrors
+  ${GetOptions} $R0 "${XINGMANG_CLEAR_KEYS_ARGUMENT}" $R1
+  ${IfNot} ${Errors}
+    StrCpy $xingmangClearKeys "1"
   ${EndIf}
   Pop $R1
   Pop $R0

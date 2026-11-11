@@ -13,7 +13,7 @@ import {
 import { supportServiceUrl } from './relay-sites'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
 import { loginLaunchArgument } from './login-launch'
-import { uninstallCleanupArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
+import { uninstallCleanupArgument, uninstallClearKeysArgument, uninstallClearLoginArgument } from './uninstall-cleanup-entry'
 import { buildUnexpectedExitRelaunchArgs } from './unexpected-exit'
 
 const windowsPolicy: ApplicationUrlPolicy = {
@@ -303,6 +303,7 @@ describe('packaged debug switch security', () => {
         '--user-data-dir=/tmp/xingmang-acceleration-profile-abc',
         uninstallCleanupArgument,
         uninstallClearLoginArgument,
+        uninstallClearKeysArgument,
         // electron-builder's StartApp after an update, and Electron's relaunch.
         '--updated',
         'xingmang://open',
@@ -334,6 +335,8 @@ describe('packaged Windows launch allowlist', () => {
       ['--updated'],
       [uninstallCleanupArgument],
       [uninstallCleanupArgument, uninstallClearLoginArgument],
+      [uninstallCleanupArgument, uninstallClearKeysArgument],
+      [uninstallCleanupArgument, uninstallClearLoginArgument, uninstallClearKeysArgument],
       [accelerationWorkerArgument, '--user-data-dir=C:\\Users\\tester\\AppData\\Local\\Temp\\xingmang-acceleration-abc'],
       ['--user-data-dir=C:\\Users\\tester\\AppData\\Local\\Temp\\xingmang-packaged-smoke-abc\\user-data'],
       ['-Embedding'],
@@ -418,14 +421,26 @@ describe('packaged launch arguments from the Windows installer', () => {
       .filter((line) => /\bExec\w*\b/.test(line) && line.includes('${APP_EXECUTABLE_FILENAME}'))
       .filter((line) => !/\bExec\w*\s+`"\$SYSDIR\\taskkill\.exe" /.test(line))
     expect(launches.length).toBeGreaterThan(0)
+    // The cleanup's optional switches are put together in $R1 first, one per ticked
+    // box on the uninstall page, so every combination of them is a command line too.
+    const cleanup = installer.match(/Function un\.xingmangUninstallCleanup\n([\s\S]*?)\n\s*FunctionEnd/)?.[1] ?? ''
+    const switchSets = new Set<string>()
+    for (const [, value] of cleanup.matchAll(/^\s*StrCpy \$R1 "([^"]*)"$/gm)) {
+      if (value.startsWith('$R1')) for (const earlier of [...switchSets]) switchSets.add(earlier + value.slice('$R1'.length))
+      else switchSets.add(value)
+    }
+    expect(switchSets.size).toBe(4)
     for (const line of launches) {
       const tail = line.match(/\$\{APP_EXECUTABLE_FILENAME\}"([^']*)'/)
       expect(tail, line).not.toBeNull()
-      const args = (tail?.[1] ?? '').trim().split(/\s+/).filter(Boolean)
-        .map((token) => token.replace(/^\$\{(\w+)\}$/, (_whole, name: string) => defines.get(name) ?? token))
-      expect(args.length, line).toBeGreaterThan(0)
-      for (const argument of args) expect(argument, line).not.toContain('${')
-      expect(resolvePackagedLaunchArguments([windowsExecutable, ...args], 'win32'), line).toEqual({ action: 'start' })
+      const tails = tail?.[1].includes('$R1') ? [...switchSets].map((switches) => tail[1].replace('$R1', switches)) : [tail?.[1] ?? '']
+      for (const commandLine of tails) {
+        const args = commandLine.trim().split(/\s+/).filter(Boolean)
+          .map((token) => token.replace(/^\$\{(\w+)\}$/, (_whole, name: string) => defines.get(name) ?? token))
+        expect(args.length, line).toBeGreaterThan(0)
+        for (const argument of args) expect(argument, line).not.toContain('$')
+        expect(resolvePackagedLaunchArguments([windowsExecutable, ...args], 'win32'), commandLine).toEqual({ action: 'start' })
+      }
     }
   })
 

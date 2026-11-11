@@ -45,10 +45,14 @@ test('the cleanup runs only on a real uninstall, before any file is removed', ()
 
 test('the cleanup starts the installed exe by absolute path, waits for it and never aborts the uninstall', () => {
   const body = functionBody('un.xingmangUninstallCleanup')
-  assert.match(body, /ExecWait '"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" \$\{XINGMANG_UNINSTALL_CLEANUP_ARGUMENT\}' \$R0/)
+  assert.match(body, /ExecWait '"\$INSTDIR\\\$\{APP_EXECUTABLE_FILENAME\}" \$\{XINGMANG_UNINSTALL_CLEANUP_ARGUMENT\}\$R1' \$R0/)
   // No shell and no PATH lookup (I1, I14): the only program started is the one
-  // this uninstaller installed, with a fixed argument.
+  // this uninstaller installed, with fixed arguments. The optional switches in
+  // $R1 are built from compile-time constants only, nothing from outside.
   assert.doesNotMatch(body, /cmd\.exe|powershell|ExecShell|nsExec/i)
+  const assignments = [...body.matchAll(/StrCpy \$R1 (.*)$/gm)].map((match) => match[1])
+  assert.deepEqual(assignments, ['""', '" ${XINGMANG_CLEAR_LOGIN_ARGUMENT}"', '"$R1 ${XINGMANG_CLEAR_KEYS_ARGUMENT}"'])
+  assert.match(body, /Push \$R1[\s\S]*Pop \$R1/)
   assert.doesNotMatch(body, /\bAbort\b|\bQuit\b/)
   // $R0 is shared with the template's own uninstall section.
   assert.match(body, /Push \$R0[\s\S]*Pop \$R0/)
@@ -72,8 +76,44 @@ test('the uninstaller passes the clear-login switch the cleanup recognizes, and 
   assert.equal(nsis, electron)
   const body = functionBody('un.xingmangUninstallCleanup')
   // The switch rides only on the branch the ticked box (or the silent flag) selects.
-  assert.match(body, /\$\{If\} \$xingmangClearLogin == "1"[\s\S]*?\$\{XINGMANG_UNINSTALL_CLEANUP_ARGUMENT\} \$\{XINGMANG_CLEAR_LOGIN_ARGUMENT\}'[\s\S]*?\$\{Else\}/)
+  assert.match(body, /\$\{If\} \$xingmangClearLogin == "1"\s+DetailPrint "[^"]+"\s+StrCpy \$R1 " \$\{XINGMANG_CLEAR_LOGIN_ARGUMENT\}"\s+\$\{EndIf\}/)
   assert.equal(body.match(/XINGMANG_CLEAR_LOGIN_ARGUMENT/g).length, 1)
+})
+
+// 决定单 D91：卸载页「同时删掉这台电脑上存的密钥」，默认不勾，跟清登录记录那个勾各管各的。
+test('the uninstaller passes the clear-keys switch the cleanup recognizes, and only when asked', () => {
+  const nsis = include.match(/^!define XINGMANG_CLEAR_KEYS_ARGUMENT "([^"]+)"$/m)?.[1]
+  const electron = entrySource.match(/export const uninstallClearKeysArgument = '([^']+)'/)?.[1]
+  assert.ok(nsis && electron)
+  assert.equal(nsis, electron)
+  const body = functionBody('un.xingmangUninstallCleanup')
+  // Appended after whatever the clear-login box added, so both can ride together.
+  assert.match(body, /\$\{If\} \$xingmangClearKeys == "1"\s+StrCpy \$R1 "\$R1 \$\{XINGMANG_CLEAR_KEYS_ARGUMENT\}"\s+\$\{EndIf\}/)
+  assert.equal(body.match(/XINGMANG_CLEAR_KEYS_ARGUMENT/g).length, 1)
+  // Both switches are settled before the one ExecWait that carries them.
+  assert.ok(body.indexOf('$xingmangClearKeys == "1"') < body.indexOf('ExecWait'))
+  assert.equal(body.match(/ExecWait/g).length, 1)
+})
+
+test('the uninstall welcome page carries an unticked clear-keys box below the clear-login one', () => {
+  const show = functionBody('un.xingmangWelcomeShow')
+  assert.match(show, /\$\{NSD_CreateCheckbox\} 120u 164u 195u 12u "同时清除登录记录和聊天记录"/)
+  assert.match(show, /\$\{NSD_CreateCheckbox\} 120u 178u 195u 12u "同时删掉这台电脑上存的密钥"/)
+  assert.ok(show.indexOf('同时清除登录记录和聊天记录') < show.indexOf('同时删掉这台电脑上存的密钥'))
+  assert.match(show, /\$\{If\} \$xingmangClearKeys == "1"\s+\$\{NSD_Check\} \$xingmangClearKeysCheckbox\s+\$\{EndIf\}/)
+  assert.match(show, /SetCtlColors \$xingmangClearKeysCheckbox "" "\$\{MUI_BGCOLOR\}"/)
+  // The welcome text label (MUI2: 45u down, 130u tall) is cut to 116u before the boxes
+  // go in, so it ends at 161u and never overlaps them; the page is 193u tall.
+  assert.match(show, /StrCpy \$R0 \$mui\.WelcomePage\.Text/)
+  assert.match(show, /IntOp \$R3 \$R3 \* 116\s+IntOp \$R3 \$R3 \/ 130/)
+  assert.match(show, /user32::SetWindowPos\(p R0, p 0, i 0, i 0, i R2, i R3, i 0x16\)/)
+  assert.ok(show.indexOf('SetWindowPos') < show.indexOf('NSD_CreateCheckbox'))
+  for (const register of ['R0', 'R1', 'R2', 'R3']) {
+    assert.ok(show.indexOf(`Push $${register}`) >= 0 && show.indexOf(`Push $${register}`) < show.indexOf(`Pop $${register}`), register)
+  }
+  assert.match(functionBody('un.xingmangWelcomeLeave'), /\$\{NSD_GetState\} \$xingmangClearKeysCheckbox \$R0\s+\$\{If\} \$R0 == \$\{BST_CHECKED\}\s+StrCpy \$xingmangClearKeys "1"/)
+  // A silent uninstall has no page; the same switch on its own command line stands in.
+  assert.match(macroBody('customUnInit'), /ClearErrors\s+\$\{GetOptions\} \$R0 "\$\{XINGMANG_CLEAR_KEYS_ARGUMENT\}" \$R1\s+\$\{IfNot\} \$\{Errors\}\s+StrCpy \$xingmangClearKeys "1"/)
 })
 
 test('the uninstall welcome page carries an unticked clear-login box', () => {
@@ -89,7 +129,7 @@ test('the uninstall welcome page carries an unticked clear-login box', () => {
   assert.match(macroBody('customUnInit'), /\$\{GetOptions\} \$R0 "\$\{XINGMANG_CLEAR_LOGIN_ARGUMENT\}" \$R1\s+\$\{IfNot\} \$\{Errors\}\s+StrCpy \$xingmangClearLogin "1"/)
   // The variables exist only in the uninstaller build; an unused one elsewhere is
   // a makensis warning, and warnings are errors (-WX).
-  assert.match(include, /!ifdef BUILD_UNINSTALLER\s+(?:#[^\n]*\n\s*)*Var xingmangClearLogin\s+Var xingmangClearLoginCheckbox\s+!endif/)
+  assert.match(include, /!ifdef BUILD_UNINSTALLER\s+(?:#[^\n]*\n\s*)*Var xingmangClearLogin\s+Var xingmangClearLoginCheckbox\s+(?:#[^\n]*\n\s*)*Var xingmangClearKeys\s+Var xingmangClearKeysCheckbox\s+!endif/)
 })
 
 test('the uninstall details the user reads are Chinese and the other-account code matches the cleanup', () => {
