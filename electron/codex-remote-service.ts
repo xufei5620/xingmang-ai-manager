@@ -32,6 +32,7 @@ import {
   approvalAcceptedMessage,
   approvalDeclinedMessage,
   approvalExpiredMessage,
+  approvalExpiringMessage,
   classifyRemoteTurnFailure,
   formatApprovalText,
   formatFileChangeLine,
@@ -40,6 +41,7 @@ import {
   redactRemoteText,
   remoteDisplayPath,
   remoteMessages,
+  remoteOpenedMessage,
   remoteTurnFailureMessages,
   splitRemoteText,
   staleMessageNotice,
@@ -88,6 +90,9 @@ const pairingQuietMs = 60_000
 const maxPairingFailures = 20
 const approvalTimeoutMinutes = 10
 const approvalTimeoutMs = approvalTimeoutMinutes * 60_000
+/** 等你同意的还剩这么久就提醒一次（YF-20）：人在路上没看到，到点自动拒绝，这一轮多半就做不下去了。 */
+const approvalReminderMinutesLeft = 3
+const approvalReminderMs = approvalTimeoutMs - approvalReminderMinutesLeft * 60_000
 const idleTimeoutMs = 4 * 60 * 60_000
 const idleRecheckMs = 30 * 60_000
 /** 闲着自动关之前这么久先提醒手机一次（D66 / YKS-19），回什么都会重新起算。 */
@@ -1141,12 +1146,18 @@ export class CodexRemoteService {
     if (runtime.adapter !== adapter) return null
     this.touch(runtime)
     this.options.log('info', 'remote.channel-started', { channel: runtime.id })
+    // 这一份连接第一次连上时给手机说一声（YF-11）；断线重连还是这一份，不再说。
+    let announced = false
     try {
       await adapter.start({
         onInbound: (message) => this.onInbound(runtime, adapter, message),
         onStatus: (status) => {
           if (runtime.adapter !== adapter) return
           runtime.status = status
+          if (status.state === 'connected' && !announced) {
+            announced = true
+            void this.announceOpened(runtime, adapter)
+          }
           this.emitSoon()
         },
       })
@@ -1195,6 +1206,18 @@ export class CodexRemoteService {
       this.codexStartFailed = false
       await this.stopCodex()
     }
+  }
+
+  /**
+   * 电脑上打开遥控、连上了（YF-11）：给配对过的人说一声，手机上不用自己发一句试通没通；也顺带是个提醒，
+   * 不是自己开的，手机上看得到。还没配对过的没人可说，等配对成功那句。
+   */
+  private async announceOpened(runtime: ChannelRuntime, adapter: RemoteChannelAdapter): Promise<void> {
+    const [peer, settings] = await Promise.all([this.boundPeer(runtime.id), this.options.store.readSettings()])
+    const workspace = settings.workspaceDirectory
+    if (!peer || !workspace || runtime.adapter !== adapter) return
+    this.options.log('info', 'remote.opened-announced', { channel: runtime.id })
+    await this.sendText(runtime, remoteOpenedMessage(remoteDisplayPath(workspace, this.options.homeDirectory, this.platform)), peer)
   }
 
   private async boundPeer(channel: RemoteChannelId): Promise<RemotePeer | null> {
@@ -1457,12 +1480,29 @@ export class CodexRemoteService {
         await this.sendText(runtime, remoteMessages.newThread)
         this.emitSoon()
         return
+      case 'close':
+        await this.closeFromPhone(runtime)
+        return
       case 'approval':
         await this.answerApproval(runtime, command.decision, command.approvalId)
         return
       case 'prompt':
         await this.runPrompt(runtime, command.text)
     }
+  }
+
+  /**
+   * 手机上发「关闭遥控」（YF-17）：手机丢了、发现不对劲，换台设备登录同一个账号就能当场关。跟托盘「关掉手机遥控」一样
+   * 开着的渠道全关（同一个人两个渠道都开着时，只关一个等于没关），只是每个配对过的人收到的是「已关闭」那句。
+   * 只认配对过的人（走到这里之前已经核过），要再开只能回电脑上。
+   */
+  private async closeFromPhone(from: ChannelRuntime): Promise<void> {
+    this.options.log('info', 'remote.closed-from-phone', { channel: from.id })
+    for (const id of remoteChannelIds) {
+      const runtime = this.runtimes[id]
+      if (runtime.enabled) await this.disableChannel(runtime, remoteMessages.closedFromPhone)
+    }
+    await this.emit()
   }
 
   private staleNoticedRecently(runtime: ChannelRuntime): boolean {
@@ -1958,6 +1998,12 @@ export class CodexRemoteService {
         this.emitSoon()
       }, approvalTimeoutMs)
       timer.unref?.()
+      const reminder = setTimeout(() => {
+        if (!this.pending.has(id)) return
+        this.options.log('info', 'remote.approval-reminded', { channel: runtime.id })
+        void this.sendText(runtime, approvalExpiringMessage(id, approvalReminderMinutesLeft))
+      }, approvalReminderMs)
+      reminder.unref?.()
       const entry: PendingApproval = {
         id,
         nonce,
@@ -1967,6 +2013,7 @@ export class CodexRemoteService {
         settle: (value) => {
           if (!this.pending.delete(id)) return
           clearTimeout(timer)
+          clearTimeout(reminder)
           resolve(value)
         },
       }

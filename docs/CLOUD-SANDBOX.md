@@ -49,7 +49,7 @@ npm run selfcheck                                # 提 PR 前的四道自查，�
 
 - **浏览器套件跑着的时候，别在同一个工作目录里合 main 或改文件。** vite 夹具会读到改了一半的文件，冒出和改动无关的红。要边跑边干别的，另开一个工作目录：`git worktree add --detach <临时目录> <提交>`，在那里重新 `npm ci`（Electron 的下载缓存共用，不用重下）。（沿用 10-26）
 - **在新开的 worktree 里把主目录的 `node_modules` 软链过来省安装，有两个坑。**（沿用 11-09；`.gitignore` 那一行 11-11 验）
-  1. 根 `.gitignore` 写的是 `node_modules/`（带斜杠），只挡目录、不挡软链，`git add -A` 会把这个链接提交进去。先往 `.git/info/exclude` 加一行 `/node_modules`，提交前 `git show --stat` 扫一眼。
+  1. 根 `.gitignore` 写的是 `node_modules/`（带斜杠），只挡目录、不挡软链，`git add -A` 会把这个链接提交进去。先往 `.git/info/exclude` 加一行 `/node_modules`，提交前 `git show --stat` 扫一眼。已经提交进去的那个提交别再挑回（`cherry-pick`、`merge`）主目录：git 会把主目录里真的 `node_modules` 删掉，换成一个指向它自己的坏链接，整个依赖就没了（11-11 踩过）。要挑，先在 worktree 里 `git rm --cached node_modules` 补一个提交，再连它一起挑；挑的时候加 `-n`、事后再 `git reset -- node_modules` 来不及，目录在挑的那一下就删了。真删了：从另一个装好的 worktree 把 `node_modules` 搬回来（锁文件一样才行），不然重新 `npm ci`。
   2. `tooling/legacy-renderer/node_modules` 也要链（它是 npm workspace，装着 React 18 的类型）。漏了 `npm run typecheck` 会在 legacy 的 `src/components/ui/*` 报一串类型错，不是代码问题。
 - **别用 `pkill -f <脚本名>` 收拾卡住的命令。** 命令行里带这串字的 shell 自己也会被杀掉。用进程号杀。（沿用 10-03）
 - **`npm test` 和 `npm run test:v2` 可以在同一个目录里同时后台跑**，没冒过假红。（沿用 11-09）

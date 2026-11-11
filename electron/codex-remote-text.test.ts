@@ -8,6 +8,7 @@ import {
   parseRemoteCommand,
   redactRemoteText,
   remoteMessages,
+  remoteOpenedMessage,
   remoteTurnFailureMessages,
   splitRemoteText,
   staleMessageNotice,
@@ -21,6 +22,19 @@ describe('codex-remote-text', () => {
     expect(parseRemoteCommand(' /停止 ', false)).toEqual({ kind: 'stop' })
     expect(parseRemoteCommand('／状态', false)).toEqual({ kind: 'status' })
     expect(parseRemoteCommand('帮助', true)).toEqual({ kind: 'help' })
+    expect(parseRemoteCommand('关闭遥控', false)).toEqual({ kind: 'close' })
+    expect(parseRemoteCommand('/关闭遥控', true)).toEqual({ kind: 'close' })
+  })
+
+  // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
+  it('lists closing the remote among the commands and does not read it out of a sentence', () => {
+    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、关闭遥控、帮助。')
+    expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。')
+    expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
+  })
+
+  it('tells the phone the remote was switched on, with the folder written like the status reply', () => {
+    expect(remoteOpenedMessage('~/projects/demo')).toBe('电脑上的手机遥控打开了，可以发消息了。工作文件夹：~/projects/demo')
   })
 
   it('treats a sentence that merely contains a command word as a prompt', () => {

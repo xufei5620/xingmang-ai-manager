@@ -1585,6 +1585,33 @@ describe('codex-remote-service approvals', () => {
     await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
   })
 
+  // YF-20：还剩 3 分钟时提醒一次，人在路上没看到也还来得及回；回过了就不再提醒。
+  it('reminds once with three minutes left, and not at all once answered', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const reminder = '第 1 条还在等你，3 分钟后自动拒绝。回「同意 1」或「拒绝 1」。'
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    await vi.advanceTimersByTimeAsync(7 * 60_000 - 1_000)
+    expect(channel.texts()).not.toContain(reminder)
+    await vi.advanceTimersByTimeAsync(1_000)
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe(reminder))
+    expect(s.logs).toContain('remote.approval-reminded')
+    await vi.advanceTimersByTimeAsync(3 * 60_000)
+    expect((await first).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+    expect(channel.texts().filter((line) => line === reminder)).toHaveLength(1)
+
+    const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' })
+    await approvalCardsSent(channel, 2)
+    channel.handlers?.onInbound(text(alice, '同意'))
+    expect((await second).result).toEqual({ decision: 'accept' })
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect(channel.texts().some((line) => line.startsWith('第 2 条还在等你'))).toBe(false)
+  })
+
   it('declines a command the card would cut short without asking, says why, and spends no approval number', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -1762,6 +1789,72 @@ describe('codex-remote-service lifecycle', () => {
     expect(channel.stopped).toBe(1)
     s.service.dispose()
     expect(await s.service.disableAllChannels()).toBeNull()
+  })
+
+  // YF-17：手机上发「关闭遥控」，开着的渠道一起关，跟托盘那一项一样；那句话换成「已关闭」，要再开只能回电脑。
+  it('switches every open channel off when the paired person sends the close command from the phone', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    await s.service.setChannelEnabled('weixin', true)
+    const weixin = s.channels[1]
+    const codex = await prompted(s, channel)
+    channel.sent.length = 0
+    s.snapshots.length = 0
+
+    channel.handlers?.onInbound(text(alice, '关闭遥控'))
+    await vi.waitFor(() => expect(s.service.hasEnabledChannel()).toBe(false))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)).toMatchObject({ channels: { feishu: { enabled: false }, weixin: { enabled: false } } }))
+    expect(channel.texts()).toEqual(['手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。'])
+    expect(channel.sent[0].replyContext).toMatch(/^ctx-/)
+    expect(channel.stopped).toBe(1)
+    expect(weixin.stopped).toBe(1)
+    expect(codex.kills).toContain('SIGTERM')
+    expect(s.logs).toContain('remote.closed-from-phone')
+    // 关了以后再发什么都没人理，得回电脑上打开。
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(channel.texts()).toHaveLength(1)
+  })
+
+  it('ignores the close command from anyone but the paired person, and from a group', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text({ channel: 'feishu', userId: 'ou_stranger_9999' }, '关闭遥控'))
+    channel.handlers?.onInbound(text(alice, '关闭遥控', { direct: false }))
+    channel.handlers?.onInbound(text(alice, '状态'))
+    await channel.sentUntil(() => channel.texts().some((line) => line.startsWith('工作文件夹')))
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    expect(channel.stopped).toBe(0)
+    expect(channel.texts()).toHaveLength(1)
+    expect(s.logs).not.toContain('remote.closed-from-phone')
+  })
+
+  // YF-11：电脑上打开、连上了给配对过的人说一声，手机上不用自己发一句试；断线重连不再说，没配对过的没人可说。
+  it('tells the paired person once the remote is switched on and connected, with the folder, but not again on a reconnect', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    expect(s.channels[0].sent).toHaveLength(0)
+    const first = s.channels[0]
+    await s.service.startPairing('feishu')
+    first.handlers?.onInbound(text(alice, '000042'))
+    await first.sentUntil(() => first.texts().some((line) => line.startsWith('配对成功')))
+    expect(first.texts().some((line) => line.startsWith('电脑上的手机遥控打开了'))).toBe(false)
+    await s.service.setChannelEnabled('feishu', false)
+
+    await s.service.setChannelEnabled('feishu', true)
+    const second = s.channels[1]
+    const opened = '电脑上的手机遥控打开了，可以发消息了。工作文件夹：~/projects/demo'
+    await second.sentUntil(() => second.texts().includes(opened))
+    expect(second.sent).toHaveLength(1)
+    expect(second.sent[0].peer).toMatchObject({ channel: 'feishu', userId: alice.userId })
+    expect(second.sent[0].replyContext).toBeUndefined()
+    expect(s.logs).toContain('remote.opened-announced')
+    second.handlers?.onStatus({ state: 'connecting', message: '网络断了，正在重连' })
+    second.handlers?.onStatus({ state: 'connected' })
+    second.handlers?.onInbound(text(alice, '状态'))
+    await second.sentUntil(() => second.texts().some((line) => line.startsWith('工作文件夹')))
+    expect(second.texts().filter((line) => line === opened)).toHaveLength(1)
   })
 
   // 状态文件关掉了手机遥控（G04）：开着的当场停，手机上收到的跟在电脑上点关一样。
