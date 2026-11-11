@@ -75,11 +75,38 @@ describe('data transfer file', () => {
   })
 
   it('validates the export request from the renderer', () => {
-    expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }] })
+    expect(parseDataTransferExportInput({ conversations: [{ id: 'a' }] })).toEqual({ conversations: [{ id: 'a' }], phrases: [] })
     expect(() => parseDataTransferExportInput(null)).toThrow()
     expect(() => parseDataTransferExportInput({ conversations: [1] })).toThrow()
     expect(parseDataTransferExportInput({ conversations: Array.from({ length: 200 }, () => ({})) }).conversations).toHaveLength(200)
     expect(() => parseDataTransferExportInput({ conversations: Array.from({ length: 201 }, () => ({})) })).toThrow()
+  })
+
+  it('carries saved chat phrases and leaves them out when there are none', () => {
+    const raw = buildDataTransferFile(settings(), { conversations: [], phrases: ['回答尽量简短', '翻译成英文'] }, new Date())
+    expect(parseDataTransferFile(raw).phrases).toEqual(['回答尽量简短', '翻译成英文'])
+    expect(JSON.parse(buildDataTransferFile(settings(), { conversations: [], phrases: [] }, new Date()))).not.toHaveProperty('phrases')
+  })
+
+  it('reads a file from before saved phrases existed as having none', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
+    expect(valid).not.toHaveProperty('phrases')
+    expect(parseDataTransferFile(JSON.stringify(valid)).phrases).toEqual([])
+  })
+
+  it('rejects a file whose phrases are not a short list of short strings', () => {
+    const valid = JSON.parse(buildDataTransferFile(settings(), { conversations: [] }, new Date()))
+    for (const phrases of ['回答尽量简短', [42], [{ text: 'x' }], ['x'.repeat(2_001)], Array.from({ length: 31 }, () => 'x')]) {
+      expect(() => parseDataTransferFile(JSON.stringify({ ...valid, phrases }))).toThrow(dataTransferInvalidMessage)
+    }
+    expect(parseDataTransferFile(JSON.stringify({ ...valid, phrases: Array.from({ length: 30 }, () => 'x'.repeat(2_000)) })).phrases).toHaveLength(30)
+  })
+
+  it('validates the phrases in the export request from the renderer', () => {
+    expect(parseDataTransferExportInput({ conversations: [], phrases: ['回答尽量简短'] }).phrases).toEqual(['回答尽量简短'])
+    expect(() => parseDataTransferExportInput({ conversations: [], phrases: 'x' })).toThrow('导出的常用的话格式无效')
+    expect(() => parseDataTransferExportInput({ conversations: [], phrases: [1] })).toThrow('导出的常用的话格式无效')
+    expect(() => parseDataTransferExportInput({ conversations: [], phrases: Array.from({ length: 31 }, () => 'x') })).toThrow('导出的常用的话格式无效')
   })
 })
 

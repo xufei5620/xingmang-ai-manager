@@ -1,4 +1,4 @@
-import { AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
+import { AI_CHAT_PHRASE_LIMITS, AI_CHAT_TEXT_FILE_LIMITS, IMAGE_SKILL_GROUP_NAMES } from '../../../../electron/ai-chat-protocol'
 import { resolveNewestModelOfFamily } from '../../../../electron/cli-model-defaults'
 import { matchNetworkFailureMessage, networkFailureMessages, networkFailureReasonForMessage } from '../../../../electron/network-failure'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent, AiChatTextFile } from '../../../../electron/ipc-contract'
@@ -37,7 +37,8 @@ export interface ChatMessage {
 // draftImages 是输入框里已经加上、还没发出去的图片；发出去以后挂在那条用户消息的 assets 上。draftFiles 同理，挂在 files 上。
 // pinned：客户置顶的，列表里排在最上面「置顶」那一段。renamed：客户自己改过名字，消息删光了再发也不按第一句话重新起名。
 export interface Conversation { id: string; title: string; createdAt: number; updatedAt: number; draft: string; draftImages?: AiChatAsset[]; draftFiles?: AiChatTextFile[]; settings: ChatSettings; messages: ChatMessage[]; lengthNoticeDismissed?: boolean; pinned?: boolean; renamed?: boolean }
-export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation }
+// phrases 是客户自己存的「常用的话」（Fable 第二轮 Q7），跟这个账号的聊天记录存在一起，新的在前。
+export interface ChatWorkspace { version: 2; owner: string; activeId: string | null; conversations: Conversation[]; draftConversation: Conversation; phrases?: string[] }
 export interface TurnPlan { conversation: Conversation; requestId: string; assistantId: string; settings: ChatSettings; prompt: string; messages: AiChatMessageInput[]; images: AiChatAsset[] }
 
 // Keep the first chat surface aligned with the account-side Codex defaults.
@@ -273,12 +274,6 @@ export function messageWithFiles(content: string, files: readonly AiChatTextFile
 const FILE_MARKUP_ALLOWANCE = 300
 function fileCharacters(files: readonly AiChatTextFile[] | undefined): number { return files?.reduce((total, file) => total + file.text.length, 0) ?? 0 }
 
-/** 输入框里最多还能写几个字：文件和标记占掉的从单条上限里扣，拼起来的整条不超过主进程认的单条上限。 */
-export function draftTextRoom(files: readonly AiChatTextFile[] | undefined): number {
-  if (!files?.length) return chatLimits.messageLength
-  return Math.max(0, chatLimits.messageLength - messageWithFiles('', files).length - 2)
-}
-
 /** 再选文件时还能加几个、能放多少字：文件合计不超过 3 万字，跟已经写的字拼起来也不超过单条上限。 */
 export function draftFileRoom(conversation: Pick<Conversation, 'draft' | 'draftFiles'>): { files: number; characters: number } {
   const present = conversation.draftFiles ?? []
@@ -366,6 +361,15 @@ export function continueInNewConversation(state: ChatWorkspace, sourceId: string
   const next = { ...createConversation(source.settings), draft: text, ...(images.length ? { draftImages: images } : {}), ...(files.length ? { draftFiles: files } : {}) }
   const cleared = fromSourceDraft ? changeConversation(state, sourceId, (item) => { const { draftImages: _moved, draftFiles: _movedFiles, ...rest } = item; return { ...rest, draft: '' } }) : state
   return { ...cleared, conversations: [next, ...cleared.conversations], activeId: next.id }
+}
+
+// 输入框不再靠 maxLength 截字：浏览器截掉的是尾巴，客户贴的报错日志最要紧的偏偏是最后几行，
+// 截了 AI 照样回答，客户不知道它没看到（D42）。超长时输入框下面说这一句、发送灰掉。
+// 跟 planTurn 一样按去掉首尾空白、连同带的文件一起算，灰着的按钮和真发出去时的检查口径一致；
+// 带了文件时「现在 N 字」也含文件，删字或拿掉文件都能降下来。
+export function draftLengthError(text: string, files?: readonly AiChatTextFile[]): string {
+  const length = messageWithFiles(text.trim(), files).length
+  return length > chatLimits.messageLength ? `最多 ${chatLimits.messageLength} 字，现在 ${length} 字，删掉一些再发。` : ''
 }
 
 export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string; images?: AiChatAsset[]; files?: AiChatTextFile[] }): TurnPlan {
@@ -542,3 +546,27 @@ export function shouldPasteScreenshot(clipboard: { items: Iterable<{ kind: strin
 export const chatExamples: readonly string[] = ['帮我把这段话改得更通顺', '把下面的内容翻译成英文', '帮我写一条朋友圈文案，卖的是……', '这个 Excel 公式怎么写：我想……', '帮我写一个批量重命名文件的脚本', '这段报错是什么意思']
 /** 带「……」的示例是半句话：填进去时去掉省略号，光标停在末尾，客户接着往下打，不用先删掉它。 */
 export function chatExampleDraft(example: string): string { return example.replace(/…+$/, '') }
+
+// 「常用」里最多存几条、一条最长多少字。一条是一句常说的话或一段固定要求，不是一篇文章。
+export const MAX_CHAT_PHRASES = AI_CHAT_PHRASE_LIMITS.count
+export const MAX_CHAT_PHRASE_LENGTH = AI_CHAT_PHRASE_LIMITS.length
+
+/** 存一条常用的话：去掉首尾空白，新的放最前面；已经有一样的就挪到最前面，不重复存。满了不再加。 */
+export function addChatPhrase(phrases: readonly string[] | undefined, text: string): string[] {
+  const phrase = text.trim().slice(0, MAX_CHAT_PHRASE_LENGTH)
+  const present = phrases ?? []
+  if (!phrase) return [...present]
+  const rest = present.filter((item) => item !== phrase)
+  if (rest.length >= MAX_CHAT_PHRASES) return [...present]
+  return [phrase, ...rest]
+}
+
+export function removeChatPhrase(phrases: readonly string[] | undefined, index: number): string[] {
+  return (phrases ?? []).filter((_phrase, position) => position !== index)
+}
+
+/** 填进输入框：输入框空着就换成这一句；已经写了字就接在下一行，不把写好的冲掉。 */
+export function draftWithPhrase(draft: string, phrase: string): string {
+  const text = draft.trim() ? `${draft.replace(/\s+$/, '')}\n${phrase}` : phrase
+  return text.slice(0, chatLimits.messageLength)
+}

@@ -177,6 +177,8 @@ const remoteState: {
   boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
   problem: RemoteSnapshot['channels']['feishu']['status'] | null
   codexStartFailed: boolean
+  autoStart: boolean
+  idleCloseHours: 4 | 12 | null
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
@@ -185,6 +187,8 @@ const remoteState: {
   boundPeer: null,
   problem: null,
   codexStartFailed: false,
+  autoStart: false,
+  idleCloseHours: null,
 }
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
@@ -210,6 +214,8 @@ function remoteSnapshot(): RemoteSnapshot {
     workspaceDirectory: remoteState.workspaceDirectory,
     task: 'idle',
     pendingApprovals: 0,
+    ...(remoteState.autoStart ? { autoStart: true } : {}),
+    ...(remoteState.idleCloseHours ? { idleCloseHours: remoteState.idleCloseHours } : {}),
     ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     channels: {
       feishu: {
@@ -262,6 +268,16 @@ const codexRemoteMethods = {
   onCodexRemoteStateChanged: (listener: (snapshot: RemoteSnapshot) => void) => {
     remoteListeners.add(listener)
     return () => { remoteListeners.delete(listener) }
+  },
+  setCodexRemoteAutoStart: async (enabled: boolean) => {
+    record('remote-auto-start', enabled)
+    remoteState.autoStart = enabled
+    return remoteSnapshot()
+  },
+  setCodexRemoteIdleClose: async (hours: 4 | 12 | null) => {
+    record('remote-idle-close', hours)
+    remoteState.idleCloseHours = hours
+    return remoteSnapshot()
   },
   chooseCodexRemoteWorkspace: async () => {
     record('remote-workspace')

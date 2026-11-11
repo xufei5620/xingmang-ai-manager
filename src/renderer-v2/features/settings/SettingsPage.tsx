@@ -56,7 +56,7 @@ import { certificateDiagnosticCode } from '../app/certificate-trust'
 import { takeSettingsGroup } from '../app/settings-group-intent'
 import { useRowFocus } from '../app/row-focus'
 import { currentWindowOs, type WindowOs } from '../app/window-os'
-import { parseImportedConversations } from '../chat/storage'
+import { parseImportedConversations, readChatPhrases } from '../chat/storage'
 import type { Conversation } from '../chat/state'
 import { dataTransferExportMessage, dataTransferImportMessage, settingsPatchFrom } from '../app/data-transfer'
 import type { V2Bridge } from '../../types'
@@ -465,7 +465,7 @@ export function SettingsPage({
     overwrite: boolean,
   ) => {
     const { added, skipped } = chatTransfer
-      ? await chatTransfer.importConversations(conversations)
+      ? await chatTransfer.importConversations(conversations, readChatPhrases(preview.phrases))
       : { added: 0, skipped: 0 }
     const patch = overwrite
       ? settingsPatchFrom(preview.settings, preview.conflictingSettings)
@@ -521,11 +521,11 @@ export function SettingsPage({
     void operation.execute(
       'transfer-export',
       async () =>
-        api.exportAppData({
-          conversations: chatTransfer
-            ? await chatTransfer.exportConversations()
-            : [],
-        }),
+        api.exportAppData(
+          chatTransfer
+            ? await chatTransfer.exportChat()
+            : { conversations: [] },
+        ),
       (result) =>
         result
           ? {

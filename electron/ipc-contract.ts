@@ -21,7 +21,7 @@ import type {
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
-import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
+import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
@@ -31,6 +31,7 @@ export type {
   RemoteChannelId,
   RemoteChannelState,
   RemoteChannelStatus,
+  RemoteIdleCloseHours,
 } from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
@@ -709,6 +710,8 @@ export interface AiChatHistoryFlushRequest {
  */
 export interface DataTransferExportInput {
   conversations: unknown[]
+  /** 聊天页「常用的话」（Fable 第二轮 Q7）。旧版本不带，当作没存过。 */
+  phrases?: string[]
 }
 
 export interface DataTransferExportResult {
@@ -723,6 +726,8 @@ export interface DataTransferExportResult {
  */
 export interface DataTransferImportPreview {
   conversations: unknown[]
+  /** 文件里的「常用的话」，聊天页合并时再筛一遍。旧文件没有这一项。 */
+  phrases?: string[]
   settings: AppSettingsUpdate
   conflictingSettings: AppSettingsUpdate
   /** conflictingSettings 对应的设置名，给询问框用。 */
@@ -1497,6 +1502,10 @@ export interface XingmangInvokeContract {
   setCodexRemoteChannelEnabled: IpcInvokeDefinition<'codex-remote:set-channel-enabled', [channel: RemoteChannelId, enabled: boolean], CodexRemoteSnapshot>
   /** 卡片上的「重新连接」：开着的渠道断开重连一次，凭据和绑定的人不动；没开着就原样交回现在的状态。 */
   reconnectCodexRemoteChannel: IpcInvokeDefinition<'codex-remote:reconnect', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  /** 「打开星芒时自动打开遥控」（YF-9，默认关）：只记下来，不当场开关渠道。 */
+  setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
+  /** 「多久没消息就自动关」（YF-10）：4 / 12 小时，null = 不自动关（缺省）。开着的渠道当场按新时长重新起算。 */
+  setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
   /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1805,6 +1814,8 @@ export const ipcInvokeChannels = {
   getCodexRemoteState: 'codex-remote:get-state',
   setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
   reconnectCodexRemoteChannel: 'codex-remote:reconnect',
+  setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
+  setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',

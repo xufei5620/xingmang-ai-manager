@@ -24,18 +24,30 @@ import {
   parseCanvasVideoReferenceOrder,
 } from './canvas-reference-order'
 import {
+  assertCanvasSceneTaskConfiguration,
+  parseCanvasNodeCommerceTask,
+  parseCanvasNodeExteriorTask,
+  parseCanvasNodeInteriorTask,
+  parseCanvasNodeStoryboardTask,
+} from './canvas-scene-tasks'
+import {
   canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
+  type CanvasCommerceTask,
+  type CanvasExteriorTask,
   type CanvasImageCollageInputOrder,
   type CanvasImageEditMask,
   type CanvasImageReferenceOrder,
   type CanvasImageTransformRecipe,
+  type CanvasInteriorTask,
   type CanvasRunGraph,
+  type CanvasRunGraphNode,
   type CanvasRunImageCandidateCount,
   type CanvasRunImageToolNodeKind,
   type CanvasRunKernelOnlyNodeKind,
   type CanvasRunNodeKind,
   type CanvasRunScope,
+  type CanvasStoryboardTask,
   type CanvasTileInputSelection,
   type CanvasVideoReferenceOrder,
 } from './canvas-run-contract'
@@ -432,6 +444,45 @@ function referenceOrderFields(kind: CanvasRunNodeKind, data: Record<string, unkn
   return fields
 }
 
+function sceneTasksRun(options: CanvasStartRunParseOptions): boolean {
+  return options.scenarioTemplates === true && options.referenceOrder === true
+}
+
+/** What a node carries once the desktop runs scene tasks (画布完善第 8 条第二步). */
+interface ParsedSceneTaskFields {
+  commerceTask?: CanvasCommerceTask
+  interiorTask?: CanvasInteriorTask
+  exteriorTask?: CanvasExteriorTask
+  storyboardTask?: CanvasStoryboardTask
+}
+
+/**
+ * The four scene tasks, parsed in full with the kernel's rules
+ * (canvas-scene-tasks.ts) because they write the prompt. As on the web host,
+ * a task on a node that cannot carry one fails the whole request.
+ */
+function sceneTaskFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedSceneTaskFields {
+  if (!sceneTasksRun(options)) return {}
+  const fields: ParsedSceneTaskFields = {}
+  if (data.interiorTask !== undefined) {
+    assertBoundedKernelValue(data.interiorTask, '画布室内创作配置', budget)
+    fields.interiorTask = parseCanvasNodeInteriorTask(kind, data.interiorTask)
+  }
+  if (data.exteriorTask !== undefined) {
+    assertBoundedKernelValue(data.exteriorTask, '画布室外创作配置', budget)
+    fields.exteriorTask = parseCanvasNodeExteriorTask(kind, data.exteriorTask)
+  }
+  if (data.storyboardTask !== undefined) {
+    assertBoundedKernelValue(data.storyboardTask, '画布故事板配置', budget)
+    fields.storyboardTask = parseCanvasNodeStoryboardTask(kind, data.storyboardTask)
+  }
+  if (data.commerceTask !== undefined) {
+    assertBoundedKernelValue(data.commerceTask, '画布电商创作配置', budget)
+    fields.commerceTask = parseCanvasNodeCommerceTask(kind, data.commerceTask)
+  }
+  return fields
+}
+
 /**
  * Returns why the desktop cannot run this node as the kernel asked, or
  * undefined when every kernel field is absent or equal to what the desktop
@@ -507,6 +558,8 @@ function kernelFieldsUnsupported(
   for (const [field, label, reason] of structured) {
     if (data[field] === undefined) continue
     if (imageToolsRun && (field === 'imageTransform' || field === 'imageCollageInputOrder' || field === 'tileInput')) continue
+    // sceneTaskFields parsed these, or refused the node outright.
+    if (sceneTasksRun(options) && (field === 'commerceTask' || field === 'interiorTask' || field === 'exteriorTask' || field === 'storyboardTask')) continue
     if (!isRecord(data[field]) && !Array.isArray(data[field])) throw new Error(`${label}格式错误`)
     assertBoundedKernelValue(data[field], label, budget)
     reasons.push(reason)
@@ -721,6 +774,12 @@ export interface CanvasStartRunParseOptions {
   imageTools?: boolean
   /** Whether picture roles and video reference orders run (第 8 条); defaults to desktopCanvasCapabilities.features.referenceOrder. */
   referenceOrder?: boolean
+  /**
+   * Whether the four scene tasks run (第 8 条第二步); defaults to
+   * desktopCanvasCapabilities.features.scenarioTemplates. Every task needs
+   * picture roles, so they run only with referenceOrder too.
+   */
+  scenarioTemplates?: boolean
 }
 
 export function parseCanvasStartRunInput(
@@ -729,6 +788,7 @@ export function parseCanvasStartRunInput(
     frameExtract: desktopCanvasCapabilities.features.frameExtract,
     imageTools: desktopCanvasCapabilities.features.imageTools,
     referenceOrder: desktopCanvasCapabilities.features.referenceOrder,
+    scenarioTemplates: desktopCanvasCapabilities.features.scenarioTemplates,
   },
 ): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
@@ -755,6 +815,8 @@ export function parseCanvasStartRunInput(
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
     const imageTools = imageToolFields(kind, entry.data, kernelFieldBudget, options)
+    // Tasks before roles, in the web host's order, so a broken pair reads the same there and here.
+    const sceneTasks = sceneTaskFields(kind, entry.data, kernelFieldBudget, options)
     const referenceOrders = referenceOrderFields(kind, entry.data, kernelFieldBudget, options)
     const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options, imageTools !== undefined)
     // Range-checked by kernelFieldsUnsupported above; kept only where it runs.
@@ -793,7 +855,7 @@ export function parseCanvasStartRunInput(
     const imageCandidateCount = runsImageCandidates(kind) && typeof entry.data.imageCandidateCount === 'number' && entry.data.imageCandidateCount > 1
       ? entry.data.imageCandidateCount as CanvasRunImageCandidateCount
       : undefined
-    return {
+    const node: CanvasRunGraphNode = {
       id: requiredCanvasString(entry.id, '画布节点标识', 256),
       kind,
       definitionVersion: entry.definitionVersion as number,
@@ -821,8 +883,13 @@ export function parseCanvasStartRunInput(
         ...(imageTools?.imageOutputIndex !== undefined ? { imageOutputIndex: imageTools.imageOutputIndex } : {}),
         ...(referenceOrders.imageReferenceOrder ? { imageReferenceOrder: referenceOrders.imageReferenceOrder } : {}),
         ...(referenceOrders.videoReferenceOrder ? { videoReferenceOrder: referenceOrders.videoReferenceOrder } : {}),
+        ...sceneTasks,
       },
     }
+    // As on the web host: a task without the picture roles it needs, two tasks
+    // on one node, or material B with a size of its own fails the request.
+    assertCanvasSceneTaskConfiguration(node.data)
+    return node
   })
   const edges: CanvasRunGraph['edges'] = value.graph.edges.map((entry) => {
     if (!isRecord(entry)) throw new Error('画布运行连线格式错误')

@@ -220,6 +220,8 @@ async function setup(options: {
   configRead?: Record<string, unknown>
   /** 还剩几次起 Codex 直接失败：模拟 Codex 坏了、起不来。 */
   failSpawns?: { remaining: number }
+  /** 设置里「多久没消息就自动关」选的时长；缺省 = 不自动关（YF-10）。 */
+  idleCloseHours?: 4 | 12
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -227,6 +229,7 @@ async function setup(options: {
   fs.mkdirSync(workspace, { recursive: true })
   const store = new CodexRemoteStore(path.join(root, 'data', 'codex-remote'), fakeStorage(), 'darwin')
   if (options.workspace !== false) await store.updateSettings((settings) => { settings.workspaceDirectory = workspace })
+  if (options.idleCloseHours) await store.updateSettings((settings) => { settings.idleCloseHours = options.idleCloseHours })
   if (options.credential !== false) await store.writeCredential('feishu', JSON.stringify({ appId: 'cli_abcdef', appSecret: 'feishu-secret-value' }))
   const channels: FakeChannel[] = []
   const codex: FakeCodex[] = []
@@ -798,6 +801,64 @@ describe('codex-remote-service switching on from the tray', () => {
     expect(await s.service.enableReadyChannels()).toEqual({ opened: [], failure: null })
     expect(s.channels).toHaveLength(0)
     expect(s.snapshots).toHaveLength(1)
+  })
+})
+
+describe('codex-remote-service switching on when Xingmang opens', () => {
+  it('remembers the choice without touching the channels, and drops it again when turned off', async () => {
+    const s = await setup()
+    await enabledAndPaired(s)
+    s.snapshots.length = 0
+    expect((await s.service.setAutoStart(true)).autoStart).toBe(true)
+    expect((await s.store.readSettings()).autoStart).toBe(true)
+    expect(s.snapshots.at(-1)?.autoStart).toBe(true)
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    const off = await s.service.setAutoStart(false)
+    expect(off.autoStart).toBeUndefined()
+    expect((await s.store.readSettings()).autoStart).toBeUndefined()
+    // 关掉开关不顺手断开：现在开着的照旧开着，只是下次打开星芒不再自己连。
+    expect(off.channels.feishu.enabled).toBe(true)
+  })
+
+  it('opens only the paired channels on the next launch, and only when the switch is on', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    await first.store.writeCredential('weixin', 'weixin-credential-value')
+    await enabledAndPaired(first)
+    first.service.dispose()
+
+    const plain = await setup({ root })
+    await plain.service.startOnLaunch()
+    expect(plain.channels).toHaveLength(0)
+    expect(plain.service.hasEnabledChannel()).toBe(false)
+    await plain.service.setAutoStart(true)
+    plain.service.dispose()
+
+    const s = await setup({ root })
+    await s.service.startOnLaunch()
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.enabled).toBe(true)
+    // 微信有凭据但没配对过人：不替他连，得回电脑上配对。
+    expect(snapshot.channels.weixin.enabled).toBe(false)
+    expect(s.channels).toHaveLength(1)
+    expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 1, failed: false })
+    // 自己连上的也跟手动打开一样，给配对过的人说一声（YF-11），他在外面才知道能用了。
+    await s.channels[0].sentUntil(() => s.channels[0].texts().some((line) => line.startsWith('电脑上的手机遥控打开了')))
+    expect(s.channels[0].sent[0].peer).toMatchObject({ userId: alice.userId })
+  })
+
+  it('only logs when it cannot open, leaving the switch on for next time', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    first.service.dispose()
+
+    const s = await setup({ root, codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    await s.service.startOnLaunch()
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 0, failed: true })
+    expect((await s.service.snapshot()).autoStart).toBe(true)
   })
 })
 
@@ -2006,7 +2067,7 @@ describe('codex-remote-service lifecycle', () => {
 
   it('tells the idle update install whether any channel is on, through switch-off and the four-hour close', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const s = await setup()
+    const s = await setup({ idleCloseHours: 4 })
     expect(s.service.hasEnabledChannel()).toBe(false)
     await enabledAndPaired(s)
     expect(s.service.hasEnabledChannel()).toBe(true)
@@ -2018,9 +2079,9 @@ describe('codex-remote-service lifecycle', () => {
     expect(s.service.hasEnabledChannel()).toBe(false)
   })
 
-  it('closes itself after four idle hours', async () => {
+  it('closes itself after four idle hours when four hours is chosen', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const s = await setup()
+    const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
     await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
     await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
@@ -2030,7 +2091,7 @@ describe('codex-remote-service lifecycle', () => {
   // D66 / YKS-19：自动关之前 10 分钟提醒一次，回什么都续上。
   it('warns ten minutes before the idle close and stays open when the phone answers', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const s = await setup()
+    const s = await setup({ idleCloseHours: 4 })
     const channel = await enabledAndPaired(s)
     const warning = '手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'
     await vi.advanceTimersByTimeAsync(3 * 60 * 60_000 + 49 * 60_000)
@@ -2043,6 +2104,68 @@ describe('codex-remote-service lifecycle', () => {
     await vi.advanceTimersByTimeAsync(3 * 60 * 60_000)
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
     expect(channel.texts().filter((line) => line === warning)).toHaveLength(1)
+  })
+
+  // YF-10：缺省「不自动关」，闲多久都开着、也不发提醒。
+  it('stays open however long it idles when nothing is chosen', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await vi.advanceTimersByTimeAsync(48 * 60 * 60_000)
+    expect(channel.texts()).toEqual([])
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.enabled).toBe(true)
+    expect(snapshot.idleCloseHours).toBeUndefined()
+    expect(s.logs).not.toContain('remote.idle-closing-soon')
+  })
+
+  it('warns and closes on the twelve-hour mark, saying twelve hours', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup({ idleCloseHours: 12 })
+    const channel = await enabledAndPaired(s)
+    await vi.advanceTimersByTimeAsync(11 * 60 * 60_000 + 49 * 60_000)
+    expect(channel.texts()).toEqual([])
+    await vi.advanceTimersByTimeAsync(60_000)
+    await channel.sentUntil(() => channel.texts().includes('手机遥控 10 分钟后自动关闭，还要用的话随便回一句就行。'))
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    await vi.waitFor(() => expect(channel.texts()).toContain('12 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
+
+  it('restarts the countdown from now when the duration changes, and drops it for never', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await vi.advanceTimersByTimeAsync(5 * 60 * 60_000)
+    s.snapshots.length = 0
+    const chosen = await s.service.setIdleClose(4)
+    expect(chosen.idleCloseHours).toBe(4)
+    expect(s.snapshots.at(-1)?.idleCloseHours).toBe(4)
+    expect((await s.store.readSettings()).idleCloseHours).toBe(4)
+    // 从改的这一刻起算 4 小时，不是从打开那一刻：前面闲着的 5 小时不算。
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60_000 + 49 * 60_000)
+    expect(channel.texts()).toEqual([])
+    await vi.advanceTimersByTimeAsync(60_000)
+    await channel.sentUntil(() => channel.texts().length === 1)
+    // 提醒发出去以后换成不自动关：后面那一下关闭也撤掉。
+    const never = await s.service.setIdleClose(null)
+    expect(never.idleCloseHours).toBeUndefined()
+    expect((await s.store.readSettings()).idleCloseHours).toBeUndefined()
+    await vi.advanceTimersByTimeAsync(24 * 60 * 60_000)
+    expect(channel.texts()).toHaveLength(1)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
+  })
+
+  it('reads the chosen duration back after a restart', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const root = tempRoot()
+    const first = await setup({ root })
+    await first.service.setIdleClose(4)
+    first.service.dispose()
+    const s = await setup({ root })
+    const channel = await enabledAndPaired(s)
+    await vi.advanceTimersByTimeAsync(4 * 60 * 60_000)
+    await vi.waitFor(() => expect(channel.texts()).toContain('4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。'))
   })
 
   // D66 / YKS-18：解绑、换人、退出登录，原来那个人要知道之后发的话不会再执行。
@@ -2083,7 +2206,7 @@ describe('codex-remote-service lifecycle', () => {
 
   it('reports every open, login loss and close to the state listener so the sleep blocker can follow', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
-    const s = await setup()
+    const s = await setup({ idleCloseHours: 4 })
     let held = 0
     const keepAwake = createCodexRemoteKeepAwake({
       blocker: {

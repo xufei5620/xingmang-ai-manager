@@ -11,13 +11,12 @@ import { answerHistoryFlushRequests } from './features/chat/storage'
 import { OnlineStatusContext } from './features/shell/useOnlineStatus'
 import { buildEnvironmentStatus, environmentJobsFinished, markDiagnosticsStale, useDiagnosticsCounts } from './features/app/environment-status'
 import { createAppApi } from './features/app/api'
-import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, isGuideToolRoute, type AuthMode, type GuideLanding, type GuideRoute, type GuideToolState, type LoginTarget } from './features/auth'
+import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideFolderFields, guideOfficialLoginRequired, isGuideToolRoute, type AuthMode, type GuideLanding, type GuideRoute, type GuideToolState, type LoginTarget, useGuideLaunch } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, homeWalletEmpty } from './features/tools/Home'
-import { opensUntouchedStarterWorkspace } from './features/tools/recent-workspaces'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
@@ -325,6 +324,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     document.documentElement.dataset.rendererReady = 'true'
     return () => { delete document.documentElement.dataset.rendererReady }
   }, [])
+  // 引导最后一步那颗「打开」跟首页同一套（D46）：落在哪个文件夹按会话记录定，引导开着时读一份。
+  const guideLaunchTarget = useGuideLaunch(toolsApi, guide, recentRevision, toolbox.snapshot?.config.rememberedWorkspace)
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: guideSource(tool.source),
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
@@ -336,9 +337,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // Mac 上 Codex 桌面端的更新要先看开没开着、换完再帮它打开，引导里那颗「更新」走不了这一套：只在首页卡片上给。
     update: tool.id === 'codexDesktop' && toolbox.snapshot!.platform.isMac ? null : toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
-    // 引导最后一步那句话（D45）：还没记过文件夹的，引导叫他点「新建并打开」，首页第一次「打开」也是替他新建；
-    // 记着的那个是星芒建的、还空着，也算。记着的是别的文件夹，照旧。
-    freshFolder: opensUntouchedStarterWorkspace({ createsFolder: !toolbox.snapshot!.config.rememberedWorkspace, workspace: toolbox.snapshot!.config.rememberedWorkspace }, toolbox.snapshot!.config),
+    // 「打开」落在哪、旁边给不给「选择其他文件夹…」，那句话（D45）也跟着它挑：跟首页这个工具的卡片同一套。
+    ...guideFolderFields(guideLaunchTarget(tool.provider), toolbox.snapshot!.config),
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,
@@ -554,7 +554,13 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         return Boolean(outcome?.result?.configured.includes(provider))
       }} onFailureAction={runGuideFailureAction} support={supportInput} onFailure={setLastFailure} canReplaceNode={canReplaceNode({ platform: platform?.platform, nodeRuntimeInstall: platform?.nodeRuntimeInstall })}
       walletEmpty={session.authenticated && homeWalletEmpty(balanceAmount, subscription, accountSupports(session, 'supportsBilling'))}
-      onLaunch={async (id, newFolder) => isGuideToolRoute(id) ? launch(id, 'open', undefined, newFolder ? 'create' : 'choose') : true}
+      onLaunch={async (id, chooseFolder) => {
+        if (!isGuideToolRoute(id)) return true
+        // 跟首页那颗「打开」同一套（D46）：没用过的替他新建项目文件夹，用过的在上次的文件夹里开（不在了提示一句再弹选择窗口）；
+        // 「选择其他文件夹…」弹选择窗口。Codex 桌面端自己管工作区。
+        const target = guideLaunchTarget(providerFor(id))
+        return chooseFolder || id === 'codexDesktop' ? launch(id, 'open', undefined, 'choose') : launch(id, 'open', target.workspace, target.startsFresh ? 'firstOpen' : 'choose')
+      }}
       createAvailable={signedInSiteId(session) !== 'solov-api'} onCreateLogin={() => { guideCreateAfterLogin.current = true; setAuth('login') }}
       onComplete={finishGuide} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} onRegister={() => setAuth('register')} />}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} initialSiteId={authTarget?.siteId} initialIdentifier={authTarget?.identifier} sessionOnly={session.sessionOnly === true} onClose={() => { guideCreateAfterLogin.current = false; setAuth(null); setAuthTarget(null) }} onHelp={() => setHelp(true)}

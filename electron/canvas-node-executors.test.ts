@@ -649,6 +649,85 @@ describe('createCanvasNodeExecutors', () => {
       .rejects.toThrow('请输入图片编辑指令或连接上游文本节点')
   })
 
+  it('writes a scene task prompt around the user words, sends material B at the source size times the upscale, and fails a picture of another size', async () => {
+    const edited = (width: number, height: number) => ({ assetId: 'e'.repeat(43), localUrl: 'xingmang-asset://e', mimeType: 'image/png' as const, fileName: 'edited.png', width, height })
+    const edit = vi.fn(async () => [edited(1536, 1152)])
+    const executors = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) } })
+    const source = { kind: 'image' as const, assetId: 's'.repeat(43), localUrl: 'xingmang-asset://s', width: 1024, height: 768 }
+    const one = { version: 1 as const, slots: [{ role: 'source' as const, edgeId: 's', outputIndex: 0 }] }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 42, signal: new AbortController().signal }
+    const materialB = { version: 1 as const, kind: 'material-b' as const, preserve: ['shape' as const], strength: 0.35, upscale: 1.5 }
+    function node(data: Record<string, unknown>) {
+      return { id: 'n', kind: 'image-edit' as const, definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '生图', size: 'auto', imageReferenceOrder: one, ...data } }
+    }
+    // No typed prompt is needed: the task writes it.
+    await executors['image-edit']!({ ...base, inputs: { image: source, images: [source] }, node: node({ commerceTask: materialB }) })
+    expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({
+      prompt: '【材质优化 B】\n第 1 张参考图是原始商品或主体图片。\n优化表面材质、细节与光影。改变幅度意图为 35%；这是文字指令，不是模型原生重绘参数。\n优先保持：商品形状。',
+      size: '1536x1152', sourceAssetIds: [source.assetId],
+    }))
+    // Paid for, but not the size asked for: the node fails and says not to simply rerun.
+    edit.mockResolvedValueOnce([edited(1024, 768)])
+    await expect(executors['image-edit']!({ ...base, inputs: { image: source, images: [source] }, node: node({ commerceTask: materialB }) }))
+      .rejects.toThrow('模型已返回图片，但实际尺寸不是请求的 1536x1152；本次不能标记为倍率处理成功，请核对原尝试，不要直接重复生成')
+    edit.mockResolvedValueOnce([edited(1536, 1152), edited(1536, 1152)])
+    await expect(executors['image-edit']!({ ...base, inputs: { image: source, images: [source] }, node: node({ commerceTask: materialB }) }))
+      .rejects.toThrow('创作任务每次请求应返回唯一图片，实际返回数量不符；请核对原尝试，不会自动重发')
+    // A size the desktop would not send exactly, or a source without its pixel size, costs nothing.
+    edit.mockClear()
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [{ ...source, width: 1000, height: 1000 }] }, node: node({ commerceTask: { ...materialB, upscale: 1 } }) }))
+      .rejects.toThrow('当前模型无法精确输出派生尺寸 1000x1000；请更换原图、请求倍率或模型。这个型号的宽和高都要是 16 的倍数，并在 256 到 4096 之间')
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [{ kind: 'image', assetId: source.assetId, localUrl: source.localUrl }] }, node: node({ commerceTask: materialB }) }))
+      .rejects.toThrow('材质优化 B 需要核对原图的实际像素尺寸')
+    expect(edit).not.toHaveBeenCalled()
+    // Other tasks keep the node's own size; the typed words become 补充要求, upstream text first.
+    edit.mockResolvedValue([edited(64, 64)])
+    await executors['image-edit']!({ ...base, inputs: { text: '白色背景', images: [source] }, node: node({ prompt: '保留 logo', size: '1024x1024', interiorTask: { version: 1, kind: 'interior-render', addDecor: false, addPeople: true, enclosedSpace: false, interiorLighting: false, weather: 'none', time: 'night', exterior: 'none', filter: 'none' } }) })
+    expect(edit).toHaveBeenLastCalledWith(9, expect.objectContaining({
+      size: '1024x1024',
+      prompt: '【室内渲染】\n第 1 张参考图是唯一室内原图。保留原图的空间结构、门窗位置、透视和主要构图，完成室内视觉渲染。\n加入尺度和透视合理的自然人物，不遮挡空间主体。\n以深夜的窗外亮度和室内外光照关系呈现。\n以上选项通过文字指令表达，不是模型原生灯光、天气或本地像素滤镜参数。关闭或未指定的选项不要求删除原有场景内容。\n补充要求：\n白色背景\n保留 logo',
+    }))
+    // Without automatic writing an exterior or storyboard task needs the user's own words.
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [source] }, node: node({ storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: false, style: 'cinematic', panels: 4 } }) }))
+      .rejects.toThrow('关闭自动剧情后，请填写明确的故事剧情')
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [source] }, node: node({ exteriorTask: { version: 1, kind: 'exterior-redraw', useToneReference: false } }) }))
+      .resolves.toBeDefined()
+  })
+
+  it('compares the pictures of an exterior task over two pictures, a storyboard and their prompt-writing text node before the paid request', async () => {
+    const edit = vi.fn(async () => [{ assetId: 'e'.repeat(43), localUrl: 'xingmang-asset://e', mimeType: 'image/png' as const, fileName: 'edited.png' }])
+    const completeOnce = vi.fn().mockResolvedValue('改成石材铺地')
+    const bytes = new Map([['a'.repeat(43), Buffer.from('red')], ['b'.repeat(43), Buffer.from('blue')], ['c'.repeat(43), Buffer.from('red')]])
+    const sceneSources = vi.fn(async (_userId: number, assetId: string) => ({ bytes: bytes.get(assetId)! }))
+    const executors = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) }, completeText: { completeOnce }, sceneSources })
+    const picture = (letter: string) => ({ kind: 'image' as const, assetId: letter.repeat(43), localUrl: `xingmang-asset://${letter}` })
+    const two = { version: 1 as const, slots: [{ role: 'source' as const, edgeId: 'x', outputIndex: 0 }, { role: 'reference' as const, edgeId: 'y', outputIndex: 0 }] }
+    const exteriorTask = { version: 1 as const, kind: 'landscape-redesign' as const, automaticPrompt: false }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 42, projectId: 'project-1', signal: new AbortController().signal }
+    const exterior = { id: 'n', kind: 'image-edit' as const, definitionVersion: 1, data: { prompt: '铺地换成石材', model: 'gpt-image-2', group: '生图', imageReferenceOrder: two, exteriorTask } }
+    await executors['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: exterior })
+    expect(sceneSources).toHaveBeenCalledWith(42, 'a'.repeat(43), 'project-1')
+    expect(edit).toHaveBeenCalledTimes(1)
+    // The same picture under another id is refused before anything is paid.
+    await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: exterior }))
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+    const storyboard = { ...exterior, data: { ...exterior.data, exteriorTask: undefined, storyboardTask: { version: 1 as const, kind: 'storyboard' as const, automaticPlot: true, style: 'cinematic' as const, panels: 4 as const } } }
+    await expect(executors['image-edit']!({ ...base, sceneSourceChecks: ['storyboard'], inputs: { images: [picture('c'), picture('a')] }, node: storyboard }))
+      .rejects.toThrow('故事板输入图片内容相同，请选择内容不同的图片；当前没有提交生成请求')
+    const analysis = { id: 't', kind: 'text-generate' as const, definitionVersion: 1, data: { prompt: '分析', model: 'gpt-5.5', group: 'GPT', imageReferenceOrder: two } }
+    await expect(executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('c')] }, node: analysis }))
+      .rejects.toThrow('原图与参考图内容相同，请选择内容不同的两张图片；当前没有提交生成请求')
+    expect(edit).toHaveBeenCalledTimes(1)
+    expect(completeOnce).not.toHaveBeenCalled()
+    await executors['text-generate']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: analysis })
+    expect(completeOnce).toHaveBeenCalledTimes(1)
+    // Without a reader those nodes are refused, never run unchecked.
+    const unchecked = createCanvasNodeExecutors({ imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) } })
+    await expect(unchecked['image-edit']!({ ...base, sceneSourceChecks: ['exterior'], inputs: { images: [picture('a'), picture('b')] }, node: exterior }))
+      .rejects.toThrow('室外参考图内容核对服务暂时不可用，当前没有提交生成请求')
+    expect(edit).toHaveBeenCalledTimes(1)
+  })
+
   it('refuses a text node before any paid request when it has nothing to say, a picture its model cannot read, or too many pictures', async () => {
     const completeOnce = vi.fn().mockResolvedValue('好')
     const executors = createCanvasNodeExecutors({

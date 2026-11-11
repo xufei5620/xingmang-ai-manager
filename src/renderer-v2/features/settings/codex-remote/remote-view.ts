@@ -27,15 +27,21 @@ export function remoteCardMeta(snapshot: Pick<CodexRemoteSnapshot, 'task' | 'pen
   return remoteAnyEnabled(snapshot) ? `Codex ${remoteTaskLabel(snapshot)}` : null
 }
 
-/** 「打开遥控」那一行的说明：还差哪一步就说哪一步，都齐了说开着时电脑睡不睡、什么时候会断开。 */
+/**
+ * 「打开遥控」那一行的说明：还差哪一步就说哪一步，都齐了说开着时电脑睡不睡、什么时候会断开。
+ * 开了「打开星芒时自动打开遥控」（YF-9）时不再说「下次打开星芒要再打开一次」：那时下次会自己连上，留着就说反了。
+ * 「闲着几小时也会自动断开」跟着「多久没消息就自动关」选的时长走，选了「不自动关」（YF-10 的缺省）就不说。
+ */
 export function remoteSwitchHint(
-  snapshot: Pick<CodexRemoteSnapshot, 'workspaceDirectory'>,
+  snapshot: Pick<CodexRemoteSnapshot, 'workspaceDirectory' | 'autoStart' | 'idleCloseHours'>,
   channel: Pick<CodexRemoteChannelSnapshot, 'hasCredential' | 'enabled'>,
   credentialHint: string,
 ): string {
   if (!channel.enabled && !channel.hasCredential) return credentialHint
   if (!channel.enabled && !snapshot.workspaceDirectory) return '先在上面选好干活的文件夹。'
-  return '开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 4 小时也会自动断开。'
+  const reopen = snapshot.autoStart ? '' : '，下次打开星芒要再打开一次'
+  const idle = snapshot.idleCloseHours ? `；闲着 ${snapshot.idleCloseHours} 小时也会自动断开` : ''
+  return `开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开${reopen}${idle}。`
 }
 
 export function remoteChannelStateLabel(status: RemoteChannelStatus): string {

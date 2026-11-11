@@ -24,6 +24,7 @@ import type {
 import { canvasRunTimelineLimit } from './canvas-run-contract'
 import { canvasImageCandidateCacheKey } from './canvas-fingerprint'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
+import { buildCanvasExteriorAnalysisPrompt, buildCanvasStoryboardAnalysisPrompt } from './canvas-scene-tasks'
 
 function node(id: string, kind: CanvasRunGraphNode['kind'], prompt = id): CanvasRunGraphNode {
   return { id, kind, definitionVersion: 1, data: { prompt, model: kind === 'image' ? 'gpt-image-2' : '' } }
@@ -1642,5 +1643,77 @@ describe('executeCanvasRun reference orders', () => {
     const gone = await run(workflow({ version: 1, slots: [{ edgeId: 'removed->video', outputIndex: 0 }, { edgeId: 'first->video', outputIndex: 0 }] }))
     expect(gone.nodes.find((entry) => entry.nodeId === 'video')).toMatchObject({ state: 'failed', errorMessage: '已保存的视频参考位置缺失，请核对首尾帧并重新确认参考顺序；当前不会提交生成' })
     expect(video).toHaveBeenCalledTimes(3)
+  })
+})
+
+describe('executeCanvasRun scene tasks', () => {
+  const pictureA = asset('a'.repeat(43))
+  const pictureB = asset('b'.repeat(43))
+  function pictures(id: string, assetId: string) {
+    return { ...node(id, 'image-input'), data: { prompt: '', model: '', adoptedAssetId: assetId } }
+  }
+  function into(source: string, target: string) {
+    return { id: `${source}->${target}`, source, sourceHandle: 'out:image', target, targetHandle: 'in:images' }
+  }
+  function roles(target: string) {
+    return { version: 1 as const, slots: [{ role: 'source' as const, edgeId: `a->${target}`, outputIndex: 0 }, { role: 'reference' as const, edgeId: `b->${target}`, outputIndex: 0 }] }
+  }
+  const inputPictures: CanvasNodeExecutor = async ({ node: current }) => ({ assets: [asset(current.data.adoptedAssetId)] })
+  const exteriorTask = { version: 1 as const, kind: 'landscape-redesign' as const, automaticPrompt: true }
+  const storyboardTask = { version: 1 as const, kind: 'storyboard' as const, automaticPlot: true, style: 'cinematic' as const, panels: 4 as const }
+
+  function workflow(task: 'exterior' | 'storyboard', change: { analysisPrompt?: string; targetRoles?: boolean } = {}) {
+    const plot = task === 'storyboard' ? '两只猫在窗台上' : ''
+    const analysis: CanvasRunGraphNode = {
+      id: 'analysis', kind: 'text-generate', definitionVersion: 1,
+      data: { prompt: change.analysisPrompt ?? (task === 'exterior' ? buildCanvasExteriorAnalysisPrompt(exteriorTask) : buildCanvasStoryboardAnalysisPrompt(storyboardTask, plot)), model: 'gpt-5.5', imageReferenceOrder: roles('analysis') },
+    }
+    const target: CanvasRunGraphNode = {
+      id: 'target', kind: 'image-edit', definitionVersion: 1,
+      data: { prompt: plot, model: 'gpt-image-2', ...(change.targetRoles === false ? {} : { imageReferenceOrder: roles('target') }), ...(task === 'exterior' ? { exteriorTask } : { storyboardTask }) },
+    }
+    return graph(
+      [pictures('a', pictureA.assetId), pictures('b', pictureB.assetId), analysis, target],
+      [into('a', 'analysis'), into('b', 'analysis'), into('a', 'target'), into('b', 'target'), { id: 'analysis->target', source: 'analysis', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' }],
+    )
+  }
+
+  it('asks the executors to compare the pictures of a scene task and of its prompt-writing node, and nothing else', async () => {
+    for (const task of ['exterior', 'storyboard'] as const) {
+      const text = vi.fn<CanvasNodeExecutor>(async () => ({ outputText: '写好的提示词' }))
+      const edit = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+      const input = vi.fn<CanvasNodeExecutor>(inputPictures)
+      const value = workflow(task)
+      expect(canvasRunDesktopUnsupportedReason(value, { kind: 'all' })).toBeUndefined()
+      const record = await executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': input, 'text-generate': text, 'image-edit': edit }) }))
+      expect(record.status).toBe('succeeded')
+      expect(text.mock.calls[0][0].sceneSourceChecks).toEqual([task])
+      expect(text.mock.calls[0][0].inputs.images).toEqual([pictureA, pictureB])
+      expect(edit.mock.calls[0][0].sceneSourceChecks).toEqual([task])
+      expect(edit.mock.calls[0][0].inputs.text).toBe('写好的提示词')
+      for (const call of input.mock.calls) expect(call[0]).not.toHaveProperty('sceneSourceChecks')
+    }
+    // A plain edit over the same two pictures compares nothing.
+    const plain = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+    const bare = graph([pictures('a', pictureA.assetId), pictures('b', pictureB.assetId), { id: 'target', kind: 'image-edit', definitionVersion: 1, data: { prompt: '换成夜景', model: 'gpt-image-2', imageReferenceOrder: roles('target') } }], [into('a', 'target'), into('b', 'target')])
+    await executeCanvasRun(runOptions(bare, { executors: executors({ 'image-input': inputPictures, 'image-edit': plain }) }))
+    expect(plain.mock.calls[0][0]).not.toHaveProperty('sceneSourceChecks')
+  })
+
+  it('refuses a scene task whose roles or prompt-writing node no longer match, at run start and at the node, before anything is paid', async () => {
+    const refused: Array<[CanvasRunGraph, string]> = [
+      // No roles at all counts as no pictures, as in the kernel.
+      [workflow('storyboard', { targetRoles: false }), '故事板需要 1–4 张有序输入图片'],
+      [workflow('exterior', { targetRoles: false }), '室外任务需要明确绑定对应的原图和参考图角色'],
+      [workflow('exterior', { analysisPrompt: '描述一下这两张图' }), '自动提示需要唯一、可用的显式图片分析节点，请重新配置室外任务'],
+      [workflow('storyboard', { analysisPrompt: buildCanvasStoryboardAnalysisPrompt(storyboardTask, '他们去了海边') }), '自动剧情需要唯一、可用且与当前剧情一致的显式图片分析节点，请重新配置故事板'],
+    ]
+    const edit = vi.fn<CanvasNodeExecutor>(async () => ({ assets: [asset('e'.repeat(43))] }))
+    for (const [value, message] of refused) {
+      expect(canvasRunDesktopUnsupportedReason(value, { kind: 'all' })).toBe(message)
+      const failed = await executeCanvasRun(runOptions(value, { executors: executors({ 'image-input': inputPictures, 'image-edit': edit }) }))
+      expect(failed.nodes.find((entry) => entry.nodeId === 'target')).toMatchObject({ state: 'failed', errorMessage: message })
+    }
+    expect(edit).not.toHaveBeenCalled()
   })
 })
