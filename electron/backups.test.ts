@@ -663,6 +663,48 @@ describe('ConfigBackupStore', () => {
     expect(fs.existsSync(corruptDirectory)).toBe(false)
   })
 
+  it('keeps the newest backups the caller counts and removes the older ones of them', async () => {
+    const { home, userData } = fixture()
+    const [codexConfig] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    const [geminiSettings] = providerConfigPaths('gemini', fixtureProviderRoots(home))
+    writeConfig(codexConfig, 'model = "gpt-5.6-sol"\n')
+    writeConfig(geminiSettings, '{"model":{"name":"gemini-3.8-flash-high"}}\n')
+    let second = 0
+    const store = new ConfigBackupStore({
+      userDataDirectory: userData,
+      homeDirectory: home,
+      now: () => new Date(Date.UTC(2026, 10, 11, 0, 0, second++)),
+    })
+    // The retired tool's backup is the oldest one and is not among those counted.
+    const gemini = store.create('gemini', 'manual')
+    const codex = Array.from({ length: 13 }, () => store.create('codex', 'pre-save'))
+    const corrupt = path.join(userData, 'backups', 'corrupt-manifest')
+    fs.mkdirSync(corrupt, { recursive: true })
+    fs.writeFileSync(path.join(corrupt, 'manifest.json'), '{invalid', 'utf8')
+
+    const result = await store.removeAllButNewest(10, (backup) => backup.provider === 'codex')
+
+    expect(result).toEqual({ removed: 3, failed: 0, freedBytes: expect.any(Number) })
+    expect(result.freedBytes).toBeGreaterThan(0)
+    const left = store.list().map((backup) => backup.id)
+    expect(left).toEqual(expect.arrayContaining([...codex.slice(3).map((backup) => backup.id), gemini.id, 'corrupt-manifest']))
+    expect(left).toHaveLength(12)
+    for (const removed of codex.slice(0, 3)) expect(fs.existsSync(path.join(userData, 'backups', removed.id))).toBe(false)
+  })
+
+  it('has nothing to remove when no more backups than the ones to keep are counted', async () => {
+    const { home, userData } = fixture()
+    const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))
+    writeConfig(configPath, 'original')
+    const store = new ConfigBackupStore({ userDataDirectory: userData, homeDirectory: home })
+    store.create('codex')
+
+    await expect(store.removeAllButNewest(10, () => true)).resolves.toEqual({ removed: 0, failed: 0, freedBytes: 0 })
+    expect(store.list()).toHaveLength(1)
+    expect(store.rootDirectory()).toBe(path.join(path.resolve(userData), 'backups'))
+    await expect(store.removeAllButNewest(-1, () => true)).rejects.toThrow('要留下的备份份数无效')
+  })
+
   it('removes stale temporary directories after a successful create', () => {
     const { home, userData } = fixture()
     const [configPath] = providerConfigPaths('codex', fixtureProviderRoots(home))

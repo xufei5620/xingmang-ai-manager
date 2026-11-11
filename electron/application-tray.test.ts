@@ -560,6 +560,30 @@ describe('application tray remote-control switch', () => {
     expect(labels({ installedTools: [], remoteControlOn: true }, false)).not.toContain('关掉手机遥控')
   })
 
+  // YF-8：都关着、文件夹和配对过的人都齐了时，托盘里能直接打开，不用进设置翻到最底下。
+  it('offers to switch phone remote control on in the same place once everything is set up and nothing is on', () => {
+    const on = vi.fn()
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn(), onRemoteControlOff: vi.fn(), onRemoteControlOn: on }
+    const menu = buildApplicationTrayMenu({ installedTools: [], keepAwakeLabel: null, remoteControlReady: true }, actions, (action) => { void action() })
+    expect(menu.slice(0, 3).map((entry) => entry.label ?? entry.type)).toEqual(['打开星芒AI管理工具', '打开手机遥控', 'separator'])
+    expect(menu[1].enabled).not.toBe(false)
+    expect(menu.map((entry) => entry.label)).not.toContain('关掉手机遥控')
+    click(menu, '打开手机遥控')
+    expect(on).toHaveBeenCalledOnce()
+    // 开着时只给关的那一项，齐不齐都一样。
+    const running = buildApplicationTrayMenu({ installedTools: [], remoteControlOn: true, remoteControlReady: true }, actions, () => undefined).map((entry) => entry.label)
+    expect(running).toContain('关掉手机遥控')
+    expect(running).not.toContain('打开手机遥控')
+  })
+
+  it('leaves the switch-on item out until everything is set up, or when nothing is wired to it', () => {
+    const actions = { onOpen: vi.fn(), onNavigate: vi.fn(), onLaunchTool: vi.fn(), onQuit: vi.fn() }
+    const labels = (snapshot: ApplicationTraySnapshot, wired: boolean) => buildApplicationTrayMenu(snapshot, wired ? { ...actions, onRemoteControlOn: vi.fn() } : actions, () => undefined).map((entry) => entry.label)
+    expect(labels({ installedTools: [] }, true)).not.toContain('打开手机遥控')
+    expect(labels({ installedTools: [], remoteControlReady: false }, true)).not.toContain('打开手机遥控')
+    expect(labels({ installedTools: [], remoteControlReady: true }, false)).not.toContain('打开手机遥控')
+  })
+
   it('reports a failed switch-off through the tray error path and drops the item once the tray snapshot says it is off', async () => {
     const failure = new Error('飞书断开失败')
     const { controller, runtime, options } = fixture({ onRemoteControlOff: vi.fn(async () => { throw failure }) })

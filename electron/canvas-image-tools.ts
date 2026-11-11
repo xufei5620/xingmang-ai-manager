@@ -7,7 +7,7 @@ import type {
 } from './canvas-run-contract'
 
 // 画布完善第 7 条第三步（#1397）：图片工具。跟网页版同一套分工（xingmang-canvas lib/canvas-runs.ts）：
-// 运行到裁剪、拼图、平铺、图层合成时，主进程不处理像素，把「这几张图、这组参数」推给画布，内核在页面里
+// 运行到裁剪、拼图、宫格裁剪、平铺、图层合成时，主进程不处理像素，把「这几张图、这组参数」推给画布，内核在页面里
 // 处理好交回 PNG，主进程核对张数、尺寸、总量再存。参数是画布自己写的，主进程不解读，只量大小、原样交回
 // 同一个页面；内核的参数解析不搬进主进程，那是画布的代码，不在主进程里跑。
 
@@ -27,9 +27,13 @@ const maximumRecipeDepth = 40
 const maximumCollageOrderedInputs = 20
 const maximumTileInputOutputs = 20
 
+/** The kernel's grid split: at most 4 x 4 slices (image-tools/recipe.ts). */
+const maximumGridSplitEdge = 4
+
 const imageTransformKinds: Readonly<Record<string, CanvasImageTransformKind>> = {
   'image-crop': 'crop',
   'image-collage': 'collage',
+  'image-grid-split': 'grid-split',
   'image-tile': 'tile',
   'image-layer': 'layer',
 }
@@ -87,13 +91,20 @@ function outputEdge(value: unknown, label: string): number {
   return value as number
 }
 
+function gridSplitEdge(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > maximumGridSplitEdge) {
+    throw new Error(`画布图片处理${label}格式错误`)
+  }
+  return value as number
+}
+
 /**
  * What the desktop checks the page's pictures against. The recipe itself
  * stays opaque; only these numbers are read out of it.
  */
 export interface CanvasImageTransformExpectation {
   count: number
-  /** Absent where the page decides the size (automatic strips, and later grid splits). */
+  /** Absent where the page decides the size (automatic strips, grid splits). */
   size?: { width: number; height: number }
 }
 
@@ -104,7 +115,7 @@ export interface ParsedCanvasImageTransformRecipe {
 }
 
 /**
- * The recipe of a crop, collage, tile or layer node as the kernel wrote it,
+ * The recipe of a crop, collage, grid-split, tile or layer node as the kernel wrote it,
  * kept as it came and bounded: at most 256 KB of JSON, the kernel's depth, the
  * graph's shared budget. Throws on anything else; the run is then refused as a
  * whole before any request, as with every other malformed field.
@@ -119,6 +130,13 @@ export function parseCanvasImageTransformRecipe(kind: CanvasRunNodeKind, value: 
     throw new Error('图片处理参数超过 256 KB，请拆分图层节点后再运行')
   }
   if (value.kind !== expectedKind) throw new Error('图片处理参数与节点类型不匹配')
+  if (expectedKind === 'grid-split') {
+    // One slice per cell, each as large as the page's decoded picture makes
+    // it (xingmang-canvas lib/image-transform-contract.ts checks no size either).
+    const rows = gridSplitEdge(value.rows, '行数')
+    const columns = gridSplitEdge(value.columns, '列数')
+    return { recipe: structuredClone(value) as CanvasImageTransformRecipe, expectation: { count: rows * columns }, layerGroups: found.layerGroups }
+  }
   const width = outputEdge(value.outputWidth, '输出宽度')
   const height = outputEdge(value.outputHeight, '输出高度')
   // xingmang-canvas image-tools/recipe.ts imageCollageUsesAutoSize: a strip

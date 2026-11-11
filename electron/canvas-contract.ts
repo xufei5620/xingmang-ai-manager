@@ -126,7 +126,7 @@ export const desktopCanvasCapabilities: CanvasHostCapabilities = {
     'image-input', 'video-input', 'audio-input', 'router', 'gallery', 'output', 'group',
     'drama-bible', 'drama-script', 'drama-parse', 'drama-shot', 'drama-character', 'drama-scene', 'drama-prop',
     'text-generate', 'frame-extract',
-    'image-crop', 'image-collage', 'image-tile', 'image-layer', 'image-compare', 'image-panorama',
+    'image-crop', 'image-collage', 'image-grid-split', 'image-tile', 'image-layer', 'image-compare', 'image-panorama',
   ],
   features: {
     quote: true,
