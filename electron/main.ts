@@ -209,7 +209,7 @@ import { claudeDesktopOfflinePackagesUrl } from './claude-desktop-install-failur
 import { createCodexRemote } from './bootstrap/codex-remote'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { remoteChannelsReadyToEnable, type CodexRemoteReleaseAction } from './codex-remote-service'
-import type { CodexRemoteSnapshot } from './codex-remote-channel'
+import { feishuDeveloperConsoleUrl, type CodexRemoteSnapshot } from './codex-remote-channel'
 
 guardProcessOutputStreams()
 
@@ -233,6 +233,9 @@ const nonSiteExternalUrlAllowlist = [
   claudeDesktopOfflinePackagesUrl,
   // 「必须更新」那层提示里自动更新走不通时的「打开下载页」。
   appReleaseDownloadUrl,
+  // 手机遥控卡飞书那块的「打开飞书开放平台」（YF-4，yoyo 2026-11-11 北京 20:47 亲手打字「飞书网址加」）：
+  // 只这一条，带别的路径、参数的照样拦下。
+  feishuDeveloperConsoleUrl,
 ] as const
 
 // Every relay site's own destinations (marketing and keys pages) is derived
@@ -2478,6 +2481,8 @@ if (!hasSingleInstanceLock) {
         followRemoteForTray(snapshot)
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
+      // 手机上「状态」里的余额（YF-18）：跟画布余额条同一份，用托盘、余额提醒读过的，太旧了才读一次，读回来时换了账号就不要。
+      readBalanceUsd: async () => (await readCanvasAccountSummary())?.balanceUsd ?? null,
     })
     // 开机时遥控一个都没开、也还没推过快照：先读一份，托盘才知道该不该出「打开手机遥控」。
     void codexRemote.snapshot().then(followRemoteForTray).catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.tray-state.failed', cause))

@@ -3,6 +3,8 @@ import { createRoot } from 'react-dom/client'
 import { BusinessPage } from '../src/renderer-v2/pages-business'
 import { Shell } from '../src/renderer-v2/features/shell/Shell'
 import { BalanceTierProvider, Dialog, ToastProvider } from '../src/renderer-v2/ui'
+import { AccountBalanceContext } from '../src/renderer-v2/features/app/balance-context'
+import type { AccountBalanceStore } from '../src/renderer-v2/features/app/balance-store'
 import { SavedAccounts } from '../src/renderer-v2/SavedAccounts'
 import type { V2Bridge, V2Page } from '../src/renderer-v2/types'
 import type {
@@ -63,6 +65,8 @@ declare global {
       feishuProblem(problem: 'credential' | 'connection-limit' | 'other' | null): void
       // 手机上来了一条，电脑上的 Codex 没起来（YK-5）；false = 后来又起来了。
       codexStartFailed(failed: boolean): void
+      // 手机上最近一条（YF-13）：几点发来的、做到哪儿了、等你同意几条；null = 还没发来过。
+      phoneRequest(request: { minutesAgo: number; state: 'running' | 'done' | 'failed' | 'stopped'; reason?: string; pendingApprovals?: number } | null): void
     }
   }
 }
@@ -179,6 +183,8 @@ const remoteState: {
   codexStartFailed: boolean
   autoStart: boolean
   idleCloseHours: 4 | 12 | null
+  lastRequest: RemoteSnapshot['lastRequest'] | null
+  pendingApprovals: number
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
@@ -189,6 +195,8 @@ const remoteState: {
   codexStartFailed: false,
   autoStart: false,
   idleCloseHours: null,
+  lastRequest: null,
+  pendingApprovals: 0,
 }
 // 和主进程 codex-remote-feishu.ts 的 feishuProblemMessages 同三句。
 const feishuProblemStatuses = {
@@ -218,8 +226,9 @@ function remoteSnapshot(): RemoteSnapshot {
     ...(elevated ? { unavailableReason: '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。' } : {}),
     credentialPersistence: query.has('remoteSessionOnly') ? 'session-only' : 'durable',
     workspaceDirectory: remoteState.workspaceDirectory,
-    task: 'idle',
-    pendingApprovals: 0,
+    task: remoteState.pendingApprovals > 0 ? 'waiting-approval' : remoteState.lastRequest?.state === 'running' ? 'running' : 'idle',
+    pendingApprovals: remoteState.pendingApprovals,
+    ...(remoteState.lastRequest ? { lastRequest: remoteState.lastRequest } : {}),
     ...(remoteState.autoStart ? { autoStart: true } : {}),
     ...(remoteState.idleCloseHours ? { idleCloseHours: remoteState.idleCloseHours } : {}),
     ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
@@ -268,6 +277,13 @@ window.remoteHarness = {
     remoteState.problem = problem ? feishuProblemStatuses[problem] : null
     pushRemoteSnapshot()
   },
+  phoneRequest(request) {
+    remoteState.lastRequest = request
+      ? { receivedAt: Date.now() - request.minutesAgo * 60_000, state: request.state, ...(request.reason ? { reason: request.reason } : {}) }
+      : null
+    remoteState.pendingApprovals = request?.pendingApprovals ?? 0
+    pushRemoteSnapshot()
+  },
 }
 const codexRemoteMethods = {
   getCodexRemoteState: async () => remoteSnapshot(),
@@ -278,6 +294,21 @@ const codexRemoteMethods = {
   setCodexRemoteAutoStart: async (enabled: boolean) => {
     record('remote-auto-start', enabled)
     remoteState.autoStart = enabled
+    return remoteSnapshot()
+  },
+  openExternal: async (url: string) => {
+    record('openExternal', url)
+    return true
+  },
+  stopCodexRemoteTurn: async () => {
+    record('remote-stop-turn')
+    remoteState.pendingApprovals = 0
+    if (remoteState.lastRequest?.state === 'running') remoteState.lastRequest = { ...remoteState.lastRequest, state: 'stopped' }
+    return remoteSnapshot()
+  },
+  declineCodexRemoteApprovals: async () => {
+    record('remote-decline-approvals')
+    remoteState.pendingApprovals = 0
     return remoteSnapshot()
   },
   setCodexRemoteIdleClose: async (hours: 4 | 12 | null) => {
@@ -493,6 +524,21 @@ const balance = {
   usdExchangeRate: 1,
   displayAmount: 10,
 }
+// remoteLowBalance：外壳那份共享余额只剩 $0.80（手机遥控卡上的余额提醒，YF-12）。别的页不读它，照旧读 getAccountBalance。
+const lowBalanceStore: AccountBalanceStore | null = query.has('remoteLowBalance')
+  ? (() => {
+      const snapshot = { scope: 'fixture', balance: { ...balance, quota: 80 }, loading: false, updatedAt: 1, error: null, networkFailures: 0 }
+      return {
+        getSnapshot: () => snapshot,
+        subscribe: () => () => undefined,
+        setScope: () => undefined,
+        setVisible: () => undefined,
+        refresh: async () => undefined,
+        scheduleActivity: () => undefined,
+        dispose: () => undefined,
+      }
+    })()
+  : null
 let settings: Awaited<ReturnType<V2Bridge['getSettings']>> = {
   version: 2,
   workspace: 'C:/test-project',
@@ -1703,6 +1749,7 @@ const renderFixture = (paymentReturn?: {
       environment={{ tone: 'ok', label: '环境正常', issues: 0 }}
       adapter={{ navigate: (next) => record('navigate', next) }}
     >
+      <AccountBalanceContext.Provider value={lowBalanceStore}>
       <BalanceTierProvider value="warn">
         <BusinessPage
           api={api}
@@ -1744,6 +1791,7 @@ const renderFixture = (paymentReturn?: {
           active={pageActive}
         />
       </BalanceTierProvider>
+      </AccountBalanceContext.Provider>
       {switcherOpen && (
         <Dialog open title="切换账号" width={480} onClose={closeSwitcher}>
           <SavedAccounts api={api} onLogin={() => { record('login'); closeSwitcher() }} />

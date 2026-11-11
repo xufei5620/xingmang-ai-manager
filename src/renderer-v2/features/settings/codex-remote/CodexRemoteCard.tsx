@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { FolderOpen, Headset, Home, RefreshCw } from 'lucide-react'
-import { Button, Card, Confirm, Notice, Pill, Segment, SettingRow, Switch } from '../../../ui'
-import { ResultNotice, useOperation, useResource } from '../../../business-common'
+import { ChevronDown, ChevronRight, FolderOpen, Headset, Home, RefreshCw, Zap } from 'lucide-react'
+import { Button, Card, Confirm, Notice, Pill, Segment, SettingRow, Switch, useBalanceTier } from '../../../ui'
+import { dollars, ResultNotice, useOperation, useResource } from '../../../business-common'
+import { useSharedAccountBalance } from '../../app/balance-context'
 import { isRemoteIdleCloseHours, remoteChannelIds, remoteIdleCloseHours } from '../../../../../electron/codex-remote-channel'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot, RemoteChannelId } from '../../../../../electron/ipc-contract'
 import type { V2Bridge, V2Page } from '../../../types'
 import { remoteChannelSections, type RemoteChannelSectionDefinition, type RemoteChannelSectionProps } from './channel-sections'
 import {
   boundPeerText,
+  lastRequestText,
   newerRemoteSnapshot,
   pairingAttemptText,
+  pendingApprovalsText,
+  remoteAnyEnabled,
   remoteCardMeta,
+  remoteChannelCollapsed,
+  remoteLowBalanceDollars,
   remoteChannelStateLabel,
   remoteChannelStateTone,
   remoteSwitchHint,
@@ -57,6 +63,27 @@ export const codexRemoteIdleCloseText = {
   neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。',
 } as const
 
+/**
+ * 「最近一次」那行（YF-13）：坐回电脑前看得出手机最近让它干了什么。只摆时间和结果，不摆手机上发来的原话；
+ * 「停下这一轮」跟手机上发「停止」一样，「都拒绝」跟手机上点「拒绝」一样，手机上都收得到。
+ */
+export const codexRemoteLastRequestText = {
+  title: '最近一次',
+  stop: '停下这一轮',
+  declineAll: '都拒绝',
+  sessions: '在记录里看',
+} as const
+
+/**
+ * 遥控开着、余额不到 $1 又没有能用的订阅时卡上那条黄条（YF-12）：充值只能在电脑上做，人出门了就充不了。
+ * 照样让开，只是提醒。
+ */
+export const codexRemoteLowBalanceNotice = {
+  title: (amount: string) => `余额只剩 ${amount}`,
+  body: '人不在电脑前时充不了值，建议先充一点再出门。',
+  action: '去充值',
+} as const
+
 const idleCloseOptions = [
   ...remoteIdleCloseHours.map((hours) => ({ value: String(hours), label: `${hours} 小时` })),
   { value: 'never', label: codexRemoteIdleCloseText.never },
@@ -72,13 +99,16 @@ export const codexRemoteConfirmText = {
   logout: { title: (channelTitle: string) => `退出${channelTitle}登录？`, ok: '退出登录' },
 } as const
 
-function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpenHelp }: {
+function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, navigate, onOpenHelp }: {
   id: RemoteChannelId
   definition: RemoteChannelSectionDefinition
   snapshot: CodexRemoteSnapshot
   channel: CodexRemoteChannelSnapshot
   onOpenHelp?: () => void
-} & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
+} & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run' | 'navigate'>) {
+  // 没登录的渠道收成一行，点标题才摊开（YF-7）。登录、打开以后就不再收。
+  const collapsible = remoteChannelCollapsed(snapshot, channel)
+  const [expanded, setExpanded] = useState(false)
   const disabled = !snapshot.available || Boolean(busy)
   // 那句话旁边配的按钮（D23）：同一个应用在别处连着、别的原因没连上，给「重新连接」；后一种再给「找客服」。
   // 凭据不对时就是下面「飞书应用」那一行的「重新填写」，不再摆第二颗。只在开着时给：关着的渠道没什么可重连的。
@@ -146,12 +176,36 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpe
       />
     )
   }
+  const statePill = <Pill tone={remoteChannelStateTone(channel.status)} dot testId={`settings-remote-${id}-state`}>{remoteChannelStateLabel(channel.status)}</Pill>
+  const bodyId = `settings-remote-${id}-body`
+  if (collapsible && !expanded) {
+    return (
+      <section className="v2-remote-channel" data-testid={`settings-remote-${id}`}>
+        <div className="v2-remote-channel-head is-collapsed">
+          <h3>
+            <button type="button" className="v2-remote-channel-toggle" aria-expanded={false} aria-controls={bodyId} onClick={() => setExpanded(true)} data-testid={`settings-remote-${id}-toggle`}>
+              <ChevronRight size={16} aria-hidden="true" />{definition.title}
+            </button>
+          </h3>
+          {statePill}
+        </div>
+      </section>
+    )
+  }
   return (
     <section className="v2-remote-channel" data-testid={`settings-remote-${id}`}>
       <div className="v2-remote-channel-head">
-        <h3>{definition.title}</h3>
+        {collapsible
+          ? (
+            <h3>
+              <button type="button" className="v2-remote-channel-toggle" aria-expanded aria-controls={bodyId} onClick={() => setExpanded(false)} data-testid={`settings-remote-${id}-toggle`}>
+                <ChevronDown size={16} aria-hidden="true" />{definition.title}
+              </button>
+            </h3>
+          )
+          : <h3>{definition.title}</h3>}
         {definition.experimental && <Pill tone="warn">实验功能</Pill>}
-        <Pill tone={remoteChannelStateTone(channel.status)} dot testId={`settings-remote-${id}-state`}>{remoteChannelStateLabel(channel.status)}</Pill>
+        {statePill}
         {/* 各渠道共用：飞书清掉 App ID / App Secret，微信清掉扫码拿到的登录；绑定的人一起解掉。 */}
         {channel.hasCredential && (
           <span className="v2-remote-channel-actions">
@@ -169,45 +223,47 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpe
           </span>
         )}
       </div>
-      {channel.status.message && channel.status.state !== 'connected' && (
-        <p className="v2-remote-status" data-testid={`settings-remote-${id}-status`}>{channel.status.message}</p>
-      )}
-      {canReconnect && (
-        <div className="v2-remote-status-actions" data-testid={`settings-remote-${id}-status-actions`}>
-          <Button
-            size="sm"
-            icon={RefreshCw}
-            disabled={disabled}
-            loading={busy === `${id}-reconnect`}
-            onClick={() => void run(`${id}-reconnect`, () => api.reconnectCodexRemoteChannel(id))}
-            testId={`settings-remote-${id}-reconnect`}
-          >
-            重新连接
-          </Button>
-          {problem === 'other' && onOpenHelp && (
-            <Button size="sm" variant="ghost" icon={Headset} onClick={onOpenHelp} testId={`settings-remote-${id}-support`}>
-              找客服
+      <div id={bodyId}>
+        {channel.status.message && channel.status.state !== 'connected' && (
+          <p className="v2-remote-status" data-testid={`settings-remote-${id}-status`}>{channel.status.message}</p>
+        )}
+        {canReconnect && (
+          <div className="v2-remote-status-actions" data-testid={`settings-remote-${id}-status-actions`}>
+            <Button
+              size="sm"
+              icon={RefreshCw}
+              disabled={disabled}
+              loading={busy === `${id}-reconnect`}
+              onClick={() => void run(`${id}-reconnect`, () => api.reconnectCodexRemoteChannel(id))}
+              testId={`settings-remote-${id}-reconnect`}
+            >
+              重新连接
             </Button>
-          )}
-        </div>
-      )}
-      <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} />
-      <SettingRow
-        title="打开遥控"
-        description={remoteSwitchHint(snapshot, channel, definition.credentialHint)}
-        control={
-          <Switch
-            checked={channel.enabled}
-            disabled={disabled || (!channel.enabled && !canEnable)}
-            onChange={(enabled) => void run(`${id}-switch`, () => api.setCodexRemoteChannelEnabled(id, enabled))}
-            aria-label={`打开${definition.title}遥控`}
-            testId={`settings-remote-${id}-switch`}
-          />
-        }
-        testId={`settings-remote-${id}-enable`}
-      />
-      {binding}
-      {pairingNote && <p className="v2-remote-pairing-note" data-testid={`settings-remote-${id}-pairing-note`}>{pairingNote}</p>}
+            {problem === 'other' && onOpenHelp && (
+              <Button size="sm" variant="ghost" icon={Headset} onClick={onOpenHelp} testId={`settings-remote-${id}-support`}>
+                找客服
+              </Button>
+            )}
+          </div>
+        )}
+        <Section snapshot={channel} api={api} disabled={disabled} busy={busy} run={run} navigate={navigate} />
+        <SettingRow
+          title="打开遥控"
+          description={remoteSwitchHint(snapshot, channel, definition.credentialHint)}
+          control={
+            <Switch
+              checked={channel.enabled}
+              disabled={disabled || (!channel.enabled && !canEnable)}
+              onChange={(enabled) => void run(`${id}-switch`, () => api.setCodexRemoteChannelEnabled(id, enabled))}
+              aria-label={`打开${definition.title}遥控`}
+              testId={`settings-remote-${id}-switch`}
+            />
+          }
+          testId={`settings-remote-${id}-enable`}
+        />
+        {binding}
+        {pairingNote && <p className="v2-remote-pairing-note" data-testid={`settings-remote-${id}-pairing-note`}>{pairingNote}</p>}
+      </div>
       <Confirm
         open={asking !== null}
         title={asking === 'logout' ? codexRemoteConfirmText.logout.title(definition.title) : codexRemoteConfirmText.unbind.title}
@@ -222,18 +278,79 @@ function ChannelBlock({ id, definition, snapshot, channel, api, busy, run, onOpe
   )
 }
 
+/** 正在处理时「已经 N 分钟」跟着走：半分钟重画一次，做完了就停。 */
+function useTicking(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [active])
+  return now
+}
+
+function LastRequestRow({ snapshot, api, busy, run, navigate, now }: {
+  snapshot: CodexRemoteSnapshot
+  navigate?: (page: V2Page, section?: string) => void
+  /** 测试用的钟；缺省跟着真实时间走。 */
+  now?: number
+} & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
+  const request = snapshot.lastRequest
+  const running = request?.state === 'running'
+  const ticking = useTicking(running && now === undefined)
+  if (!request) return null
+  const waiting = pendingApprovalsText(snapshot.pendingApprovals)
+  return (
+    <SettingRow
+      title={codexRemoteLastRequestText.title}
+      description={
+        <>
+          <span data-testid="settings-remote-last-request-text">{lastRequestText(request, now ?? ticking)}</span>
+          {waiting && <><br /><span className="v2-remote-waiting" data-testid="settings-remote-last-request-waiting">{waiting}</span></>}
+        </>
+      }
+      control={
+        <>
+          {running && (
+            <Button size="sm" disabled={Boolean(busy)} loading={busy === 'stop-turn'} onClick={() => void run('stop-turn', () => api.stopCodexRemoteTurn())} testId="settings-remote-stop-turn">
+              {codexRemoteLastRequestText.stop}
+            </Button>
+          )}
+          {snapshot.pendingApprovals > 0 && (
+            <Button size="sm" variant="ghost" disabled={Boolean(busy)} loading={busy === 'decline-approvals'} onClick={() => void run('decline-approvals', () => api.declineCodexRemoteApprovals())} testId="settings-remote-decline-approvals">
+              {codexRemoteLastRequestText.declineAll}
+            </Button>
+          )}
+          {navigate && (
+            <Button size="sm" variant="ghost" onClick={() => navigate('sessions')} testId="settings-remote-last-request-sessions">
+              {codexRemoteLastRequestText.sessions}
+            </Button>
+          )}
+        </>
+      }
+      testId="settings-remote-last-request"
+    />
+  )
+}
+
 /**
  * 卡片本身：拿到快照以后怎么摆。和取数分开，好用 renderToStaticMarkup 按各种快照直接测。
  */
-export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, onOpenHelp }: {
+export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, onOpenHelp, lowBalance = null, now }: {
   snapshot: CodexRemoteSnapshot
   /** 卡上那条红条；没有失败时是空的。 */
   error: ReactNode
   navigate?: (page: V2Page, section?: string) => void
   /** 渠道没连上时「找客服」打开的帮助框；没给就不摆这颗按钮。 */
   onOpenHelp?: () => void
+  /** 余额不到 remoteLowBalanceDollars、又没有能用的订阅时是余额（美元），否则 null（YF-12）。 */
+  lowBalance?: number | null
+  /** 测试用的钟；缺省跟着真实时间走。 */
+  now?: number
 } & Pick<RemoteChannelSectionProps, 'api' | 'busy' | 'run'>) {
   const persistenceNotice = snapshot.credentialPersistence === 'durable' ? null : codexRemotePersistenceNotices[snapshot.credentialPersistence]
+  const anyEnabled = remoteAnyEnabled(snapshot)
   return (
     <Card title="手机遥控 Codex" meta={remoteCardMeta(snapshot)} padding="none" testId="settings-remote-card">
       <p className="v2-remote-intro">{codexRemoteIntro}</p>
@@ -250,9 +367,19 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
             testId="settings-remote-codex-failed"
           />
         )}
+        {anyEnabled && lowBalance !== null && (
+          <Notice
+            tone="warn"
+            title={codexRemoteLowBalanceNotice.title(dollars(lowBalance))}
+            body={codexRemoteLowBalanceNotice.body}
+            actions={navigate && <Button size="sm" icon={Zap} onClick={() => navigate('account', 'recharge')} testId="settings-remote-low-balance-recharge">{codexRemoteLowBalanceNotice.action}</Button>}
+            testId="settings-remote-low-balance"
+          />
+        )}
         {persistenceNotice && <Notice tone={persistenceNotice.tone} title={persistenceNotice.title} body={persistenceNotice.body} testId="settings-remote-persistence" />}
         {error}
       </div>
+      {anyEnabled && <LastRequestRow snapshot={snapshot} api={api} busy={busy} run={run} navigate={navigate} now={now} />}
       <SettingRow
         title="干活的文件夹"
         description={snapshot.workspaceDirectory
@@ -282,6 +409,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
           api={api}
           busy={busy}
           run={run}
+          navigate={navigate}
           onOpenHelp={onOpenHelp}
         />
       ))}
@@ -327,6 +455,7 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
  * 操作的返回值和 state-changed 事件都是整份快照，按 revision 只收新的那份（newerRemoteSnapshot）。
  */
 export function CodexRemoteCard({ api, navigate, onOpenHelp }: { api: V2Bridge; navigate?: (page: V2Page, section?: string) => void; onOpenHelp?: () => void }) {
+  const lowBalance = useRemoteLowBalance()
   const load = useCallback(() => api.getCodexRemoteState(), [api])
   const resource = useResource(load)
   const { setData } = resource
@@ -362,6 +491,23 @@ export function CodexRemoteCard({ api, navigate, onOpenHelp }: { api: V2Bridge; 
       error={<ResultNotice error={operation.error} detail={operation.detail} />}
       navigate={navigate}
       onOpenHelp={onOpenHelp}
+      lowBalance={lowBalance}
     />
   )
+}
+
+/**
+ * 余额不到 $1、又没有能用的订阅时的余额（YF-12），否则 null。订阅、余额读没读到沿用状态栏那份判断（balance tier）：
+ * 有能用的订阅是 ok，余额没读到是 neutral，这两种都不提醒。
+ */
+export function remoteLowBalanceAmount(tier: ReturnType<typeof useBalanceTier>, balance: { quota: number; quotaPerUnit: number } | null): number | null {
+  if (tier === 'ok' || tier === 'neutral' || !balance || balance.quotaPerUnit <= 0) return null
+  const amount = balance.quota / balance.quotaPerUnit
+  return amount < remoteLowBalanceDollars ? amount : null
+}
+
+function useRemoteLowBalance(): number | null {
+  const tier = useBalanceTier()
+  const { snapshot } = useSharedAccountBalance()
+  return remoteLowBalanceAmount(tier, snapshot.balance)
 }

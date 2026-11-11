@@ -21,6 +21,12 @@ export function isRemoteChannelId(value: unknown): value is RemoteChannelId {
 }
 
 /**
+ * 手机遥控卡飞书那块「打开飞书开放平台」交给浏览器的网址（YF-4）：开发者后台的应用列表，建机器人第 1 步就到这里。
+ * 主窗口外链白名单（main.ts，I12 全等匹配）收的就是这一条，两边用同一个常量。
+ */
+export const feishuDeveloperConsoleUrl = 'https://open.feishu.cn/app'
+
+/**
  * 「多久没消息就自动关」能选的时长，单位小时（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。
  * 不在这里面就是「不自动关」，也是缺省：设置里不存、快照里不带。
  */
@@ -224,6 +230,17 @@ export interface CodexRemoteChannelSnapshot {
 
 export type CodexRemoteTaskState = 'idle' | 'starting' | 'running' | 'waiting-approval'
 
+/**
+ * 手机上最近发来让 Codex 做的那一条（YF-13），电脑卡片上「最近一次」那行用。只给时间和结果，
+ * 手机上发来的原话不上电脑卡片。
+ */
+export interface CodexRemoteLastRequestSnapshot {
+  receivedAt: number
+  state: 'running' | 'done' | 'failed' | 'stopped'
+  /** 没做完时手机上收到的那句原因（大白话，已脱敏截短）；说不出原因时不填。 */
+  reason?: string
+}
+
 export interface CodexRemoteSnapshot {
   /**
    * 每拼一次快照加一。操作的返回值和 state-changed 事件都是整份快照、到达先后不定，界面只收比手上新的那份。
@@ -247,5 +264,7 @@ export interface CodexRemoteSnapshot {
    * 下次 Codex 起来了、或者遥控全关了就不带；缺省 = 没有这回事。
    */
   codexStartFailed?: boolean
+  /** 手机上最近一条（YF-13）；这次打开遥控以后还没发来过、或者遥控全关了就不带。 */
+  lastRequest?: CodexRemoteLastRequestSnapshot
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

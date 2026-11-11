@@ -2,8 +2,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText } from './CodexRemoteCard'
+import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText, remoteLowBalanceAmount } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
+import { feishuBotChatLink, feishuBotQrText, feishuGuideActions } from './FeishuRemoteSection'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
   return { channel: 'feishu', hasCredential: false, accountLabel: null, enabled: false, status: { state: 'stopped' }, boundPeer: null, pairing: null, ...patch }
@@ -56,6 +57,19 @@ describe('codex remote card', () => {
     expect(switchMarkup(markup)).toContain('disabled=""')
     // 还没填应用时不摆配对那一行。
     expect(markup).not.toContain('data-testid="settings-remote-feishu-peer"')
+  })
+
+  // YF-4：六步下面两颗，飞书开发者后台交给浏览器，教程是星芒自己的那一章；不给跳页的就只摆前一颗。
+  it('puts the Feishu console and the tutorial under the setup steps, and drops the tutorial without a way to navigate', () => {
+    const state = snapshot()
+    const withNavigate = renderToStaticMarkup(<CodexRemotePanel snapshot={state} api={{} as V2Bridge} busy="" run={async () => true} error={null} navigate={() => undefined} />)
+    expect(feishuGuideActions).toEqual({ console: '打开飞书开放平台', tutorial: '看教程' })
+    expect(withNavigate).toContain('data-testid="settings-remote-feishu-console"')
+    expect(withNavigate).toContain('data-testid="settings-remote-feishu-tutorial"')
+    expect(withNavigate.indexOf('在「版本管理与发布」里发布一个版本')).toBeLessThan(withNavigate.indexOf('settings-remote-feishu-console'))
+    const withoutNavigate = render(state)
+    expect(withoutNavigate).toContain('data-testid="settings-remote-feishu-console"')
+    expect(withoutNavigate).not.toContain('data-testid="settings-remote-feishu-tutorial"')
   })
 
   it('shows the saved app by its App ID only and lets the switch on once the folder is chosen', () => {
@@ -260,5 +274,81 @@ describe('codex remote card', () => {
     expect(render(snapshot({ credentialPersistence: 'session-only' }))).toContain('凭据只记到这次关掉星芒')
     expect(render(snapshot({ credentialPersistence: 'unavailable' }))).toContain('凭据存不下')
     expect(render(snapshot())).not.toContain('data-testid="settings-remote-persistence"')
+  })
+
+  // YF-13：坐回电脑前看得出手机最近让它干了什么；只摆时间和结果。
+  it('shows the last phone request with stop and decline-all only while a channel is on', () => {
+    const now = new Date(2026, 10, 11, 14, 8, 30).getTime()
+    const lastRequest = { receivedAt: new Date(2026, 10, 11, 14, 5).getTime(), state: 'running' as const }
+    const on = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
+    const off = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({ lastRequest })} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} />)
+    expect(off).not.toContain('settings-remote-last-request')
+    const running = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({ lastRequest, task: 'waiting-approval', pendingApprovals: 2 }, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} navigate={() => undefined} />)
+    expect(running).toContain('最近一次')
+    expect(running).toContain('14:05 发来一条，正在处理，已经 3 分钟')
+    expect(running).toContain('等你同意 2 条，要在手机上回。')
+    expect(running).toContain('<span>停下这一轮</span></button>')
+    expect(running).toContain('<span>都拒绝</span></button>')
+    expect(running).toContain('<span>在记录里看</span></button>')
+    // 在文件夹那行上面。
+    expect(running.indexOf('settings-remote-last-request')).toBeLessThan(running.indexOf('settings-remote-workspace-row'))
+    const done = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({ lastRequest: { ...lastRequest, state: 'done' } }, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} />)
+    expect(done).toContain('14:05 那一条做完了')
+    expect(done).not.toContain('停下这一轮')
+    expect(done).not.toContain('都拒绝')
+    expect(done).not.toContain('在记录里看')
+    expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} now={now} />)).not.toContain('settings-remote-last-request')
+  })
+
+  // YF-12：开着遥控、余额不到 $1 又没订阅时提醒先充值，照样让开。
+  it('warns about a low balance only while a channel is on, with a way to top up', () => {
+    const on = { hasCredential: true, accountLabel: 'cli_a1b2c3d4', enabled: true, status: { state: 'connected' as const } }
+    const warned = renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={0.8} navigate={() => undefined} />)
+    expect(warned).toContain('data-testid="settings-remote-low-balance"')
+    expect(warned).toContain('xm-tone-warn')
+    expect(warned).toContain('<strong>余额只剩 $0.80</strong>')
+    expect(warned).toContain('人不在电脑前时充不了值，建议先充一点再出门。')
+    expect(warned).toContain('<span>去充值</span></button>')
+    expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, { ...on, enabled: false })} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={0.8} />)).not.toContain('settings-remote-low-balance')
+    expect(renderToStaticMarkup(<CodexRemotePanel snapshot={snapshot({}, on)} api={{} as V2Bridge} busy="" run={async () => true} error={null} lowBalance={null} />)).not.toContain('settings-remote-low-balance')
+  })
+
+  it('counts a balance as low only under a dollar with no usable subscription and a balance read', () => {
+    expect(remoteLowBalanceAmount('bad', { quota: 400_000, quotaPerUnit: 500_000 })).toBe(0.8)
+    expect(remoteLowBalanceAmount('zero', { quota: 0, quotaPerUnit: 500_000 })).toBe(0)
+    expect(remoteLowBalanceAmount('bad', { quota: 1_500_000, quotaPerUnit: 500_000 })).toBeNull()
+    expect(remoteLowBalanceAmount('ok', { quota: 0, quotaPerUnit: 500_000 })).toBeNull()
+    expect(remoteLowBalanceAmount('neutral', { quota: 0, quotaPerUnit: 500_000 })).toBeNull()
+    expect(remoteLowBalanceAmount('bad', null)).toBeNull()
+    expect(remoteLowBalanceAmount('bad', { quota: 0, quotaPerUnit: 0 })).toBeNull()
+  })
+
+  // YF-7：只用飞书的人，下面不再摊着微信那一大块和橙色警告。
+  it('folds the WeChat block into one line while only Feishu is logged in', () => {
+    const folded = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(folded).toContain('aria-expanded="false"')
+    expect(folded).toContain('data-testid="settings-remote-weixin-toggle"')
+    expect(folded).not.toContain('data-testid="settings-remote-weixin-warning"')
+    expect(folded).not.toContain('data-testid="settings-remote-feishu-toggle"')
+    const fresh = render(snapshot())
+    expect(fresh).not.toContain('aria-expanded')
+    expect(fresh).toContain('data-testid="settings-remote-weixin-warning"')
+  })
+
+  // YF-3：保存好飞书应用、还没配对时，「还差这几步」下面给一个二维码，手机飞书扫了直接到机器人对话。
+  it('offers a QR code that opens the bot chat in Feishu while someone still has to pair', () => {
+    const saved = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4' }))
+    expect(saved).toContain('data-testid="settings-remote-feishu-bot-qr"')
+    expect(saved).toContain(feishuBotQrText)
+    expect(feishuBotQrText).toBe('用手机飞书扫一扫，直接打开和机器人的对话')
+    const paired = render(snapshot({ workspaceDirectory: '~/projects/demo' }, { hasCredential: true, accountLabel: 'cli_a1b2c3d4', boundPeer: { userIdTail: 'a1b2', boundAt: 1 } }))
+    expect(paired).not.toContain('settings-remote-feishu-bot-qr')
+  })
+
+  it('builds the Feishu bot chat link only from an App ID that looks right', () => {
+    expect(feishuBotChatLink('cli_a1b2c3d4')).toBe('https://applink.feishu.cn/client/bot/open?appId=cli_a1b2c3d4')
+    expect(feishuBotChatLink(null)).toBeNull()
+    expect(feishuBotChatLink('cli_a1b2&x=1')).toBeNull()
+    expect(feishuBotChatLink('https://evil.example/')).toBeNull()
   })
 })

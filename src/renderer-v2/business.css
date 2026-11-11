@@ -368,6 +368,17 @@
 .v2-remote-channel-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 13px 16px 6px; }
 .v2-remote-channel-head h3 { margin: 0 4px 0 0; color: var(--text); font-size: var(--font-body); font-weight: 600; }
 .v2-remote-channel-actions { margin-left: auto; }
+/* 没登录的渠道收成一行（YF-7）：标题本身是展开 / 收起的按钮，收着时下边距跟上边一样。 */
+.v2-remote-channel-head.is-collapsed { padding-bottom: 13px; }
+.v2-remote-channel-toggle { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 0 -4px; padding: 2px 4px; border: 0; border-radius: var(--radius-input); background: none; color: inherit; font: inherit; cursor: pointer; }
+.v2-remote-channel-toggle:hover { background: var(--panel-2); }
+.v2-remote-channel-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 「最近一次」下面那句等你同意（YF-13）。 */
+.v2-remote-waiting { color: var(--warn-tx); }
+/* 飞书「还差这几步」里扫码直接打开机器人对话（YF-3）。二维码保持白底：暗色主题下手机也要扫得出来。 */
+.v2-remote-bot-qr { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.v2-remote-bot-qr img, .v2-remote-bot-qr-pending { width: 96px; height: 96px; flex: none; border-radius: var(--radius-input); background: #fff; }
+.v2-remote-bot-qr p { margin: 0; color: var(--text-2); font-size: var(--font-small-compact); line-height: var(--line-body); }
 .v2-remote-status { margin: 6px 16px 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
 /* 那句话下面的「重新连接」「找客服」（D23）。 */
 .v2-remote-status-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 16px 0; }
@@ -376,6 +387,7 @@
 .v2-remote-guide > summary { cursor: pointer; color: var(--text-2); font-size: var(--font-small); font-weight: 600; }
 .v2-remote-guide ol { margin: 8px 0 0; padding-left: 20px; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.7; }
 .v2-remote-guide-row { padding: 0 16px 10px; }
+.v2-remote-guide-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
 .v2-remote-next { margin: 0 16px 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--radius-input); background: var(--panel-2); }
 .v2-remote-next-title { margin: 0; color: var(--text); font-size: var(--font-small); font-weight: 600; line-height: var(--line-body); }
 .v2-remote-next ol { margin: 6px 0 0; padding-left: 20px; color: var(--text-2); font-size: var(--font-small-compact); line-height: 1.7; }

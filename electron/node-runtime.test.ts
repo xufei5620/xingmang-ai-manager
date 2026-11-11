@@ -32,6 +32,7 @@ import {
   validateInstalledNodeRuntimeInspection,
   type NodeRuntimeProcessPlan,
 } from './node-runtime'
+import { fileOperationInFlight } from './slow-download.test-support'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 
 const hostPlatform = process.platform
@@ -899,17 +900,53 @@ describe('Node.js package download deadline', () => {
     // Only the timers are fake; the file is still written for real. The clock moves one
     // chunk at a time and waits (in real time) for that chunk to reach the disk, so a slow
     // real write never shows up as minutes of fake time without progress.
+    // That wait used to give up after 10,000 event-loop turns and move the clock anyway. On a
+    // Windows runner a write now and then took longer, the clock ran on past chunks that had not
+    // been counted yet, and the 3-minute stall limit fired before the ceiling (760000 where
+    // 1800000 is right). As in slow-download.test-support.ts, a turn counts towards that limit
+    // only when no file operation is in flight; the limit stays for the turns where the next
+    // chunk is simply not due yet.
     async function driveChunkByChunk<T>(work: Promise<T>, received: () => number): Promise<T> {
       let settled = false
       work.then(() => { settled = true }, () => { settled = true })
       for (let chunk = 1; !settled; chunk += 1) {
+        // A test that timed out has had its timers restored by afterEach; stop instead of
+        // spinning on a download that will never finish.
+        if (!vi.isFakeTimers()) throw new Error('chunk driver: the fake clock was put away before the download settled')
         await vi.advanceTimersByTimeAsync(chunkEveryMs)
-        for (let turn = 0; turn < 10_000 && !settled && received() < chunk * chunkBytes; turn += 1) {
+        let quietTurns = 0
+        while (quietTurns < 10_000 && !settled && received() < chunk * chunkBytes) {
           await new Promise((resolve) => setImmediate(resolve))
+          quietTurns = fileOperationInFlight() ? 0 : quietTurns + 1
         }
       }
       return work
     }
+
+    it('drives the clock no further while the code under test is on the disk, however many turns that takes', async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-busy-'))
+      const startedAt = Date.now()
+      let turns = 0
+      let counting = true
+      function count(): void {
+        turns += 1
+        if (counting) setImmediate(count)
+      }
+      setImmediate(count)
+      try {
+        // Nothing arrives, so the driver hands out the first chunk and then has only the disk to
+        // wait for: one file operation after another for longer than its 10,000-turn limit.
+        await driveChunkByChunk((async () => {
+          while (turns < 15_000) await fs.promises.stat(directory)
+        })(), () => 0)
+        expect(turns).toBeGreaterThanOrEqual(15_000)
+        expect(Date.now() - startedAt).toBe(chunkEveryMs)
+      } finally {
+        counting = false
+        fs.rmSync(directory, { recursive: true, force: true })
+      }
+    })
 
     it('finishes a slow but steady download that takes longer than ten minutes', async () => {
       vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date', 'performance'] })

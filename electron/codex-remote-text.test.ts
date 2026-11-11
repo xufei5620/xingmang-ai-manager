@@ -10,11 +10,15 @@ import {
   redactRemoteText,
   remoteMessages,
   remoteOpenedMessage,
+  remoteRunningForText,
+  remoteTookText,
   remoteTurnFailureMessages,
+  retryMessage,
   splitRemoteText,
   staleMessageNotice,
   statusMessage,
   truncateRemoteText,
+  turnSummaryLine,
 } from './codex-remote-text'
 
 describe('codex-remote-text', () => {
@@ -29,7 +33,7 @@ describe('codex-remote-text', () => {
 
   // YF-17：「帮助」里列出手机上能关遥控；只有整条就是「关闭遥控」才算，句子里带着的照常交给 Codex。
   it('lists closing the remote among the commands and does not read it out of a sentence', () => {
-    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、关闭遥控、帮助。')
+    expect(remoteMessages.help.split('\n')[1]).toBe('能用的指令：新对话、停止、状态、关闭遥控、重试、帮助。')
     expect(remoteMessages.closedFromPhone).toBe('手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。')
     expect(parseRemoteCommand('先别关闭遥控', false)).toEqual({ kind: 'prompt', text: '先别关闭遥控' })
   })
@@ -123,6 +127,64 @@ describe('codex-remote-text', () => {
   it('describes the current state', () => {
     expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 0 })).toContain('正在处理')
     expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 2 })).toContain('等你同意 2 条')
+  })
+
+  // YF-18：「状态」最多四行，字照「状态重试」那批一字不差；读不到的那一样整行不写。
+  it('adds how long it has run, the plan step, the balance and the idle close to the status reply', () => {
+    expect(statusMessage({
+      workspace: '~/projects/demo',
+      running: true,
+      pendingApprovals: 0,
+      runningForMs: 6 * 60_000 + 30_000,
+      step: '运行测试',
+      balanceUsd: 12.4,
+      idleCloseHours: 4,
+    })).toBe('工作文件夹：~/projects/demo\n现在：正在处理，已经 6 分钟，做到「运行测试」\n余额：$12.40\n再过 4 小时没新消息就自动关')
+    expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 0, runningForMs: 20_000, step: null, balanceUsd: null, idleCloseHours: null }))
+      .toBe('工作文件夹：~/p\n现在：正在处理，已经不到 1 分钟')
+    expect(statusMessage({ workspace: '~/p', running: false, pendingApprovals: 0, balanceUsd: 1234.5, idleCloseHours: 12 }))
+      .toBe('工作文件夹：~/p\n现在：空闲\n余额：$1,234.50\n再过 12 小时没新消息就自动关')
+    expect(statusMessage({ workspace: '~/p', running: true, pendingApprovals: 2, runningForMs: 60_000, step: '运行测试' }))
+      .toBe('工作文件夹：~/p\n现在：等你同意 2 条')
+  })
+
+  it('writes the running time in minutes and hours', () => {
+    expect(remoteRunningForText(59_000)).toBe('已经不到 1 分钟')
+    expect(remoteRunningForText(6 * 60_000)).toBe('已经 6 分钟')
+    expect(remoteRunningForText(65 * 60_000)).toBe('已经 1 小时 5 分钟')
+    expect(remoteRunningForText(120 * 60_000)).toBe('已经 2 小时')
+  })
+
+  it('squeezes a long or multi-line plan step onto the status line', () => {
+    const reply = statusMessage({ workspace: '~/p', running: true, pendingApprovals: 0, runningForMs: 0, step: '先把\n登录页的表单校验全部改成新的写法，再补上对应的测试用例和文档' })
+    expect(reply.split('\n')).toHaveLength(2)
+    expect(reply).toContain('做到「先把 登录页的表单校验全部改成新的写法，再补上对应的测试用…」')
+  })
+
+  // YF-16：做完以后接在回答后面的那一行。
+  it('sums up how long the turn took and which files it changed', () => {
+    expect(turnSummaryLine(200_000, ['a.ts', 'b.ts', 'c.css', 'd.md'])).toBe('用时 3 分 20 秒，改了 4 个文件：a.ts、b.ts、c.css，另外 1 个。')
+    expect(turnSummaryLine(45_000, ['a.ts', 'b.ts'])).toBe('用时 45 秒，改了 2 个文件：a.ts、b.ts。')
+    expect(turnSummaryLine(200_000, [])).toBe('用时 3 分 20 秒。')
+    expect(turnSummaryLine(65 * 60_000, ['a.ts', 'b.ts', 'c.css'])).toBe('用时 1 小时 5 分，改了 3 个文件：a.ts、b.ts、c.css。')
+  })
+
+  it('writes the time taken in seconds, minutes and hours', () => {
+    expect(remoteTookText(200)).toBe('1 秒')
+    expect(remoteTookText(45_000)).toBe('45 秒')
+    expect(remoteTookText(180_000)).toBe('3 分')
+    expect(remoteTookText(3_600_000)).toBe('1 小时')
+  })
+
+  // YF-22：「重试」是整条才算的指令，回复只带前 20 个字。
+  it('recognises the retry command and previews the first twenty characters', () => {
+    expect(parseRemoteCommand('重试', false)).toEqual({ kind: 'retry' })
+    expect(parseRemoteCommand('/重试', true)).toEqual({ kind: 'retry' })
+    expect(parseRemoteCommand('重试一下刚才那个命令', false)).toEqual({ kind: 'prompt', text: '重试一下刚才那个命令' })
+    expect(retryMessage('把登录页的表单校验全部改成新的写法，再补上测试')).toBe('再发一次上一条：「把登录页的表单校验全部改成新的写法，再补…」')
+    expect(retryMessage('修一下首页')).toBe('再发一次上一条：「修一下首页」')
+    expect(retryMessage('12345678901234567890')).toBe('再发一次上一条：「12345678901234567890」')
+    expect(remoteMessages.nothingToRetry).toBe('还没有可以重发的上一条。直接发要做的事就行。')
   })
 
   it('truncates with an ellipsis', () => {

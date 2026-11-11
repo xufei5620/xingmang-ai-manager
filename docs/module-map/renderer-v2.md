@@ -233,7 +233,7 @@
 ## features/settings/ 与 features/tutorial/
 - `features/settings/VersionCard.tsx` — 设置 › 版本更新最上面的版本卡：当前版本、更新内容、下载进度与主按钮，撤回、要管理员密码、磁盘不够、失败几种提示；Windows 授权窗、Mac 钥匙串、Linux 系统安装窗口各有提前说明。
 - `features/settings/BackupCard.tsx` — 设置 › 备份迁移的备份列表、预览与恢复，恢复后提醒回首页看或重开工具；下线的 Gemini 不列。
-- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。
+- `features/settings/codex-remote/CodexRemoteCard.tsx` — 设置 › 工具管理的「手机遥控 Codex」整卡：干活的文件夹、每个渠道一块（凭据、打开遥控、配对码与绑定的人）；`CodexRemotePanel` 只管按快照摆，取数和操作在外层。「干活的文件夹」上面的「最近一次」（YF-13，停下这一轮 / 都拒绝）、余额不到 $1 的黄条（YF-12，余额在外层 `useRemoteLowBalance` 读）、另一个渠道登录过时没登录的那块收成一行（YF-7，`remoteChannelCollapsed`）；飞书还差几步那块的打开机器人对话二维码在 `FeishuRemoteSection.tsx`（YF-3），「怎么建飞书机器人」六步下面的「打开飞书开放平台」「看教程」也在那里（YF-4）。
 - `features/settings/codex-remote/channel-sections.tsx` — 各渠道那一块的登记表（`Record<RemoteChannelId, …>`，主进程加渠道这里漏了是编译错）：标题、提示句和填凭据的组件。
 - `features/settings/codex-remote/FeishuRemoteSection.tsx` — 飞书那一块：填 App ID / App Secret（附怎么建机器人的六步，只写字不放链接），填过了只显示 App ID。
 - `features/settings/codex-remote/WeixinRemoteSection.tsx` — 微信那一块（实验功能）：黄色提醒、扫码登录 / 重新扫码，扫码弹窗（二维码图由主进程给、手机上要输数字时换成输入框）；拿二维码走卡片的 `run`，弹窗里的轮询自己管（`useLatestRequest`），登录好了靠主进程推的快照变成「已登录」。
