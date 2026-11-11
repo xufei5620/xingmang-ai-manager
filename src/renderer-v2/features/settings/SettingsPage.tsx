@@ -127,6 +127,19 @@ export function launchAtLoginFallbackNote(isMac: boolean): string {
     : '开机后在托盘里待命，不弹窗口'
 }
 /**
+ * 「发测试通知」交给系统以后那句（决定单 D68、深查 NT-6）。系统里把星芒的通知关了，大多不会报错
+ * （Mac 上一般静默），所以不能再说「已发送」，叫客户没看到时去系统的通知设置里看。
+ */
+export const testNotificationHandedOffText = '已经交给系统了。没看到通知的话，去系统的通知设置里看看星芒有没有被关掉。'
+/** 那句旁边的按钮，打开哪一页由主进程定（electron/platform/system-service.ts 的 notificationSettingsTarget）。 */
+export const openNotificationSettingsLabel = '打开系统通知设置'
+/** 系统没让打开时补的那句，说法同检查页「没能打开网络设置」（network-settings-fix.ts）。 */
+export const notificationSettingsUnavailableText = '没能打开系统通知设置，请在系统设置里找「通知」。'
+/** Windows、Mac 有能直接打开的系统通知设置页；Linux 各家桌面的设置程序不一样，不给按钮。 */
+export function canOpenNotificationSettings(platform: string): boolean {
+  return platform === 'windows' || platform === 'macos'
+}
+/**
  * 「只让 Claude Code 改项目文件夹里的文件」拨完以后那句小提示（Fable 第二轮 Q6）。kept：Claude Code 自己的设置里
  * 客户写过这一项（星芒没写过），星芒不替他改，开关照样记下。
  */
@@ -258,6 +271,8 @@ export function SettingsPage({
   const [isLinux, setIsLinux] = useState(false)
   // 网络加速 2026-10-30 下线：能力读回来之前按没有算，不先闪一下加速卡、「加速提醒」。
   const [accelerationAvailable, setAccelerationAvailable] = useState(false)
+  // 同上，读回来之前不给「打开系统通知设置」，免得 Linux 上先出一颗点了没用的按钮。
+  const [notificationSettingsOpenable, setNotificationSettingsOpenable] = useState(false)
   useEffect(() => {
     let current = true
     // 读不到平台就照旧显示工具的安装卸载，不出「卸载星芒」。
@@ -267,6 +282,7 @@ export function SettingsPage({
         setIsMac(capability.platform === 'macos')
         setIsLinux(capability.platform === 'linux')
         setAccelerationAvailable(capability.acceleration !== false)
+        setNotificationSettingsOpenable(canOpenNotificationSettings(capability.platform))
       })
       .catch(() => undefined)
     return () => { current = false }
@@ -309,6 +325,28 @@ export function SettingsPage({
   // 做成了的结果改成会自己消失的小提示，页面不再往下跳；没做成的照旧在页顶出红条。
   const toasted = (text: string) => () => {
     showToast(text, 'ok')
+    return null
+  }
+  // 测试通知那句旁边的按钮：真打开了才收起那句；没打开就留着，再补一句叫客户自己去找。
+  // 主进程是旧版、桥上还没有这个方法时同样落到那一句。
+  const openNotificationSettings = (dismiss: () => void) => {
+    if (!systemApi) return
+    void Promise.resolve()
+      .then(() => systemApi.openNotificationSettings())
+      .then((opened) => {
+        if (!opened) throw new Error('not-opened')
+        dismiss()
+      })
+      .catch(() => showToast(notificationSettingsUnavailableText, 'warn'))
+  }
+  const testNotificationHandedOff = () => {
+    showToast(
+      testNotificationHandedOffText,
+      'ok',
+      notificationSettingsOpenable
+        ? { label: openNotificationSettingsLabel, onSelect: openNotificationSettings }
+        : undefined,
+    )
     return null
   }
   // 「连接方式」点「查看」：查到的那一句用小提示说，不在这一行里多占一行字。
@@ -1020,7 +1058,7 @@ export function SettingsPage({
                   if (result === 'unsupported')
                     throw new Error('这台电脑当前无法显示系统通知。')
                 },
-                toasted('已发送一条测试通知'),
+                testNotificationHandedOff,
               )
             }
           >

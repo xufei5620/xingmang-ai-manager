@@ -1639,6 +1639,11 @@ if (query.has('system')) {
       record('test-notification')
       return settings.desktopNotifications !== false ? 'requested' : 'disabled'
     },
+    // fail=notification-settings：系统没让打开通知设置那一页。
+    openNotificationSettings: async () => {
+      record('open-notification-settings')
+      return fail !== 'notification-settings'
+    },
     notifyActivity: async (kind, eventKey) => {
       record('activity-notification', { kind, eventKey })
       return 'requested'

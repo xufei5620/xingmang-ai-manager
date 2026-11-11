@@ -98,6 +98,11 @@ export interface XingmangPlatformApi {
     enabled: boolean,
   ): Promise<PlatformSystemState>
   testNotification(): Promise<PlatformNotificationResult>
+  /**
+   * 打开系统自己的通知设置页（Windows、Mac）。打开哪一页由主进程定死，渲染层不传网址（I12）；
+   * 这台电脑没有能直接打开的那一页时回 false。
+   */
+  openNotificationSettings(): Promise<boolean>
   notifyActivity(
     kind: PlatformActivityKind,
     eventKey: string,
@@ -115,6 +120,7 @@ export const platformChannels = {
   setNotificationPreference: 'xingmang-platform:set-notification-preference',
   setPrivacyPreference: 'xingmang-platform:set-privacy-preference',
   testNotification: 'xingmang-platform:test-notification',
+  openNotificationSettings: 'xingmang-platform:open-notification-settings',
   notifyActivity: 'xingmang-platform:notify-activity',
   stateChanged: 'xingmang-platform:state-changed',
 } as const

@@ -4,6 +4,7 @@ import type { PlatformPreferences } from './contract'
 import { loginLaunchArgument } from '../login-launch'
 import {
   migrateLegacyWindowsLoginItem,
+  notificationSettingsTarget,
   PlatformSystemService,
   describeSessionProxy,
   removeWindowsLoginItem,
@@ -382,6 +383,44 @@ describe('platform system preferences', () => {
     expect(h.dependencies.resolveProxy).not.toHaveBeenCalled()
     expect(h.app.setLoginItemSettings).not.toHaveBeenCalled()
     expect(h.service.testNotification()).toBe('unsupported')
+  })
+  it('points the notification settings button at a fixed system page on Windows and macOS only', () => {
+    expect(notificationSettingsTarget('win32')).toBe('ms-settings:notifications')
+    expect(notificationSettingsTarget('darwin')).toBe(
+      'x-apple.systempreferences:com.apple.Notifications-Settings.extension',
+    )
+    expect(notificationSettingsTarget('linux')).toBeNull()
+    expect(notificationSettingsTarget('freebsd')).toBeNull()
+  })
+  it('opens the system notification settings through the injected opener and nothing else', async () => {
+    for (const [platform, target] of [
+      ['win32', 'ms-settings:notifications'],
+      ['darwin', 'x-apple.systempreferences:com.apple.Notifications-Settings.extension'],
+    ] as const) {
+      const h = setup(platform)
+      const openExternal = vi.fn(async () => undefined)
+      h.dependencies.openExternal = openExternal
+      await expect(h.service.openNotificationSettings()).resolves.toBe(true)
+      expect(openExternal).toHaveBeenCalledTimes(1)
+      expect(openExternal).toHaveBeenCalledWith(target)
+      expect(h.store.update).not.toHaveBeenCalled()
+      expect(h.app.setLoginItemSettings).not.toHaveBeenCalled()
+    }
+  })
+  it('reports the notification settings as not opened on Linux or without an opener', async () => {
+    const linux = setup('linux')
+    const openExternal = vi.fn(async () => undefined)
+    linux.dependencies.openExternal = openExternal
+    await expect(linux.service.openNotificationSettings()).resolves.toBe(false)
+    expect(openExternal).not.toHaveBeenCalled()
+    await expect(setup('win32').service.openNotificationSettings()).resolves.toBe(false)
+  })
+  it('lets a refused system settings page surface as a failure', async () => {
+    const h = setup('darwin')
+    h.dependencies.openExternal = vi.fn(async () => {
+      throw new Error('系统没让打开')
+    })
+    await expect(h.service.openNotificationSettings()).rejects.toThrow('系统没让打开')
   })
   it('stores the anonymous usage switch only once it is turned, and keeps it off after that', async () => {
     const h = setup()
