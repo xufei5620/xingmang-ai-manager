@@ -62,6 +62,18 @@ export const managedNpmTransactionPreservedEntries: readonly string[] = ['previo
  */
 export const installLeftoverMinimumAgeMs = 6 * 60 * 60 * 1000
 
+/**
+ * 客户在「设置 › 备份迁移 › 星芒占用的空间」里亲手点「清理」时要多旧才删（yoyo 2026-11-11 亲手回「下载清理放开」）。
+ *
+ * 普通权限运行时（Mac、Linux、不按管理员身份的 Windows）不等：清理排在安装队列里，星芒自己的安装碰不上；
+ * 这些目录在当前用户自己的临时目录或托管目录里，同一个用户只开得了一个星芒（单实例锁），别的账号的星芒写不到这里。
+ * 按管理员身份运行的 Windows 照旧等 installLeftoverMinimumAgeMs：那时的目录在 ProgramData 里，这台电脑上
+ * 每个按管理员身份运行星芒的账号共用，另一个账号的星芒可能正在装。后台自动清理一律照旧等。
+ */
+export function manualInstallLeftoverMinimumAgeMs(platform: NodeJS.Platform, windowsExecutionMode: 'same-user' | 'trusted-only'): number {
+  return platform === 'win32' && windowsExecutionMode === 'trusted-only' ? installLeftoverMinimumAgeMs : 0
+}
+
 /** 启动后（开机安静期结束后）再等这么久才清，让开机那一阵的检测先跑完。 */
 export const installLeftoverStartupDelayMs = 2 * 60 * 1000
 
@@ -216,12 +228,15 @@ async function containsAnyEntry(directory: string, names: readonly string[]): Pr
   return false
 }
 
-export async function sweepInstallLeftovers(
+/**
+ * 一处一处地交出这次会删的候选目录。清理和「星芒占用的空间」那一行量大小走同一套判断，
+ * 卡片上写的就是点「清理」能腾出来的。
+ */
+async function* installLeftoverCandidates(
   locations: readonly InstallLeftoverLocation[],
-  options: InstallLeftoverSweepOptions = {},
-): Promise<InstallLeftoverSweepResult> {
+  options: InstallLeftoverSweepOptions,
+): AsyncGenerator<string> {
   const cutoff = (options.now ?? Date.now()) - (options.minimumAgeMs ?? installLeftoverMinimumAgeMs)
-  const result: InstallLeftoverSweepResult = { removed: 0, freedBytes: 0, failed: 0 }
   for (const location of locations) {
     let rootStats: fs.Stats
     let resolvedRoot: string
@@ -239,16 +254,36 @@ export async function sweepInstallLeftovers(
       const candidate = await inspectCandidate(location.directory, resolvedRoot, name, cutoff)
       if (!candidate) continue
       if (location.preserveIfContains && await containsAnyEntry(candidate, location.preserveIfContains)) continue
-      const bytes = await measureDirectoryBytes(candidate)
-      try {
-        await fs.promises.rm(candidate, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 })
-      } catch {
-        result.failed++
-        continue
-      }
-      result.removed++
-      result.freedBytes += bytes
+      yield candidate
     }
   }
+}
+
+export async function sweepInstallLeftovers(
+  locations: readonly InstallLeftoverLocation[],
+  options: InstallLeftoverSweepOptions = {},
+): Promise<InstallLeftoverSweepResult> {
+  const result: InstallLeftoverSweepResult = { removed: 0, freedBytes: 0, failed: 0 }
+  for await (const candidate of installLeftoverCandidates(locations, options)) {
+    const bytes = await measureDirectoryBytes(candidate)
+    try {
+      await fs.promises.rm(candidate, { recursive: true, force: true, maxRetries: 2, retryDelay: 200 })
+    } catch {
+      result.failed++
+      continue
+    }
+    result.removed++
+    result.freedBytes += bytes
+  }
   return result
+}
+
+/** sweepInstallLeftovers 同样的选法、同样的年龄，只量不删：「装工具时下载的文件」那一行右边的数。 */
+export async function measureInstallLeftovers(
+  locations: readonly InstallLeftoverLocation[],
+  options: InstallLeftoverSweepOptions = {},
+): Promise<number> {
+  let total = 0
+  for await (const candidate of installLeftoverCandidates(locations, options)) total += await measureDirectoryBytes(candidate)
+  return total
 }

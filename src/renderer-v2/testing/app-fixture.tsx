@@ -284,6 +284,8 @@ let releaseScan: () => void = () => undefined
 let startupScan: Promise<void> | null = null
 /** ?launchRemembers：同主进程，打开过一次之后读配置也带着那个目录。 */
 let launchedWorkspace: string | undefined
+// 「新建项目文件夹」在夹具里总是落在这一个（同主进程的 XingmangProjects\my-project）。
+const fixtureStarterWorkspace = 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project'
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
@@ -544,6 +546,8 @@ const methods = {
   getConfig: async () => {
     const result = structuredClone(config)
     if (launchedWorkspace) result.rememberedWorkspace = launchedWorkspace
+    // 同主进程（isUntouchedStarterWorkspace）：夹具里替用户建的那个文件夹一直空着。
+    if (launchedWorkspace === fixtureStarterWorkspace) result.rememberedWorkspaceFresh = true
     // 同主进程：恢复中没有账号可比，来源只会是 unknown，并带上「待定」标记。
     if (session.restoring) {
       result.ownershipPending = true
@@ -605,7 +609,7 @@ const methods = {
   },
   chooseWorkspace: async (options) => {
     if (query.has('workspaceCancel')) return null
-    const workspace = options?.createStarter ? 'C:\\Users\\fixture\\Documents\\XingmangProjects\\my-project' : 'C:\\Selected Project'
+    const workspace = options?.createStarter ? fixtureStarterWorkspace : 'C:\\Selected Project'
     settings = { ...settings, workspace }
     config.workspace = workspace
     return workspace
@@ -672,6 +676,9 @@ const methods = {
     return { id, provider: item.provider, deletedFiles: 1 }
   },
   listBackups: async () => [],
+  // 「备份迁移」最下面的「星芒占用的空间」（D100）一点开这一组就六行各问一次；这里只给个小数，业务回归在 e2e/v2-business。
+  inspectStorageUsage: async (part) => (part === 'backups' ? { bytes: 4096, backupCount: 0 } : part === 'downloads' ? { bytes: 0, installing: false } : { bytes: 4096 }),
+  cleanStorage: async () => ({ freedBytes: 0, kept: 0 }),
   exportDiagnostics: async () => ({ outputPath: 'C:\\Fixture\\xingmang-diagnostics.txt' }),
   revealExportedFile: async () => true,
   launchCli: async (_provider, workspace) => {
@@ -679,7 +686,7 @@ const methods = {
     if (query.has('workspaceGone') && workspace === 'C:\\work\\my-app') throw new Error('工作目录不存在，请重新选择')
     if (query.has('launchRemembers')) {
       launchedWorkspace = config.workspace
-      return { rememberedWorkspace: launchedWorkspace }
+      return { rememberedWorkspace: launchedWorkspace, ...(launchedWorkspace === fixtureStarterWorkspace ? { rememberedWorkspaceFresh: true } : {}) }
     }
     // ?launchReadOnly：打开前试写不进去（只读盘），主进程照样打开，带回 workspaceReadOnly（D17）。
     if (query.has('launchReadOnly')) return { workspaceReadOnly: true }

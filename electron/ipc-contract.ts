@@ -19,6 +19,8 @@ import type {
   ConfigRestoreResult,
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
+import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
+export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
@@ -1147,6 +1149,13 @@ export interface XingmangInvokeContract {
   restoreBackup: IpcInvokeDefinition<'backups:restore', [id: string], ConfigRestoreResult>
   deleteBackup: IpcInvokeDefinition<'backups:delete', [id: string], void>
   /**
+   * 「设置 › 备份迁移 › 星芒占用的空间」的一行有多大。入参只是哪一行，要量的文件夹由主进程自己定，
+   * 渲染层给不了路径（I5）。没算出来时 bytes 是 null，不抛错。
+   */
+  inspectStorageUsage: IpcInvokeDefinition<'storage:inspect', [part: StorageUsagePart], StorageUsagePartReport>
+  /** 那张卡上的三个「清理」。同上，只认是哪一样，删什么、留什么由主进程按认得的文件名定（I8）。 */
+  cleanStorage: IpcInvokeDefinition<'storage:clean', [target: StorageCleanTarget], StorageCleanResult>
+  /**
    * 手机遥控 Codex 的微信扫码登录。二维码由主进程画成图片给过来，登录链接和机器人令牌都不过
    * IPC（I3）；令牌直接进底座的加密凭据存储。poll 等一轮长轮询（最多四十来秒）。
    */
@@ -1640,6 +1649,8 @@ export const ipcInvokeChannels = {
   inspectBackup: 'backups:inspect',
   restoreBackup: 'backups:restore',
   deleteBackup: 'backups:delete',
+  inspectStorageUsage: 'storage:inspect',
+  cleanStorage: 'storage:clean',
   startWeixinRemoteLogin: 'codex-remote:weixin-login-start',
   pollWeixinRemoteLogin: 'codex-remote:weixin-login-poll',
   cancelWeixinRemoteLogin: 'codex-remote:weixin-login-cancel',

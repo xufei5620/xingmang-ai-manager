@@ -49,6 +49,7 @@ import {
 } from './install-cancellation'
 import {
   buildInstallLeftoverLocations,
+  manualInstallLeftoverMinimumAgeMs,
   type InstallLeftoverLocation,
   type InstallLeftoverSweepResult,
 } from './install-leftovers'
@@ -2009,9 +2010,38 @@ export function createCliInstallService(context: ServiceContext, dependencies: C
     })
   }
 
+  /**
+   * 「星芒占用的空间」里「装工具时下载的文件」那一行右边的数：和下面的手动清理同一套选法、同一个年龄，
+   * 写的就是点「清理」能腾出来的。只读，不排队：量的时候正在装也不碍事，最多少算正在下的那份。
+   */
+  function measureInstallLeftoversNow(): Promise<number> {
+    const measure = serviceOptions.measureInstallLeftovers
+    if (!measure) return Promise.resolve(0)
+    return measure(resolveInstallLeftoverLocations(), { minimumAgeMs: manualInstallLeftoverMinimumAgeMs(platform, windowsExecutionMode) })
+  }
+
+  /**
+   * 客户在那一行亲手点「清理」：和后台那次一样排进安装队列（I11），正在装的话等它装完再删；
+   * 不等 6 小时的规则见 manualInstallLeftoverMinimumAgeMs。键和后台那次分开：后台那次正排着时，
+   * 同一个键会直接拿到它的结果，那一次还是按 6 小时删的。
+   */
+  function cleanInstallLeftoversNow(): Promise<InstallLeftoverSweepResult> {
+    const sweep = serviceOptions.sweepInstallLeftovers
+    if (!sweep) return Promise.resolve({ removed: 0, freedBytes: 0, failed: 0 })
+    return installationQueue.enqueue('maintenance:install-leftovers-manual', async () => {
+      const result = await sweep(resolveInstallLeftoverLocations(), { minimumAgeMs: manualInstallLeftoverMinimumAgeMs(platform, windowsExecutionMode) })
+      runtimeLog?.log(result.failed ? 'warn' : 'info', 'install', 'install-leftovers.manual-cleaned', `手动清掉装工具时留下的下载 ${result.removed} 份，约 ${Math.round(result.freedBytes / 1024 / 1024)} MB`, {
+        removed: result.removed,
+        freedBytes: result.freedBytes,
+        failed: result.failed,
+      })
+      return result
+    })
+  }
+
   function cancelCliInstall(provider: ProviderId): InstallCancellationOutcome {
     return installCancellations.cancel(`cli:install:${provider}`)
   }
 
-  return { installCli, cancelCliInstall, cleanupInstallLeftovers }
+  return { installCli, cancelCliInstall, cleanupInstallLeftovers, measureInstallLeftoversNow, cleanInstallLeftoversNow }
 }
