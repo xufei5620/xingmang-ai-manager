@@ -72,6 +72,14 @@ describe('codex remote view', () => {
     expect(remoteSwitchHint(snapshot({ workspaceDirectory: null }), channel({ enabled: true }), '先在上面填好飞书应用。')).toContain('退出星芒才断开')
   })
 
+  // Mac 上没有托盘（「菜单栏改」）：只换中间那截，前后跟着设置走的照旧。
+  it('says the menu bar instead of the tray on a Mac', () => {
+    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。', true)).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口收到菜单栏也照样开着，退出星芒才断开，下次打开星芒要再打开一次。')
+    expect(remoteSwitchHint(snapshot({ autoStart: true, idleCloseHours: 4 }), channel(), '先在上面填好飞书应用。', true)).toBe('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口收到菜单栏也照样开着，退出星芒才断开；闲着 4 小时也会自动断开。')
+    expect(remoteSwitchHint(snapshot(), channel({ hasCredential: false }), '先在上面填好飞书应用。', true)).toBe('先在上面填好飞书应用。')
+    expect(remoteSwitchHint(snapshot(), channel(), '先在上面填好飞书应用。', false)).toContain('窗口缩到托盘也照样开着')
+  })
+
   it('names the bound person by nickname and id tail, or by the tail alone', () => {
     const boundAt = new Date(2026, 9, 25, 14, 5).getTime()
     expect(boundPeerText({ displayName: '小明', userIdTail: 'a1b2', boundAt })).toBe('小明（尾号 a1b2），10 月 25 日 14:05 配对')
