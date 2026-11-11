@@ -1039,9 +1039,8 @@ if (!hasSingleInstanceLock) {
     })
     // D78：只记日志，不提示客户。写回前就读出原文不是 UTF-8，写成以后才记，没写成的不算。
     attachNotUtf8ConfigRewriteLog(({ file, backup }) => {
-      runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten', backup
-        ? '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，原样在备份里'
-        : '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，这次写回不留备份', { file, backup })
+      runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten',
+        '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，原样在备份里', { file, backup })
     })
     if (loginItemMigration === true) {
       runtimeLog.log('info', 'main', 'login-item.migrated', '旧版开机启动项已改成开机后留在托盘')
