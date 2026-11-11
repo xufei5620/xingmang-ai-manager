@@ -1,5 +1,6 @@
 // 主窗口业务通道的处理器：账号用量、看板、任务记录。
 // #1070 第 7 步从 ipc.ts 原样搬来：按域一个文件，ipc.ts 只管组装，各域共用的东西在 context.ts。
+import { buildAccountPriceList } from '../../account-price-list'
 import { parseAccountDashboardQuery, parseAccountTaskQuery, parseAccountUsageQuery } from '../parsers/account-usage'
 import type { IpcHandlerContext } from './context'
 
@@ -13,5 +14,9 @@ export function registerAccountUsageHandlers(ctx: IpcHandlerContext): void {
   ))
   registerTrustedHandler('account:get-tasks', (_event, input: unknown) => (
     accountService.getTasks(parseAccountTaskQuery(input))
+  ))
+  // 历史账号的后端没有按型号的价目，回 null，页面不出价格表。
+  registerTrustedHandler('account:get-price-list', async () => (
+    accountService.getModelPricing ? buildAccountPriceList(await accountService.getModelPricing()) : null
   ))
 }

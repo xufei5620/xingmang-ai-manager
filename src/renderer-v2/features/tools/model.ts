@@ -589,8 +589,9 @@ export function spacedName(name: string): string {
   return /[一-鿿]$/.test(name) ? name : `${name} `
 }
 
+/** 凌晨 0～5 点说「晚上好」：那会儿还开着软件的多半还没睡，说「早上好」不对劲（D60）。 */
 export function greeting(hour: number): string {
-  return hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
+  return hour < 5 ? '晚上好' : hour < 11 ? '早上好' : hour < 14 ? '中午好' : hour < 18 ? '下午好' : '晚上好'
 }
 
 export function balanceTier(dollars: number): 'ok' | 'warn' | 'bad' {

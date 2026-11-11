@@ -728,6 +728,30 @@ export async function mcpNameTakenIn(
 }
 
 /**
+ * 外接工具页「也装到别的工具…」给不给（同类对比 备选 5）：只给 Claude Code、Codex「我的（全局）」那份里客户自己加的连接
+ * （能移除的那种）。项目里的连接常跟着仓库走，搬进别的工具的项目配置等于把密钥写进仓库文件；Grok 的连接列表
+ * 不带环境变量和请求头，主进程读不全；插件带的、系统自带的不在客户自己的配置里。
+ */
+export function mcpCopyOffered(provider: Provider, item: ExtensionItem): boolean {
+  return (provider === 'claude' || provider === 'codex')
+    && item.kind === 'mcp'
+    && item.installed
+    && item.scope === 'user'
+    && item.operations.uninstall
+}
+
+/** 「也装到别的工具」框里能勾的工具：不含来源那个；已经有同名连接的标「已添加」、不给勾。 */
+export function mcpCopyChoices(
+  provider: Provider,
+  usable: readonly string[] | undefined,
+  taken: readonly string[],
+  codexViaDesktop = false,
+): ExtensionToolChoice[] {
+  return extensionToolChoices(activeTools.map((tool) => tool.id), usable, taken, codexViaDesktop)
+    .filter((choice) => choice.id !== provider)
+}
+
+/**
  * 手填表单与「星芒精选」共用同一条提交路径：精选不另开一条通道，命令与参数照样过主进程
  * 的 safeIdentifier / argv 校验（I1、I5）。Codex 的 MCP 走它自己的原生接口，其余三家走
  * mutateProviderExtension，这个分叉本来就在表单里，这里只是把它抽出来让两个入口共用。

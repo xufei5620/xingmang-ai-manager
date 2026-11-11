@@ -364,6 +364,8 @@
 .v2-remote-channel-head h3 { margin: 0 4px 0 0; color: var(--text); font-size: var(--font-body); font-weight: 600; }
 .v2-remote-channel-actions { margin-left: auto; }
 .v2-remote-status { margin: 6px 16px 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
+/* 那句话下面的「重新连接」「找客服」（D23）。 */
+.v2-remote-status-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 16px 0; }
 .v2-remote-form { display: flex; flex-direction: column; gap: 10px; padding: 12px 16px 13px; }
 .v2-remote-note { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: var(--line-body); }
 .v2-remote-guide > summary { cursor: pointer; color: var(--text-2); font-size: var(--font-small); font-weight: 600; }
@@ -1142,6 +1144,8 @@ dl.v2-health-more dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap
 .v2-usage-toolbar > h2 { margin: 0; color: var(--text); font-size: 14px; font-weight: 600; }
 .v2-usage-toolbar-gap { flex: 1; }
 .v2-usage-mono { font-family: var(--mono); font-size: 12.5px; }
+.v2-usage-price-caption { color: var(--text-3); font-size: var(--font-small); }
+.v2-usage-price-note { margin: 8px 2px 0; color: var(--text-3); font-size: var(--font-small); line-height: 1.7; }
 .v2-usage-nowrap { white-space: nowrap; }
 .v2-business-filters.is-folded { display: contents; }
 .v2-business-filters-panel { display: grid; flex-basis: 100%; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-card); corner-shape: squircle; background: var(--panel); }

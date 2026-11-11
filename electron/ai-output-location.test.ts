@@ -395,6 +395,73 @@ describe('chooseAiOutputRoot', () => {
     expect(chooseAiOutputRoot(placementOptions(home, full)).movedFromDocuments).toBe(false)
   })
 
+  // 决定单 D107：「文档」不让写那段时间存到个人文件夹的作品，「文档」又能写了要挪回来。
+  it('hands back the home-folder works once documents can be written again', () => {
+    const home = temporaryDirectory()
+    fs.mkdirSync(path.join(home, 'Documents'))
+    const options = placementOptions(home, () => undefined)
+
+    expect(chooseAiOutputRoot(options).worksToMoveBackFrom).toBeUndefined()
+    // Only account folders count: a stray file or an unrelated folder is not a reason to walk it.
+    writeFile(path.join(home, aiOutputFolderName, 'notes.txt'), 'x')
+    fs.mkdirSync(path.join(home, aiOutputFolderName, 'user-0'))
+    expect(chooseAiOutputRoot(options).worksToMoveBackFrom).toBeUndefined()
+    fs.mkdirSync(path.join(home, aiOutputFolderName, 'user-7'))
+    expect(chooseAiOutputRoot(options)).toEqual({
+      root: path.join(home, 'Documents', aiOutputFolderName),
+      movedFromDocuments: false,
+      earlierWorksLeftInDocuments: false,
+      worksToMoveBackFrom: path.join(home, aiOutputFolderName),
+    })
+  })
+
+  it('never hands back works while documents still refuses them', () => {
+    const home = temporaryDirectory()
+    fs.mkdirSync(path.join(home, 'Documents'))
+    fs.mkdirSync(path.join(home, aiOutputFolderName, 'user-7'), { recursive: true })
+    const full = () => { throw Object.assign(new Error('ENOSPC'), { code: 'ENOSPC' }) }
+
+    const refused = chooseAiOutputRoot(placementOptions(home, denied))
+    expect(refused.root).toBe(path.join(home, aiOutputFolderName))
+    expect(refused.worksToMoveBackFrom).toBeUndefined()
+    // A full disk keeps documents as the location (see above), but moving more into it would only fail.
+    expect(chooseAiOutputRoot(placementOptions(home, full)).worksToMoveBackFrom).toBeUndefined()
+  })
+
+  it('hands back only the works of the same account scope', () => {
+    const home = temporaryDirectory()
+    fs.mkdirSync(path.join(home, 'Documents'))
+    fs.mkdirSync(path.join(home, aiOutputFolderName, 'user-7'), { recursive: true })
+    const options = { ...placementOptions(home, () => undefined), scope: (root: string) => path.join(root, 'realms', 'api-account') }
+
+    expect(chooseAiOutputRoot(options).worksToMoveBackFrom).toBeUndefined()
+    fs.mkdirSync(path.join(home, aiOutputFolderName, 'realms', 'api-account', 'user-8'), { recursive: true })
+    expect(chooseAiOutputRoot(options).worksToMoveBackFrom).toBe(path.join(home, aiOutputFolderName, 'realms', 'api-account'))
+  })
+
+  it('moves the handed-back works into documents without touching what is already there', async () => {
+    const home = temporaryDirectory()
+    const documentsRoot = path.join(home, 'Documents', aiOutputFolderName)
+    const homeRoot = path.join(home, aiOutputFolderName)
+    writeFile(path.join(documentsRoot, 'user-7', '2026-11-01', `xingmang-${assetA}.png`), 'before')
+    writeFile(path.join(homeRoot, 'user-7', '2026-11-05', `xingmang-${assetB}.png`), 'while documents refused')
+    writeFile(path.join(homeRoot, 'user-9', '2026-11-05', `xingmang-${assetC}.mp4`), 'another account')
+
+    const placement = chooseAiOutputRoot(placementOptions(home, () => undefined))
+    expect(placement.worksToMoveBackFrom).toBe(homeRoot)
+    expect(await migrateLegacyAiOutput(homeRoot, placement.root)).toEqual({ moved: 2, kept: 0, failed: 0 })
+
+    expect(listFiles(documentsRoot)).toEqual([
+      `user-7/2026-11-01/xingmang-${assetA}.png`,
+      `user-7/2026-11-05/xingmang-${assetB}.png`,
+      `user-9/2026-11-05/xingmang-${assetC}.mp4`,
+    ])
+    expect(fs.readFileSync(path.join(documentsRoot, 'user-7', '2026-11-01', `xingmang-${assetA}.png`), 'utf8')).toBe('before')
+    expect(fs.existsSync(homeRoot)).toBe(false)
+    // Next launch: nothing left to hand back.
+    expect(chooseAiOutputRoot(placementOptions(home, () => undefined)).worksToMoveBackFrom).toBeUndefined()
+  })
+
   // #1091：后来才打开云盘同步，作品从那次启动起存到主目录下，以前的还在「文档」里，检查页要说在哪。
   it.runIf(process.platform === 'win32')('points at earlier works left behind when OneDrive took over documents', () => {
     const home = temporaryDirectory()

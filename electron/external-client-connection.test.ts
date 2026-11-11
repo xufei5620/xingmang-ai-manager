@@ -122,11 +122,23 @@ describe('buildExternalClientProbe', () => {
   })
 
   it('refuses to send a key the current account did not write', () => {
-    const build = buildExternalClientProbe(input({ configurationSource: 'other', apiKey: null }))
+    const build = buildExternalClientProbe(input(desktopInput({ configurationSource: 'other', apiKey: null })))
     expect(build).toMatchObject({ kind: 'blocked', outcome: { layer: 'config' } })
     if (build.kind !== 'blocked') return
     // 指向哪里不回显：那可能是用户自己的另一家服务。
     expect(build.outcome.summary).not.toContain('http')
+  })
+
+  it('greys out a WorkBuddy or OpenCode the customer pointed at another provider and sends nothing', async () => {
+    // 决定单 D63：这两个本来就能接别家，客户自己配的不算问题，检查页上是灰的、不是黄的。
+    for (const tool of ['workbuddy', 'opencode'] as const) {
+      const own = input({ tool, configurationSource: 'other', apiKey: null })
+      expect(buildExternalClientProbe(own)).toMatchObject({
+        kind: 'blocked', outcome: { layer: 'unconfigured', summary: '用的是你自己的配置' },
+      })
+      const result = await check((async () => { throw new Error('must not send') }) as typeof globalThis.fetch, own)
+      expect(result).toMatchObject({ ok: false, layer: 'unconfigured', summary: '用的是你自己的配置', endpoint: null })
+    }
   })
 
   it('carries the local read failure through instead of inventing one', () => {

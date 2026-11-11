@@ -10,7 +10,7 @@ import { BlockedLinkHint, openExternalOrCopy, type BlockedLinkNotice } from '../
 import { writeLocalPreference } from '../app/preferences'
 import { useOnlineStatus } from './useOnlineStatus'
 import type { RelayNotice, RelayNoticeReadMode } from '../../../../electron/relay-backend'
-import { AnnouncementCollectionError, formatTimelineDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import { AnnouncementCollectionError, formatTimelineDate, formatTimelineListDate, readTimelineMigrated, rememberTimelineMigrated, timelineEntries, timelineMigrationReadIds, timelineTypeLabels, withMarkdownLineBreaks, type LocalAnnouncementEntry, type TimelineMeta, announcementAttentionKeys, announcementNotificationKey, legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberLocalAnnouncementIds, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 import { activePromos, buildPromoTiers, formatPromoDeadline, formatPromoShortDeadline, localDayKey, nextPromoReminder, promoPreviewLines, promoShortName, readAcknowledgedPromos, readPromoBarHiddenDay, readRemindedPromos, readSnoozedPromos, rememberAcknowledgedPromo, rememberPromoBarHiddenDay, rememberRemindedPromo, rememberSnoozedPromo, stripSiteAddresses, visiblePromo, type PromoTier } from './promo-announcements'
 
 interface AnnouncementEntry { id: string; title: string; text: string; read: boolean; publishedAt?: string; timeline?: TimelineMeta }
@@ -1402,7 +1402,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
               <span className="v2-announcement-row-head">
                 {entry.timeline && <TimelineTag type={entry.timeline.type} />}
                 <span className="v2-announcement-title">{entry.title}</span>
-                {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineDate(publishedAt, Date.now()).slice(5, 10)}</time>}
+                {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineListDate(publishedAt)}</time>}
                 <span className="v2-announcement-read-state xm-visually-hidden">{entry.read ? '已读' : '未读'}</span>
               </span>
               {/* 第一句只给眼睛看：读屏点进去就是全文，列表里每条只念标题、日期和已读未读。 */}
@@ -1442,7 +1442,7 @@ export function AnnouncementCenter({ scope, read, refreshTick, markRemoteRead, s
               onClick={() => openEntry(entry)} title={entry.title}>
               {entry.timeline && <TimelineTag type={entry.timeline.type} />}
               <span className="v2-announcement-title">{entry.title}</span>
-              {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineDate(publishedAt, Date.now()).slice(5, 10)}</time>}
+              {publishedAt && <time className="v2-announcement-date" dateTime={publishedAt}>{formatTimelineListDate(publishedAt)}</time>}
               <span className={`v2-announcement-read-state${entry.read ? '' : ' is-unread'}`}>{entry.read ? '已读' : '未读'}</span>
               <ChevronRight size={16} aria-hidden="true" />
             </button>

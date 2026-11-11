@@ -13,6 +13,7 @@ import { dollars } from '../../business-common'
 import { buildTopupBonus, type TopupBonus } from './topup-bonus'
 import { formatAmount } from './topup-tier'
 import { runwayDaysText, shortDate } from './account-center'
+import { quotaPeriodResetAt, subscriptionResetAt, subscriptionResetTime } from '../../../../electron/subscription-summary'
 
 /**
  * 充值订阅这一页（v4 第 07 批）上由数据拼出来的话和算出来的数。都是纯函数，页面只管摆；
@@ -21,6 +22,7 @@ import { runwayDaysText, shortDate } from './account-center'
 
 type PaymentMethod = AccountTopupInfo['paymentMethods'][number]
 type Subscription = AccountSubscriptionSelf['allSubscriptions'][number]
+type QuotaPeriod = NonNullable<Subscription['quotaPeriods']>[number]
 type Order = AccountTopupOrdersPage['orders'][number]
 export type PaymentKind = 'topup' | 'subscription'
 
@@ -253,11 +255,18 @@ export function planQuotaUsd(plan: Pick<AccountSubscriptionPlan, 'totalAmount'>,
     : null
 }
 
-/** 价格后面那截：「/ 30 天，含 $10.00 额度」。周期、额度哪样算不出就不写哪样。 */
-export function planTermText(plan: Pick<AccountSubscriptionPlan, 'durationUnit' | 'durationValue' | 'customSeconds' | 'totalAmount'>, quotaPerUnit: number | null | undefined): string {
+/**
+ * 价格后面那截：「/ 30 天，含 $10.00 额度，每天重置额度」。周期、额度哪样算不出就不写哪样；
+ * 有额度上限、又是每天重置的套餐才说「每天重置额度」（D60），不限额的重置了也看不出差别。
+ */
+export function planTermText(
+  plan: Pick<AccountSubscriptionPlan, 'durationUnit' | 'durationValue' | 'customSeconds' | 'totalAmount'> & Partial<Pick<AccountSubscriptionPlan, 'quotaResetPeriod'>>,
+  quotaPerUnit: number | null | undefined,
+): string {
   const duration = planDurationText(plan)
   const quota = planQuotaUsd(plan, quotaPerUnit)
-  return [duration && `/ ${duration}`, quota !== null && `含 ${dollars(quota)} 额度`].filter(Boolean).join('，')
+  const daily = plan.quotaResetPeriod === 'daily' && typeof plan.totalAmount === 'number' && plan.totalAmount > 0
+  return [duration && `/ ${duration}`, quota !== null && `含 ${dollars(quota)} 额度`, daily && '每天重置额度'].filter(Boolean).join('，')
 }
 
 /**
@@ -274,6 +283,20 @@ export function planUsageText(subscription: Pick<Subscription, 'amountUsed' | 'e
   const used = typeof subscription.amountUsed === 'number' && quotaPerUnit && quotaPerUnit > 0 ? dollars(subscription.amountUsed / quotaPerUnit) : null
   const expiry = ends ? `${ends}到期` : ''
   return used === null ? expiry : expiry ? `已用 ${used}，${expiry}` : `已用 ${used}`
+}
+
+/**
+ * 「我的订阅」里接在「剩余 …」后面的那截：「 · 明天 00:00 恢复」（D60）。星芒账号用服务端给的下次
+ * 重置时间，历史账号每个窗口按各自的规矩算（subscription-summary）；读不到、不会再恢复时为空串。
+ */
+export function subscriptionResetSuffix(
+  subscription: Pick<Subscription, 'status' | 'startedAt' | 'endsAt' | 'quotaPeriods' | 'nextResetAt'>,
+  period: QuotaPeriod | null,
+  now: Date = new Date(),
+): string {
+  const at = period ? quotaPeriodResetAt(subscription, period, now.getTime()) : subscriptionResetAt(subscription, now.getTime())
+  const when = at ? subscriptionResetTime(at, now) : null
+  return when ? ` · ${when} 恢复` : ''
 }
 
 /** 扣费顺序四个选项各自下面那句（字表批07；「只用订阅」按注里的建议句）。 */
@@ -353,6 +376,17 @@ export function ordersSearchEmpty(keyword: string, multiplierAccount: boolean): 
   }
   return { title: '没有找到这个订单', description: '核对一下订单号，或者清空搜索看全部订单。' }
 }
+
+/**
+ * 「我的订单」的「开发票」打开开票窗口以后那条提示（2026-11-11 yoyo 回「窗口改」批的原字）。
+ * 开票中心另要登录一次，同一个账号登过就记着：星芒账号填用户名，历史账号填邮箱，和它自己登录页上写的一致。
+ */
+export function invoicePortalOpenedText(multiplierAccount: boolean): string {
+  return `开票中心已在新窗口打开；要登录的话，用这个账号的${multiplierAccount ? '邮箱' : '用户名'}和密码。`
+}
+
+/** 开票窗口没打开时那句（2026-11-02 批的原字，「窗口改」时照旧）。 */
+export const invoicePortalOpenFailed = '没能打开开票中心，请稍后再试；还不行请找客服。'
 
 /** 「本次充值」里「按最近用量」后面那句：跟账号概览同一套说法（runwayDaysText），左边已经写了「按最近用量」，这里去掉打头那几个字。 */
 export function rechargeRunwayText(days: number): string {

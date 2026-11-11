@@ -3,6 +3,8 @@ import type { AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import {
   balancePurchaseLine,
   billingPreferenceNote,
+  invoicePortalOpenedText,
+  invoicePortalOpenFailed,
   isSubscriptionTradeNo,
   orderPaidText,
   ordersSearchEmpty,
@@ -17,10 +19,12 @@ import {
   planUsageText,
   rechargeRunwayText,
   redeemSuccessText,
+  subscriptionResetSuffix,
   topupCreditedUsd,
   topupGift,
 } from './recharge'
 import { creditedMoney } from './topup-tier'
+import { presentOperationFailure } from '../../operation-error'
 
 type Subscription = AccountSubscriptionSelf['allSubscriptions'][number]
 
@@ -115,6 +119,31 @@ describe('recharge', () => {
     expect(planTermText({ durationUnit: 'custom', durationValue: 0, customSeconds: 90, totalAmount: 1000 }, 100)).toBe('含 $10.00 额度')
   })
 
+  it('says a capped plan refills every day only when its quota resets daily', () => {
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'daily' }, 100)).toBe('/ 30 天，含 $10.00 额度，每天重置额度')
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'daily' }, null)).toBe('/ 30 天，每天重置额度')
+    // An uncapped plan has nothing to refill; weekly and monthly have no approved wording yet.
+    expect(planTermText({ ...duration, totalAmount: 0, quotaResetPeriod: 'daily' }, 100)).toBe('/ 30 天')
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'weekly' }, 100)).toBe('/ 30 天，含 $10.00 额度')
+    expect(planTermText({ ...duration, totalAmount: 1000, quotaResetPeriod: 'never' }, 100)).toBe('/ 30 天，含 $10.00 额度')
+  })
+
+  it('follows a remaining amount with when it comes back', () => {
+    const now = new Date(2026, 10, 11, 10, 0)
+    const resetsAt = new Date(2026, 10, 12, 0, 0).toISOString()
+    expect(subscriptionResetSuffix(subscription({ nextResetAt: resetsAt }), null, now)).toBe(' · 明天 00:00 恢复')
+    expect(subscriptionResetSuffix(subscription({ nextResetAt: null }), null, now)).toBe('')
+    expect(subscriptionResetSuffix(subscription({ nextResetAt: resetsAt, status: 'expired' }), null, now)).toBe('')
+    const history = subscription({
+      source: 'sub2api', startedAt: new Date(2026, 10, 1, 9, 30).toISOString(), endsAt: new Date(2026, 11, 1, 9, 30).toISOString(),
+    })
+    const daily = { period: 'daily' as const, limit: 5, limitState: 'limited' as const, used: 1, windowStartedAt: new Date(2026, 10, 11).toISOString() }
+    const weekly = { period: 'weekly' as const, limit: 20, limitState: 'limited' as const, used: 4, windowStartedAt: new Date(2026, 10, 8, 9, 30).toISOString() }
+    expect(subscriptionResetSuffix(history, daily, now)).toBe(' · 明天 00:00 恢复')
+    expect(subscriptionResetSuffix(history, weekly, now)).toBe(' · 11月15日 09:30 恢复')
+    expect(subscriptionResetSuffix(history, { ...daily, windowStartedAt: null }, now)).toBe('')
+  })
+
   it('matches a plan card to its own active subscription but never to a Sub2API group id', () => {
     const own = subscription()
     expect(planSubscription({ id: 7 }, [subscription({ status: 'expired' }), own])).toBe(own)
@@ -197,6 +226,18 @@ describe('recharge', () => {
     expect(paymentTerminalPresentation('closed', false, 'subscription').body).toBe('关闭支付窗口不会取消订单。付过款的话，付款成功后订阅会自动开通，也可以点「查看我的订单」核对。')
     expect(paymentTerminalPresentation('closed', true).body).toBe('如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。')
     expect(paymentTerminalPresentation('unconfirmed', false, 'subscription').title).toBe('还没查到这笔订单到账')
+  })
+
+  it('tells each account which name to log in to the invoice portal with', () => {
+    expect(invoicePortalOpenedText(false)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的用户名和密码。')
+    expect(invoicePortalOpenedText(true)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的邮箱和密码。')
+  })
+
+  it('shows the invoice portal failure as approved instead of a catalogued rewrite', () => {
+    expect(invoicePortalOpenFailed).toBe('没能打开开票中心，请稍后再试；还不行请找客服。')
+    // The page-top notice swaps a message the catalogue recognises for its
+    // own title; this one must reach the customer word for word.
+    expect(presentOperationFailure({ message: invoicePortalOpenFailed })).toBeNull()
   })
 
   it('names the bought plan when a paid subscription opens', () => {

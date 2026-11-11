@@ -9,6 +9,7 @@ import { networkFailureMessages, type NetworkFailureReason } from './network-fai
 import { createRelayEndpointRoutingSnapshot, relaySiteProviderBaseUrlVariants, relaySites, requireRelaySite } from './relay-sites'
 import {
   clockSkewMs,
+  clockSkewSummary,
   buildWindowsArmSummary,
   clearableEnvironmentOverrides,
   clockSyncGuidance,
@@ -382,6 +383,23 @@ describe('diagnostics', () => {
       .toBe('[CODEX_HOME]/.codex/config.toml')
     expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE')?.details?.file1)
       .toBe('~/.claude/config.json')
+  })
+
+  // D78：老记事本存的中文，下次写回会成「�」。只进导出的报告给客服看，检查页照常通过、结论不变。
+  it('marks a tool config that is not UTF-8 for the exported report without changing the verdict', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.inspectProvider = (provider) => {
+      const base = inspection(provider, home, 'sk-test')
+      return provider === 'claude' ? { ...base, files: [{ ...base.files[0], notUtf8: true }] } : base
+    }
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE'))
+      .toMatchObject({ state: 'pass', summary: '已连到当前账号', details: { file1NotUtf8: true } })
+    expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details).not.toHaveProperty('file1NotUtf8')
+    expect(createDiagnosticsExport(report, { userHome: home })).toContain('"file1NotUtf8": true')
   })
 
   // #941 第 2 节：工具配置里写的地址和星芒这会儿走的线路对不上时，导出的报告里写清两边各是哪条。两条线路连的
@@ -1325,6 +1343,39 @@ describe('diagnostics', () => {
       expect(clockSyncGuidance('darwin')).toContain('日期与时间')
       expect(clockSyncGuidance('linux')).toContain('自动同步')
     })
+
+    // D56（时间数字格式.md N-6）：差一天以前写「约 1442 分钟」，看不出是一天还是一年，也看不出快了还是慢了。
+    it.each([
+      ['twenty minutes fast', 20 * 60_000, '快了约 20 分钟'],
+      ['forty-nine minutes slow', -49 * 60_000, '慢了约 49 分钟'],
+      ['an hour and a half fast', 90 * 60_000, '快了约 2 小时'],
+      ['three and a half hours slow', -3.5 * 3_600_000, '慢了约 4 小时'],
+      ['a day and two minutes fast', 1_442 * 60_000, '快了约 24 小时'],
+      ['two days slow', -2 * 86_400_000, '慢了约 2 天'],
+      ['a year fast', 525_600 * 60_000, '快了约 365 天'],
+    ])('says a clock that is %s in the unit that fits', (_label, skewMs, amount) => {
+      expect(clockSkewSummary(skewMs, 'win32')).toBe(
+        `能连上星芒服务，但这台电脑的系统时间比实际${amount}，可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance('win32')}`,
+      )
+    })
+
+    it.each([
+      ['eight hours fast', 8 * 3_600_000 + 90_000, '快了约 8 小时'],
+      ['sixteen hours slow', -(16 * 3_600_000 - 2 * 60_000), '慢了约 16 小时'],
+      ['an hour slow', -(3_600_000 + 4 * 60_000), '慢了约 1 小时'],
+      ['just under an hour fast', 59 * 60_000 + 40_000, '快了约 1 小时'],
+    ])('points a whole number of hours (%s) at the time zone', (_label, skewMs, amount) => {
+      expect(clockSkewSummary(skewMs, 'darwin')).toBe(
+        `能连上星芒服务，但这台电脑的系统时间比实际${amount}，多半是时区设错了，可能让登录、安装、更新卡在证书校验这一步。${clockSyncGuidance('darwin')}`,
+      )
+    })
+
+    it('does not blame the time zone for a whole day', () => {
+      expect(clockSkewSummary(24 * 3_600_000, 'win32')).not.toContain('时区设错')
+      expect(clockSkewSummary(3 * 86_400_000, 'win32')).not.toContain('时区设错')
+      // 离整小时差出五分钟以上就不是时区，是钟走错了。
+      expect(clockSkewSummary(8 * 3_600_000 + 6 * 60_000, 'win32')).not.toContain('时区设错')
+    })
   })
 
   describe('system clock comparison on the network probe', () => {
@@ -1365,7 +1416,7 @@ describe('diagnostics', () => {
         state: 'warn',
         details: { status: 200, clockSkewMinutes: minutes },
       })
-      expect(network?.summary).toContain(`相差约 ${Math.abs(minutes)} 分钟`)
+      expect(network?.summary).toContain(`${minutes > 0 ? '快' : '慢'}了约 ${Math.abs(minutes)} 分钟，可能让登录`)
       expect(network?.summary).toContain('自动设置时间')
       expect(fetchImpl).toHaveBeenCalledTimes(1)
     })
@@ -3494,6 +3545,7 @@ describe('proxySettingsOutcome', () => {
   const closedOnly = async () => false
   const openOnly = async () => true
   const noScopes = async () => null
+  const macNoProxySummary = '星芒这里没看到另外设的代理。你在终端设置里写的代理星芒看不到，从星芒打开的工具会用它。'
 
   it('passes when no proxy is set', async () => {
     expect(await proxySettingsOutcome({ PATH: 'C:\\Windows' }, closedOnly, noScopes))
@@ -3589,7 +3641,9 @@ describe('proxySettingsOutcome', () => {
     })
 
     it('says a closed local proxy is bypassed and offers no button', async () => {
-      const item = proxyItem(await runDiagnostics(input(proxies, false).input))
+      const { input: closed } = input(proxies, false)
+      closed.inspectCodexDesktop = async () => ({ installed: false, version: null, path: null, running: false })
+      const item = proxyItem(await runDiagnostics(closed))
       expect(item).toMatchObject({
         state: 'warn',
         summary: '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。',
@@ -3599,7 +3653,76 @@ describe('proxySettingsOutcome', () => {
 
     it('does not count a setting that only keeps requests off the proxy', async () => {
       const item = proxyItem(await runDiagnostics(input({ NO_PROXY: 'localhost', FTP_PROXY: 'http://127.0.0.1:21' }, false).input))
-      expect(item).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+      expect(item).toMatchObject({ state: 'pass', summary: platform === 'darwin' ? macNoProxySummary : '没有另外设过代理' })
+    })
+  })
+
+  // D34（代理.md PX-9）：Mac 上工具经登录 shell 用 ~/.zshrc 里的代理，星芒自己的环境里看不到，不能说「没有」。
+  it('does not claim there is no proxy on a Mac, where terminal settings are out of sight', async () => {
+    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'darwin')).toEqual({ state: 'pass', summary: macNoProxySummary })
+    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'win32')).toEqual({ state: 'pass', summary: '没有另外设过代理' })
+    expect(await proxySettingsOutcome({}, closedOnly, noScopes, 'linux')).toEqual({ state: 'pass', summary: '没有另外设过代理' })
+  })
+
+  // D33（代理.md PX-10）：命令行工具是星芒去掉了没开的代理再打开的，Codex 桌面端拿的是登录时那份环境，绕不开。
+  describe('with the Codex desktop app installed', () => {
+    const desktopSummary = '电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的命令行工具会自动绕开它；'
+      + 'Codex 桌面端这类桌面软件绕不开，会连不上，要把这条旧设置清掉。'
+    function proxyItem(report: Awaited<ReturnType<typeof runDiagnostics>>) {
+      return report.items.find((item) => item.code === 'PROXY_ENVIRONMENT')
+    }
+    function windowsInput(scopes: Awaited<ReturnType<NonNullable<DiagnosticsDependencies['readProxyScopes']>>>, desktopInstalled = true) {
+      return {
+        ...dependencies(temporaryHome()),
+        env: { HTTPS_PROXY: 'http://user:secret@127.0.0.1:7890' },
+        probeLoopbackProxy: async () => false,
+        readProxyScopes: async () => scopes,
+        inspectCodexDesktop: async () => desktopInstalled
+          ? { installed: true, version: 'Codex', path: 'OpenAI.Codex_123!App', running: false }
+          : { installed: false, version: null, path: null, running: false },
+      }
+    }
+
+    it('says the desktop app cannot bypass a stale current-user setting and keeps the clear button', async () => {
+      const item = proxyItem(await runDiagnostics(windowsInput({ user: { HTTPS_PROXY: 'http://127.0.0.1:7890' }, machine: {} })))
+      expect(item).toMatchObject({
+        state: 'warn',
+        summary: desktopSummary,
+        details: { HTTPS_PROXY: '本机 7890 端口（没开）', fix: 'clear-user-proxy', port: 7890 },
+      })
+      expect(JSON.stringify(item)).not.toContain('secret')
+    })
+
+    it('says the same when the settings cannot be read on Windows', async () => {
+      const item = proxyItem(await runDiagnostics(windowsInput(null)))
+      expect(item).toMatchObject({ state: 'warn', summary: desktopSummary })
+      expect(item?.details).not.toHaveProperty('fix')
+    })
+
+    it('says the same on a Mac, where the desktop app and Xingmang share the login environment', async () => {
+      const input = { ...windowsInput(null), platform: 'darwin' as const }
+      expect(proxyItem(await runDiagnostics(input))).toMatchObject({ state: 'warn', summary: desktopSummary })
+    })
+
+    it('keeps the old sentence when only this launch of Xingmang carried the setting', async () => {
+      // Windows 上两边都读到了、都没有：是从命令行窗口带进来的，资源管理器打开的桌面端看不见它。
+      const item = proxyItem(await runDiagnostics(windowsInput({ user: {}, machine: {} })))
+      expect(item?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
+    })
+
+    it('keeps the administrator sentence for a machine-wide setting', async () => {
+      const item = proxyItem(await runDiagnostics(windowsInput({ user: {}, machine: { HTTPS_PROXY: 'http://127.0.0.1:7890' } })))
+      expect(item?.summary).toContain('这条设置是给整台电脑设的，要管理员才能改')
+    })
+
+    it('keeps the old sentences when the desktop app is not installed', async () => {
+      const item = proxyItem(await runDiagnostics(windowsInput({ user: { HTTPS_PROXY: 'http://127.0.0.1:7890' }, machine: {} }, false)))
+      expect(item?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它；你自己开的命令行窗口可能还是连不上。')
+    })
+
+    it('leaves Linux alone, which has no Codex desktop app', async () => {
+      const input = { ...windowsInput(null), platform: 'linux' as const }
+      expect(proxyItem(await runDiagnostics(input))?.summary).toBe('电脑里设了一个代理（本机 7890 端口），但它现在没开。从星芒打开的工具会自动绕开它。')
     })
   })
 })
@@ -3623,7 +3746,10 @@ describe('diagnostics system proxy', () => {
     const input = wired(dependencies(temporaryHome()), 'PROXY 127.0.0.1:7897')
     input.platform = 'darwin'
     const report = await runDiagnostics(input)
-    expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({ state: 'pass', summary: '没有另外设过代理' })
+    expect(item(report, 'PROXY_ENVIRONMENT')).toMatchObject({
+      state: 'pass',
+      summary: '星芒这里没看到另外设的代理。你在终端设置里写的代理星芒看不到，从星芒打开的工具会用它。',
+    })
     expect(item(report, 'SYSTEM_PROXY_SOFTWARE')).toMatchObject({
       title: '别的代理软件',
       state: 'warn',

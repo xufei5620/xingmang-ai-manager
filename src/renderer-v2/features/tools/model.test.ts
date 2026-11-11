@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { relayProviderBaseUrls } from '../../../../electron/relay-sites'
-import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, spacedName, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { accountSwitchTarget, brokenConfigRepairTarget, canSwitchToManagedInstall, canUninstallTool, ccSwitchLeftoverFor, brokenConfigOf, codexNeedsRepair, readyOnceRepaired, foreignKeyKind, switchAccountLabel, codexDesktopUpdateKind, codexDesktopVersionAdvice, configDirectoryMenuItem, connectionReady, externalInstallHint, greeting, isExternallyManagedInstall, officialAccountSubtitle, presentTools, providerFor, recommendedVersionVerb, revertVersion, rollbackVersion, sourceFor, spacedName, subscriptionWarning, toolAvailability, toolInstallDirectory, toolUpdateOffer, updateCheckFailure, updateButtonHint, updatesOutsideApp, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -774,7 +774,8 @@ describe('foreign key kinds', () => {
 })
 
 describe('renderer subscription warning', () => {
-  const endsAt = new Date(2026, 9, 3, 12).toISOString()
+  // 不是今年的到期日会带上年份（D52）；这里只看措辞，用今年的日期。
+  const endsAt = new Date(new Date().getFullYear(), 9, 3, 12).toISOString()
   const base = { name: null, remainingUsd: 3, endsAt, expiringSoon: false, lowRemaining: false, subscriptionOnly: false }
 
   it('stays quiet while the wallet can take over or nothing is running out', () => {
@@ -832,5 +833,19 @@ describe('renderer spaced tool names', () => {
     expect(`${spacedName('WorkBuddy')}更多操作`).toBe('WorkBuddy 更多操作')
     expect(`${spacedName('Codex 桌面端')}更多操作`).toBe('Codex 桌面端更多操作')
     expect(`${spacedName('2 个工具')}写入密钥`).toBe('2 个工具写入密钥')
+  })
+})
+
+describe('greeting', () => {
+  it('says good evening rather than good morning before 5 a.m.', () => {
+    // D60：凌晨 2 点还说「早上好」。
+    expect(greeting(0)).toBe('晚上好')
+    expect(greeting(4)).toBe('晚上好')
+    expect(greeting(5)).toBe('早上好')
+    expect(greeting(10)).toBe('早上好')
+    expect(greeting(11)).toBe('中午好')
+    expect(greeting(14)).toBe('下午好')
+    expect(greeting(18)).toBe('晚上好')
+    expect(greeting(23)).toBe('晚上好')
   })
 })

@@ -61,7 +61,18 @@ export function FeishuRemoteSection({ snapshot, api, disabled, busy, run }: Remo
         <SettingRow
           title="飞书应用"
           description={`App ID：${snapshot.accountLabel ?? '已保存'}`}
-          control={<Button size="sm" disabled={disabled} onClick={() => setEditing(true)} testId="settings-remote-feishu-edit">重新填写</Button>}
+          control={(
+            <Button
+              size="sm"
+              // 凭据不对（D23）时上面那句叫人重新填，这颗就是它配的按钮，换成主色免得找。
+              variant={snapshot.status.problem === 'credential' ? 'primary' : undefined}
+              disabled={disabled}
+              onClick={() => setEditing(true)}
+              testId="settings-remote-feishu-edit"
+            >
+              重新填写
+            </Button>
+          )}
           testId="settings-remote-feishu-app"
         />
         {snapshot.boundPeer

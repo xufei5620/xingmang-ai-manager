@@ -268,3 +268,65 @@ describe('the environment the Windows Grok shell is worked out from', () => {
     expect(resolveGrokWindowsShell(result, exists)).toBe('bash')
   })
 })
+
+// Fable 第二轮 Q6：设置里「只让 Claude Code 改项目文件夹里的文件」。
+describe('the Claude Code write boundary toggle', () => {
+  const settingsOf = (userHome: string) => JSON.parse(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')) as { permissions?: Record<string, unknown> }
+  const saveForAccount = (service: ReturnType<typeof createService>['service'], apiKey = 'sk-fixture') => service.saveConfig(
+    { provider: 'claude', apiKey, model: 'claude-fixture', mode: 'merge' }, false, undefined, { source: 'account', automatic: false },
+  )
+
+  it('changes the account config in place after a backup and keeps the choice through later saves', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    const backup = vi.fn()
+
+    await expect(service.setClaudeWriteBoundary(true, backup)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(backup).toHaveBeenCalledTimes(1)
+    expect(settingsOf(userHome).permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
+    expect(store.read().claudeWritesInsideProject).toBe(true)
+
+    await saveForAccount(service, 'sk-fixture-2')
+    expect(settingsOf(userHome).permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
+
+    await expect(service.setClaudeWriteBoundary(false, backup)).resolves.toEqual({ enabled: false, applied: 'written' })
+    expect(settingsOf(userHome).permissions).not.toHaveProperty('blockWritesOutsideWorkingDirectories')
+    expect(store.read().claudeWritesInsideProject).toBeUndefined()
+  })
+
+  it('only remembers the choice while Claude Code is not on the current account, and applies it at the next account save', async () => {
+    let owner: string | null = null
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => owner })
+    const backup = vi.fn()
+
+    await expect(service.setClaudeWriteBoundary(true, backup)).resolves.toEqual({ enabled: true, applied: 'later' })
+    expect(backup).not.toHaveBeenCalled()
+    expect(fs.existsSync(path.join(userHome, '.claude', 'settings.json'))).toBe(false)
+    expect(store.read().claudeWritesInsideProject).toBe(true)
+
+    owner = 'user-1'
+    await saveForAccount(service)
+    expect(settingsOf(userHome).permissions?.blockWritesOutsideWorkingDirectories).toBe(true)
+  })
+
+  it('changes neither the config nor the choice when the backup before the change fails', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    const before = fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')
+
+    await expect(service.setClaudeWriteBoundary(true, () => { throw new Error('没能先备份 Claude Code 的配置，这次没有改') }))
+      .rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+    expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
+    expect(store.read().claudeWritesInsideProject).toBeUndefined()
+  })
+
+  it('leaves an official-account Claude Code alone', async () => {
+    const { store, userHome, service } = createService({ getExternalClientAccountId: () => 'user-1' })
+    await saveForAccount(service)
+    await store.setOfficialProvider('claude', true)
+    const before = fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')
+
+    await expect(service.setClaudeWriteBoundary(true)).resolves.toEqual({ enabled: true, applied: 'later' })
+    expect(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).toBe(before)
+  })
+})
