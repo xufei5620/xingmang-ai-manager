@@ -1,6 +1,6 @@
 ## 开发
 
-- Fable 手机遥控 YK-8：飞书审批卡处理过以后原地变样，标题换成「已同意 / 已拒绝 / 没回，已自动拒绝（第 N 条）」
+- Fable 手机遥控 YK-8：飞书审批卡处理过以后原地变样（yoyo 2026-11-11「同意卡改」，去掉「回 同意 N」那句一并批了），标题换成「已同意 / 已拒绝 / 没回，已自动拒绝（第 N 条）」
   （`codex-remote-text.ts` 的 `approvalOutcomeTitle`），按钮去掉，正文去掉「回 同意 N」那句（`formatApprovalBody`）。
   渠道接口多两个可选方法 `sendApproval` / `updateApproval`，只有飞书实现，跟 YF-15 的进度卡共用发卡取 `message_id`、
   `PATCH` 原地更新那一套（`postCard` / `patchCard`）；审批卡因此一开始就是 `update_multi: true`。每处拒绝都改样子：

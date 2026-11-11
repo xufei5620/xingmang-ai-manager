@@ -285,7 +285,7 @@ export function formatApprovalText(request: RemoteApprovalRequest): string {
   return `${formatApprovalBody(request)}\n回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`
 }
 
-/** 审批的正文（要做什么、在哪、为什么），不带「回 同意 N」那句：处理过的卡片只留这些（YK-8）。 */
+/** 审批的正文（要做什么、在哪、为什么），不带「回 同意 N」那句：处理过的卡片只留这些（YK-8，「同意卡改」一并批的）。 */
 export function formatApprovalBody(request: RemoteApprovalRequest): string {
   const lines = [`${approvalTitle(request.kind)}（第 ${request.approvalId} 条）：`]
   if (request.summary) lines.push(request.summary)
@@ -294,7 +294,7 @@ export function formatApprovalBody(request: RemoteApprovalRequest): string {
   return lines.join('\n')
 }
 
-/** 处理过的审批卡的标题（YK-8）。 */
+/** 处理过的审批卡的标题（YK-8，yoyo 2026-11-11「同意卡改」）。 */
 export function approvalOutcomeTitle(outcome: RemoteApprovalOutcome, id: string): string {
   if (outcome === 'accepted') return `已同意（第 ${id} 条）`
   if (outcome === 'expired') return `没回，已自动拒绝（第 ${id} 条）`
