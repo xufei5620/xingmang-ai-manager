@@ -224,6 +224,17 @@ export interface CodexRemoteChannelSnapshot {
 
 export type CodexRemoteTaskState = 'idle' | 'starting' | 'running' | 'waiting-approval'
 
+/**
+ * 手机上最近发来让 Codex 做的那一条（YF-13），电脑卡片上「最近一次」那行用。只给时间和结果，
+ * 手机上发来的原话不上电脑卡片。
+ */
+export interface CodexRemoteLastRequestSnapshot {
+  receivedAt: number
+  state: 'running' | 'done' | 'failed' | 'stopped'
+  /** 没做完时手机上收到的那句原因（大白话，已脱敏截短）；说不出原因时不填。 */
+  reason?: string
+}
+
 export interface CodexRemoteSnapshot {
   /**
    * 每拼一次快照加一。操作的返回值和 state-changed 事件都是整份快照、到达先后不定，界面只收比手上新的那份。
@@ -247,5 +258,7 @@ export interface CodexRemoteSnapshot {
    * 下次 Codex 起来了、或者遥控全关了就不带；缺省 = 没有这回事。
    */
   codexStartFailed?: boolean
+  /** 手机上最近一条（YF-13）；这次打开遥控以后还没发来过、或者遥控全关了就不带。 */
+  lastRequest?: CodexRemoteLastRequestSnapshot
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

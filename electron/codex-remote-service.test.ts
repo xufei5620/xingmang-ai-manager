@@ -1259,6 +1259,91 @@ describe('codex-remote-service turns', () => {
     await vi.waitFor(() => expect(channel.texts()).toContain('这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。'))
   })
 
+  // YF-13：电脑卡片上「最近一次」——几点发来的、做到哪儿了；手机上发来的原话不上卡片。
+  it('tells the window when the last phone request came in and how it ended', async () => {
+    let clock = 1_800_000_000_000
+    const s = await setup({ now: () => clock })
+    const channel = await enabledAndPaired(s)
+    expect((await s.service.snapshot()).lastRequest).toBeUndefined()
+    const receivedAt = clock
+    const codex = await prompted(s, channel, '修一下登录页')
+    clock += 3 * 60_000
+    expect((await s.service.snapshot()).lastRequest).toEqual({ receivedAt, state: 'running' })
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'completed' } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toEqual({ receivedAt, state: 'done' }))
+    expect(JSON.stringify(await s.service.snapshot())).not.toContain('修一下登录页')
+    channel.handlers?.onInbound(text(alice, '再跑一次'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-2', status: 'failed', error: { message: `401 for key ${apiKey}` } } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '401 for key [已隐去]' }))
+  })
+
+  it('gives the plain reason for a failure it recognises, and none when Codex could not start', async () => {
+    const s = await setup({ failSpawns: { remaining: 1 } })
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest?.state).toBe('failed'))
+    expect((await s.service.snapshot()).lastRequest?.reason).toBeUndefined()
+    const codex = await prompted(s, channel, '再跑一次')
+    const quota = 'unexpected status 403 Forbidden: {"error":{"message":"用户额度不足, 剩余额度: $0.01","code":"insufficient_user_quota"}}'
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: quota, codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } } } } })
+    await vi.waitFor(async () => expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '余额不够了，充值后再发一次。' }))
+  })
+
+  it('marks the last request stopped when the phone says stop, and forgets it once every channel is off', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    await prompted(s, channel)
+    channel.handlers?.onInbound(text(alice, '停止'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已停止。'))
+    expect((await s.service.snapshot()).lastRequest?.state).toBe('stopped')
+    const off = await s.service.setChannelEnabled('feishu', false)
+    expect(off.lastRequest).toBeUndefined()
+  })
+
+  it('stops the running turn from the computer the same way the phone does, and tells the phone', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const asked = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    const stopped = await s.service.stopTurnFromComputer()
+    await expect(asked).resolves.toMatchObject({ result: { decision: 'decline' } })
+    expect(codex.requests('turn/interrupt')[0].params).toEqual({ threadId: 'th-1', turnId: 'tu-1' })
+    expect(channel.texts()).toContain('已停止。')
+    expect(stopped).toMatchObject({ task: 'idle', pendingApprovals: 0, lastRequest: { state: 'stopped' } })
+    expect(s.logs).toContain('remote.turn-stopped-on-computer')
+    codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'interrupted' } })
+    channel.handlers?.onInbound(text(alice, '再来一次'))
+    await vi.waitFor(() => expect(codex.requests('turn/start')).toHaveLength(2))
+  })
+
+  it('does nothing on the phone when the computer asks to stop and nothing is running', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const sentBefore = channel.sent.length
+    const snapshot = await s.service.stopTurnFromComputer()
+    expect(snapshot.task).toBe('idle')
+    expect(channel.sent.length).toBe(sentBefore)
+  })
+
+  it('declines every waiting approval from the computer, tells the phone each one, and lets the turn go on', async () => {
+    const s = await setup()
+    const channel = await enabledAndPaired(s)
+    const codex = await prompted(s, channel)
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest, 'a')
+    const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' }, 'b')
+    await approvalCardsSent(channel, 2)
+    expect((await s.service.snapshot()).pendingApprovals).toBe(2)
+    const declined = await s.service.declineApprovalsFromComputer()
+    await expect(first).resolves.toMatchObject({ result: { decision: 'decline' } })
+    await expect(second).resolves.toMatchObject({ result: { decision: 'decline' } })
+    expect(channel.texts()).toEqual(expect.arrayContaining(['已拒绝第 1 条。', '已拒绝第 2 条。']))
+    expect(declined).toMatchObject({ task: 'running', pendingApprovals: 0, lastRequest: { state: 'running' } })
+    expect(codex.requests('turn/interrupt')).toHaveLength(0)
+  })
+
   it('reports a failed turn with the redacted reason', async () => {
     const s = await setup()
     const channel = await enabledAndPaired(s)
@@ -1387,6 +1472,8 @@ describe('codex-remote-service turns', () => {
     const codex = await prompted(s, channel)
     codex.emit('exit', 1, null)
     await vi.waitFor(() => expect(channel.texts().at(-1)).toContain('意外退出'))
+    // 卡片「最近一次」跟着说没做完，不会一直停在「正在处理」（YF-13）。
+    expect((await s.service.snapshot()).lastRequest).toMatchObject({ state: 'failed', reason: '电脑上的 Codex 意外退出了，再发一次试试。' })
     channel.handlers?.onInbound(text(alice, '再试一次'))
     await vi.waitFor(() => expect(s.codex).toHaveLength(2))
   })

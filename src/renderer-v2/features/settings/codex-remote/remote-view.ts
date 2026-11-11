@@ -1,6 +1,7 @@
 import type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
+  CodexRemoteLastRequestSnapshot,
   CodexRemoteSnapshot,
   RemoteChannelStatus,
 } from '../../../../../electron/ipc-contract'
@@ -93,4 +94,58 @@ export function boundPeerText(peer: CodexRemoteBoundPeerSnapshot): string {
   const when = `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`
   const who = peer.displayName ? `${peer.displayName}（尾号 ${peer.userIdTail}）` : `尾号 ${peer.userIdTail} 的账号`
   return `${who}，${when} 配对`
+}
+
+/** 「14:05」；不是今天的带上日期，「11 月 10 日 23:50」（遥控开着过了半夜）。 */
+export function remoteClockText(at: number, now: number): string {
+  const date = new Date(at)
+  const today = new Date(now)
+  const clock = `${twoDigits(date.getHours())}:${twoDigits(date.getMinutes())}`
+  const sameDay = date.getFullYear() === today.getFullYear() && date.getMonth() === today.getMonth() && date.getDate() === today.getDate()
+  return sameDay ? clock : `${date.getMonth() + 1} 月 ${date.getDate()} 日 ${clock}`
+}
+
+/** 「不到 1 分钟」「3 分钟」「1 小时 5 分钟」「2 小时」：按整分钟往下取。 */
+export function remoteElapsedText(ms: number): string {
+  const minutes = Math.floor(Math.max(0, ms) / 60_000)
+  if (minutes < 1) return '不到 1 分钟'
+  if (minutes < 60) return `${minutes} 分钟`
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return rest ? `${hours} 小时 ${rest} 分钟` : `${hours} 小时`
+}
+
+/**
+ * 卡片上「最近一次」那行的说明（YF-13）：只说几点发来的、做到哪儿了，手机上发来的原话不上卡片。
+ * 没做完时原因用手机上收到的那句大白话（主进程给的 reason）。
+ */
+export function lastRequestText(request: CodexRemoteLastRequestSnapshot, now: number): string {
+  const at = remoteClockText(request.receivedAt, now)
+  switch (request.state) {
+    case 'running':
+      return `${at} 发来一条，正在处理，已经 ${remoteElapsedText(now - request.receivedAt)}`
+    case 'done':
+      return `${at} 那一条做完了`
+    case 'stopped':
+      return `${at} 那一条停下了`
+    case 'failed':
+      return request.reason ? `${at} 那一条没做完：${request.reason}` : `${at} 那一条没做完。`
+  }
+}
+
+/** 「最近一次」下面那句：有等你同意的才说，同意要在手机上点（YF-13）。 */
+export function pendingApprovalsText(count: number): string | null {
+  return count > 0 ? `等你同意 ${count} 条，要在手机上回。` : null
+}
+
+/** 余额低于这个数（美元）、又没有能用的订阅时，开着遥控的卡片上提醒先充值（YF-12）。 */
+export const remoteLowBalanceDollars = 1
+
+/**
+ * 没登录的渠道收成一行（YF-7）：没凭据、没开着，而且另一个渠道登录过了。两个都没登录时都摊开，
+ * 刚来的人得看得见每个渠道怎么开。
+ */
+export function remoteChannelCollapsed(snapshot: Pick<CodexRemoteSnapshot, 'channels'>, channel: Pick<CodexRemoteChannelSnapshot, 'channel' | 'hasCredential' | 'enabled'>): boolean {
+  if (channel.hasCredential || channel.enabled) return false
+  return Object.values(snapshot.channels).some((other) => other.channel !== channel.channel && other.hasCredential)
 }

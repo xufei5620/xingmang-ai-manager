@@ -3899,6 +3899,79 @@ test('the phone remote card picks how long it may idle before closing, never by 
   }
 })
 
+// YF-7：飞书登录过、微信没登录时微信收成一行，点标题才摊开说明和警告。
+test('the phone remote card folds a channel that is not logged in while the other one is', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const weixin = card.getByTestId('settings-remote-weixin')
+    const toggle = weixin.getByRole('button', { name: '微信', exact: true })
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false')
+    await weixin.getByText('没打开', { exact: true }).waitFor()
+    assert.equal(await weixin.getByTestId('settings-remote-weixin-warning').count(), 0)
+    assert.equal(await weixin.getByText('实验功能', { exact: true }).count(), 0)
+    await toggle.click()
+    await weixin.getByTestId('settings-remote-weixin-warning').getByText('实验功能，随时可能断', { exact: true }).waitFor()
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true')
+    await toggle.click()
+    await weixin.getByTestId('settings-remote-weixin-warning').waitFor({ state: 'detached' })
+    // 飞书登录过，不收。
+    assert.equal(await card.getByTestId('settings-remote-feishu').getByRole('button', { name: '飞书', exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+// YF-13：「最近一次」只说几点发来的、做到哪儿了，不摆手机上的原话；「都拒绝」「停下这一轮」交给主进程，「在记录里看」去记录页。
+test('the phone remote card shows the last phone request and can stop it, decline what waits and open the records', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 3, state: 'running', pendingApprovals: 2 }))
+    // 遥控没开着时不出这一行。
+    assert.equal(await card.getByTestId('settings-remote-last-request').count(), 0)
+    await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
+    const row = card.getByTestId('settings-remote-last-request')
+    await row.getByText('最近一次', { exact: true }).waitFor()
+    assert.match(await row.getByTestId('settings-remote-last-request-text').innerText(), /^\d\d:\d\d 发来一条，正在处理，已经 3 分钟$/)
+    await row.getByText('等你同意 2 条，要在手机上回。', { exact: true }).waitFor()
+    await row.getByRole('button', { name: '都拒绝', exact: true }).click()
+    await row.getByTestId('settings-remote-last-request-waiting').waitFor({ state: 'detached' })
+    assert.equal(await row.getByRole('button', { name: '都拒绝', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '停下这一轮', exact: true }).click()
+    await page.waitForFunction(() => /那一条停下了$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    assert.equal(await row.getByRole('button', { name: '停下这一轮', exact: true }).count(), 0)
+    await page.evaluate(() => window.remoteHarness.phoneRequest({ minutesAgo: 20, state: 'failed', reason: '余额不够了，充值后再发一次。' }))
+    await page.waitForFunction(() => /^\d\d:\d\d 那一条没做完：余额不够了，充值后再发一次。$/.test(document.querySelector('[data-testid="settings-remote-last-request-text"]')?.textContent ?? ''))
+    await row.getByRole('button', { name: '在记录里看', exact: true }).click()
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'sessions')
+    assert.deepEqual((await calls(page)).filter((call) => call.name === 'remote-decline-approvals' || call.name === 'remote-stop-turn').map((call) => call.name), ['remote-decline-approvals', 'remote-stop-turn'])
+  } finally {
+    await page.close()
+  }
+})
+
+// YF-12：遥控开着、余额不到 $1 时提醒出门前先充值，照样让开；点「去充值」到个人中心的充值。
+test('the phone remote card warns about a low balance once the remote is on and leads to the top-up', async () => {
+  const page = await fixture('page=settings&remoteReady=1&remoteLowBalance=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-workspace-row').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-low-balance').count(), 0)
+    await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).click()
+    const notice = card.getByTestId('settings-remote-low-balance')
+    await notice.getByText('余额只剩 $0.80', { exact: true }).waitFor()
+    await notice.getByText('人不在电脑前时充不了值，建议先充一点再出门。', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '去充值', exact: true }).click()
+    assert.deepEqual((await callsNamed(page, 'navigate')).at(-1).args, ['account', 'recharge'])
+  } finally {
+    await page.close()
+  }
+})
+
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
   const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
   try {
