@@ -80,7 +80,8 @@ test('the vendored license texts are the reviewed upstream bytes, in the order t
 })
 
 test('a missing, empty or unregistered text stops the sync with its own code', async () => {
-  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'cos-license-files-'))
+  // The reader refuses any symlink on the way, and macOS's temp root sits under /var -> /private/var.
+  const directory = await fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'cos-license-files-'))
   try {
     await assert.rejects(readLicenseFiles('opencode-desktop', directory), function (error) {
       assert.match(error.message, /LICENSE\.txt 读不出来/)
