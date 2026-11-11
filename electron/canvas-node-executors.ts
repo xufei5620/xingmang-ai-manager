@@ -14,6 +14,14 @@ import {
 } from './canvas-image-tools'
 import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRunAsset, type CanvasRunGraphNode } from './canvas-run-contract'
 import { canvasImageReferenceRolePrompt } from './canvas-reference-order'
+import {
+  assertCanvasCommerceOutputSize,
+  assertCanvasCommerceTargetSizeSupported,
+  assertCanvasSceneSourceImages,
+  buildCanvasSceneImagePrompt,
+  canvasNodeHasSceneTask,
+  resolveCanvasCommerceTargetSize,
+} from './canvas-scene-tasks'
 import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
@@ -76,6 +84,21 @@ function promptForNode(localPrompt: string, upstreamPrompt: string | undefined):
  */
 function withReferenceRoles(node: CanvasRunGraphNode, prompt: string): string {
   return node.data.imageReferenceOrder ? canvasImageReferenceRolePrompt(node.data.imageReferenceOrder, prompt) : prompt
+}
+
+/**
+ * A picture node's prompt: a scene task (第 8 条第二步) writes it around the
+ * user's words, which may then be empty; otherwise the user's words with any
+ * role lines ahead of them.
+ */
+function picturePrompt(node: CanvasRunGraphNode, typed: string, missing: string): string {
+  if (!typed && !canvasNodeHasSceneTask(node)) throw new Error(missing)
+  return buildCanvasSceneImagePrompt(node, typed, (prompt) => withReferenceRoles(node, prompt))
+}
+
+/** A scene task asks for one picture per request, as on the web host. */
+function assertOneScenePicture(node: CanvasRunGraphNode, assets: readonly unknown[]): void {
+  if (canvasNodeHasSceneTask(node) && assets.length !== 1) throw new Error('创作任务每次请求应返回唯一图片，实际返回数量不符；请核对原尝试，不会自动重发')
 }
 
 function videoDimensions(size: string | undefined): { width: number; height: number } {
@@ -180,12 +203,27 @@ export function createCanvasNodeExecutors(options: {
   frames?: CanvasFrameExtraction
   /** Image-tool nodes run only with it (第三步); without it they stay refused. */
   imageTools?: CanvasImageToolProcessing
+  /**
+   * Reads a picture's bytes from the account's own canvas store, so the
+   * pictures of an exterior task over two pictures or of a storyboard can be
+   * told apart before the paid request (第 8 条第二步). Without it those
+   * nodes are refused.
+   */
+  sceneSources?: (userId: number, assetId: string, projectId?: string) => Promise<{ bytes: Buffer }>
 }): CanvasNodeExecutors {
+  // Called only when the node has checks: an await on every node would let a
+  // stop pressed right after the call miss the abort listener set up below.
+  async function checkSceneSources(context: CanvasNodeExecutionContext, assetIds: readonly string[]): Promise<void> {
+    const read = options.sceneSources
+    await assertCanvasSceneSourceImages(context.sceneSourceChecks ?? [], assetIds,
+      read ? async (assetId) => (await read(context.userId, assetId, context.projectId)).bytes : undefined, context.signal)
+  }
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
-  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
+  const image: CanvasNodeExecutors['image'] = async (context) => {
+    const { ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing } = context
     const typed = promptForNode(node.data.prompt, inputs.text)
-    if (!typed) throw new Error('请输入图像提示词或连接上游文本节点')
-    const prompt = withReferenceRoles(node, typed)
+    const prompt = picturePrompt(node, typed, '请输入图像提示词或连接上游文本节点')
+    if (context.sceneSourceChecks?.length) await checkSceneSources(context, [])
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -212,16 +250,17 @@ export function createCanvasNodeExecutors(options: {
       const assets = observer
         ? await options.imageService.generate(ownerId, input, observer)
         : await options.imageService.generate(ownerId, input)
+      assertOneScenePicture(node, assets)
       return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
+  const imageEdit: CanvasNodeExecutors['image-edit'] = async (context) => {
+    const { ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing } = context
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
     const typed = promptForNode(node.data.prompt, inputs.text)
-    if (!typed) throw new Error('请输入图片编辑指令或连接上游文本节点')
-    const prompt = withReferenceRoles(node, typed)
+    const prompt = picturePrompt(node, typed, '请输入图片编辑指令或连接上游文本节点')
     const capability = resolveAiModelCapability(node.data.model)
     if (capability.kind !== 'image' || !capability.supportsEdits) {
       throw new Error('当前模型不支持图片编辑，请换用支持编辑的图像模型')
@@ -237,6 +276,13 @@ export function createCanvasNodeExecutors(options: {
     // goes out whatever the canvas checked: a mask drawn on another image, or
     // on an image since swapped, fails before anything is paid.
     if (mask) assertCanvasImageEditMaskInput(mask, node.data.model, inputs.images ?? (inputs.image ? [inputs.image] : []))
+    // Material B (第 8 条第二步): the source's own pixels times the upscale, the
+    // source being the first picture by role (canvas-run-engine.ts).
+    const commerceTask = node.data.commerceTask
+    const source = (inputs.images ?? (inputs.image ? [inputs.image] : []))[0]
+    const target = commerceTask ? resolveCanvasCommerceTargetSize(commerceTask, source) : undefined
+    if (target) assertCanvasCommerceTargetSizeSupported(node.data.model, target)
+    if (context.sceneSourceChecks?.length) await checkSceneSources(context, sourceAssetIds)
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -252,7 +298,7 @@ export function createCanvasNodeExecutors(options: {
         ...(mask ? { mask: { width: mask.width, height: mask.height, png: (maskSignal: AbortSignal) => buildCanvasImageMaskPng(mask, maskSignal) } } : {}),
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
-        ...(node.data.size ? { size: node.data.size } : {}),
+        ...(target ? { size: target.size } : node.data.size ? { size: node.data.size } : {}),
         ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
@@ -265,6 +311,10 @@ export function createCanvasNodeExecutors(options: {
       const assets = observer
         ? await options.imageService.edit(ownerId, input, observer)
         : await options.imageService.edit(ownerId, input)
+      assertOneScenePicture(node, assets)
+      // Paid for and kept in the asset library either way; a picture of
+      // another size just is not a material-B result, so the node fails.
+      for (const asset of assets) assertCanvasCommerceOutputSize(commerceTask, source, asset)
       return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
@@ -497,7 +547,8 @@ export function createCanvasNodeExecutors(options: {
   // lib/canvas-runs.ts）：上游文字和节点自己的提示词按行拼起来，原样作为一条用户消息
   // 发出，不加系统提示；连了图片就一起给模型看。结果超过 32000 字不收，跟画布能存的
   // 文字结果一样长。
-  const textGenerate: CanvasNodeExecutors['text-generate'] = async ({ projectId, node, inputs, signal, billing }) => {
+  const textGenerate: CanvasNodeExecutors['text-generate'] = async (context) => {
+    const { projectId, node, inputs, signal, billing } = context
     const typed = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n')
     if (!typed.trim()) throw new Error('请输入文字提示词或连接上游提示词节点')
     const prompt = withReferenceRoles(node, typed)
@@ -508,6 +559,8 @@ export function createCanvasNodeExecutors(options: {
     if (!model) throw new Error('请选择文字模型')
     const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
     assertCanvasTextImageInput(model, images.length)
+    // The text node that writes an exterior or storyboard prompt reads the same pictures.
+    if (context.sceneSourceChecks?.length) await checkSceneSources(context, images.map((asset) => asset.assetId))
     const outputText = await options.completeText.completeOnce({
       group,
       model,

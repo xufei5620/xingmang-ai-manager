@@ -10,6 +10,7 @@ import {
   resumeLaunchChoice,
   resumeNeedsRecheck,
   resumeStillLatest,
+  startsInNewFolder,
   workspaceButtonLabel,
   workspaceName,
 } from './recent-workspaces'
@@ -45,6 +46,31 @@ describe('launchWorkspaces', () => {
     expect(launchWorkspaces([], 'claude')).toEqual([])
     expect(launchWorkspaces([], 'claude', '   ')).toEqual([])
     expect(launchWorkspaces([], 'claude', null)).toEqual([])
+  })
+})
+
+// 已知40 / D46：首页卡片和引导最后一步的「打开」按同一条判要不要替他新建项目文件夹。
+describe('startsInNewFolder', () => {
+  function page(byProvider: Partial<MultiProviderSessionPage['stats']['byProvider']>): Pick<MultiProviderSessionPage, 'stats'> {
+    return { stats: { total: 0, byProvider: { claude: 0, codex: 0, gemini: 0, grok: 0, ...byProvider } } }
+  }
+
+  it('creates a folder only for a tool with no sessions and no folder to open', () => {
+    expect(startsInNewFolder(page({}), 'claude', [])).toBe(true)
+    expect(startsInNewFolder(page({ codex: 4 }), 'claude', [])).toBe(true)
+  })
+
+  it('opens the known folder instead when there is one', () => {
+    expect(startsInNewFolder(page({}), 'claude', [{ path: 'D:\\picked\\beta', name: 'beta' }])).toBe(false)
+  })
+
+  // 用得少的工具挤不进最近那一页，记录里没有它的目录也不等于没用过。
+  it('does not create one for a tool that has sessions outside the page it read', () => {
+    expect(startsInNewFolder(page({ claude: 2 }), 'claude', [])).toBe(false)
+  })
+
+  it('does not guess before the sessions have been read', () => {
+    expect(startsInNewFolder(null, 'claude', [])).toBe(false)
   })
 })
 

@@ -1180,6 +1180,46 @@ test('an empty chat says where conversations go, and its examples only fill the 
   } finally { await page.close() }
 })
 
+test('saved phrases fill the composer without sending, survive a reload and can be deleted', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    const input = page.getByTestId('chat-composer-input')
+    await input.fill('帮我看看这段话')
+    await page.getByTestId('chat-phrases-open').click()
+    const dialog = page.getByTestId('chat-phrases-dialog')
+    await dialog.getByTestId('chat-phrases-empty').waitFor()
+    assert.equal(await dialog.getByTestId('chat-phrases-empty').textContent(), '还没有存过常用的话。把经常要说的话存在这里，下次一点就填好。')
+    // 打开时把输入框里写好的字带进来，点「存下来」就存。
+    const phraseInput = dialog.getByTestId('chat-phrase-input')
+    assert.equal(await phraseInput.inputValue(), '帮我看看这段话')
+    await phraseInput.fill('回答尽量简短，用大白话')
+    await dialog.getByTestId('chat-phrase-save').click()
+    assert.equal(await phraseInput.inputValue(), '')
+    assert.equal(await dialog.getByTestId('chat-phrase-save').isDisabled(), true)
+    assert.deepEqual(await dialog.locator('.chat-phrase-text').allTextContents(), ['回答尽量简短，用大白话'])
+    await dialog.getByTestId('chat-phrase-use').click()
+    await dialog.waitFor({ state: 'detached' })
+    await page.waitForFunction(() => document.activeElement?.id === 'chatIn')
+    assert.equal(await input.inputValue(), '帮我看看这段话\n回答尽量简短，用大白话')
+    assert.equal(await input.evaluate((element) => element.selectionStart === element.value.length), true)
+    assert.equal((await calls(page, 'start')).length, 0, 'a saved phrase is never sent on its own')
+    await waitSaved(page, (workspace) => workspace.phrases?.[0] === '回答尽量简短，用大白话')
+
+    await page.reload()
+    await page.getByTestId('chat-composer-input').waitFor()
+    await ready(page)
+    await page.getByTestId('chat-phrases-open').click()
+    const reopened = page.getByTestId('chat-phrases-dialog')
+    assert.deepEqual(await reopened.locator('.chat-phrase-text').allTextContents(), ['回答尽量简短，用大白话'])
+    await reopened.getByTestId('chat-phrase-remove').click()
+    await reopened.getByTestId('chat-phrases-empty').waitFor()
+    await waitSaved(page, (workspace) => !workspace.phrases)
+    await reopened.getByTestId('chat-phrases-close').click()
+    await reopened.waitFor({ state: 'detached' })
+  } finally { await page.close() }
+})
+
 test('history that cannot be read is left alone, and reading it again brings it back with what was said meanwhile', async () => {
   const page = await open()
   try {

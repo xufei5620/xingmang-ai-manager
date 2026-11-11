@@ -83,7 +83,7 @@ describe('moving to a new computer with one broken conversation file', () => {
     files.bridge.readAiChatHistory.mockResolvedValueOnce(stored)
     const reportRendererError = vi.fn(async () => undefined)
     const transfer = createChatTransfer({ ...files.bridge, reportRendererError }, storage, scope, () => undefined)
-    const exported = await transfer.exportConversations()
+    const exported = (await transfer.exportChat()).conversations
     expect(exported).toHaveLength(1)
     expect(exported[0]).toMatchObject({ id: 'fine' })
     expect(reportRendererError).toHaveBeenCalledWith({ message: expect.stringContaining('c-broken.json 读不出来'), context: 'chat-history', level: 'warn' })
@@ -130,5 +130,44 @@ describe('importing conversations while the chat is replying', () => {
 
   it('says it in the exact words the decision sheet gave', () => {
     expect(chatReplyingImportMessage).toBe('聊天正在回复，等它说完再导入。')
+  })
+})
+
+// Fable 第二轮 Q7：「常用的话」跟聊天记录存在一起，搬到新电脑时一起带走。
+describe('moving saved phrases to a new computer', () => {
+  it('exports the saved phrases with the conversations', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('fine')], phrases: ['回答尽量简短', '翻译成英文'] })
+    const exported = await createChatTransfer(files.bridge, storage, scope, () => undefined).exportChat()
+    expect(exported.phrases).toEqual(['回答尽量简短', '翻译成英文'])
+    expect(exported.conversations).toHaveLength(1)
+  })
+
+  it('adds imported phrases after the ones already here, without duplicates, even when no conversation is new', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('here')], phrases: ['本机的一句', '两边都有'] })
+    const transfer = createChatTransfer(files.bridge, storage, scope, () => undefined)
+    expect(await transfer.importConversations([conversation('here')], ['两边都有', '旧电脑的一句'])).toEqual({ added: 0, skipped: 0 })
+    expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual(['本机的一句', '两边都有', '旧电脑的一句'])
+  })
+
+  it('writes nothing when the file brings no new conversation and no new phrase', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), conversations: [conversation('here')], phrases: ['两边都有'] })
+    files.bridge.writeAiChatHistory.mockClear()
+    await createChatTransfer(files.bridge, storage, scope, () => undefined).importConversations([conversation('here')], ['两边都有'])
+    expect(files.bridge.writeAiChatHistory).not.toHaveBeenCalled()
+  })
+
+  it('stops adding imported phrases once this computer holds the most it can', async () => {
+    const files = memoryFiles()
+    const storage = memoryStorage()
+    const present = Array.from({ length: 29 }, (_, index) => `本机第 ${index} 句`)
+    await createHistoryWriter(files.api, null).save({ ...createWorkspace(scope), phrases: present })
+    await createChatTransfer(files.bridge, storage, scope, () => undefined).importConversations([], ['旧电脑甲', '旧电脑乙'])
+    expect((await loadChatHistory(files.api, storage, scope)).state.phrases).toEqual([...present, '旧电脑甲'])
   })
 })

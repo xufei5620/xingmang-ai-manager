@@ -638,6 +638,8 @@ export function createRealmBusinesses(options: RealmBusinessesOptions) {
             })
           },
         },
+        // 画布完善第 8 条第二步：室外两张图、故事板几张图在付费前读出来比内容，从画布自己的项目素材库读。
+        sceneSources: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
       }),
     })
     return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
