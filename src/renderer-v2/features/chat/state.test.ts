@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, shouldShowOfflineReplyNotice, offlineReplyNotice, type ChatMessage, type ChatSettings, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -386,6 +386,26 @@ describe('v2 chat image in flight', () => {
     for (const status of ['complete', 'canceled', 'error'] as const)
       expect(isGeneratingImage({ ...pending, messages: pending.messages.map((message) => message.role === 'assistant' ? { ...message, status } : message) })).toBe(false)
     expect(isGeneratingImage(createConversation(undefined, 'empty'))).toBe(false)
+  })
+})
+
+describe('v2 chat reply while offline', () => {
+  it('says the network dropped only under a text reply that is still coming in (D43)', () => {
+    expect(offlineReplyNotice).toBe('网络断了，这条回复可能接不上，可以先停止。')
+    const pending = turn().conversation
+    const reply = pending.messages.find((message) => message.role === 'assistant')!
+    const question = pending.messages.find((message) => message.role === 'user')!
+    expect(reply.status).toBe('pending')
+    expect(shouldShowOfflineReplyNotice(reply, true)).toBe(true)
+    expect(shouldShowOfflineReplyNotice({ ...reply, status: 'streaming' }, true)).toBe(true)
+    expect(shouldShowOfflineReplyNotice({ ...reply, status: 'streaming' }, false)).toBe(false)
+    for (const status of ['complete', 'canceled', 'error'] as const) expect(shouldShowOfflineReplyNotice({ ...reply, status }, true)).toBe(false)
+    expect(shouldShowOfflineReplyNotice(question, true)).toBe(false)
+    // 出图停下也可能照样计费，停之前另有一问，这里不催人去停。
+    const image = readyConversation()
+    image.settings = { ...image.settings, mode: 'image', model: 'gpt-image-2' }
+    const drawing = planTurn(image, { prompt: 'an orange cat', requestId: 'request-image', assistantId: 'assistant-image', userMessageId: 'user-image' }).conversation
+    expect(shouldShowOfflineReplyNotice(drawing.messages.find((message) => message.role === 'assistant')!, true)).toBe(false)
   })
 })
 

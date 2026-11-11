@@ -169,6 +169,7 @@ export function SettingsPage({
   onSettingsGroupChange,
   onBackupRestored,
   installedProviders,
+  openHelp,
 }: { api: V2Bridge } & BusinessActions & Pick<Parameters<typeof BackupCard>[0], 'installedProviders'> & {
   /** 备份卡恢复成功后回调，用来让首页重读配置。 */
   onBackupRestored?: Parameters<typeof BackupCard>[0]['onRestored']
@@ -542,7 +543,7 @@ export function SettingsPage({
       />
     ),
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
-    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} />,
+    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} onOpenHelp={openHelp} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard

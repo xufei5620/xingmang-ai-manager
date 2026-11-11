@@ -123,10 +123,17 @@ export type RemoteChannelState =
   | 'needs-login'
   | 'error'
 
+/**
+ * 渠道停在哪一类毛病上（0.2.24 D23），电脑卡片按它在那句话旁边配按钮：credential = 凭据不对，要重新填；
+ * connection-limit = 同一个应用在别处连着；other = 别的原因没连上。现在只有飞书填它，缺省 = 只摆那句话。
+ */
+export type RemoteChannelProblem = 'credential' | 'connection-limit' | 'other'
+
 export interface RemoteChannelStatus {
   state: RemoteChannelState
   /** 能上屏的中文原因，不带平台原文里的令牌和消息内容。 */
   message?: string
+  problem?: RemoteChannelProblem
 }
 
 export interface RemoteChannelCapabilities {
@@ -219,5 +226,10 @@ export interface CodexRemoteSnapshot {
   workspaceDirectory: string | null
   task: CodexRemoteTaskState
   pendingApprovals: number
+  /**
+   * 手机上最近一条因为电脑上的 Codex 起不来没做（YK-5），卡片上摆一条黄条。
+   * 下次 Codex 起来了、或者遥控全关了就不带；缺省 = 没有这回事。
+   */
+  codexStartFailed?: boolean
   channels: Record<RemoteChannelId, CodexRemoteChannelSnapshot>
 }

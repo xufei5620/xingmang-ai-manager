@@ -1461,6 +1461,8 @@ export interface XingmangInvokeContract {
   /** 手机遥控 Codex：飞书、微信这些渠道的开关、配对、绑定的人，和 Codex 在哪个文件夹里干活。 */
   getCodexRemoteState: IpcInvokeDefinition<'codex-remote:get-state', [], CodexRemoteSnapshot>
   setCodexRemoteChannelEnabled: IpcInvokeDefinition<'codex-remote:set-channel-enabled', [channel: RemoteChannelId, enabled: boolean], CodexRemoteSnapshot>
+  /** 卡片上的「重新连接」：开着的渠道断开重连一次，凭据和绑定的人不动；没开着就原样交回现在的状态。 */
+  reconnectCodexRemoteChannel: IpcInvokeDefinition<'codex-remote:reconnect', [channel: RemoteChannelId], CodexRemoteSnapshot>
   /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1762,6 +1764,7 @@ export const ipcInvokeChannels = {
   chooseExtensionDirectory: 'extensions:choose-directory',
   getCodexRemoteState: 'codex-remote:get-state',
   setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
+  reconnectCodexRemoteChannel: 'codex-remote:reconnect',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',

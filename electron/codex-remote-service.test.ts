@@ -217,6 +217,8 @@ async function setup(options: {
   now?: () => number
   /** 起出来的每份 Codex 回 config/read 用的（FakeCodex.configRead）。 */
   configRead?: Record<string, unknown>
+  /** 还剩几次起 Codex 直接失败：模拟 Codex 坏了、起不来。 */
+  failSpawns?: { remaining: number }
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -250,6 +252,10 @@ async function setup(options: {
     ...(options.now ? { now: options.now } : {}),
     spawnCodex: async () => {
       await options.spawnGate
+      if (options.failSpawns && options.failSpawns.remaining > 0) {
+        options.failSpawns.remaining -= 1
+        throw new Error('spawn codex ENOENT')
+      }
       const fake = new FakeCodex()
       for (const [method, gate] of options.replyGates ?? []) fake.replyGates.set(method, gate)
       if (options.configRead) fake.configRead = options.configRead
@@ -702,6 +708,40 @@ describe('codex-remote-service enabling', () => {
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
     const settings = await s.store.readSettings()
     expect(JSON.stringify(settings)).not.toContain('enabled')
+  })
+
+  // D23：卡片上的「重新连接」只把停住的渠道重连一次，不像关掉再开那样给手机发「电脑上关了」，绑定的人也还在。
+  it('reconnects a stuck channel in place without telling the phone it was closed or forgetting the bound person', async () => {
+    const s = await setup()
+    const first = await enabledAndPaired(s)
+    first.handlers?.onStatus({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' })
+    expect((await s.service.snapshot()).channels.feishu.status.problem).toBe('connection-limit')
+
+    const snapshot = await s.service.reconnectChannel('feishu')
+    expect(first.stopped).toBe(1)
+    expect(first.sent).toHaveLength(0)
+    expect(s.channels).toHaveLength(2)
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'connected' } })
+    expect(snapshot.channels.feishu.boundPeer).not.toBeNull()
+    // The replaced adapter can no longer move the card.
+    first.handlers?.onStatus({ state: 'error', message: '旧的', problem: 'other' })
+    expect((await s.service.snapshot()).channels.feishu.status).toEqual({ state: 'connected' })
+  })
+
+  it('does not open a channel that is switched off when asked to reconnect it', async () => {
+    const s = await setup()
+    const snapshot = await s.service.reconnectChannel('feishu')
+    expect(s.channels).toHaveLength(0)
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: false, status: { state: 'stopped' } })
+  })
+
+  it('stops the channel and says why when it may no longer run at the moment it reconnects', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    s.unavailable.reason = '星芒正以管理员身份运行'
+    await expect(s.service.reconnectChannel('feishu')).rejects.toThrow('管理员')
+    expect(s.channels).toHaveLength(1)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
   })
 })
 
@@ -1242,6 +1282,42 @@ describe('codex-remote-service turns', () => {
     expect(s.logs).toContain('remote.codex-start-abandoned')
     expect(s.logs).not.toContain('remote.codex-start-failed')
     expect(channel.texts()).not.toContain('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。')
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
+  })
+
+  // YK-5：手机上收到「Codex 没能启动」，电脑卡片上也要看得见；Codex 下次起来了就收起。
+  it('tells the window Codex could not start until a later message gets it started', async () => {
+    const s = await setup({ failSpawns: { remaining: 1 } })
+    const channel = await enabledAndPaired(s)
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await vi.waitFor(() => expect(s.snapshots.at(-1)?.codexStartFailed).toBe(true))
+    expect(s.logs).toContain('remote.codex-start-failed')
+    expect((await s.service.snapshot()).task).toBe('idle')
+    channel.sent.length = 0
+    s.snapshots.length = 0
+    const codex = await prompted(s, channel, '再跑一次')
+    expect(codex.requests('turn/start')).toHaveLength(1)
+    await vi.waitFor(() => expect(s.snapshots.length).toBeGreaterThan(0))
+    expect(s.snapshots.every((snapshot) => snapshot.codexStartFailed === undefined)).toBe(true)
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
+  })
+
+  it('drops the Codex-could-not-start notice once every channel is off, not while one is still on', async () => {
+    const s = await setup({ failSpawns: { remaining: 1 } })
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    const channel = await enabledAndPaired(s)
+    channel.handlers?.onInbound(text(alice, '跑一下测试'))
+    await channel.sentUntil(() => channel.texts().includes('电脑上的 Codex 没能启动，请在电脑上的星芒里看一下。'))
+    await vi.waitFor(async () => expect((await s.service.snapshot()).codexStartFailed).toBe(true))
+    await s.service.setChannelEnabled('weixin', true)
+    await s.service.setChannelEnabled('weixin', false)
+    expect((await s.service.snapshot()).codexStartFailed).toBe(true)
+    const off = await s.service.setChannelEnabled('feishu', false)
+    expect(off.codexStartFailed).toBeUndefined()
+    await s.service.setChannelEnabled('feishu', true)
+    expect((await s.service.snapshot()).codexStartFailed).toBeUndefined()
   })
 
   it('hands nothing to a Codex that finishes starting after the manager began quitting, and stops it', async () => {

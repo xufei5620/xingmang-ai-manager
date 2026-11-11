@@ -556,14 +556,20 @@ describe('canvas request parser', () => {
 
   it('refuses image-tool nodes by name while image tools are switched off', () => {
     for (const [kind, label] of Object.entries(canvasRunImageToolNodeLabels)) {
-      for (const options of [undefined, { frameExtract: true }, { frameExtract: true, imageTools: false }]) {
+      for (const options of [{ frameExtract: false, imageTools: false }, { frameExtract: true, imageTools: false }]) {
         const node = parseCanvasStartRunInput(kernelNode(kind, {}), options).graph.nodes[0]
         expect(node.kind).toBe(kind)
         expect(node.desktopUnsupported).toBe(`「${label}」节点${kernelRefusal}`)
       }
     }
-    const off = parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: { kind: 'crop', outputWidth: 64, outputHeight: 32 } })).graph.nodes[0]
+    const crop = { kind: 'crop', outputWidth: 64, outputHeight: 32 }
+    const off = parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: crop }), { frameExtract: true, imageTools: false }).graph.nodes[0]
     expect(off.data).toEqual({ prompt: 'p', model: 'm' })
+    // 画布完善第 7 条第三步: the canvas window parses with the desktop's own
+    // switch, which is on now that the kernel makes the pictures.
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: crop })).graph.nodes[0])
+      .toMatchObject({ data: { prompt: 'p', model: 'm', imageTransform: crop } })
+    expect(parseCanvasStartRunInput(kernelNode('image-crop', { imageTransform: crop })).graph.nodes[0].desktopUnsupported).toBeUndefined()
   })
 
   // 画布完善第 7 条第三步: switched on, the four page-made kinds keep their

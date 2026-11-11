@@ -1599,7 +1599,7 @@ function CanvasWorkspace({
   const activeRunsRef = useRef(new Map<string, { graphRevision: string; projectId?: string; scope?: CanvasRunScope }>())
   const runWaitingBannerRef = useRef<{ runId: string; graphRevision: string; message: string } | null>(null)
   const runInputGraphsRef = useRef(new Map<string, CanvasRunGraph>())
-  // 宿主运行准备：桌面宿主请内核替它抽视频帧（runtime/host-run-preparations.ts）；网页宿主自己抽，这里是 null。
+  // 宿主运行准备：桌面宿主请内核替它抽视频帧、处理图片工具的图（runtime/host-run-preparations.ts）；网页宿主自己做，这里是 null。
   const runPreparationsRef = useRef<HostRunPreparations | null>(null)
   useEffect(() => {
     const preparations = createHostRunPreparations(window.xingmangCanvasHost)
@@ -3456,8 +3456,8 @@ function CanvasWorkspace({
           recoveredRunning = true
         }
         if (record.status !== 'running' && activeRunsRef.current.has(record.runId)) forgetActiveRun(record.runId)
-        // A frame asked for before this page knew the run (or before a reload) is read back here.
-        if (record.status === 'running' && record.projectId === projectId && record.framePreparations?.length) runPreparationsRef.current?.resume(record.runId, record.framePreparations)
+        // A frame or picture asked for before this page knew the run (or before a reload) is read back here.
+        if (record.status === 'running' && record.projectId === projectId && (record.framePreparations?.length || record.imagePreparations?.length)) runPreparationsRef.current?.resume(record.runId, record.framePreparations ?? [], record.imagePreparations ?? [])
       }
       // A durable terminal snapshot can win the race against the event stream.
       // Once its active entry is removed, the later terminal event is ignored;
@@ -3628,7 +3628,7 @@ function CanvasWorkspace({
     const matchingIds = submitted && !awaitingVideoCatalog ? matchingCanvasRunNodeIds(submitted, toCanvasRunGraph(graph.nodes, graph.edges, confirmedRunGroups(), nodeSourceCatalogRef.current)) : new Set<string>()
     setRunRecords((current) => mergeCanvasRunEvent(current, event))
     if (event.type === 'run-waiting') {
-      runPreparationsRef.current?.update(event.runId, event.framePreparations)
+      runPreparationsRef.current?.update(event.runId, event.framePreparations, event.imagePreparations ?? [])
       if (event.framePreparations.length || event.imagePreparations?.length || event.waitingForVideo) {
         const message = event.imagePreparations?.length ? '正在处理图像并保存素材，完成后会继续原工作流' : event.framePreparations.length ? '正在准备视频帧图片，完成后会继续原工作流' : '视频任务已提交，正在查询原任务进度'
         runWaitingBannerRef.current = { runId: event.runId, graphRevision: event.graphRevision, message }
