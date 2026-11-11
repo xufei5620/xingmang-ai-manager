@@ -673,6 +673,18 @@ export function pairingQuietField(pairingStartedAt: number, inboundSeen: RemoteI
   return { quiet: inboundSeen === 'group' ? 'group-only' : 'nothing' }
 }
 
+/**
+ * 托盘「打开手机遥控」能直接打开的渠道（YF-8）：选好了文件夹，渠道有凭据、配对过人，还没开着。
+ * 没配对过的不算：打开以后还得回电脑上点「开始配对」，从托盘开它没用。
+ */
+export function remoteChannelsReadyToEnable(snapshot: Pick<CodexRemoteSnapshot, 'workspaceDirectory' | 'channels'>): RemoteChannelId[] {
+  if (!snapshot.workspaceDirectory) return []
+  return remoteChannelIds.filter((id) => {
+    const channel = snapshot.channels[id]
+    return channel.hasCredential && channel.boundPeer !== null && !channel.enabled
+  })
+}
+
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message ? error.message : fallback
 }
@@ -872,6 +884,29 @@ export class CodexRemoteService {
       }
     }
     return this.emit()
+  }
+
+  /**
+   * 托盘里点「打开手机遥控」（YF-8）：齐了的渠道（remoteChannelsReadyToEnable）都打开，跟在设置里一个个点开过同样的检查。
+   * 一个都没打开时 failure 是第一个打不开的原因原句（比如还没装 Codex），托盘那边拿它弹系统通知；
+   * 齐了的一个都没有（刚在设置里解了绑）时什么都不做，只推一份快照让托盘收起这一项。
+   */
+  async enableReadyChannels(): Promise<{ opened: RemoteChannelId[]; failure: string | null }> {
+    if (this.disposed) return { opened: [], failure: null }
+    const ready = remoteChannelsReadyToEnable(await this.snapshot())
+    const opened: RemoteChannelId[] = []
+    let failure: string | null = null
+    for (const id of ready) {
+      try {
+        await this.setChannelEnabled(id, true)
+        opened.push(id)
+      } catch (error) {
+        failure ??= errorMessage(error, '手机遥控没能打开。')
+        this.options.log('warn', 'remote.tray-enable-failed', { channel: id })
+      }
+    }
+    if (!opened.length) await this.emit()
+    return { opened, failure: opened.length ? null : failure }
   }
 
   /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */

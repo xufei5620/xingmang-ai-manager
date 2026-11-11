@@ -37,6 +37,7 @@ import {
   permissionsShowInFull,
   readFileChange,
   readRequestedPermissions,
+  remoteChannelsReadyToEnable,
   sentWhileOpen,
   validateRemoteWorkspace,
 } from './codex-remote-service'
@@ -708,6 +709,61 @@ describe('codex-remote-service enabling', () => {
     expect((await s.service.snapshot()).channels.feishu.enabled).toBe(true)
     const settings = await s.store.readSettings()
     expect(JSON.stringify(settings)).not.toContain('enabled')
+  })
+})
+
+// YF-8：托盘「打开手机遥控」。只开凭据、配对过的人都在的渠道，过的检查跟设置里那个开关一样，打不开时给原因原句。
+describe('codex-remote-service switching on from the tray', () => {
+  it('counts a channel as ready only with a folder, a credential and a paired person, while it is off', async () => {
+    const s = await setup()
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    expect(remoteChannelsReadyToEnable(await s.service.snapshot())).toEqual([])
+    await enabledAndPaired(s)
+    expect(remoteChannelsReadyToEnable(await s.service.snapshot())).toEqual([])
+    await s.service.setChannelEnabled('feishu', false)
+    const off = await s.service.snapshot()
+    // 微信有凭据但没配对过人：开了也得回电脑上配对，不算。
+    expect(remoteChannelsReadyToEnable(off)).toEqual(['feishu'])
+    expect(remoteChannelsReadyToEnable({ ...off, workspaceDirectory: null })).toEqual([])
+  })
+
+  it('switches on every ready channel and leaves the unpaired one alone', async () => {
+    const s = await setup()
+    await s.store.writeCredential('weixin', 'weixin-credential-value')
+    await enabledAndPaired(s)
+    await s.service.setChannelEnabled('feishu', false)
+    s.snapshots.length = 0
+    expect(await s.service.enableReadyChannels()).toEqual({ opened: ['feishu'], failure: null })
+    const after = await s.service.snapshot()
+    expect(after.channels.feishu.enabled).toBe(true)
+    expect(after.channels.weixin.enabled).toBe(false)
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    expect(s.snapshots.at(-1)?.channels.feishu.enabled).toBe(true)
+    expect(s.logs).toContain('remote.channel-started')
+  })
+
+  it('opens nothing and hands back the same reason the switch would show', async () => {
+    const options: { codexProblem?: string } = {}
+    const s = await setup(options)
+    await enabledAndPaired(s)
+    await s.service.setChannelEnabled('feishu', false)
+    options.codexProblem = '这台电脑还没装 Codex 命令行工具，先在首页把它装好。'
+    s.snapshots.length = 0
+    expect(await s.service.enableReadyChannels()).toEqual({ opened: [], failure: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    expect(s.logs).toContain('remote.tray-enable-failed')
+    // 托盘那一项留着：没打开，下次修好了还能从这里开。
+    expect(remoteChannelsReadyToEnable(s.snapshots.at(-1)!)).toEqual(['feishu'])
+    options.codexProblem = undefined
+    s.unavailable.reason = '星芒正以管理员身份运行。'
+    expect(await s.service.enableReadyChannels()).toEqual({ opened: [], failure: '星芒正以管理员身份运行。' })
+  })
+
+  it('does nothing when no channel is ready any more, but still tells the tray', async () => {
+    const s = await setup()
+    expect(await s.service.enableReadyChannels()).toEqual({ opened: [], failure: null })
+    expect(s.channels).toHaveLength(0)
+    expect(s.snapshots).toHaveLength(1)
   })
 })
 

@@ -18,7 +18,15 @@ export interface ApplicationTraySnapshot {
   keepAwakeLabel?: string | null
   /** 手机遥控有渠道开着（codex-remote-service.ts 的 hasEnabledChannel）。缺省 = 没开，菜单里就没有「关掉手机遥控」。 */
   remoteControlOn?: boolean
+  /**
+   * 手机遥控都关着，但文件夹选好了、有渠道凭据和配对过的人都在（codex-remote-service.ts 的 remoteChannelsReadyToEnable），
+   * 菜单里多一项「打开手机遥控」（YF-8）。缺省 = 没齐。
+   */
+  remoteControlReady?: boolean
 }
+
+/** 托盘里点「打开手机遥控」一个都没打开时那条系统通知的标题；正文是打不开的原因原句（YF-8）。 */
+export const trayRemoteControlOpenFailedTitle = '手机遥控没打开'
 
 export interface TrayKeepAwakeState {
   /** 终端里正在干活的工具名（Claude Code、Gemini CLI、Grok CLI）。 */
@@ -146,6 +154,8 @@ export interface ApplicationTrayOptions {
   onInstallUpdate?: TrayAction
   /** 「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样；缺省时那一项不出。 */
   onRemoteControlOff?: TrayAction
+  /** 「打开手机遥控」：把齐了的渠道都打开，跟在设置里点开过同样的检查；缺省时那一项不出。 */
+  onRemoteControlOn?: TrayAction
   /** 用户刚打开托盘菜单：用来现读一次会过期的状态，不是定时轮询。 */
   onMenuOpen?: TrayAction
   onQuit: TrayAction
@@ -234,7 +244,7 @@ function accelerationItems(
 
 export function buildApplicationTrayMenu(
   snapshot: ApplicationTraySnapshot,
-  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate' | 'onRemoteControlOff'>,
+  actions: Pick<ApplicationTrayOptions, 'onOpen' | 'onLaunchTool' | 'onNavigate' | 'onQuit' | 'onAccelerationToggle' | 'onInstallUpdate' | 'onRemoteControlOff' | 'onRemoteControlOn'>,
   run: (action: TrayAction) => void,
   appName = '星芒AI管理工具',
 ): MenuItemConstructorOptions[] {
@@ -243,10 +253,13 @@ export function buildApplicationTrayMenu(
   // 窗口缩到托盘后遥控照样开着（#1407 P2-1），人走开了也得能在托盘里一下关掉；放在那行灰字下面，
   // 状态和动作挨着。灰字同一时间只说一件，终端里的工具在干活时说的是那件，这一项不跟着它藏。
   const remoteOff = snapshot.remoteControlOn ? actions.onRemoteControlOff : undefined
+  // 反过来（YF-8）：都关着、齐了能直接开时，不用进设置翻到最底下。没配对过的、没选文件夹的还得去设置里弄，不出这一项。
+  const remoteOn = !snapshot.remoteControlOn && snapshot.remoteControlReady ? actions.onRemoteControlOn : undefined
   return [
     { label: `打开${appName}`, click: () => run(actions.onOpen) },
     ...(keepAwake ? [{ label: keepAwake, enabled: false }] : []),
     ...(remoteOff ? [{ label: '关掉手机遥控', click: () => run(remoteOff) }] : []),
+    ...(remoteOn ? [{ label: '打开手机遥控', click: () => run(remoteOn) }] : []),
     { type: 'separator' },
     { label: menuLabel(snapshot.accountLabel, '未登录'), enabled: false },
     { label: `余额：${trayBalanceLabel(snapshot.balanceUsd)}`, enabled: false },
