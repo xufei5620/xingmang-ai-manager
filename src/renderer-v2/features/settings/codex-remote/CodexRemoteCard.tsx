@@ -39,6 +39,15 @@ export const codexStartFailedNotice = {
 } as const
 
 /**
+ * 「打开星芒时自动打开遥控」那一行（YF-9，yoyo 2026-11-11 亲手打字「遥控自动开，做」）。默认关；说明把风险说在前头：
+ * 开机自启的星芒没人在电脑前也会连上。
+ */
+export const codexRemoteAutoStartText = {
+  title: '打开星芒时自动打开遥控',
+  description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
+} as const
+
+/**
  * 「解绑」「退出登录」点了先问一句（0.2.24 D67）：做完那个人立刻用不了，得重新配对或重新登录。
  * 退出登录那个框的标题带渠道名，跟按钮的读屏名字（退出飞书登录 / 退出微信登录）一样；正文各渠道不同
  * （飞书重新填凭据、微信重新扫码），放在 remoteChannelSections 的 logoutHint。
@@ -261,6 +270,20 @@ export function CodexRemotePanel({ snapshot, api, busy, run, error, navigate, on
           onOpenHelp={onOpenHelp}
         />
       ))}
+      <SettingRow
+        title={codexRemoteAutoStartText.title}
+        description={codexRemoteAutoStartText.description}
+        control={
+          <Switch
+            checked={snapshot.autoStart === true}
+            disabled={!snapshot.available || Boolean(busy)}
+            onChange={(enabled) => void run('auto-start', () => api.setCodexRemoteAutoStart(enabled))}
+            aria-label={codexRemoteAutoStartText.title}
+            testId="settings-remote-auto-start-switch"
+          />
+        }
+        testId="settings-remote-auto-start"
+      />
     </Card>
   )
 }

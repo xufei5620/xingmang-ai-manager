@@ -54,6 +54,13 @@ describe('codex-remote-store', () => {
     }
   })
 
+  it('reads the launch switch as on only when it was stored as true', () => {
+    expect(parseCodexRemoteSettings({ version: 1, autoStart: true }).autoStart).toBe(true)
+    for (const value of [false, 'true', 1, null, undefined]) {
+      expect(parseCodexRemoteSettings({ version: 1, autoStart: value })).not.toHaveProperty('autoStart')
+    }
+  })
+
   it('persists settings and reads them back in a new store', async () => {
     const directory = tempDirectory()
     const store = new CodexRemoteStore(directory, fakeStorage(), 'darwin')

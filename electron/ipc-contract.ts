@@ -1474,6 +1474,8 @@ export interface XingmangInvokeContract {
   setCodexRemoteChannelEnabled: IpcInvokeDefinition<'codex-remote:set-channel-enabled', [channel: RemoteChannelId, enabled: boolean], CodexRemoteSnapshot>
   /** 卡片上的「重新连接」：开着的渠道断开重连一次，凭据和绑定的人不动；没开着就原样交回现在的状态。 */
   reconnectCodexRemoteChannel: IpcInvokeDefinition<'codex-remote:reconnect', [channel: RemoteChannelId], CodexRemoteSnapshot>
+  /** 「打开星芒时自动打开遥控」（YF-9，默认关）：只记下来，不当场开关渠道。 */
+  setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
   /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1779,6 +1781,7 @@ export const ipcInvokeChannels = {
   getCodexRemoteState: 'codex-remote:get-state',
   setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
   reconnectCodexRemoteChannel: 'codex-remote:reconnect',
+  setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',

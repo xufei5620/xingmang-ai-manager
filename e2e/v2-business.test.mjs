@@ -3851,6 +3851,28 @@ test('the phone remote card says Codex could not start and leads to the home pag
   }
 })
 
+// YF-9：卡片最后一行「打开星芒时自动打开遥控」默认关，点开、点关都记给主进程，开着时飞书那个开关不跟着动。
+test('the phone remote card lets the customer turn on opening the remote whenever the manager starts, off by default', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const row = card.getByTestId('settings-remote-auto-start')
+    await row.getByText('开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。', { exact: true }).waitFor()
+    const toggle = row.getByRole('switch', { name: '打开星芒时自动打开遥控', exact: true })
+    assert.equal(await toggle.getAttribute('aria-checked'), 'false')
+    await toggle.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="settings-remote-auto-start-switch"] button')?.getAttribute('aria-checked') === 'true')
+    assert.equal(await card.getByRole('switch', { name: '打开飞书遥控', exact: true }).getAttribute('aria-checked'), 'false')
+    await toggle.click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="settings-remote-auto-start-switch"] button')?.getAttribute('aria-checked') === 'false')
+    assert.deepEqual((await callsNamed(page, 'remote-auto-start')).map((call) => call.args), [true, false])
+    assert.equal((await callsNamed(page, 'remote-enable')).length, 0)
+  } finally {
+    await page.close()
+  }
+})
+
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
   const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
   try {

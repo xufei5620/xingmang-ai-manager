@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel, codexRemoteConfirmText } from './CodexRemoteCard'
+import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
@@ -222,6 +222,22 @@ describe('codex remote card', () => {
     expect(failed).toMatch(/data-testid="settings-remote-codex-failed-home"[^>]*>.*去首页看 Codex/)
     expect(failed.indexOf('settings-remote-codex-failed')).toBeLessThan(failed.indexOf('settings-remote-workspace-row'))
     expect(render(snapshot({ workspaceDirectory: '~/projects/demo' }, connected))).not.toContain('settings-remote-codex-failed')
+  })
+
+  // YF-9：「打开星芒时自动打开遥控」在卡片最后一行，默认关，说明把没人在电脑前也会连上说在前头。
+  it('ends the card with the launch switch, off unless turned on, warning that it connects with nobody around', () => {
+    expect(codexRemoteAutoStartText).toEqual({
+      title: '打开星芒时自动打开遥控',
+      description: '开着时，每次打开星芒都会自己连上，不用再回这里点。星芒开机自启的话，没人在电脑前时手机也能指挥它。不放心就别开。',
+    })
+    const off = render(snapshot())
+    const row = off.slice(off.indexOf('data-testid="settings-remote-auto-start"'))
+    expect(off.indexOf('data-testid="settings-remote-auto-start"')).toBeGreaterThan(off.indexOf('data-testid="settings-remote-weixin"'))
+    expect(row).toContain(codexRemoteAutoStartText.title)
+    expect(row).toContain(codexRemoteAutoStartText.description)
+    expect(row).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="false"[^>]*aria-label="打开星芒时自动打开遥控"/)
+    expect(render(snapshot({ autoStart: true }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="true"/)
+    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*disabled=""/)
   })
 
   it('warns when the credentials only last until the manager closes', () => {

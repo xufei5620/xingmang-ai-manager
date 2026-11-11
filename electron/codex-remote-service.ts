@@ -835,6 +835,7 @@ export class CodexRemoteService {
         : null,
       task,
       pendingApprovals,
+      ...(settings.autoStart ? { autoStart: true } : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
     }
@@ -926,6 +927,29 @@ export class CodexRemoteService {
     }
     if (!opened.length) await this.emit()
     return { opened, failure: opened.length ? null : failure }
+  }
+
+  /**
+   * 设置里「打开星芒时自动打开遥控」那个开关（YF-9）。只记下来，不当场开关渠道：开着的照旧开着，关着的等下次打开星芒。
+   */
+  async setAutoStart(enabled: boolean): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (enabled) settings.autoStart = true
+      else delete settings.autoStart
+    })
+    this.options.log('info', 'remote.auto-start-set', { enabled })
+    return this.emit()
+  }
+
+  /**
+   * 打开星芒时（YF-9）：客户自己打开了「打开星芒时自动打开遥控」才替他连，连的跟托盘「打开手机遥控」一样只是
+   * 配对过人的渠道（enableReadyChannels），检查也跟设置里那个开关一样；只认配对的那一个人、改东西要手机上同意都不变。
+   * 打不开（比如还没装 Codex）只记日志：这时没人在看，卡片上开关照旧是关的。
+   */
+  async startOnLaunch(): Promise<void> {
+    if (this.disposed || !(await this.options.store.readSettings()).autoStart) return
+    const { opened, failure } = await this.enableReadyChannels()
+    this.options.log(failure ? 'warn' : 'info', 'remote.auto-started', { opened: opened.length, failed: failure !== null })
   }
 
   /** 托盘里点「关掉手机遥控」：开着的渠道全关，手机上收到的跟在设置里点关一样。 */

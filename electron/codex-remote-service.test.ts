@@ -801,6 +801,61 @@ describe('codex-remote-service switching on from the tray', () => {
   })
 })
 
+describe('codex-remote-service switching on when Xingmang opens', () => {
+  it('remembers the choice without touching the channels, and drops it again when turned off', async () => {
+    const s = await setup()
+    await enabledAndPaired(s)
+    s.snapshots.length = 0
+    expect((await s.service.setAutoStart(true)).autoStart).toBe(true)
+    expect((await s.store.readSettings()).autoStart).toBe(true)
+    expect(s.snapshots.at(-1)?.autoStart).toBe(true)
+    expect(s.service.hasEnabledChannel()).toBe(true)
+    const off = await s.service.setAutoStart(false)
+    expect(off.autoStart).toBeUndefined()
+    expect((await s.store.readSettings()).autoStart).toBeUndefined()
+    // 关掉开关不顺手断开：现在开着的照旧开着，只是下次打开星芒不再自己连。
+    expect(off.channels.feishu.enabled).toBe(true)
+  })
+
+  it('opens only the paired channels on the next launch, and only when the switch is on', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    await first.store.writeCredential('weixin', 'weixin-credential-value')
+    await enabledAndPaired(first)
+    first.service.dispose()
+
+    const plain = await setup({ root })
+    await plain.service.startOnLaunch()
+    expect(plain.channels).toHaveLength(0)
+    expect(plain.service.hasEnabledChannel()).toBe(false)
+    await plain.service.setAutoStart(true)
+    plain.service.dispose()
+
+    const s = await setup({ root })
+    await s.service.startOnLaunch()
+    const snapshot = await s.service.snapshot()
+    expect(snapshot.channels.feishu.enabled).toBe(true)
+    // 微信有凭据但没配对过人：不替他连，得回电脑上配对。
+    expect(snapshot.channels.weixin.enabled).toBe(false)
+    expect(s.channels).toHaveLength(1)
+    expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 1, failed: false })
+  })
+
+  it('only logs when it cannot open, leaving the switch on for next time', async () => {
+    const root = tempRoot()
+    const first = await setup({ root })
+    await enabledAndPaired(first)
+    await first.service.setAutoStart(true)
+    first.service.dispose()
+
+    const s = await setup({ root, codexProblem: '这台电脑还没装 Codex 命令行工具，先在首页把它装好。' })
+    await s.service.startOnLaunch()
+    expect(s.service.hasEnabledChannel()).toBe(false)
+    expect(s.logDetails.find((entry) => entry.event === 'remote.auto-started')?.detail).toEqual({ opened: 0, failed: true })
+    expect((await s.service.snapshot()).autoStart).toBe(true)
+  })
+})
+
 describe('codex-remote-service pairing', () => {
   it('ignores strangers silently and binds whoever sends the code', async () => {
     const s = await setup()
