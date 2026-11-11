@@ -59,6 +59,8 @@ declare global {
       pair(displayName: string): void
       // 手机微信扫了二维码：挂着的那次查询这时才回「要输数字」。
       weixinScanned(): void
+      // 手机上来了一条，电脑上的 Codex 没起来（YK-5）；false = 后来又起来了。
+      codexStartFailed(failed: boolean): void
     }
   }
 }
@@ -169,12 +171,14 @@ const remoteState: {
   enabled: boolean
   pairing: RemoteSnapshot['channels']['feishu']['pairing']
   boundPeer: RemoteSnapshot['channels']['feishu']['boundPeer']
+  codexStartFailed: boolean
 } = {
   workspaceDirectory: remoteReady ? '~/projects/demo' : null,
   accountLabel: remoteReady ? 'cli_a1b2c3d4e5' : null,
   enabled: false,
   pairing: null,
   boundPeer: null,
+  codexStartFailed: false,
 }
 // 微信那一块只测扫码登录：手机上要输数字，输 2580 才对，对了以后再查一次就登录好了。
 const weixinRemote: { accountLabel: string | null; enabled: boolean; stage: 'idle' | 'code' | 'scanned' } = { accountLabel: null, enabled: false, stage: 'idle' }
@@ -194,6 +198,7 @@ function remoteSnapshot(): RemoteSnapshot {
     workspaceDirectory: remoteState.workspaceDirectory,
     task: 'idle',
     pendingApprovals: 0,
+    ...(remoteState.codexStartFailed ? { codexStartFailed: true } : {}),
     channels: {
       feishu: {
         channel: 'feishu',
@@ -230,6 +235,10 @@ window.remoteHarness = {
   weixinScanned() {
     releaseWeixinScan?.()
     releaseWeixinScan = null
+  },
+  codexStartFailed(failed) {
+    remoteState.codexStartFailed = failed
+    pushRemoteSnapshot()
   },
 }
 const codexRemoteMethods = {
