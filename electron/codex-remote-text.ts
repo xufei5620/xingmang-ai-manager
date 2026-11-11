@@ -3,7 +3,7 @@ import { redactHomeDirectory } from './startup-log'
 import { isRecord } from './input-guards'
 import { isServiceUnavailableResponse } from './network-failure'
 import { classifyRelayQuotaFailure, relayQuotaFailureMessages } from './relay-quota-failure'
-import type { RemoteApprovalKind, RemoteApprovalRequest } from './codex-remote-channel'
+import type { RemoteApprovalKind, RemoteApprovalOutcome, RemoteApprovalRequest } from './codex-remote-channel'
 
 // 手机遥控发到聊天里的字、从聊天里认的指令，飞书、微信共用。字都在这一张表里，改字只改这里。
 
@@ -282,12 +282,23 @@ export function approvalTitle(kind: RemoteApprovalKind): string {
 
 /** 没有按钮的渠道发这一段；有按钮的渠道也把它当卡片正文。 */
 export function formatApprovalText(request: RemoteApprovalRequest): string {
+  return `${formatApprovalBody(request)}\n回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`
+}
+
+/** 审批的正文（要做什么、在哪、为什么），不带「回 同意 N」那句：处理过的卡片只留这些（YK-8）。 */
+export function formatApprovalBody(request: RemoteApprovalRequest): string {
   const lines = [`${approvalTitle(request.kind)}（第 ${request.approvalId} 条）：`]
   if (request.summary) lines.push(request.summary)
   if (request.cwd) lines.push(`在：${request.cwd}`)
   if (request.reason) lines.push(`原因：${request.reason}`)
-  lines.push(`回「同意 ${request.approvalId}」或「拒绝 ${request.approvalId}」。`)
   return lines.join('\n')
+}
+
+/** 处理过的审批卡的标题（YK-8）。 */
+export function approvalOutcomeTitle(outcome: RemoteApprovalOutcome, id: string): string {
+  if (outcome === 'accepted') return `已同意（第 ${id} 条）`
+  if (outcome === 'expired') return `没回，已自动拒绝（第 ${id} 条）`
+  return `已拒绝（第 ${id} 条）`
 }
 
 /** 改文件审批卡上一行说的那个文件，路径已经换成手机上显示的样子。 */

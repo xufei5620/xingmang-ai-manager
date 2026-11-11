@@ -10,7 +10,9 @@ import type {
   RemoteChannelAdapter,
   RemoteChannelHandlers,
   RemoteInbound,
+  RemoteApprovalOutcome,
   RemoteOutbound,
+  RemoteOutboundApproval,
   RemotePeer,
   RemoteProgressCard,
 } from './codex-remote-channel'
@@ -201,6 +203,24 @@ class FakeCardChannel extends FakeChannel {
   }
 }
 
+/** 能把审批卡改成处理过的样子的渠道（像飞书，YK-8）：发卡照样记进 sent，改样子另记。 */
+class FakeApprovalCardChannel extends FakeChannel {
+  readonly approvalUpdates: Array<{ handle: string; message: RemoteOutboundApproval; outcome: RemoteApprovalOutcome }> = []
+  failUpdates = false
+  private cards = 0
+
+  async sendApproval(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string> {
+    await this.send(peer, message)
+    this.cards += 1
+    return `om_approval_${this.cards}`
+  }
+
+  async updateApproval(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void> {
+    if (this.failUpdates) throw new Error('feishu said no')
+    this.approvalUpdates.push({ handle, message, outcome })
+  }
+}
+
 let messageCounter = 0
 const commandRequest = { threadId: 'th-1', turnId: 'tu-1', itemId: 'i1', startedAtMs: 0, environmentId: null, kind: 'command', command: 'npm test', cwd: '/tmp/x' }
 
@@ -245,6 +265,8 @@ async function setup(options: {
   readBalanceUsd?: () => Promise<number | null>
   /** 渠道能原地更新进度卡（像飞书，YF-15）；缺省像微信，只能发文字。 */
   progressCards?: boolean
+  /** 渠道能把审批卡改成处理过的样子（像飞书，YK-8）。 */
+  approvalCards?: boolean
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -263,7 +285,7 @@ async function setup(options: {
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
-      const channel = options.progressCards ? new FakeCardChannel() : new FakeChannel()
+      const channel = options.approvalCards ? new FakeApprovalCardChannel() : options.progressCards ? new FakeCardChannel() : new FakeChannel()
       channels.push(channel)
       return channel
     },
@@ -1734,6 +1756,76 @@ describe('codex-remote-service turns', () => {
 })
 
 // YF-15（yoyo 2026-11-11「进度改」）：长任务中途给进度。飞书一张原地更新的卡，微信每满 5 分钟一句。
+describe('codex-remote-service answered approval cards', () => {
+  async function cardSetup(): Promise<{ s: Setup; channel: FakeApprovalCardChannel; codex: FakeCodex }> {
+    const s = await setup({ approvalCards: true })
+    const channel = await enabledAndPaired(s)
+    if (!(channel instanceof FakeApprovalCardChannel)) throw new Error('expected a channel with approval cards')
+    const codex = await prompted(s, channel)
+    return { s, channel, codex }
+  }
+
+  it('marks a card as agreed or declined once answered on the card or by text, keeping only the body', async () => {
+    const { channel, codex } = await cardSetup()
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    const [request] = await approvalCardsSent(channel, 1)
+    channel.handlers?.onInbound(cardClick(alice, request, 'accept'))
+    expect((await first).result).toEqual({ decision: 'accept' })
+    await vi.waitFor(() => expect(channel.approvalUpdates).toHaveLength(1))
+    const [update] = channel.approvalUpdates
+    expect(update).toMatchObject({ handle: 'om_approval_1', outcome: 'accepted', message: { kind: 'approval', request: { approvalId: '1' } } })
+    expect(update.message.text).toContain('npm test')
+    expect(update.message.text).not.toContain('回「同意')
+    await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
+
+    const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' })
+    await approvalCardsSent(channel, 2)
+    channel.handlers?.onInbound(text(alice, '拒绝 2'))
+    expect((await second).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.approvalUpdates).toHaveLength(2))
+    expect(channel.approvalUpdates[1]).toMatchObject({ handle: 'om_approval_2', outcome: 'declined' })
+    await vi.waitFor(() => expect(channel.texts()).toContain('已拒绝第 2 条。'))
+  })
+
+  it('marks a card as declined by itself after ten minutes without an answer', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const { channel, codex } = await cardSetup()
+    const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    await vi.advanceTimersByTimeAsync(10 * 60_000)
+    expect((await answer).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.approvalUpdates.map((entry) => entry.outcome)).toEqual(['expired']))
+    await vi.waitFor(() => expect(channel.texts().at(-1)).toBe('第 1 条等了 10 分钟没回，已自动拒绝。'))
+  })
+
+  it('marks cards as declined when declined from the computer or swept up by 「停止」', async () => {
+    const { s, channel, codex } = await cardSetup()
+    const first = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    await approvalCardsSent(channel, 1)
+    await s.service.declineApprovalsFromComputer()
+    expect((await first).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.approvalUpdates.map((entry) => entry.outcome)).toEqual(['declined']))
+
+    const second = codex.ask('item/commandExecution/requestApproval', { ...commandRequest, itemId: 'i2' })
+    await approvalCardsSent(channel, 2)
+    channel.handlers?.onInbound(text(alice, '停止'))
+    expect((await second).result).toEqual({ decision: 'decline' })
+    await vi.waitFor(() => expect(channel.approvalUpdates).toHaveLength(2))
+    expect(channel.approvalUpdates[1]).toMatchObject({ handle: 'om_approval_2', outcome: 'declined' })
+  })
+
+  it('still answers and says so in text when the card cannot be changed', async () => {
+    const { s, channel, codex } = await cardSetup()
+    channel.failUpdates = true
+    const answer = codex.ask('item/commandExecution/requestApproval', commandRequest)
+    const [request] = await approvalCardsSent(channel, 1)
+    channel.handlers?.onInbound(cardClick(alice, request, 'accept'))
+    expect((await answer).result).toEqual({ decision: 'accept' })
+    await vi.waitFor(() => expect(s.logs).toContain('remote.approval-card-update-failed'))
+    await vi.waitFor(() => expect(channel.texts()).toContain('已同意第 1 条。'))
+  })
+})
+
 describe('codex-remote-service progress', () => {
   const twoSteps = [{ step: '读登录页的代码', status: 'inProgress' }, { step: '改登录页', status: 'pending' }]
 

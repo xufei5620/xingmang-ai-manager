@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
+  approvalOutcomeTitle,
   approvalTitle,
   classifyRemoteTurnFailure,
+  formatApprovalBody,
   formatApprovalText,
   formatFileChangeLine,
   idleClosedMessage,
@@ -157,6 +159,16 @@ describe('codex-remote-text', () => {
     expect(remoteRunningForText(6 * 60_000)).toBe('已经 6 分钟')
     expect(remoteRunningForText(65 * 60_000)).toBe('已经 1 小时 5 分钟')
     expect(remoteRunningForText(120 * 60_000)).toBe('已经 2 小时')
+  })
+
+  // YK-8：处理过的审批卡只留正文，标题换成结果。
+  it('titles an answered approval card by its outcome and drops the reply line from its body', () => {
+    expect(approvalOutcomeTitle('accepted', '3')).toBe('已同意（第 3 条）')
+    expect(approvalOutcomeTitle('declined', '3')).toBe('已拒绝（第 3 条）')
+    expect(approvalOutcomeTitle('expired', '3')).toBe('没回，已自动拒绝（第 3 条）')
+    const request = { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test', cwd: '~/p' }
+    expect(formatApprovalBody(request)).toBe(formatApprovalText(request).split('\n').slice(0, -1).join('\n'))
+    expect(formatApprovalBody(request)).not.toContain('回「同意')
   })
 
   // YF-15：yoyo 2026-11-11「进度改」批的字，逐字钉住。

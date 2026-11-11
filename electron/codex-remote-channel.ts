@@ -142,6 +142,9 @@ export interface RemoteOutboundApproval {
 
 export type RemoteOutbound = RemoteOutboundText | RemoteOutboundApproval
 
+/** 审批卡最后怎么样了（YK-8）：同意了、拒绝了（含「都拒绝」和发「停止」时一起拒掉的）、等到点没回自动拒绝的。 */
+export type RemoteApprovalOutcome = 'accepted' | 'declined' | 'expired'
+
 /** 进度卡上的一步（YF-15）：Codex 计划里的一条，字是 Codex 自己写的（已脱敏、已截短）。 */
 export interface RemoteProgressStep {
   text: string
@@ -209,6 +212,13 @@ export interface RemoteChannelAdapter {
    */
   sendProgress?(peer: RemotePeer, card: RemoteProgressCard): Promise<string>
   updateProgress?(handle: string, card: RemoteProgressCard): Promise<void>
+  /**
+   * 能原地改样子的审批卡（YK-8，飞书有，微信没有）：sendApproval 代替 send 发卡，交回句柄；处理过以后
+   * updateApproval 把卡改成「已同意 / 已拒绝 / 没回，已自动拒绝」、去掉按钮。message.text 这时是不带
+   * 「回 同意 N」那句的正文。两个都有才算有；失败就抛，底座记日志，手机上那句文字照样发。
+   */
+  sendApproval?(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string>
+  updateApproval?(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void>
 }
 
 export type RemoteChannelLogLevel = 'info' | 'warn' | 'error'

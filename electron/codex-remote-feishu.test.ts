@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildFeishuApprovalCard,
   buildFeishuMessageBody,
   buildFeishuProgressCard,
   classifyFeishuSendResponse,
@@ -325,6 +326,24 @@ describe('codex-remote-feishu fragments', () => {
 })
 
 describe('codex-remote-feishu outbound', () => {
+  // YK-8：审批卡一开始就是共享卡片才改得了；处理过以后标题换成结果、按钮去掉、正文留着。
+  it('turns an answered approval card into its outcome without buttons', () => {
+    const message = {
+      kind: 'approval' as const,
+      request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test' },
+      text: 'Codex 想运行命令（第 3 条）：\nnpm test',
+    }
+    expect((buildFeishuApprovalCard(message).config as Record<string, unknown>).update_multi).toBe(true)
+    const body = { tag: 'div', text: { tag: 'plain_text', content: message.text } }
+    expect(buildFeishuApprovalCard(message, 'accepted')).toEqual({
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { template: 'green', title: { tag: 'plain_text', content: '已同意（第 3 条）' } },
+      elements: [body],
+    })
+    expect(buildFeishuApprovalCard(message, 'declined')).toMatchObject({ header: { template: 'grey', title: { content: '已拒绝（第 3 条）' } }, elements: [body] })
+    expect(buildFeishuApprovalCard(message, 'expired')).toMatchObject({ header: { template: 'grey', title: { content: '没回，已自动拒绝（第 3 条）' } }, elements: [body] })
+  })
+
   it('sends text as a text message and approvals as a card with two buttons', () => {
     const peer = { channel: 'feishu' as const, userId: 'ou_alice' }
     expect(buildFeishuMessageBody(peer, { kind: 'text', text: '你好' })).toEqual({
@@ -778,6 +797,30 @@ describe('codex-remote-feishu progress card', () => {
     expect(String(patchCalls[1][0])).toBe('https://open.feishu.cn/open-apis/im/v1/messages/om_progress_1')
     expect(JSON.parse(String(patchCalls[1][1]?.body))).toEqual({ content: JSON.stringify(buildFeishuProgressCard(done)) })
     expect(h.fetch.mock.calls.filter(([url]) => String(url).endsWith('/tenant_access_token/internal'))).toHaveLength(2)
+    await channel.stop()
+  })
+
+  it('sends an approval card for its message id and later patches it to the outcome', async () => {
+    const h = harness(serializeFeishuCredential({ appId, appSecret }), (url, init) => {
+      if (url.includes('/im/v1/messages') && init.method !== 'PATCH') return json({ code: 0, data: { message_id: 'om_approval_9' } })
+      if (init.method === 'PATCH') return json({ code: 0 })
+      return defaultRespond(url)
+    })
+    const channel = await startChannel(h)
+    const message = {
+      kind: 'approval' as const,
+      request: { approvalId: '3', nonce: 'nonce-of-three', kind: 'command' as const, summary: 'npm test' },
+      text: 'Codex 想运行命令（第 3 条）：\nnpm test\n回「同意 3」或「拒绝 3」。',
+    }
+    await expect(channel.sendApproval?.(peer, message)).resolves.toBe('om_approval_9')
+    const sent = h.fetch.mock.calls.find(([url, init]) => String(url).includes('/im/v1/messages') && init?.method !== 'PATCH')
+    expect(JSON.parse(String(JSON.parse(String(sent?.[1]?.body)).content))).toEqual(buildFeishuApprovalCard(message))
+    const decided = { ...message, text: 'Codex 想运行命令（第 3 条）：\nnpm test' }
+    await channel.updateApproval?.('om_approval_9', decided, 'accepted')
+    const patch = h.fetch.mock.calls.find(([, init]) => init?.method === 'PATCH')
+    expect(String(patch?.[0])).toBe('https://open.feishu.cn/open-apis/im/v1/messages/om_approval_9')
+    expect(JSON.parse(String(patch?.[1]?.body))).toEqual({ content: JSON.stringify(buildFeishuApprovalCard(decided, 'accepted')) })
+    await expect(channel.updateApproval?.('om_../x', decided, 'declined')).rejects.toThrow('飞书卡片编号不对')
     await channel.stop()
   })
 

@@ -8,7 +8,7 @@ import {
   type FeishuFrame,
 } from './codex-remote-feishu-frame'
 import { isRecord } from './input-guards'
-import { progressCardTitles, progressStepMarks, progressStopButton } from './codex-remote-text'
+import { approvalOutcomeTitle, progressCardTitles, progressStepMarks, progressStopButton } from './codex-remote-text'
 import type {
   RemoteChannelAdapter,
   RemoteChannelDependencies,
@@ -16,6 +16,7 @@ import type {
   RemoteChannelProblem,
   RemoteChannelStatus,
   RemoteInbound,
+  RemoteApprovalOutcome,
   RemoteOutbound,
   RemoteOutboundApproval,
   RemotePeer,
@@ -368,8 +369,26 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
  * 审批卡片（消息卡片 1.0 写法）：正文是底座写好的纯文字，下面两颗按钮。按钮里带上这一条的随机串，
  * 旧卡片留在聊天记录里随时能点，底座靠它认出点的是不是当下这一条。
  */
-export function buildFeishuApprovalCard(message: RemoteOutboundApproval): Record<string, unknown> {
+const approvalOutcomeTemplates: Record<RemoteApprovalOutcome, string> = {
+  accepted: 'green',
+  declined: 'grey',
+  expired: 'grey',
+}
+
+/**
+ * 审批卡。处理过以后（YK-8，带 outcome）原地改成「已同意 / 已拒绝 / 没回，已自动拒绝」，按钮去掉、正文留着；
+ * 要能改就得一开始就是共享卡片（update_multi，飞书只许更新共享卡片，更新前后都得是 true）。
+ */
+export function buildFeishuApprovalCard(message: RemoteOutboundApproval, outcome?: RemoteApprovalOutcome): Record<string, unknown> {
   const { request } = message
+  const body = { tag: 'div', text: { tag: 'plain_text', content: message.text } }
+  if (outcome) {
+    return {
+      config: { wide_screen_mode: true, update_multi: true },
+      header: { template: approvalOutcomeTemplates[outcome], title: { tag: 'plain_text', content: approvalOutcomeTitle(outcome, request.approvalId) } },
+      elements: [body],
+    }
+  }
   const button = (text: string, type: 'primary' | 'danger', decision: 'accept' | 'decline') => ({
     tag: 'button',
     text: { tag: 'plain_text', content: text },
@@ -377,10 +396,10 @@ export function buildFeishuApprovalCard(message: RemoteOutboundApproval): Record
     value: { approval: request.approvalId, nonce: request.nonce, decision },
   })
   return {
-    config: { wide_screen_mode: true, update_multi: false },
+    config: { wide_screen_mode: true, update_multi: true },
     header: { template: 'orange', title: { tag: 'plain_text', content: `需要你同意（第 ${request.approvalId} 条）` } },
     elements: [
-      { tag: 'div', text: { tag: 'plain_text', content: message.text } },
+      body,
       { tag: 'action', actions: [button('同意', 'primary', 'accept'), button('拒绝', 'danger', 'decline')] },
     ],
   }
@@ -626,21 +645,39 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
 
   /** 发进度卡（YF-15），交回它的 message_id，之后的 updateProgress 拿它原地更新。 */
   async sendProgress(peer: RemotePeer, card: RemoteProgressCard): Promise<string> {
-    const payload = await this.post({ receive_id: peer.userId, msg_type: 'interactive', content: JSON.stringify(buildFeishuProgressCard(card)) })
+    return await this.postCard(peer, buildFeishuProgressCard(card))
+  }
+
+  /**
+   * 原地更新进度卡（YF-15）。只换一次令牌，不等不重发：进度隔一会儿就会再更新，下一次带的总是最新的样子。
+   */
+  async updateProgress(handle: string, card: RemoteProgressCard): Promise<void> {
+    await this.patchCard(handle, buildFeishuProgressCard(card), 'feishu.progress-update-failed')
+  }
+
+  /** 发审批卡（YK-8），交回它的 message_id，处理过以后 updateApproval 拿它改样子。 */
+  async sendApproval(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string> {
+    return await this.postCard(peer, buildFeishuApprovalCard(message))
+  }
+
+  /** 审批卡改成处理过的样子（YK-8）：标题换成结果，按钮去掉。改不成只是样子没变，手机上那句文字照样发。 */
+  async updateApproval(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void> {
+    await this.patchCard(handle, buildFeishuApprovalCard(message, outcome), 'feishu.approval-update-failed')
+  }
+
+  private async postCard(peer: RemotePeer, card: Record<string, unknown>): Promise<string> {
+    const payload = await this.post({ receive_id: peer.userId, msg_type: 'interactive', content: JSON.stringify(card) })
     const data = isRecord(payload.data) ? payload.data : {}
     const messageId = stringField(data.message_id)
     if (!messageId || !feishuMessageIdPattern.test(messageId)) throw new Error('飞书没有给出这张卡片的编号')
     return messageId
   }
 
-  /**
-   * 原地更新进度卡（YF-15，PATCH /open-apis/im/v1/messages/:message_id）。只换一次令牌，不等不重发：
-   * 进度隔一会儿就会再更新，下一次带的总是最新的样子。
-   */
-  async updateProgress(handle: string, card: RemoteProgressCard): Promise<void> {
+  /** 原地更新一张发过的卡片（PATCH /open-apis/im/v1/messages/:message_id）。 */
+  private async patchCard(handle: string, card: Record<string, unknown>, failureEvent: string): Promise<void> {
     if (!this.credential) throw new Error('飞书渠道没有在运行')
     if (!feishuMessageIdPattern.test(handle)) throw new Error('飞书卡片编号不对')
-    const body = { content: JSON.stringify(buildFeishuProgressCard(card)) }
+    const body = { content: JSON.stringify(card) }
     for (let attempt = 0; ; attempt += 1) {
       const token = await this.tenantToken()
       const response = await requestRemoteJson({
@@ -663,7 +700,7 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
         this.token = null
         continue
       }
-      this.deps.log('warn', 'feishu.progress-update-failed', { status: response.status, code })
+      this.deps.log('warn', failureEvent, { status: response.status, code })
       throw new Error(`飞书没有更新这张卡片（错误码 ${code ?? response.status}）`)
     }
   }

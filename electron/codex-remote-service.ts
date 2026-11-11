@@ -22,11 +22,13 @@ import {
   type RemoteChannelLogLevel,
   type RemoteChannelStatus,
   type RemoteInbound,
+  type RemoteApprovalOutcome,
   type RemoteInboundApproval,
   type RemoteInboundStop,
   type RemoteInboundText,
   type RemoteInboundUnsupported,
   type RemoteOutbound,
+  type RemoteOutboundApproval,
   type RemoteIdleCloseHours,
   type RemotePeer,
   type RemoteProgressCard,
@@ -39,6 +41,7 @@ import {
   approvalExpiredMessage,
   approvalExpiringMessage,
   classifyRemoteTurnFailure,
+  formatApprovalBody,
   formatApprovalText,
   formatFileChangeLine,
   idleClosedMessage,
@@ -759,7 +762,13 @@ interface PendingApproval {
   channel: RemoteChannelId
   threadId: string
   timer: NodeJS.Timeout
-  settle(decision: RemoteApprovalDecision): void
+  /** 到点没回的自动拒绝传 expired，卡片上写「没回，已自动拒绝」（YK-8）；别的拒绝写「已拒绝」。 */
+  settle(decision: RemoteApprovalDecision, outcome?: RemoteApprovalOutcome): void
+}
+
+/** 渠道能不能把审批卡改成处理过的样子（YK-8，飞书能，微信不能）。 */
+function approvalCards(adapter: RemoteChannelAdapter | null): adapter is RemoteChannelAdapter & Required<Pick<RemoteChannelAdapter, 'sendApproval' | 'updateApproval'>> {
+  return Boolean(adapter?.sendApproval && adapter.updateApproval)
 }
 
 function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
@@ -1659,6 +1668,42 @@ export class CodexRemoteService {
     })
   }
 
+  /** 审批卡走能改样子的那条路（YK-8），跟文字排在同一条发件队里，交回卡片编号。 */
+  private deliverApprovalCard(
+    runtime: ChannelRuntime,
+    adapter: RemoteChannelAdapter & Required<Pick<RemoteChannelAdapter, 'sendApproval'>>,
+    peer: RemotePeer,
+    message: RemoteOutboundApproval,
+  ): Promise<string> {
+    const next = runtime.outbox.then(() => adapter.sendApproval(peer, message))
+    runtime.outbox = next.then(() => undefined, () => undefined)
+    return next.catch(() => {
+      this.options.log('warn', 'remote.send-failed', { channel: runtime.id, kind: message.kind })
+      throw new Error('send failed')
+    })
+  }
+
+  /**
+   * 处理过的审批卡改样子（YK-8）：标题换成结果、按钮去掉，正文去掉「回 同意 N」那句。星芒在退、渠道关了或换了
+   * 一个连接就不改；改不成只记日志，手机上「已同意第 N 条。」那句文字照样发。
+   */
+  private closeApprovalCard(
+    runtime: ChannelRuntime,
+    adapter: RemoteChannelAdapter | null,
+    card: Promise<string | null>,
+    request: RemoteApprovalRequest,
+    outcome: RemoteApprovalOutcome,
+  ): void {
+    if (!approvalCards(adapter)) return
+    void card.then(async (handle) => {
+      if (!handle || this.disposed || runtime.adapter !== adapter) return
+      const text = redactRemoteText(formatApprovalBody(request), this.redaction())
+      await adapter.updateApproval(handle, { kind: 'approval', request, text }, outcome)
+    }).catch(() => {
+      this.options.log('warn', 'remote.approval-card-update-failed', { channel: runtime.id, outcome })
+    })
+  }
+
   private async sendText(
     runtime: ChannelRuntime,
     text: string,
@@ -2457,11 +2502,14 @@ export class CodexRemoteService {
     if (this.disposed || runtime.turn !== turn || turn.stoppedByUser || !runtime.adapter) return 'decline'
     const nonce = generateApprovalNonce()
     const request = buildApprovalRequest(id, nonce, kind, params, changedFiles, display)
+    // 飞书的审批卡发出去以后记下编号，处理过就改成「已同意 / 已拒绝」的样子（YK-8）。
+    let card: Promise<string | null> | null = null
+    const adapter = runtime.adapter
     const decision = new Promise<RemoteApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {
         if (!this.pending.has(id)) return
         this.options.log('info', 'remote.approval-expired', { channel: runtime.id })
-        entry.settle('decline')
+        entry.settle('decline', 'expired')
         void this.sendText(runtime, approvalExpiredMessage(id, approvalTimeoutMinutes))
         this.emitSoon()
       }, approvalTimeoutMs)
@@ -2478,11 +2526,12 @@ export class CodexRemoteService {
         channel: runtime.id,
         threadId,
         timer,
-        settle: (value) => {
+        settle: (value, outcome) => {
           if (!this.pending.delete(id)) return
           clearTimeout(timer)
           clearTimeout(reminder)
           resolve(value)
+          if (card) this.closeApprovalCard(runtime, adapter, card, request, outcome ?? (value === 'accept' ? 'accepted' : 'declined'))
         },
       }
       this.pending.set(id, entry)
@@ -2491,7 +2540,11 @@ export class CodexRemoteService {
     this.emitSoon()
     const text = redactRemoteText(formatApprovalText(request), this.redaction())
     try {
-      await this.deliver(runtime, peer, { kind: 'approval', request, text })
+      if (approvalCards(adapter)) {
+        const sent = this.deliverApprovalCard(runtime, adapter, peer, { kind: 'approval', request, text })
+        card = sent.then((handle) => handle, () => null)
+        await sent
+      } else await this.deliver(runtime, peer, { kind: 'approval', request, text })
     } catch {
       // 问不到人就不能当作同意。
       this.pending.get(id)?.settle('decline')
