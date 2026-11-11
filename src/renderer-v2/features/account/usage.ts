@@ -1,6 +1,8 @@
 import type { AccountDashboardData, AccountUsageRecord } from '../../../../electron/ipc-contract'
 import type { AccountFilterField } from '../../AccountFilters'
+import { dollars } from '../../business-common'
 import { localSpendDays, spendDayTitle } from './account-center'
+import { usageMoney } from './usage-detail-view'
 
 /**
  * 用量账单这一页（v4 第 07 批）上由数据算出来的东西：时间范围、花费趋势每根柱子管哪一段、
@@ -109,6 +111,21 @@ export function mergeDashboards(parts: readonly AccountDashboardData[]): Pick<Ac
     }
   }
   return { quota, count, tokens, models: [...models.values()] }
+}
+
+/**
+ * 用量账单这一页上的花费（明细、柱子、日均、总花费、按模型、生成任务）只有这一种写法（D53）。
+ * 一次调用常常只花几厘钱，固定两位小数会把一整页写成「$0.00」，状态却是「成功」，点进详情
+ * 又是「$0.0032」，客户以为没扣钱或者软件算错了。不到一分的照详情的写法写全，一分以上和
+ * 正好是 0 的照旧两位小数。余额、充值这些照旧走 dollars，不经过这里。
+ */
+export function usageCost(amount: number | null | undefined): string {
+  return typeof amount === 'number' && amount !== 0 && Math.abs(amount) < 0.01 ? usageMoney(amount) : dollars(amount)
+}
+
+/** 后台记的额度（quota）换成用量花费；换算比例没读到时写「—」，跟 quotaMoney 一样。 */
+export function usageQuotaCost(quota: number | null | undefined, balance: { quotaPerUnit: number } | null): string {
+  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number' ? usageCost(quota / balance.quotaPerUnit) : '—'
 }
 
 /** 柱子高度（百分比，按刻度顶算）和左边那几条刻度：顶取一个整齐的数，最多四格。 */
