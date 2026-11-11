@@ -103,9 +103,14 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 钉住三件事：这三个名字（以后升 Node 改了名会在这里红，而不是悄悄变回偶发）、磁盘连着忙 1.5 万轮时钟也不走、
 等自己的假定时器时钟照样走。用同一个驱动的 `python-runtime.test.ts` 两条（只在 Windows 上跑）一起受益。
 
-同一个毛病还有一处没修：`electron/node-runtime.test.ts`「gives up at the ceiling and removes the partial package」
-（指纹 `expected 760000 to be 1800000`）用的是它自己的 `driveChunkByChunk`，也是每块最多等 1 万轮就接着拨。
-修它另开一个 PR，照这里的办法用 `fileOperationInFlight()` 只数磁盘闲着的轮次即可。
+同一个毛病的另一处也修了：`electron/node-runtime.test.ts`「gives up at the ceiling and removes the partial package」
+（Windows `vitest-1`，指纹 `expected 760000 to be 1800000`，10-26 #1413 红过一次）用的是它自己的 `driveChunkByChunk`，
+每拨一格最多等 1 万轮让那一块落盘，等不满就接着拨。写盘慢时连着几格没算上进度，3 分钟没进展那道先到，报的是
+「安装包下载超时」，时间却停在 76 万毫秒。本机让每 4 块里有一块写盘前卡 0.3 秒，旧写法红成
+`expected 1040000 to be 1800000`，同一个形状。现在它也只数没有文件操作在进行的轮次（同一个 `fileOperationInFlight()`），
+同文件里加了一条「磁盘连着忙 1.5 万轮，拨完第一格就不再拨」，旧写法上红成 `expected 80000 to be 40000`。
+它没换成上面那个共用驱动：两边判断「该拨了」的条件不一样（这边看收到的字节数，那边看响应体在不在等下一块），
+这条的断言又是正好 30 分钟，换驱动是另一件事，这里只改计数。
 
 ### MCP 页点「自定义连接」超时：没坐实
 
