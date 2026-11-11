@@ -125,6 +125,18 @@ function quitCleanupSteps() {
   return steps
 }
 
+describe('main process config rewrite log', () => {
+  // D78：配置原来不是 UTF-8、写回后成了乱码，只记运行日志。要在运行日志建好后、头一次写配置之前接上，晚了就漏记。
+  it('hands not-UTF-8 config rewrites to the runtime log before any service can write a config', () => {
+    const { sourceText } = mainSource()
+    expect(sourceText.match(/attachNotUtf8ConfigRewriteLog\(/g)).toHaveLength(1)
+    const attached = sourceText.indexOf('attachNotUtf8ConfigRewriteLog(')
+    expect(attached).toBeGreaterThan(sourceText.indexOf('new RuntimeLogStore('))
+    expect(attached).toBeLessThan(sourceText.indexOf('createSystemService('))
+    expect(sourceText.slice(attached, attached + 200)).toContain("runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten'")
+  })
+})
+
 describe('main process quit cleanup', () => {
   it('hangs the whole quit cleanup on a single will-quit listener', () => {
     const { sourceText } = mainSource()
