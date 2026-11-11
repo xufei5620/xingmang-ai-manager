@@ -8,6 +8,7 @@ import { isProviderId, isRetiredProviderId, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig } from './config-files'
 import { assertNoReparseComponents, ensureSafeDataDirectory, renameWithTransientRetrySync } from './safe-local-data'
+import { measureDirectoryBytes } from './storage-usage'
 
 export type ConfigBackupReason = 'manual' | 'pre-save' | 'pre-restore'
 
@@ -64,6 +65,13 @@ export type ConfigBackupManifest = ConfigBackupManifestV1 | ConfigBackupManifest
  * 没登录又说不出是谁的。
  */
 export type ConfigBackupKeyOwnership = 'current' | 'other' | 'none' | 'unknown'
+
+export interface ConfigBackupPruneResult {
+  removed: number
+  /** 认得、但这次没删掉的（被占用、没权限、校验不过）。 */
+  failed: number
+  freedBytes: number
+}
 
 export interface ConfigBackupSummary {
   id: string
@@ -765,6 +773,33 @@ export class ConfigBackupStore {
   delete(id: string): void {
     const directory = validateBackupDirectory(this.userDataDirectory, id)
     fs.rmSync(directory, { recursive: true, force: false })
+  }
+
+  /** 所有备份放在哪个文件夹里；「星芒占用的空间」量这一行的大小用，只读。 */
+  rootDirectory(): string {
+    return backupRoot(this.userDataDirectory)
+  }
+
+  /**
+   * 「星芒占用的空间」里的「清理旧备份」：`include` 认得的那些（界面上看得到的）按时间留最新的 `keep` 份，
+   * 更早的删掉。和单条删除一样逐份校验目录（不跟链接、不越界）再删；一份接一份异步删，几百份也不卡窗口。
+   * 删的时候别处（改配置前、恢复前自动存的那一份顺手清超过 200 份的）刚好删掉了同一份，算已经没了，不算没删掉。
+   */
+  async removeAllButNewest(keep: number, include: (backup: ConfigBackupSummary) => boolean): Promise<ConfigBackupPruneResult> {
+    if (!Number.isSafeInteger(keep) || keep < 0) throw new Error('要留下的备份份数无效')
+    const result: ConfigBackupPruneResult = { removed: 0, failed: 0, freedBytes: 0 }
+    for (const backup of this.list().filter(include).slice(keep)) {
+      try {
+        const directory = validateBackupDirectory(this.userDataDirectory, backup.id)
+        const bytes = await measureDirectoryBytes(directory)
+        await fs.promises.rm(directory, { recursive: true, force: false })
+        result.removed += 1
+        result.freedBytes += bytes
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') result.failed += 1
+      }
+    }
+    return result
   }
 
   private prune(root: string, keepId?: string): void {
