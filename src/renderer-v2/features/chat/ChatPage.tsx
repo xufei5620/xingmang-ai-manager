@@ -1,5 +1,6 @@
 import { Fragment, isValidElement, memo, useEffect, useMemo, useRef, useState, type ClipboardEvent, type ReactNode } from 'react'
-import { ArrowUp, ArrowUpRight, Brush, Check, ChevronDown, Copy, Download, FileText, Image as ImageIcon, ImagePlus, Images, MoreHorizontal, Pencil, Plus, RefreshCw, SlidersHorizontal, Square, Trash2, X } from 'lucide-react'
+import { ArrowUp, ArrowUpRight, Brush, Check, ChevronDown, Copy, Download, FileText, Image as ImageIcon, ImagePlus, MoreHorizontal, Pencil, Plus, RefreshCw, SlidersHorizontal, Square, Trash2, X } from 'lucide-react'
+import { Images } from 'lucide-react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
