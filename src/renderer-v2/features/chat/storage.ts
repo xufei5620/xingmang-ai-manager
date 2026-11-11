@@ -1,6 +1,7 @@
 import { currentAccountGroupName } from '../../../../electron/catalog'
 import { redactSecretShapes } from '../../../../electron/redaction-patterns'
-import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, XingmangApi } from '../../../../electron/ipc-contract'
+import { AI_CHAT_LIMITS, AI_CHAT_TEXT_FILE_LIMITS } from '../../../../electron/ai-chat-protocol'
+import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatTextFile, XingmangApi } from '../../../../electron/ipc-contract'
 import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
@@ -80,14 +81,29 @@ function readAsset(value: unknown): AiChatAsset {
   const mimeType = asset.mimeType === 'image/jpeg' || asset.mimeType === 'image/webp' ? asset.mimeType : 'image/png'
   return { assetId: asset.assetId, localUrl: `xingmang-asset://image/${asset.assetId}`, mimeType, fileName: text(asset.fileName) || '星芒图片.png', ...(timestamp(asset.width) ? { width: timestamp(asset.width) } : {}), ...(timestamp(asset.height) ? { height: timestamp(asset.height) } : {}), ...(asset.revisedPrompt ? { revisedPrompt: text(asset.revisedPrompt) } : {}) }
 }
+// 带的文件只认这几个字段。字数按单条消息的上限卡（存盘时换掉密钥会让字数变一点，不按 3 万卡死），
+// 存档被改大了也不会一条消息带进几十万字。
+function readTextFile(value: unknown): AiChatTextFile {
+  const file = object(value)
+  if (!file || typeof file.name !== 'string' || !file.name || file.name.length > 255 || typeof file.text !== 'string' || file.text.length > AI_CHAT_LIMITS.messageLength) {
+    throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
+  }
+  return { name: file.name, size: timestamp(file.size), text: file.text, truncated: file.truncated === true }
+}
+function readTextFiles(value: unknown): AiChatTextFile[] {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > AI_CHAT_TEXT_FILE_LIMITS.filesPerMessage) throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
+  return value.map(readTextFile)
+}
 function readMessage(value: unknown): ChatMessage {
   const message = object(value)
   if (!message || (message.role !== 'user' && message.role !== 'assistant')) throw new ChatStorageError('聊天消息格式无效，原始记录已保留')
   const images = Array.isArray(message.assets) ? message.assets : Array.isArray(message.images) ? message.images : []
   if ((message.assets !== undefined && !Array.isArray(message.assets)) || (message.images !== undefined && !Array.isArray(message.images))) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
   const assets = images.map(readAsset)
+  const files = readTextFiles(message.files)
   const status = message.status === 'complete' || message.status === 'error' || message.status === 'canceled' ? message.status : 'canceled'
-  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(assets.length ? { assets } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || '上次请求未完成，可以重新生成' } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}) }
+  return { id: id(message.id), role: message.role, content: text(message.content), reasoning: text(message.reasoning), status, createdAt: timestamp(message.createdAt), ...(assets.length ? { assets } : {}), ...(files.length ? { files } : {}), ...(message.settings ? { settings: readSettings(message.settings) } : {}), ...(status === 'error' ? { error: text(message.error) || '上次请求未完成，可以重新生成' } : {}), ...(message.mayStillComplete === true ? { mayStillComplete: true } : {}) }
 }
 function assertUniqueIds(items: { id: string }[]): void {
   if (new Set(items.map((item) => item.id)).size !== items.length) throw new ChatStorageError('聊天记录包含重复标识，原始记录已保留')
@@ -99,7 +115,8 @@ function readConversation(value: unknown): Conversation {
   assertUniqueIds(messages)
   if (conversation.draftImages !== undefined && !Array.isArray(conversation.draftImages)) throw new ChatStorageError('聊天图片列表无效，原始记录已保留')
   const draftImages = (conversation.draftImages ?? []).map(readAsset)
-  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}), ...(conversation.pinned === true ? { pinned: true } : {}), ...(conversation.renamed === true ? { renamed: true } : {}) }
+  const draftFiles = readTextFiles(conversation.draftFiles)
+  return { id: id(conversation.id), title: text(conversation.title) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), ...(draftImages.length ? { draftImages } : {}), ...(draftFiles.length ? { draftFiles } : {}), settings: readSettings(conversation.settings), messages, ...(conversation.lengthNoticeDismissed === true ? { lengthNoticeDismissed: true } : {}), ...(conversation.pinned === true ? { pinned: true } : {}), ...(conversation.renamed === true ? { renamed: true } : {}) }
 }
 function parseWorkspace(raw: string, scope: string): ChatWorkspace {
   const parsed = object(JSON.parse(raw))
@@ -296,6 +313,10 @@ function persistedSettings(settings: ChatSettings): ChatSettings {
 function persistedAsset({ localUrl: _runtimeUrl, ...asset }: AiChatAsset) {
   return { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
 }
+// 文件里的字跟消息正文一样，存盘前把密钥样的东西换掉；发给 AI 的那一次用的是原文。
+function persistedTextFile(file: AiChatTextFile): AiChatTextFile {
+  return { ...file, name: redactPersistentChatText(file.name), text: redactPersistentChatText(file.text) }
+}
 function persistedMessage(message: ChatMessage) {
   return {
     ...message,
@@ -305,10 +326,11 @@ function persistedMessage(message: ChatMessage) {
     ...(message.error === undefined ? {} : { error: redactPersistentChatText(message.error) }),
     ...(message.settings ? { settings: persistedSettings(message.settings) } : {}),
     assets: message.assets?.map(persistedAsset),
+    files: message.files?.map(persistedTextFile),
   }
 }
 function persistedConversation(conversation: Conversation) {
-  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), draftImages: conversation.draftImages?.map(persistedAsset), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
+  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), draftImages: conversation.draftImages?.map(persistedAsset), draftFiles: conversation.draftFiles?.map(persistedTextFile), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
 }
 
 // What the file store holds after the last successful save. Conversations are
@@ -681,6 +703,7 @@ export function conversationPlainText(conversation: Conversation): string {
     lines.push(when ? `${who}（${when}）：` : `${who}：`)
     const content = redactPersistentChatText(message.content)
     if (content) lines.push(content)
+    for (const file of message.files ?? []) lines.push(`附件：${redactPersistentChatText(file.name)}`)
     if (message.assets?.length) lines.push(`[${message.assets.length} 张图片，没有放进这个文件]`)
     if (message.status === 'error' && message.error) lines.push(`[没有回复成功：${redactPersistentChatText(message.error)}]`)
     lines.push('')
