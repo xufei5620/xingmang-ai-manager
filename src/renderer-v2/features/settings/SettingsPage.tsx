@@ -529,7 +529,7 @@ export function SettingsPage({
       />
     ),
     // 手机遥控 Codex：不读设置，自己向主进程要状态。
-    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} />,
+    'codex-remote': <CodexRemoteCard key="codex-remote" api={api} navigate={navigate} />,
     // 原来的更新页。两个开关不在卡上再摆一份，就是下面那两行。
     version: (
       <VersionCard

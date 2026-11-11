@@ -3575,6 +3575,27 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
   }
 })
 
+// YK-5：手机上收到「Codex 没能启动」，电脑卡片上也有一条黄条，点一下去首页；Codex 又起来了就收起。
+test('the phone remote card says Codex could not start and leads to the home page until Codex starts again', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    await card.getByTestId('settings-remote-workspace-row').waitFor()
+    assert.equal(await card.getByTestId('settings-remote-codex-failed').count(), 0)
+    await page.evaluate(() => window.remoteHarness.codexStartFailed(true))
+    const notice = card.getByTestId('settings-remote-codex-failed')
+    await notice.getByText('Codex 没能启动', { exact: true }).waitFor()
+    await notice.getByText('手机上刚发来的那条没有做。去首页看一下 Codex，好了以后在手机上再发一次。', { exact: true }).waitFor()
+    await notice.getByRole('button', { name: '去首页看 Codex', exact: true }).click()
+    assert.equal((await callsNamed(page, 'navigate')).at(-1).args, 'home')
+    await page.evaluate(() => window.remoteHarness.codexStartFailed(false))
+    await notice.waitFor({ state: 'detached' })
+  } finally {
+    await page.close()
+  }
+})
+
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
   const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
   try {
