@@ -9,7 +9,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 interface LoginHarness {
   dependencies: WeixinLoginDependencies
   requests: string[]
-  saved: Array<{ value: string; label: string }>
+  saved: Array<{ value: string; label: string; verifiedOwner: string | null }>
   clock: { now: number }
   reconnects: { count: number; failure: Error | null }
   logs: string[]
@@ -40,8 +40,8 @@ function harness(responses: Array<Response | Error>, existing: string | null = n
       botAgent: 'XingmangAI/test',
       now: () => clock.now,
       readCredential: async () => existing,
-      saveCredential: async (value, label) => {
-        saved.push({ value, label })
+      saveCredential: async (value, label, verifiedOwner) => {
+        saved.push({ value, label, verifiedOwner })
       },
       reconnectIfLoggedOut: async () => {
         reconnects.count += 1
@@ -93,6 +93,9 @@ describe('createWeixinLoginController', () => {
     // 新凭据走保存那条路重启渠道，不用另外重连。
     expect(reconnects.count).toBe(0)
     expect(saved[0].label).toBe('ClawBot decb')
+    // 微信没要数字：扫码的人不直接绑，照旧要配对码（YF-5 只在过了数字时免）。
+    expect(saved[0].verifiedOwner).toBeNull()
+    expect(done.boundByScan).toBeUndefined()
     expect(decodeWeixinCredential(saved[0].value)).toEqual({
       version: 1, token: 'tok', botId: 'b0f5860fdecb@im.bot', origin: 'https://sz.ilinkai.weixin.qq.com', ownerUserId: 'owner@im.wechat',
     })
@@ -148,6 +151,83 @@ describe('createWeixinLoginController', () => {
     expect(requests[4]).toContain('verify_code=2222')
     expect(saved).toHaveLength(1)
     expect(decodeWeixinCredential(saved[0].value)).toMatchObject({ token: 'tok', ownerUserId: 'owner@im.wechat' })
+    // YF-5：确认了还要数字（confirmed_but_need_verifycode）也算微信要过数字，输对了扫码的人直接记成绑定的人。
+    expect(saved[0].verifiedOwner).toBe('owner@im.wechat')
+  })
+
+  // YF-5：微信要过手机上那串数字、输对了，扫码的人直接记成绑定的人。
+  it('hands over the scanner as the bound person only after the number on the phone was asked for and accepted', async () => {
+    const { dependencies, saved } = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'scaned' }),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+    ])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await login.poll(started.loginId)
+    await expect(login.poll(started.loginId, '1111')).resolves.toMatchObject({ phase: 'verify-code-wrong' })
+    await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'scanned' })
+    const done = await login.poll(started.loginId)
+    expect(done).toMatchObject({ phase: 'confirmed', boundByScan: true })
+    expect(saved[0].verifiedOwner).toBe('owner@im.wechat')
+  })
+
+  it('also counts a number accepted straight into the confirmation', async () => {
+    const { dependencies, saved } = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+    ])
+    const login = createWeixinLoginController(dependencies)
+    const started = await login.start()
+    await login.poll(started.loginId)
+    await expect(login.poll(started.loginId, '2222')).resolves.toMatchObject({ phase: 'confirmed', boundByScan: true })
+    expect(saved[0].verifiedOwner).toBe('owner@im.wechat')
+  })
+
+  it('keeps asking for pairing when no number was asked for, the scanner is unknown, or the number came for another QR', async () => {
+    // 界面没被要就塞了一串数字：微信根本没要过，不算过了数字。
+    const unasked = harness([
+      qr('q1'),
+      jsonResponse({ status: 'scaned' }),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+    ])
+    let login = createWeixinLoginController(unasked.dependencies)
+    let started = await login.start()
+    await login.poll(started.loginId, '2222')
+    expect((await login.poll(started.loginId)).boundByScan).toBeUndefined()
+    expect(unasked.saved[0].verifiedOwner).toBeNull()
+
+    // 过了数字，可微信没说是谁扫的：没法直接绑。
+    const anonymous = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok', ilink_bot_id: 'b1@im.bot' }),
+    ])
+    login = createWeixinLoginController(anonymous.dependencies)
+    started = await login.start()
+    await login.poll(started.loginId)
+    expect((await login.poll(started.loginId, '2222')).boundByScan).toBeUndefined()
+    expect(anonymous.saved[0].verifiedOwner).toBeNull()
+
+    // 上一张二维码输对过数字，过期换了一张、这张微信没要数字：不算。
+    const refreshed = harness([
+      qr('q1'),
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'scaned' }),
+      jsonResponse({ status: 'expired' }),
+      qr('q2'),
+      jsonResponse({ status: 'confirmed', bot_token: 'tok', ilink_bot_id: 'b1@im.bot', ilink_user_id: 'owner@im.wechat' }),
+    ])
+    login = createWeixinLoginController(refreshed.dependencies)
+    started = await login.start()
+    await login.poll(started.loginId)
+    await login.poll(started.loginId, '2222')
+    await expect(login.poll(started.loginId)).resolves.toMatchObject({ phase: 'waiting-scan' })
+    expect((await login.poll(started.loginId)).boundByScan).toBeUndefined()
+    expect(refreshed.saved[0].verifiedOwner).toBeNull()
   })
 
   it('swaps in a new QR code when one expires, up to three in total', async () => {

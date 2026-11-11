@@ -3793,8 +3793,10 @@ test('the WeChat block logs in through the QR dialog, asks for the number on the
     await dialog.getByText('数字不对，请对照手机上的数字重新输入', { exact: true }).waitFor()
     await code.fill('2580')
     await dialog.getByTestId('settings-remote-weixin-code-submit').click()
-    await dialog.getByText('微信登录好了。下一步打开下面的「打开遥控」，再点「开始配对」，在微信的 ClawBot 对话里发配对码。', { exact: true }).waitFor()
+    // 过了手机上那串数字：扫码的人直接绑上，不用配对码（YF-5）。
+    await dialog.getByText('微信登录好了，已经绑定你这个微信。下一步打开下面的「打开遥控」。', { exact: true }).waitFor()
     await block.getByText('已登录：ClawBot decb', { exact: true }).waitFor()
+    await block.getByText(/^尾号 c0de 的账号/).waitFor()
     await dialog.getByTestId('settings-remote-weixin-close').click()
     await dialog.waitFor({ state: 'detached' })
     assert.equal(await block.getByTestId('settings-remote-weixin-login-start').innerText(), '重新扫码')

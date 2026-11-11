@@ -22,6 +22,12 @@ export const weixinIlinkDefaultOrigin = 'https://ilinkai.weixin.qq.com'
 const weixinProtocolVersion = '2.4.10'
 const weixinAppId = 'bot'
 const weixinLoginBotType = '3'
+/**
+ * 取二维码时请微信这次一定要扫码人输手机上显示的那串数字（YF-5）。照腾讯 openclaw-weixin 3.0.0-beta-0
+ * `src/auth/login-qr.ts` 的 encodeBotSpamBusinessData：JSON 按 UTF-8 再标准 base64，放在请求体的
+ * bot_spam_business_data 里；微信认不认、这次要不要数字仍以它回的状态为准。
+ */
+export const weixinVerifyPinBusinessData = Buffer.from(JSON.stringify({ verify_pin: 1 }), 'utf8').toString('base64')
 
 export const weixinTextLimit = 4000
 
@@ -285,7 +291,7 @@ export async function fetchWeixinLoginQrCode(context: WeixinIlinkContext, knownT
     method: 'POST',
     headers: commonHeaders(),
     // 带上本机已有的令牌，服务端认出是同一台已经连过的，就回 binded_redirect 而不是再签一个。
-    body: { local_token_list: knownTokens.slice(0, 1) },
+    body: { local_token_list: knownTokens.slice(0, 1), bot_spam_business_data: weixinVerifyPinBusinessData },
     timeoutMs: qrRequestTimeoutMs,
     maxResponseBytes: smallResponseBytes,
     label: '微信',
