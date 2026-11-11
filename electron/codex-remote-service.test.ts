@@ -267,6 +267,8 @@ async function setup(options: {
   progressCards?: boolean
   /** 渠道能把审批卡改成处理过的样子（像飞书，YK-8）。 */
   approvalCards?: boolean
+  /** 服务按哪个平台的路径规矩认文件夹；缺省 darwin。 */
+  platform?: NodeJS.Platform
 } = {}): Promise<Setup> {
   const root = options.root ?? tempRoot()
   const home = path.join(root, 'home')
@@ -292,7 +294,7 @@ async function setup(options: {
     fetch: vi.fn(),
     appVersion: '0.2.21',
     homeDirectory: home,
-    platform: 'darwin',
+    platform: options.platform ?? 'darwin',
     log: (_level, event, detail) => {
       logs.push(event)
       logDetails.push({ event, ...(detail ? { detail } : {}) })
@@ -1790,7 +1792,9 @@ describe('codex-remote-service folders', () => {
   })
 
   it('keeps at most five folders and still refuses a folder too broad to work in', async () => {
-    const s = await setup()
+    // These are real folders, so the guard has to use this machine's path rules: under the
+    // darwin rules a C:\ path is not absolute and the home folder would slip through.
+    const s = await setup({ platform: process.platform })
     for (const name of ['b', 'c', 'd', 'e']) await s.service.addWorkspace(folder(s, name))
     expect((await s.service.snapshot()).workspaces).toHaveLength(5)
     await expect(s.service.addWorkspace(folder(s, 'f'))).rejects.toThrow('最多加 5 个文件夹，先移除一个再添加。')
