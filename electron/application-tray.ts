@@ -47,31 +47,35 @@ export function trayKeepAwakeLabel(state: TrayKeepAwakeState): string | null {
 /**
  * 托盘上那一项更新跟着「软件知不知道有新版本」走，而不是只认 `available`：自动下载
  * 开着时 `available` 只停留几秒就进了 `downloading`，常驻托盘的人几乎看不到它。
+ *
+ * `rollback`：这一版比本机旧，是发布者撤回本机这一版后建议退回的那一版（updater.ts 的
+ * rollback）。那一项不再说「新版本」，换成设置页「建议退回」的说法（D11）。缺省 = 平时的说法。
  */
 export type TrayUpdateEntry =
-  | { kind: 'available'; version: string | null; waitingForDisk: boolean }
-  | { kind: 'downloading'; version: string | null }
+  | { kind: 'available'; version: string | null; waitingForDisk: boolean; rollback?: true }
+  | { kind: 'downloading'; version: string | null; rollback?: true }
   /** systemInstaller：装这一步交给系统安装程序（Linux），软件只关掉、不会自己重开。 */
-  | { kind: 'downloaded'; version: string | null; systemInstaller?: true }
-  | { kind: 'failed'; version: string | null }
+  | { kind: 'downloaded'; version: string | null; systemInstaller?: true; rollback?: true }
+  | { kind: 'failed'; version: string | null; rollback?: true }
 
 export function resolveTrayUpdateEntry(
-  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall' | 'installMethod'>,
+  snapshot: Pick<UpdateSnapshot, 'phase' | 'availableVersion' | 'error' | 'failedStep' | 'diskShortfall' | 'installMethod' | 'rollback'>,
 ): TrayUpdateEntry | null {
   const version = snapshot.availableVersion
+  const rollback: { rollback?: true } = snapshot.rollback === true ? { rollback: true } : {}
   switch (snapshot.phase) {
     case 'available':
-      return { kind: 'available', version, waitingForDisk: Boolean(snapshot.diskShortfall) }
+      return { kind: 'available', version, waitingForDisk: Boolean(snapshot.diskShortfall), ...rollback }
     case 'downloading':
-      return { kind: 'downloading', version }
+      return { kind: 'downloading', version, ...rollback }
     case 'downloaded':
       // 带错误的 downloaded 是安装器起过一次又失败了：updater 的安装闸已经关上，
       // 再点「重启安装」会什么都不发生，只能带他去更新页看原因。
-      if (snapshot.error) return { kind: 'failed', version }
-      return snapshot.installMethod === 'system-installer' ? { kind: 'downloaded', version, systemInstaller: true } : { kind: 'downloaded', version }
+      if (snapshot.error) return { kind: 'failed', version, ...rollback }
+      return snapshot.installMethod === 'system-installer' ? { kind: 'downloaded', version, systemInstaller: true, ...rollback } : { kind: 'downloaded', version, ...rollback }
     case 'error':
       // 只有下载失败时 availableVersion 才确定还是那个要装的版本；检查失败时它可能是上一轮留下的。
-      return snapshot.failedStep === 'download' && version ? { kind: 'failed', version } : null
+      return snapshot.failedStep === 'download' && version ? { kind: 'failed', version, ...rollback } : null
     default:
       return null
   }
@@ -87,20 +91,22 @@ function updateItem(
   if (!entry) return { label: '版本更新', click: openPage }
   const version = menuLabel(entry.version, '')
   const named = version ? `新版本 ${version} ` : '新版本'
+  // 退回旧版时说「建议退回的 X 版」（D11）；读不到版本号说不出「X 版」，照旧用平时那几句。
+  const rollback = entry.rollback && version ? version : null
   switch (entry.kind) {
     case 'available':
       return entry.waitingForDisk
-        ? { label: `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
-        : { label: `版本更新：有${named}`.trimEnd(), click: openPage }
+        ? { label: rollback ? `版本更新：建议退回的 ${rollback} 版等电脑腾出空间再下载` : `版本更新：${named}等电脑腾出空间再下载`, click: openPage }
+        : { label: rollback ? `版本更新：建议退回 ${rollback} 版` : `版本更新：有${named}`.trimEnd(), click: openPage }
     case 'downloading':
-      return { label: `版本更新：正在下载${named}`.trimEnd(), click: openPage }
+      return { label: rollback ? `版本更新：正在下载建议退回的 ${rollback} 版` : `版本更新：正在下载${named}`.trimEnd(), click: openPage }
     case 'downloaded':
       // 和更新页「确认重启安装」走同一条 install()，不另开安装路径；没接安装动作时退回更新页。
       return install
-        ? { label: `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
-        : { label: `版本更新：${named}已下载好`, click: openPage }
+        ? { label: rollback ? `${entry.systemInstaller ? '' : '重启并'}退回 ${rollback} 版` : `${entry.systemInstaller ? '安装' : '重启并安装'}${named}`.trimEnd(), click: () => run(install) }
+        : { label: rollback ? `版本更新：建议退回的 ${rollback} 版已下载好` : `版本更新：${named}已下载好`, click: openPage }
     case 'failed':
-      return { label: `版本更新：${named}没更新成功，点开看看`, click: openPage }
+      return { label: rollback ? `版本更新：退回 ${rollback} 版没成功，点开看看` : `版本更新：${named}没更新成功，点开看看`, click: openPage }
   }
 }
 
@@ -193,7 +199,7 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
 /** 托盘那一行订阅；和首页用同一个「能不能用」的判断，没有能用的订阅时 null。 */
 export function traySubscriptionLabel(self: NewApiSubscriptionSelf | null, quotaPerUnit: number, now: number): string | null {
   const subscription = resolveUsableSubscription(self, { now, quotaPerUnit })
-  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel) : null
+  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel, new Date(now)) : null
 }
 
 function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapshot {

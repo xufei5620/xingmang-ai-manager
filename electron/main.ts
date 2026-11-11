@@ -129,6 +129,7 @@ import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { migrateLegacyWindowsLoginItem } from './platform/system-service'
 import { recordStartupFailure, redactHomeDirectory } from './startup-log'
 import { syncXingmangImageMcpConfigs } from './config-files'
+import { attachNotUtf8ConfigRewriteLog } from './config-files-context'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
   buildMacosInstallLocationNotice, buildMacosMoveFailureNotice, inspectMacosInstallLocation,
@@ -1035,6 +1036,12 @@ if (!hasSingleInstanceLock) {
     // so their audit entries buffer in the bridge until it is handed over.
     attachPlatformAuditLog((level, source, event, message, detail) => {
       runtimeLog.log(level, source, event, message, detail)
+    })
+    // D78：只记日志，不提示客户。写回前就读出原文不是 UTF-8，写成以后才记，没写成的不算。
+    attachNotUtf8ConfigRewriteLog(({ file, backup }) => {
+      runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten', backup
+        ? '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，原样在备份里'
+        : '这份配置原来不是 UTF-8（多半是老记事本存的中文），写回后那几个字成了乱码，这次写回不留备份', { file, backup })
     })
     if (loginItemMigration === true) {
       runtimeLog.log('info', 'main', 'login-item.migrated', '旧版开机启动项已改成开机后留在托盘')
@@ -3205,7 +3212,8 @@ if (!hasSingleInstanceLock) {
     // 运行中没人接住的异常：不让 Electron 弹那个英文框、带着坏状态接着跑，而是记一笔、
     // 收拾好加速和聊天记录后退出，10 分钟内头一次就自动重开（见 unexpected-exit.ts）。
     // 注册了自己的 uncaughtException 监听，Electron 自带的那个弹框就不再出现。
-    const simulateUnexpectedExit = process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
+    // 模拟开关只在开发态认：它走的是真的未捕获异常那条路，打包版认了会混进崩溃上报的统计（D101）。
+    const simulateUnexpectedExit = !app.isPackaged && process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
     let unexpectedExitStarted = false
     let appWillQuit = false
     quitCleanup.add('unexpected-exit-flag', () => { appWillQuit = true })
@@ -3248,7 +3256,7 @@ if (!hasSingleInstanceLock) {
     }
     process.on('uncaughtException', onUnexpectedException)
     quitCleanup.add('unexpected-exit-handler', () => { process.off('uncaughtException', onUnexpectedException) })
-    // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
+    // 演「意外退出」用（开发态，打包版不认）：设了它启动 30 秒后主进程抛一次没人接的异常。
     // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
     if (simulateUnexpectedExit) {
       runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')

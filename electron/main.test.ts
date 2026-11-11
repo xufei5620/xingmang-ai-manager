@@ -125,6 +125,18 @@ function quitCleanupSteps() {
   return steps
 }
 
+describe('main process config rewrite log', () => {
+  // D78：配置原来不是 UTF-8、写回后成了乱码，只记运行日志。要在运行日志建好后、头一次写配置之前接上，晚了就漏记。
+  it('hands not-UTF-8 config rewrites to the runtime log before any service can write a config', () => {
+    const { sourceText } = mainSource()
+    expect(sourceText.match(/attachNotUtf8ConfigRewriteLog\(/g)).toHaveLength(1)
+    const attached = sourceText.indexOf('attachNotUtf8ConfigRewriteLog(')
+    expect(attached).toBeGreaterThan(sourceText.indexOf('new RuntimeLogStore('))
+    expect(attached).toBeLessThan(sourceText.indexOf('createSystemService('))
+    expect(sourceText.slice(attached, attached + 200)).toContain("runtimeLog.log('warn', 'config', 'config.not-utf8-rewritten'")
+  })
+})
+
 describe('main process quit cleanup', () => {
   it('hangs the whole quit cleanup on a single will-quit listener', () => {
     const { sourceText } = mainSource()
@@ -338,6 +350,26 @@ describe('main process quit cleanup', () => {
     expect(all.match(/(?<![\w.])acceleration\?\.dispose\(\)/g)).toHaveLength(1)
     expect(all.match(/accelerationHosts\.dispose\(\)/g)).toHaveLength(1)
     expect(all).not.toMatch(/developmentAcceleration\?\.dispose\(\)/)
+  })
+})
+
+describe('main process unexpected exit', () => {
+  it('only honours the simulated main process crash in development builds', () => {
+    // 模拟开关走的是真的未捕获异常那条路，打包版认了，真机演示就混进崩溃上报的统计（D101）。
+    const sourceText = readMainWiringSource()
+    expect(sourceText.match(/process\.env\.XINGMANG_SIMULATE_MAIN_CRASH/g)).toHaveLength(1)
+    const { source } = mainSource()
+    const initializers: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'simulateUnexpectedExit' && node.initializer) {
+        initializers.push(node.initializer.getText(source))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(initializers).toEqual(["!app.isPackaged && process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'"])
+    // 开发态设了开关照样重开，不打包也能演一遍「重开一次、第二次不再重开」。
+    expect(source.getText()).toContain('allowRelaunch: app.isPackaged || simulateUnexpectedExit,')
   })
 })
 

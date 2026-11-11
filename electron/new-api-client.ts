@@ -86,6 +86,7 @@ const pricingPath = '/api/pricing'
 // fields and descriptions; a few hundred models stay far below this.
 const maximumPricingResponseBytes = 4 * 1024 * 1024
 const maximumPricingModels = 2_000
+const maximumPricingGroups = 64
 const topupInfoPath = '/api/user/topup/info'
 const topupAmountPath = '/api/user/amount'
 const topupPaymentPath = '/api/user/pay'
@@ -2397,6 +2398,16 @@ export interface NewApiModelPrice {
   modelPrice: number
   /** Billed by an expression or a billing plugin, so modelPrice is not what a call costs. */
   expressionPriced: boolean
+  /** Token-priced models: input price as a ratio (1 = US$2 per million tokens at group ratio 1). Left out when the entry had none. */
+  modelRatio?: number
+  /** Output tokens cost this many times the input price. */
+  completionRatio?: number
+  /** The groups that enable the model (`all` means every usable group), as the site lists them. */
+  groups?: string[]
+}
+
+function nonNegativeNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 export interface NewApiModelPricing {
@@ -2424,7 +2435,19 @@ export function parseModelPricing(data: unknown, payload: unknown): NewApiModelP
     const expressionPriced = (typeof entry.billing_expr === 'string' && entry.billing_expr.trim() !== '')
       || (typeof entry.billing_mode === 'string' && entry.billing_mode.trim() !== '')
       || (Array.isArray(entry.billing_plugin_variants) && entry.billing_plugin_variants.length > 0)
-    models.push({ model, quotaType: entry.quota_type, modelPrice: entry.model_price, expressionPriced })
+    const modelRatio = nonNegativeNumber(entry.model_ratio)
+    const completionRatio = nonNegativeNumber(entry.completion_ratio)
+    const groups = Array.isArray(entry.enable_groups)
+      ? [...new Set(entry.enable_groups.slice(0, maximumPricingGroups).flatMap((group) => (
+        typeof group === 'string' && group.trim() && group.length <= 128 && !/[\x00-\x1F\x7F]/.test(group) ? [group.trim()] : []
+      )))]
+      : undefined
+    models.push({
+      model, quotaType: entry.quota_type, modelPrice: entry.model_price, expressionPriced,
+      ...(modelRatio === undefined ? {} : { modelRatio }),
+      ...(completionRatio === undefined ? {} : { completionRatio }),
+      ...(groups ? { groups } : {}),
+    })
   }
   const groupRatios: Record<string, number> = {}
   const rawRatios = isRecord(payload) && isRecord(payload.group_ratio) ? payload.group_ratio : {}
@@ -2904,6 +2927,7 @@ const newApiCapabilities: RelayBackendCapabilities = {
   supportsDashboard: true,
   supportsDashboardTrends: true,
   supportsTasks: true,
+  supportsPriceList: true,
   supportsProfileUpdate: true,
   supportsSessionManagement: true,
   supportsAutoKeyProvision: true,

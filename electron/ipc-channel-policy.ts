@@ -70,6 +70,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:switch-to-official-account': { log: 'normal', account: 'scoped' },
   'config:switch-account-source': { log: 'normal', account: 'scoped' },
   'config:repair-cli-hooks': { log: 'normal', account: 'scoped' },
+  'config:set-claude-write-boundary': { label: '只让 Claude Code 改项目文件夹里的文件', log: 'normal', account: 'scoped' },
   'tools:inspect-running': { label: '换账号后检查哪些工具还开着', log: 'normal', account: 'none' },
   'tools:check-models': { label: '打开工具前核对当前账号能用的模型', log: 'normal', account: 'scoped' },
   'tools:cli-model-hints': { label: '读取服务状态文件里的型号表', log: 'normal', account: 'none' },
@@ -171,6 +172,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'extensions:mutate': { label: 'AI 工具扩展操作', log: 'normal', account: 'none' },
   'extensions:ensure-marketplace': { label: '官方插件市场添加', log: 'normal', account: 'none' },
   'extensions:check-mcp-health': { label: 'MCP 连接状态检测', log: 'normal', account: 'none' },
+  'extensions:copy-mcp': { label: '把外接工具也装到别的工具', log: 'normal', account: 'none' },
   // Frequent read-style checks stay quiet, while managed CLI configuration
   // handles secrets internally and account:reveal-key deliberately returns a
   // short-lived plaintext secret to the renderer. Logging any of those
@@ -244,6 +246,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // logs differently from its siblings.
   'account:list-keys': { label: '星芒账号 Key 列表读取', log: 'quiet-success', account: 'scoped' },
   'account:list-groups': { label: '星芒账号可用分组读取', log: 'quiet-success', account: 'scoped' },
+  'account:get-price-list': { label: '星芒账号价格表读取', log: 'quiet-success', account: 'scoped' },
   'account:revoke-key': { label: '星芒账号 Key 撤销', log: 'normal', account: 'scoped' },
   'account:copy-key': { label: '星芒账号 Key 复制', log: 'quiet-success', account: 'scoped' },
   // The input is the plaintext password the reset just produced.
