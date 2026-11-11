@@ -10,8 +10,10 @@ import { assertNoReparseComponents, readSafeUtf8FileSync } from './safe-local-da
  * Claude Code 的 VS Code 插件（Cursor 装的是同一个）一打开先是一屏「登录 Anthropic 账号」，接星芒的客户
  * 没有那种账号。官方文档《在 VS Code 中使用 Claude Code》「使用第三方提供商」第一步就是勾「禁用登录提示」，
  * 也就是编辑器用户设置里的 claudeCode.disableLoginPrompt；连上哪个服务、用哪把 Key 照旧读 ~/.claude/settings.json，
- * 跟命令行同一份。插件也不用客户自己去装：在 VS Code、Cursor 的终端里跑一次 Claude Code，它就自己装上
- * （autoInstallIdeExtension 默认开，2.1.310 安装包里核过），所以星芒写 Claude Code 配置时顺手在编辑器里补上这一项。
+ * 跟命令行同一份。插件要客户自己装：2.1.318 起 Claude Code 在编辑器终端里启动时不再自己装、自己更新插件
+ * （更新说明原文，2.1.319 安装包里核过；以前 autoInstallIdeExtension 默认开会自己装上），要在编辑器的插件市场里装，
+ * 或在外面的终端里用 /ide。教程「在 VS Code 或 Cursor 里用 Claude Code」教客户怎么装。不管插件哪天装上，
+ * 星芒写 Claude Code 配置时都顺手在编辑器里补上这一项。
  *
  * 只补这一项：键不在才补，客户写过的（哪怕是 false）一个字不动；设置文件带注释、末尾逗号，原样只插这一行，读回来
  * 必须恰好只多了这一个键，对不上就不写；编辑器从没打开过（用户设置那层目录都没有）就不建。

@@ -179,7 +179,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Codex、Grok 的回复语言 | `~/.codex/AGENTS.md`、`~/.grok/AGENTS.md`（两家的全局说明，拼在项目说明前面交给模型） | 没有（跟着项目说明和对话语言走） | 一份写着「始终用简体中文回复」的 `AGENTS.md`（配置目录里已有任何一份全局说明就不放：Codex 的 `AGENTS.override.md` / `AGENTS.md`，Grok 认的 `AGENTS.md` / `AGENT.md` / `CLAUDE.md` / `CLAUDE.local.md`，大小写不论、链接也算；切回官方不收回） | 同上，两家又没有 `language` 这样的设置 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |
-| VS Code、Cursor 里 Claude Code 插件的登录页 | 编辑器用户设置（`Code/User/settings.json`、`Cursor/User/settings.json`）的 `claudeCode.disableLoginPrompt` | `false`（一打开先要登录 Anthropic 账号） | `true`（编辑器打开过才补，客户写过的不动；切回官方不收回，认不出是不是我们补的） | 官方文档「使用第三方提供商」第一步；在编辑器终端里跑一次 Claude Code 插件就自己装上，客户没有那种账号 |
+| VS Code、Cursor 里 Claude Code 插件的登录页 | 编辑器用户设置（`Code/User/settings.json`、`Cursor/User/settings.json`）的 `claudeCode.disableLoginPrompt` | `false`（一打开先要登录 Anthropic 账号） | `true`（编辑器打开过才补，客户写过的不动；切回官方不收回，认不出是不是我们补的） | 官方文档「使用第三方提供商」第一步，客户没有那种账号。插件 2.1.318 起不再在编辑器终端里自己装（要去插件市场装或用 `/ide`），教程「在 VS Code 或 Cursor 里用 Claude Code」教怎么装 |
 | Claude 的状态行 | `statusLine` | 未设（终端里没有状态行） | 指向随包脚本的一条命令 | 用户按 token 付费，却看不到在用哪个模型、上下文吃到几成 |
 | Gemini 后台功能用的型号 | `modelConfigs.customOverrides` | 联网搜索、读网页、压缩、子代理、会话摘要、Auto 各自写死 Google 官方型号名 | 这批官方型号名统一改写成当前配的中转型号（只在星芒来源下写，切回官方删掉） | 中转没有这些型号时，这些功能默默重试几分钟后失败 |
 | Grok 画图与视频工具的地址 | `~/.grok/config.toml` 的 `[endpoints] xai_api_base_url` | `https://api.x.ai/v1` | 与对话同一个中转地址 | 这几个工具带的是同一把 `api_key`，不改就把中转 Key 发给 xAI 官方，国内还要卡 120 秒 |
