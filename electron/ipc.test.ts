@@ -7747,6 +7747,31 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(paymentWindow.destroy).not.toHaveBeenCalled()
     })
 
+    it('opens the invoice window for the signed-in account only, never for a site or account the renderer names', async () => {
+      const accountService = accountServiceStub()
+      const invoicePortalWindow = { open: vi.fn(async () => undefined) }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { invoicePortalWindow })
+      const openInvoicePortal = electronMocks.handlers.get('account:open-invoice-portal')!
+
+      await expect(openInvoicePortal(trustedEvent())).rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
+      expect(invoicePortalWindow.open).not.toHaveBeenCalled()
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
+      accountService.getActiveSiteId = vi.fn(() => 'solov-api' as const)
+      // Anything the renderer passes is ignored: the main process picks the portal and the login.
+      await expect(openInvoicePortal(trustedEvent(), { siteId: 'solov', userId: 1 })).resolves.toBeUndefined()
+      expect(invoicePortalWindow.open).toHaveBeenCalledWith({ siteId: 'solov-api', userId: 42 })
+    })
+
+    it('says the approved line when this host has no invoice window', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:open-invoice-portal')!(trustedEvent()))
+        .rejects.toThrow('没能打开开票中心，请稍后再试；还不行请找客服。')
+    })
+
     it('validates the backend payment form before opening the window or returning its trade number', async () => {
       const accountService = accountServiceStub()
       const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)

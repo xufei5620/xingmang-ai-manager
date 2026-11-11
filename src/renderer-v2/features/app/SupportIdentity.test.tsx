@@ -90,13 +90,22 @@ describe('SupportIdentity', () => {
     expect(text).toContain('[REDACTED]')
   })
 
+  it('names the day when the last failure was not today', () => {
+    // D60：软件常年开着，昨天那次只写钟点看着像今天。
+    const at = new Date(2026, 8, 29, 14, 37)
+    const failure = { at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '工具正在运行' }
+    expect(buildLastFailureLine(failure, new Date(2026, 8, 30, 9, 0).getTime())).toBe('最近一次出错：昨天 14:37 打开 Codex 桌面端：工具正在运行')
+    expect(buildLastFailureLine(failure, new Date(2026, 9, 3, 9, 0).getTime())).toBe('最近一次出错：9月29日 14:37 打开 Codex 桌面端：工具正在运行')
+  })
+
   it('writes the last failure line for the help dialog and renders it under the identity', () => {
     const at = new Date(2026, 8, 29, 14, 37)
-    expect(buildLastFailureLine({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '工具正在运行' }))
+    const sameDay = new Date(2026, 8, 29, 18, 0).getTime()
+    expect(buildLastFailureLine({ at, action: '打开 Codex 桌面端', message: '打开 Codex 桌面端没有完成', reason: '工具正在运行' }, sameDay))
       .toBe('最近一次出错：14:37 打开 Codex 桌面端：工具正在运行')
-    expect(buildLastFailureLine({ at, action: '保存', message: '保存没有完成', detail: 'spawn ENOSYS' }))
+    expect(buildLastFailureLine({ at, action: '保存', message: '保存没有完成', detail: 'spawn ENOSYS' }, sameDay))
       .toBe('最近一次出错：14:37 保存：spawn ENOSYS')
-    expect(buildLastFailureLine({ at, message: '操作没有完成' })).toBe('最近一次出错：14:37 操作没有完成')
+    expect(buildLastFailureLine({ at, message: '操作没有完成' }, sameDay)).toBe('最近一次出错：14:37 操作没有完成')
     const markup = renderToStaticMarkup(<SupportIdentity line="未登录" lastFailure="最近一次出错：14:37 保存" onCopy={() => undefined} />)
     expect(markup).toContain('support-last-failure')
     expect(renderToStaticMarkup(<SupportIdentity line="未登录" onCopy={() => undefined} />)).not.toContain('support-last-failure')

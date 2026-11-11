@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { formatTimelineDate, splitTimelineContent, timelineEntries, timelineFreshWindowMs, timelineMigrationReadIds, withMarkdownLineBreaks, announcementAttentionKeys, announcementNotificationKey, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
+import { formatTimelineDate, formatTimelineListDate, splitTimelineContent, timelineEntries, timelineFreshWindowMs, timelineMigrationReadIds, withMarkdownLineBreaks, announcementAttentionKeys, announcementNotificationKey, readNotifiedAnnouncementKeys, readSeenAnnouncementKeys, rememberNotifiedAnnouncementKeys, rememberSeenAnnouncementKeys, sameAnnouncementSnapshot } from './newapi-announcements'
 
 describe('announcement attention keys', () => {
   it('asks for attention only for unread entries or an unread single notice', () => {
@@ -98,11 +98,29 @@ describe('announcement timeline entries', () => {
   })
 
   it('shows the publish time as a date and how long ago', () => {
-    const now = Date.parse('2026-09-12T12:00:00Z')
-    expect(formatTimelineDate('2026-09-09T12:00:00Z', now)).toMatch(/^2026-09-09 \d\d:00 · 3 天前$/)
-    expect(formatTimelineDate('2026-09-12T11:30:00Z', now)).toMatch(/ · 30 分钟前$/)
-    expect(formatTimelineDate('2026-09-12T12:00:00Z', now)).toMatch(/ · 刚刚$/)
+    // 本机时区：用本地时间造日期，哪个时区跑都是同一句。
+    const now = new Date(2026, 8, 12, 12, 0).getTime()
+    expect(formatTimelineDate(new Date(2026, 8, 9, 20, 0).toISOString(), now)).toBe('9月9日 20:00 · 2 天前')
+    expect(formatTimelineDate(new Date(2026, 8, 9, 12, 0).toISOString(), now)).toBe('9月9日 12:00 · 3 天前')
+    expect(formatTimelineDate(new Date(2026, 8, 12, 11, 30).toISOString(), now)).toBe('今天 11:30 · 30 分钟前')
+    expect(formatTimelineDate(new Date(2026, 8, 11, 22, 0).toISOString(), now)).toBe('昨天 22:00 · 14 小时前')
+    expect(formatTimelineDate(new Date(2026, 8, 12, 12, 0).toISOString(), now)).toBe('今天 12:00 · 刚刚')
     expect(formatTimelineDate('not a date', now)).toBe('')
+  })
+
+  it('writes only the date for entries 30 days old or more, never "12 months ago"', () => {
+    // D60：以前按 30 天一个月折算，360～364 天会写「12 个月前」。
+    const now = new Date(2026, 10, 20, 18, 0).getTime()
+    expect(formatTimelineDate(new Date(2025, 10, 20, 18, 0).toISOString(), now)).toBe('2025年11月20日 18:00')
+    expect(formatTimelineDate(new Date(2025, 10, 22, 18, 0).toISOString(), now)).toBe('2025年11月22日 18:00')
+    // 边界按经过的时长算，不按日历：夏令时那一小时不影响。
+    expect(formatTimelineDate(new Date(now - 30 * 86_400_000).toISOString(), now)).not.toContain(' · ')
+    expect(formatTimelineDate(new Date(now - 30 * 86_400_000 + 60_000).toISOString(), now)).toMatch(/^\d+月\d+日 \d\d:\d\d · 29 天前$/)
+  })
+
+  it('keeps the short list date as month and day', () => {
+    expect(formatTimelineListDate(new Date(2026, 8, 9, 20, 0).toISOString())).toBe('09-09')
+    expect(formatTimelineListDate('not a date')).toBe('')
   })
 
   it('marks moved-over and week-old entries read the first time an account sees the timeline', () => {

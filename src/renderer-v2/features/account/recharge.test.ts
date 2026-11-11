@@ -3,6 +3,8 @@ import type { AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
 import {
   balancePurchaseLine,
   billingPreferenceNote,
+  invoicePortalOpenedText,
+  invoicePortalOpenFailed,
   isSubscriptionTradeNo,
   orderPaidText,
   ordersSearchEmpty,
@@ -22,6 +24,7 @@ import {
   topupGift,
 } from './recharge'
 import { creditedMoney } from './topup-tier'
+import { presentOperationFailure } from '../../operation-error'
 
 type Subscription = AccountSubscriptionSelf['allSubscriptions'][number]
 
@@ -223,6 +226,18 @@ describe('recharge', () => {
     expect(paymentTerminalPresentation('closed', false, 'subscription').body).toBe('关闭支付窗口不会取消订单。付过款的话，付款成功后订阅会自动开通，也可以点「查看我的订单」核对。')
     expect(paymentTerminalPresentation('closed', true).body).toBe('如果已经付过款，不用做什么：星芒还在确认到账，到了会自动更新余额。还没付的话，这笔订单放着就行，不会扣钱。')
     expect(paymentTerminalPresentation('unconfirmed', false, 'subscription').title).toBe('还没查到这笔订单到账')
+  })
+
+  it('tells each account which name to log in to the invoice portal with', () => {
+    expect(invoicePortalOpenedText(false)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的用户名和密码。')
+    expect(invoicePortalOpenedText(true)).toBe('开票中心已在新窗口打开；要登录的话，用这个账号的邮箱和密码。')
+  })
+
+  it('shows the invoice portal failure as approved instead of a catalogued rewrite', () => {
+    expect(invoicePortalOpenFailed).toBe('没能打开开票中心，请稍后再试；还不行请找客服。')
+    // The page-top notice swaps a message the catalogue recognises for its
+    // own title; this one must reach the customer word for word.
+    expect(presentOperationFailure({ message: invoicePortalOpenFailed })).toBeNull()
   })
 
   it('names the bought plan when a paid subscription opens', () => {
