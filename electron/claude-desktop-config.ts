@@ -208,7 +208,7 @@ function parseOwner(content: string | null, profileDirectory: string): OwnedProf
   const marker = parseObject(content)
   if (marker.version !== 1 || marker.profileDirectory !== pathIdentity(profileDirectory)
     || typeof marker.id !== 'string' || !uuidPattern.test(marker.id)) {
-    throw new Error(`${label}工具箱配置归属记录无效`)
+    throw new Error(`${label}的星芒归属记录无效`)
   }
   return marker as unknown as OwnedProfile
 }

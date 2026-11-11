@@ -408,7 +408,8 @@ export interface QuitInstallPrompt {
  * 密码框同理（`platform` 缺省 = 不说那句，旧行为）。
  *
  * `rollback`：要装的是更旧的一版（quit-blocking-tasks.ts 的 InstallableUpdateOnQuit），问的那句
- * 换成「建议退回」，跟设置页的说法一致（D11）。没有版本号时说不出「X 版」，照旧。
+ * 换成「建议退回」，跟设置页的说法一致（D11）。没有版本号时说不出「X 版」，照旧。下面那行小字
+ * 不提「新版本」，平时和退回都用同一句。
  */
 export function quitInstallPrompt(version: string | null, installMethod: UpdateInstallMethod | null | undefined, platform?: NodeJS.Platform, rollback = false): QuitInstallPrompt {
   const rollbackVersion = rollback ? version : null
@@ -425,16 +426,22 @@ export function quitInstallPrompt(version: string | null, installMethod: UpdateI
     message: rollbackVersion
       ? `建议退回的 ${rollbackVersion} 版已经下好，顺手装上吗？`
       : version ? `新版本 ${version} 已经下载好，顺手装上吗？` : '新版本已经下载好，顺手装上吗？',
-    detail: `安装很快，装完会自动打开新版本。${platform === 'darwin' ? macKeychainUpdateHint : ''}现在不装也行，更新会一直留着，下次退出时再问你。`,
+    detail: `安装很快，装完会自动打开。${platform === 'darwin' ? macKeychainUpdateHint : ''}现在不装也行，更新会一直留着，下次退出时再问你。`,
     buttons: ['安装并退出', '先退出，下次再装'],
   }
 }
 
-/** 上次自动装没装上时，提示气泡和更新页上的那句话。 */
-export function previousAutoInstallFailureMessage(platform: NodeJS.Platform): string {
+/**
+ * 上次自动装没装上时，提示气泡和更新页上的那句话。
+ *
+ * `rollbackVersion`：没装上的那一版比本机旧、是发布者建议退回的那一版时传它的版本号，开头换成
+ * 「建议退回的 X 版」，跟同一页上那句的说法一致（D11）。缺省或 null = 平时的说法。
+ */
+export function previousAutoInstallFailureMessage(platform: NodeJS.Platform, rollbackVersion?: string | null): string {
+  const subject = rollbackVersion ? `建议退回的 ${rollbackVersion} 版` : '新版本'
   return platform === 'win32'
-    ? '新版本上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。'
-    : '新版本上次没装上，安装程序没起来。点「重新安装」再试一次。'
+    ? `${subject}上次没装上：Windows 的授权窗口被关掉了，或者安装程序没起来。点「重新安装」再试一次，授权窗口弹出来时点「是」。`
+    : `${subject}上次没装上，安装程序没起来。点「重新安装」再试一次。`
 }
 
 export interface PendingUpdateStore {
