@@ -54,6 +54,14 @@ describe('codex-remote-store', () => {
     }
   })
 
+  it('reads back only an offered idle-close duration, anything else meaning never', () => {
+    expect(parseCodexRemoteSettings({ version: 1, idleCloseHours: 4 }).idleCloseHours).toBe(4)
+    expect(parseCodexRemoteSettings({ version: 1, idleCloseHours: 12 }).idleCloseHours).toBe(12)
+    for (const value of [0, 1, 24, '4', null, Number.NaN]) {
+      expect(parseCodexRemoteSettings({ version: 1, idleCloseHours: value })).not.toHaveProperty('idleCloseHours')
+    }
+  })
+
   it('reads the launch switch as on only when it was stored as true', () => {
     expect(parseCodexRemoteSettings({ version: 1, autoStart: true }).autoStart).toBe(true)
     for (const value of [false, 'true', 1, null, undefined]) {

@@ -20,6 +20,18 @@ export function isRemoteChannelId(value: unknown): value is RemoteChannelId {
   return typeof value === 'string' && (remoteChannelIds as readonly string[]).includes(value)
 }
 
+/**
+ * 「多久没消息就自动关」能选的时长，单位小时（YF-10，yoyo 2026-11-11 亲手打字「不自动关」「默认不关」）。
+ * 不在这里面就是「不自动关」，也是缺省：设置里不存、快照里不带。
+ */
+export const remoteIdleCloseHours = [4, 12] as const
+
+export type RemoteIdleCloseHours = typeof remoteIdleCloseHours[number]
+
+export function isRemoteIdleCloseHours(value: unknown): value is RemoteIdleCloseHours {
+  return typeof value === 'number' && (remoteIdleCloseHours as readonly number[]).includes(value)
+}
+
 /** 平台给的发送人。userId 是平台里稳定的那个编号（飞书 open_id、微信 iLink 的用户编号）。 */
 export interface RemotePeer {
   channel: RemoteChannelId
@@ -228,6 +240,8 @@ export interface CodexRemoteSnapshot {
   pendingApprovals: number
   /** 「打开星芒时自动打开遥控」开着（YF-9）；缺省 = 关。 */
   autoStart?: boolean
+  /** 「多久没消息就自动关」选的小时数（YF-10）；缺省 = 不自动关。 */
+  idleCloseHours?: RemoteIdleCloseHours
   /**
    * 手机上最近一条因为电脑上的 Codex 起不来没做（YK-5），卡片上摆一条黄条。
    * 下次 Codex 起来了、或者遥控全关了就不带；缺省 = 没有这回事。

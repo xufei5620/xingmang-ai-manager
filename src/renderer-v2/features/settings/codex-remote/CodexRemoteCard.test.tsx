@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import type { CodexRemoteChannelSnapshot, CodexRemoteSnapshot } from '../../../../../electron/ipc-contract'
 import type { V2Bridge } from '../../../types'
-import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText } from './CodexRemoteCard'
+import { CodexRemoteCard, CodexRemotePanel, codexRemoteAutoStartText, codexRemoteConfirmText, codexRemoteIdleCloseText } from './CodexRemoteCard'
 import { remoteChannelSections } from './channel-sections'
 
 function channel(patch: Partial<CodexRemoteChannelSnapshot> = {}): CodexRemoteChannelSnapshot {
@@ -238,6 +238,22 @@ describe('codex remote card', () => {
     expect(row).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="false"[^>]*aria-label="打开星芒时自动打开遥控"/)
     expect(render(snapshot({ autoStart: true }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*aria-checked="true"/)
     expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/data-testid="settings-remote-auto-start-switch"><button[^>]*disabled=""/)
+  })
+
+  // YF-10：「多久没消息就自动关」三选一，缺省「不自动关」并写明还有哪几种办法关；选了时长不写小字。
+  it('offers four hours, twelve hours or never for the idle close, never by default with how else it closes', () => {
+    expect(codexRemoteIdleCloseText).toEqual({ title: '多久没消息就自动关', never: '不自动关', neverHint: '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。' })
+    const never = render(snapshot())
+    const row = never.slice(never.indexOf('data-testid="settings-remote-idle-close"'))
+    expect(never.indexOf('data-testid="settings-remote-idle-close"')).toBeGreaterThan(never.indexOf('data-testid="settings-remote-auto-start"'))
+    expect(row).toContain('<strong>多久没消息就自动关</strong>')
+    expect(row).toContain('只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。')
+    expect(row).toMatch(/role="group" aria-label="多久没消息就自动关" data-testid="settings-remote-idle-close-choice">/)
+    expect([...row.matchAll(/aria-pressed="(true|false)"[^>]*>([^<]+)<\/button>/g)].map((match) => [match[2], match[1]])).toEqual([['4 小时', 'false'], ['12 小时', 'false'], ['不自动关', 'true']])
+    const twelve = render(snapshot({ idleCloseHours: 12 }))
+    expect(twelve).not.toContain('只有你在电脑上、托盘里关')
+    expect(twelve).toMatch(/aria-pressed="true"[^>]*>12 小时<\/button>/)
+    expect(render(snapshot({ available: false, unavailableReason: '星芒正以管理员身份运行。' }))).toMatch(/<button[^>]*disabled=""[^>]*aria-pressed="true"[^>]*>不自动关<\/button>/)
   })
 
   it('warns when the credentials only last until the manager closes', () => {

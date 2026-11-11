@@ -3873,6 +3873,30 @@ test('the phone remote card lets the customer turn on opening the remote wheneve
   }
 })
 
+// YF-10：「多久没消息就自动关」缺省「不自动关」带小字；选 12 小时小字收起、「打开遥控」那行说明带上 12 小时，再选回不自动关又出来。
+test('the phone remote card picks how long it may idle before closing, never by default', async () => {
+  const page = await fixture('page=settings&remoteReady=1')
+  try {
+    await page.getByRole('tab', { name: '工具管理', exact: true }).click()
+    const card = page.getByTestId('settings-remote-card')
+    const row = card.getByTestId('settings-remote-idle-close')
+    const neverHint = '只有你在电脑上、托盘里关，或者手机上发「关闭遥控」才会关。'
+    await row.getByText(neverHint, { exact: true }).waitFor()
+    const choice = row.getByRole('group', { name: '多久没消息就自动关', exact: true })
+    assert.equal(await choice.getByRole('button', { name: '不自动关', exact: true }).getAttribute('aria-pressed'), 'true')
+    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次。', { exact: true }).waitFor()
+    await choice.getByRole('button', { name: '12 小时', exact: true }).click()
+    await row.getByText(neverHint, { exact: true }).waitFor({ state: 'detached' })
+    assert.equal(await choice.getByRole('button', { name: '12 小时', exact: true }).getAttribute('aria-pressed'), 'true')
+    await card.getByText('开着时电脑不会自己睡着，合上笔记本盖子还是会睡。窗口缩到托盘也照样开着，退出星芒才断开，下次打开星芒要再打开一次；闲着 12 小时也会自动断开。', { exact: true }).waitFor()
+    await choice.getByRole('button', { name: '不自动关', exact: true }).click()
+    await row.getByText(neverHint, { exact: true }).waitFor()
+    assert.deepEqual((await callsNamed(page, 'remote-idle-close')).map((call) => call.args), [12, null])
+  } finally {
+    await page.close()
+  }
+})
+
 test('the phone remote card says why it cannot be turned on while the manager runs as administrator', async () => {
   const page = await fixture('page=settings&remoteElevated=1&remoteReady=1')
   try {

@@ -25,6 +25,7 @@ import {
   type RemoteInboundText,
   type RemoteInboundUnsupported,
   type RemoteOutbound,
+  type RemoteIdleCloseHours,
   type RemotePeer,
 } from './codex-remote-channel'
 import { emptyChannelSettings, type CodexRemoteStore } from './codex-remote-store'
@@ -36,6 +37,7 @@ import {
   classifyRemoteTurnFailure,
   formatApprovalText,
   formatFileChangeLine,
+  idleClosedMessage,
   normalizePairingAttempt,
   parseRemoteCommand,
   redactRemoteText,
@@ -93,7 +95,7 @@ const approvalTimeoutMs = approvalTimeoutMinutes * 60_000
 /** 等你同意的还剩这么久就提醒一次（YF-20）：人在路上没看到，到点自动拒绝，这一轮多半就做不下去了。 */
 const approvalReminderMinutesLeft = 3
 const approvalReminderMs = approvalTimeoutMs - approvalReminderMinutesLeft * 60_000
-const idleTimeoutMs = 4 * 60 * 60_000
+const hourMs = 60 * 60_000
 const idleRecheckMs = 30 * 60_000
 /** 闲着自动关之前这么久先提醒手机一次（D66 / YKS-19），回什么都会重新起算。 */
 const idleWarningMs = 10 * 60_000
@@ -708,6 +710,12 @@ export class CodexRemoteService {
    * 下次 Codex 起来了、或者遥控全关了就清掉。
    */
   private codexStartFailed = false
+  /**
+   * 「多久没消息就自动关」（YF-10）：null = 不自动关，也是缺省。设置在盘上，这里留一份给同步的 touch 用：
+   * 头一回连渠道前从盘上读，之后只有 setIdleClose 改它（盘上那份也只有它写），免得读到一半被改、拿旧值盖掉新值。
+   */
+  private idleCloseHours: RemoteIdleCloseHours | null = null
+  private idleCloseLoaded = false
   /** 已经叫停、还没真退出的几份 Codex（retireClient）：装、卸 Codex 前也要等它们放开文件。 */
   private readonly retiringClients = new Set<CodexAppServerClient>()
   private secrets: readonly string[] = []
@@ -836,6 +844,7 @@ export class CodexRemoteService {
       task,
       pendingApprovals,
       ...(settings.autoStart ? { autoStart: true } : {}),
+      ...(settings.idleCloseHours ? { idleCloseHours: settings.idleCloseHours } : {}),
       ...(this.codexStartFailed ? { codexStartFailed: true } : {}),
       channels: channels as Record<RemoteChannelId, CodexRemoteChannelSnapshot>,
     }
@@ -938,6 +947,24 @@ export class CodexRemoteService {
       else delete settings.autoStart
     })
     this.options.log('info', 'remote.auto-start-set', { enabled })
+    return this.emit()
+  }
+
+  /**
+   * 设置里「多久没消息就自动关」（YF-10）：null = 不自动关。开着的渠道当场按新的时长从现在重新起算，
+   * 换成不自动关就把计时和「10 分钟后自动关闭」那句提醒一起撤掉。
+   */
+  async setIdleClose(hours: RemoteIdleCloseHours | null): Promise<CodexRemoteSnapshot> {
+    await this.options.store.updateSettings((settings) => {
+      if (hours === null) delete settings.idleCloseHours
+      else settings.idleCloseHours = hours
+    })
+    this.idleCloseHours = hours
+    this.idleCloseLoaded = true
+    for (const runtime of Object.values(this.runtimes)) {
+      if (runtime.enabled) this.touch(runtime)
+    }
+    this.options.log('info', 'remote.idle-close-set', { hours: hours ?? 0 })
     return this.emit()
   }
 
@@ -1165,8 +1192,9 @@ export class CodexRemoteService {
     runtime.status = { state: 'connecting' }
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
     runtime.adapter = adapter
+    await this.loadIdleClose()
     await this.refreshSecrets(true)
-    // 读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
+    // 读设置、读密钥这一下里渠道被关掉了（或者又开了一次、换上了新的一份）：这一份还没连，就别连了，连上就没人停它。
     if (runtime.adapter !== adapter) return null
     this.touch(runtime)
     this.options.log('info', 'remote.channel-started', { channel: runtime.id })
@@ -1336,8 +1364,25 @@ export class CodexRemoteService {
     turn.stallTimer.unref?.()
   }
 
-  /** 从现在起再闲 delayMs 就自动关；关之前 10 分钟先提醒手机一次（D66 / YKS-19），手机上回什么都会走到这里重新起算。 */
-  private touch(runtime: ChannelRuntime, delayMs = idleTimeoutMs): void {
+  private async loadIdleClose(): Promise<void> {
+    if (this.idleCloseLoaded) return
+    const hours = (await this.options.store.readSettings()).idleCloseHours ?? null
+    if (this.idleCloseLoaded) return
+    this.idleCloseHours = hours
+    this.idleCloseLoaded = true
+  }
+
+  /**
+   * 从现在起再闲 delayMs（缺省是设置里选的时长）就自动关；关之前 10 分钟先提醒手机一次（D66 / YKS-19），
+   * 手机上回什么都会走到这里重新起算。选了「不自动关」（YF-10）就只撤掉手上的计时。
+   */
+  private touch(runtime: ChannelRuntime, delayMs?: number): void {
+    if (this.idleCloseHours === null) {
+      if (runtime.idleTimer) clearTimeout(runtime.idleTimer)
+      runtime.idleTimer = null
+      return
+    }
+    delayMs ??= this.idleCloseHours * hourMs
     if (delayMs > idleWarningMs) this.scheduleIdle(runtime, delayMs - idleWarningMs, () => this.warnIdleClose(runtime))
     else this.scheduleIdle(runtime, delayMs, () => this.closeIdle(runtime))
   }
@@ -1367,8 +1412,10 @@ export class CodexRemoteService {
   }
 
   private closeIdle(runtime: ChannelRuntime): void {
-    this.options.log('info', 'remote.idle-closed', { channel: runtime.id })
-    void this.disableChannel(runtime, remoteMessages.idleClosed).then(() => this.emit()).catch(() => undefined)
+    const hours = this.idleCloseHours
+    if (hours === null) return
+    this.options.log('info', 'remote.idle-closed', { channel: runtime.id, hours })
+    void this.disableChannel(runtime, idleClosedMessage(hours)).then(() => this.emit()).catch(() => undefined)
   }
 
   private async refreshSecrets(force = false): Promise<void> {

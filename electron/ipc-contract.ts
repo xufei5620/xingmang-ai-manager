@@ -21,7 +21,7 @@ import type {
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
 export type { StorageCleanResult, StorageCleanTarget, StorageUsagePart, StorageUsagePartReport } from './storage-usage'
-import type { CodexRemoteSnapshot, RemoteChannelId } from './codex-remote-channel'
+import type { CodexRemoteSnapshot, RemoteChannelId, RemoteIdleCloseHours } from './codex-remote-channel'
 export type {
   CodexRemoteBoundPeerSnapshot,
   CodexRemoteChannelSnapshot,
@@ -31,6 +31,7 @@ export type {
   RemoteChannelId,
   RemoteChannelState,
   RemoteChannelStatus,
+  RemoteIdleCloseHours,
 } from './codex-remote-channel'
 import type { CliLaunchMode as MainCliLaunchMode } from './tool-installation'
 import type {
@@ -1476,6 +1477,8 @@ export interface XingmangInvokeContract {
   reconnectCodexRemoteChannel: IpcInvokeDefinition<'codex-remote:reconnect', [channel: RemoteChannelId], CodexRemoteSnapshot>
   /** 「打开星芒时自动打开遥控」（YF-9，默认关）：只记下来，不当场开关渠道。 */
   setCodexRemoteAutoStart: IpcInvokeDefinition<'codex-remote:set-auto-start', [enabled: boolean], CodexRemoteSnapshot>
+  /** 「多久没消息就自动关」（YF-10）：4 / 12 小时，null = 不自动关（缺省）。开着的渠道当场按新时长重新起算。 */
+  setCodexRemoteIdleClose: IpcInvokeDefinition<'codex-remote:set-idle-close', [hours: RemoteIdleCloseHours | null], CodexRemoteSnapshot>
   /** 弹系统的选文件夹窗口；客户取消了就原样交回现在的状态。 */
   chooseCodexRemoteWorkspace: IpcInvokeDefinition<'codex-remote:choose-workspace', [], CodexRemoteSnapshot>
   startCodexRemotePairing: IpcInvokeDefinition<'codex-remote:start-pairing', [channel: RemoteChannelId], CodexRemoteSnapshot>
@@ -1782,6 +1785,7 @@ export const ipcInvokeChannels = {
   setCodexRemoteChannelEnabled: 'codex-remote:set-channel-enabled',
   reconnectCodexRemoteChannel: 'codex-remote:reconnect',
   setCodexRemoteAutoStart: 'codex-remote:set-auto-start',
+  setCodexRemoteIdleClose: 'codex-remote:set-idle-close',
   chooseCodexRemoteWorkspace: 'codex-remote:choose-workspace',
   startCodexRemotePairing: 'codex-remote:start-pairing',
   cancelCodexRemotePairing: 'codex-remote:cancel-pairing',
