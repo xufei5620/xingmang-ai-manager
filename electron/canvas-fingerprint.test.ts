@@ -237,6 +237,25 @@ describe('canvas fingerprints', () => {
     expect(computeCanvasGraphRevision({ nodes: [frame()], edges: [] })).toBe(computeCanvasGraphRevision({ nodes: [{ ...frame(), data: { prompt: '', model: '', frameTimestampSeconds: undefined } }], edges: [] }))
   })
 
+  it('gives another crop box, collage order or tile choice its own fingerprint and revision', () => {
+    const tool = (kind: CanvasRunGraphNode['kind'], data: Partial<CanvasRunGraphNode['data']> = {}): CanvasRunGraphNode => ({
+      id: 'tool', kind, definitionVersion: 1, data: { prompt: '', model: '', ...data },
+    })
+    const crop = (width: number) => tool('image-crop', { imageTransform: { kind: 'crop', outputWidth: width, outputHeight: 32 } })
+    const wide = computeCanvasNodeFingerprint({ node: crop(64), upstream: [] })
+    expect(computeCanvasNodeFingerprint({ node: crop(64), upstream: [] })).toBe(wide)
+    expect(computeCanvasNodeFingerprint({ node: crop(65), upstream: [] })).not.toBe(wide)
+    expect(computeCanvasGraphRevision({ nodes: [crop(65)], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [crop(64)], edges: [] }))
+    // The processor revision is part of a page-made picture's key, so even an empty crop differs from a compare node's.
+    expect(computeCanvasNodeFingerprint({ node: tool('image-crop'), upstream: [] })).not.toBe(computeCanvasNodeFingerprint({ node: { ...tool('image-crop'), kind: 'image-compare' }, upstream: [] }))
+    const order = (first: string) => tool('image-collage', { imageCollageInputOrder: { version: 1, slots: [{ edgeId: first, outputIndex: 0 }] } })
+    expect(computeCanvasNodeFingerprint({ node: order('a'), upstream: [] })).not.toBe(computeCanvasNodeFingerprint({ node: order('b'), upstream: [] }))
+    expect(computeCanvasGraphRevision({ nodes: [order('a')], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [order('b')], edges: [] }))
+    const tile = (edgeId: string) => tool('image-tile', { tileInput: { edgeId, outputIndex: 0 } })
+    expect(computeCanvasNodeFingerprint({ node: tile('a'), upstream: [] })).not.toBe(computeCanvasNodeFingerprint({ node: tile('b'), upstream: [] }))
+    expect(computeCanvasGraphRevision({ nodes: [tile('a')], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [tile('b')], edges: [] }))
+  })
+
   it('changes the graph revision with the image count but keeps it for one image', () => {
     const base = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
     expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageCandidateCount: 2 })], edges: [] })).not.toBe(base)
