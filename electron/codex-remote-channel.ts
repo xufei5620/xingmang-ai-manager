@@ -93,13 +93,39 @@ export interface RemoteInboundStop extends RemoteInboundBase {
   nonce: string | null
 }
 
-/** 收到了渠道转不成文字的东西（图片、文件）。底座回一句「暂时只支持文字」，渠道不用自己回话。 */
+/**
+ * 带图片的消息（YF-14）。images 是渠道自己认得的取图句柄，底座不解读、不进日志，核过是绑定的那个人以后
+ * 才原样交还 fetchImage() 去取：陌生人发来的图连下载都不下载。text 是同一条消息里带的字（飞书富文本、
+ * 微信图文一起发），没有就不填。
+ */
+export interface RemoteInboundImage extends RemoteInboundBase {
+  kind: 'image'
+  messageId: string
+  images: string[]
+  text?: string
+}
+
+/** 收到了渠道转不成文字、也不是图片的东西（语音、文件）。底座回一句只支持文字和图片，渠道不用自己回话。 */
 export interface RemoteInboundUnsupported extends RemoteInboundBase {
   kind: 'unsupported'
   messageId: string
 }
 
-export type RemoteInbound = RemoteInboundText | RemoteInboundApproval | RemoteInboundStop | RemoteInboundUnsupported
+export type RemoteInbound = RemoteInboundText | RemoteInboundImage | RemoteInboundApproval | RemoteInboundStop | RemoteInboundUnsupported
+
+/** 一条消息里最多认这么多张图（YF-14），也是攒着等下一句话的图最多几张。 */
+export const remoteImagesPerPrompt = 5
+
+/** 一张图最多这么大（YF-14），按取回来、解开以后的字节算。 */
+export const remoteImageMaxBytes = 10 * 1024 * 1024
+
+/**
+ * 取图的结果（YF-14）。too-large：比 maxBytes 大；permission：平台说这个应用没开取图的权限（飞书）；
+ * failed：别的原因（网断了、平台报错、解不开）。字节是平台给的原样，是不是图片由底座认。
+ */
+export type RemoteImageFetchResult =
+  | { ok: true; bytes: Uint8Array }
+  | { ok: false; reason: 'too-large' | 'permission' | 'failed' }
 
 export type RemoteApprovalDecision = 'accept' | 'decline'
 
@@ -219,6 +245,11 @@ export interface RemoteChannelAdapter {
    */
   sendApproval?(peer: RemotePeer, message: RemoteOutboundApproval): Promise<string>
   updateApproval?(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void>
+  /**
+   * 取一张图（YF-14）：ref 是 RemoteInboundImage.images 里的一个。只许去平台自己那几个固定的 https 地址，
+   * 读到 maxBytes 就停；不抛，失败按原因交回。没有这个方法的渠道收到图片当 unsupported 报。
+   */
+  fetchImage?(ref: string, maxBytes: number): Promise<RemoteImageFetchResult>
 }
 
 export type RemoteChannelLogLevel = 'info' | 'warn' | 'error'

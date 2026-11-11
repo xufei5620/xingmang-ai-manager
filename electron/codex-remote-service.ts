@@ -8,6 +8,8 @@ import {
 } from './codex-remote-app-server'
 import {
   remoteChannelIds,
+  remoteImageMaxBytes,
+  remoteImagesPerPrompt,
   type CodexRemoteChannelSnapshot,
   type CodexRemoteLastRequestSnapshot,
   type CodexRemoteSnapshot,
@@ -24,6 +26,7 @@ import {
   type RemoteInbound,
   type RemoteApprovalOutcome,
   type RemoteInboundApproval,
+  type RemoteInboundImage,
   type RemoteInboundStop,
   type RemoteInboundText,
   type RemoteInboundUnsupported,
@@ -34,6 +37,7 @@ import {
   type RemoteProgressCard,
   type RemoteProgressStep,
 } from './codex-remote-channel'
+import { sniffRemoteImageType, type RemoteImageStore } from './codex-remote-images'
 import { emptyChannelSettings, maxRemoteWorkspaces, remoteWorkspaceList, type CodexRemoteStore } from './codex-remote-store'
 import {
   approvalAcceptedMessage,
@@ -48,6 +52,7 @@ import {
   normalizePairingAttempt,
   parseRemoteCommand,
   progressTextMessage,
+  receivedMessage,
   redactRemoteText,
   remoteDisplayPath,
   remoteMessages,
@@ -208,6 +213,10 @@ export interface CodexRemoteServiceOptions {
    * 读得慢也只等 statusBalanceTimeoutMs，过了就不带这一行，「状态」不能因为余额卡住。
    */
   readBalanceUsd?(): Promise<number | null>
+  /**
+   * 手机上发来的图存哪儿（YF-14）。缺省 = 不收图，收到图片照旧回只支持文字和图片那句。
+   */
+  imageStore?: RemoteImageStore
   onStateChanged?(snapshot: CodexRemoteSnapshot): void
 }
 
@@ -759,6 +768,13 @@ interface ChannelRuntime {
    * 下次打开时发「重试」，不该把上次开着时的话翻出来执行。
    */
   lastPrompt: string | null
+  /** 上一句带着交给 Codex 的图（YF-14），「重试」时一起重发；下一句交出去、关遥控、换人时删掉。 */
+  lastPromptImages: string[]
+  /**
+   * 只发了图、还没说要做什么时攒着的图（YF-14），下一句话交给 Codex 时一起带上，最多 remoteImagesPerPrompt 张。
+   * 发「新对话」、关遥控、换人时删掉。
+   */
+  pendingImages: string[]
 }
 
 export type RemoteInboundSeen = 'none' | 'group' | 'direct'
@@ -800,7 +816,16 @@ function emptyRuntime(id: RemoteChannelId): ChannelRuntime {
     turn: null,
     retiredTurnIds: [],
     lastPrompt: null,
+    lastPromptImages: [],
+    pendingImages: [],
   }
+}
+
+/** 取图失败时手机上收到的那句（YF-14）：没开权限那句只有飞书会碰到。 */
+function imageProblemMessage(channel: RemoteChannelId, reason: 'too-large' | 'permission' | 'failed'): string {
+  if (reason === 'too-large') return remoteMessages.imageTooLarge
+  if (reason === 'permission' && channel === 'feishu') return remoteMessages.imagePermissionFeishu
+  return remoteMessages.imageFailed
 }
 
 /**
@@ -864,6 +889,8 @@ export class CodexRemoteService {
   private secretsReadAt = 0
   /** farewell() 已经说过「星芒关了」的渠道：退出没退成时要补一句（quitAborted）。 */
   private readonly farewellSaid = new Set<RemoteChannelId>()
+  /** 这次打开星芒以后清过上次留下的图没有（sweepImagesOnce）。 */
+  private imagesSwept = false
   private disposed = false
 
   constructor(private readonly options: CodexRemoteServiceOptions) {
@@ -1403,6 +1430,32 @@ export class CodexRemoteService {
     const client = this.codex
     this.codex = null
     void client?.stop()
+    // 退出时来不及等，删不完的下次打开遥控时先清（sweepImagesOnce）。
+    void this.options.imageStore?.clear().catch(() => undefined)
+  }
+
+  /** 这次打开星芒头一回开遥控时，清掉上次没删成的图（YF-14）。 */
+  private async sweepImagesOnce(): Promise<void> {
+    if (this.imagesSwept || !this.options.imageStore) return
+    this.imagesSwept = true
+    await this.options.imageStore.clear().catch(() => {
+      this.options.log('warn', 'remote.image-remove-failed')
+    })
+  }
+
+  /** 删掉这几张图；删不掉只记日志，下次全关或者下次打开时再清。 */
+  private releaseImages(paths: readonly string[]): void {
+    if (paths.length === 0 || !this.options.imageStore) return
+    void this.options.imageStore.remove(paths).catch(() => {
+      this.options.log('warn', 'remote.image-remove-failed')
+    })
+  }
+
+  /** 攒着的和上一句带过的图都不要了（关遥控、换人、重新打开）。 */
+  private dropImages(runtime: ChannelRuntime): void {
+    this.releaseImages([...runtime.pendingImages, ...runtime.lastPromptImages])
+    runtime.pendingImages = []
+    runtime.lastPromptImages = []
   }
 
   private async emit(): Promise<CodexRemoteSnapshot> {
@@ -1446,6 +1499,8 @@ export class CodexRemoteService {
     runtime.seen.clear()
     runtime.staleNoticeAt = 0
     runtime.lastPrompt = null
+    this.dropImages(runtime)
+    await this.sweepImagesOnce()
     runtime.inboundSeen = 'none'
     runtime.status = { state: 'connecting' }
     const adapter = this.options.createChannel(runtime.id, this.channelDependencies(runtime.id))
@@ -1511,11 +1566,16 @@ export class CodexRemoteService {
     runtime.peer = null
     runtime.replyContext = undefined
     this.dropThread(runtime)
+    this.dropImages(runtime)
     if (wasEnabled) this.options.log('info', 'remote.channel-stopped', { channel: runtime.id })
     if (!remoteChannelIds.some((id) => this.runtimes[id].enabled)) {
       this.codexStartFailed = false
       this.lastRequest = null
       await this.stopCodex()
+      // 都关了：这里存过的图一张不留（上面按渠道删的，加上半路没登记上的）。
+      await this.options.imageStore?.clear().catch(() => {
+        this.options.log('warn', 'remote.image-remove-failed')
+      })
     }
   }
 
@@ -1543,6 +1603,7 @@ export class CodexRemoteService {
     runtime.replyContext = undefined
     runtime.threadId = null
     runtime.lastPrompt = null
+    this.dropImages(runtime)
     // 换了人就是新的人，没有「前面的」可言。
     runtime.threadLost = false
   }
@@ -1838,7 +1899,16 @@ export class CodexRemoteService {
       await this.stopFromProgressCard(runtime, message)
       return
     }
-    const command = parseRemoteCommand(message.text, this.pendingFor(runtime.id).length > 0)
+    let text: string
+    if (message.kind === 'image') {
+      if (!(await this.receiveImages(runtime, message))) return
+      // 图和字一起发来的（飞书富文本、微信图文）：图已经攒上，字照常当一句话处理，是要做的事就带着图交出去。
+      if (!message.text?.trim()) return
+      text = message.text
+    } else {
+      text = message.text
+    }
+    const command = parseRemoteCommand(text, this.pendingFor(runtime.id).length > 0)
     switch (command.kind) {
       case 'help':
         await this.sendText(runtime, remoteMessages.help)
@@ -1857,7 +1927,7 @@ export class CodexRemoteService {
           await this.sendText(runtime, remoteMessages.nothingToRetry)
           return
         }
-        await this.runPrompt(runtime, runtime.lastPrompt, retryMessage(runtime.lastPrompt))
+        await this.runPrompt(runtime, runtime.lastPrompt, true)
         return
       case 'stop':
         if (!runtime.turn) {
@@ -1873,6 +1943,9 @@ export class CodexRemoteService {
         runtime.threadId = null
         // 是他自己要的新对话，下次不用再提醒「前面的记不得了」。
         runtime.threadLost = false
+        // 攒着还没用的图一起扔掉（YF-14）；上一句带过的留着给「重试」。
+        this.releaseImages(runtime.pendingImages)
+        runtime.pendingImages = []
         await this.sendText(runtime, remoteMessages.newThread)
         this.emitSoon()
         return
@@ -1885,6 +1958,64 @@ export class CodexRemoteService {
       case 'prompt':
         await this.runPrompt(runtime, command.text)
     }
+  }
+
+  /**
+   * 手机上发来的图（YF-14）：走到这里已经核过是绑定的那个人，这才去平台取。认过开头字节是图片的存下来攒着，
+   * 等下一句话一起交给 Codex；取不到、太大、攒满了，每种原因回一句。只有图、没带字、之前没攒着图时回一句
+   * 「收到图片」，免得连发几张收到一串一样的话。返回 false = 取图的这一会儿渠道关了或者换了人，别再往下做。
+   */
+  private async receiveImages(runtime: ChannelRuntime, message: RemoteInboundImage): Promise<boolean> {
+    const adapter = runtime.adapter
+    const store = this.options.imageStore
+    if (!adapter?.fetchImage || !store) {
+      await this.sendText(runtime, remoteMessages.unsupported)
+      return true
+    }
+    const stillHere = () => runtime.enabled && runtime.adapter === adapter && runtime.peer?.userId === message.peer.userId
+    const hadPending = runtime.pendingImages.length > 0
+    const problems = new Set<string>()
+    let added = 0
+    for (const ref of message.images) {
+      if (runtime.pendingImages.length >= remoteImagesPerPrompt) {
+        problems.add(remoteMessages.imagesFull)
+        break
+      }
+      const result = await adapter.fetchImage(ref, remoteImageMaxBytes)
+      if (!stillHere()) return false
+      if (!result.ok) {
+        problems.add(imageProblemMessage(runtime.id, result.reason))
+        continue
+      }
+      if (result.bytes.byteLength > remoteImageMaxBytes) {
+        problems.add(remoteMessages.imageTooLarge)
+        continue
+      }
+      const type = sniffRemoteImageType(result.bytes)
+      if (!type) {
+        this.options.log('warn', 'remote.image-not-recognized', { channel: runtime.id })
+        problems.add(remoteMessages.imageFailed)
+        continue
+      }
+      let saved: string
+      try {
+        saved = await store.save(result.bytes, type)
+      } catch {
+        this.options.log('warn', 'remote.image-save-failed', { channel: runtime.id })
+        problems.add(remoteMessages.imageFailed)
+        continue
+      }
+      if (!stillHere()) {
+        this.releaseImages([saved])
+        return false
+      }
+      runtime.pendingImages.push(saved)
+      added += 1
+    }
+    this.options.log('info', 'remote.images-received', { channel: runtime.id, added, offered: message.images.length })
+    for (const problem of problems) await this.sendText(runtime, problem)
+    if (added > 0 && !hadPending && !message.text?.trim()) await this.sendText(runtime, remoteMessages.imageReceived)
+    return stillHere()
   }
 
   /**
@@ -1922,7 +2053,7 @@ export class CodexRemoteService {
    * 当成旧的丢掉，发码的就是要绑定的那个人）；别人照旧不回话，免得拿消息探出这里有个遥控。这条配对码不算
    * 输错，也不拿它配对。
    */
-  private async warnClockAhead(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundUnsupported): Promise<void> {
+  private async warnClockAhead(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundImage | RemoteInboundUnsupported): Promise<void> {
     if (!this.markSeen(runtime, message.messageId)) return
     const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
     const pairing = runtime.pairing
@@ -1942,7 +2073,7 @@ export class CodexRemoteService {
    * 免得手机上白等。电脑回来时攒着的几条是一下子送来的，一批只回一句（1 分钟内回过就不再回），说的是
    * 这一批里第一条的分钟数；陌生人照旧不回，免得拿消息探出这里有个遥控。
    */
-  private async noticeStale(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundUnsupported, ageMs: number): Promise<void> {
+  private async noticeStale(runtime: ChannelRuntime, message: RemoteInboundText | RemoteInboundImage | RemoteInboundUnsupported, ageMs: number): Promise<void> {
     if (!this.markSeen(runtime, message.messageId) || this.staleNoticedRecently(runtime)) return
     const bound = (await this.options.store.readSettings()).channels[runtime.id]?.boundPeer
     if (bound?.userId !== message.peer.userId || this.staleNoticedRecently(runtime)) return
@@ -2231,8 +2362,11 @@ export class CodexRemoteService {
     return next
   }
 
-  /** lead 是「收到」前面先说的那句，「重试」时说重发的是哪一句（YF-22）。 */
-  private async runPrompt(runtime: ChannelRuntime, text: string, lead?: string): Promise<void> {
+  /**
+   * retry：手机上发的是「重试」（YF-22），「收到」前面先说重发的是哪一句，带的是上一句的图。不是重试时
+   * 带上攒着的图（YF-14）。还在做上一条、没选文件夹时图照旧攒着，下一句再带。
+   */
+  private async runPrompt(runtime: ChannelRuntime, text: string, retry = false): Promise<void> {
     if (runtime.turn) {
       await this.sendText(runtime, remoteMessages.busy)
       return
@@ -2257,29 +2391,35 @@ export class CodexRemoteService {
     }
     runtime.turn = turn
     runtime.lastPrompt = text
+    const images = retry ? [...runtime.lastPromptImages] : [...runtime.pendingImages]
+    if (!retry) {
+      this.releaseImages(runtime.lastPromptImages.filter((image) => !images.includes(image)))
+      runtime.lastPromptImages = images
+      runtime.pendingImages = []
+    }
     this.lastRequest = { turn, receivedAt: this.now(), state: 'running', reason: null }
     this.noteTurnProgress(runtime)
     this.emitSoon()
     // 原来的对话丢了（不是他自己发的「新对话」），这一条会从新对话开始：收到那句前面先说一声（D66 / YKS-16）。
     const received = [
-      ...(lead ? [lead] : []),
+      ...(retry ? [retryMessage(text)] : []),
       ...(runtime.threadId === null && runtime.threadLost ? [remoteMessages.threadReset] : []),
-      remoteMessages.received,
+      receivedMessage(images.length),
     ].join('\n')
     await this.sendText(runtime, received)
     this.scheduleProgress(runtime, turn, progressCards(runtime.adapter) ? progressCardFirstMs : progressTextEveryMs)
     // 起 Codex、开对话不在收件队列里等（D66 / YKS-3）：起 Codex 排在全局的安装队列里，别的工具在装时能等好几分钟，
     // 这期间手机发的「停止」「状态」得有人理，「停止」靠 turnStillWanted 拦住还没交给 Codex 的这一句。
     // 这一轮已经登记在 runtime.turn 上，后面再来的话照旧回「还在处理上一条」。
-    void this.startTurn(runtime, turn, workspace, text)
+    void this.startTurn(runtime, turn, workspace, text, images)
   }
 
-  private async startTurn(runtime: ChannelRuntime, turn: TurnState, workspace: string, text: string): Promise<void> {
+  private async startTurn(runtime: ChannelRuntime, turn: TurnState, workspace: string, text: string, images: readonly string[]): Promise<void> {
     const slowNotice = setTimeout(() => {
       if (turn.id === null && this.turnStillWanted(runtime, turn)) void this.sendText(runtime, remoteMessages.codexStarting)
     }, codexStartingNoticeMs)
     slowNotice.unref?.()
-    const handoff = runtime.handoff.then(() => this.handTurnToCodex(runtime, turn, workspace, text))
+    const handoff = runtime.handoff.then(() => this.handTurnToCodex(runtime, turn, workspace, text, images))
     runtime.handoff = handoff.catch(() => undefined)
     try {
       await handoff
@@ -2290,7 +2430,7 @@ export class CodexRemoteService {
     }
   }
 
-  private async handTurnToCodex(runtime: ChannelRuntime, turn: TurnState, workspace: string, text: string): Promise<void> {
+  private async handTurnToCodex(runtime: ChannelRuntime, turn: TurnState, workspace: string, text: string, images: readonly string[]): Promise<void> {
     let client: CodexAppServerClient
     try {
       client = await this.ensureCodex()
@@ -2324,7 +2464,8 @@ export class CodexRemoteService {
       const threadId = runtime.threadId
       const result = await client.request('turn/start', {
         threadId,
-        input: [{ type: 'text', text, text_elements: [] }],
+        // 图只给这里存的路径（YF-14），Codex 的 localImage 自己读文件。
+        input: [{ type: 'text', text, text_elements: [] }, ...images.map((image) => ({ type: 'localImage', path: image }))],
       })
       const turnId = isRecord(result) && isRecord(result.turn) ? stringField(result.turn.id) : null
       if (turnId && this.turnStillWanted(runtime, turn)) turn.id = turnId

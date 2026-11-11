@@ -3,6 +3,7 @@ import type {
   RemoteChannelDependencies,
   RemoteChannelHandlers,
   RemoteChannelStatus,
+  RemoteImageFetchResult,
   RemoteInbound,
   RemoteOutbound,
   RemotePeer,
@@ -10,12 +11,14 @@ import type {
 import { RemoteHttpError } from './codex-remote-http'
 import {
   WeixinIlinkError,
+  downloadWeixinImage,
   fetchWeixinUpdates,
   isWeixinUserMessage,
   notifyWeixinLifecycle,
   sendWeixinText,
   weixinTextLimit,
   type WeixinIlinkContext,
+  type WeixinImageRef,
   type WeixinInboundMessage,
 } from './codex-remote-weixin-api'
 import { decodeWeixinCredential, type WeixinCredential } from './codex-remote-weixin-credential'
@@ -69,11 +72,31 @@ export function toWeixinRemoteInbound(message: WeixinInboundMessage, ownerUserId
     ...(message.contextToken ? { replyContext: message.contextToken } : {}),
     ...(message.createdAt !== null && message.createdAt > 0 ? { sentAt: message.createdAt } : {}),
   }
-  if (message.text !== null && message.text.trim()) {
-    return { ...base, kind: 'text', messageId: message.messageId, text: message.text }
+  const text = message.text !== null && message.text.trim() ? message.text : null
+  if (message.images.length > 0) {
+    return { ...base, kind: 'image', messageId: message.messageId, images: message.images.map(encodeWeixinImageRef), ...(text !== null ? { text } : {}) }
   }
+  if (text !== null) return { ...base, kind: 'text', messageId: message.messageId, text }
   if (message.hasMedia) return { ...base, kind: 'unsupported', messageId: message.messageId }
   return null
+}
+
+/** 交给底座的取图句柄（YF-14）：底座原样交还 fetchImage，这里再解开、再核一遍。 */
+export function encodeWeixinImageRef(ref: WeixinImageRef): string {
+  return JSON.stringify({ q: ref.encryptQueryParam, k: ref.aesKeyHex })
+}
+
+function decodeWeixinImageRef(value: string): WeixinImageRef | null {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(value)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const { q, k } = parsed as { q?: unknown; k?: unknown }
+  if (typeof q !== 'string' || (k !== null && (typeof k !== 'string' || !/^[0-9a-f]{32}$/.test(k)))) return null
+  return { encryptQueryParam: q, aesKeyHex: k }
 }
 
 function isTransientSendFailure(error: unknown): boolean {
@@ -237,6 +260,14 @@ export function createWeixinRemoteChannel(dependencies: RemoteChannelDependencie
           dependencies.log('warn', 'weixin-notify-stop-failed', { reason: failureReason(error) })
         })
       }
+    },
+
+    async fetchImage(ref: string, maxBytes: number): Promise<RemoteImageFetchResult> {
+      const decoded = decodeWeixinImageRef(ref)
+      const result = decoded ? await downloadWeixinImage(dependencies.fetch, decoded, maxBytes) : { ok: false as const, reason: 'failed' as const, failure: 'bad-ref' }
+      if (result.ok) return { ok: true, bytes: result.bytes }
+      dependencies.log('warn', 'weixin-image-fetch-failed', { reason: result.reason, ...('failure' in result && result.failure ? { failure: result.failure } : {}) })
+      return { ok: false, reason: result.reason }
     },
 
     async send(peer: RemotePeer, message: RemoteOutbound, replyContext?: string) {

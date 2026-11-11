@@ -1,4 +1,5 @@
-// 手机遥控 Codex 的组装：设置和凭据放 <userData>/codex-remote（凭据 safeStorage 加密），渠道走主进程的会话 fetch，
+// 手机遥控 Codex 的组装：设置和凭据放 <userData>/codex-remote（凭据 safeStorage 加密），手机上发来的图暂放
+// 它下面的 images（YF-14，交给 Codex 以后删），渠道走主进程的会话 fetch，
 // Codex 用客户装好的那一份命令行工具起 app-server。Windows 上星芒以管理员身份运行时不许开：
 // 那时 Codex 和它跑的每条命令都会是管理员权限，手机上点一下「同意」就是管理员级操作。
 import path from 'node:path'
@@ -9,6 +10,7 @@ import type { ProviderConfigRoots } from '../codex-home'
 import type { AppServerProcess } from '../codex-remote-app-server'
 import type { CodexRemoteSnapshot } from '../codex-remote-channel'
 import { createRemoteChannelAdapter } from '../codex-remote-channels'
+import { createRemoteImageStore } from '../codex-remote-images'
 import { spawnCodexAppServer } from '../codex-remote-process'
 import { CodexRemoteService } from '../codex-remote-service'
 import { CodexRemoteStore } from '../codex-remote-store'
@@ -56,9 +58,11 @@ export function resolveCodexRemoteAvailability(
 
 export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRemoteService {
   const env = commandEnvironment(options.codexEnv)
-  const store = new CodexRemoteStore(path.join(options.managerDataDirectory, 'codex-remote'), safeStorage)
+  const directory = path.join(options.managerDataDirectory, 'codex-remote')
+  const store = new CodexRemoteStore(directory, safeStorage)
   return new CodexRemoteService({
     store,
+    imageStore: createRemoteImageStore(path.join(directory, 'images')),
     createChannel: createRemoteChannelAdapter,
     fetch: options.fetch,
     appVersion: options.appVersion,

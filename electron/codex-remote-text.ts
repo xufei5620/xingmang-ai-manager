@@ -15,7 +15,8 @@ export const remoteMessages = {
   interrupted: '已停止。',
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
-  unsupported: '暂时只支持文字消息。',
+  // 语音、文件这些（YF-14，yoyo 2026-11-11「图片改」）：图片能发了，这句跟着改。
+  unsupported: '暂时只支持文字和图片。语音、文件发不过来，请打成字。',
   help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、文件夹、关闭遥控、重试、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
   // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
@@ -39,7 +40,18 @@ export const remoteMessages = {
   staleProgressCard: '这张卡片是上一轮的，现在这一轮没有停。要停请发「停止」。',
   // 手机上换文件夹（YF-19）：这一轮还没做完（含等你同意）时不换，免得改到一半换了地方。
   workspaceBusy: 'Codex 还在处理上一条，等它做完再换文件夹。',
+  // 手机上发图片（YF-14，yoyo 2026-11-11「图片改」）。图和字在聊天里是分开的两条，只有图时先攒着等下一句话。
+  imageReceived: '收到图片。再发一句要 Codex 做什么，会跟图片一起交给它。',
+  imagesFull: '一次最多带 5 张图片，这张没收。',
+  imageTooLarge: '这张图片太大了，电脑没收。请发小一点的，或者截一部分。',
+  imagePermissionFeishu: '这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。',
+  imageFailed: '这张图片电脑没取到，请再发一次。',
 } as const
+
+/** 「收到」那句（YF-14）：带着图的说几张，没带图的照旧。 */
+export function receivedMessage(imageCount: number): string {
+  return imageCount > 0 ? `收到，带着 ${imageCount} 张图片，Codex 开始处理。` : remoteMessages.received
+}
 
 /** 飞书进度卡的标题（YF-15，yoyo 2026-11-11「进度改」）：做着的时候、做完、停了、没做完。 */
 export const progressCardTitles = {
