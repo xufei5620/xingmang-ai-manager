@@ -2478,6 +2478,8 @@ if (!hasSingleInstanceLock) {
         followRemoteForTray(snapshot)
       },
       suspended: () => remoteFeatures.isOff('codex-remote'),
+      // 手机上「状态」里的余额（YF-18）：跟画布余额条同一份，用托盘、余额提醒读过的，太旧了才读一次，读回来时换了账号就不要。
+      readBalanceUsd: async () => (await readCanvasAccountSummary())?.balanceUsd ?? null,
     })
     // 开机时遥控一个都没开、也还没推过快照：先读一份，托盘才知道该不该出「打开手机遥控」。
     void codexRemote.snapshot().then(followRemoteForTray).catch((cause: unknown) => runtimeLog.exception('codex-remote', 'remote.tray-state.failed', cause))

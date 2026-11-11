@@ -32,6 +32,8 @@ export interface CodexRemoteBootstrapOptions {
   onStateChanged(snapshot: CodexRemoteSnapshot): void
   /** 状态文件关掉了手机遥控（remote-features.ts）。它变了要调一次 applyAvailability。缺省 = 不关。 */
   suspended?(): boolean
+  /** 手机上发「状态」时报的余额（美元，YF-18）；没登录、读不到回 null。 */
+  readBalanceUsd?(): Promise<number | null>
 }
 
 const elevatedMessage = '星芒正以管理员身份运行。为了安全，这时不能打开手机遥控，请用普通方式重新打开星芒。'
@@ -78,5 +80,6 @@ export function createCodexRemote(options: CodexRemoteBootstrapOptions): CodexRe
       ? null
       : '这台电脑还没装 Codex 命令行工具，先在首页把它装好。'),
     onStateChanged: options.onStateChanged,
+    ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
   })
 }
