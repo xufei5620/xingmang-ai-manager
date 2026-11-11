@@ -123,6 +123,11 @@ export function usageCost(amount: number | null | undefined): string {
   return typeof amount === 'number' && amount !== 0 && Math.abs(amount) < 0.01 ? usageMoney(amount) : dollars(amount)
 }
 
+/** 「总花费」下面那行小字。「24 小时」那一档只有一天，日均就是总花费本身，不写这行（D60）。 */
+export function usageDailyAverageText(costUsd: number | null, days: number): string | undefined {
+  return costUsd !== null && days > 1 ? `日均 ${usageCost(costUsd / days)}` : undefined
+}
+
 /** 后台记的额度（quota）换成用量花费；换算比例没读到时写「—」，跟 quotaMoney 一样。 */
 export function usageQuotaCost(quota: number | null | undefined, balance: { quotaPerUnit: number } | null): string {
   return balance && balance.quotaPerUnit > 0 && typeof quota === 'number' ? usageCost(quota / balance.quotaPerUnit) : '—'

@@ -6263,7 +6263,8 @@ test('the announcement timeline shows title, type, date and note, and only recen
     await list.locator('.v2-announcement-row').first().click()
     const detail = dialog.getByTestId('announcement-detail')
     await detail.getByRole('heading', { name: '图片模型上线' }).waitFor()
-    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^上新\d{4}-\d{2}-\d{2} \d{2}:\d{2} · 2 小时前$/)
+    // 跟全软件一样写「今天 14:05」，不写横杠日期（D60）；跑在凌晨两点前时那条是昨天的。
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^上新(今天|昨天) \d{2}:\d{2} · 2 小时前$/)
     // 单个换行也要换行：三步说明逐行显示，不挤成一行。
     assert.equal(await detail.locator('.v2-announcement-content').first().locator('li').count(), 3)
     await detail.getByTestId('announcement-detail-extra').getByText(/勿发送 API 密钥/).waitFor()
@@ -6434,7 +6435,8 @@ test('Sub2API announcements list titles and automatically mark only the opened d
     const detail = dialog.getByTestId('announcement-detail')
     await detail.getByRole('heading', { name: '服务通知', level: 2, exact: true }).waitFor()
     // 历史账号的公告没有类型标签，详情里只写发布时间。
-    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^2026-09-28 \d{2}:\d{2} · \d+ (天|个月|年)前$/)
+    // 30 天以上只写日期、不写「N 个月前」（D60）；跨了年带上年份。
+    assert.match(await detail.getByTestId('announcement-detail-meta').textContent(), /^(2026年)?9月28日 \d{2}:\d{2}( · \d+ 天前)?$/)
     assert.equal(await detail.locator('strong').innerText(), '系统升级完成')
     assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead'))

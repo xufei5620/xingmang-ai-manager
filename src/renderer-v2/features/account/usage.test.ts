@@ -11,6 +11,7 @@ import {
   usageCalendarNote,
   usageChartScale,
   usageCost,
+  usageDailyAverageText,
   usageEmptyText,
   usageFailedFree,
   usageHourBlocks,
@@ -112,6 +113,14 @@ describe('usage', () => {
     expect(usageChartScale([0.03])).toEqual({ top: 0.03, ticks: [0, 0.01, 0.02, 0.03] })
     expect(usageTickText(1, [0, 0.5, 1])).toBe('$1.0')
     expect(usageTickText(4, [0, 2, 4])).toBe('$4')
+  })
+
+  it('leaves out the daily average for the 24-hour range, where it would just repeat the total', () => {
+    // D60：「24 小时」那一档 days = 1，日均就等于总花费。
+    expect(usageDailyAverageText(3.5, 1)).toBeUndefined()
+    expect(usageDailyAverageText(14, 7)).toBe('日均 $2.00')
+    expect(usageDailyAverageText(0.09, 30)).toBe('日均 $0.0030')
+    expect(usageDailyAverageText(null, 7)).toBeUndefined()
   })
 
   it('writes sub-cent usage costs out like the call details instead of rounding them to $0.00', () => {
