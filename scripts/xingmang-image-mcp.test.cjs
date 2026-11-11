@@ -284,7 +284,7 @@ test('MCP server falls back to gpt-image-2 when the picked model is refused by t
   }
   await withServer(config, respond, async ({ call, requests }) => {
     const generated = await call('tools/call', { name: 'generate_image', arguments: { prompt: 'a cat' } })
-    assert.equal(generated.result.isError, undefined)
+    assert.equal(generated.result.isError, undefined, JSON.stringify({ result: generated.result, requests: requests.map((request) => [request.authorization, request.body.toString('utf8').slice(0, 80)]) }))
     assert.match(generated.result.content[1].text, /已用 gpt-image-2 画好图片/)
     assert.deepEqual(requests.map((request) => [
       request.authorization,
