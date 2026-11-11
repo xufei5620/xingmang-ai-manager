@@ -1,12 +1,14 @@
-import { randomBytes } from 'node:crypto'
-import { RemoteHttpError, requestRemoteJson } from './codex-remote-http'
+import { createDecipheriv, randomBytes } from 'node:crypto'
+import type { RemoteImageFetchResult } from './codex-remote-channel'
+import { RemoteHttpError, requestRemoteBytes, requestRemoteJson } from './codex-remote-http'
 
 // 微信遥控走腾讯给微信 ClawBot 开的 iLink 接口（ilinkai.weixin.qq.com）：电脑主动长轮询收消息，
 // 不要公网、不经过星芒的服务器。接口没有公开文档，收发和扫码的写法照腾讯自己发布的
 // @tencent-weixin/openclaw-weixin 2.4.10（MIT）逐个核过，代码是这里自己写的。
 //
 // 这条通道是腾讯给 OpenClaw 开的，别的程序借用许不许没写明，界面上标「实验功能」。所以这里
-// 宁可少做：只收发文字，不传图片文件，不发「正在输入」，不做群聊。
+// 宁可少做：只收文字和图片、只发文字，不发图片文件，不发「正在输入」，不做群聊。收图片（YF-14）是
+// 2026-11-11 产品负责人亲手打字「微信图片网址加」以后才加的，取图只去腾讯的图片服务器那一个地址。
 //
 // iLink can move a login to another host mid-scan (redirect_host) and hands the
 // bot its own API host once confirmed (baseurl). Both arrive in a response body,
@@ -16,6 +18,13 @@ import { RemoteHttpError, requestRemoteJson } from './codex-remote-http'
 // that single origin pinned (I10).
 
 export const weixinIlinkDefaultOrigin = 'https://ilinkai.weixin.qq.com'
+
+/**
+ * 微信消息里的图放在腾讯的图片服务器上（YF-14），是加密过的，电脑去这里下载再解开。手机遥控能连的地址
+ * 多这一条是放宽，产品负责人 2026-11-11 北京亲手打字「微信图片网址加」才加的；只认这一个 origin，
+ * 消息里带来的别的地址一律不去。
+ */
+export const weixinCdnOrigin = 'https://novac2c.cdn.weixin.qq.com'
 
 // 协议版本照着核对过的那一版填：服务端按它判断客户端会不会新格式。自报身份放在 bot_agent，
 // 腾讯说明里它只用来记日志和统计，星芒在这里如实写自己的名字和版本。
@@ -55,7 +64,12 @@ const weixinMessageTypeUser = 1
 const weixinMessageTypeBot = 2
 const weixinMessageStateFinish = 2
 const weixinItemText = 1
+const weixinItemImage = 2
 const weixinItemVoice = 3
+/** 一条消息里最多认这么多张图；底座自己还有一条每次最多几张的线。 */
+const maxImagesPerMessage = 20
+const maxEncryptQueryParamLength = 4096
+const imageTimeoutMs = 30_000
 
 const losslessIdFields: ReadonlySet<string> = new Set(['message_id', 'msg_id', 'svr_id'])
 
@@ -105,8 +119,21 @@ export interface WeixinInboundMessage {
   contextToken: string | null
   /** 文字或语音转写；转不成文字时是 null。 */
   text: string | null
-  /** 带了图片、文件、视频或转写不出的语音。 */
+  /** 带的图（YF-14），按消息里的顺序。 */
+  images: WeixinImageRef[]
+  /** 带了文件、视频或转写不出的语音（图片另算在 images 里）。 */
   hasMedia: boolean
+}
+
+/**
+ * 一张图在腾讯图片服务器上的位置和解开它的钥匙（YF-14）。照腾讯 openclaw-weixin 的写法：
+ * image_item.media.encrypt_query_param 拼下载地址；钥匙优先用 image_item.aeskey（32 位十六进制），
+ * 没有再用 media.aes_key（base64，解出来是 16 字节原值，或者 32 个十六进制字符）。没有钥匙的照原样存。
+ */
+export interface WeixinImageRef {
+  encryptQueryParam: string
+  /** AES-128 钥匙，32 位小写十六进制；没有是 null。 */
+  aesKeyHex: string | null
 }
 
 export interface WeixinUpdates {
@@ -376,21 +403,50 @@ export async function pollWeixinLoginStatus(
   }
 }
 
-function textOfItems(items: unknown[]): { text: string | null; hasMedia: boolean } {
+/** 钥匙认成 32 位小写十六进制；认不出返回 null。 */
+export function normalizeWeixinAesKey(itemKey: unknown, mediaKey: unknown): string | null {
+  if (typeof itemKey === 'string' && /^[0-9a-fA-F]{32}$/.test(itemKey.trim())) return itemKey.trim().toLowerCase()
+  if (typeof mediaKey !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/.test(mediaKey.trim())) return null
+  const decoded = Buffer.from(mediaKey.trim(), 'base64')
+  if (decoded.length === 16) return decoded.toString('hex')
+  const ascii = decoded.toString('latin1')
+  return decoded.length === 32 && /^[0-9a-fA-F]{32}$/.test(ascii) ? ascii.toLowerCase() : null
+}
+
+function imageRefOf(item: Record<string, unknown>): WeixinImageRef | null {
+  const image = isRecord(item.image_item) ? item.image_item : null
+  const media = image && isRecord(image.media) ? image.media : null
+  if (!image || !media) return null
+  const query = typeof media.encrypt_query_param === 'string' ? media.encrypt_query_param.trim() : ''
+  if (!query || query.length > maxEncryptQueryParamLength || !/^[\x21-\x7e]+$/.test(query)) return null
+  return { encryptQueryParam: query, aesKeyHex: normalizeWeixinAesKey(image.aeskey, media.aes_key) }
+}
+
+function contentOfItems(items: unknown[]): { text: string | null; images: WeixinImageRef[]; hasMedia: boolean } {
+  let text: string | null = null
+  const images: WeixinImageRef[] = []
   let hasMedia = false
   for (const item of items) {
     if (!isRecord(item)) continue
     const type = optionalInteger(item.type)
     if (type === weixinItemText && isRecord(item.text_item) && typeof item.text_item.text === 'string') {
-      return { text: item.text_item.text, hasMedia }
+      text ??= item.text_item.text
+      continue
     }
     // 微信自带语音转文字，转出来了就当文字用。
     if (type === weixinItemVoice && isRecord(item.voice_item) && typeof item.voice_item.text === 'string' && item.voice_item.text.trim()) {
-      return { text: item.voice_item.text, hasMedia }
+      text ??= item.voice_item.text
+      continue
     }
-    if (type !== null && type !== weixinItemText) hasMedia = true
+    if (type === weixinItemImage) {
+      const ref = imageRefOf(item)
+      // 是图但看不懂放在哪儿：交给底座当一张取不到的图，手机上说「没取到」，别说「只支持文字和图片」。
+      if (images.length < maxImagesPerMessage) images.push(ref ?? { encryptQueryParam: '', aesKeyHex: null })
+      continue
+    }
+    if (type !== null) hasMedia = true
   }
-  return { text: null, hasMedia }
+  return { text, images, hasMedia }
 }
 
 function firstItemMessageId(items: unknown[]): string | null {
@@ -408,7 +464,7 @@ export function parseWeixinInboundMessage(value: unknown): WeixinInboundMessage 
   const fromUserId = optionalString(value.from_user_id, 256)
   const messageId = identifierString(value.message_id) ?? firstItemMessageId(items)
   if (!fromUserId || !messageId) return null
-  const { text, hasMedia } = textOfItems(items)
+  const { text, images, hasMedia } = contentOfItems(items)
   return {
     messageId,
     fromUserId,
@@ -417,6 +473,7 @@ export function parseWeixinInboundMessage(value: unknown): WeixinInboundMessage 
     createdAt: optionalInteger(value.create_time_ms),
     contextToken: optionalString(value.context_token, 4096),
     text,
+    images,
     hasMedia,
   }
 }
@@ -480,6 +537,45 @@ export async function fetchWeixinUpdates(
 
 export function buildWeixinClientId(): string {
   return `xingmang-weixin-${randomBytes(8).toString('hex')}`
+}
+
+/**
+ * 从腾讯图片服务器取一张图、解开（YF-14）：AES-128-ECB，PKCS#7 补齐，照 openclaw-weixin。只去
+ * weixinCdnOrigin，最多读 maxBytes 再加一个块；解开以后比 maxBytes 大也不要。不抛，失败按原因交回。
+ */
+export async function downloadWeixinImage(
+  fetchImpl: typeof fetch,
+  ref: WeixinImageRef,
+  maxBytes: number,
+): Promise<RemoteImageFetchResult & { failure?: string }> {
+  if (!ref.encryptQueryParam) return { ok: false, reason: 'failed', failure: 'no-location' }
+  let response
+  try {
+    response = await requestRemoteBytes({
+      fetch: fetchImpl,
+      url: `${weixinCdnOrigin}/c2c/download?encrypted_query_param=${encodeURIComponent(ref.encryptQueryParam)}`,
+      allowedOrigins: [weixinCdnOrigin],
+      method: 'GET',
+      timeoutMs: imageTimeoutMs,
+      maxResponseBytes: maxBytes + 16,
+      label: '微信',
+    })
+  } catch (error) {
+    if (error instanceof RemoteHttpError && error.reason === 'oversize') return { ok: false, reason: 'too-large' }
+    return { ok: false, reason: 'failed', failure: error instanceof RemoteHttpError ? error.reason : 'unknown' }
+  }
+  if (!response.ok) return { ok: false, reason: 'failed', failure: `status-${response.status}` }
+  let bytes: Buffer = response.bytes
+  if (ref.aesKeyHex) {
+    try {
+      const decipher = createDecipheriv('aes-128-ecb', Buffer.from(ref.aesKeyHex, 'hex'), null)
+      bytes = Buffer.concat([decipher.update(response.bytes), decipher.final()])
+    } catch {
+      return { ok: false, reason: 'failed', failure: 'decrypt' }
+    }
+  }
+  if (bytes.length > maxBytes) return { ok: false, reason: 'too-large' }
+  return { ok: true, bytes }
 }
 
 export async function sendWeixinText(

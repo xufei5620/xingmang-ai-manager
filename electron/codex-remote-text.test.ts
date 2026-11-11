@@ -13,6 +13,7 @@ import {
   progressStepMarks,
   progressStopButton,
   progressTextMessage,
+  receivedMessage,
   redactRemoteText,
   remoteMessages,
   remoteOpenedMessage,
@@ -73,6 +74,18 @@ describe('codex-remote-text', () => {
     expect(workspaceMissingMessage(6)).toBe('没有第 6 个文件夹。发「文件夹」看有哪些。')
     expect(workspaceUnusableMessage('~/projects/blog')).toBe('~/projects/blog 现在打不开了，可能被移走或删掉了。先在电脑上看一下。')
     expect(remoteMessages.workspaceBusy).toBe('Codex 还在处理上一条，等它做完再换文件夹。')
+  })
+
+  // YF-14：yoyo 2026-11-11「图片改」批的那几句，逐字。
+  it('says the approved image words, counting the pictures in the received line', () => {
+    expect(remoteMessages.unsupported).toBe('暂时只支持文字和图片。语音、文件发不过来，请打成字。')
+    expect(remoteMessages.imageReceived).toBe('收到图片。再发一句要 Codex 做什么，会跟图片一起交给它。')
+    expect(remoteMessages.imagesFull).toBe('一次最多带 5 张图片，这张没收。')
+    expect(remoteMessages.imageTooLarge).toBe('这张图片太大了，电脑没收。请发小一点的，或者截一部分。')
+    expect(remoteMessages.imagePermissionFeishu).toBe('这张图片电脑没取到。飞书后台要多开一个权限「获取单聊、群组消息」，再发布一个版本。')
+    expect(remoteMessages.imageFailed).toBe('这张图片电脑没取到，请再发一次。')
+    expect(receivedMessage(0)).toBe('收到，Codex 开始处理。')
+    expect(receivedMessage(2)).toBe('收到，带着 2 张图片，Codex 开始处理。')
   })
 
   it('tells the phone the remote was switched on, with the folder written like the status reply', () => {

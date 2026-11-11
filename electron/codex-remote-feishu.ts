@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { requestRemoteJson, RemoteHttpError, type RemoteJsonResponse } from './codex-remote-http'
+import { requestRemoteBytes, requestRemoteJson, RemoteHttpError, type RemoteBytesResponse, type RemoteJsonResponse } from './codex-remote-http'
 import {
   decodeFeishuFrame,
   encodeFeishuFrame,
@@ -15,6 +15,7 @@ import type {
   RemoteChannelHandlers,
   RemoteChannelProblem,
   RemoteChannelStatus,
+  RemoteImageFetchResult,
   RemoteInbound,
   RemoteApprovalOutcome,
   RemoteOutbound,
@@ -111,6 +112,16 @@ const appSecretPattern = /^[A-Za-z0-9]{8,128}$/
 const approvalNoncePattern = /^[A-Za-z0-9_-]{8,64}$/
 // 飞书消息编号（om_ 开头）。拼进更新卡片的接口路径之前先认一遍，不让奇怪的串改了路径。
 const feishuMessageIdPattern = /^om_[A-Za-z0-9_-]{1,128}$/
+/** 飞书消息里图片的 image_key（YF-14），形如 img_v3_02ab_…；别的样子不拿去拼地址。 */
+const feishuImageKeyPattern = /^img_[A-Za-z0-9_-]{1,200}$/
+/** 一条消息里最多认这么多张图，再多的当没有；底座自己还有一条每次最多几张的线。 */
+const maxImagesPerMessage = 20
+const imageRequestTimeoutMs = 30_000
+// 取消息里的图碰到这几个 code 是应用没开取图要的权限（YF-14）：照飞书文档，「获取消息中的资源文件」要
+// 「获取单聊、群组消息」这一类权限三选一，没开时开放平台回 99991672（应用身份）或 99991679（用户身份）。
+const imagePermissionCodes = new Set([99991672, 99991679])
+// 文件超过飞书自己的下载上限。
+const imageTooLargeCode = 234037
 
 /** 界面填进来的两串字：去掉两边空白，格式不对直接报能上屏的中文。 */
 export function validateFeishuCredentialInput(appId: unknown, appSecret: unknown): FeishuCredential {
@@ -278,7 +289,61 @@ function extractPostText(content: Record<string, unknown>): string | null {
   return text || null
 }
 
-/** 把飞书消息的 content（JSON 字符串）读成纯文字；读不出来是 null，底座回「暂时只支持文字」。 */
+/**
+ * 飞书消息里的图（YF-14）：图片消息是那一张，富文本（post）是按顺序的每个 img 节点。认不出的 key 不要。
+ */
+export function extractFeishuImageKeys(messageType: unknown, content: unknown): string[] {
+  if ((messageType !== 'image' && messageType !== 'post') || typeof content !== 'string' || content.length > maxEventBytes) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(content)
+  } catch {
+    return []
+  }
+  if (!isRecord(parsed)) return []
+  const keys: string[] = []
+  function take(value: unknown): void {
+    if (keys.length < maxImagesPerMessage && typeof value === 'string' && feishuImageKeyPattern.test(value)) keys.push(value)
+  }
+  if (messageType === 'image') {
+    take(parsed.image_key)
+    return keys
+  }
+  const body = Array.isArray(parsed.content)
+    ? parsed
+    : Object.values(parsed).find((value): value is Record<string, unknown> => isRecord(value) && Array.isArray(value.content))
+  if (!body || !Array.isArray(body.content)) return []
+  for (const paragraph of body.content) {
+    if (!Array.isArray(paragraph)) continue
+    for (const node of paragraph) {
+      if (isRecord(node) && node.tag === 'img') take(node.image_key)
+    }
+  }
+  return keys
+}
+
+/** 交给底座的取图句柄：哪条消息里的哪张图。取的时候两段都再核一遍。 */
+export function feishuImageRef(messageId: string, imageKey: string): string {
+  return `${messageId}/${imageKey}`
+}
+
+function parseFeishuImageRef(ref: string): { messageId: string; imageKey: string } | null {
+  const [messageId, imageKey, extra] = ref.split('/')
+  if (extra !== undefined || !messageId || !imageKey) return null
+  return feishuMessageIdPattern.test(messageId) && feishuImageKeyPattern.test(imageKey) ? { messageId, imageKey } : null
+}
+
+/** 飞书报错时回的是 JSON，取里面的 code；不是 JSON 返回 null。 */
+function feishuErrorCode(response: RemoteBytesResponse): number | null {
+  try {
+    const payload: unknown = JSON.parse(response.bytes.toString('utf8'))
+    return isRecord(payload) ? numberField(payload.code) : null
+  } catch {
+    return null
+  }
+}
+
+/** 把飞书消息的 content（JSON 字符串）读成纯文字；读不出来是 null（带图的另由 extractFeishuImageKeys 认）。 */
 export function extractFeishuText(messageType: unknown, content: unknown): string | null {
   if (typeof content !== 'string' || content.length > maxEventBytes) return null
   let parsed: unknown
@@ -332,6 +397,10 @@ export function parseFeishuEvent(payload: unknown, context: FeishuEventContext):
     const sentAt = parseMillis(message.create_time)
     const base = { peer, direct, replyContext: messageId, ...(sentAt ? { sentAt } : {}) }
     const text = extractFeishuText(message.message_type, message.content)
+    const images = extractFeishuImageKeys(message.message_type, message.content).map((key) => feishuImageRef(messageId, key))
+    if (images.length > 0) {
+      return { eventId, inbound: { ...base, kind: 'image', messageId, images, ...(text !== null ? { text } : {}) } }
+    }
     return {
       eventId,
       inbound: text === null ? { ...base, kind: 'unsupported', messageId } : { ...base, kind: 'text', messageId, text },
@@ -663,6 +732,46 @@ class FeishuRemoteChannel implements RemoteChannelAdapter {
   /** 审批卡改成处理过的样子（YK-8）：标题换成结果，按钮去掉。改不成只是样子没变，手机上那句文字照样发。 */
   async updateApproval(handle: string, message: RemoteOutboundApproval, outcome: RemoteApprovalOutcome): Promise<void> {
     await this.patchCard(handle, buildFeishuApprovalCard(message, outcome), 'feishu.approval-update-failed')
+  }
+
+  /**
+   * 取消息里的一张图（YF-14，GET /open-apis/im/v1/messages/:message_id/resources/:file_key?type=image）。
+   * 只去 open.feishu.cn，读到 maxBytes 就停；令牌失效换一次，别的失败不重试，手机上说一声让他再发。
+   */
+  async fetchImage(ref: string, maxBytes: number): Promise<RemoteImageFetchResult> {
+    const parsed = parseFeishuImageRef(ref)
+    if (!parsed || !this.credential) return { ok: false, reason: 'failed' }
+    for (let attempt = 0; ; attempt += 1) {
+      let response: RemoteBytesResponse
+      try {
+        const token = await this.tenantToken()
+        response = await requestRemoteBytes({
+          fetch: this.deps.fetch,
+          url: `${feishuOpenOrigin}/open-apis/im/v1/messages/${parsed.messageId}/resources/${parsed.imageKey}?type=image`,
+          allowedOrigins,
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+          timeoutMs: imageRequestTimeoutMs,
+          maxResponseBytes: maxBytes,
+          label,
+        })
+      } catch (error) {
+        if (error instanceof RemoteHttpError && error.reason === 'oversize') return { ok: false, reason: 'too-large' }
+        this.deps.log('warn', 'feishu.image-fetch-failed', { reason: error instanceof RemoteHttpError ? error.reason : 'unknown' })
+        return { ok: false, reason: 'failed' }
+      }
+      this.noteServerTime(response.serverTime)
+      if (response.ok && response.contentType !== 'application/json') return { ok: true, bytes: response.bytes }
+      const code = feishuErrorCode(response)
+      if (code !== null && tokenInvalidCodes.has(code) && attempt === 0) {
+        this.token = null
+        continue
+      }
+      this.deps.log('warn', 'feishu.image-fetch-failed', { status: response.status, code })
+      if (code !== null && imagePermissionCodes.has(code)) return { ok: false, reason: 'permission' }
+      if (code === imageTooLargeCode) return { ok: false, reason: 'too-large' }
+      return { ok: false, reason: 'failed' }
+    }
   }
 
   private async postCard(peer: RemotePeer, card: Record<string, unknown>): Promise<string> {

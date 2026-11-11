@@ -1,16 +1,20 @@
+import { createCipheriv } from 'node:crypto'
 import { describe, expect, it } from 'vitest'
 import {
   buildWeixinBotAgent,
   buildWeixinClientVersion,
   clampWeixinLongPollMs,
+  downloadWeixinImage,
   fetchWeixinLoginQrCode,
   fetchWeixinUpdates,
+  normalizeWeixinAesKey,
   parseWeixinInboundMessage,
   parseWeixinJson,
   pollWeixinLoginStatus,
   resolveWeixinIlinkOrigin,
   sendWeixinText,
   type WeixinIlinkContext,
+  weixinCdnOrigin,
   weixinIlinkDefaultOrigin,
   WeixinIlinkError,
   weixinStatusNeedsVerifyCode,
@@ -111,8 +115,39 @@ describe('parseWeixinInboundMessage', () => {
       message_id: '12', from_user_id: 'u@im.wechat', message_type: 1, item_list: [{ type: 3, voice_item: { text: '跑一下' } }],
     })).toMatchObject({ text: '跑一下', hasMedia: false })
     expect(parseWeixinInboundMessage({
-      message_id: '13', from_user_id: 'u@im.wechat', message_type: 1, item_list: [{ type: 2, image_item: {} }],
-    })).toMatchObject({ text: null, hasMedia: true })
+      message_id: '13', from_user_id: 'u@im.wechat', message_type: 1, item_list: [{ type: 4, file_item: {} }],
+    })).toMatchObject({ text: null, images: [], hasMedia: true })
+  })
+
+  // YF-14：图片放在腾讯图片服务器上，取的位置和钥匙照 openclaw-weixin 读。
+  it('reads where each image is kept and its key, next to any words', () => {
+    const hexKey = '00112233445566778899aabbccddeeff'
+    expect(parseWeixinInboundMessage({
+      message_id: '14', from_user_id: 'u@im.wechat', message_type: 1, item_list: [
+        { type: 2, image_item: { aeskey: hexKey.toUpperCase(), media: { encrypt_query_param: 'q1', aes_key: 'ignored' } } },
+        { type: 1, text_item: { text: '看这张' } },
+        { type: 2, image_item: { media: { encrypt_query_param: 'q2', aes_key: Buffer.from(hexKey, 'hex').toString('base64') } } },
+        { type: 2, image_item: { media: { encrypt_query_param: 'q3', aes_key: Buffer.from(hexKey, 'latin1').toString('base64') } } },
+        { type: 2, image_item: { media: { encrypt_query_param: 'q4' } } },
+        { type: 2, image_item: {} },
+      ],
+    })).toMatchObject({
+      text: '看这张',
+      hasMedia: false,
+      images: [
+        { encryptQueryParam: 'q1', aesKeyHex: hexKey },
+        { encryptQueryParam: 'q2', aesKeyHex: hexKey },
+        { encryptQueryParam: 'q3', aesKeyHex: hexKey },
+        { encryptQueryParam: 'q4', aesKeyHex: null },
+        { encryptQueryParam: '', aesKeyHex: null },
+      ],
+    })
+  })
+
+  it('only takes keys that decode to sixteen bytes', () => {
+    expect(normalizeWeixinAesKey('xyz', Buffer.alloc(8).toString('base64'))).toBeNull()
+    expect(normalizeWeixinAesKey(undefined, 'not base64!')).toBeNull()
+    expect(normalizeWeixinAesKey(undefined, Buffer.from('z'.repeat(32), 'latin1').toString('base64'))).toBeNull()
   })
 
   it('drops messages without a sender or id', () => {
@@ -262,5 +297,51 @@ describe('sendWeixinText', () => {
     const { fetch } = mockFetch([jsonResponse({ ret: -2 })])
     const error = await sendWeixinText(contextFor(fetch), 'tok', 'u', 'x', 'old').catch((caught: unknown) => caught)
     expect((error as WeixinIlinkError).reason).toBe('stale-context')
+  })
+})
+
+describe('downloadWeixinImage', () => {
+  const key = Buffer.from('00112233445566778899aabbccddeeff', 'hex')
+  const picture = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3, 4, 5, 6, 7, 8, 9])
+
+  function encrypted(plain: Buffer): Buffer {
+    const cipher = createCipheriv('aes-128-ecb', key, null)
+    return Buffer.concat([cipher.update(plain), cipher.final()])
+  }
+
+  function binary(bytes: Buffer, status = 200): Response {
+    return new Response(new Uint8Array(bytes), { status, headers: { 'Content-Type': 'image/jpeg' } })
+  }
+
+  it('downloads only from the image server and unlocks the picture', async () => {
+    const { fetch, requests } = mockFetch([binary(encrypted(picture))])
+    const result = await downloadWeixinImage(fetch, { encryptQueryParam: 'a+b/c=', aesKeyHex: key.toString('hex') }, 1024)
+    expect(result).toEqual({ ok: true, bytes: picture })
+    expect(requests).toHaveLength(1)
+    expect(requests[0].url).toBe(`${weixinCdnOrigin}/c2c/download?encrypted_query_param=a%2Bb%2Fc%3D`)
+    expect(requests[0].method).toBe('GET')
+    expect(weixinCdnOrigin).toBe('https://novac2c.cdn.weixin.qq.com')
+  })
+
+  it('keeps a picture that came without a key as it is', async () => {
+    const { fetch } = mockFetch([binary(picture)])
+    await expect(downloadWeixinImage(fetch, { encryptQueryParam: 'q', aesKeyHex: null }, 1024)).resolves.toEqual({ ok: true, bytes: picture })
+  })
+
+  it('reports too large, refused and undecodable downloads without throwing', async () => {
+    const big = mockFetch([binary(encrypted(Buffer.alloc(64, 1)))])
+    await expect(downloadWeixinImage(big.fetch, { encryptQueryParam: 'q', aesKeyHex: key.toString('hex') }, 32)).resolves.toEqual({ ok: false, reason: 'too-large' })
+    const refused = mockFetch([binary(Buffer.from('no'), 404)])
+    await expect(downloadWeixinImage(refused.fetch, { encryptQueryParam: 'q', aesKeyHex: null }, 1024)).resolves.toMatchObject({ ok: false, reason: 'failed', failure: 'status-404' })
+    const garbled = mockFetch([binary(Buffer.from('not a multiple of sixteen'))])
+    await expect(downloadWeixinImage(garbled.fetch, { encryptQueryParam: 'q', aesKeyHex: key.toString('hex') }, 1024)).resolves.toMatchObject({ ok: false, reason: 'failed', failure: 'decrypt' })
+    const redirected = mockFetch([new Response(null, { status: 302, headers: { Location: 'https://evil.example/x' } })])
+    await expect(downloadWeixinImage(redirected.fetch, { encryptQueryParam: 'q', aesKeyHex: null }, 1024)).resolves.toMatchObject({ ok: false, reason: 'failed', failure: 'redirected' })
+  })
+
+  it('does not ask anyone when it does not know where the image is', async () => {
+    const { fetch, requests } = mockFetch([])
+    await expect(downloadWeixinImage(fetch, { encryptQueryParam: '', aesKeyHex: null }, 1024)).resolves.toMatchObject({ ok: false, reason: 'failed' })
+    expect(requests).toEqual([])
   })
 })
