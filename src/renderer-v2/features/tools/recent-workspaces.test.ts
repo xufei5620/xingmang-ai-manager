@@ -5,6 +5,7 @@ import {
   isMissingWorkspace,
   latestSessionIdsByWorkspace,
   launchWorkspaces,
+  opensUntouchedStarterWorkspace,
   recentWorkspaces,
   resumeLaunchChoice,
   resumeNeedsRecheck,
@@ -44,6 +45,30 @@ describe('launchWorkspaces', () => {
     expect(launchWorkspaces([], 'claude')).toEqual([])
     expect(launchWorkspaces([], 'claude', '   ')).toEqual([])
     expect(launchWorkspaces([], 'claude', null)).toEqual([])
+  })
+})
+
+// D45：「打开」会落在星芒刚建、还空着的项目文件夹里时，第一句话换成让它动手做点东西。
+describe('opensUntouchedStarterWorkspace', () => {
+  const starter = 'C:\\Users\\peaker\\Documents\\XingmangProjects\\my-project'
+
+  it('counts a launch that will create the folder', () => {
+    expect(opensUntouchedStarterWorkspace({ createsFolder: true }, undefined)).toBe(true)
+    expect(opensUntouchedStarterWorkspace({ createsFolder: true, workspace: null }, { rememberedWorkspace: 'C:\\work\\alpha' })).toBe(true)
+  })
+
+  it('counts the remembered folder only while the main process says it is still untouched', () => {
+    expect(opensUntouchedStarterWorkspace({ createsFolder: false, workspace: starter }, { rememberedWorkspace: starter, rememberedWorkspaceFresh: true })).toBe(true)
+    expect(opensUntouchedStarterWorkspace({ createsFolder: false, workspace: starter }, { rememberedWorkspace: starter })).toBe(false)
+    expect(opensUntouchedStarterWorkspace({ createsFolder: false, workspace: starter }, { rememberedWorkspace: starter, rememberedWorkspaceFresh: false })).toBe(false)
+  })
+
+  // 这个工具自己的记录里另有一个文件夹，「打开」去的是那里，不是记着的那个空文件夹。
+  it('leaves any other folder with the usual sentence', () => {
+    const config = { rememberedWorkspace: starter, rememberedWorkspaceFresh: true }
+    expect(opensUntouchedStarterWorkspace({ createsFolder: false, workspace: 'C:\\work\\alpha' }, config)).toBe(false)
+    expect(opensUntouchedStarterWorkspace({ createsFolder: false }, config)).toBe(false)
+    expect(opensUntouchedStarterWorkspace({ createsFolder: false, workspace: starter }, null)).toBe(false)
   })
 })
 

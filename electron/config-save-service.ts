@@ -94,6 +94,7 @@ import type { CliInstallation } from './tool-installation'
 import { createToolModelChecker, type ToolModelCheckTarget } from './tool-model-check'
 import type { ToolRouteFollowRecord, ToolRouteFollowState } from './tool-route-follow-state'
 import { withAppendedWindowsPath } from './windows-live-path'
+import { isUntouchedStarterWorkspace } from './starter-workspace'
 import { resolveRememberedWorkspace } from './workspace-guard'
 
 /**
@@ -361,6 +362,7 @@ export function createConfigSaveService(context: ServiceContext, dependencies: C
     const result = {
       workspace: stored.workspace,
       ...(rememberedWorkspace ? { rememberedWorkspace } : {}),
+      ...(rememberedWorkspace && isUntouchedStarterWorkspace(rememberedWorkspace, platform) ? { rememberedWorkspaceFresh: true } : {}),
       providers: Object.fromEntries(
         providerIds.map((id) => {
           const current = inspectNativeProviderConfig(id)

@@ -2505,6 +2505,39 @@ test('a folder picked for one CLI opens the others there without asking again', 
   } finally { await page.close() }
 })
 
+// D45（新手流程 N4）：新建的项目文件夹是空的，问「介绍一下这个项目」只会换来「这里什么都没有」。
+// 「打开」会替他新建、或者记着的正是那个还空着的文件夹时，「试试第一条命令」那句换成让它动手做点东西。
+test('the first-run card asks for a small web page while the folder is the empty one the app made (D45)', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    const card = page.getByTestId('home-first-run')
+    const prompt = page.getByTestId('home-first-run-steps-prompt')
+    await prompt.waitFor()
+    assert.equal(await card.getByText('Claude Code', { exact: true }).count(), 1)
+    assert.equal(await prompt.innerText(), '帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。')
+    // 在替他新建的文件夹里打开过一次：记着的就是它、还空着，这句不跳回「介绍一下这个项目」。
+    await page.getByTestId('tool-codex-primary').click()
+    await page.waitForFunction((folder) => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === `在 ${folder} 打开`, starterFolder)
+    assert.equal(await prompt.innerText(), '帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('the first-run card keeps the usual sentence for a folder the user picked (D45)', async () => {
+  const page = await open('launchRemembers=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await recentRead(page)
+    await page.getByTestId('tool-row-codex').getByRole('button', { name: '更多操作' }).click()
+    await page.getByTestId('tool-codex-choose-workspace').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-claude-primary"]')?.getAttribute('title') === '在 C:\\Selected Project 打开')
+    assert.equal(await page.getByTestId('home-first-run-steps-prompt').innerText(), '用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 // 第四十批 A：托盘「已安装的工具」和 Ctrl+数字以前什么文件夹都不带，每次都弹选择框；
 // 现在和首页那颗「打开 xx」挑同一个文件夹，都没有才弹。
 test('the tray and Ctrl+number shortcuts open a CLI in the folder its home button shows', async () => {

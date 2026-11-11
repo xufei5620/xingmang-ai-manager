@@ -40,6 +40,11 @@ export interface GuideToolState {
   model?: string
   workspace?: string
   /**
+   * 最后一步打开时多半落在星芒刚建、还空着的项目文件夹里：「新建并打开」建的就是它，记着的那个也还空着。
+   * 那句粘进去的话换成让它动手做点东西（D45）。缺省 = 不是，照旧。
+   */
+  freshFolder?: boolean
+  /**
    * 来源没确认（source 为 unknown）时，Key 到底是哪种（方案盘查 2026-09-25）：
    * otherSite = 不是当前账号所在站的 Key，在这里用不了；otherAccount = 当前账号
    * 那个站上、却认不出是当前账号的 Key，能用但用量可能算到别的账号上；changed =
@@ -614,7 +619,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
           {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
           {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
           {result && <GuideResultCard result={result} />}
-          {definition?.firstRun && readyToOpen && <FirstRunSteps key={route} name={name} firstRun={definition.firstRun} testId="guide-first-run" />}
+          {definition?.firstRun && readyToOpen && <FirstRunSteps key={`${route}:${tool?.freshFolder === true}`} name={name} firstRun={definition.firstRun} testId="guide-first-run" freshFolder={tool?.freshFolder === true} />}
           {result?.prompt && readyToOpen && <GuideFirstTaskPrompt key={route} prompt={result.prompt} copiedNotice={route === 'chat' ? '已复制，粘贴到聊天里试试' : `已复制，粘贴到 ${spaceAfter(name)}里试试`} disabled={locked} />}
           {opensFolder && readyToOpen && <div className="auth-guide-check-row" data-testid="guide-folder-hint"><FolderPlus size={20} aria-hidden="true" /><div><strong>选哪个文件夹</strong><p>打开时要选一个项目文件夹。不知道选哪个，就点「新建并打开」，软件替你建好一个空文件夹并直接打开。</p></div><Button size="sm" icon={FolderPlus} disabled={locked} onClick={() => launch(true)} testId="guide-open-tool-new-folder">新建并打开</Button></div>}
           <div className="auth-guide-ready-actions">

@@ -17,6 +17,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
 import { Home, homeWalletEmpty } from './features/tools/Home'
+import { opensUntouchedStarterWorkspace } from './features/tools/recent-workspaces'
 import { rescanFingerprint } from './features/tools/rescan-change'
 import { externalClientReady, visibleExternalClients } from './features/tools/external-model'
 import { createToolsApi } from './features/tools/api'
@@ -325,6 +326,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     // Mac 上 Codex 桌面端的更新要先看开没开着、换完再帮它打开，引导里那颗「更新」走不了这一套：只在首页卡片上给。
     update: tool.id === 'codexDesktop' && toolbox.snapshot!.platform.isMac ? null : toolUpdateOffer(tool),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
+    // 引导最后一步那句话（D45）：还没记过文件夹的，引导叫他点「新建并打开」，首页第一次「打开」也是替他新建；
+    // 记着的那个是星芒建的、还空着，也算。记着的是别的文件夹，照旧。
+    freshFolder: opensUntouchedStarterWorkspace({ createsFolder: !toolbox.snapshot!.config.rememberedWorkspace, workspace: toolbox.snapshot!.config.rememberedWorkspace }, toolbox.snapshot!.config),
     // 没登录就没有「当前账号」可比：来源没确认的一律按「不是当前账号的 Key」走，
     // 引导只给「登录后改用我的账号」，不因 Key 恰好在我们站上就放行（方案盘查第 1 条）。
     keyState: tool.source === 'changed' ? 'changed' : session.authenticated ? foreignKeyKind(toolbox.snapshot!.config.providers[tool.provider], tool.source) ?? undefined : tool.source === 'unknown' ? 'otherSite' : undefined,

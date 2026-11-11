@@ -62,6 +62,27 @@ describe('renderer-v2 start guide first run', () => {
     expect(markup).not.toContain('data-testid="guide-first-run"')
   })
 
+  // D45（新手流程 N4）：新建的项目文件夹是空的，问「介绍一下这个项目」只会换来「这里什么都没有」。
+  it('asks the tool to build something when it is about to open a folder the app has just made', () => {
+    stubResumedGuide('claude', 'ready')
+    const fresh = render([guideTool({ freshFolder: true })])
+    expect(fresh).toContain('帮我在这个文件夹里做一个能在浏览器里打开的待办清单小网页，做好后告诉我怎么打开它。')
+    expect(fresh).toContain('data-fresh-folder="true"')
+    expect(fresh).not.toContain('用中文介绍一下这个项目是做什么的')
+
+    const ownFolder = render([guideTool()])
+    expect(ownFolder).toContain('用中文介绍一下这个项目是做什么的，再指出最值得先读的三个文件。')
+    expect(ownFolder).not.toContain('data-fresh-folder')
+    expect(ownFolder).not.toContain('待办清单小网页')
+  })
+
+  it('gives Codex CLI and Grok CLI their own sentence for a fresh folder', () => {
+    stubResumedGuide('codex', 'ready')
+    expect(render([guideTool({ id: 'codex', freshFolder: true })])).toContain('在这个文件夹里写一个能在浏览器里打开的小计算器网页，写完用一句话告诉我怎么打开。')
+    stubResumedGuide('grok', 'ready')
+    expect(render([guideTool({ id: 'grok', freshFolder: true })])).toContain('在这个文件夹里写一个能在浏览器里打开的番茄钟小网页，写完告诉我怎么打开。')
+  })
+
   // 新手没有「项目」这个概念，最后一步要告诉他打开时选什么，并给一颗不用选的按钮。
   it('offers to create a project folder before opening a CLI', () => {
     stubResumedGuide('claude', 'ready')

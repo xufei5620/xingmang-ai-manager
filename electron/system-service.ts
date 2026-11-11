@@ -310,6 +310,8 @@ export interface CliLaunchResult {
    * 首页据此直接换按钮，不必为这一个字段再读一遍整份配置。缺省 = 没带，界面照旧。
    */
   rememberedWorkspace?: string | null
+  /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
+  rememberedWorkspaceFresh?: boolean
 }
 
 export type ToolUninstallResult =
@@ -401,6 +403,11 @@ export interface AppConfigSummary {
    * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
    */
   rememberedWorkspace?: string
+  /**
+   * rememberedWorkspace 是星芒替用户新建的项目文件夹，里面还没有用户自己的东西
+   * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
+   */
+  rememberedWorkspaceFresh?: boolean
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
