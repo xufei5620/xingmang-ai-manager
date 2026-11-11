@@ -551,3 +551,57 @@ export function parseShellStartupExports(
   }
   return state.found
 }
+
+/**
+ * fish's escaping in `fish_variables`: every character that is not a letter or
+ * a digit is written as `\xHH`, `\uHHHH` or `\UHHHHHHHH` (or a backslash before
+ * it). null = it does not decode, holds a list (joined by U+001E) or an escape
+ * that stands for a control character, so only the name can be judged.
+ */
+function decodeFishUniversalValue(encoded: string): string | null {
+  let result = ''
+  for (let index = 0; index < encoded.length; index += 1) {
+    const char = encoded[index]
+    if (char !== '\\') {
+      result += char
+      continue
+    }
+    const kind = encoded[index + 1]
+    const width = kind === 'x' ? 2 : kind === 'u' ? 4 : kind === 'U' ? 8 : 0
+    if (width) {
+      const digits = /^[0-9A-Fa-f]+/.exec(encoded.slice(index + 2, index + 2 + width))?.[0] ?? ''
+      const code = digits ? Number.parseInt(digits, 16) : Number.NaN
+      if (!Number.isInteger(code) || code > 0x10FFFF) return null
+      result += String.fromCodePoint(code)
+      index += 1 + digits.length
+      continue
+    }
+    if (kind === undefined || /[A-Za-z0-9]/.test(kind)) return null
+    result += kind
+    index += 1
+  }
+  // A list, or a control character no key, URL or folder holds.
+  return /[\u0000-\u001F]/.test(result) ? null : result
+}
+
+/**
+ * The universal variables fish keeps in `fish_variables` (what `set -Ux` writes,
+ * 深查 Shell差异 SH-12): only `SETUVAR --export NAME:value` lines reach a CLI,
+ * while one without `--export` stays inside fish. In file order, once per line.
+ */
+export function parseFishUniversalExports(text: string, names: readonly string[]): ShellStartupExport[] {
+  const wanted = new Set(names)
+  const found: ShellStartupExport[] = []
+  for (const line of text.split('\n')) {
+    const words = line.replace(/\r$/, '').split(' ')
+    if (words[0] !== 'SETUVAR') continue
+    const flags = words.slice(1, -1)
+    const entry = words.slice(1).find((word) => !word.startsWith('--')) ?? ''
+    if (!flags.includes('--export')) continue
+    const colon = entry.indexOf(':')
+    if (colon <= 0) continue
+    const name = entry.slice(0, colon)
+    if (wanted.has(name)) found.push({ name, value: decodeFishUniversalValue(entry.slice(colon + 1)) })
+  }
+  return found
+}

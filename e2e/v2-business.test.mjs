@@ -446,6 +446,44 @@ test('account exposes the six v4 tabs and keeps server orders and keys visible',
   }
 })
 
+test('the orders head asks the main process to open the invoice window without naming a site or account', async () => {
+  // 两个账号登录开票中心用的名字不同：星芒账号是用户名，历史账号是邮箱。开哪一个由主进程按当前账号定，
+  // 界面这一下不带地址、不带账号。
+  for (const [route, loginName] of [
+    ['page=account', '用户名'],
+    ['page=account&sub2apiReliability=1', '邮箱'],
+  ]) {
+    const page = await fixture(route)
+    try {
+      await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+      const orders = page.getByTestId('account-orders-section')
+      await orders.getByRole('button', { name: '开发票', exact: true }).click()
+      await waitForToast(page, `开票中心已在新窗口打开；要登录的话，用这个账号的${loginName}和密码。`)
+      assert.deepEqual(
+        (await calls(page)).filter((call) => call.name === 'open-invoice-portal').map((call) => call.args),
+        [[]],
+      )
+      assert.equal(await orders.getByRole('alert').count(), 0)
+    } finally {
+      await page.close()
+    }
+  }
+})
+
+test('the invoice button says the approved line when the invoice window does not open', async () => {
+  const page = await fixture('page=account&invoiceFail=1')
+  try {
+    await page.getByRole('tab', { name: '充值订阅', exact: true }).click()
+    const orders = page.getByTestId('account-orders-section')
+    await orders.getByRole('button', { name: '开发票', exact: true }).click()
+    await orders.getByRole('alert').filter({ hasText: '没能打开开票中心，请稍后再试；还不行请找客服。' }).waitFor()
+    // 订单照常列着：打不开开票中心不影响看订单。
+    await orders.getByText('TEST-ORDER').waitFor()
+  } finally {
+    await page.close()
+  }
+})
+
 test('the account tabs move with the left and right arrow keys and open on Enter', async () => {
   const page = await fixture('page=account')
   try {

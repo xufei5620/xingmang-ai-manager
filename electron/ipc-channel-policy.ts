@@ -209,6 +209,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'account:quote-topup': { log: 'normal', account: 'scoped' },
   'account:create-topup-payment': { log: 'normal', account: 'scoped' },
   'account:close-payment-window': { log: 'normal', account: 'scoped' },
+  'account:open-invoice-portal': { log: 'normal', account: 'scoped' },
   'account:list-topup-orders': { log: 'normal', account: 'scoped' },
   'account:redeem-topup-code': { log: 'normal', account: 'scoped' },
   'account:transfer-affiliate-quota': { log: 'normal', account: 'scoped' },

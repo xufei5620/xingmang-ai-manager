@@ -21,6 +21,7 @@ export type CanvasRunNodeKind =
 export const canvasRunImageToolNodeLabels = {
   'image-crop': '裁剪图片',
   'image-collage': '拼图',
+  'image-grid-split': '宫格裁剪',
   'image-tile': '平铺图片',
   'image-layer': '图层合成',
   'image-compare': '图片对比',
@@ -33,11 +34,10 @@ export type CanvasRunImageToolNodeKind = keyof typeof canvasRunImageToolNodeLabe
  * Node kinds the xingmang-canvas kernel can put in a run graph but the desktop
  * has no executor for yet. They parse so a graph that merely contains one is
  * not refused as a whole; a run whose scope reaches one is refused before any
- * paid request (#1392). Each label is the kernel's own node title.
+ * paid request (#1392). Each label is the kernel's own node title. Empty since
+ * the grid split joined the image tools; the next kernel kind goes here.
  */
-export const canvasRunKernelOnlyNodeLabels = {
-  'image-grid-split': '宫格裁剪',
-} as const
+export const canvasRunKernelOnlyNodeLabels = {} as const
 
 export type CanvasRunKernelOnlyNodeKind = keyof typeof canvasRunKernelOnlyNodeLabels
 export type CanvasRunScope =
@@ -111,10 +111,16 @@ export interface CanvasRunGraphNode {
     imageCollageInputOrder?: CanvasImageCollageInputOrder
     /** Tile nodes only: which connected picture is the tile. */
     tileInput?: CanvasTileInputSelection
+    /**
+     * Grid-split nodes only: which slice the canvas shows and a single-picture
+     * connection hands on, below rows x columns. Choosing another slice is not
+     * a new picture, so it stays out of the fingerprint, as on the web host.
+     */
+    imageOutputIndex?: number
   }
 }
 
-export type CanvasImageTransformKind = 'crop' | 'collage' | 'tile' | 'layer'
+export type CanvasImageTransformKind = 'crop' | 'collage' | 'grid-split' | 'tile' | 'layer'
 
 /** The kernel's ImageTransformRecipe (xingmang-canvas image-tools/recipe.ts); only `kind` is typed here. */
 export interface CanvasImageTransformRecipe {
@@ -194,6 +200,12 @@ export type CanvasRunStatus =
   | 'interrupted'
 
 export interface CanvasRunCandidate {
+  /**
+   * Image tools only: the picture's place in what the node made (a grid
+   * split's slice number), whichever candidate comes first. The kernel's
+   * CanvasRunCandidate has the same field.
+   */
+  outputIndex?: number
   candidateId: string
   attemptId: string
   createdAt: string
@@ -405,6 +417,12 @@ export interface CanvasRunCacheEntry {
   fingerprint: string
   nodeKind: CanvasRunNodeKind
   candidate?: CanvasRunCandidate
+  /**
+   * Every candidate, when the node handed on more than one (a grid split's
+   * slices, the pictures a compare node shows), starting with `candidate`.
+   * A release that predates it reads only `candidate`.
+   */
+  candidates?: CanvasRunCandidate[]
   outputText?: string
   createdAt: string
   lastUsedAt: string

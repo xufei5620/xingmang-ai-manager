@@ -329,23 +329,28 @@ interface ParsedImageToolFields {
   imageTransform?: CanvasImageTransformRecipe
   imageCollageInputOrder?: CanvasImageCollageInputOrder
   tileInput?: CanvasTileInputSelection
+  imageOutputIndex?: number
 }
 
 /**
  * The image-tool fields of a node the desktop runs: the recipe on the four
  * kinds the page processes, the arranged order on a collage, the chosen
  * picture on a tile. On any other node they stay what kernelFieldsUnsupported
- * says. imageOutputIndex picks one picture of a batch; every kind run here
- * makes one, so any index the kernel accepts (0-15) means that one and is not
- * passed on, as the web host does (xingmang-canvas lib/canvas-runs.ts).
+ * says. imageOutputIndex picks one picture of a batch, as on the web host
+ * (xingmang-canvas lib/canvas-runs.ts): any index the kernel accepts (0-15),
+ * and one past what the node makes means the first. Only a grid split makes
+ * more than one, so only it passes the index on.
  */
 function imageToolFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedImageToolFields | undefined {
   if (!options.imageTools || !isImageToolNodeKind(kind)) return undefined
   const transformKind = canvasImageTransformKindForNode(kind)
   const fields: ParsedImageToolFields = {}
+  let outputCount = 1
   if (data.imageTransform !== undefined) {
     if (!transformKind) throw new Error('图片处理参数只能保存在图片工具节点中')
-    fields.imageTransform = parseCanvasImageTransformRecipe(kind, data.imageTransform, budget).recipe
+    const parsed = parseCanvasImageTransformRecipe(kind, data.imageTransform, budget)
+    fields.imageTransform = parsed.recipe
+    outputCount = parsed.expectation.count
   }
   if (data.imageCollageInputOrder !== undefined) {
     if (transformKind !== 'collage') throw new Error('拼图输入顺序只能保存在拼图节点中')
@@ -357,8 +362,11 @@ function imageToolFields(kind: CanvasRunNodeKind, data: Record<string, unknown>,
     assertBoundedKernelValue(data.tileInput, '画布平铺输入', budget)
     fields.tileInput = parseCanvasTileInput(data.tileInput)
   }
-  if (data.imageOutputIndex !== undefined && (!transformKind || !Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) >= 16)) {
-    throw new Error('图片批次选中序号无效')
+  if (data.imageOutputIndex !== undefined) {
+    if (!transformKind || !Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) >= 16) {
+      throw new Error('图片批次选中序号无效')
+    }
+    if (transformKind === 'grid-split') fields.imageOutputIndex = (data.imageOutputIndex as number) < outputCount ? data.imageOutputIndex as number : 0
   }
   return fields
 }
@@ -764,6 +772,7 @@ export function parseCanvasStartRunInput(
         ...(imageTools?.imageTransform ? { imageTransform: imageTools.imageTransform } : {}),
         ...(imageTools?.imageCollageInputOrder ? { imageCollageInputOrder: imageTools.imageCollageInputOrder } : {}),
         ...(imageTools?.tileInput ? { tileInput: imageTools.tileInput } : {}),
+        ...(imageTools?.imageOutputIndex !== undefined ? { imageOutputIndex: imageTools.imageOutputIndex } : {}),
       },
     }
   })

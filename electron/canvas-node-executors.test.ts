@@ -945,6 +945,27 @@ describe('canvas image-tool executors', () => {
     expect(imageService.generate).not.toHaveBeenCalled()
   })
 
+  it('asks the page for one slice per grid cell of a grid split, after checking its one source', async () => {
+    const tools = processing()
+    const report = vi.fn(async () => undefined)
+    const executor = createCanvasNodeExecutors({ imageService, imageTools: tools })['image-grid-split']!
+    const node = { id: 'grid', kind: 'image-grid-split', definitionVersion: 1, data: { prompt: '', model: '', imageTransform: { kind: 'grid-split', rows: 2, columns: 3 } } } as CanvasRunGraph['nodes'][number]
+    await expect(executor({ ...base, node, inputs: inputs('A', 'B'), signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('宫格裁剪只能使用一个图片来源')
+    await expect(executor({ ...base, node, inputs: {}, signal: new AbortController().signal, reportImagePreparation: report })).rejects.toThrow('宫格裁剪只能使用一个图片来源')
+    expect(report).not.toHaveBeenCalled()
+
+    const running = executor({ ...base, node, inputs: inputs('A'), signal: new AbortController().signal, reportImagePreparation: report })
+    await vi.waitFor(() => expect(tools.waitForImages).toHaveBeenCalledTimes(1))
+    // Six slices, and no size: the slices are as big as the cells of the picture they came from.
+    expect(vi.mocked(tools.waitForImages).mock.calls[0][0]).toMatchObject({ preparation: { nodeId: 'grid', sourceAssetIds: ['A'.repeat(43)], recipe: { kind: 'grid-split', rows: 2, columns: 3 } }, expectation: { count: 6 } })
+    expect(vi.mocked(tools.waitForImages).mock.calls[0][0].expectation).not.toHaveProperty('size')
+    const slices = ['C', 'D', 'E', 'F', 'G', 'H'].map(picture)
+    tools.answer(slices)
+    await expect(running).resolves.toEqual({ assets: slices })
+    expect(report).toHaveBeenCalledTimes(2)
+    expect(imageService.generate).not.toHaveBeenCalled()
+  })
+
   it('orders a collage the way the user arranged it, picks the chosen tile, and marks layer groups', async () => {
     const tools = processing()
     const report = vi.fn(async () => undefined)

@@ -36,6 +36,7 @@ import {
   usageCalendarNote,
   usageChartScale,
   usageCost,
+  usageDailyAverageText,
   usageEmptyText,
   usageHourBlocks,
   usageQuotaCost,
@@ -201,7 +202,7 @@ function UsageDashboard({
         />
       )}
       <div className="v2-usage-stats" data-testid="usage-stats">
-        {stat('总花费', data ? usageQuotaCost(data.totals.quota, balance) : undefined, trends && !summaryOnly && costUsd !== null ? `日均 ${usageCost(costUsd / days)}` : undefined, true)}
+        {stat('总花费', data ? usageQuotaCost(data.totals.quota, balance) : undefined, trends && !summaryOnly ? usageDailyAverageText(costUsd, days) : undefined, true)}
         {stat('请求次数', data?.totals.count.toLocaleString())}
         {stat('处理字数', data?.totals.tokens.toLocaleString())}
       </div>

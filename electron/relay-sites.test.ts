@@ -86,7 +86,7 @@ describe('relay site registry', () => {
 
   it('every site URL is https -- I10', () => {
     for (const site of relaySites) {
-      for (const url of [site.websiteUrl, site.keysPageUrl, ...(site.accountBaseUrl ? [site.accountBaseUrl] : [])]) {
+      for (const url of [site.websiteUrl, site.keysPageUrl, ...(site.accountBaseUrl ? [site.accountBaseUrl] : []), ...(site.invoicePortalUrl ? [site.invoicePortalUrl] : [])]) {
         expect(() => new URL(url)).not.toThrow()
         expect(new URL(url).protocol).toBe('https:')
       }
@@ -138,6 +138,7 @@ describe('relay site registry', () => {
       // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
       // Unchanged by D-10: the removed sub2api entry was same-domain, so it
       // contributed no URL of its own here either.
+      // 开票中心的地址只在软件里的开票窗口打开，不进外链白名单（invoice-portal-window.ts）。
       expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys', 'https://api.solov.cc', 'https://api.solov.cc/keys'])
     })
 

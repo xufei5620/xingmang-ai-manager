@@ -89,11 +89,19 @@ describe('explicit relay site identity', () => {
   })
 
   it('does not expand the external URL allowlist in this preparatory wave', () => {
+    // The invoice portals open only in the in-app invoice window, never in the system browser.
     expect(relaySiteExternalUrls(relaySites)).toEqual([
       'https://xm.solov.cc',
       'https://xm.solov.cc/keys',
       'https://api.solov.cc',
       'https://api.solov.cc/keys',
     ])
+  })
+
+  it('sends each account to its own invoice portal', () => {
+    // The two portals are separate logins: an xm account sent to the api
+    // portal (or the reverse) would be told its password is wrong.
+    expect(requireRelaySite('solov').invoicePortalUrl).toBe('https://invoice-xm.solov.cc/orders')
+    expect(requireRelaySite('solov-api').invoicePortalUrl).toBe('https://invoice-api.solov.cc/orders')
   })
 })

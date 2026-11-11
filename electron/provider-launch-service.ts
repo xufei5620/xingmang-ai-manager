@@ -39,7 +39,7 @@ import {
 import { inspectWorkspaceWritable, shouldNoteReadOnlyWorkspace } from './documents-fallback'
 import { errorCodeOf, toolLaunchFailureMessage } from './failure-wording'
 import { type LinuxTerminalAttempt, LinuxTerminalLaunchError } from './linux-terminal'
-import type { MacosTerminalLaunchPlan } from './macos-platform'
+import { type MacosTerminalLaunchPlan, MacosTerminalNotStartedError } from './macos-platform'
 import { ensureProjectInstructions, readProjectInstructionsTemplate } from './project-instructions'
 import { redactHomeDirectory } from './startup-log'
 import { withSystemCertificateTrust } from './system-certificate-trust'
@@ -599,8 +599,14 @@ export function createProviderLaunchService(context: ServiceContext, dependencie
           macosShellOverrideVariables(provider, accountMode),
         ))
       } catch (error) {
-        // Windows、Linux 另记一条 terminal.failed；Mac 上 open 交回来的退出码和原话挂在 cause 上，
-        // 随这次失败一起进运行日志。
+        // open 交回来的退出码和原话挂在 cause 上，随这次失败一起进运行日志。窗口开了、工具没起来的，
+        // 同 Windows、Linux 另记一条 terminal.failed（SH-3）。
+        if (error instanceof MacosTerminalNotStartedError) {
+          runtimeLog?.log('warn', 'system', 'terminal.failed', `${definition.name} 的终端窗口开了，工具没有跟着起来`, {
+            provider,
+            waitedMs: error.waitedMs,
+          })
+        }
         throw new Error(toolLaunchFailureMessage(definition.name, error), { cause: error })
       }
       return launchResult

@@ -1,3 +1,4 @@
+import { formatClockTime } from '../../calendar-time'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 
 export interface LocalAnnouncementEntry { id: string; title: string; text: string }
@@ -210,19 +211,28 @@ export function timelineEntries(bulletins: TimelineSource[]): TimelineEntry[] {
 
 function pad(value: number): string { return String(value).padStart(2, '0') }
 
-/** `2026-09-09 20:00 · 3 天前`，按本机时区显示。 */
+/**
+ * 公告详情的发布时间，按本机时区、跟全软件一样写「9月9日 20:00 · 3 天前」。30 天以上只写日期
+ * 「2025年11月20日 18:00」，不再折算成「N 个月前」：原来按 30 天一个月算，360 来天会写出「12 个月前」（D60）。
+ */
 export function formatTimelineDate(publishedAt: string, now: number): string {
-  const date = new Date(publishedAt)
-  if (!Number.isFinite(date.getTime())) return ''
-  const absolute = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
-  const minutes = Math.floor((now - date.getTime()) / 60_000)
+  const at = Date.parse(publishedAt)
+  const absolute = formatClockTime(at, now)
+  if (absolute === null) return ''
+  const minutes = Math.floor((now - at) / 60_000)
+  if (minutes >= 30 * 24 * 60) return absolute
   const relative = minutes < 1 ? '刚刚'
     : minutes < 60 ? `${minutes} 分钟前`
       : minutes < 24 * 60 ? `${Math.floor(minutes / 60)} 小时前`
-        : minutes < 30 * 24 * 60 ? `${Math.floor(minutes / (24 * 60))} 天前`
-          : minutes < 365 * 24 * 60 ? `${Math.floor(minutes / (30 * 24 * 60))} 个月前`
-            : `${Math.floor(minutes / (365 * 24 * 60))} 年前`
+        : `${Math.floor(minutes / (24 * 60))} 天前`
   return `${absolute} · ${relative}`
+}
+
+/** 公告列表每条右边的短日期「09-09」，按本机时区；读不出日期返回空串。 */
+export function formatTimelineListDate(publishedAt: string): string {
+  const date = new Date(publishedAt)
+  if (!Number.isFinite(date.getTime())) return ''
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`
 }
 
 function normalizedTitle(title: string): string { return title.replace(/\s+/g, '') }

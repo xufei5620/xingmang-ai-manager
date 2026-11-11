@@ -385,7 +385,7 @@ export function createCanvasNodeExecutors(options: {
       await reportFramePreparation(preparation, false)
     }
   }
-  // 画布完善第 7 条第三步：裁剪、拼图、平铺、图层合成。主进程不处理像素，只核对来源是这个账号、这个项目的
+  // 画布完善第 7 条第三步：裁剪、拼图、宫格裁剪、平铺、图层合成。主进程不处理像素，只核对来源是这个账号、这个项目的
   // 图片、张数和大小在网页版的上限内，再请页面按节点上的参数做好交回来。不发任何付费请求。
   const imageTransform: CanvasNodeExecutors['image-crop'] = async ({ runId, attemptId, userId, projectId, node, inputs, signal, reportImagePreparation }) => {
     const label = canvasRunImageToolNodeLabels[node.kind as keyof typeof canvasRunImageToolNodeLabels] ?? '图片处理'
@@ -404,7 +404,9 @@ export function createCanvasNodeExecutors(options: {
       sources = chosen ? [chosen] : []
     }
     // The kernel checks the rest (collage capacity, layer references) before the run starts.
-    if ((kind === 'crop' || kind === 'tile') && sources.length !== 1) throw new Error(kind === 'crop' ? '裁剪只能使用一个图片来源' : '平铺图片每次只能使用一张输入图片')
+    if (kind === 'crop' && sources.length !== 1) throw new Error('裁剪只能使用一个图片来源')
+    if (kind === 'grid-split' && sources.length !== 1) throw new Error('宫格裁剪只能使用一个图片来源')
+    if (kind === 'tile' && sources.length !== 1) throw new Error('平铺图片每次只能使用一张输入图片')
     if (kind === 'collage' && sources.length < 1) throw new Error('请连接可读取的图片来源')
     if (sources.length > maximumCanvasImageTransformInputs) throw new Error('图片处理最多用 20 张图片')
     const sourceAssetIds = sources.map((source) => source.asset.assetId)
@@ -529,6 +531,7 @@ export function createCanvasNodeExecutors(options: {
     ...(options.imageTools ? {
       'image-crop': imageTransform,
       'image-collage': imageTransform,
+      'image-grid-split': imageTransform,
       'image-tile': imageTransform,
       'image-layer': imageTransform,
       'image-compare': imagePassThrough,
