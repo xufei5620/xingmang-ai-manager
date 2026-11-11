@@ -22,6 +22,8 @@ import {
 import { canvasRunImageToolNodeLabels, canvasRunKernelOnlyNodeLabels } from './canvas-run-contract'
 
 const kernelRefusal = '桌面版暂不支持，本次没有提交任何付费请求'
+// What the desktop parsed before picture roles and video reference orders ran (画布完善第 8 条).
+const referenceOrderOff = { frameExtract: true, imageTools: true, referenceOrder: false }
 
 function kernelNode(kind: string, extra: Record<string, unknown>) {
   return structuredClone({
@@ -472,6 +474,8 @@ describe('canvas request parser', () => {
       ['router', { routerStrategy: { version: 1, strategy: 'all' } }, '路由策略'],
       ['video-generate', { videoProtocol: 'xai-native' }, '这个视频接口'],
       ['video-generate', { videoProtocol: 'ark-seedance' }, '这个视频接口'],
+      // With reference orders running these two are parsed in full instead
+      // (see the picture-role test below); off, they are refused as before.
       ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ kind: 'image', sourceNodeId: 'a' }] } }, '视频参考顺序'],
       ['image-edit', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图角色'],
       ['image-generate', { imageOutputIndex: 0 }, '图片处理'],
@@ -485,7 +489,7 @@ describe('canvas request parser', () => {
       ['image-generate', { tileInput: { columns: 2 } }, '图片处理'],
     ]
     for (const [kind, extra, reason] of cases) {
-      const node = parseCanvasStartRunInput(kernelNode(kind, extra)).graph.nodes[0]
+      const node = parseCanvasStartRunInput(kernelNode(kind, extra), referenceOrderOff).graph.nodes[0]
       expect(node.desktopUnsupported, JSON.stringify(extra)).toBe(`「${reason}」${kernelRefusal}`)
       expect(node.data).toEqual({ prompt: 'p', model: 'm' })
     }
@@ -621,6 +625,43 @@ describe('canvas request parser', () => {
       .toMatchObject({ desktopUnsupported: `「宫格裁剪」节点${kernelRefusal}`, data: { prompt: 'p', model: 'm' } })
   })
 
+  it('hands picture roles and a video reference order on once reference orders are switched on', () => {
+    const roles = { version: 1, slots: [{ role: 'source', edgeId: 'e1', outputIndex: 0 }, { role: 'reference', edgeId: 'e2', outputIndex: 3 }, { role: 'reference', missing: true }] }
+    for (const kind of ['image', 'image-generate', 'image-edit', 'text-generate']) {
+      // The default options follow desktopCanvasCapabilities, which runs them now.
+      const node = parseCanvasStartRunInput(kernelNode(kind, { imageReferenceOrder: roles })).graph.nodes[0]
+      expect(node.desktopUnsupported, kind).toBeUndefined()
+      expect(node.data).toEqual({ prompt: 'p', model: 'm', imageReferenceOrder: roles })
+    }
+    const order = { version: 1, slots: [{ edgeId: 'last', outputIndex: 0 }, { edgeId: 'first', outputIndex: 0 }] }
+    for (const kind of ['video', 'video-generate']) {
+      const node = parseCanvasStartRunInput(kernelNode(kind, { videoReferenceOrder: order })).graph.nodes[0]
+      expect(node.desktopUnsupported, kind).toBeUndefined()
+      expect(node.data).toEqual({ prompt: 'p', model: 'm', videoReferenceOrder: order })
+      // Empty is connection order, what the desktop already does: dropped, so the key stays.
+      expect(parseCanvasStartRunInput(kernelNode(kind, { videoReferenceOrder: { version: 1, slots: [] } })).graph.nodes[0].data).toEqual({ prompt: 'p', model: 'm' })
+    }
+    // On a kind that does not use them they are still refused by name.
+    expect(parseCanvasStartRunInput(kernelNode('video-generate', { imageReferenceOrder: roles })).graph.nodes[0].desktopUnsupported).toBe(`「参考图角色」${kernelRefusal}`)
+    expect(parseCanvasStartRunInput(kernelNode('image-generate', { videoReferenceOrder: order })).graph.nodes[0].desktopUnsupported).toBe(`「视频参考顺序」${kernelRefusal}`)
+    // The kernel's own words for an order it would not have saved.
+    const malformed: Array<[string, Record<string, unknown>, string]> = [
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [] } }, '参考图片角色需要 1 到 4 个位置，且版本须为 1'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: Array.from({ length: 5 }, (_, index) => ({ role: index ? 'reference' : 'source', edgeId: `e${index}`, outputIndex: 0 })) } }, '参考图片角色需要 1 到 4 个位置，且版本须为 1'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'reference', edgeId: 'e', outputIndex: 0 }] } }, '第一个参考位置必须是原图，其余位置必须是参考图'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', edgeId: 'e', outputIndex: 20 }] } }, '参考图片连线或批次位置无效'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', missing: true, edgeId: 'e' }] } }, '缺失的参考图片位置不能携带旧连线或资产身份'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', edgeId: 'e', outputIndex: 0 }, { role: 'reference', edgeId: 'e', outputIndex: 0 }] } }, '参考图片不能重复使用同一连线位置'],
+      ['image-generate', { imageReferenceOrder: { version: 1, slots: [{ role: 'source', edgeId: 'e', outputIndex: 0, apiKey: 'sk-x' }] } }, '画布参考图角色格式错误'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: Array.from({ length: 13 }, (_, index) => ({ edgeId: `e${index}`, outputIndex: 0 })) } }, '视频参考顺序最多保存 12 个素材位置'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ edgeId: 'e', outputIndex: 0 }, { edgeId: 'e', outputIndex: 0 }] } }, '视频参考顺序不能包含重复位置'],
+      ['video-generate', { videoReferenceOrder: { version: 1, slots: [{ edgeId: '', outputIndex: 0 }] } }, '视频参考的连线或批次位置无效'],
+    ]
+    for (const [kind, extra, message] of malformed) {
+      expect(() => parseCanvasStartRunInput(kernelNode(kind, extra)), JSON.stringify(extra)).toThrow(message)
+    }
+  })
+
   it('refuses an image-tool recipe, order or choice it cannot bound or that names another tool', () => {
     const on = { frameExtract: true, imageTools: true }
     const crop = { kind: 'crop', outputWidth: 64, outputHeight: 32 }
@@ -730,7 +771,7 @@ describe('canvas request parser', () => {
       [{ imageTransform: { scale: Number.POSITIVE_INFINITY } }, '画布图片处理配置格式错误'],
     ]
     for (const [extra, message] of malformed) {
-      expect(() => parseCanvasStartRunInput(kernelNode('image-generate', extra)), JSON.stringify(extra)).toThrow(message)
+      expect(() => parseCanvasStartRunInput(kernelNode('image-generate', extra), referenceOrderOff), JSON.stringify(extra)).toThrow(message)
     }
   })
 

@@ -1,8 +1,8 @@
 // 一键检测里「网络与代理」那几项（#1070 第 9 步，从 diagnostics.ts 的 runDiagnostics 原样搬来）：星芒 AI 网络（向当前站点
 // 的公开状态接口发一次请求，「自动」先走的那条没查通就改查备用那条，顺带比一次系统时间）、安全证书（用跑工具的那个
 // Node.js 握手两次）、代理软件的全局接管模式（Clash Verge Rev）、电脑里的代理设置（另外设的代理；系统设置里的代理归
-// diagnostics-proxy-software-check.ts 的「别的代理软件」）。前两项挨着排在工具那几项后面，后两项排在磁盘与文件夹
-// 那几项后面，所以分成 buildNetworkChecks、buildProxyChecks 两段。
+// diagnostics-proxy-software-check.ts 的「别的代理软件」）、Claude Code 自己设置里的代理（D35）。前两项挨着排在工具
+// 那几项后面，后三项排在磁盘与文件夹那几项后面，所以分成 buildNetworkChecks、buildProxyChecks 两段。
 //
 // 各类检查共用的那份在 diagnostics-context.ts；这里只 import diagnostics.ts 的类型，免得两个文件互相 require。
 import fs from 'node:fs'
@@ -21,6 +21,7 @@ import {
   type CertificateTrustVerdict,
   type NodeTlsProbeResult,
 } from './certificate-trust-probe'
+import { providerConfigRoot } from './codex-home'
 import { commandEnvironment, runCommand } from './command-runner'
 import type {
   CheckDefinition,
@@ -38,10 +39,12 @@ import { relayLineFailureAnswer, relayLineFailureReason, reportedRelayLineFailur
 import { firstLaunchTrigger, relayRouteFailureThreshold, relayRouteRecoveryMs, requestFailuresTrigger, type RelayRouteChange } from './relay-route-controller'
 import { relaySiteStatusProbeUrls, relayStatusProbeUrl } from './relay-status-probe'
 import type { RelayEndpointId, RelaySite } from './relay-sites'
+import { readSafeUtf8File } from './safe-local-data'
 import {
   inspectProxyVariables,
   probeLoopbackProxy,
   readWindowsProxyScopes,
+  staleProxyVariableNames,
   type LoopbackProbe,
   type ProxyVariableFinding,
   type ProxyVariableScopes,
@@ -59,6 +62,8 @@ const MAX_CLASH_CONFIG_BYTES = 2 * 1024 * 1024
 /** 两个站的状态接口都只回几 KB 的 JSON；门户页再大也用不着读完才认出来。 */
 const MAX_NETWORK_PROBE_BYTES = 256 * 1024
 const MAX_YAML_ALIAS_COUNT = 20
+/** 手写的 Claude Code 设置不会上百 KB；同「Claude Code 跑命令前要不要先问你」读同一份文件的上限。 */
+const MAX_CLAUDE_SETTINGS_BYTES = 256 * 1024
 
 function clashCandidates(homeDirectory: string, env: NodeJS.ProcessEnv): string[] {
   const appData = env.APPDATA
@@ -204,6 +209,42 @@ export async function proxySettingsOutcome(
     state: 'pass',
     summary: `电脑里设了代理（本机 ${findings[0].target?.port} 端口），工具会通过它联网。`,
     details,
+  }
+}
+
+/**
+ * Claude Code 个人设置（settings.json）env 段里写的那几个代理变量。国内教程几乎都教在这里写
+ * `"HTTPS_PROXY": "http://127.0.0.1:7890"`，客户换到星芒以后它还在：星芒写这份文件时 env 段原样留着（config-files.ts），
+ * Claude Code 启动时又拿这一段盖过进程环境（11-06 实测 ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN 是这样，代理变量
+ * 同一机制，推测一样），所以星芒打开工具前去掉没开的本机代理那一步（withoutDeadLoopbackProxies、Mac 的
+ * buildMacosClosedProxyGuard）管不到它。只留这三个名字的字符串值，别的键（密钥一类）不往下传；大小写交给
+ * inspectProxyVariables 认。不是正经 JSON 的照常抛错。
+ */
+export function claudeSettingsProxyVariables(source: string): NodeJS.ProcessEnv {
+  const parsed: unknown = JSON.parse(source)
+  const env = isRecord(parsed) && isRecord(parsed.env) ? parsed.env : null
+  if (!env) return {}
+  const names = new Set<string>(staleProxyVariableNames)
+  return Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => (
+    names.has(entry[0].toUpperCase()) && typeof entry[1] === 'string'
+  )))
+}
+
+/**
+ * 「Claude Code 自己设置里的代理」（D35，代理.md PX-4）：代理软件一关 Claude Code 就连不上，别的检查项却全绿，
+ * 客服也看不出来。照「电脑里的代理设置」同一套规则判（inspectProxyVariables），只有指向本机、试连连不上的才出
+ * 这一项、亮黄灯；开着的、指向别的机器的、没写的、没有这份文件的都不出——决定单只给了发现时那一句。不给按钮
+ * （yoyo 回的「决定单照推荐」= 「D35 改」不加按钮）：那是客户自己设的值，星芒只说一声。details 同样只写变量名
+ * 和端口，不写原值：原值里可能带着代理的用户名和密码。
+ */
+export async function claudeSettingsProxyOutcome(source: string | null, probe: LoopbackProbe): Promise<CheckOutcome> {
+  if (source === null) return { state: 'pass', summary: '', omit: true }
+  const findings = await inspectProxyVariables(claudeSettingsProxyVariables(source), probe)
+  if (!findings.some((finding) => finding.reach === 'closed')) return { state: 'pass', summary: '', omit: true }
+  return {
+    state: 'warn',
+    summary: 'Claude Code 自己的设置里写了一个代理，它现在没开，Claude Code 会连不上。',
+    details: proxyFindingDetails(findings),
   }
 }
 
@@ -617,7 +658,7 @@ export function buildNetworkChecks(context: DiagnosticsContext): CheckDefinition
 }
 
 export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[] {
-  const { dependencies, env, userHome, displayRoots, platform } = context
+  const { dependencies, env, userHome, providerRoots, displayRoots, platform, sanitize, log } = context
   const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const probeProxy = dependencies.probeLoopbackProxy ?? probeLoopbackProxy
 
@@ -660,6 +701,24 @@ export function buildProxyChecks(context: DiagnosticsContext): CheckDefinition[]
         platform === 'win32' ? dependencies.readProxyScopes ?? (() => readWindowsProxyScopes()) : undefined,
         platform,
       ),
+    },
+    {
+      code: 'CLAUDE_SETTINGS_PROXY',
+      title: 'Claude Code 自己设置里的代理',
+      run: async () => {
+        try {
+          const settingsPath = path.join(providerConfigRoot('claude', providerRoots), 'settings.json')
+          return await claudeSettingsProxyOutcome(
+            await readSafeUtf8File(settingsPath, 'Claude Code 设置文件', MAX_CLAUDE_SETTINGS_BYTES),
+            probeProxy,
+          )
+        } catch (error) {
+          // 读不了（链接、太大、读的时候在改）或不是正经 JSON 的，「Claude Code 跑命令前要不要先问你」读的是同一份
+          // 文件，会在那一项报出来；这一项只是提醒，不再多出一条报错，原因只进日志（原文可能带用户名，先脱敏）。
+          log?.('info', 'diagnostics.claude-settings-proxy.skipped', 'Claude Code 设置里的代理没查', { raw: sanitize(errorChainText(error)) })
+          return { state: 'pass', summary: '', omit: true }
+        }
+      },
     },
   ]
 }

@@ -31,8 +31,10 @@ describe('desktop canvas capabilities', () => {
     // and hands it back through canvas-host:complete-run-preparation
     // (canvas-run-preparations.ts). 第 7 条第三步: the kernel makes the
     // pictures a crop, collage, tile or layer node waits on and hands them back
-    // the same way. The rest stays off.
-    const { accountSummary, quote, imageEditMask, textGenerate, byteUpload, frameExtract, imageTools, ...rest } = desktopCanvasCapabilities.features
+    // the same way. 第 8 条第一步: picture roles and video reference orders
+    // reorder what the node already receives (canvas-reference-order.ts). The
+    // rest stays off.
+    const { accountSummary, quote, imageEditMask, textGenerate, byteUpload, frameExtract, imageTools, referenceOrder, ...rest } = desktopCanvasCapabilities.features
     expect(accountSummary).toBe(true)
     expect(quote).toBe(true)
     expect(imageEditMask).toBe(true)
@@ -40,6 +42,7 @@ describe('desktop canvas capabilities', () => {
     expect(byteUpload).toBe(true)
     expect(frameExtract).toBe(true)
     expect(imageTools).toBe(true)
+    expect(referenceOrder).toBe(true)
     expect(Object.values(rest).every((enabled) => enabled === false)).toBe(true)
     // Image nodes send 2-4 independent one-image requests (canvas-run-engine.ts).
     expect(desktopCanvasCapabilities.imageCandidates.maximum).toBe(4)

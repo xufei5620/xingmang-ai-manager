@@ -71,6 +71,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'config:switch-account-source': { log: 'normal', account: 'scoped' },
   'config:repair-cli-hooks': { log: 'normal', account: 'scoped' },
   'config:set-claude-write-boundary': { label: '只让 Claude Code 改项目文件夹里的文件', log: 'normal', account: 'scoped' },
+  'config:set-claude-commit-attribution': { label: 'Claude Code 提交代码时不署名', log: 'normal', account: 'scoped' },
   'tools:inspect-running': { label: '换账号后检查哪些工具还开着', log: 'normal', account: 'none' },
   'tools:check-models': { label: '打开工具前核对当前账号能用的模型', log: 'normal', account: 'scoped' },
   'tools:cli-model-hints': { label: '读取服务状态文件里的型号表', log: 'normal', account: 'none' },
@@ -185,6 +186,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // configure-managed-clis, reveal-key, list-key-models, configure-cli-with-key).
   'account:get-status': { label: '星芒账号服务状态读取', log: 'quiet-success', account: 'none' },
   'account:get-notice': { log: 'polling', account: 'scoped' },
+  // 打开公告时一张图一次，成功了只会刷屏；下不下来照记，排查破图要用。
+  'account:get-notice-image': { label: '公告图片下载', log: 'quiet-success', account: 'scoped' },
   'account:mark-notice-read': { log: 'normal', account: 'scoped' },
   'account:sync-local-notice-reads': { log: 'polling', account: 'scoped' },
   'acceleration:get-state': { log: 'normal', account: 'none' },
@@ -287,6 +290,7 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'chat:asset-menu': { log: 'quiet-success', account: 'scoped' },
   'chat:pick-images': { label: '聊天图片选择', log: 'quiet-success', account: 'scoped' },
   'chat:paste-image': { label: '聊天截图粘贴', log: 'quiet-success', account: 'scoped' },
+  'chat:pick-text-files': { label: '聊天选文字文件', log: 'quiet-success', account: 'scoped' },
   // 出视频要几分钟。换账号时 main.ts 先叫停视频服务再等账号工作结束，所以照样能放进账号工作里。
   'video-studio:plan': { label: '视频剪辑分镜', log: 'normal', account: 'scoped' },
   'video:generate': { label: 'AI 视频生成', log: 'normal', account: 'scoped' },

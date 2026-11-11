@@ -176,6 +176,7 @@ Claude Code 的 `fallbackModel`（settings.json，型号数组，最多认三个
 | Claude 的 DesignSync 工具 | 同上 | 不禁 | 禁掉（只在星芒来源下写，切回官方删掉） | 要 claude.ai 登录才能用，2.1.277 在中转上却每次都把它发给模型 |
 | Claude 的命令确认 | `permissions.defaultMode` 与 `skipDangerousModePermissionPrompt` | `default`（逐条问）；2.1.283 起接第三方中转又没写时进自动模式 | `bypassPermissions`（新客户模板写；已有设置的老客户只在没写时补，写过任何模式都不动） | 本产品的卖点就是不用自己配、也不用自己按确认 |
 | Claude 不许写到项目文件夹外面 | `~/.claude/settings.json` 的 `permissions.blockWritesOutsideWorkingDirectories`（2.1.314 起有） | 不开 | **默认不写**；客户在「设置 › 工具管理」打开「只让 Claude Code 改项目文件夹里的文件」才写 `true`（客户自己写过任何值都不动）。跟命令确认那两项一样记成星芒填的：关掉开关、开关关着时接当前账号、切回官方账号都只撤记下的而且值还是 `true` 的 | `bypassPermissions` 下 AI 改哪儿都不问，这一项只拦写文件、改文件，不拦终端命令和读（Fable 第二轮 Q6，2.1.319 沙箱试过） |
+| Claude 提交代码时的署名 | `~/.claude/settings.json` 的 `attribution` | 提交和 PR 末尾加 Claude 的署名（`Co-Authored-By`、`Generated with`） | **默认不写**；客户在「设置 › 工具管理」打开「Claude Code 提交代码时不署名」才写 `{ "commit": "", "pr": "" }`（不写 `false`：旧版本见到会报错，整份设置不读；客户自己写过任何 `attribution` 都不动）。同上记成星芒填的，只撤原样没改过的那一份 | 往公司仓库提交的客户不想带 AI 署名（同类对比 备选 6，2.1.319 沙箱看过请求里不再有那两段） |
 | Claude 的回复语言 | `language` | 未设（跟着对话语言走） | `简体中文` | 只靠 AGENTS.md 撑不住：克隆来的项目大多已有说明文件，模板不会生成 |
 | Codex、Grok 的回复语言 | `~/.codex/AGENTS.md`、`~/.grok/AGENTS.md`（两家的全局说明，拼在项目说明前面交给模型） | 没有（跟着项目说明和对话语言走） | 一份写着「始终用简体中文回复」的 `AGENTS.md`（配置目录里已有任何一份全局说明就不放：Codex 的 `AGENTS.override.md` / `AGENTS.md`，Grok 认的 `AGENTS.md` / `AGENT.md` / `CLAUDE.md` / `CLAUDE.local.md`，大小写不论、链接也算；切回官方不收回） | 同上，两家又没有 `language` 这样的设置 |
 | Claude 的记录保留期 | `cleanupPeriodDays` | 30 天 | 365 天 | 记录页、「接着聊」、导出都建立在文件还在的前提上 |

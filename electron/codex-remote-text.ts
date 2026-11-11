@@ -16,9 +16,11 @@ export const remoteMessages = {
   nothingToStop: '现在没有在处理的任务。',
   newThread: '已开始新对话。',
   unsupported: '暂时只支持文字消息。',
-  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
+  help: '直接发消息就能让 Codex 干活。\n能用的指令：新对话、停止、状态、关闭遥控、帮助。\nCodex 要改文件、跑会改东西的命令时会先问你，回「同意」或「拒绝」；只是看文件不问。',
   idleClosed: '4 小时没有新消息，手机遥控已自动关闭。要再用，请在电脑上的星芒里重新打开。',
   closedOnComputer: '手机遥控已在电脑上关闭。',
+  // 手机上发「关闭遥控」（Fable 手机遥控 YF-17，yoyo 2026-11-11「第三批改」）：开着的渠道都收到这一句。
+  closedFromPhone: '手机遥控已关闭。要再用，请在电脑上的星芒里重新打开。',
   quitting: '电脑上的星芒关了，遥控已停。再打开星芒并打开遥控才能继续。',
   quitAborted: '电脑上的星芒没关成，遥控还开着，可以接着用。',
   stalled: '这件事 1 小时没有任何进展，已经停下。可以重新说一遍要做什么。',
@@ -128,6 +130,11 @@ export function approvalExpiredMessage(id: string, minutes: number): string {
   return `第 ${id} 条等了 ${minutes} 分钟没回，已自动拒绝。`
 }
 
+/** 等你同意的快过期时提醒一次（Fable 手机遥控 YF-20，yoyo 2026-11-11「第三批改」）。 */
+export function approvalExpiringMessage(id: string, minutesLeft: number): string {
+  return `第 ${id} 条还在等你，${minutesLeft} 分钟后自动拒绝。回「同意 ${id}」或「拒绝 ${id}」。`
+}
+
 export function unknownApprovalMessage(id: string): string {
   return `没有第 ${id} 条等你同意的操作。`
 }
@@ -140,6 +147,14 @@ export interface RemoteStatusSummary {
   workspace: string
   running: boolean
   pendingApprovals: number
+}
+
+/**
+ * 电脑上打开遥控、第一次连上时给配对过的人发的这一句（Fable 手机遥控 YF-11，yoyo 2026-11-11「第三批改」）。
+ * workspace 是已换成 ~ 的工作文件夹，跟「状态」里那行同一种写法。
+ */
+export function remoteOpenedMessage(workspace: string): string {
+  return `电脑上的手机遥控打开了，可以发消息了。工作文件夹：${workspace}`
 }
 
 export function statusMessage(status: RemoteStatusSummary): string {
@@ -201,6 +216,7 @@ export type RemoteCommand =
   | { kind: 'stop' }
   | { kind: 'status' }
   | { kind: 'help' }
+  | { kind: 'close' }
   | { kind: 'approval'; decision: 'accept' | 'decline'; approvalId?: string }
 
 const plainCommands: Record<string, RemoteCommand['kind']> = {
@@ -208,6 +224,7 @@ const plainCommands: Record<string, RemoteCommand['kind']> = {
   停止: 'stop',
   状态: 'status',
   帮助: 'help',
+  关闭遥控: 'close',
 }
 
 /**
@@ -218,7 +235,7 @@ export function parseRemoteCommand(text: string, hasPendingApprovals: boolean): 
   const trimmed = text.trim()
   const bare = trimmed.replace(/^[/／]\s*/, '')
   const plain = plainCommands[bare]
-  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help') return { kind: plain }
+  if (plain === 'new-thread' || plain === 'stop' || plain === 'status' || plain === 'help' || plain === 'close') return { kind: plain }
   if (hasPendingApprovals) {
     const match = /^(同意|拒绝)(?:\s*(?:第\s*)?(\d{1,4})\s*条?)?$/.exec(bare)
     if (match) {

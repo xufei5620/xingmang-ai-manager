@@ -618,6 +618,25 @@ test('the Claude Code write boundary switch starts off and goes through its own 
   } finally { await page.close() }
 })
 
+// 同类对比 备选 6：「不署名」开关默认关，走自己那条通道，跟上面那个开关互不影响。
+test('the Claude Code commit attribution switch starts off and goes through its own channel', async () => {
+  const page = await open()
+  try {
+    const settings = await openSettingsGroup(page, '工具管理')
+    const row = settings.getByTestId('settings-claude-commit-attribution').getByRole('switch', { name: 'Claude Code 提交代码时不署名', exact: true })
+    await expect(row).toHaveAttribute('aria-checked', 'false')
+    await settings.getByText('开着时，Claude Code 替你提交代码（git commit）和发 PR 时，不再在末尾加上 Claude 的署名。', { exact: true }).waitFor()
+    await row.click()
+    await waitForToast(page, '已打开，新开的 Claude Code 提交代码时不再署名。')
+    await expect(row).toHaveAttribute('aria-checked', 'true')
+    await expect(settings.getByTestId('settings-claude-write-boundary').getByRole('switch')).toHaveAttribute('aria-checked', 'false')
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'setClaudeCommitAttribution').map((entry) => entry.args), [[true]])
+    assert.equal(calls.some((entry) => entry.method === 'setClaudeWriteBoundary' || entry.method === 'saveSettings'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('the Claude Code write boundary switch says so when the customer\'s own Claude Code setting was left alone', async () => {
   const page = await open('writeBoundary=kept')
   try {
@@ -5943,6 +5962,33 @@ test('Markdown announcements render headings, lists, emphasis and links', async 
     await clean(page)
   } finally { await page.close() }
 })
+
+// D89 a：页面的安全设置不放网上图片，官网的图由主进程下好交回 data: 地址；页面自己一次网都不连。
+for (const [label, query] of [['Markdown', 'noticeImage=1'], ['rich HTML', 'noticeImage=1&noticeImageHtml=1']]) {
+  test(`${label} announcement images come from the host as data URLs, and the rest show their caption`, async () => {
+    const page = await open(query)
+    const outside = []
+    page.on('request', (request) => {
+      if (!request.url().startsWith(origin + '/') && !request.url().startsWith('data:')) outside.push(request.url())
+    })
+    try {
+      await page.getByTestId('page-home').waitFor()
+      await page.getByRole('button', { name: /^公告/ }).click()
+      const dialog = page.getByRole('dialog', { name: '公告' })
+      const image = dialog.getByRole('img', { name: '官方二维码' })
+      await image.waitFor()
+      assert.match(await image.getAttribute('src'), /^data:image\/png;base64,/)
+      await expect.poll(() => image.evaluate((element) => element.complete && element.naturalWidth)).toBe(1)
+      await dialog.getByText('[图片：下不下来]', { exact: true }).waitFor()
+      await dialog.getByText('[图片：外部图片]', { exact: true }).waitFor()
+      await expect(dialog.locator('img')).toHaveCount(1)
+      const asked = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountNoticeImage').map((call) => call.args[0]))
+      assert.deepEqual([...new Set(asked)].sort(), ['https://xm.solov.cc/missing.png', 'https://xm.solov.cc/qr.png'])
+      assert.deepEqual(outside, [])
+      await clean(page)
+    } finally { await page.close() }
+  })
+}
 
 test('a blocked announcement link is copied for the browser instead of failing', async () => {
   const page = await open('noticeMarkdown=1&externalBlocked=1')

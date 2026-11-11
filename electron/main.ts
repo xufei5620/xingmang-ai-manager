@@ -17,6 +17,7 @@ import {
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
+import { createAnnouncementImageReader } from './announcement-image'
 import type { AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import type { AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
@@ -26,6 +27,8 @@ import { createAccelerationPreferenceStore } from './acceleration-preference-sto
 import { hasAccelerationProxyRecoveryRecords, readAccelerationDevelopmentConfig, type AccelerationDevelopmentHost } from './acceleration-development-host'
 import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { createAiChatHistoryStore } from './ai-chat-history-store'
+import { chatTextFileExtensions, createChatTextFileService } from './ai-chat-text-files'
+import { readBoundedFilePrefix } from './bounded-file'
 import { createChatHistoryFlush } from './chat-history-flush'
 import { createManagedKeyReplacementStore } from './managed-key-replacement-store'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
@@ -2099,6 +2102,18 @@ if (!hasSingleInstanceLock) {
     const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
     const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)
     const chatAttachments = createRealmServiceDispatch(() => currentBusiness().chatAttachments)
+    // 文字类文件不进资产库、不分账号：读完只把字交给聊天窗口，所以不跟着账号切。
+    const chatTextFiles = createChatTextFileService({
+      pickFiles: async () => {
+        const result = await dialog.showOpenDialog({
+          title: '选择要发给 AI 的文件',
+          properties: ['openFile', 'multiSelections'],
+          filters: [{ name: '文字类文件', extensions: [...chatTextFileExtensions] }],
+        })
+        return result.canceled ? [] : result.filePaths
+      },
+      readPrefix: (filePath, maximumBytes) => readBoundedFilePrefix(filePath, maximumBytes, '聊天文件'),
+    })
     const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
     const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
     const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
@@ -2509,6 +2524,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
+      announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,
@@ -2523,6 +2539,7 @@ if (!hasSingleInstanceLock) {
       imageService,
       aiAssets: assetStore,
       chatAttachments,
+      chatTextFiles,
       videoService: chatVideoService,
       videoAssets,
       audioAssets,

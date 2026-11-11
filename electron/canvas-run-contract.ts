@@ -117,6 +117,18 @@ export interface CanvasRunGraphNode {
      * a new picture, so it stays out of the fingerprint, as on the web host.
      */
     imageOutputIndex?: number
+    /**
+     * Image, image-generate, image-edit and text-generate nodes (画布完善第 8
+     * 条): which connected picture is the source and which are references, in
+     * the order the request sends them. Absent means connection order.
+     */
+    imageReferenceOrder?: CanvasImageReferenceOrder
+    /**
+     * Video nodes only: the order the user arranged the references in (which
+     * picture is the first frame). Absent means connection order, as before;
+     * an empty order is dropped by the parser for the same reason.
+     */
+    videoReferenceOrder?: CanvasVideoReferenceOrder
   }
 }
 
@@ -131,6 +143,14 @@ export interface CanvasImageTransformRecipe {
 export interface CanvasImageCollageInputSlot { edgeId: string; outputIndex: number }
 export interface CanvasImageCollageInputOrder { version: 1; slots: CanvasImageCollageInputSlot[] }
 export type CanvasTileInputSelection = { edgeId: string; outputIndex: number } | { missing: true }
+
+/** One picture reaching a node, named by its connection and its place in that connection's batch. */
+export interface CanvasReferenceIdentity { edgeId: string; outputIndex: number }
+/** The kernel's ImageReferenceSlot (commerce/image-reference-order.ts): slot 1 is the source, the rest references. */
+export type CanvasImageReferenceSlot = { role: 'source' | 'reference' } & (CanvasReferenceIdentity | { missing: true })
+export interface CanvasImageReferenceOrder { version: 1; slots: CanvasImageReferenceSlot[] }
+/** The kernel's VideoReferenceOrder (video-tools/video-reference-order.ts), at most 12 slots. */
+export interface CanvasVideoReferenceOrder { version: 1; slots: CanvasReferenceIdentity[] }
 
 export type CanvasRunImageCandidateCount = 1 | 2 | 3 | 4
 

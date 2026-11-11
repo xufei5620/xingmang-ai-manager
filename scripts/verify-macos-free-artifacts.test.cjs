@@ -8,6 +8,7 @@ const { gzipSync } = require('node:zlib')
 const YAML = require('yaml')
 const { createSettledPackage } = require('./asar-fixture.test-support.cjs')
 const { publishedSigningCertificateSha256 } = require('./macos-published-signing-identity.cjs')
+const { NOTICES_HEADING } = require('./third-party-notices.cjs')
 
 // 夹具直接用仓库登记的那张已发布证书，好让跨版本连续性核对在每条用例里都真的跑
 // 一遍；换证书的拒绝路径由下面那条专门的用例覆盖。
@@ -180,6 +181,7 @@ async function createInspectableZipFixture(t, {
   helperName = 'Fixture Helper.app',
   fuseStates = hardenedFuseStates(),
   frameworkVersions = ['A'],
+  omitLicenseFile = null,
 } = {}) {
   const root = temporaryDirectory(t)
   const sourceApp = path.join(root, 'Fixture.app')
@@ -222,6 +224,15 @@ async function createInspectableZipFixture(t, {
     'url: https://updates.shenfengwl.fun/xingmang-manager/',
     '',
   ].join('\n'))
+  // The real bundle carries these in Contents/Resources (electron-builder.config.cjs afterExtract and extraResources).
+  const licenseFiles = {
+    'THIRD-PARTY-NOTICES.txt': `${NOTICES_HEADING}\n`,
+    'LICENSE.electron.txt': 'Copyright (c) Electron contributors\n',
+    'LICENSES.chromium.html': '<pre>GNU LESSER GENERAL PUBLIC LICENSE\nVersion 2.1, February 1999</pre>\n',
+  }
+  for (const [name, contents] of Object.entries(licenseFiles)) {
+    if (name !== omitLicenseFile) fs.writeFileSync(path.join(resourcesDirectory, name), contents)
+  }
   const asarSource = path.join(root, 'asar-source')
   fs.mkdirSync(asarSource)
   fs.writeFileSync(path.join(asarSource, 'package.json'), JSON.stringify({
@@ -1153,6 +1164,31 @@ test('reports the verified entitlements of the application and of every helper',
     entitlementKeys: [...SELF_SIGNED_ENTITLEMENT_KEYS].sort(),
   }])
 })
+
+test('accepts a macOS bundle that carries the third-party notices and the Electron and Chromium licenses', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const result = await verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+  })
+  assert.equal(result.thirdPartyNoticeCount, 0)
+})
+
+// electron-builder deletes the last two from every macOS bundle on its own
+// (app-builder-lib electronMac.js); only the afterExtract hook puts them back.
+for (const name of ['THIRD-PARTY-NOTICES.txt', 'LICENSE.electron.txt', 'LICENSES.chromium.html']) {
+  test(`rejects a macOS bundle without ${name}`, async (t) => {
+    const fixture = await createInspectableZipFixture(t, { omitLicenseFile: name })
+    const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+    await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+      expectedCertificateSha256: certificateSha256,
+      expectedVersion: '1.2.3',
+      commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+    }), new RegExp(name.replaceAll('.', '\\.')))
+  })
+}
 
 test('asserts the packaged Electron fuses of the macOS bundle, not only of the Windows build', async (t) => {
   const fixture = await createInspectableZipFixture(t)

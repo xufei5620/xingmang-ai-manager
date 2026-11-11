@@ -18,10 +18,17 @@ import {
   parseCanvasTileInput,
 } from './canvas-image-tools'
 import {
+  canvasImageReferenceNodeKind,
+  canvasVideoReferenceNodeKind,
+  parseCanvasNodeImageReferenceOrder,
+  parseCanvasVideoReferenceOrder,
+} from './canvas-reference-order'
+import {
   canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
   type CanvasImageCollageInputOrder,
   type CanvasImageEditMask,
+  type CanvasImageReferenceOrder,
   type CanvasImageTransformRecipe,
   type CanvasRunGraph,
   type CanvasRunImageCandidateCount,
@@ -30,6 +37,7 @@ import {
   type CanvasRunNodeKind,
   type CanvasRunScope,
   type CanvasTileInputSelection,
+  type CanvasVideoReferenceOrder,
 } from './canvas-run-contract'
 import type { AiImageGenerateInput } from './ipc-contract'
 import { isRecord } from './input-guards'
@@ -396,6 +404,34 @@ function referenceSlotCount(value: unknown, label: string, maximum: number, budg
   return value.slots.length
 }
 
+/** What a node carries once the desktop runs reference orders (画布完善第 8 条). */
+interface ParsedReferenceOrderFields {
+  imageReferenceOrder?: CanvasImageReferenceOrder
+  videoReferenceOrder?: CanvasVideoReferenceOrder
+}
+
+/**
+ * The picture roles of an image, image-generate, image-edit or text-generate
+ * node and the reference order of a video node, parsed in full with the
+ * kernel's rules (canvas-reference-order.ts) because they change the request.
+ * An empty video order is what the desktop already does, so it is dropped and
+ * the node keeps its fingerprint.
+ */
+function referenceOrderFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedReferenceOrderFields {
+  if (!options.referenceOrder) return {}
+  const fields: ParsedReferenceOrderFields = {}
+  if (data.imageReferenceOrder !== undefined && canvasImageReferenceNodeKind(kind)) {
+    assertBoundedKernelValue(data.imageReferenceOrder, '画布参考图角色', budget)
+    fields.imageReferenceOrder = parseCanvasNodeImageReferenceOrder(kind, data.imageReferenceOrder)
+  }
+  if (data.videoReferenceOrder !== undefined && canvasVideoReferenceNodeKind(kind)) {
+    assertBoundedKernelValue(data.videoReferenceOrder, '画布视频参考顺序', budget)
+    const order = parseCanvasVideoReferenceOrder(data.videoReferenceOrder)
+    if (order.slots.length > 0) fields.videoReferenceOrder = order
+  }
+  return fields
+}
+
 /**
  * Returns why the desktop cannot run this node as the kernel asked, or
  * undefined when every kernel field is absent or equal to what the desktop
@@ -435,10 +471,16 @@ function kernelFieldsUnsupported(
     // The desktop always submits through the relay's /v1/videos.
     if (data.videoProtocol !== 'relay-videos') reasons.push('这个视频接口')
   }
-  const videoSlots = referenceSlotCount(data.videoReferenceOrder, '画布视频参考顺序', 12, budget)
-  if (videoSlots !== undefined && videoSlots > 0) reasons.push('视频参考顺序')
-  const imageSlots = referenceSlotCount(data.imageReferenceOrder, '画布参考图角色', 4, budget)
-  if (imageSlots !== undefined) reasons.push('参考图角色')
+  // referenceOrderFields parses both orders on the kinds that use them while
+  // the desktop runs them (画布完善第 8 条); anywhere else they stay refused.
+  if (!(options.referenceOrder && canvasVideoReferenceNodeKind(kind))) {
+    const videoSlots = referenceSlotCount(data.videoReferenceOrder, '画布视频参考顺序', 12, budget)
+    if (videoSlots !== undefined && videoSlots > 0) reasons.push('视频参考顺序')
+  }
+  if (!(options.referenceOrder && canvasImageReferenceNodeKind(kind))) {
+    const imageSlots = referenceSlotCount(data.imageReferenceOrder, '画布参考图角色', 4, budget)
+    if (imageSlots !== undefined) reasons.push('参考图角色')
+  }
   if (data.imageOutputIndex !== undefined && !imageToolsRun) {
     if (!Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) > 10_000) throw new Error('画布图片输出序号格式错误')
     reasons.push('图片处理')
@@ -677,6 +719,8 @@ export interface CanvasStartRunParseOptions {
   frameExtract: boolean
   /** Whether image-tool nodes run (画布完善第 7 条第三步); defaults to desktopCanvasCapabilities.features.imageTools. */
   imageTools?: boolean
+  /** Whether picture roles and video reference orders run (第 8 条); defaults to desktopCanvasCapabilities.features.referenceOrder. */
+  referenceOrder?: boolean
 }
 
 export function parseCanvasStartRunInput(
@@ -684,6 +728,7 @@ export function parseCanvasStartRunInput(
   options: CanvasStartRunParseOptions = {
     frameExtract: desktopCanvasCapabilities.features.frameExtract,
     imageTools: desktopCanvasCapabilities.features.imageTools,
+    referenceOrder: desktopCanvasCapabilities.features.referenceOrder,
   },
 ): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
@@ -710,6 +755,7 @@ export function parseCanvasStartRunInput(
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
     const imageTools = imageToolFields(kind, entry.data, kernelFieldBudget, options)
+    const referenceOrders = referenceOrderFields(kind, entry.data, kernelFieldBudget, options)
     const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options, imageTools !== undefined)
     // Range-checked by kernelFieldsUnsupported above; kept only where it runs.
     const frameTimestampSeconds = kind === 'frame-extract' && options.frameExtract
@@ -773,6 +819,8 @@ export function parseCanvasStartRunInput(
         ...(imageTools?.imageCollageInputOrder ? { imageCollageInputOrder: imageTools.imageCollageInputOrder } : {}),
         ...(imageTools?.tileInput ? { tileInput: imageTools.tileInput } : {}),
         ...(imageTools?.imageOutputIndex !== undefined ? { imageOutputIndex: imageTools.imageOutputIndex } : {}),
+        ...(referenceOrders.imageReferenceOrder ? { imageReferenceOrder: referenceOrders.imageReferenceOrder } : {}),
+        ...(referenceOrders.videoReferenceOrder ? { videoReferenceOrder: referenceOrders.videoReferenceOrder } : {}),
       },
     }
   })
