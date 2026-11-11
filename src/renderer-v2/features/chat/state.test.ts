@@ -231,6 +231,12 @@ describe('v2 chat request transitions', () => {
     expect(chatErrorMessage('当前模型不可用', 'model-unavailable')).toBe('当前模型暂时用不了，请刷新模型后重新选择')
     expect(chatErrorMessage('无法连接 AI 服务，请检查网络后重试', 'network-error')).toBe('无法连接 AI 服务，请检查网络后重试')
   })
+  it('shows the low disk space stop before a paid image instead of asking for a retry that cannot work (D38)', () => {
+    const windows = 'C 盘空间不足，只剩 120 MB，至少需要 200 MB，请先清理 C 盘再试'
+    expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${windows}`))).toBe(windows)
+    const mac = '磁盘空间不足，只剩 35 MB，至少需要 200 MB，请先清理磁盘再试'
+    expect(chatErrorMessage(new Error(mac))).toBe(mac)
+  })
   it('shows an image refusal the main process already worded instead of asking for a retry', () => {
     const blocked = '这次的描述或参考图没通过安全审核，没有生成图片。改一改描述或换一张图再试。'
     expect(chatErrorMessage(new Error(`Error invoking remote method 'ai:image-generate': Error: ${blocked}`))).toBe(blocked)

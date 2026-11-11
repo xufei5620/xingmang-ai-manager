@@ -17,6 +17,12 @@ export const installMinimumFreeBytes = 1024 ** 3
  * 卡在门槛上才报等于没提醒。
  */
 export const lowDiskSpaceBytes = 2 * 1024 ** 3
+/**
+ * 发付费的生图、生视频请求之前，作品保存位置所在的盘至少要剩这么多（D38）。钱一扣，作品就得存得下：
+ * 以前只试写 2 个字节，盘只剩几兆照样放行，视频下下来存不进去，钱白花了。一段视频一般几十兆、
+ * 一张图几兆，存的时候先写一份临时文件再挂上去，这条线给几段同时出的视频都留够了余地。
+ */
+export const paidGenerationMinimumFreeBytes = 200 * 1024 ** 2
 
 export interface DiskSpaceReading {
   /** 普通用户真正能用掉的字节数（statfs 的 bavail，不含只留给 root 的那部分）。*/
