@@ -272,6 +272,11 @@ let cancelExternalInstall: ((error: Error) => void) | null = null
 let holdExternalScan = false
 // 工具开没开（inspectRunningTools）；?runningTools 开机时都开着，用例可以中途关掉（setToolsRunning）。
 let fixtureToolsRunning = query.has('runningTools')
+// ?bypassLeft：Claude Code 切回官方以后还是「不逐条确认就执行」、又没问过，主进程让界面问一句（Fable 复查第一轮 3）；答过就不再问。
+let commandConfirmationAnswered = false
+function commandConfirmationQuestion(provider: ProviderId) {
+  return provider === 'claude' && query.has('bypassLeft') && !commandConfirmationAnswered ? { askCommandConfirmation: true } : {}
+}
 let releaseExternalScan: () => void = () => undefined
 let holdConfigRead = false
 let releaseConfigRead: () => void = () => undefined
@@ -810,14 +815,18 @@ const methods = {
     config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
       ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const, actualBaseUrl: '', matchesRelay: false } : {}),
       ...(mode === 'reset' ? { configBroken: false, codexAuthBroken: false } : {}) }
-    return { backups: [], files: [] }
+    return { backups: [], files: [], ...(mode === 'reset' ? {} : commandConfirmationQuestion(provider)) }
+  },
+  answerClaudeCommandConfirmation: async (choice: 'ask' | 'keep') => {
+    commandConfirmationAnswered = true
+    return { choice, changed: choice === 'ask' }
   },
   switchAccountSource: async (provider: ProviderId, target: 'account' | 'official') => {
     if (target === 'official') {
       config.providers[provider] = { ...config.providers[provider], hasApiKey: false, matchesRelay: false, actualBaseUrl: '',
         ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const } : {}) }
       return { provider, target, backupId: 'fixture-backup', verified: false, loginRequired: false, message: '已切回官方账号，原来的配置已备份。',
-        ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}) }
+        ...(query.has('runningTools') ? { runningTools: fixtureRunningTools([provider]) } : {}), ...commandConfirmationQuestion(provider) }
     }
     // 真实的切换遇到工具读不了的文件改走重置，切完文件就好了。
     config.providers[provider] = { ...config.providers[provider], hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl,

@@ -31,6 +31,11 @@ export interface AccountSourceSwitchResult {
    * 提示按旧行为无条件带上「关掉重开」。
    */
   runningTools?: RunningToolsReport
+  /**
+   * 切回官方以后 Claude Code 还是「不逐条确认就执行」、这台电脑上又没问过（Fable 复查第一轮 3）：界面接着问客户一次。
+   * 由 ipc/handlers/config.ts 在切完以后补上；缺省 = 不用问。
+   */
+  askCommandConfirmation?: boolean
 }
 
 export interface AccountSourceSwitchDependencies {

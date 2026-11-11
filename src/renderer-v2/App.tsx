@@ -13,6 +13,7 @@ import { buildEnvironmentStatus, environmentJobsFinished, markDiagnosticsStale, 
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideFolderFields, guideOfficialLoginRequired, isGuideToolRoute, type AuthMode, type GuideLanding, type GuideRoute, type GuideToolState, type LoginTarget, useGuideLaunch } from './features/auth'
 import { AuthConnectionRoutes } from './features/app/AuthConnectionRoutes'
+import { CommandConfirmationDialog } from './features/tools/CommandConfirmationDialog'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { OfficialQuotaDialog } from './features/tools/OfficialQuotaDialog'
@@ -230,7 +231,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const { accountBootstrap, accountBootstrapRef, runAccountBootstrap, rewriteAccountKeys, applySubscriptionToTools, followSessionChange, abandonAccountBootstrap, suppressRestore } = useAccountBootstrap({
     native, settings, toast, toolbox, session, scope, siteId, boot, auth, offline, noteStartupCheck, mounted, accountEpoch, setAuth, setWorkspaceEntered, restoredBoot,
   })
-  const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave } = useToolAccountActions({
+  const { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave, commandConfirmation, answerCommandConfirmation } = useToolAccountActions({
     toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer,
   })
   // 官方账号与手填密钥重写不动（重写流程本身会跳过它们），所以按钮按当前配置的
@@ -659,6 +660,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       footer={<Button variant="primary" onClick={() => setCcSwitchReminder(false)}>知道了</Button>}>
       <p>这个工具以前用 CC Switch 配过。CC Switch 还开着的话，会把刚改好的设置又改回去。不再用它的话，请把它退出（包括托盘里的图标）。</p>
     </Dialog>}
+    {commandConfirmation && <CommandConfirmationDialog busy={commandConfirmation === 'answering'}
+      onAnswer={(choice) => void perform(choice === 'ask' ? '改回先问我' : '保持现在这样', () => answerCommandConfirmation(choice))} />}
     {switchRestartOffer && <Dialog open title="Codex 桌面端还开着" onClose={() => setSwitchRestartOffer(null)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setSwitchRestartOffer(null)}>先不用</Button>
       <Button variant="primary" testId="switch-restart-codex-desktop" onClick={() => void perform('重开 Codex 桌面端', async () => { await launch('codexDesktop', 'restart'); setSwitchRestartOffer(null) })}>帮我重开</Button>

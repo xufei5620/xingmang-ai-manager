@@ -40,7 +40,8 @@ export interface ConfigDialogProps {
   onOfficialQuota?(): void
   onClose(): void
   onRefresh(): Promise<void>
-  onSaved(warning?: string, outcome?: ConfigSaveOutcome): void
+  /** askCommandConfirmation：切回官方以后主进程说要问一句「要不要让官方 Claude Code 先问再执行？」（CommandConfirmationDialog）。 */
+  onSaved(warning?: string, outcome?: ConfigSaveOutcome, askCommandConfirmation?: boolean): void
   /**
    * 主进程已经把一把新的 Key（或官方登录）写进这个工具；原样沿用现有 Key 的保存不算。
    * 密钥页靠它收起「还在用刚撤销的密钥」（#546）。缺省 = 不通知（旧行为）。
@@ -357,8 +358,9 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
     void run('保存配置', async () => {
       let markerWarning = ''
       let keyWritten = true
+      let askCommandConfirmation = false
       if (target.source === 'official') {
-        await api.official(tool, mode)
+        askCommandConfirmation = (await api.official(tool, mode)).askCommandConfirmation === true
         markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else if (target.source === 'manual') {
@@ -386,7 +388,7 @@ function RegisteredToolConfigDialog({ api, tool, config, signedIn, strictKeyForm
       if (!active.current) return
       // The host has committed the write. Close through the owner so feedback
       // survives this dialog's unmount; a later refresh cannot undo that save.
-      onSaved(markerWarning || undefined, mode === 'reset' ? 'reset' : target.source === 'official' && currentSource !== 'official' ? 'official' : 'saved')
+      onSaved(markerWarning || undefined, mode === 'reset' ? 'reset' : target.source === 'official' && currentSource !== 'official' ? 'official' : 'saved', askCommandConfirmation)
     })
   }
   function requestReset() {

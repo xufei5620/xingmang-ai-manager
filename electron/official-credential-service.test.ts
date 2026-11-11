@@ -129,4 +129,81 @@ describe('official credential service', () => {
     expect(relayModelBeforeOfficialSwitch('codex', { actualBaseUrl: '', model: 'gpt-5.5' }, site)).toBeNull()
     expect(relayModelBeforeOfficialSwitch('codex', { actualBaseUrl: site.providerBaseUrls.codex, model: '' }, site)).toBeNull()
   })
+
+  // Fable 复查第一轮 3：老配置切回官方以后「不逐条确认」还开着，问客户一次；点了「改回先问我」才改。
+  describe('the one question about the official Claude Code asking first', () => {
+    function legacyOfficialClaude(userHome: string): string {
+      // What a pre-0.2.24 relay config looks like after the official switch: no marks, so the bypass mode stayed.
+      const configPath = path.join(userHome, '.claude', 'settings.json')
+      fs.writeFileSync(configPath, JSON.stringify({ permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: true, theme: 'dark' }))
+      return configPath
+    }
+
+    it('asks while the bypass mode is left and stops asking once answered either way', async () => {
+      for (const choice of ['ask', 'keep'] as const) {
+        const { store, userHome, service } = createService()
+        legacyOfficialClaude(userHome)
+        expect(service.claudeCommandConfirmationQuestionPending()).toBe(true)
+
+        await service.answerClaudeCommandConfirmation(choice)
+
+        expect(store.read().claudeCommandConfirmationAnswered).toBe(true)
+        expect(service.claudeCommandConfirmationQuestionPending()).toBe(false)
+      }
+    })
+
+    it('changes the settings only for「改回先问我」and backs up right before it writes', async () => {
+      const { userHome, service } = createService()
+      const configPath = legacyOfficialClaude(userHome)
+      const before = fs.readFileSync(configPath, 'utf8')
+      const backup = vi.fn()
+
+      await expect(service.answerClaudeCommandConfirmation('keep', backup)).resolves.toEqual({ choice: 'keep', changed: false })
+      expect(backup).not.toHaveBeenCalled()
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+
+      await expect(service.answerClaudeCommandConfirmation('ask', backup)).resolves.toEqual({ choice: 'ask', changed: true })
+      expect(backup).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ theme: 'dark' })
+      // Nothing left to change: no second backup, still reported as answered.
+      await expect(service.answerClaudeCommandConfirmation('ask', backup)).resolves.toEqual({ choice: 'ask', changed: false })
+      expect(backup).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not ask when the bypass mode is gone or the config is on the account', () => {
+      const { userHome, roots, service } = createService()
+      expect(service.claudeCommandConfirmationQuestionPending()).toBe(false)
+      saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', roots, {}, providerBaseUrls)
+      expect(JSON.parse(fs.readFileSync(path.join(userHome, '.claude', 'settings.json'), 'utf8')).permissions.defaultMode).toBe('bypassPermissions')
+      expect(service.claudeCommandConfirmationQuestionPending()).toBe(false)
+    })
+
+    it('keeps asking next time when the change is refused, and finishes an answer it cannot record', async () => {
+      const logged: string[] = []
+      const { store, userHome, roots, service } = createService({ runtimeLog: { log: (_level, _source, event) => { logged.push(event) } } })
+      saveProviderConfig('claude', 'sk-relay', 'claude-sonnet-5', 'merge', roots, {}, providerBaseUrls)
+      await expect(service.answerClaudeCommandConfirmation('ask')).rejects.toThrow('Claude Code 现在没在用官方账号，这次没有改。')
+      expect(store.read()).not.toHaveProperty('claudeCommandConfirmationAnswered')
+
+      legacyOfficialClaude(userHome)
+      vi.spyOn(store, 'update').mockRejectedValue(new Error('磁盘满了'))
+      await expect(service.answerClaudeCommandConfirmation('ask')).resolves.toEqual({ choice: 'ask', changed: true })
+      expect(logged).toContain('claude.command-confirmation-unsaved')
+    })
+
+    it('waits for a config write already in the shared queue', async () => {
+      const { context, userHome, service } = createService()
+      const configPath = legacyOfficialClaude(userHome)
+      let releaseWrite!: () => void
+      const pendingWrite = context.serializeConfigWrite(() => new Promise<void>((resolve) => { releaseWrite = resolve }))
+
+      const answered = service.answerClaudeCommandConfirmation('ask')
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8')).permissions).toEqual({ defaultMode: 'bypassPermissions' })
+
+      releaseWrite()
+      await Promise.all([pendingWrite, answered])
+      expect(JSON.parse(fs.readFileSync(configPath, 'utf8'))).toEqual({ theme: 'dark' })
+    })
+  })
 })
