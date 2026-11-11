@@ -1905,7 +1905,8 @@ describe('codex-remote-service lifecycle', () => {
 
     await s.service.setChannelEnabled('feishu', true)
     const second = s.channels[1]
-    const opened = '电脑上的手机遥控打开了，可以发消息了。工作文件夹：~/projects/demo'
+    // The folder is real (path.join), so on Windows it reads ~\projects\demo.
+    const opened = `电脑上的手机遥控打开了，可以发消息了。工作文件夹：${path.join('~', 'projects', 'demo')}`
     await second.sentUntil(() => second.texts().includes(opened))
     expect(second.sent).toHaveLength(1)
     expect(second.sent[0].peer).toMatchObject({ channel: 'feishu', userId: alice.userId })
