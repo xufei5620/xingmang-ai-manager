@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
-import type { NodeRuntimeInstallRequest } from './ipc-contract'
+import type { ClaudeWriteBoundaryResult, NodeRuntimeInstallRequest } from './ipc-contract'
 import type { LoopbackProbe } from './stale-proxy-environment'
 import type { ProviderId } from './catalog'
 import {
@@ -457,6 +457,11 @@ export interface SystemService {
    * （这台电脑写不出来就收回），写完再查一遍；还是旧的就抛中文原因。可选 = 旧实现不提供。
    */
   repairCliHooks?(provider: ProviderId): Promise<ReturnType<typeof saveProviderConfig>>
+  /**
+   * 设置里「只让 Claude Code 改项目文件夹里的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
+   * 再记下开关。可选 = 旧实现不提供。
+   */
+  setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeWriteBoundaryResult>
   /**
    * 开机后读配置前：本账号写的、指向旧位置的钩子与状态行不等客户点就改好，每家这次启动只试一次。
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
@@ -1205,6 +1210,7 @@ export function createSystemService(
     revealApiKey,
     saveConfig,
     repairCliHooks,
+    setClaudeWriteBoundary,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     toolModelChecker,
@@ -1346,6 +1352,7 @@ export function createSystemService(
     saveConfig,
     serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
+    setClaudeWriteBoundary,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,

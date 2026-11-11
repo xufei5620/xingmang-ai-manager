@@ -15,7 +15,7 @@ export type TutorialIllustrationId = 'desktop-home' | 'desktop-install' | 'deskt
  * 这里只收教程真用到的几个，写错照样编译不过；tutorials.test.ts 核对它们都登记过。
  * 网络加速那一章 2026-10-30 随加速下线去掉了。
  */
-type TutorialSettingsRow = 'backups' | 'version';
+type TutorialSettingsRow = 'backups' | 'version' | 'codex-remote';
 
 /**
  * 按钮落到哪一页、哪个分页。个人中心和设置里分页很多，只跳页会停在默认的
@@ -655,6 +655,55 @@ export const tutorialTopics: readonly TutorialTopic[] = [
       },
     ],
   },
+  // Claude Code 2.1.318 起不再在编辑器终端里自己装插件（更新说明原文），客户得自己去插件市场装；
+  // 不用登录那一半是星芒保存 Claude Code 配置时补的（editor-claude-login-prompt.ts），编辑器没打开过就补不上，
+  // 所以第 4 步让客户先打开过编辑器、再回来保存一次。
+  {
+    id: 'editor',
+    title: '在 VS Code 或 Cursor 里用 Claude Code',
+    lead: '在编辑器侧边和 Claude Code 对话，用的是星芒给 Claude Code 连好的同一个账号，不用另外登录。',
+    category: 'tools',
+    minutes: 3,
+    keywords: ['VS Code', 'VSCode', 'Cursor', '编辑器', '插件', '扩展', 'Claude Code', '侧边栏', '登录', 'Anthropic', 'IDE', '/ide'],
+    steps: [
+      {
+        title: '先在星芒里装好 Claude Code、连上当前账号',
+        where: '星芒首页 › Claude Code',
+        detail: '编辑器里的 Claude Code 和终端里的用同一份设置，在星芒里连好，编辑器里就不用再填。',
+        bullets: ['还没装就点「安装」。', '卡片左下角写着「当前账号」就是连好了。'],
+        expected: 'Claude Code 卡片上有版本号，左下角写着「当前账号」。',
+        action: '回首页看 Claude Code',
+        page: 'home',
+      },
+      {
+        title: '在编辑器的插件市场里装 Claude Code',
+        where: 'VS Code 或 Cursor › 左侧的扩展图标',
+        detail: '新版 Claude Code 不会再自己往编辑器里装插件，要在编辑器里装一次。',
+        bullets: ['点编辑器左侧的扩展图标（四个小方块），搜「Claude Code」。', '认准发布者是 Anthropic，点「安装」（英文界面是 Install）。'],
+        expected: '编辑器侧边多了一个 Claude 图标。',
+        action: '回首页确认 Claude Code 已连好',
+        page: 'home',
+      },
+      {
+        title: '点 Claude 图标，不用登录直接发消息',
+        where: 'VS Code 或 Cursor › 侧边的 Claude 图标',
+        detail: '星芒保存 Claude Code 的设置时，已经替编辑器关掉了登录页。花的是当前账号的余额。',
+        bullets: ['先在编辑器里打开要处理的项目文件夹。', '点 Claude 图标，在输入框里用中文说要做什么。'],
+        expected: '编辑器里收到 Claude Code 的回复。',
+        action: '回首页看 Claude Code',
+        page: 'home',
+      },
+      {
+        title: '还是让你登录？回星芒重新保存一次',
+        where: '星芒首页 › Claude Code › … › 配置…',
+        detail: '星芒保存 Claude Code 设置那时候，编辑器要是还没打开过，登录页就关不上。打开过编辑器以后再保存一次就好。',
+        bullets: ['先把编辑器关掉。', '回星芒首页，在 Claude Code 卡片的「…」里点「配置…」，再点「保存配置」。', '重新打开编辑器，再点 Claude 图标。'],
+        expected: '编辑器里不再要你登录，直接能发消息。',
+        action: '回首页重新保存 Claude Code 配置',
+        page: 'home',
+      },
+    ],
+  },
   {
     id: 'mcp',
     title: '外接工具',
@@ -800,6 +849,56 @@ export const tutorialTopics: readonly TutorialTopic[] = [
         extra: [{ title: '没有市场、缺 Git 或来源不确定？', detail: '看到「没有插件市场」，表示这个工具没有市场，装好的插件仍在上面的列表里。Claude Code 首次加官方市场需要 Git，按检查页指引安装。来源不可信先别装，插件可能拥有与工具相同的操作能力。' }],
         action: '打开插件检查状态',
         page: 'plugins',
+      },
+    ],
+  },
+  // 卡片上的按钮名、步骤以手机遥控卡为准（features/settings/codex-remote），这里只说走哪几步，不抄卡片上的字，
+  // 卡片改字不用跟着改这一章。
+  {
+    id: 'phone-remote',
+    title: '用手机遥控 Codex',
+    lead: '人不在电脑前，也能在飞书或微信里让这台电脑上的 Codex 干活，用的是当前账号的额度。',
+    category: 'tools',
+    minutes: 4,
+    keywords: ['手机', '遥控', '远程', '飞书', '微信', 'ClawBot', '机器人', '配对', '配对码', '不在电脑前'],
+    steps: [
+      {
+        title: '找到「手机遥控 Codex」，选一个干活的文件夹',
+        where: '设置 › 工具管理 › 手机遥控 Codex',
+        detail: 'Codex 只在这个文件夹里干活。选一个具体的项目文件夹，别选整个桌面或整个盘。',
+        expected: '卡片上写着选好的文件夹。',
+        action: '打开手机遥控',
+        page: 'settings',
+        section: 'codex-remote',
+      },
+      {
+        title: '选飞书或微信，登录机器人',
+        where: '设置 › 工具管理 › 手机遥控 Codex › 飞书 / 微信',
+        detail: '飞书：照卡片上的步骤建一个你自己的机器人，把它的凭据填进来。微信：用手机微信扫码登录。',
+        bullets: ['微信这条是实验功能，随时可能断，长期用建议选飞书。'],
+        expected: '卡片上显示已经登录。',
+        action: '打开手机遥控登录机器人',
+        page: 'settings',
+        section: 'codex-remote',
+      },
+      {
+        title: '打开遥控，在手机上配对',
+        where: '设置 › 工具管理 › 手机遥控 Codex',
+        detail: '打开遥控后开始配对，把卡片上的配对码私聊发给机器人。只认配对过的那一个人。',
+        expected: '卡片上写着谁在什么时候配对的。',
+        action: '打开手机遥控去配对',
+        page: 'settings',
+        section: 'codex-remote',
+      },
+      {
+        title: '在手机上派活、点同意',
+        where: '飞书或微信里和机器人的私聊；设置 › 工具管理 › 手机遥控 Codex',
+        detail: '直接发要做的事。Codex 要改文件、跑会改东西的命令，都先在聊天里问你，你回「同意」它才动手。',
+        bullets: ['谁能用你绑定的飞书或微信发消息，谁就能指挥这台电脑，账号别借给别人。'],
+        expected: '手机上收到 Codex 的进度和结果。',
+        action: '打开手机遥控看状态',
+        page: 'settings',
+        section: 'codex-remote',
       },
     ],
   },
@@ -974,6 +1073,45 @@ export const tutorialTopics: readonly TutorialTopic[] = [
           { title: '重新检测后还是未安装？', detail: '先确认应用真的放在「应用程序」目录里、仍使用官方名称，并且能从那里打开。仍失败时到「检查」查看具体原因。' },
         ],
         action: '回首页检测并配置',
+        page: 'home',
+      },
+    ],
+  },
+  // Claude Code 的「退回」在 2.1.319 安装包里核过：/rewind（别名 /undo）、连按两下 Esc，选项是英文的
+  // Restore code and conversation / Restore code。Codex CLI 0.167.0 的命令表里没有撤回（旧的留底功能只剩
+  // 「跳过旧记录」），所以只能劝客户先留一份。两边都没真机演过。
+  {
+    id: 'undo',
+    title: 'AI 改坏了，怎么撤回？',
+    lead: 'Claude Code 能退回到改之前；它在终端里跑命令改的、别的工具改的，退不回来，重要的文件夹先自己留一份。',
+    category: 'trouble',
+    minutes: 2,
+    keywords: ['撤回', '撤销', '退回', '还原', '恢复', '改坏了', '改错了', '回到之前', 'rewind', 'undo', 'Esc', '留一份', '复制文件夹'],
+    steps: [
+      {
+        title: 'Claude Code：连按两下 Esc，退回到改之前',
+        where: 'Claude Code 的终端窗口',
+        detail: '输入框空着的时候连按两下 Esc，或者输入 /rewind 再回车，会列出你发过的每一句话。',
+        bullets: ['用上下键选到改坏之前的那一句，回车。', '选「Restore code and conversation」，文件和对话一起退回去；只想退文件，选「Restore code」。'],
+        expected: 'Claude Code 改过的文件回到那一句之前的样子。',
+        action: '回首页打开 Claude Code',
+        page: 'home',
+      },
+      {
+        title: '在终端里跑命令改的，退不回来',
+        where: 'Claude Code、Codex、Grok 都一样',
+        detail: '退回只管 Claude Code 自己动手改的文件。它让终端跑命令删掉、挪走、装上的东西，退不回来。',
+        bullets: ['动重要的文件夹之前，先把整个文件夹复制一份，放到别的地方。'],
+        expected: '重要的文件夹在别处有一份自己留的。',
+        action: '回首页',
+        page: 'home',
+      },
+      {
+        title: 'Codex：没有一键撤回',
+        where: 'Codex CLI',
+        detail: 'Codex CLI 没有一键撤回改动的命令。改坏了，从你留的那一份里把文件拷回来，或者直接告诉它「把刚才的改动改回去」。',
+        expected: '文件回到改之前的样子。',
+        action: '回首页打开 Codex CLI',
         page: 'home',
       },
     ],

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configWriteBlockerMessage } from '../../../../electron/config-write-blocker'
 import { toolCertificateMessages } from '../../../../electron/network-failure'
-import { StartGuide, defaultGuideRoute, guideCanSkipConnect, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
+import { StartGuide, defaultGuideRoute, guideCanSkipConnect, isGuideToolRoute, resolveGuideReadiness, guideFailureExits, guideInstallFailure, guideInstallExits, guideStepFailure, guideSupportAction, type GuideToolState, type StartGuideProps } from './StartGuide'
 
 const resumeKey = 'fixture-scope'
 
@@ -584,6 +584,26 @@ describe('guide choose step descriptions', () => {
   })
 })
 
+describe('guide routes that install nothing', () => {
+  it('treats chat and images-and-videos as ready once signed in, without any tool', () => {
+    expect(isGuideToolRoute('create')).toBe(false)
+    expect(isGuideToolRoute('chat')).toBe(false)
+    expect(isGuideToolRoute(null)).toBe(false)
+    expect(isGuideToolRoute('codexDesktop')).toBe(true)
+    expect(resolveGuideReadiness('create', undefined, false)).toEqual({ prepared: true, connected: false })
+    expect(resolveGuideReadiness('create', undefined, true)).toEqual({ prepared: true, connected: true })
+  })
+
+  it('lists images-and-videos last, after chat, unless the account cannot use the video page', () => {
+    // 不接上一条用例留下的进度：要看的是第一步。
+    const html = render([guideTool()], { resumeKey: undefined })
+    expect(html.indexOf('先在星芒里聊天')).toBeLessThan(html.indexOf('做图、做视频'))
+    expect(html).toContain('什么都不用装，用画布和视频剪辑')
+    expect(html).toContain('data-testid="guide-route-create"')
+    expect(render([guideTool()], { resumeKey: undefined, createAvailable: false })).not.toContain('guide-route-create')
+  })
+})
+
 describe('guide connect step skipping', () => {
   it('skips only when the account key is already written and the tool is ready', () => {
     expect(guideCanSkipConnect('claude', guideTool(), true)).toBe(true)
@@ -598,6 +618,7 @@ describe('guide connect step skipping', () => {
     expect(guideCanSkipConnect('claude', guideTool({ configured: false }), true)).toBe(false)
     expect(guideCanSkipConnect('claude', guideTool({ runtimeReady: false }), true)).toBe(false)
     expect(guideCanSkipConnect('chat', undefined, true)).toBe(false)
+    expect(guideCanSkipConnect('create', undefined, true)).toBe(false)
     expect(guideCanSkipConnect(null, guideTool(), true)).toBe(false)
   })
 

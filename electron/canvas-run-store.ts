@@ -9,6 +9,7 @@ import {
 } from './safe-local-data'
 import {
   canvasRunContractVersion,
+  canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
   type CanvasRunAsset,
   type CanvasRunAssetLineage,
@@ -39,6 +40,7 @@ const CACHEABLE_NODE_KINDS = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
   'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot', 'text-generate',
+  ...Object.keys(canvasRunImageToolNodeLabels) as CanvasRunNodeKind[],
   ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
 const CANVAS_RUN_NODE_STAGES = new Set([
@@ -405,6 +407,9 @@ export class CanvasRunStore {
       if (!safeRunRecord(run, userId)) throw new Error('画布运行记录格式错误')
       const state = await this.readState(userId)
       const copy = structuredClone(run)
+      // Recipes stay in memory (canvas-run-service.ts): they can be hundreds of KB each.
+      delete copy.imagePreparations
+      for (const event of copy.events) if (event.type === 'run-waiting') delete event.imagePreparations
       const existing = state.runs.findIndex((entry) => entry.runId === copy.runId)
       if (existing >= 0) state.runs.splice(existing, 1)
       state.runs.unshift(copy)

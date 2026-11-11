@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { Check, Copy, Download, FolderOpen, FolderPlus, Info, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal, UserPlus, UserRound, Zap, type LucideIcon } from 'lucide-react'
+import { Check, Clapperboard, Copy, Download, FolderOpen, FolderPlus, Info, KeyRound, LogIn, MessageSquare, RefreshCw, Settings, Terminal, UserPlus, UserRound, Zap, type LucideIcon } from 'lucide-react'
 import type { AccountSourceSwitchResult, ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Dialog, Pill, Progress, useToast } from '../../ui'
 import { guideRecommendedTool, guideRecommendedToolFor, officialAccountNames, officialAccountNotes, tools as toolRegistry, type ToolDef } from '../../registry/tools'
@@ -17,10 +17,12 @@ import { clearGuideProgress, getGuideStorage, readGuideProgress, writeGuideProgr
 import { buildGuideSetupResult, walletEmptyLead, type GuideSetupResult } from './guide-result'
 import './auth.css'
 
-export type GuideRoute = 'claude' | 'codex' | 'codexDesktop' | 'grok' | 'chat'
+export type GuideRoute = 'claude' | 'codex' | 'codexDesktop' | 'grok' | 'chat' | 'create'
+/** 要装工具的那几条；「先在星芒里聊天」「做图、做视频」什么都不装。 */
+export type GuideToolRoute = Exclude<GuideRoute, 'chat' | 'create'>
 export type GuideStep = 'choose' | 'prepare' | 'connect' | 'ready'
 export interface GuideToolState {
-  id: Exclude<GuideRoute, 'chat'>
+  id: GuideToolRoute
   installed: boolean
   configured: boolean
   source: 'account' | 'official' | 'manual' | 'unknown' | 'none'
@@ -65,20 +67,20 @@ export interface StartGuideProps {
   progress?: { label: string; percent: number }
   onDetect: () => Promise<void>
   /** version：点名装哪个版本（「更新」到推荐版本时）；缺省 = 按名单或最新版。 */
-  onInstall: (route: Exclude<GuideRoute, 'chat'>, version?: string) => Promise<void>
+  onInstall: (route: GuideToolRoute, version?: string) => Promise<void>
   onInstallRuntime?: () => Promise<void>
   resumeKey?: string
-  onConfigure: (route: Exclude<GuideRoute, 'chat'>) => Promise<void>
+  onConfigure: (route: GuideToolRoute) => Promise<void>
   /**
    * 第 3 步的一键「改用 <账号名>」：主进程先备份、再写入、再自检，连不上自动恢复原样，
    * 失败时抛错。返回 null = 没切（还没登录，先去登录了）。缺省 = 旧行为，只给「打开配置」。
    */
-  onSwitchAccount?: (route: Exclude<GuideRoute, 'chat'>) => Promise<AccountSourceSwitchResult | null>
+  onSwitchAccount?: (route: GuideToolRoute) => Promise<AccountSourceSwitchResult | null>
   /**
    * 第 3 步的「重新同步」：只给这个工具把账号密钥再写一次，跟装完以后那一轮一样。返回 true = 写好了，
    * 引导替他点「下一步」。缺省 = 不给这颗按钮，写失败时只剩「去连好」。
    */
-  onBootstrapRetry?: (route: Exclude<GuideRoute, 'chat'>) => Promise<boolean>
+  onBootstrapRetry?: (route: GuideToolRoute) => Promise<boolean>
   /** 按钮上的账号名；没登录为 null。 */
   accountName?: string | null
   /**
@@ -91,18 +93,33 @@ export interface StartGuideProps {
   /** 当前账号余额是 $0、也没有能用的订阅：最后一步先说这件事，「去充值」放到最上面。缺省 = 不知道，照旧。 */
   walletEmpty?: boolean
   onLogin: () => void
+  /**
+   * 选了「做图、做视频」、还没登录时点「下一步」：先去登录，登好了就算走完引导、进视频剪辑页。
+   * 登录以后引导会按新账号重开，「登好了接着走完」只能由调用方记着。缺省 = 调 onLogin，
+   * 引导还开着、登好了就在这里走完。
+   */
+  onCreateLogin?: () => void
+  /** 第一步给不给「做图、做视频」：当前账号用不了视频剪辑（历史账号）时不给。缺省 = 给。 */
+  createAvailable?: boolean
   /** 最后一步没登录时的「注册新账号」；缺省 = 不给这颗按钮。 */
   onRegister?: () => void
   /** newFolder：不弹目录选择器，替用户新建一个项目文件夹再打开（只对命令行工具有意义）。 */
   onLaunch: (route: GuideRoute, newFolder?: boolean) => Promise<boolean | void>
-  /** landing：走完以后进哪一页。只有「去聊天」进聊天页，「进入首页」「打开 X」「去充值」都先回首页。 */
-  onComplete: (route: GuideRoute, landing: 'home' | 'chat') => void
+  /** landing：走完以后进哪一页。「去聊天」进聊天页，「做图、做视频」进视频剪辑页，「进入首页」「打开 X」「去充值」都先回首页。 */
+  onComplete: (route: GuideRoute, landing: GuideLanding) => void
   onBack?: () => void
   onHelp?: () => void
   /** 账号、版本、系统；给了才在红字旁出「复制给客服」（和错误框同一份内容）。 */
   support?: SupportIdentityInput
   /** 引导里的失败也记进帮助框的「最近一次出错」；缺省 = 不记。 */
   onFailure?: (failure: SupportFailure) => void
+}
+
+export type GuideLanding = 'home' | 'chat' | 'video'
+
+/** 这条路要不要装工具、连工具：聊天和「做图、做视频」都只在星芒里用。 */
+export function isGuideToolRoute(route: GuideRoute | null | undefined): route is GuideToolRoute {
+  return Boolean(route) && route !== 'chat' && route !== 'create'
 }
 
 const steps: readonly { id: GuideStep; title: string }[] = [{ id: 'choose', title: '选一种开始方式' }, { id: 'prepare', title: '准备工具' }, { id: 'connect', title: '确认连接' }, { id: 'ready', title: '可以开始了' }]
@@ -304,7 +321,7 @@ export function defaultGuideRoute(restored: GuideRoute | null | undefined, visib
  * 聊天路线不在这里改。
  */
 export function guideCanSkipConnect(route: GuideRoute | null, state: GuideToolState | undefined, signedIn: boolean): boolean {
-  if (!route || route === 'chat' || !state || state.source !== 'account') return false
+  if (!isGuideToolRoute(route) || !state || state.source !== 'account') return false
   const readiness = resolveGuideReadiness(route, state, signedIn)
   return readiness.prepared && readiness.connected
 }
@@ -316,7 +333,7 @@ function guideNeedsNodeRuntime(route: GuideRoute | null, state: GuideToolState |
 
 export function resolveGuideReadiness(route: GuideRoute | null, state: GuideToolState | undefined, signedIn: boolean) {
   if (!route) return { prepared: false, connected: false }
-  if (route === 'chat') return { prepared: true, connected: signedIn }
+  if (!isGuideToolRoute(route)) return { prepared: true, connected: signedIn }
   return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (!guideNeedsNodeRuntime(route, state) || state.runtimeReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'none' && !state.officialLoginRequired
     // 来源没确认的只放行 Key 就在当前账号那个站上、确实能用的两种；别的站的 Key 在这里用不了。
     && (state.source !== 'unknown' || state.keyState === 'otherAccount' || state.keyState === 'changed')
@@ -371,7 +388,7 @@ function GuideFirstTaskPrompt({ prompt, copiedNotice, disabled }: { prompt: stri
   </div>
 }
 
-function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, onBootstrapRetry, accountName = null, onFailureAction, canReplaceNode = false, walletEmpty = false, onLogin, onRegister, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
+function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, onDetect, onInstall, onInstallRuntime, resumeKey, onConfigure, onSwitchAccount, onBootstrapRetry, accountName = null, onFailureAction, canReplaceNode = false, walletEmpty = false, onLogin, onCreateLogin, createAvailable = true, onRegister, onLaunch, onComplete, onBack, onHelp, support, onFailure }: StartGuideProps) {
   const [restored] = useState(() => readGuideProgress(getGuideStorage(), resumeKey, platform))
   const recommended = guideRecommendedToolFor(platform)
   const options = toolRegistry.filter((item) => !item.hidden?.(platform)).sort((a, b) => Number(b.id === recommended) - Number(a.id === recommended) || a.shortcutIndex - b.shortcutIndex)
@@ -391,6 +408,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 改用、重新同步成功后替用户点「下一步」；还没登录时先去登录，登好了接着改。
   const advanceAfterSwitch = useRef<GuideRoute | null>(null)
   const switchAfterLogin = useRef<GuideRoute | null>(null)
+  // 「做图、做视频」点「下一步」时还没登录：先去登录，登好了（引导还开着的话）就在这里走完。
+  const createAfterLogin = useRef(false)
   const [storageWarning, setStorageWarning] = useState('')
   const lock = useRef(false)
   // 在「准备工具」这一步点「安装」成功后记下路线；等检测结果跟上来、工具确实
@@ -400,7 +419,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const heading = useRef<HTMLHeadingElement>(null)
   useEffect(() => () => { lock.current = false }, [])
   useEffect(() => { heading.current?.focus() }, [step])
-  useEffect(() => { if (restored && restored.route !== 'chat' && restored.step !== 'choose') void run('检测工具', onDetect) }, [])
+  useEffect(() => { if (restored && isGuideToolRoute(restored.route) && restored.step !== 'choose') void run('检测工具', onDetect) }, [])
   const tool = tools.find((item) => item.id === route)
   const definition = toolRegistry.find((item) => item.id === route)
   const name = route === 'chat' ? '星芒聊天' : definition?.name ?? ''
@@ -424,9 +443,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     if (!writeGuideProgress(getGuideStorage(), resumeKey, { route: chosen, step: currentStep })) setStorageWarning('引导进度没有保存到本机，当前步骤仍可继续')
     else setStorageWarning('')
   }
-  const choose = (chosen: GuideRoute) => { if (locked) return; setRoute(chosen); setSwitched(null); setError(''); setFailed(null); saveProgress(chosen, 'choose') }
+  const choose = (chosen: GuideRoute) => { if (locked) return; createAfterLogin.current = false; setRoute(chosen); setSwitched(null); setError(''); setFailed(null); saveProgress(chosen, 'choose') }
   const install = () => {
-    if (!route || route === 'chat') return
+    if (!isGuideToolRoute(route)) return
     const chosen = route
     const ticket = owner.capture()
     void run('安装工具', async () => { await onInstall(chosen); if (ticket()) advanceAfterInstall.current = chosen })
@@ -434,7 +453,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   // 更新不接「装好后替他点下一步」：工具本来就装好了，更新被取消时版本没变，
   // 跟着往下走会让人以为已经更完。
   const updateTool = () => {
-    if (!route || route === 'chat' || !update || update.manualHint) return
+    if (!isGuideToolRoute(route) || !update || update.manualHint) return
     const chosen = route
     const version = update.version ?? undefined
     void run('更新工具', () => onInstall(chosen, version))
@@ -461,7 +480,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     switchAccount()
   }, [signedIn, locked, step, route])
   const move = (nextStep: GuideStep) => { setStep(nextStep); if (route) saveProgress(route, nextStep) }
-  const complete = (chosen: GuideRoute, landing: 'home' | 'chat') => { clearGuideProgress(getGuideStorage(), resumeKey); onComplete(chosen, landing) }
+  const complete = (chosen: GuideRoute, landing: GuideLanding) => { clearGuideProgress(getGuideStorage(), resumeKey); onComplete(chosen, landing) }
   // 去充值就算走完引导：否则下次登录引导又从头弹出来，客户以为刚才没弄好。
   const recharge = (chosen: GuideRoute) => { if (locked) return; complete(chosen, 'home'); onFailureAction?.('recharge') }
   const run = async (action: string, work: () => Promise<void>) => {
@@ -494,7 +513,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     )
   }
   const switchAccount = () => {
-    if (!route || route === 'chat' || !onSwitchAccount || locked) return
+    if (!isGuideToolRoute(route) || !onSwitchAccount || locked) return
     const chosen = route
     if (!signedIn) { switchAfterLogin.current = chosen; onLogin(); return }
     const ticket = owner.capture()
@@ -505,8 +524,20 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       advanceAfterSwitch.current = chosen
     })
   }
+  // 跟「先在星芒里聊天」一样什么都不装：登录了就算走完，进视频剪辑页（画布在左边栏它上面那一行）。
+  const startCreate = () => {
+    if (signedIn) { complete('create', 'video'); return }
+    if (onCreateLogin) { onCreateLogin(); return }
+    createAfterLogin.current = true
+    onLogin()
+  }
+  useEffect(() => {
+    if (!createAfterLogin.current || !signedIn || locked) return
+    createAfterLogin.current = false
+    if (step === 'choose' && route === 'create') complete('create', 'video')
+  }, [signedIn, locked, step, route])
   const retryKeySync = () => {
-    if (!route || route === 'chat' || !onBootstrapRetry || locked) return
+    if (!isGuideToolRoute(route) || !onBootstrapRetry || locked) return
     const chosen = route
     const ticket = owner.capture()
     // 算在「确认连接」这一步里：等的时候、万一出错时说的都是这一步现成的话。
@@ -514,7 +545,8 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   }
   const next = () => {
     if (locked || !route) return
-    if (step === 'choose') { move('prepare'); if (route !== 'chat') void run('检测工具', onDetect) }
+    if (step === 'choose' && route === 'create') { startCreate(); return }
+    if (step === 'choose') { move('prepare'); if (isGuideToolRoute(route)) void run('检测工具', onDetect) }
     else if (step === 'prepare' && readiness.prepared) move(skipConnect ? 'ready' : 'connect')
     else if (step === 'connect' && readiness.prepared && readiness.connected) move('ready')
     setError(''); setFailed(null)
@@ -529,11 +561,11 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
     })
   }
   // Codex 桌面端自己管工作区，只有命令行工具打开时要选文件夹。
-  const opensFolder = route !== null && route !== 'chat' && route !== 'codexDesktop'
+  const opensFolder = isGuideToolRoute(route) && route !== 'codexDesktop'
   // 保留着官方来源的工具,在这一步也要看到它自己的限制(registry/tools.ts 的
   // officialAccountNotes),否则用户会拿着一份用不了的连接走完引导。
-  const officialNote = route && route !== 'chat' && tool?.source === 'official' ? officialAccountNotes[route === 'codexDesktop' ? 'codex' : route] : null
-  const officialName = route && route !== 'chat' ? officialAccountNames[route === 'codexDesktop' ? 'codex' : route] ?? '官方账号' : '官方账号'
+  const officialNote = isGuideToolRoute(route) && tool?.source === 'official' ? officialAccountNotes[route === 'codexDesktop' ? 'codex' : route] : null
+  const officialName = isGuideToolRoute(route) ? officialAccountNames[route === 'codexDesktop' ? 'codex' : route] ?? '官方账号' : '官方账号'
   const switchLabel = switchAccountLabel(accountName)
   // 来源没确认时按 Key 的归属分三种说法；没接「改用」的调用方仍走旧的「打开配置」那条路。
   const foreign = tool?.source === 'unknown' && onSwitchAccount ? tool.keyState ?? 'otherSite' : null
@@ -542,7 +574,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const switchButton = signedIn ? switchLabel : '登录后改用我的账号'
   // 装完自动写密钥没写成（主路卡点 F14）：先说首页那句，主按钮是「重新同步」，不叫客户自己去选来源、密钥和模型。
   // 别处的 Key 是被跳过、不是没写成，照旧走「改用」那条路。
-  const keySyncFailure = route && route !== 'chat' && signedIn && !foreign && !readiness.connected ? tool?.keySyncFailure ?? null : null
+  const keySyncFailure = isGuideToolRoute(route) && signedIn && !foreign && !readiness.connected ? tool?.keySyncFailure ?? null : null
   const offerKeySync = Boolean(keySyncFailure?.retry && onBootstrapRetry)
   const foreignCallout = { otherSite: `点「${switchButton}」就能接着往下走。改之前会先把现在的设置备份一份。`, otherAccount: `能直接用，但用量可能算到别的账号上。点「${switchButton}」换成你自己的，改之前会先备份。`, changed: `现在还能用。想恢复成你账号的设置，点「${switchButton}」，改之前会先备份。` }
   // 官方账号本来就能用，「改用」只是旁边一颗次要按钮；没登录时不给，免得点了先弹登录。
@@ -562,12 +594,12 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
   const result = route ? buildGuideSetupResult({ route, tool, signedIn, readiness, name, officialName, accountName, switched: switchedHere, walletEmpty }) : null
   // 第 3 步：没装好、没登录、已用当前账号或官方账号连好、聊天这几种照 v4 一张卡说清；别处的 Key、官方账号还没登录、
   // 手动填的密钥这些要人看一眼的，照旧是说明加按钮，下面再带结果卡。
-  const connectCard = !route || route === 'chat' || foreign || tool?.officialLoginRequired || !readiness.prepared ? null
+  const connectCard = !isGuideToolRoute(route) || foreign || tool?.officialLoginRequired || !readiness.prepared ? null
     : tool?.source === 'official' ? <GuideStateCard tone="ok" icon={Check} title={`已用${spaceBefore(officialName)}连好 ${name}`}>额度走你自己的官方订阅，不扣当前账号的余额。想改用当前账号，在首页的工具卡片上切换。</GuideStateCard>
       : tool?.source === 'account' && readiness.connected && signedIn ? <GuideStateCard tone="ok" icon={Check} title={`已用当前账号连好 ${name}`}>账号专属密钥已写入，额度和余额共用，不需要你再填任何东西。</GuideStateCard>
         : !signedIn && !readiness.connected ? <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>
           : null
-  const notPrepared = route && route !== 'chat' && !readiness.prepared ? <GuideStateCard tone="off" icon={Download} title={`${spaceAfter(name)}还没装好`}>回上一步装好，再来这里连接。</GuideStateCard> : null
+  const notPrepared = isGuideToolRoute(route) && !readiness.prepared ? <GuideStateCard tone="off" icon={Download} title={`${spaceAfter(name)}还没装好`}>回上一步装好，再来这里连接。</GuideStateCard> : null
   const readyToOpen = readiness.prepared && readiness.connected
   const showRecharge = Boolean(step === 'ready' && onFailureAction && route && readyToOpen && result?.usesAccountBalance)
   const unverifiedSwitch = switchedHere?.target === 'account' && !switchedHere.verified
@@ -592,9 +624,9 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       {/* 步骤名已经在上面那条进度里；这一行只给读屏和换步时落焦点用。 */}
       <h3 ref={heading} tabIndex={-1} className="auth-guide-heading" data-testid="guide-heading">{steps[currentStep].title}</h3>
       <div className="auth-guide-body">
-        {step === 'choose' && <><p className="auth-guide-lead">先挑一个，之后随时可以装别的。</p><fieldset className="auth-guide-choices" disabled={locked}><legend>开始方式</legend>{options.map((item) => <label className="auth-guide-choice" data-selected={route === item.id} key={item.id}><input type="radio" name="start-guide-route" value={item.id} checked={route === item.id} onChange={() => choose(item.id as GuideRoute)} data-testid={`guide-route-${item.id}`} /><BrandIcon tool={item.id} size={40} variant="tile" /><span className="auth-guide-choice-text"><strong>{item.name}{item.id === recommended && <Pill tone="accent" testId="guide-recommended">推荐</Pill>}</strong><span>{guideChoiceNote(item.id, platform)}</span></span></label>)}<label className="auth-guide-choice" data-selected={route === 'chat'}><input type="radio" name="start-guide-route" value="chat" checked={route === 'chat'} onChange={() => choose('chat')} data-testid="guide-route-chat" /><span className="auth-guide-chat-tile"><MessageSquare size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>先在星芒里聊天</strong><span>什么都不用装，直接问问题</span></span></label></fieldset></>}
+        {step === 'choose' && <><p className="auth-guide-lead">先挑一个，之后随时可以装别的。</p><fieldset className="auth-guide-choices" disabled={locked}><legend>开始方式</legend>{options.map((item) => <label className="auth-guide-choice" data-selected={route === item.id} key={item.id}><input type="radio" name="start-guide-route" value={item.id} checked={route === item.id} onChange={() => choose(item.id as GuideRoute)} data-testid={`guide-route-${item.id}`} /><BrandIcon tool={item.id} size={40} variant="tile" /><span className="auth-guide-choice-text"><strong>{item.name}{item.id === recommended && <Pill tone="accent" testId="guide-recommended">推荐</Pill>}</strong><span>{guideChoiceNote(item.id, platform)}</span></span></label>)}<label className="auth-guide-choice" data-selected={route === 'chat'}><input type="radio" name="start-guide-route" value="chat" checked={route === 'chat'} onChange={() => choose('chat')} data-testid="guide-route-chat" /><span className="auth-guide-chat-tile"><MessageSquare size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>先在星芒里聊天</strong><span>什么都不用装，直接问问题</span></span></label>{(createAvailable || route === 'create') && <label className="auth-guide-choice" data-selected={route === 'create'}><input type="radio" name="start-guide-route" value="create" checked={route === 'create'} onChange={() => choose('create')} data-testid="guide-route-create" /><span className="auth-guide-chat-tile"><Clapperboard size={18} aria-hidden="true" /></span><span className="auth-guide-choice-text"><strong>做图、做视频</strong><span>什么都不用装，用画布和视频剪辑</span></span></label>}</fieldset></>}
         {step === 'prepare' && route === 'chat' && <GuideStateCard tone="ok" icon={Check} title="不用准备">聊天直接在星芒里进行，额度和余额共用。</GuideStateCard>}
-        {step === 'prepare' && route && route !== 'chat' && <>
+        {step === 'prepare' && isGuideToolRoute(route) && <>
           <p className="auth-guide-lead">{readiness.prepared ? update ? `${name} 已经装好，但${update.knownIssue ? '这个版本有已知问题，用起来会出错' : '版本旧了'}，建议先${update.manualHint ? '用它原来的方式更新' : `点「${updateLabel}」`}。${update.knownIssue ? '' : '不更新也能直接点「下一步」。'}` : `${name} 已经装好。` : oneButton ? '点「安装」就行，缺的运行环境会一并装好。' : `核对 ${name} 的安装状态，再按顺序准备。`}</p>
           {!tool || tool.detectionError ? <p className="auth-error" role="alert">暂时无法确认工具是否已安装，请重新检测。</p> : <div className="auth-guide-checklist">
             {guideNeedsNodeRuntime(route, tool) && <div className="auth-guide-check-row"><Terminal size={20} aria-hidden="true" /><div><strong>运行环境</strong><p>{tool.runtimeReady ? '运行环境已就绪' : oneButton ? '点「安装」时会一并装好' : runtimeByApp ? '命令行工具需要运行环境' : '在应用外安装完成后回来重新检测'}</p></div><Pill tone={tool.runtimeReady ? 'ok' : oneButton ? 'neutral' : 'warn'}>{tool.runtimeReady ? '已就绪' : oneButton ? '自动准备' : '待准备'}</Pill>{!tool.runtimeReady && !oneButton && onInstallRuntime && <Button size="sm" icon={Download} disabled={locked} onClick={() => void run('准备环境', onInstallRuntime)} testId="guide-node">{runtimeByApp ? '一键安装' : '安装指南'}</Button>}</div>}
@@ -606,7 +638,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
         </>}
         {step === 'prepare' && !signedIn && <p className="auth-guide-note"><Info size={15} aria-hidden="true" /><span>登录后会自动连接账号。</span></p>}
         {step === 'connect' && route === 'chat' && <>{signedIn ? <GuideStateCard tone="ok" icon={Check} title="账号已就绪">聊天和工具共用同一份余额。</GuideStateCard> : <GuideStateCard tone="off" icon={UserRound} title="登录后自动连接">登录账号后，我们会给 {name} 写好专属密钥，不用手动配置。</GuideStateCard>}{!signedIn && <div className="auth-form-actions"><Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button></div>}</>}
-        {step === 'connect' && route && route !== 'chat' && readiness.prepared && <>
+        {step === 'connect' && isGuideToolRoute(route) && readiness.prepared && <>
           {keySyncFailure && <p className="auth-error" role="alert" data-testid="guide-key-sync-failure">{keySyncFailure.text}</p>}
           {connectCard ?? <>{foreign ? <p className="auth-guide-lead" data-testid="guide-foreign-key" data-key-state={foreign}>{foreignLead[foreign]}</p> : <p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p>}<p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{foreign ? `${foreignCallout[foreign]}${codexShared}` : tool?.source === 'unknown' ? '你原来的配置已经原样留着。先看看处理步骤，确认哪些设置要留下，再决定怎么连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用当前账号。` : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p></>}
           {officialNote && <p className="auth-hint" data-testid="guide-official-note">{officialNote}</p>}{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}
@@ -617,7 +649,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
         {step === 'ready' && <>
           {readiness.prepared && <p className="auth-guide-lead" data-testid={walletFirst ? 'guide-wallet-empty' : undefined}>{walletFirst ? walletEmptyLead : route === 'chat' ? '从一个问题开始，慢慢熟悉星芒。' : readiness.connected ? unverifiedSwitch ? `${name} 已改用你的账号，但这次没能确认能用。` : `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p>}
           {walletFirst && route && <div className="auth-form-actions" data-testid="guide-recharge"><Button variant="primary" icon={Zap} disabled={locked} onClick={() => recharge(route)} testId="guide-recharge-button">去充值</Button></div>}
-          {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (route && route !== 'chat') void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
+          {switchedHere ? <div className="auth-hint auth-guide-connected" data-testid="guide-switched-note" data-backup-id={switchedHere.backupId.trim() || undefined}><p>{switchReceipt(switchedHere)}</p>{switchedHere.target === 'account' && !switchedHere.verified && onFailureAction && guideFailureExits(switchedHere.message).map((action) => <Button key={action.id} size="sm" disabled={locked} onClick={() => onFailureAction(action.id)} testId={`guide-exit-${action.id}`}>{action.label}</Button>)}</div> : skipConnect && <p className="auth-hint auth-guide-connected" data-testid="guide-connected-note">已用当前账号连好。想换密钥或模型，<Button variant="ghost" size="sm" disabled={locked} onClick={() => { if (isGuideToolRoute(route)) void run('确认连接', () => onConfigure(route)) }} testId="guide-connected-config">点这里</Button></p>}
           {result && <GuideResultCard result={result} />}
           {definition?.firstRun && readyToOpen && <FirstRunSteps key={`${route}:${tool?.freshFolder === true}`} name={name} firstRun={definition.firstRun} testId="guide-first-run" freshFolder={tool?.freshFolder === true} />}
           {result?.prompt && readyToOpen && <GuideFirstTaskPrompt key={route} prompt={result.prompt} copiedNotice={route === 'chat' ? '已复制，粘贴到聊天里试试' : `已复制，粘贴到 ${spaceAfter(name)}里试试`} disabled={locked} />}

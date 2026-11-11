@@ -12,13 +12,24 @@ import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
 import { parseCanvasImageEditMask } from './canvas-image-mask'
 import {
+  canvasImageTransformKindForNode,
+  parseCanvasImageCollageInputOrder,
+  parseCanvasImageTransformRecipe,
+  parseCanvasTileInput,
+} from './canvas-image-tools'
+import {
+  canvasRunImageToolNodeLabels,
   canvasRunKernelOnlyNodeLabels,
+  type CanvasImageCollageInputOrder,
   type CanvasImageEditMask,
+  type CanvasImageTransformRecipe,
   type CanvasRunGraph,
   type CanvasRunImageCandidateCount,
+  type CanvasRunImageToolNodeKind,
   type CanvasRunKernelOnlyNodeKind,
   type CanvasRunNodeKind,
   type CanvasRunScope,
+  type CanvasTileInputSelection,
 } from './canvas-run-contract'
 import type { AiImageGenerateInput } from './ipc-contract'
 import { isRecord } from './input-guards'
@@ -252,6 +263,7 @@ const canvasNodeKinds = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
   'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot', 'text-generate',
+  ...Object.keys(canvasRunImageToolNodeLabels) as CanvasRunNodeKind[],
   ...Object.keys(canvasRunKernelOnlyNodeLabels) as CanvasRunNodeKind[],
 ])
 
@@ -308,6 +320,49 @@ function isKernelOnlyNodeKind(kind: CanvasRunNodeKind): kind is CanvasRunKernelO
   return Object.prototype.hasOwnProperty.call(canvasRunKernelOnlyNodeLabels, kind)
 }
 
+function isImageToolNodeKind(kind: CanvasRunNodeKind): kind is CanvasRunImageToolNodeKind {
+  return Object.prototype.hasOwnProperty.call(canvasRunImageToolNodeLabels, kind)
+}
+
+/** What an image-tool node carries once the desktop runs it (画布完善第 7 条第三步). */
+interface ParsedImageToolFields {
+  imageTransform?: CanvasImageTransformRecipe
+  imageCollageInputOrder?: CanvasImageCollageInputOrder
+  tileInput?: CanvasTileInputSelection
+}
+
+/**
+ * The image-tool fields of a node the desktop runs: the recipe on the four
+ * kinds the page processes, the arranged order on a collage, the chosen
+ * picture on a tile. On any other node they stay what kernelFieldsUnsupported
+ * says. imageOutputIndex picks one picture of a batch; every kind run here
+ * makes one, so any index the kernel accepts (0-15) means that one and is not
+ * passed on, as the web host does (xingmang-canvas lib/canvas-runs.ts).
+ */
+function imageToolFields(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): ParsedImageToolFields | undefined {
+  if (!options.imageTools || !isImageToolNodeKind(kind)) return undefined
+  const transformKind = canvasImageTransformKindForNode(kind)
+  const fields: ParsedImageToolFields = {}
+  if (data.imageTransform !== undefined) {
+    if (!transformKind) throw new Error('图片处理参数只能保存在图片工具节点中')
+    fields.imageTransform = parseCanvasImageTransformRecipe(kind, data.imageTransform, budget).recipe
+  }
+  if (data.imageCollageInputOrder !== undefined) {
+    if (transformKind !== 'collage') throw new Error('拼图输入顺序只能保存在拼图节点中')
+    assertBoundedKernelValue(data.imageCollageInputOrder, '画布拼图顺序', budget)
+    fields.imageCollageInputOrder = parseCanvasImageCollageInputOrder(data.imageCollageInputOrder)
+  }
+  if (data.tileInput !== undefined) {
+    if (transformKind !== 'tile') throw new Error('只有平铺图片节点可以选择贴图输入')
+    assertBoundedKernelValue(data.tileInput, '画布平铺输入', budget)
+    fields.tileInput = parseCanvasTileInput(data.tileInput)
+  }
+  if (data.imageOutputIndex !== undefined && (!transformKind || !Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) >= 16)) {
+    throw new Error('图片批次选中序号无效')
+  }
+  return fields
+}
+
 function optionalCandidateCount(value: unknown, label: string): number | undefined {
   if (value === undefined) return undefined
   if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > 4) throw new Error(`${label}格式错误`)
@@ -338,7 +393,14 @@ function referenceSlotCount(value: unknown, label: string, maximum: number, budg
  * undefined when every kernel field is absent or equal to what the desktop
  * already does. The wording names what the user switched on, never a field.
  */
-function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, unknown>, budget: { remaining: number }, options: CanvasStartRunParseOptions): string | undefined {
+function kernelFieldsUnsupported(
+  kind: CanvasRunNodeKind,
+  data: Record<string, unknown>,
+  budget: { remaining: number },
+  options: CanvasStartRunParseOptions,
+  /** imageToolFields already parsed this node's image-tool fields: they are run, not refused. */
+  imageToolsRun = false,
+): string | undefined {
   const reasons: string[] = []
   // Image kinds run 2-4 independent requests (canvas-run-engine.ts); the
   // kernel never sends a count for any other kind.
@@ -369,7 +431,7 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
   if (videoSlots !== undefined && videoSlots > 0) reasons.push('视频参考顺序')
   const imageSlots = referenceSlotCount(data.imageReferenceOrder, '画布参考图角色', 4, budget)
   if (imageSlots !== undefined) reasons.push('参考图角色')
-  if (data.imageOutputIndex !== undefined) {
+  if (data.imageOutputIndex !== undefined && !imageToolsRun) {
     if (!Number.isSafeInteger(data.imageOutputIndex) || (data.imageOutputIndex as number) < 0 || (data.imageOutputIndex as number) > 10_000) throw new Error('画布图片输出序号格式错误')
     reasons.push('图片处理')
   }
@@ -394,11 +456,13 @@ function kernelFieldsUnsupported(kind: CanvasRunNodeKind, data: Record<string, u
   ]
   for (const [field, label, reason] of structured) {
     if (data[field] === undefined) continue
+    if (imageToolsRun && (field === 'imageTransform' || field === 'imageCollageInputOrder' || field === 'tileInput')) continue
     if (!isRecord(data[field]) && !Array.isArray(data[field])) throw new Error(`${label}格式错误`)
     assertBoundedKernelValue(data[field], label, budget)
     reasons.push(reason)
   }
   if (isKernelOnlyNodeKind(kind)) return `「${canvasRunKernelOnlyNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
+  if (isImageToolNodeKind(kind) && !imageToolsRun) return `「${canvasRunImageToolNodeLabels[kind]}」节点桌面版暂不支持，本次没有提交任何付费请求`
   if (reasons.length === 0) return undefined
   return `「${[...new Set(reasons)].join('、')}」桌面版暂不支持，本次没有提交任何付费请求`
 }
@@ -603,11 +667,16 @@ function parseRunScope(value: unknown): CanvasRunScope {
 export interface CanvasStartRunParseOptions {
   /** Whether frame-extract nodes run; the canvas window passes desktopCanvasCapabilities.features.frameExtract. */
   frameExtract: boolean
+  /** Whether image-tool nodes run (画布完善第 7 条第三步); defaults to desktopCanvasCapabilities.features.imageTools. */
+  imageTools?: boolean
 }
 
 export function parseCanvasStartRunInput(
   value: unknown,
-  options: CanvasStartRunParseOptions = { frameExtract: desktopCanvasCapabilities.features.frameExtract },
+  options: CanvasStartRunParseOptions = {
+    frameExtract: desktopCanvasCapabilities.features.frameExtract,
+    imageTools: desktopCanvasCapabilities.features.imageTools,
+  },
 ): CanvasStartRunInput {
   if (!isRecord(value)) throw new Error('画布运行请求格式错误')
   // The kernel's agent panel starts runs on the user's behalf from a cloud
@@ -632,7 +701,8 @@ export function parseCanvasStartRunInput(
     ], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
-    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options)
+    const imageTools = imageToolFields(kind, entry.data, kernelFieldBudget, options)
+    const desktopUnsupported = kernelFieldsUnsupported(kind, entry.data, kernelFieldBudget, options, imageTools !== undefined)
     // Range-checked by kernelFieldsUnsupported above; kept only where it runs.
     const frameTimestampSeconds = kind === 'frame-extract' && options.frameExtract
       ? (typeof entry.data.frameTimestampSeconds === 'number' ? entry.data.frameTimestampSeconds : 0)
@@ -691,6 +761,9 @@ export function parseCanvasStartRunInput(
         ...(imageCandidateCount ? { imageCandidateCount } : {}),
         ...(imageEditMask ? { imageEditMask } : {}),
         ...(frameTimestampSeconds !== undefined ? { frameTimestampSeconds: Object.is(frameTimestampSeconds, -0) ? 0 : frameTimestampSeconds } : {}),
+        ...(imageTools?.imageTransform ? { imageTransform: imageTools.imageTransform } : {}),
+        ...(imageTools?.imageCollageInputOrder ? { imageCollageInputOrder: imageTools.imageCollageInputOrder } : {}),
+        ...(imageTools?.tileInput ? { tileInput: imageTools.tileInput } : {}),
       },
     }
   })
