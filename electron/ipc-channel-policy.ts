@@ -186,6 +186,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   // configure-managed-clis, reveal-key, list-key-models, configure-cli-with-key).
   'account:get-status': { label: '星芒账号服务状态读取', log: 'quiet-success', account: 'none' },
   'account:get-notice': { log: 'polling', account: 'scoped' },
+  // 打开公告时一张图一次，成功了只会刷屏；下不下来照记，排查破图要用。
+  'account:get-notice-image': { label: '公告图片下载', log: 'quiet-success', account: 'scoped' },
   'account:mark-notice-read': { log: 'normal', account: 'scoped' },
   'account:sync-local-notice-reads': { log: 'polling', account: 'scoped' },
   'acceleration:get-state': { log: 'normal', account: 'none' },

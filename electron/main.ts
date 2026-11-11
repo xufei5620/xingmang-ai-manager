@@ -17,6 +17,7 @@ import {
   type WebContents,
 } from 'electron'
 import { AnnouncementReadStore } from './announcement-read-store'
+import { createAnnouncementImageReader } from './announcement-image'
 import type { AccelerationExpiryNotice } from './acceleration-expiry-notice'
 import type { AccelerationInterruptionNotice } from './acceleration-interruption-notice'
 import { createAccelerationPower } from './acceleration-power'
@@ -2523,6 +2524,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountStartupGate,
       announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
+      announcementImages: createAnnouncementImageReader({ fetch: networkRoutes.announcementImageFetch }),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       accountGroupHints: readAccountGroupHints,

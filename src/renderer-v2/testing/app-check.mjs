@@ -5887,6 +5887,33 @@ test('Markdown announcements render headings, lists, emphasis and links', async 
   } finally { await page.close() }
 })
 
+// D89 a：页面的安全设置不放网上图片，官网的图由主进程下好交回 data: 地址；页面自己一次网都不连。
+for (const [label, query] of [['Markdown', 'noticeImage=1'], ['rich HTML', 'noticeImage=1&noticeImageHtml=1']]) {
+  test(`${label} announcement images come from the host as data URLs, and the rest show their caption`, async () => {
+    const page = await open(query)
+    const outside = []
+    page.on('request', (request) => {
+      if (!request.url().startsWith(origin + '/') && !request.url().startsWith('data:')) outside.push(request.url())
+    })
+    try {
+      await page.getByTestId('page-home').waitFor()
+      await page.getByRole('button', { name: /^公告/ }).click()
+      const dialog = page.getByRole('dialog', { name: '公告' })
+      const image = dialog.getByRole('img', { name: '官方二维码' })
+      await image.waitFor()
+      assert.match(await image.getAttribute('src'), /^data:image\/png;base64,/)
+      await expect.poll(() => image.evaluate((element) => element.complete && element.naturalWidth)).toBe(1)
+      await dialog.getByText('[图片：下不下来]', { exact: true }).waitFor()
+      await dialog.getByText('[图片：外部图片]', { exact: true }).waitFor()
+      await expect(dialog.locator('img')).toHaveCount(1)
+      const asked = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountNoticeImage').map((call) => call.args[0]))
+      assert.deepEqual([...new Set(asked)].sort(), ['https://xm.solov.cc/missing.png', 'https://xm.solov.cc/qr.png'])
+      assert.deepEqual(outside, [])
+      await clean(page)
+    } finally { await page.close() }
+  })
+}
+
 test('a blocked announcement link is copied for the browser instead of failing', async () => {
   const page = await open('noticeMarkdown=1&externalBlocked=1')
   try {

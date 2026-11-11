@@ -6,6 +6,7 @@ import type { SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import type { StorageUsageService } from './storage-usage-service'
 import type { AnnouncementReadStore } from './announcement-read-store'
+import type { AnnouncementImageReader } from './announcement-image'
 import { accelerationFailureReason, type AccelerationApi, type AccelerationPreferenceApi } from './acceleration-contract'
 import type { ProviderId } from './catalog'
 import type { ManagedKeyReplacementStore } from './managed-key-replacement-store'
@@ -146,6 +147,8 @@ export interface IpcRegistrationOptions {
   // type -- this module never needs to know which relay backend is active.
   accountService?: RelayBackendClient
   announcementReads?: Pick<AnnouncementReadStore, 'sync'>
+  /** 公告里官网自己的图由主进程下好再交给页面（announcement-image.ts）；省略 = 这条通道报显示不了，页面照旧显示「[图片：说明]」。 */
+  announcementImages?: AnnouncementImageReader
   acceleration?: AccelerationApi & Partial<AccelerationPreferenceApi>
   /** 手机遥控 Codex（bootstrap/codex-remote.ts）；省略 = 那几条通道报「暂未准备好」。 */
   codexRemote?: import('./codex-remote-service').CodexRemoteService

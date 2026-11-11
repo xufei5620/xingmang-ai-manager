@@ -132,6 +132,8 @@ export function createNetworkRoutes(options: NetworkRoutesOptions) {
   const routedRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { log: logRelayLine })
   const routedAccountRelayFetch = createRelayLineFetch(relayRouteController, relayFetch, { abortMeansNoAnswer: true, log: logRelayLine })
   const routedAccountFetch = createRelayLineFetch(relayRouteController, accountFetch, { abortMeansNoAnswer: true, log: logRelayLine })
+  // 公告里官网自己的图（announcement-image.ts，决定单 D89 a）：跟着线路走、照样换线路重发，下不下来不报给线路那边。
+  const announcementImageFetch = createRelayLineFetch(relayRouteController, relayFetch, { unreported: true, log: logRelayLine })
 
   // ---- xm 三线路：星芒账号的工具线路（写进各 AI 工具配置的那条，tool-route-controller.ts） ----
   // 管理工具自己的请求照旧走上面的应用线路；工具线路照 AI 工具自己的网络路径探（Node 的 TLS、系统代理、
@@ -268,6 +270,7 @@ export function createNetworkRoutes(options: NetworkRoutesOptions) {
     routedRelayFetch,
     routedAccountRelayFetch,
     routedAccountFetch,
+    announcementImageFetch,
     observedRelayFetch,
     latestRouteStatus: () => latestRouteStatus,
     readRouteStatus,

@@ -23,6 +23,8 @@ export function createAppApi(bridge: XingmangApi) {
     openCanvasAssets: () => bridge.openCanvasAssetLibrary(),
     openExternal: (url: string) => bridge.openExternal(url),
     announcement: (mode?: RelayNoticeReadMode) => mode === undefined ? bridge.getAccountNotice() : bridge.getAccountNotice(mode),
+    // 公告里官网自己的图由主进程下好再交回（决定单 D89 a）。
+    announcementImage: (url: string) => bridge.getAccountNoticeImage(url),
     markAnnouncementRead: (id: string, entryId: string) => bridge.markAccountNoticeRead(id, entryId),
     syncLocalNoticeReads: (scope: string, ids: string[]) => bridge.syncLocalNoticeReads(scope, ids),
   }
