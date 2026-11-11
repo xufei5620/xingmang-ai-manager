@@ -550,7 +550,8 @@ export function executeFilePlans(
   providerRoot: string,
   // discard：提交成功以后把这次的 .bak 删掉，不进每个文件 5 份的轮换。换线路的定点改写
   // 来回切几次就会把客户自己保存时留下的备份挤掉，那几份才是有用的（原件另由调用方留一份）。
-  // 原文不是 UTF-8 的例外：写回后那几个字成了「�」，原样只剩这次的 .bak，照 rotate 留着、一起轮换。
+  // 原文不是 UTF-8 的例外：写回后那几个字成了「�」，原样只剩这次的 .bak（迁移前原件只在头一回换线路时
+  // 留过），照 rotate 留着、一起轮换。
   // 写回的那份已经是 UTF-8，下回再换线路就照常删，留下的不会越攒越多。
   backupRetention: 'rotate' | 'discard' = 'rotate',
 ): NativeConfigSaveResult {
