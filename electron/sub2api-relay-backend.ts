@@ -9,7 +9,7 @@ import type {
 } from './new-api-client'
 import { usageDateRange } from './usage-date-range'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
-import { managedKeyQuotaExhaustedMessage } from './account-key-quota'
+import { managedKeyQuotaExhaustedMessage, sub2ApiManagedKeyStoppedMessage } from './account-key-quota'
 import { summarizeKeySecret } from './key-secret-summary'
 import { sub2ApiAnnouncementNotice } from './sub2api-announcements'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
@@ -329,6 +329,14 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
   function exhaustedCap(key: Sub2ApiKeySummary): boolean {
     return key.quota > 0 && (key.status === 'quota_exhausted' || (key.quotaUsed ?? 0) >= key.quota)
   }
+  // Disabled or expired on the web: as deliberate a stop as a used-up cap.
+  // Upstream never flips an expired key's status by itself; it stays
+  // 'active' and the gateway rejects it on expires_at (APIKey.IsExpired), so
+  // the date is read too, on the same boundary usable() drops it at.
+  function stoppedOnWeb(key: Sub2ApiKeySummary): boolean {
+    return key.status === 'inactive' || key.status === 'expired'
+      || (key.status === 'active' && !!key.expiresAt && !(Date.parse(key.expiresAt) > now()))
+  }
   async function reveal(scope: Scope, key: Sub2ApiKeySummary): Promise<NewApiCliKeyResult> {
     return { id: Number(key.id), name: key.name, key: await call(scope, (saved, abort) => native.revealKey(saved, key.id, abort)) }
   }
@@ -501,6 +509,13 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         // back to an older usable sibling. Only a key newer than the cap wins.
         if (captured.unlimitedQuota !== false && sameName.some((key) => exhaustedCap(key)
           && (!existing || Number(key.id) > Number(existing.id)))) throw new Error(managedKeyQuotaExhaustedMessage)
+        // 网页上停用了、到期了的那把也不拿一把不限额、永不过期的新 Key 顶上（星芒账号那边是
+        // new-api-client.ts 的 hasStoppedCliKey，0.2.24 深查 D3）。只认比要复用的那把更新的：
+        // 停用以后又签过一把、或者在网页上重新启用了的，照旧接着用；被删掉的不在列表里，照旧重签。
+        // fresh 是撤销一把在用的 Key 以后照抄原限制换新，那把是用户自己撤的；对话那把归
+        // chat-credential-coordinator.ts 管。
+        if (!captured.fresh && captured.purpose !== 'chat' && sameName.some((key) => stoppedOnWeb(key)
+          && (!existing || Number(key.id) > Number(existing.id)))) throw new Error(sub2ApiManagedKeyStoppedMessage)
         const key = existing ?? await create(scope, { name, group: groupName, remainQuota: captured.remainQuota ?? 0,
           unlimitedQuota: captured.unlimitedQuota ?? true, expiredTime: captured.expiredTime ?? -1 }, group)
         return reveal(scope, key)
