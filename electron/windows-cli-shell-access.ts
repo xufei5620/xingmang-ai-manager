@@ -63,6 +63,15 @@ export function isNpmPowerShellShim(content: string, packageName: string): boole
  * PowerShell fall through to the `.cmd`, which the policy does not govern, so
  * nobody has to loosen their execution policy. The app itself never launches
  * through either shim (tool-installation.ts refuses `.cmd`/`.ps1`).
+ *
+ * The price, accepted knowingly (深查 Shell差异 SH-9): once PowerShell falls
+ * through to the `.cmd`, cmd.exe parses the arguments a second time, so an
+ * argument without spaces that carries `& | < > ^` is read as cmd syntax and
+ * `%NAME%` is expanded (the BatBadBut class). Typing `claude` or `codex` on its
+ * own is unaffected; only one-shot calls such as `claude -p '…'` with those
+ * characters are. PowerShell 7 defaults to RemoteSigned and could have run the
+ * `.ps1`, but telling the two apart means asking `Get-ExecutionPolicy`, a
+ * PowerShell cold start per sweep, so the `.ps1` goes everywhere.
  */
 export async function removeNpmPowerShellShim(
   options: RemoveNpmPowerShellShimOptions,

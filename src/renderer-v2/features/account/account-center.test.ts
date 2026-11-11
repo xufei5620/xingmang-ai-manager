@@ -78,6 +78,11 @@ describe('account center wording', () => {
     expect(deviceActivityText({ current: false, ip: '1.1.1.1', lastActiveAt: new Date(at - 3 * 86_400_000 - 5).toISOString() }, at)).toBe('3 天前活动 · 1.1.1.1')
     expect(deviceActivityText({ current: false, ip: '', lastActiveAt: new Date(at - 2 * 3_600_000).toISOString() }, at)).toBe('2 小时前活动')
     expect(deviceActivityText({ current: false, ip: '2.2.2.2', lastActiveAt: new Date(at - 60_000).toISOString() }, at)).toBe('刚刚活动 · 2.2.2.2')
+    // D60：只有不到 5 分钟算「刚刚」，50 分钟前的不能也写「刚刚」。
+    expect(deviceActivityText({ current: false, ip: '2.2.2.2', lastActiveAt: new Date(at - 5 * 60_000 + 1).toISOString() }, at)).toBe('刚刚活动 · 2.2.2.2')
+    expect(deviceActivityText({ current: false, ip: '2.2.2.2', lastActiveAt: new Date(at - 5 * 60_000).toISOString() }, at)).toBe('5 分钟前活动 · 2.2.2.2')
+    expect(deviceActivityText({ current: false, ip: '1.2.3.4', lastActiveAt: new Date(at - 35 * 60_000 - 20_000).toISOString() }, at)).toBe('35 分钟前活动 · 1.2.3.4')
+    expect(deviceActivityText({ current: false, ip: '', lastActiveAt: new Date(at - 3_600_000 + 1).toISOString() }, at)).toBe('59 分钟前活动')
     expect(deviceActivityText({ current: false, ip: '2.2.2.2', lastActiveAt: 'garbled' }, at)).toBe('2.2.2.2')
   })
 })

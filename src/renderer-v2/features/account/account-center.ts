@@ -155,7 +155,8 @@ export function inviteRuleText(rate: number | null | undefined): string {
 
 /**
  * 登录设备那一行的小字：这台是「正在使用」；别的写多久以前活动过、从哪个地址。后台没给地址
- * 或时间的那一半就不写。
+ * 或时间的那一半就不写。只有不到 5 分钟才算「刚刚」：客户靠这一行判断是不是别人在用他的号，
+ * 「刚刚」和 50 分钟前差得不小（D60）。
  */
 export function deviceActivityText(session: Pick<AccountLoginSession, 'current' | 'ip' | 'lastActiveAt'>, now: number): string {
   if (session.current) return '正在使用'
@@ -165,6 +166,7 @@ export function deviceActivityText(session: Pick<AccountLoginSession, 'current' 
     const elapsed = Math.max(0, now - at)
     if (elapsed >= dayMs) when = `${Math.floor(elapsed / dayMs)} 天前活动`
     else if (elapsed >= 3_600_000) when = `${Math.floor(elapsed / 3_600_000)} 小时前活动`
+    else if (elapsed >= 5 * 60_000) when = `${Math.floor(elapsed / 60_000)} 分钟前活动`
     else when = '刚刚活动'
   }
   return [when, session.ip.trim()].filter(Boolean).join(' · ')

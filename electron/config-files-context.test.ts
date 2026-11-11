@@ -243,17 +243,50 @@ describe('config-files-context', () => {
     expect(fs.existsSync(removed)).toBe(false)
   })
 
-  it('logs no backup for a write that discards its backup (D78)', () => {
+  it('keeps the backup of a config that was not UTF-8 even when the write discards backups (D78)', () => {
     const root = fs.realpathSync.native(temporaryDirectory())
     const settings = path.join(root, 'settings.json')
+    const config = path.join(root, 'config.toml')
     fs.writeFileSync(settings, gbkSettings)
+    fs.writeFileSync(config, 'model = "中文"\n', 'utf8')
     const log = vi.fn()
     attachNotUtf8ConfigRewriteLog(log)
 
-    executeFilePlans([{ path: settings, content: '{}\n' }], {}, root, 'discard')
+    const saved = executeFilePlans([
+      { path: settings, content: '{"dir":"\uFFFD\uFFFD"}\n' },
+      { path: config, content: 'model = "b"\n' },
+    ], {}, root, 'discard')
 
-    expect(log).toHaveBeenCalledWith({ file: settings, backup: null })
-    expect(fs.readdirSync(root)).toEqual(['settings.json'])
+    // 原样只剩这一份，留着；UTF-8 那份照旧写成就删。
+    expect(saved.backups).toHaveLength(1)
+    expect(path.dirname(saved.backups[0])).toBe(root)
+    expect(path.basename(saved.backups[0]).startsWith('settings.json.bak.')).toBe(true)
+    expect(fs.readFileSync(saved.backups[0])).toEqual(gbkSettings)
+    expect(fs.readdirSync(root).sort()).toEqual(['config.toml', path.basename(saved.backups[0]), 'settings.json'].sort())
+    expect(log).toHaveBeenCalledTimes(1)
+    expect(log).toHaveBeenCalledWith({ file: settings, backup: saved.backups[0] })
+
+    // 写回的那份已经是 UTF-8：下回同样的写法照旧删，不再多留。
+    log.mockClear()
+    const again = executeFilePlans([{ path: settings, content: '{}\n' }], {}, root, 'discard')
+    expect(again.backups).toEqual([])
+    expect(fs.readdirSync(root).sort()).toEqual(['config.toml', path.basename(saved.backups[0]), 'settings.json'].sort())
+    expect(log).not.toHaveBeenCalled()
+  })
+
+  it('rotates a kept not-UTF-8 backup with the backups already there instead of piling them up (D78)', () => {
+    const root = fs.realpathSync.native(temporaryDirectory())
+    const settings = path.join(root, 'settings.json')
+    const older = ['20200101000000001', '20200101000000002', '20200101000000003', '20200101000000004', '20200101000000005']
+      .map((suffix) => path.join(root, `settings.json.bak.${suffix}`))
+    for (const backup of older) fs.writeFileSync(backup, '{}\n')
+    fs.writeFileSync(settings, gbkSettings)
+
+    const saved = executeFilePlans([{ path: settings, content: '{"dir":"\uFFFD\uFFFD"}\n' }], {}, root, 'discard')
+
+    const backups = fs.readdirSync(root).filter((name) => name.startsWith('settings.json.bak.')).sort()
+    expect(backups).toEqual([...older.slice(1).map((backup) => path.basename(backup)), path.basename(saved.backups[0])])
+    expect(fs.readFileSync(saved.backups[0])).toEqual(gbkSettings)
   })
 
   it('logs nothing when the write back did not happen, and a failing log never fails a save (D78)', () => {
