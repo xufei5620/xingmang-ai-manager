@@ -3163,7 +3163,8 @@ if (!hasSingleInstanceLock) {
     // 运行中没人接住的异常：不让 Electron 弹那个英文框、带着坏状态接着跑，而是记一笔、
     // 收拾好加速和聊天记录后退出，10 分钟内头一次就自动重开（见 unexpected-exit.ts）。
     // 注册了自己的 uncaughtException 监听，Electron 自带的那个弹框就不再出现。
-    const simulateUnexpectedExit = process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
+    // 模拟开关只在开发态认：它走的是真的未捕获异常那条路，打包版认了会混进崩溃上报的统计（D101）。
+    const simulateUnexpectedExit = !app.isPackaged && process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'
     let unexpectedExitStarted = false
     let appWillQuit = false
     quitCleanup.add('unexpected-exit-flag', () => { appWillQuit = true })
@@ -3206,7 +3207,7 @@ if (!hasSingleInstanceLock) {
     }
     process.on('uncaughtException', onUnexpectedException)
     quitCleanup.add('unexpected-exit-handler', () => { process.off('uncaughtException', onUnexpectedException) })
-    // 真机上演「意外退出」用：打包版也认，设了它启动 30 秒后主进程抛一次没人接的异常。
+    // 演「意外退出」用（开发态，打包版不认）：设了它启动 30 秒后主进程抛一次没人接的异常。
     // 重开出来的进程带着同一个环境变量，会再退一次，正好演「10 分钟内第二次不再重开」。
     if (simulateUnexpectedExit) {
       runtimeLog.log('warn', 'main', 'app.unexpected-exit.simulate', '已设置模拟意外退出，30 秒后触发')

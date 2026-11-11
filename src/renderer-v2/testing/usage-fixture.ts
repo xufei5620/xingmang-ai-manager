@@ -37,6 +37,11 @@ export function usageDetailFixture(kind: string): AccountUsageRecord {
     record.details.costs = { input: 0.013275, output: 0.023325, cacheRead: 0.736, cacheCreation: 0, total: 0.7726, actual: 0.3863 }
     if (kind === 'sub2-missing') record.details.costs = { input: null, output: null, cacheRead: null, cacheCreation: null, total: null, actual: null }
   }
+  // D53：一次只花几厘钱的调用（$0.0032，夹具的换算是 100 额度 = $1），明细表那一格要跟详情的合计一样写全。
+  if (kind === 'sub-cent') {
+    delete record.details.unitPrices; delete record.details.pricingTiers
+    record.quota = 0.32; record.details.matchedTier = ''
+  }
   if (kind === 'stream-error') {
     record.type = 5; record.content = 'fixture <script>window.usageXss=true</script>'
     record.details.streamStatus = { status: 'error', endReason: 'upstream_error', errorCount: 1, endError: '连接中断', errors: ['请稍后重试'] }

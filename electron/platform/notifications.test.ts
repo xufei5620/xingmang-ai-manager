@@ -73,8 +73,8 @@ describe('bounded native activity notifications', () => {
     expect(h.controller.notify('task', 'user:task-1')).toBe('requested')
     expect(h.controller.notify('task', 'user:task-1')).toBe('duplicate')
     expect(h.runtime.create).toHaveBeenCalledWith({
-      title: '异步任务已完成',
-      body: '任务结果已经更新，可以回到星芒工具箱查看。',
+      title: '生成任务已完成',
+      body: '任务结果已经更新，可以回到星芒查看。',
       silent: true,
     })
     h.notifications[0].emit('click')
@@ -309,7 +309,7 @@ describe('announcement reminders', () => {
     const { title, body } = buildActivityNotificationMessage('balance', 'balance-empty:7:1')
     expect(`${title}${body}`).not.toMatch(/solov|Sub2API|API|403|Codex|Claude|npm|PATH|Key/)
     // The prefix only matters for the balance kind.
-    expect(buildActivityNotificationMessage('task', 'balance-empty:7:1').title).toBe('异步任务已完成')
+    expect(buildActivityNotificationMessage('task', 'balance-empty:7:1').title).toBe('生成任务已完成')
   })
   it('words recharge promos on their own, once per promo and once per day, under the announcement switch', () => {
     const h = setup()
@@ -392,7 +392,7 @@ describe('chat notifications and click destinations', () => {
       title: '图片生成好了',
       body: '回到星芒的「聊天」查看。',
     })
-    expect(buildActivityNotificationMessage('task', 'xm-account:7:12:0').title).toBe('异步任务已完成')
+    expect(buildActivityNotificationMessage('task', 'xm-account:7:12:0').title).toBe('生成任务已完成')
     // 前缀只对 task 这一类生效，别的种类照旧用自己的说法。
     expect(buildActivityNotificationMessage('balance', 'chat:1').title).toBe('余额需要留意')
   })

@@ -2,7 +2,9 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { app } from 'electron'
 import { AiAssetStore } from '../ai-asset-store'
+import { aiOutputFolderName } from '../ai-output-location'
 import type { RuntimeLogStore } from '../runtime-log'
 import { createGlobalVideoAssetWriter, createRealmBusinesses, type RealmBusinessesOptions } from './ai-services'
 
@@ -38,7 +40,7 @@ afterEach(async () => {
   for (const directory of directories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
-function create() {
+function create(overrides: Partial<RealmBusinessesOptions> = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-services-'))
   directories.push(root)
   const accounts = {
@@ -58,6 +60,7 @@ function create() {
     runtimeLog: { log: vi.fn(), exception: vi.fn() } as unknown as RuntimeLogStore,
     sessionFetch: vi.fn() as unknown as typeof fetch,
     routedRelayFetch: vi.fn() as unknown as typeof fetch,
+    ...overrides,
   })
 }
 
@@ -139,6 +142,36 @@ describe('realm businesses', () => {
     for (const business of [solov, history]) {
       const [detach] = vi.mocked(business.canvasRuns.subscribe).mock.results.map((result) => result.value as () => void)
       expect(detach).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  // 决定单 D107：上次「文档」不让写、作品存到了个人文件夹，这次「文档」能写了，启动后在后台挪回来。
+  it('moves works saved in the home folder back into documents once documents can be written', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-services-home-'))
+    directories.push(home)
+    const documents = path.join(home, 'Documents')
+    fs.mkdirSync(documents)
+    const work = path.join('user-7', '2026-11-05', `xingmang-${'b'.repeat(43)}.png`)
+    fs.mkdirSync(path.dirname(path.join(home, aiOutputFolderName, work)), { recursive: true })
+    fs.writeFileSync(path.join(home, aiOutputFolderName, work), 'png')
+    const homedir = vi.spyOn(os, 'homedir').mockReturnValue(home)
+    // The electron mock above is a plain object; only this test pretends to be the installed app.
+    const mockedApp: { isPackaged: boolean } = app
+    mockedApp.isPackaged = true
+    try {
+      const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+      const { ensureBusiness } = create({ readDocumentsDirectory: () => documents, runtimeLog: runtimeLog as unknown as RuntimeLogStore })
+      expect(ensureBusiness('solov').aiOutputPlacement.root).toBe(path.join(documents, aiOutputFolderName))
+
+      await vi.waitFor(() => {
+        expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ai-chat', 'asset.output.moved-back-to-documents', expect.any(String), { moved: 1, kept: 0, failed: 0 })
+      })
+      expect(fs.readFileSync(path.join(documents, aiOutputFolderName, work), 'utf8')).toBe('png')
+      expect(fs.existsSync(path.join(home, aiOutputFolderName))).toBe(false)
+      expect(runtimeLog.exception).not.toHaveBeenCalled()
+    } finally {
+      mockedApp.isPackaged = false
+      homedir.mockRestore()
     }
   })
 
