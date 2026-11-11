@@ -187,6 +187,10 @@ export function saveConversation(state: ChatWorkspace, conversation: Conversatio
 export function isGenerating(conversation: Conversation): boolean { return conversation.messages.some((message) => message.status === 'pending' || message.status === 'streaming') }
 // 出图那一条带着发出时的设置；换账号会把它掐掉、钱可能已经扣了，切换前要先问一句（D44）。出字的不算。
 export function isGeneratingImage(conversation: Conversation): boolean { return conversation.messages.some((message) => (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode === 'image') }
+// 回复途中网断了，主进程要连着 3 分钟收不到字才停（给长思考模型留的，时限不改），这期间界面只转圈，
+// 客户以为卡死了。在那条下面说一句，让客户知道可以先停（D43）。出图的不说：停下也可能照样计费，停之前另有一问。
+export const offlineReplyNotice = '网络断了，这条回复可能接不上，可以先停止。'
+export function shouldShowOfflineReplyNotice(message: ChatMessage, offline: boolean): boolean { return offline && message.role === 'assistant' && (message.status === 'pending' || message.status === 'streaming') && message.settings?.mode !== 'image' }
 
 // A stream chunk replaces only the conversation it belongs to, so every other
 // conversation keeps its object identity for the whole answer. Caching the

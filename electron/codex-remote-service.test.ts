@@ -710,6 +710,40 @@ describe('codex-remote-service enabling', () => {
     const settings = await s.store.readSettings()
     expect(JSON.stringify(settings)).not.toContain('enabled')
   })
+
+  // D23：卡片上的「重新连接」只把停住的渠道重连一次，不像关掉再开那样给手机发「电脑上关了」，绑定的人也还在。
+  it('reconnects a stuck channel in place without telling the phone it was closed or forgetting the bound person', async () => {
+    const s = await setup()
+    const first = await enabledAndPaired(s)
+    first.handlers?.onStatus({ state: 'error', message: '这个飞书应用在别处也连着，先关掉别处再试。', problem: 'connection-limit' })
+    expect((await s.service.snapshot()).channels.feishu.status.problem).toBe('connection-limit')
+
+    const snapshot = await s.service.reconnectChannel('feishu')
+    expect(first.stopped).toBe(1)
+    expect(first.sent).toHaveLength(0)
+    expect(s.channels).toHaveLength(2)
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: true, status: { state: 'connected' } })
+    expect(snapshot.channels.feishu.boundPeer).not.toBeNull()
+    // The replaced adapter can no longer move the card.
+    first.handlers?.onStatus({ state: 'error', message: '旧的', problem: 'other' })
+    expect((await s.service.snapshot()).channels.feishu.status).toEqual({ state: 'connected' })
+  })
+
+  it('does not open a channel that is switched off when asked to reconnect it', async () => {
+    const s = await setup()
+    const snapshot = await s.service.reconnectChannel('feishu')
+    expect(s.channels).toHaveLength(0)
+    expect(snapshot.channels.feishu).toMatchObject({ enabled: false, status: { state: 'stopped' } })
+  })
+
+  it('stops the channel and says why when it may no longer run at the moment it reconnects', async () => {
+    const s = await setup()
+    await s.service.setChannelEnabled('feishu', true)
+    s.unavailable.reason = '星芒正以管理员身份运行'
+    await expect(s.service.reconnectChannel('feishu')).rejects.toThrow('管理员')
+    expect(s.channels).toHaveLength(1)
+    expect((await s.service.snapshot()).channels.feishu.enabled).toBe(false)
+  })
 })
 
 // YF-8：托盘「打开手机遥控」。只开凭据、配对过的人都在的渠道，过的检查跟设置里那个开关一样，打不开时给原因原句。

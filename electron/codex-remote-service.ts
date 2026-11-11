@@ -870,6 +870,20 @@ export class CodexRemoteService {
   }
 
   /**
+   * 卡片上的「重新连接」（0.2.24 D23）：开着、停在出错上的渠道断开重连一次。凭据、绑定的人、配对码都不动，
+   * 手机上也不收「电脑上关了」那句，跟换凭据以后重启渠道是同一条路。没开着就不连：按钮只在开着时才有，
+   * 点下去这一会儿被关掉了就算了。
+   */
+  async reconnectChannel(channel: RemoteChannelId): Promise<CodexRemoteSnapshot> {
+    const runtime = this.runtimes[channel]
+    if (!runtime.enabled) return this.emit()
+    await this.stopAdapter(runtime)
+    const blocked = await this.startChannel(runtime)
+    if (blocked) throw new Error(blocked)
+    return this.emit()
+  }
+
+  /**
    * 能不能开变了（状态文件关掉或放开了手机遥控，remote-features.ts）：现在不能开了，开着的渠道当场停掉，
    * 手机上收到的跟在电脑上点关一样；又能开了不替他打开，只让界面跟上。
    */

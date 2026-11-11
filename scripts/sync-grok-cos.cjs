@@ -5,13 +5,15 @@ const { execFile } = require('node:child_process')
 const { promisify } = require('node:util')
 const { performance } = require('node:perf_hooks')
 const { checkFailure, observedProcessFailure, safeSyncFailure } = require('./cos-sync-utils.cjs')
+const { assertCompleteLicense, publishLicense, readLicenseFiles, validateLicense } = require('./cos-license-files.cjs')
 
 // Windows 上一键装 Grok 从 xAI 官方下 grok.exe（electron/grok-installer.ts），国内多半连不上，以前靠加速。
 // yoyo 2026-10-14 定「放桶」：xAI 签过名的原件原样放进星芒的腾讯云存储桶，客户端先从桶里下
 // （electron/grok-bucket.ts），那道「xAI 签名」核对一行不改；桶里没有或对不上，照旧去 xAI。
 // 每次同步问 xAI 现在的 stable 是哪一版，再读本仓 electron/cli-verified-versions.ts 里 Grok 的推荐
 // 版本（星芒默认装它），两版的 x64、ARM64 都要在桶里；已经传过、对象还在的不再下。清单留最近几版，
-// 「退回更新前的版本」也多半能从桶里下。
+// 「退回更新前的版本」也多半能从桶里下。Grok 是 Apache-2.0，转发要带上许可原文和 xAI 自己的第三方声明，
+// 两份一起放进桶、写进清单的 license（决定单 D98，见 cos-license-files.cjs）。
 //
 // Trust: only xAI's two documented hosts are contacted, every URL is built from the
 // constants below and the shared transport refuses redirects. A binary is uploaded only
@@ -150,6 +152,7 @@ function validateLatest(value, publicUrl) {
     if (platforms.size !== PLATFORM_IDS.length) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单的版本缺少平台')
   }
   if (!seen.has(value.stable.version)) throw checkFailure('cos-index-invalid', 'COS 现有 Grok 清单里没有 stable 那一版')
+  validateLicense(value.license, { prefix: PREFIX, publicUrl, message: 'COS 现有 Grok 清单的许可文件记录无效' })
   return value
 }
 
@@ -285,6 +288,8 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
   // mid-run, the index must not vouch for the old stable any longer than it has to.
   const checkedAt = now()
   const versions = targetVersions(stable.version, parseVersion(recommendedVersion))
+  // Read before any download so a broken checkout fails fast; uploaded only once the binaries are in.
+  const licenseFiles = await stage('read-license', {}, function () { return dependencies.readLicenseFiles() })
   const workDirectory = await stage('prepare-temp', {}, function () { return dependencies.createWorkDirectory() })
   let primaryError
   try {
@@ -326,8 +331,12 @@ async function synchronizeGrok({ store, dependencies, recommendedVersion, progre
       for (const platformId of PLATFORM_IDS) files.push(await synchronizeFile(version, platformId))
       current.push({ version, files })
     }
-    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), stable, releases: mergeReleases(current, old), checkedAt }
-    await stage('validate-latest', {}, async function () { validateLatest(manifest, store.publicUrl) })
+    const license = await publishLicense({ stage, store, prefix: PREFIX, product: PRODUCT, files: licenseFiles, previous: old?.license })
+    const manifest = { schemaVersion: 1, product: PRODUCT, generatedAt: now(), stable, releases: mergeReleases(current, old), license, checkedAt }
+    await stage('validate-latest', {}, async function () {
+      validateLatest(manifest, store.publicUrl)
+      assertCompleteLicense(manifest.license, PRODUCT)
+    })
     // 没变也照样写一遍，只换 checkedAt：客户端靠它判断桶还跟不跟得上 xAI 的 stable，太久没核过就不从桶里
     // 装最新的（#1061 第 7 条）。
     const changed = contentOf(manifest) !== contentOf(old)
@@ -399,6 +408,7 @@ function createRuntimeDependencies(common) {
     fetchText: common.fetchText,
     downloadResource: common.downloadResource,
     readPeMachine,
+    readLicenseFiles: function () { return readLicenseFiles(PRODUCT) },
     inspectSignature: function (filePath, workDirectory) { return inspectSignature(filePath, workDirectory) },
     removeFile: function (filePath) { return fs.rm(filePath, { force: true }) },
     createWorkDirectory: async function () { return fs.mkdtemp(path.join(await fs.realpath(os.tmpdir()), 'xingmang-grok-cos-')) },
