@@ -193,7 +193,7 @@ export function trayBalanceLabel(balance: number | null | undefined): string {
 /** 托盘那一行订阅；和首页用同一个「能不能用」的判断，没有能用的订阅时 null。 */
 export function traySubscriptionLabel(self: NewApiSubscriptionSelf | null, quotaPerUnit: number, now: number): string | null {
   const subscription = resolveUsableSubscription(self, { now, quotaPerUnit })
-  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel) : null
+  return subscription ? subscriptionSummaryText(subscription, trayBalanceLabel, new Date(now)) : null
 }
 
 function copySnapshot(snapshot: ApplicationTraySnapshot): ApplicationTraySnapshot {
