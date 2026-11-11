@@ -4273,6 +4273,60 @@ test('switching Codex account source offers to restart an open Codex desktop and
   } finally { await page.close() }
 })
 
+// Fable 复查第一轮 3：老客户切回官方以后 Claude Code 还是「不逐条确认就执行」，问一次，点了「改回先问我」才改。
+test('switching Claude Code back to the official account asks once whether it should ask first, and changes nothing until told', async () => {
+  const page = await open('bypassLeft=1&allInstalled=1')
+  try {
+    await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    await page.getByTestId('tool-claude-switch-official').click()
+    const question = page.getByTestId('command-confirmation-question')
+    await question.getByRole('heading', { name: '要不要让官方 Claude Code 先问再执行？', exact: true }).waitFor()
+    await question.getByText('这台电脑上的 Claude Code 现在是「不逐条确认就执行」。它可能是星芒以前替你开的，也可能是你自己设的，软件分不清。切回官方账号以后它还会开着。', { exact: true }).waitFor()
+    await question.getByText('只问这一次。', { exact: true }).waitFor()
+    // 随手一按回车不许改客户的设置：焦点在「保持现在这样」。
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute('data-testid')), 'command-confirmation-keep')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'answerClaudeCommandConfirmation')), false, '不点就不许改')
+    await page.getByTestId('command-confirmation-ask').click()
+    await waitForToast(page, '已改好：官方 Claude Code 执行命令前会先问你，原来的设置已备份。')
+    await question.waitFor({ state: 'detached' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'answerClaudeCommandConfirmation').map((entry) => entry.args)), [['ask']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('closing the asked-first question keeps the setting, and the configuration dialog asks it too', async () => {
+  const page = await open('bypassLeft=1&allInstalled=1')
+  try {
+    await openToolConfiguration(page, 'claude')
+    await page.getByTestId('tool-source-official').click()
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
+    await waitForToast(page, '已切回官方账号，原来的配置已备份')
+    const question = page.getByTestId('command-confirmation-question')
+    await question.waitFor()
+    await page.keyboard.press('Escape')
+    await question.waitFor({ state: 'detached' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'answerClaudeCommandConfirmation').map((entry) => entry.args)), [['keep']])
+    await assertNoToast(page, '官方 Claude Code 执行命令前会先问你。')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a failed answer to the asked-first question leaves it open to try again', async () => {
+  const page = await open('bypassLeft=1&allInstalled=1')
+  try {
+    await page.getByRole('button', { name: 'Claude Code 更多操作', exact: true }).click()
+    await page.getByTestId('tool-claude-switch-official').click()
+    const question = page.getByTestId('command-confirmation-question')
+    await question.waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'answerClaudeCommandConfirmation'; window.v2Test.failMessage = 'Claude Code 现在没在用官方账号，这次没有改。' })
+    await page.getByTestId('command-confirmation-ask').click()
+    await page.getByText('Claude Code 现在没在用官方账号，这次没有改。', { exact: true }).waitFor()
+    assert.equal(await question.count(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('local keys no longer skip the welcome page, which offers login first and still lets tools open without an account', async () => {
   const page = await open('guest=1&existing=1')
   try {

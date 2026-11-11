@@ -222,6 +222,43 @@ describe('AiAssetStore base64 and ownership', () => {
       .rejects.toThrow('保存位置写不进去，这次没有扣费。请联系客服帮你处理。')
   })
 
+  it('stops a paid request on a nearly full disk with the install check wording, before writing anything (D38)', async () => {
+    const options = storeOptions()
+    const measured: string[] = []
+    const store = new AiAssetStore({
+      ...options,
+      readDiskSpace: async (target) => {
+        measured.push(target)
+        return { availableBytes: 120 * 1024 ** 2, totalBytes: 256 * 1024 ** 3, measuredPath: 'C:\\Users\\someone\\Documents', deviceId: 1 }
+      },
+    })
+
+    await expect(store.assertWritable(42)).rejects.toThrow(/^C 盘空间不足，只剩 120 MB，至少需要 200 MB，请先清理 C 盘再试$/)
+    expect(measured).toEqual([path.join(path.resolve(options.outputRoot), 'user-42')])
+    // Measured before the probe: nothing was created, not even the account folder.
+    expect(fs.existsSync(options.outputRoot)).toBe(false)
+  })
+
+  it('lets a paid request through when the disk has room or the free space cannot be read', async () => {
+    const options = storeOptions()
+    const roomy = new AiAssetStore({
+      ...options,
+      readDiskSpace: async () => ({ availableBytes: 200 * 1024 ** 2, totalBytes: 256 * 1024 ** 3, measuredPath: '/Users/someone', deviceId: 1 }),
+    })
+    const unreadable = new AiAssetStore({ ...options, readDiskSpace: async () => null })
+
+    await expect(roomy.assertWritable(42)).resolves.toBeUndefined()
+    await expect(unreadable.assertWritable(42)).resolves.toBeUndefined()
+  })
+
+  it('does not measure free space for the startup and diagnostics probe without an account', async () => {
+    const readDiskSpace = vi.fn(async () => ({ availableBytes: 0, totalBytes: 1, measuredPath: '/', deviceId: 1 }))
+    const store = new AiAssetStore({ ...storeOptions(), readDiskSpace })
+
+    await expect(store.assertWritable()).resolves.toBeUndefined()
+    expect(readDiskSpace).not.toHaveBeenCalled()
+  })
+
   it('treats a pre-planted file at the probe name as unwritable instead of overwriting or deleting it', async () => {
     const options = storeOptions()
     const accountRoot = path.join(options.outputRoot, 'user-42')

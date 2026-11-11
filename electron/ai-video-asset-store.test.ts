@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiVideoAssetStore, inspectMp4Video, inspectMp4VideoMetadata } from './ai-video-asset-store'
 import { setRelocatedFolderPolicy } from './relocated-folders'
+import { classifyStorageFailure } from './startup-failure'
 
 const roots: string[] = []
 
@@ -127,6 +128,23 @@ describe('AiVideoAssetStore', () => {
     await expect(store.storeComposed(0, mp4())).rejects.toThrow('AI 视频账号标识格式错误')
     const small = new AiVideoAssetStore({ outputRoot, maximumVideoBytes: 16 })
     await expect(small.storeComposed(7, mp4())).rejects.toThrow('视频超过 512 MB 安全上限')
+  })
+
+  it('keeps the full-disk reason on a failed save so a paid clip can say it is charged (D38)', async () => {
+    const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-full-'))
+    roots.push(outputRoot)
+    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
+
+    failTemporaryFileWrites()
+    const error = await store.storeMp4(7, mp4(), { taskId: 'video_full' }).then(() => null, (reason: unknown) => reason)
+
+    expect((error as Error).message).toBe('作品没能存进保存位置，请稍后重试；一直不行请联系客服')
+    expect(classifyStorageFailure(error)).toBe('disk-full')
+    vi.restoreAllMocks()
+    // Nothing half-written is left in the dated folder, and the clip lists as not stored.
+    const accountRoot = path.join(outputRoot, 'user-7')
+    for (const day of fs.readdirSync(accountRoot)) expect(fs.readdirSync(path.join(accountRoot, day))).toEqual([])
+    await expect(store.listOwned(7)).resolves.toEqual([])
   })
 
   it('imports an MP4 file idempotently without changing the source', async () => {

@@ -1,5 +1,5 @@
 import { useCallback, useState, type Dispatch, type RefObject, type SetStateAction } from 'react'
-import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget } from '../../../../electron/ipc-contract'
+import type { AccountSessionState, AccountSourceSwitchResult, AccountSourceTarget, ClaudeCommandConfirmationChoice } from '../../../../electron/ipc-contract'
 import { offersCodexDesktopRestart } from '../../../../electron/running-tools'
 import type { LatestRequest } from '../../latest-request'
 import type { ToolConfigConfirmation } from '../../pages-account'
@@ -7,6 +7,7 @@ import { tools } from '../../registry/tools'
 import type { AuthMode } from '../auth'
 import { markDiagnosticsStale } from '../app/environment-status'
 import type { AppToast, Toolbox, ToolsApi } from '../app/runtime-context'
+import { commandConfirmationAskedNotice } from './CommandConfirmationDialog'
 import type { ConfigSaveOutcome } from './ConfigDialog'
 import { brokenConfigDetails, brokenConfigOf, brokenConfigRepairTarget, providerFor, spacedName, type ToolId } from './model'
 import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
@@ -29,6 +30,9 @@ interface ToolAccountActionsOptions {
 /** 首页工具卡上改配置的那几件：切到当前账号 / 切回官方、就用现在这份、修提醒设置、重置坏掉的配置，以及配置弹窗保存之后。 */
 export function useToolAccountActions({ toolsApi, toolbox, toast, session, mounted, accountEpoch, configTool, setConfigTool, setAuth, setCcSwitchReminder, setSwitchRestartOffer }: ToolAccountActionsOptions) {
   const [toolConfigConfirmed, setToolConfigConfirmed] = useState<ToolConfigConfirmation | null>(null)
+  // 切回官方账号以后那一问「要不要让官方 Claude Code 先问再执行？」（CommandConfirmationDialog）：主进程说要问才弹，
+  // answering = 回答正在交给主进程，框不让关。
+  const [commandConfirmation, setCommandConfirmation] = useState<'asking' | 'answering' | null>(null)
   /**
    * 首页「就用现在这份」：用户自己改过配置又不想被提醒时，把这个工具记成手动来源。
    * 写的是配置对话框里「自己填写密钥」同一个本机标记，所以以后在配置里改回星芒
@@ -72,6 +76,7 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
         // Codex CLI 与 Codex 桌面端读的是同一份配置：从哪一行点的，两行都一起换了。
         if (provider === 'codex' && target === 'account') toast.show('Codex CLI 和 Codex 桌面端共用一份设置，已一起改好。', 'neutral')
         if (provider === 'codex' && offersCodexDesktopRestart(result.runningTools)) setSwitchRestartOffer(target)
+        if (result.askCommandConfirmation) setCommandConfirmation('asking')
       } finally {
         await toolbox.refresh(true).catch(() => undefined)
       }
@@ -139,7 +144,25 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
       setToolConfigConfirmed((current) => ({ provider, sequence: (current?.sequence ?? 0) + 1 }))
     }, () => undefined)
   }
-  function finishConfigSave(warning?: string, outcome: ConfigSaveOutcome = 'saved') {
+  /**
+   * 那一问的回答。改不改、改之前备份、记下问过都在主进程；改了检查页那一项（Claude Code 跑命令前问不问）就过期了。
+   * 交不上就抛给错误框，框留着，客户可以再点一次。
+   */
+  const answerCommandConfirmation = useCallback(async (choice: ClaudeCommandConfirmationChoice) => {
+    setCommandConfirmation('answering')
+    try {
+      const result = await toolsApi.answerCommandConfirmation(choice)
+      if (!mounted.current) return
+      setCommandConfirmation(null)
+      if (choice !== 'ask') return
+      if (result.changed) markDiagnosticsStale()
+      toast.show(commandConfirmationAskedNotice(result.changed), 'ok')
+    } catch (cause) {
+      if (mounted.current) setCommandConfirmation('asking')
+      throw cause
+    }
+  }, [mounted, toast, toolsApi])
+  function finishConfigSave(warning?: string, outcome: ConfigSaveOutcome = 'saved', askCommandConfirmation = false) {
     const sameAccount = accountEpoch.capture()
     const name = configTool ? jobToolName(configTool) ?? configTool : '工具'
     markDiagnosticsStale()
@@ -147,11 +170,12 @@ export function useToolAccountActions({ toolsApi, toolbox, toast, session, mount
     // 配置弹窗的保存不带连接自检（主进程只写文件），这里不说「自检通过」。
     toast.show(outcome === 'reset' ? `已重置 ${spacedName(name)}的配置，原来的配置已备份` : outcome === 'official' ? '已切回官方账号，原来的配置已备份' : `${spacedName(name)}的配置已保存`, 'ok')
     if (warning) toast.show(warning, 'warn')
+    if (askCommandConfirmation) setCommandConfirmation('asking')
     void toolbox.refresh(true).catch(() => {
       if (mounted.current && sameAccount()) {
         toast.show('配置已保存，但最新状态没有读到。请重新检测，无需重复保存。', 'warn')
       }
     })
   }
-  return { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave }
+  return { toolConfigConfirmed, keepCurrentToolConfig, switchToolAccount, repairToolHooks, repairBrokenToolConfig, confirmToolKeyWritten, finishConfigSave, commandConfirmation, answerCommandConfirmation }
 }

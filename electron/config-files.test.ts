@@ -21,6 +21,9 @@ import {
   recordClaudeFilledDefaults,
   restoreClaudeForeignSettings,
   withdrawClaudeFilledDefaults,
+  inspectClaudeOfficialSkipsConfirmation,
+  restoreClaudeOfficialCommandConfirmation,
+  claudeNotOfficialMessage,
   planProviderPickerRefresh,
   restoreManagedCliHooks,
   rewriteManagedCliHooks,
@@ -3586,6 +3589,141 @@ describe('switching a provider back to the official subscription account', () =>
       // Coming from the official account clears old marks without dropping what was stashed.
       expect(JSON.parse(String(recordClaudeFilledDefaults(marked, {}, [], true)))).toEqual(JSON.parse(stashed))
       expect(recordClaudeFilledDefaults(JSON.stringify({ version: 1, env: {}, settings: {}, filled: ['skipDangerousModePermissionPrompt'] }), {}, [], true)).toBe('')
+    })
+  })
+
+  // Fable 复查第一轮 3：0.2.24 之前接过星芒的老配置没有记号，切回官方以后「不逐条确认」还开着，问客户一次，他点了才撤。
+  describe('Claude command confirmation left on after the official switch', () => {
+    function claudeFiles(home: string) {
+      const roots = providerRoots(home)
+      const [configPath] = providerConfigPaths('claude', roots)
+      return { roots, configPath, snapshotPath: path.join(path.dirname(configPath), claudeForeignSettingsSnapshotName) }
+    }
+
+    function readSettings(configPath: string): Record<string, unknown> {
+      return JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    }
+
+    function writeSettings(configPath: string, settings: Record<string, unknown>): void {
+      fs.mkdirSync(path.dirname(configPath), { recursive: true })
+      fs.writeFileSync(configPath, JSON.stringify(settings, null, 2))
+    }
+
+    /** A config written before the marks existed: the defaults are in settings.json, the snapshot has no filled column. */
+    function legacyRelayConfig(configPath: string, snapshotPath: string): void {
+      writeSettings(configPath, {
+        env: { ANTHROPIC_AUTH_TOKEN: 'sk-relay', ANTHROPIC_BASE_URL: providerBaseUrls.claude },
+        permissions: { defaultMode: 'bypassPermissions', deny: ['Artifact', 'DesignSync'], allow: ['Read'] },
+        skipDangerousModePermissionPrompt: true,
+        theme: 'dark',
+        model: testModels.claude,
+      })
+      fs.writeFileSync(snapshotPath, JSON.stringify({ version: 1, env: {}, settings: {} }))
+    }
+
+    it('sees the bypass mode a legacy config keeps after switching to the official account', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      legacyRelayConfig(configPath, snapshotPath)
+      // Still on the account: the question is about the official side only.
+      expect(inspectClaudeOfficialSkipsConfirmation(roots)).toBe(false)
+
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      expect(asRecord(readSettings(configPath).permissions)?.defaultMode).toBe('bypassPermissions')
+      expect(inspectClaudeOfficialSkipsConfirmation(roots)).toBe(true)
+    })
+
+    it('has nothing to ask once the marks withdrew the defaults Xingmang filled', () => {
+      const home = temporaryHome()
+      const { roots } = claudeFiles(home)
+      saveProviderConfig('claude', 'sk-relay', testModels.claude, 'merge', roots, {}, providerBaseUrls)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+
+      expect(inspectClaudeOfficialSkipsConfirmation(roots)).toBe(false)
+    })
+
+    it.each([
+      ['no settings file', null],
+      ['a stricter mode', JSON.stringify({ permissions: { defaultMode: 'acceptEdits' } })],
+      ['a file Claude Code cannot read', '{ not json'],
+      ['permissions that are not a table', JSON.stringify({ permissions: 'bypassPermissions' })],
+    ] as const)('does not ask with %s and never throws', (_label, content) => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      if (content !== null) {
+        fs.mkdirSync(path.dirname(configPath), { recursive: true })
+        fs.writeFileSync(configPath, content)
+      }
+
+      expect(inspectClaudeOfficialSkipsConfirmation(roots)).toBe(false)
+    })
+
+    it('puts the official Claude Code back to asking first and leaves everything else as it was', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      legacyRelayConfig(configPath, snapshotPath)
+      switchProviderToOfficialAccount('claude', roots, {}, providerBaseUrls)
+      const before = readSettings(configPath)
+      const backup = vi.fn()
+
+      const { outcome, result } = restoreClaudeOfficialCommandConfirmation(roots, backup)
+
+      expect(outcome).toBe('written')
+      expect(backup).toHaveBeenCalledTimes(1)
+      expect(result.files).toEqual([configPath])
+      const after = readSettings(configPath)
+      const { permissions: _beforePermissions, skipDangerousModePermissionPrompt: _skip, ...rest } = before
+      expect(after).toEqual({ ...rest, permissions: { allow: ['Read'] } })
+      expect(inspectClaudeOfficialSkipsConfirmation(roots)).toBe(false)
+    })
+
+    it('drops the permissions table it empties and keeps a prompt flag the customer set to something else', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { permissions: { defaultMode: 'bypassPermissions' }, skipDangerousModePermissionPrompt: 'yes' })
+
+      expect(restoreClaudeOfficialCommandConfirmation(roots).outcome).toBe('written')
+
+      expect(readSettings(configPath)).toEqual({ skipDangerousModePermissionPrompt: 'yes' })
+    })
+
+    it('writes nothing and skips the backup when Claude Code already asks first', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { permissions: { defaultMode: 'plan' }, skipDangerousModePermissionPrompt: true })
+      const backup = vi.fn()
+
+      expect(restoreClaudeOfficialCommandConfirmation(roots, backup)).toEqual({ outcome: 'unchanged', result: { backups: [], files: [] } })
+      expect(restoreClaudeOfficialCommandConfirmation(providerRoots(temporaryHome()), backup).outcome).toBe('unchanged')
+
+      expect(backup).not.toHaveBeenCalled()
+      expect(readSettings(configPath)).toEqual({ permissions: { defaultMode: 'plan' }, skipDangerousModePermissionPrompt: true })
+    })
+
+    it('refuses to touch a config that is back on the account', () => {
+      const home = temporaryHome()
+      const { roots, configPath, snapshotPath } = claudeFiles(home)
+      legacyRelayConfig(configPath, snapshotPath)
+      const before = fs.readFileSync(configPath, 'utf8')
+      const backup = vi.fn()
+
+      expect(() => restoreClaudeOfficialCommandConfirmation(roots, backup)).toThrow(claudeNotOfficialMessage)
+
+      expect(backup).not.toHaveBeenCalled()
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+    })
+
+    it('does not write when the backup fails', () => {
+      const home = temporaryHome()
+      const { roots, configPath } = claudeFiles(home)
+      writeSettings(configPath, { permissions: { defaultMode: 'bypassPermissions' } })
+      const before = fs.readFileSync(configPath, 'utf8')
+
+      expect(() => restoreClaudeOfficialCommandConfirmation(roots, () => { throw new Error('没能先备份 Claude Code 的配置，这次没有改') }))
+        .toThrow('没能先备份 Claude Code 的配置，这次没有改')
+
+      expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
     })
   })
 

@@ -4265,21 +4265,72 @@ export function withdrawClaudeFilledDefaults(
 ): ClaudeFilledDefault[] {
   const withdrawn = readClaudeForeignSnapshot(snapshotContent).filled
     .filter((key) => claudeFilledDefaultPresent(settings, key))
-  for (const key of withdrawn) {
-    if (key === 'skipDangerousModePermissionPrompt') {
-      delete settings.skipDangerousModePermissionPrompt
-      continue
-    }
-    if (key !== 'permissions.defaultMode') {
-      removeClaudeToggle(settings, key)
-      continue
-    }
-    const permissions = settings.permissions
-    if (!isJsonRecord(permissions)) continue
-    delete permissions.defaultMode
-    if (Object.keys(permissions).length === 0) delete settings.permissions
-  }
+  for (const key of withdrawn) removeClaudeFilledDefault(settings, key)
   return withdrawn
+}
+
+/** 撤掉星芒补的那一项（会改 settings）。permissions 因此变空就连键一起删。 */
+function removeClaudeFilledDefault(settings: Record<string, unknown>, key: ClaudeFilledDefault): void {
+  if (key === 'skipDangerousModePermissionPrompt') {
+    delete settings.skipDangerousModePermissionPrompt
+    return
+  }
+  if (key !== 'permissions.defaultMode') {
+    removeClaudeToggle(settings, key)
+    return
+  }
+  const permissions = settings.permissions
+  if (!isJsonRecord(permissions)) return
+  delete permissions.defaultMode
+  if (Object.keys(permissions).length === 0) delete settings.permissions
+}
+
+/**
+ * 切回官方账号以后，Claude Code 还是不是「不逐条确认就执行」（permissions.defaultMode = bypassPermissions）。切回官方
+ * 只撤快照里记着是星芒补的那几项（withdrawClaudeFilledDefaults）；还剩着的，要么是 0.2.24 之前接星芒时补的（那时还没有
+ * 记号），要么是客户自己设的，软件分不清，所以问客户一次（Fable 复查第一轮 3，2026-11-11 yoyo 批「切回官方问一句」）。
+ * 只认官方账号的样子：配置还接着别的地址时不算。还没有 settings.json、读不出来，都当不是，不抛错。
+ */
+export function inspectClaudeOfficialSkipsConfirmation(rootsInput: ProviderConfigRoots = defaultProviderConfigRoots()): boolean {
+  try {
+    const roots = normalizeProviderConfigRoots(rootsInput)
+    const [settingsPath] = providerConfigPaths('claude', roots)
+    assertSafeConfigPath(settingsPath, providerConfigRoot('claude', roots), 'file')
+    const parsed = requireJson(settingsPath, '现有 Claude settings.json')
+    return claudeSettingsLookOfficial(parsed) && claudeFilledDefaultPresent(parsed, 'permissions.defaultMode')
+  } catch {
+    return false
+  }
+}
+
+export const claudeNotOfficialMessage = 'Claude Code 现在没在用官方账号，这次没有改。'
+
+/**
+ * 客户在「要不要让官方 Claude Code 先问再执行？」里点了「改回先问我」：撤掉 permissions.defaultMode = bypassPermissions
+ * 和 skipDangerousModePermissionPrompt = true，回到官方原样（执行命令前先问）。两项都只在值还是这样时撤，客户改成别的
+ * 模式的不动，其余一个字不动；beforeWrite 在真要写之前调（调用方在那里备份），两阶段提交（I9）。
+ * 只改官方账号的样子：配置这会儿接着别的地址时抛错不改，免得撤掉接当前账号时要用的那一项。
+ * 返回 written = 改了；unchanged = 本来就会先问（或者还没有 settings.json），什么都没写。
+ */
+export function restoreClaudeOfficialCommandConfirmation(
+  rootsInput: ProviderConfigRoots,
+  beforeWrite?: () => void,
+): { outcome: 'written' | 'unchanged'; result: NativeConfigSaveResult } {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('claude', roots)
+  for (const filePath of providerConfigPaths('claude', roots)) assertSafeConfigPath(filePath, providerRoot, 'file')
+  const [settingsPath] = providerConfigPaths('claude', roots)
+  const untouched = { outcome: 'unchanged' as const, result: { backups: [], files: [] } }
+  if (requireConfigText(settingsPath, '现有 Claude settings.json') === null) return untouched
+  const parsed = requireJson(settingsPath, '现有 Claude settings.json', 'Claude Code')
+  if (!claudeSettingsLookOfficial(parsed)) throw new Error(claudeNotOfficialMessage)
+  if (!claudeFilledDefaultPresent(parsed, 'permissions.defaultMode')) return untouched
+  removeClaudeFilledDefault(parsed, 'permissions.defaultMode')
+  if (claudeFilledDefaultPresent(parsed, 'skipDangerousModePermissionPrompt')) removeClaudeFilledDefault(parsed, 'skipDangerousModePermissionPrompt')
+  beforeWrite?.()
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return { outcome: 'written', result: executeFilePlans([{ path: settingsPath, content: jsonContent(parsed) }], {}, providerRoot) }
 }
 
 function claudeForeignSnapshotPath(roots: ProviderConfigRoots): string {
