@@ -445,6 +445,10 @@ export function chatErrorMessage(error: unknown, code?: AiChatErrorCode): string
   // 下一步怎么办，归进下面任何一类都会把这两句丢掉。
   const unwritable = message.indexOf('保存位置写不进去')
   if (unwritable >= 0) return message.slice(unwritable)
+  // 发付费请求之前还量了保存位置那块盘：剩得太少也停下，原话是装工具前查盘那句，说清哪块盘、还剩多少（D38，
+  // electron/disk-space.ts 的 describeInsufficientDiskSpace）。落到下面会变成「请稍后重试」，盘没清怎么试都一样。
+  const lowDisk = /(?:[A-Z] 盘|磁盘)空间不足，只剩/.exec(message)
+  if (lowDisk) return message.slice(lowDisk.index)
   // 生图、视频的付费请求可能已经发出去时，主进程的原话都带「请勿重复提交」，还说清了是
   // 超时、已生成没下载下来还是没存下来。必须排在下面「超时 / 网络」那条前面，否则会被改成
   // 「请检查网络后重试」，照做就再扣一次钱。
