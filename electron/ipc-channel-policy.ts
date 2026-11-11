@@ -331,6 +331,8 @@ export const ipcChannelPolicies: Readonly<Record<IpcInvokeChannel, IpcChannelPol
   'codex-remote:stop-turn': { label: '在电脑上停下手机遥控这一轮', log: 'normal', account: 'none' },
   'codex-remote:decline-approvals': { label: '在电脑上拒绝手机遥控等着同意的', log: 'normal', account: 'none' },
   'codex-remote:choose-workspace': { label: '手机遥控工作文件夹选择', log: 'normal', account: 'none' },
+  'codex-remote:use-workspace': { label: '手机遥控换用另一个工作文件夹', log: 'normal', account: 'none' },
+  'codex-remote:remove-workspace': { label: '手机遥控移除一个工作文件夹', log: 'normal', account: 'none' },
   // 返回值里带着配对码：只该出现在客户自己眼前的屏幕上，成功不进日志和反馈报告。
   'codex-remote:start-pairing': { label: '手机遥控开始配对', log: 'quiet-success', account: 'none' },
   'codex-remote:cancel-pairing': { label: '手机遥控取消配对', log: 'normal', account: 'none' },

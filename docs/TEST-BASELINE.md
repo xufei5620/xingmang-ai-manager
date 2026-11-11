@@ -140,3 +140,10 @@ Linux 的 `linux-renderer-v2-browser` 也是这样拆的（`test:v2:browser:fixt
 > 云端/CI 容器提示：`test:browser`、`test:v2:browser` 里的 Playwright 套件要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，但也不算跑过：按 `AGENTS.md` 第 3 节设 `XINGMANG_E2E_CHROMIUM` 指向容器那份 Chromium 重跑，照样要 0 失败（scripts 套件不受影响；vitest 里只有 `electron/codex-desktop-cdp.browser.test.ts` 起浏览器，它也认这个变量）。Claude Code 云端容器里是 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test`（`npm run selfcheck` 会自己设上，容器里别的坑见 `docs/CLOUD-SANDBOX.md`）；只复跑一条用例时用 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium node --test --test-name-pattern=<用例名> <套件文件>`。
 
 > 底线：**不要引入新失败**。
+
+## 本地绿、Windows 分片红的路径写法（2026-11-12，#1807）
+
+云端容器和 Mac 上都过、到 Windows `vitest-*` 才红的，多半是下面两种写法，写用例时就避开：
+
+- **把显示出来的路径写死成斜杠**。手机遥控、诊断这类按本机分隔符显示路径（`remoteDisplayPath`、`redactHomeDirectory`），Windows 上是 `~\projects\demo`。期望值用 `path.join('~', 'projects', name)` 拼，别写 `'~/projects/demo'`。
+- **服务里写死了 `platform: 'darwin'`，又拿真文件夹去撞路径规矩**。`codex-remote-service.test.ts` 的 `setup()` 缺省按 darwin 起服务；Windows 上真文件夹是 `C:\…`，按 darwin 的规矩不算绝对路径，「主目录不能当干活的文件夹」这类拦截根本不触发，用例期望的报错就不来。要验拦截的那条传 `setup({ platform: process.platform })`，跟直接测 `validateRemoteWorkspace` 那条一样按本机规矩。

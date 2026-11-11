@@ -22,6 +22,8 @@ const credentialLabel = '手机遥控凭据'
 const maxDisplayNameLength = 64
 const maxUserIdLength = 256
 const maxAccountLabelLength = 128
+/** 电脑上最多加几个干活的文件夹（YF-19）：手机上回「文件夹 2」要好认，列出来一屏看得完。 */
+export const maxRemoteWorkspaces = 5
 
 /** 「退出登录」删不掉凭据文件时上屏那句（#1407 P3-6）。比如 Windows 上文件正被杀毒软件占着，重启后再删一般就行。 */
 export const credentialRemoveFailedMessage = '没能删掉保存的登录信息，请重启星芒后再点一次退出登录。'
@@ -45,7 +47,13 @@ export interface CodexRemoteChannelSettings {
 
 export interface CodexRemoteSettings {
   version: 1
+  /** 正在用的那个文件夹。 */
   workspaceDirectory: string | null
+  /**
+   * 电脑上加过的全部文件夹（YF-19），按加的先后，含正在用的那个，最多 maxRemoteWorkspaces 个；手机上「文件夹 2」
+   * 认的就是这个次序。缺省 = 只有 workspaceDirectory 那一个（以前的版本只能选一个）。
+   */
+  workspaceDirectories?: string[]
   channels: Partial<Record<RemoteChannelId, CodexRemoteChannelSettings>>
   /**
    * 上一条审批用到的编号（0 = 还没有过）。重开星芒接着往下数：手机上还留着上次的「同意 1」，
@@ -91,6 +99,18 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
   if (!isRecord(value) || value.version !== 1) return settings
   const workspace = boundedString(value.workspaceDirectory, 4096)
   settings.workspaceDirectory = workspace && path.isAbsolute(workspace) ? workspace : null
+  if (Array.isArray(value.workspaceDirectories)) {
+    const list: string[] = []
+    for (const entry of value.workspaceDirectories) {
+      const directory = boundedString(entry, 4096)
+      if (directory && path.isAbsolute(directory) && !list.includes(directory) && list.length < maxRemoteWorkspaces) list.push(directory)
+    }
+    // 正在用的那个一定在单子上；单子满了也不挤掉它，挤掉最后加的那个。
+    if (settings.workspaceDirectory && !list.includes(settings.workspaceDirectory)) {
+      list.splice(maxRemoteWorkspaces - 1, list.length, settings.workspaceDirectory)
+    }
+    if (list.length > 1) settings.workspaceDirectories = list
+  }
   const lastApprovalNumber = value.lastApprovalNumber
   if (typeof lastApprovalNumber === 'number' && Number.isSafeInteger(lastApprovalNumber) && lastApprovalNumber > 0) {
     settings.lastApprovalNumber = lastApprovalNumber
@@ -107,6 +127,12 @@ export function parseCodexRemoteSettings(value: unknown): CodexRemoteSettings {
     }
   }
   return settings
+}
+
+/** 电脑上加过的文件夹（YF-19），正在用的那个在里面；一个都没加过是空的。 */
+export function remoteWorkspaceList(settings: Pick<CodexRemoteSettings, 'workspaceDirectory' | 'workspaceDirectories'>): string[] {
+  if (settings.workspaceDirectories?.length) return [...settings.workspaceDirectories]
+  return settings.workspaceDirectory ? [settings.workspaceDirectory] : []
 }
 
 export class CodexRemoteStore {
