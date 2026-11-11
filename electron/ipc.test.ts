@@ -3109,6 +3109,26 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
   })
 
+  it('switches Claude Code commit attribution through its own channel with the same backup rule', async () => {
+    const service = serviceStub()
+    const create = vi.fn(() => ({ id: 'backup-1' }))
+    service.setClaudeCommitAttribution = vi.fn(async (hidden: boolean, backup?: () => void) => {
+      backup?.()
+      return { enabled: hidden, applied: 'written' as const }
+    })
+    register(service, undefined, undefined, undefined, undefined, undefined, {}, {
+      backupStore: { list: vi.fn(), create, inspect: vi.fn(), restore: vi.fn() } as never,
+    })
+    const handler = electronMocks.handlers.get('config:set-claude-commit-attribution')!
+
+    await expect(handler(trustedEvent(), true)).resolves.toEqual({ enabled: true, applied: 'written' })
+    expect(create).toHaveBeenCalledWith('claude', 'pre-save', undefined, null)
+    await expect(handler(trustedEvent(), 1)).rejects.toThrow('开关格式错误')
+    expect(service.setClaudeCommitAttribution).toHaveBeenCalledTimes(1)
+    create.mockImplementationOnce(() => { throw new Error('配置文件超过 2048 KB 备份安全上限') })
+    await expect(handler(trustedEvent(), false)).rejects.toThrow('没能先备份 Claude Code 的配置，这次没有改')
+  })
+
   it('keeps a restorable backup before a reset save and refuses to reset without one', async () => {
     const service = serviceStub()
     const create = vi.fn(() => ({ id: 'backup-1' }))
@@ -7796,6 +7816,28 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(invoicePortalWindow.open).toHaveBeenCalledWith({ siteId: 'solov-api', userId: 42 })
     })
 
+    it('downloads announcement images for the signed-in account site only, never a site the renderer names', async () => {
+      const accountService = accountServiceStub()
+      const announcementImages = { read: vi.fn(async () => 'data:image/png;base64,AAAA') }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, {}, { announcementImages })
+      const readImage = electronMocks.handlers.get('account:get-notice-image')!
+
+      await expect(readImage(trustedEvent(), 'https://xm.solov.cc/qr.png')).resolves.toBe('data:image/png;base64,AAAA')
+      expect(announcementImages.read).toHaveBeenLastCalledWith('solov', 'https://xm.solov.cc/qr.png')
+
+      accountService.getActiveSiteId = vi.fn(() => 'solov-api' as const)
+      // A second argument from the renderer is ignored: the main process picks the site.
+      await readImage(trustedEvent(), 'https://api.solov.cc/qr.png', 'solov')
+      expect(announcementImages.read).toHaveBeenLastCalledWith('solov-api', 'https://api.solov.cc/qr.png')
+    })
+
+    it('fails the announcement image read when this host cannot download them', async () => {
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub())
+
+      await expect(electronMocks.handlers.get('account:get-notice-image')!(trustedEvent(), 'https://xm.solov.cc/qr.png'))
+        .rejects.toThrow('公告图片暂时显示不了，请更新或重启软件')
+    })
+
     it('says the approved line when this host has no invoice window', async () => {
       const accountService = accountServiceStub()
       vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 42 } } as never)
@@ -9269,6 +9311,7 @@ describe('IPC channel log and account policies', () => {
         'account:get-dashboard',
         'account:get-key-options',
         'account:get-legal-document',
+        'account:get-notice-image',
         'account:get-price-list',
         'account:get-profile',
         'account:get-remembered-login',
@@ -9292,6 +9335,7 @@ describe('IPC channel log and account policies', () => {
         'chat:list-groups',
         'chat:paste-image',
         'chat:pick-images',
+        'chat:pick-text-files',
         'chat:save-asset',
         'codex-remote:get-state',
         'codex-remote:start-pairing',

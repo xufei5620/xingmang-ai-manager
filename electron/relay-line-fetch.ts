@@ -27,7 +27,7 @@
  * 直连这个地址）、回话的不是星芒（拦截页、跳转、网关错误页），和等到时限连回应头都没等来（直连被
  * 丢包时就是这样；另一条先回了话也算）；报的是这一次走的那条，报上去只是叫它马上查一轮健康检查，改不改
  * 线路只看健康检查（#941 第 3 节）。回应头到了以后正文下得慢不报：直连下行只有几十 KB/s 的客户，大一点
- * 的回应本来就要下一阵，不算直连坏了。公告整个不报，它下得再慢、下不下来都不影响线路。
+ * 的回应本来就要下一阵，不算直连坏了。公告整个不报，公告里的图片也不报（unreported），它们下得再慢、下不下来都不影响线路。
  *
  * 写进工具配置之前那几次查模型、工具自检用的是另一个（createRelayObservedFetch）：它们查的
  * 正是那条线路通不通，不换地址也不重发，只按上面的口径把直连上的失败报给线路那边。
@@ -61,6 +61,11 @@ export interface RelayLineFetchOptions {
    * 回应大、读得慢。AI 对话、画图中止多半是客户点了「停止」，不给这个选项。
    */
   abortMeansNoAnswer?: boolean
+  /**
+   * 这一路的请求下得慢、下不下来都不报给线路那边，跟公告（unreportedPaths）一个道理：公告里的图片
+   * （announcement-image.ts）地址由运营随手填，填错了、图删了，不能叫线路去查健康。换线路重发照旧。
+   */
+  unreported?: boolean
   log?(level: 'info' | 'warn', event: string, message: string, detail: Record<string, unknown>): void
 }
 
@@ -355,7 +360,7 @@ export function createRelayLineFetch(router: RelayLineRouter, base: typeof fetch
     const callerSignal = init?.signal ?? undefined
     const method = (init?.method ?? 'GET').toUpperCase()
     function report(reason: string): void {
-      if (!unreportedPaths.has(path)) router.reportFailure(siteId, line, reason)
+      if (!options.unreported && !unreportedPaths.has(path)) router.reportFailure(siteId, line, reason)
     }
     function logFallback(reason: string): void {
       log('info', 'relay.line.fallback', '走着的那条线路这次没走通，改走另一条重发', { siteId, from: line, to: other, reason, method, path })

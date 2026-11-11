@@ -244,8 +244,10 @@ export function useToolLaunch(options: ToolLaunchOptions) {
     // 刚选的文件夹主进程已经记下，随打开结果带回来；首页按钮马上写「打开 它」，其余工具也不再问。
     if (launchIsCurrent(epoch) && result && 'rememberedWorkspace' in result) {
       const rememberedWorkspace = result.rememberedWorkspace ?? undefined
-      toolbox.setSnapshot((current) => current && current.config.rememberedWorkspace !== rememberedWorkspace
-        ? { ...current, config: { ...current.config, rememberedWorkspace } }
+      // 那个文件夹还空不空跟着它一起换（D45）：刚替他建好的打开了，「试试第一条命令」那句话不跳回「介绍一下这个项目」。
+      const rememberedWorkspaceFresh = rememberedWorkspace !== undefined && result.rememberedWorkspaceFresh === true ? true : undefined
+      toolbox.setSnapshot((current) => current && (current.config.rememberedWorkspace !== rememberedWorkspace || current.config.rememberedWorkspaceFresh !== rememberedWorkspaceFresh)
+        ? { ...current, config: { ...current.config, rememberedWorkspace, rememberedWorkspaceFresh } }
         : current)
       // 开机检测还没跑完就打开的（首页摆的还是上次的结果）：那一轮落地时带的是打开前读的配置，
       // 会把刚记下的目录盖回去。重读一次配置，落地时就用这份新的（见 useToolbox 的 configRevision）。

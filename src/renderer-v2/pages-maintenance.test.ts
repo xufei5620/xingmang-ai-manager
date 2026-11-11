@@ -502,6 +502,16 @@ describe('Claude Code write boundary notice', () => {
   })
 })
 
+// 同类对比 备选 6：「不署名」开关的小提示，没改 Claude Code 配置的两种跟上面那个开关说同一套。
+describe('Claude Code commit attribution notice', () => {
+  it('names what changes for the next Claude Code and falls back to the shared kept and later wording', () => {
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'written' })).toEqual({ text: '已打开，新开的 Claude Code 提交代码时不再署名。', tone: 'ok' })
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: false, applied: 'unchanged' })).toEqual({ text: '已关掉，新开的 Claude Code 提交代码时照常署名。', tone: 'ok' })
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'kept' })).toEqual({ text: '开关记下了。Claude Code 自己的设置里你写过署名这一项，星芒没有改它。', tone: 'warn' })
+    expect(settingsPage.claudeCommitAttributionNotice({ enabled: true, applied: 'later' })).toEqual(settingsPage.claudeWriteBoundaryNotice({ enabled: true, applied: 'later' }))
+  })
+})
+
 describe('settings page before the settings arrive', () => {
   it('says it is still reading instead of claiming anything is unsupported', () => {
     const markup = renderToStaticMarkup(createElement(SettingsPage, { api: {} as V2Bridge }))

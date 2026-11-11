@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type RelayToolRouteStatus } from './app-settings'
 import type { RuntimeLogLike } from './account-session-store'
-import type { ClaudeWriteBoundaryResult, NodeRuntimeInstallRequest } from './ipc-contract'
+import type { ClaudeToggleResult, NodeRuntimeInstallRequest } from './ipc-contract'
 import type { LoopbackProbe } from './stale-proxy-environment'
 import type { ProviderId } from './catalog'
 import {
@@ -311,6 +311,8 @@ export interface CliLaunchResult {
    * 首页据此直接换按钮，不必为这一个字段再读一遍整份配置。缺省 = 没带，界面照旧。
    */
   rememberedWorkspace?: string | null
+  /** 同 AppConfigSummary.rememberedWorkspaceFresh，跟着上面那个文件夹走。缺省 = 不是。 */
+  rememberedWorkspaceFresh?: boolean
 }
 
 export type ToolUninstallResult =
@@ -402,6 +404,11 @@ export interface AppConfigSummary {
    * 且不是主目录或其他敏感目录的那个（resolveRememberedWorkspace）。缺省 = 没有，照旧弹选择器。
    */
   rememberedWorkspace?: string
+  /**
+   * rememberedWorkspace 是星芒替用户新建的项目文件夹，里面还没有用户自己的东西
+   * （isUntouchedStarterWorkspace）。界面据此把第一句话换成让 AI 动手做点东西（D45）。缺省 = 不是。
+   */
+  rememberedWorkspaceFresh?: boolean
   providers: Record<ProviderId, NativeConfigSummary>
   /**
    * 账号还在恢复时读到的配置：「是不是当前账号写的」这一问还答不上来，
@@ -455,7 +462,9 @@ export interface SystemService {
    * 设置里「只让 Claude Code 改项目文件夹里的文件」：接着当前账号时当场改 Claude Code 的配置（backup 在真要写之前调），
    * 再记下开关。可选 = 旧实现不提供。
    */
-  setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeWriteBoundaryResult>
+  setClaudeWriteBoundary?(enabled: boolean, backup?: () => void): Promise<ClaudeToggleResult>
+  /** 设置里「Claude Code 提交代码时不署名」，同上。可选 = 旧实现不提供。 */
+  setClaudeCommitAttribution?(hidden: boolean, backup?: () => void): Promise<ClaudeToggleResult>
   /**
    * 开机后读配置前：本账号写的、指向旧位置的钩子与状态行不等客户点就改好，每家这次启动只试一次。
    * 返回这一次改好了哪几家。可选 = 旧实现不提供。
@@ -1211,6 +1220,7 @@ export function createSystemService(
     saveConfig,
     repairCliHooks,
     setClaudeWriteBoundary,
+    setClaudeCommitAttribution,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     toolModelChecker,
@@ -1353,6 +1363,7 @@ export function createSystemService(
     serializeToolConfigWrite: serializeConfigWrite,
     repairCliHooks,
     setClaudeWriteBoundary,
+    setClaudeCommitAttribution,
     autoRepairStaleCliHooks,
     restoreCliHooksRemovedByUninstall,
     switchToOfficialAccount,

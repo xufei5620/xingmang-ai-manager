@@ -423,6 +423,33 @@ describe('createRelayLineFetch', () => {
     }
   })
 
+  it('never reports anything from an unreported fetch but still falls back to the other line', async () => {
+    // 公告里的图片（announcement-image.ts）：地址是运营随手填的，下不下来不能叫线路去查健康；换线路重发照旧。
+    const failures: Array<() => Promise<Response>> = [
+      () => Promise.reject(networkError('ERR_CONNECTION_RESET')),
+      () => Promise.reject(new DOMException('timed out', 'TimeoutError')),
+      () => Promise.resolve(page(502)),
+      () => Promise.resolve(page(200)),
+      () => Promise.resolve(cutReply()),
+    ]
+    for (const failure of failures) {
+      const { router, reports } = fakeRouter()
+      const base = vi.fn<typeof fetch>().mockImplementationOnce(failure).mockResolvedValueOnce(new Response('png', { status: 200, headers: { 'content-type': 'image/png' } }))
+      const response = await createRelayLineFetch(router, base, { unreported: true })('https://xm.solov.cc/logo.png')
+      await response.text().catch(() => undefined)
+      expect(reports).toEqual([])
+    }
+    const { router, reports } = fakeRouter()
+    const base = vi.fn<typeof fetch>()
+      .mockRejectedValueOnce(networkError('ERR_CONNECTION_RESET'))
+      .mockResolvedValueOnce(new Response('png', { status: 200, headers: { 'content-type': 'image/png' } }))
+    const response = await createRelayLineFetch(router, base, { unreported: true })('https://xm.solov.cc/logo.png')
+    expect(await response.text()).toBe('png')
+    expect(base).toHaveBeenCalledTimes(2)
+    expect(new URL(String(base.mock.calls[1][0])).origin).toBe('https://xm.solov.cc')
+    expect(reports).toEqual([])
+  })
+
   it('keeps a redirected answer recognisable for the caller to reject when direct is chosen automatically', async () => {
     const { router, reports } = fakeRouter()
     const redirected = json(200)

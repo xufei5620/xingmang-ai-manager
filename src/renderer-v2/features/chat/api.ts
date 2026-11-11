@@ -2,7 +2,7 @@ import type { AiChatHistoryWrite, AiChatImageInput, AiChatStartInput, ChatConver
 import { AI_CHAT_LIMITS, buildChatCompletionsRequest, buildImageGenerationRequest, resolveAiModelCapability, supportsChatImageInput } from '../../../../electron/ai-chat-protocol'
 import { chatHistoryLogger } from './storage'
 
-export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'pickAiChatImages' | 'pasteAiChatImage' | 'readAiChatHistory' | 'writeAiChatHistory' | 'exportAiChatConversation' | 'getAccountSession' | 'reportRendererError'>
+export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'pickAiChatImages' | 'pickAiChatTextFiles' | 'pasteAiChatImage' | 'readAiChatHistory' | 'writeAiChatHistory' | 'exportAiChatConversation' | 'getAccountSession' | 'reportRendererError'>
 
 export function createChatApi(bridge: ChatBridge) {
   return {
@@ -17,6 +17,7 @@ export function createChatApi(bridge: ChatBridge) {
     assetMenu: (assetId: string) => bridge.showAiChatAssetMenu(assetId),
     pickImages: (remaining: number) => bridge.pickAiChatImages(remaining),
     pasteImage: () => bridge.pasteAiChatImage(),
+    pickTextFiles: (remainingFiles: number, remainingCharacters: number) => bridge.pickAiChatTextFiles(remainingFiles, remainingCharacters),
     readHistory: (scope: string) => bridge.readAiChatHistory(scope),
     writeHistory: (input: AiChatHistoryWrite) => bridge.writeAiChatHistory(input),
     logHistoryProblem: chatHistoryLogger(bridge),

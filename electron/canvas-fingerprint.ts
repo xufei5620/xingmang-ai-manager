@@ -126,6 +126,11 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       // imageOutputIndex stays out, as on the web host: picking another slice
       // of the same grid is not another picture. What it picks reaches the
       // downstream fingerprints through the asset handed on.
+      // Absent on every node that ran before 画布完善第 8 条, so their keys stay
+      // as they were. Other roles or another order send other pictures first
+      // (and a role line ahead of the prompt), so that is another request.
+      imageReferenceOrder: input.node.data.imageReferenceOrder,
+      videoReferenceOrder: input.node.data.videoReferenceOrder,
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -182,6 +187,8 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         imageCollageInputOrder: node.data.imageCollageInputOrder,
         tileInput: node.data.tileInput,
         imageOutputIndex: node.data.imageOutputIndex,
+        imageReferenceOrder: node.data.imageReferenceOrder,
+        videoReferenceOrder: node.data.videoReferenceOrder,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),
     edges: graph.edges

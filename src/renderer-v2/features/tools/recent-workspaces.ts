@@ -90,6 +90,20 @@ export function launchWorkspaces(
   return [{ path, name: workspaceName(path) }]
 }
 
+/**
+ * 「打开」会不会落在星芒刚建、还空着的项目文件夹里（D45，新手流程 N4）。两种情况：这一下
+ * 要替他新建一个（createsFolder），或者要打开的正是主进程说还空着的那个记着的文件夹。
+ * 别的文件夹里有没有东西界面不知道，一律算不是，第一句话照旧。
+ */
+export function opensUntouchedStarterWorkspace(
+  target: { createsFolder: boolean; workspace?: string | null },
+  config: { rememberedWorkspace?: string; rememberedWorkspaceFresh?: boolean } | null | undefined,
+): boolean {
+  if (target.createsFolder) return true
+  const workspace = target.workspace?.trim()
+  return Boolean(workspace && config?.rememberedWorkspaceFresh === true && workspace === config.rememberedWorkspace?.trim())
+}
+
 /** 主按钮上的文字。目录名太长时截断，鼠标停上去还能看到完整路径。 */
 export function workspaceButtonLabel(name: string, limit = NAME_LIMIT): string {
   return name.length > limit ? `${name.slice(0, limit)}…` : name

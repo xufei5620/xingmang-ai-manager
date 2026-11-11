@@ -12,7 +12,8 @@ import {
   parseCanvasImageTransformRecipe,
   selectCanvasTileSource,
 } from './canvas-image-tools'
-import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRunAsset } from './canvas-run-contract'
+import { canvasRunImageToolNodeLabels, type CanvasImagePreparation, type CanvasRunAsset, type CanvasRunGraphNode } from './canvas-run-contract'
+import { canvasImageReferenceRolePrompt } from './canvas-reference-order'
 import type {
   CanvasNodeExecutionContext,
   CanvasNodeExecutionResult,
@@ -66,6 +67,15 @@ export interface CanvasVideoOperationService {
 
 function promptForNode(localPrompt: string, upstreamPrompt: string | undefined): string {
   return [upstreamPrompt, localPrompt].filter(Boolean).join('\n').trim()
+}
+
+/**
+ * The prompt as the web host sends it once the node names its pictures'
+ * roles (画布完善第 8 条): each picture's role first, then the prompt. The
+ * pictures already arrive in that order (canvas-run-engine.ts).
+ */
+function withReferenceRoles(node: CanvasRunGraphNode, prompt: string): string {
+  return node.data.imageReferenceOrder ? canvasImageReferenceRolePrompt(node.data.imageReferenceOrder, prompt) : prompt
 }
 
 function videoDimensions(size: string | undefined): { width: number; height: number } {
@@ -173,8 +183,9 @@ export function createCanvasNodeExecutors(options: {
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
   const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
-    const prompt = promptForNode(node.data.prompt, inputs.text)
-    if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
+    const typed = promptForNode(node.data.prompt, inputs.text)
+    if (!typed) throw new Error('请输入图像提示词或连接上游文本节点')
+    const prompt = withReferenceRoles(node, typed)
     const group = node.data.group || options.imageGroup || '图片模型'
     const requestId = `canvas-run:${attemptId}`
     throwIfCancelled(signal)
@@ -208,8 +219,9 @@ export function createCanvasNodeExecutors(options: {
   }
   const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage, billing }) => {
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
-    const prompt = promptForNode(node.data.prompt, inputs.text)
-    if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
+    const typed = promptForNode(node.data.prompt, inputs.text)
+    if (!typed) throw new Error('请输入图片编辑指令或连接上游文本节点')
+    const prompt = withReferenceRoles(node, typed)
     const capability = resolveAiModelCapability(node.data.model)
     if (capability.kind !== 'image' || !capability.supportsEdits) {
       throw new Error('当前模型不支持图片编辑，请换用支持编辑的图像模型')
@@ -486,8 +498,9 @@ export function createCanvasNodeExecutors(options: {
   // 发出，不加系统提示；连了图片就一起给模型看。结果超过 32000 字不收，跟画布能存的
   // 文字结果一样长。
   const textGenerate: CanvasNodeExecutors['text-generate'] = async ({ projectId, node, inputs, signal, billing }) => {
-    const prompt = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n')
-    if (!prompt.trim()) throw new Error('请输入文字提示词或连接上游提示词节点')
+    const typed = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n')
+    if (!typed.trim()) throw new Error('请输入文字提示词或连接上游提示词节点')
+    const prompt = withReferenceRoles(node, typed)
     if (!options.completeText) throw new Error('文字生成服务未就绪')
     const group = node.data.group || options.textGroup || ''
     if (!group) throw new Error('请先在「生成配置」中选择文字分组')

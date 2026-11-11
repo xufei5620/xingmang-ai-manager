@@ -620,6 +620,35 @@ describe('createCanvasNodeExecutors', () => {
     expect(request.system).toBeUndefined()
   })
 
+  it('names each picture role ahead of the prompt once a node sets roles, and leaves other prompts alone', async () => {
+    const edit = vi.fn(async () => [{ assetId: 'e'.repeat(43), localUrl: 'xingmang-asset://e', mimeType: 'image/png' as const, fileName: 'edited.png' }])
+    const completeOnce = vi.fn().mockResolvedValue('分析')
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), edit, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const sourceB = { kind: 'image' as const, assetId: 'b'.repeat(43), localUrl: 'xingmang-asset://b' }
+    const sourceA = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: 'xingmang-asset://a' }
+    const imageReferenceOrder = { version: 1 as const, slots: [{ role: 'source' as const, edgeId: 'b', outputIndex: 0 }, { role: 'reference' as const, edgeId: 'a', outputIndex: 0 }] }
+    const roles = '第 1 张图片：原始主体图。\n第 2 张图片：辅助参考图。\n'
+    // The engine has already put the pictures in role order.
+    const inputs = { text: '保持主体', image: sourceB, images: [sourceB, sourceA] }
+    const base = { runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 42, inputs, signal: new AbortController().signal }
+    for (const kind of ['image-edit', 'image-generate'] as const) {
+      edit.mockClear()
+      await executors[kind]!({ ...base, node: { id: 'n', kind, definitionVersion: 1, data: { prompt: '夜景', model: 'gpt-image-2', group: '生图', imageReferenceOrder } } })
+      expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({ prompt: `${roles}保持主体\n夜景`, sourceAssetIds: [sourceB.assetId, sourceA.assetId] }))
+      edit.mockClear()
+      await executors[kind]!({ ...base, node: { id: 'n', kind, definitionVersion: 1, data: { prompt: '夜景', model: 'gpt-image-2', group: '生图' } } })
+      expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({ prompt: '保持主体\n夜景' }))
+    }
+    await executors['text-generate']!({ ...base, node: { id: 't', kind: 'text-generate', definitionVersion: 1, data: { prompt: '比较两张图', model: 'gpt-5.5', group: 'GPT', imageReferenceOrder } } })
+    expect(completeOnce.mock.calls[0][0]).toMatchObject({ user: `${roles}保持主体\n比较两张图`, images: { assetIds: [sourceB.assetId, sourceA.assetId] } })
+    // Roles never stand in for a prompt: an empty one is refused as before.
+    await expect(executors['image-edit']!({ ...base, inputs: { images: [sourceB, sourceA] }, node: { id: 'n', kind: 'image-edit', definitionVersion: 1, data: { prompt: '', model: 'gpt-image-2', group: '生图', imageReferenceOrder } } }))
+      .rejects.toThrow('请输入图片编辑指令或连接上游文本节点')
+  })
+
   it('refuses a text node before any paid request when it has nothing to say, a picture its model cannot read, or too many pictures', async () => {
     const completeOnce = vi.fn().mockResolvedValue('好')
     const executors = createCanvasNodeExecutors({
