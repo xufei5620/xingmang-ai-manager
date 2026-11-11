@@ -341,6 +341,26 @@ describe('main process quit cleanup', () => {
   })
 })
 
+describe('main process unexpected exit', () => {
+  it('only honours the simulated main process crash in development builds', () => {
+    // 模拟开关走的是真的未捕获异常那条路，打包版认了，真机演示就混进崩溃上报的统计（D101）。
+    const sourceText = readMainWiringSource()
+    expect(sourceText.match(/process\.env\.XINGMANG_SIMULATE_MAIN_CRASH/g)).toHaveLength(1)
+    const { source } = mainSource()
+    const initializers: string[] = []
+    function visit(node: ts.Node): void {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'simulateUnexpectedExit' && node.initializer) {
+        initializers.push(node.initializer.getText(source))
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+    expect(initializers).toEqual(["!app.isPackaged && process.env.XINGMANG_SIMULATE_MAIN_CRASH === '1'"])
+    // 开发态设了开关照样重开，不打包也能演一遍「重开一次、第二次不再重开」。
+    expect(source.getText()).toContain('allowRelaunch: app.isPackaged || simulateUnexpectedExit,')
+  })
+})
+
 describe('main process application protocol', () => {
   it('attaches the security policy to every xingmang:// file, worker scripts included', () => {
     // 页面的 <meta> 到不了后台线程，只有协议回包里的头才管得到拼片线程（app-protocol.ts）。
