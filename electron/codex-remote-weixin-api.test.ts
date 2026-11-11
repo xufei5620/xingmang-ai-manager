@@ -12,6 +12,7 @@ import {
   resolveWeixinIlinkOrigin,
   sendWeixinText,
   weixinIlinkDefaultOrigin,
+  weixinStatusNeedsVerifyCode,
   type WeixinIlinkContext,
 } from './codex-remote-weixin-api'
 
@@ -168,6 +169,22 @@ describe('login requests', () => {
     await expect(pollWeixinLoginStatus(context, 'q1', null)).resolves.toEqual({
       status: 'confirmed', token: 'tok', botId: 'b1@im.bot', origin: null, ownerUserId: 'u@im.wechat',
     })
+  })
+
+  it('asks for the phone number on every status that names need_verifycode, including the newer confirmed one', async () => {
+    expect(weixinStatusNeedsVerifyCode('need_verifycode')).toBe(true)
+    expect(weixinStatusNeedsVerifyCode('confirmed_but_need_verifycode')).toBe(true)
+    expect(weixinStatusNeedsVerifyCode('verify_code_blocked')).toBe(false)
+    expect(weixinStatusNeedsVerifyCode('confirmed')).toBe(false)
+    const { fetch } = mockFetch([
+      jsonResponse({ status: 'need_verifycode' }),
+      jsonResponse({ status: 'confirmed_but_need_verifycode', bot_token: 'tok', ilink_bot_id: 'b1@im.bot' }),
+      jsonResponse({ status: 'verify_code_blocked' }),
+    ])
+    const context = contextFor(fetch)
+    await expect(pollWeixinLoginStatus(context, 'q1', null)).resolves.toEqual({ status: 'need-verify-code' })
+    await expect(pollWeixinLoginStatus(context, 'q1', null)).resolves.toEqual({ status: 'need-verify-code' })
+    await expect(pollWeixinLoginStatus(context, 'q1', null)).resolves.toEqual({ status: 'verify-code-blocked' })
   })
 
   it('sends the verify code only as digits in the query string', async () => {
