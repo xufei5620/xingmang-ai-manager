@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AiChatAsset, AiChatTextFile } from '../../../../electron/ipc-contract'
 import { networkFailureMessages } from '../../../../electron/network-failure'
 import { relayQuotaFailureMessages } from '../../../../electron/relay-quota-failure'
-import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice } from './state'
+import { activeConversation, isGeneratingImage, addDraftImages, applyStreamEvent, attachmentErrorMessage, buildChatCatalog, chatErrorAction, chatErrorMessage, chatExampleDraft, chatExamples, chatModelVendor, chatModelVendors, continueInNewConversation, conversationContextShare, conversationDay, conversationReplyTooLongMessage, conversationTooLongMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, draftLengthError, DEFAULT_IMAGE_MODELS, defaultChatSettings, filterConversations, groupConversationList, groupConversationsByDay, MAX_CONVERSATION_TITLE_LENGTH, renameConversation, setConversationPinned, isConversationTooLongMessage, noImageModelMessage, pendingChatGroups, pickChatGroup, planTurn, recommendedChatGroup, removeDraftImage, resolveChatModel, resolveDefaultChatModel, saveConversation, settleChatModel, shouldPasteScreenshot, shouldSendOnEnter, shouldShowLengthNotice, type ChatMessage, type ChatSettings, type ChatWorkspace, addDraftFiles, draftFileRoom, fileAttachmentErrorMessage, fileTruncationNotice, imageModeFilesMessage, messageWithFiles, removeDraftFile, shouldShowOfflineReplyNotice, offlineReplyNotice, addChatPhrase, draftWithPhrase, removeChatPhrase, MAX_CHAT_PHRASES, MAX_CHAT_PHRASE_LENGTH } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, parseHistorySnapshot, planHistoryWrite, readWorkspace } from './storage'
 import { canEditImages, chatLimits, inspectModel, noImageEditModelMessage, validateImageRequest } from './api'
@@ -710,5 +710,36 @@ describe('v2 chat attached text files', () => {
     const conversation = readyConversation()
     conversation.messages = [{ id: 'u1', role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 1, files: [file('季度报表.csv', 'x')] }]
     expect(filterConversations([conversation], '季度报表')).toEqual([conversation])
+  })
+})
+
+describe('v2 chat saved phrases', () => {
+  it('saves a trimmed phrase first and moves an existing one to the front instead of storing it twice', () => {
+    expect(addChatPhrase(undefined, '  回答尽量简短  ')).toEqual(['回答尽量简短'])
+    expect(addChatPhrase(['甲', '乙', '丙'], '丙')).toEqual(['丙', '甲', '乙'])
+    expect(addChatPhrase(['甲'], '   ')).toEqual(['甲'])
+  })
+
+  it('stops adding new phrases once the list is full but still lets an existing one move up', () => {
+    const full = Array.from({ length: MAX_CHAT_PHRASES }, (_, index) => `第 ${index} 句`)
+    expect(addChatPhrase(full, '再来一句')).toEqual(full)
+    expect(addChatPhrase(full, '第 29 句')[0]).toBe('第 29 句')
+    expect(addChatPhrase(full, '第 29 句')).toHaveLength(MAX_CHAT_PHRASES)
+  })
+
+  it('cuts an overlong phrase to the limit', () => {
+    expect(addChatPhrase([], 'x'.repeat(MAX_CHAT_PHRASE_LENGTH + 10))[0]).toHaveLength(MAX_CHAT_PHRASE_LENGTH)
+  })
+
+  it('removes only the phrase at the given position', () => {
+    expect(removeChatPhrase(['甲', '乙', '丙'], 1)).toEqual(['甲', '丙'])
+    expect(removeChatPhrase(undefined, 0)).toEqual([])
+  })
+
+  it('fills an empty draft with the phrase and appends to a written draft on a new line', () => {
+    expect(draftWithPhrase('', '回答尽量简短')).toBe('回答尽量简短')
+    expect(draftWithPhrase('  \n', '回答尽量简短')).toBe('回答尽量简短')
+    expect(draftWithPhrase('帮我看看这段话\n\n', '回答尽量简短')).toBe('帮我看看这段话\n回答尽量简短')
+    expect(draftWithPhrase('x'.repeat(chatLimits.messageLength), '再来')).toHaveLength(chatLimits.messageLength)
   })
 })

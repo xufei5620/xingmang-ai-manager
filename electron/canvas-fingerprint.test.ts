@@ -301,6 +301,30 @@ describe('canvas fingerprints', () => {
     expect(computeCanvasNodeFingerprint({ node: imageNode({ videoReferenceOrder: order('last', 'first') }), upstream: [] })).not.toBe(video)
   })
 
+  it('keys the four scene tasks only on the nodes that set them, and each option is another request', () => {
+    const base = computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] })
+    const baseRevision = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
+    expect(computeCanvasNodeFingerprint({ node: imageNode({ commerceTask: undefined, interiorTask: undefined, exteriorTask: undefined, storyboardTask: undefined }), upstream: [] })).toBe(base)
+    expect(computeCanvasGraphRevision({ nodes: [imageNode({ commerceTask: undefined, interiorTask: undefined, exteriorTask: undefined, storyboardTask: undefined })], edges: [] })).toBe(baseRevision)
+    const tasks: Array<[Partial<CanvasRunGraphNode['data']>, Partial<CanvasRunGraphNode['data']>]> = [
+      [{ commerceTask: { version: 1, kind: 'material-a', preserve: ['shape'], strength: 0.5 } }, { commerceTask: { version: 1, kind: 'material-a', preserve: ['shape'], strength: 0.6 } }],
+      [{ interiorTask: { version: 1, kind: 'interior-render', addDecor: false, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'none', time: 'none', exterior: 'none', filter: 'none' } },
+        { interiorTask: { version: 1, kind: 'interior-render', addDecor: true, addPeople: false, enclosedSpace: false, interiorLighting: true, weather: 'none', time: 'none', exterior: 'none', filter: 'none' } }],
+      [{ exteriorTask: { version: 1, kind: 'landscape-redesign', automaticPrompt: true } }, { exteriorTask: { version: 1, kind: 'landscape-redesign', automaticPrompt: false } }],
+      [{ storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 4 } }, { storyboardTask: { version: 1, kind: 'storyboard', automaticPlot: true, style: 'cinematic', panels: 9 } }],
+    ]
+    const seen = new Set([base])
+    for (const [one, other] of tasks) {
+      const keyed = computeCanvasNodeFingerprint({ node: imageNode(one), upstream: [] })
+      const changed = computeCanvasNodeFingerprint({ node: imageNode(other), upstream: [] })
+      expect(seen.has(keyed)).toBe(false)
+      expect(changed).not.toBe(keyed)
+      seen.add(keyed).add(changed)
+      expect(computeCanvasGraphRevision({ nodes: [imageNode(one)], edges: [] })).not.toBe(baseRevision)
+      expect(computeCanvasGraphRevision({ nodes: [imageNode(other)], edges: [] })).not.toBe(computeCanvasGraphRevision({ nodes: [imageNode(one)], edges: [] }))
+    }
+  })
+
   it('changes the graph revision with the image count but keeps it for one image', () => {
     const base = computeCanvasGraphRevision({ nodes: [imageNode()], edges: [] })
     expect(computeCanvasGraphRevision({ nodes: [imageNode({ imageCandidateCount: 2 })], edges: [] })).not.toBe(base)

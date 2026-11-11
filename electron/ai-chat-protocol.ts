@@ -34,6 +34,15 @@ export const AI_CHAT_LIMITS = {
   imagesPerRequest: 8,
 } as const
 
+/**
+ * 聊天页「常用的话」（Fable 第二轮 Q7）：最多存几条、一条最长多少字。聊天页存的时候按它截，
+ * 「搬到新电脑」导出、导入时主进程按它挡住不成样的文件。
+ */
+export const AI_CHAT_PHRASE_LIMITS = {
+  count: 30,
+  length: 2_000,
+} as const
+
 export type AiChatGroup = {
   id: string
   label: string

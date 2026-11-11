@@ -56,3 +56,7 @@
 [data-reduce-motion='1'] .chat-generating > svg, [data-reduced-motion='true'] .chat-generating > svg, [data-system-reduced-motion='true'] .chat-generating > svg { animation: none; }
 /* 窗口比设计宽时消息和输入框不跟着拉宽：消息正文最宽 684、输入框最宽 740（v4 原型 msgs-in / cbox），两边留白变多；分隔线照旧通到两边。 */
 .chat-messages { padding-inline: max(28px, calc((100% - 684px) / 2)); }.chat-composer { padding-inline: max(28px, calc((100% - 740px) / 2)); }
+.chat-phrases { display: grid; gap: 14px; }.chat-phrase-list { display: grid; gap: 0; max-height: min(320px, 40vh); overflow-y: auto; margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: 8px; corner-shape: squircle; }
+.chat-phrase { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 8px 8px 12px; }.chat-phrase + .chat-phrase { border-top: 1px solid var(--line); }
+.chat-phrase-text { flex: 1; min-width: 0; margin: 0; color: var(--text); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-phrase-actions { display: flex; flex: none; align-items: center; gap: 4px; }.chat-phrases-empty { margin: 0; color: var(--text-3); }.chat-phrase-save { display: flex; justify-content: flex-end; }

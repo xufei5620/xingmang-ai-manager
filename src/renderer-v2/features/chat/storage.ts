@@ -2,7 +2,7 @@ import { currentAccountGroupName } from '../../../../electron/catalog'
 import { redactSecretShapes } from '../../../../electron/redaction-patterns'
 import { AI_CHAT_LIMITS, AI_CHAT_TEXT_FILE_LIMITS } from '../../../../electron/ai-chat-protocol'
 import type { AiChatAsset, AiChatHistorySnapshot, AiChatHistoryWrite, AiChatTextFile, XingmangApi } from '../../../../electron/ipc-contract'
-import { createConversation, createId, createWorkspace, defaultChatSettings, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
+import { addChatPhrase, createConversation, createId, createWorkspace, defaultChatSettings, MAX_CHAT_PHRASE_LENGTH, MAX_CHAT_PHRASES, type ChatMessage, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
 
 // 读不出来时那条红条的前半句；后半句「现在聊的内容不会保存……」在 useChatController 里接上。
 // 下面各处 ChatStorageError 的原文是给排查看的，只写进日志，上屏一律说这一句（W24）。
@@ -361,7 +361,7 @@ export function planHistoryWrite(state: ChatWorkspace, previous: SavedHistory | 
   const put = state.conversations
     .filter((conversation) => previous?.conversations.get(conversation.id) !== conversation || previous.keys.get(conversation.id) !== keys.get(conversation.id))
     .map((conversation) => ({ key: keys.get(conversation.id)!, content: JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, conversation: persistedConversation(conversation) }) }))
-  const index = JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, activeId: state.activeId, draftConversation: persistedConversation(state.draftConversation), conversations: state.conversations.map((conversation) => ({ id: conversation.id, key: keys.get(conversation.id) })) })
+  const index = JSON.stringify({ version: HISTORY_VERSION, owner: state.owner, activeId: state.activeId, draftConversation: persistedConversation(state.draftConversation), conversations: state.conversations.map((conversation) => ({ id: conversation.id, key: keys.get(conversation.id) })), ...(state.phrases?.length ? { phrases: state.phrases.map(redactPersistentChatText) } : {}) })
   const setAside = previous?.setAside?.length ? { setAside: [...previous.setAside] } : {}
   if (previous && !put.length && index === previous.index && !previous.setAside?.length) return null
   return {
@@ -405,11 +405,19 @@ export function parseHistorySnapshot(snapshot: AiChatHistorySnapshot, scope: str
   }
   const activeId = typeof parsed.activeId === 'string' && conversations.some((item) => item.id === parsed.activeId) ? parsed.activeId : null
   const setAside = unreadable.filter((item) => item.kept).map((item) => item.key)
+  const phrases = readChatPhrases(parsed.phrases)
   return {
-    state: { version: 2, owner: scope, conversations, activeId, draftConversation },
+    state: { version: 2, owner: scope, conversations, activeId, draftConversation, ...(phrases.length ? { phrases } : {}) },
     saved: { index: snapshot.index, keys, conversations: new Map(conversations.map((conversation) => [conversation.id, conversation])), ...(setAside.length ? { setAside } : {}) },
     unreadable,
   }
+}
+
+// 常用的话坏了不连累聊天记录：不是一串字的那几条丢掉，超过上限的截掉，整份索引照常读。
+// 「搬到新电脑」导进来的也按这一套筛（主进程已经挡过不成样的文件）。
+export function readChatPhrases(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === 'string' && item.trim() !== '' && item.length <= MAX_CHAT_PHRASE_LENGTH).slice(0, MAX_CHAT_PHRASES)
 }
 
 function readStoredConversation(content: string, expectedId: string, scope: string): Conversation {
@@ -597,6 +605,24 @@ function portableMessage(message: ReturnType<typeof persistedMessage>) {
 }
 
 /** 导出给新电脑的对话：和存盘时一样去掉密钥样的文字，再去掉图片和运行时字段。 */
+/** 「搬到新电脑」带走的常用的话：本机记录里存的就是脱敏过的，原样带上。 */
+export function exportablePhrases(state: ChatWorkspace): string[] {
+  return [...(state.phrases ?? [])]
+}
+
+/**
+ * 导进来的常用的话接在这台电脑上原有的后面：本机的顺序不动，一样的不重复，存满了就不再加。
+ * 返回 null 表示什么都没多。
+ */
+export function mergeImportedPhrases(present: readonly string[] | undefined, imported: readonly string[]): string[] | null {
+  const list = [...(present ?? [])]
+  for (const phrase of imported) {
+    if (list.length >= MAX_CHAT_PHRASES) break
+    if (!list.includes(phrase)) list.push(phrase)
+  }
+  return list.length === (present?.length ?? 0) ? null : list
+}
+
 export function exportableConversations(state: ChatWorkspace): unknown[] {
   return state.conversations.map((conversation) => {
     const persisted = persistedConversation(conversation)
@@ -661,7 +687,9 @@ export function mergeSessionIntoHistory(loaded: ChatWorkspace, session: ChatWork
   const draftId = typed ? unused(session.draftConversation.id) : ''
   const draftConversation = !typed ? loaded.draftConversation : draftId === session.draftConversation.id ? session.draftConversation : { ...session.draftConversation, id: draftId }
   const activeId = session.activeId ? ids.get(session.activeId) ?? null : typed || added.length ? null : loaded.activeId
-  return { ...loaded, activeId, conversations: [...added, ...loaded.conversations], draftConversation }
+  // 读不出来那段时间里存的常用的话也并进去，放在原来那些前面。
+  const phrases = [...(session.phrases ?? [])].reverse().reduce((list, phrase) => addChatPhrase(list, phrase), loaded.phrases ?? [])
+  return { ...loaded, activeId, conversations: [...added, ...loaded.conversations], draftConversation, ...(phrases.length ? { phrases } : {}) }
 }
 
 /**
@@ -675,12 +703,15 @@ export async function importConversationsIntoHistory(
   storage: ChatStorage,
   scope: string,
   imported: Conversation[],
+  importedPhrases: readonly string[] = [],
 ): Promise<ChatImportResult> {
   // Not loadChatHistory: inside runHistoryImport that would wait on itself.
   const loaded = await readChatHistory(api, storage, scope)
   if (loaded.warning) throw new ChatStorageError('这台电脑上的聊天记录现在读不出来，为了不弄丢它，这次没有导入对话')
-  const { state, added, skipped } = mergeImportedConversations(loaded.state, imported)
-  if (!added) return { added, skipped }
+  const { state: merged, added, skipped } = mergeImportedConversations(loaded.state, imported)
+  const phrases = mergeImportedPhrases(merged.phrases, importedPhrases)
+  if (!added && !phrases) return { added, skipped }
+  const state = phrases ? { ...merged, phrases } : merged
   const plan = planHistoryWrite(state, loaded.saved)
   if (plan) await api.writeHistory(plan.write)
   loaded.afterFirstSave?.()

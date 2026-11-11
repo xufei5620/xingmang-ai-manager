@@ -710,6 +710,8 @@ export interface AiChatHistoryFlushRequest {
  */
 export interface DataTransferExportInput {
   conversations: unknown[]
+  /** 聊天页「常用的话」（Fable 第二轮 Q7）。旧版本不带，当作没存过。 */
+  phrases?: string[]
 }
 
 export interface DataTransferExportResult {
@@ -724,6 +726,8 @@ export interface DataTransferExportResult {
  */
 export interface DataTransferImportPreview {
   conversations: unknown[]
+  /** 文件里的「常用的话」，聊天页合并时再筛一遍。旧文件没有这一项。 */
+  phrases?: string[]
   settings: AppSettingsUpdate
   conflictingSettings: AppSettingsUpdate
   /** conflictingSettings 对应的设置名，给询问框用。 */
