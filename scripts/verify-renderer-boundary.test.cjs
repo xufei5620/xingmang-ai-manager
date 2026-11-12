@@ -52,6 +52,8 @@ const valueImportable = [
   // 装插件、加外接工具失败时命令行说的原因（缺 Git、连不上 GitHub、重名），主进程挑行、错误框配标题共用一份。
   'electron/extension-command-failure',
   'electron/external-url-blocked',
+  // 「复制给客服」那一段的格式和留言类型：主进程拼好写剪贴板，留言框那一排选项用同一份说法（J1）；只 import 打码表。
+  'electron/feedback-message',
   'electron/git-runtime',
   // isRecord 这类最基础的输入检查，主进程和渲染层共用一份（#1071 第 3 条）；文件本身什么都不 import。
   'electron/input-guards',

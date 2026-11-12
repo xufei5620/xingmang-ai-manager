@@ -112,6 +112,8 @@ import type { CliModelHints } from './cli-model-defaults'
 export type { CliModelHints } from './cli-model-defaults'
 import type { ToolTemplateFillResult } from './tool-config-ownership'
 export type { ToolTemplateFillResult } from './tool-config-ownership'
+import type { FeedbackMessageType } from './feedback-message'
+export type { FeedbackMessageType } from './feedback-message'
 import type {
   ConnectionCheckLayer as MainConnectionCheckLayer,
   ConnectionCheckResult as MainConnectionCheckResult,
@@ -306,7 +308,22 @@ export interface FeedbackReportPreview {
 }
 // Present only when the previewed report had expired or been superseded and
 // the main process captured a fresh one; the renderer swaps its dialog text.
-export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview }
+// reportMissing: the 「复制给客服」 copy asked for the report but it could not be
+// made, so only what the customer wrote went onto the clipboard.
+export interface FeedbackReportCopyResult { entries: number; regenerated?: FeedbackReportPreview; reportMissing?: true }
+/**
+ * 「复制给客服」交给主进程的那几样（J1）：客户在留言框里选的、写的，加上「找客服」卡上那行身份和最近一次出错。
+ * 主进程按 feedback-message.ts 的固定格式拼好，勾了 attachReport 再现生成一份反馈报告接在后面，然后自己写剪贴板：
+ * 页面写剪贴板要窗口在前台，客户点完等报告那几秒切去微信就写不进去。页面给不了报告的内容，也给不了这个格式以外的东西。
+ */
+export interface FeedbackMessageCopyRequest {
+  type: FeedbackMessageType
+  description: string
+  contact?: string
+  identity?: string
+  lastFailure?: string
+  attachReport: boolean
+}
 export interface FeedbackReportExportResult { outputPath: string; regenerated?: FeedbackReportPreview }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateFailedStep = MainUpdateFailedStep
@@ -1185,7 +1202,11 @@ export interface XingmangInvokeContract {
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
   getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
-  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], FeedbackReportCopyResult>
+  /**
+   * 给预览里那份报告的标识 = 复制那份（过期了就地重生成）；不给 = 复制一份最新的；给留言 = 「复制给客服」，
+   * 留言加现生成的报告由主进程拼好再复制（J1）。三种都只往剪贴板写反馈内容，不读剪贴板。
+   */
+  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [target?: string | FeedbackMessageCopyRequest], FeedbackReportCopyResult>
   exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], FeedbackReportExportResult | null>
   /** 只认本次运行里导出过的文件路径（主进程记着），渲染层给别的路径会被拒。 */
   revealExportedFile: IpcInvokeDefinition<'exports:reveal-file', [filePath: string], boolean>

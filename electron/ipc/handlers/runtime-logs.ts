@@ -4,8 +4,11 @@ import { clipboard, dialog, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from '../../safe-local-data'
 import { resolveRevealableExportedFile } from '../../exported-file'
+import { buildFeedbackMessage } from '../../feedback-message'
+import { isRecord } from '../../input-guards'
+import type { FeedbackMessageCopyRequest, FeedbackReportCopyResult } from '../../ipc-contract'
 import { requiredString } from '../parsers/common'
-import { parseRendererError } from '../parsers/system'
+import { parseFeedbackMessageCopyRequest, parseRendererError } from '../parsers/system'
 import type { IpcHandlerContext } from './context'
 
 // The preview travels whole to the renderer and into a read-only textarea.
@@ -55,12 +58,42 @@ export function registerRuntimeLogHandlers(ctx: IpcHandlerContext): () => void {
       ...(preview.selfChecked === undefined ? {} : { selfChecked: preview.selfChecked }),
     }
   )
+  // 「复制给客服」（J1）：页面只交客户填的那几样，格式在 feedback-message.ts 里定死，报告在这里现生成，
+  // 剪贴板也在这里写。以前是页面等完报告再自己写剪贴板，慢的电脑要等好几秒，客户这时切去微信，
+  // 窗口没了焦点，页面写剪贴板被拒，复制失败、客服窗口也不开；主进程写剪贴板不看窗口在不在前台。
+  // 每次都现取一份报告（几分钟前预览的那份里没有刚才那次出错），跟以前页面取的那次一样顶掉这个窗口
+  // 上一份预览。报告生成不出来时照样把客户写的复制出去，不能让一份报告把整条留言卡住（#1104 第 1 条）。
+  const copyFeedbackMessage = async (senderId: number, request: FeedbackMessageCopyRequest): Promise<FeedbackReportCopyResult> => {
+    let report: { text: string; entries: number } | undefined
+    let reportMissing = false
+    if (request.attachReport) {
+      try {
+        report = await captureFeedbackPreview(senderId)
+      } catch (error) {
+        reportMissing = true
+        // 以前页面单独调预览那条通道取报告，取不到时日志里记的就是这一行；挪进来以后照样记，客服看得到为什么没带上报告。
+        const reason = error instanceof Error ? error.message : String(error)
+        options.runtimeLog.log('error', 'ipc', 'runtime-logs:preview-feedback', `runtime-logs:preview-feedback失败：${reason || '未知错误'}`, { error })
+      }
+    }
+    await clipboard.writeText(buildFeedbackMessage({
+      type: request.type,
+      description: request.description,
+      contact: request.contact,
+      identity: request.identity,
+      lastFailure: request.lastFailure,
+      report: report?.text,
+      reportMissing,
+    }))
+    return reportMissing ? { entries: 0, reportMissing: true } : { entries: report?.entries ?? 0 }
+  }
   registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
     return publicFeedbackPreview(await captureFeedbackPreview(event.sender.id))
   })
-  registerTrustedHandler('runtime-logs:copy-feedback', async (event, reportId?: unknown) => {
-    if (reportId !== undefined) {
-      const { preview, regenerated } = await resolveFeedbackPreview(event.sender.id, reportId)
+  registerTrustedHandler('runtime-logs:copy-feedback', async (event, target?: unknown) => {
+    if (isRecord(target)) return copyFeedbackMessage(event.sender.id, parseFeedbackMessageCopyRequest(target))
+    if (target !== undefined) {
+      const { preview, regenerated } = await resolveFeedbackPreview(event.sender.id, target)
       await clipboard.writeText(preview.text)
       return regenerated
         ? { entries: preview.entries, regenerated: publicFeedbackPreview(preview) }
