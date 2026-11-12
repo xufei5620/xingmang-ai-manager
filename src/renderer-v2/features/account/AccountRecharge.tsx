@@ -409,6 +409,7 @@ export function AccountRecharge({
   const runway = afterUsd === null ? null : buildBalanceRunway({
     walletUsd: afterUsd,
     subscription: summary?.subscription ?? null,
+    subscriptionUnknown: summary?.subscriptionUnknown,
     weekUsageUsd: summary?.weekUsageUsd ?? null,
   })
   const quoteCredited = quote ? topupCreditedUsd(quote.amount, quote.offer?.creditMultiplier ?? multiplier) : null

@@ -1186,6 +1186,55 @@ test('a wrong password offers password recovery and registration under the red t
   } finally { await page.close() }
 })
 
+// F2：中文输入法下打出来的全角＠、全角句号，注册那边会替客户改掉，登录和找回以前不改：
+// 历史账号报「请使用注册邮箱登录」，星芒账号报账号或密码不对，点去找回又报「请填写注册时用的邮箱」。
+test('a full-width at sign and full stop in a login email are corrected for both account sources (F2)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('login-account').fill(' 123456＠qq。com ')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: '123456@qq.com', password: 'fixture-password', siteId: 'solov' })
+    assert.equal(await page.getByTestId('login-account').inputValue(), '123456@qq.com')
+  } finally { await page.close() }
+  const history = await open()
+  try {
+    await chooseAccountSource(history, '历史账号')
+    await history.getByTestId('login-account').fill('abc﹫163．com')
+    await history.getByTestId('login-password').fill('fixture-password')
+    await history.getByTestId('auth-agree').check()
+    await history.getByTestId('login-submit').click()
+    await history.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.equal(await history.getByText('历史账号请使用注册邮箱登录').count(), 0)
+    assert.deepEqual((await calls(history)).find((item) => item.method === 'login').input, { username: 'abc@163.com', password: 'fixture-password', siteId: 'solov-api' })
+    assert.equal(await history.getByTestId('login-account').inputValue(), 'abc@163.com')
+  } finally { await history.close() }
+})
+
+test('recovery corrects a full-width email, including one carried over from the login form (F2)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('login-account').fill('person＠example。test')
+    await page.getByTestId('login-forgot').click()
+    await page.getByTestId('forgot-password-dialog').waitFor()
+    assert.equal(await page.getByTestId('forgot-email').inputValue(), 'person@example.test')
+  } finally { await page.close() }
+  const recovery = await open('scenario=recovery')
+  try {
+    await recovery.getByTestId('forgot-email').fill(' person＠example。test ')
+    await recovery.getByTestId('forgot-send').click()
+    await recovery.getByTestId('forgot-token').waitFor()
+    assert.equal(await recovery.getByText('请填写注册时用的邮箱', { exact: true }).count(), 0)
+    assert.deepEqual((await calls(recovery)).at(-1), { method: 'send-reset', input: { email: 'person@example.test', siteId: 'solov' } })
+    await recovery.getByTestId('forgot-token').fill('a-valid-reset-token')
+    await recovery.getByTestId('forgot-reset').click()
+    await recovery.waitForFunction(() => document.documentElement.dataset.calls?.includes('"reset"'))
+    assert.deepEqual((await calls(recovery)).find((item) => item.method === 'reset').input, { email: 'person@example.test', token: 'a-valid-reset-token', siteId: 'solov' })
+  } finally { await recovery.close() }
+})
+
 test('an email that is already registered offers to log in with it', async () => {
   const page = await open('scenario=register&emailTaken=1')
   try {

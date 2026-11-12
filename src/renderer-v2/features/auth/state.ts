@@ -26,6 +26,18 @@ export function normalizeEmail(value: string): string {
   return value.replace(/[＠﹫]/g, '@').replace(/[。．｡]/g, '.').replace(/^[\s\u3000]+|[\s\u3000]+$/g, '')
 }
 
+/**
+ * 登录框「用户名或邮箱」那一格：拿注册邮箱登录的，全角＠、句号按注册那边的口径改成半角，
+ * 否则注册时替他改好的邮箱，登录时又对不上（F2）。用户名照旧只去首尾空格；改完仍不像邮箱的
+ * 也不动，免得把用户名里本来就有的字改成他没打过的样子。
+ */
+export function normalizeLoginAccount(value: string): string {
+  const trimmed = value.trim()
+  if (!/[@＠﹫]/.test(trimmed)) return trimmed
+  const email = normalizeEmail(trimmed)
+  return isEmail(email) ? email : trimmed
+}
+
 // 国内客户最常用的几家邮箱，按「@ 后面去掉最后一段」的名字和正确后缀记。
 const commonEmailProviders: ReadonlyArray<{ name: string; suffix: string }> = [
   { name: 'qq', suffix: 'com' }, { name: '163', suffix: 'com' }, { name: '126', suffix: 'com' }, { name: 'sina', suffix: 'com' },

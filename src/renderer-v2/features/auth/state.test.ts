@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { networkFailureMessages, proxyAuthRequiredMessage } from '../../../../electron/network-failure'
-import { authDiskFullMessage, authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
+import { authDiskFullMessage, authErrorMessage, authFailure, authOfflineMessage, authUnreachableMessage, isTwoFactorChallenge, isTwoFactorExpired, macKeychainRefusedMessage, normalizeEmail, normalizeLoginAccount, parseInviteCode, passwordChangeOutcomeUnknown, parseRecoveryCode, parseTwoFactorCode, registrationOfflineMessage, registrationStatusFailure, registrationUnreachableMessage, remainingCooldown, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, verificationMailboxMissingMessage, verificationMailNotSentMessage, verificationNotSentMessage, type RegistrationDraft } from './state'
 import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 two-step verification', () => {
@@ -349,6 +349,18 @@ describe('v2 registration email typos', () => {
     expect(normalizeEmail('\u3000abc﹫163．com\u3000')).toBe('abc@163.com')
     expect(normalizeEmail('a@b｡cn')).toBe('a@b.cn')
     expect(normalizeEmail('plain@example.test')).toBe('plain@example.test')
+  })
+  it('corrects a full-width address typed into the login account box but leaves a username alone (F2)', () => {
+    expect(normalizeLoginAccount(' 123456＠qq。com ')).toBe('123456@qq.com')
+    expect(normalizeLoginAccount('　abc﹫163．com　')).toBe('abc@163.com')
+    expect(normalizeLoginAccount('person@example｡test')).toBe('person@example.test')
+    expect(normalizeLoginAccount('plain@example.test')).toBe('plain@example.test')
+    // A username is only trimmed, the way the login box always treated it.
+    expect(normalizeLoginAccount('  fixture-member  ')).toBe('fixture-member')
+    expect(normalizeLoginAccount('张三。李四')).toBe('张三。李四')
+    // An at sign that still does not make an address is not rewritten into something the user never typed.
+    expect(normalizeLoginAccount('星芒＠会员')).toBe('星芒＠会员')
+    expect(normalizeLoginAccount('　')).toBe('')
   })
   it('accepts a full-width address in the registration check once normalized', () => {
     const draft: RegistrationDraft = { username: 'u', email: '123456＠qq。com', password: 'long-password', code: '', invite: '', agreed: true }

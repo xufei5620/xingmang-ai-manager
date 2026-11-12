@@ -36,6 +36,8 @@ export interface AccountSummary {
   runway?: BalanceRunway | null
   /** 能扣的订阅（余额下面那行「另有……」）。 */
   subscription?: UsableSubscription | null
+  /** 订阅还没读到：subscription 的 null 不代表没有订阅（F1）。缺省 = 读到了。 */
+  subscriptionUnknown?: boolean
   /** 最近 7 天花了多少美元；历史账号没有按天的数，只写这个合计。 */
   weekUsageUsd?: number | null
 }

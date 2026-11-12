@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { AccountSubscriptionSelf } from '../../../../electron/ipc-contract'
-import { createAccountSubscriptionCache, subscriptionCacheMaxAge } from './subscription-cache'
+import { createAccountSubscriptionCache, subscriptionCacheMaxAge, subscriptionFirstReadRetry } from './subscription-cache'
 
 const named: AccountSubscriptionSelf = {
   billingPreference: null, allSubscriptions: [],
@@ -79,6 +79,72 @@ describe('account subscription cache', () => {
     advance(subscriptionCacheMaxAge)
     await cache.refreshIfStale('a')
     expect(cache.getSnapshot().self).toBe(named)
+  })
+
+  it('marks the account as unread until a read succeeds, not as having no subscription', async () => {
+    const { cache, readSelf } = fixture()
+    readSelf.mockRejectedValueOnce(new Error('offline'))
+    await cache.refreshIfStale('a')
+    expect(cache.getSnapshot()).toMatchObject({ scope: 'a', self: null, readAt: null })
+  })
+
+  it('retries soon after a failed first read and backs off while it keeps failing', async () => {
+    const { cache, readSelf, advance } = fixture()
+    readSelf.mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline'))
+    await cache.refreshIfStale('a')
+    advance(subscriptionFirstReadRetry - 1)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(1)
+    advance(1)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(2)
+    // Second failure in a row: wait twice as long.
+    advance(subscriptionFirstReadRetry)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(2)
+    advance(subscriptionFirstReadRetry)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(3)
+    expect(cache.getSnapshot()).toMatchObject({ scope: 'a', self: named })
+    // Read at last: back to the few-minute rhythm.
+    advance(subscriptionFirstReadRetry)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(3)
+  })
+
+  it('never waits longer than the usual few minutes between failed first reads', async () => {
+    const { cache, readSelf, advance } = fixture()
+    readSelf.mockRejectedValue(new Error('offline'))
+    for (let attempt = 0; attempt < 8; attempt++) {
+      await cache.refreshIfStale('a')
+      advance(subscriptionCacheMaxAge)
+    }
+    expect(readSelf).toHaveBeenCalledTimes(8)
+  })
+
+  it('keeps the few-minute rhythm when a read fails after one has landed', async () => {
+    const { cache, readSelf, advance } = fixture()
+    await cache.refreshIfStale('a')
+    readSelf.mockRejectedValueOnce(new Error('offline'))
+    advance(subscriptionCacheMaxAge)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(2)
+    advance(subscriptionFirstReadRetry)
+    await cache.refreshIfStale('a')
+    expect(readSelf).toHaveBeenCalledTimes(2)
+  })
+
+  it('starts the retry count over for a new account', async () => {
+    const { cache, readSelf, advance } = fixture()
+    readSelf.mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline')).mockRejectedValueOnce(new Error('offline'))
+    await cache.refreshIfStale('a')
+    advance(subscriptionFirstReadRetry)
+    await cache.refreshIfStale('a')
+    await cache.refreshIfStale('b')
+    expect(readSelf).toHaveBeenCalledTimes(3)
+    advance(subscriptionFirstReadRetry)
+    await cache.refreshIfStale('b')
+    expect(readSelf).toHaveBeenCalledTimes(4)
   })
 
   it('ignores a read that lands after the account changed', async () => {
