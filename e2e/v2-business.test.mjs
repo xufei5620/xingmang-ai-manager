@@ -4080,6 +4080,18 @@ test('restoring the default appearance resets the theme, contrast, scale, large 
   }
 })
 
+// X-2：Windows 文本大小调大了的电脑，装好时 D81 替客户开着大字；「恢复默认」要回到那个样子，不能反倒关掉。
+test('restoring the default appearance keeps large text on where a fresh install would turn it on', async () => {
+  const page = await fixture('page=settings&system=1&largeTextByDefault=1')
+  try {
+    await page.getByTestId('settings-restore-appearance').click()
+    await waitForToast(page, '已恢复默认外观')
+    assert.deepEqual((await callsNamed(page, 'settings')).at(-1).args, { version: 2, uiScale: 'auto', largeText: true, reducedMotion: false })
+  } finally {
+    await page.close()
+  }
+})
+
 test('native preferences use the independent bridge while proxy remains a read-only query', async () => {
   const page = await fixture('page=settings&system=1')
   try {

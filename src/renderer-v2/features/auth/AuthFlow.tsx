@@ -8,7 +8,7 @@ import { useLatestRequest } from '../../latest-request'
 import { getAuthApi, type AccountSiteId, type AuthApi } from './api'
 import { LegalDocument } from './LegalDocument'
 import { isUsernameTakenError } from './account-errors'
-import { accountSources, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, passwordChangeOutcomeUnknown, registrationStatusFailure, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
+import { accountSources, authFailure, authOfflineMessage, isEmail, isTwoFactorChallenge, isTwoFactorExpired, normalizeEmail, normalizeLoginAccount, parseInviteCode, parseRecoveryCode, parseTwoFactorCode, passwordChangeOutcomeUnknown, registrationStatusFailure, requiresBrowserAuthentication, sessionMatchesLogin, suggestEmailCorrection, usernameFromEmail, validateNewPassword, validateRegistration, type AuthFailureKind, type RegistrationDraft, type RegistrationErrors } from './state'
 import { useCooldown } from './useCooldown'
 import './auth.css'
 
@@ -219,7 +219,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     setMode(next); setError(''); setMessage(''); setFailure(null); setBrowserAuthentication(false); setFieldErrors({}); leaveTwoFactor(); clearRecoveredPassword()
     if (next === 'register') { setSiteId('solov'); setPassword(''); setRemember(false) }
     if (nextIdentifier !== undefined) { setIdentifier(nextIdentifier); setPassword(''); loginTouched.current = true }
-    if (next === 'recovery') { setRecoveryStep(1); if (isEmail(identifier)) setRecoveryEmail(identifier) }
+    if (next === 'recovery') { setRecoveryStep(1); const email = normalizeLoginAccount(identifier); if (isEmail(email)) setRecoveryEmail(email) }
   }
   const close = () => {
     if (locked.current) { setMessage('正在处理，请稍候'); return }
@@ -238,10 +238,13 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     finally { if (current()) { locked.current = false; setBusy(false) } }
   }
   const submitLogin = () => {
-    if (!identifier.trim() || !password) { setError('请输入账号和密码'); return }
+    // 像注册那样，把邮箱里中文输入法打出来的全角＠、句号当场改在框里（F2）；用户名只去首尾空格，框里不动。
+    const account = normalizeLoginAccount(identifier)
+    if (account !== identifier.trim()) setIdentifier(account)
+    if (!account || !password) { setError('请输入账号和密码'); return }
     if (!agreed) { setError('请先同意用户协议和隐私政策'); return }
-    if (siteId === 'solov-api' && !isEmail(identifier)) { setError('历史账号请使用注册邮箱登录'); return }
-    const login = { username: identifier.trim(), password, siteId }
+    if (siteId === 'solov-api' && !isEmail(account)) { setError('历史账号请使用注册邮箱登录'); return }
+    const login = { username: account, password, siteId }
     void run('登录', async (current) => {
       let result: AccountLoginResult
       try { result = await api.login(login) }
@@ -416,22 +419,30 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
     updateRegistration('agreed', true)
     submitRegistration(true)
   }
+  // 找回用的邮箱也和注册一样，全角＠、句号当场改在框里（F2）。后面几步都读改好的这一份。
+  const checkRecoveryEmail = () => {
+    const email = normalizeEmail(recoveryEmail)
+    if (email !== recoveryEmail) setRecoveryEmail(email)
+    return email
+  }
   const sendReset = () => {
     if (!source.supportsPasswordReset) return
-    if (!isEmail(recoveryEmail)) { setError('请填写注册时用的邮箱'); return }
+    const email = checkRecoveryEmail()
+    if (!isEmail(email)) { setError('请填写注册时用的邮箱'); return }
     if (resetCooldown.seconds) return
     void run('发送重置邮件', async (current) => {
-      await api.sendReset(recoveryEmail.trim(), siteId)
+      await api.sendReset(email, siteId)
       if (current()) { resetCooldown.start(); setRecoveryStep(2); setMessage('如果这个邮箱注册过，几分钟内会收到重置邮件。没收到的话，看看垃圾邮件。') }
     })
   }
   const submitReset = () => {
     if (!source.supportsPasswordReset) return
-    if (!isEmail(recoveryEmail)) { setError('请先填写有效的注册邮箱'); return }
+    const email = checkRecoveryEmail()
+    if (!isEmail(email)) { setError('请先填写有效的注册邮箱'); return }
     const parsed = parseRecoveryCode(recoveryText, source.website)
     if (!parsed.ok) { setError(parsed.error); return }
     void run('重置密码', async (current) => {
-      const result = await api.reset({ email: recoveryEmail.trim(), token: parsed.token }, siteId)
+      const result = await api.reset({ email, token: parsed.token }, siteId)
       if (current()) { clearRecoveredPassword(); setNewPassword(result.newPassword); setRecoveryStep(3); setRecoveryText('') }
     })
   }
