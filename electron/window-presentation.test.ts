@@ -135,7 +135,22 @@ describe('macOS application menu', () => {
       'undo', 'redo', 'cut', 'copy', 'paste', 'selectAll',
     ]))
     expect(roles[2]).toEqual(['togglefullscreen'])
-    expect(roles[3]).toEqual(expect.arrayContaining(['minimize', 'zoom', 'front']))
+    expect(roles[3]).toEqual(expect.arrayContaining(['minimize', 'zoom', 'close', 'front']))
+  })
+
+  it('lets Command-W close the focused window through the native close role', () => {
+    const template = buildMacApplicationMenuTemplate('星芒AI管理工具', vi.fn(), vi.fn())
+    const windowMenu = template.find((item) => item.label === '窗口')?.submenu
+    const close = Array.isArray(windowMenu)
+      ? windowMenu.find((item) => item.role === 'close')
+      : undefined
+
+    expect(close?.label).toBe('关闭窗口')
+    // The role supplies Command-W and routes through BrowserWindow 'close',
+    // so the main window's close prompt and the canvas save-before-close both
+    // still run. A click handler or custom accelerator would bypass that.
+    expect(close?.accelerator).toBeUndefined()
+    expect(close?.click).toBeUndefined()
   })
 
   it('gives every role item a Chinese label so no built-in English name shows', () => {
@@ -160,6 +175,7 @@ describe('macOS application menu', () => {
       ['togglefullscreen', '切换全屏'],
       ['minimize', '最小化'],
       ['zoom', '缩放'],
+      ['close', '关闭窗口'],
       ['front', '前置全部窗口'],
     ])
     for (const item of roleItems) expect(item.accelerator).toBeUndefined()

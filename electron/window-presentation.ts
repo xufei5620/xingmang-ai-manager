@@ -218,6 +218,9 @@ export function buildMacApplicationMenuTemplate(
       submenu: [
         { role: 'minimize', label: '最小化' },
         { role: 'zoom', label: '缩放' },
+        // 没有这一项，⌘W 在主窗口和画布窗口里都没反应（深查 TR-2）。role 跟点左上角红点走同一个 close 事件：
+        // 主窗口照设置里的 closeBehavior 走（问、收起或退出），画布照样先跟页面确认存好再关。别换成自己写的 click，那会绕开这两条。
+        { role: 'close', label: '关闭窗口' },
         { type: 'separator' },
         { role: 'front', label: '前置全部窗口' },
       ],

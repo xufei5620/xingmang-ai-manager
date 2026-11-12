@@ -17,7 +17,7 @@ import type {
   RemotePeer,
   RemoteProgressCard,
 } from './codex-remote-channel'
-import { createRemoteImageStore } from './codex-remote-images'
+import { createRemoteImageStore, type RemoteImageStore } from './codex-remote-images'
 import { createCodexRemoteKeepAwake } from './codex-remote-keep-awake'
 import { encodeWeixinCredential } from './codex-remote-weixin-credential'
 import { CodexRemoteStore, credentialRemoveFailedMessage } from './codex-remote-store'
@@ -257,6 +257,11 @@ interface Setup {
   logDetails: Array<{ event: string; detail?: Record<string, unknown> }>
   unavailable: { reason: string | null }
   imageDirectory: string
+  /**
+   * 第 count 张图存好（原子写换名落盘）时 resolve（YF-14）。取图（FakeImageChannel.fetched）在存图之前，
+   * 取过了文件还在写，目录里是一个 .tmp 临时文件；要看目录得等存图本身（Windows CI 上撞过，2026-11-12）。
+   */
+  imagesSaved(count: number): Promise<void>
 }
 
 async function setup(options: {
@@ -305,6 +310,28 @@ async function setup(options: {
   const logs: string[] = []
   const logDetails: Setup['logDetails'] = []
   const unavailable = { reason: null as string | null }
+  let savedImageCount = 0
+  const imageSaveWaiters: Array<{ count: number; resolve: () => void }> = []
+  function imagesSaved(count: number): Promise<void> {
+    if (savedImageCount >= count) return Promise.resolve()
+    return new Promise((resolve) => { imageSaveWaiters.push({ count, resolve }) })
+  }
+  function observedImageStore(): RemoteImageStore {
+    const real = createRemoteImageStore(imageDirectory)
+    return {
+      ...real,
+      async save(bytes, type) {
+        const saved = await real.save(bytes, type)
+        savedImageCount += 1
+        for (const waiter of [...imageSaveWaiters]) {
+          if (savedImageCount < waiter.count) continue
+          imageSaveWaiters.splice(imageSaveWaiters.indexOf(waiter), 1)
+          waiter.resolve()
+        }
+        return saved
+      },
+    }
+  }
   const service = new CodexRemoteService({
     store,
     createChannel: () => {
@@ -344,9 +371,9 @@ async function setup(options: {
     checkCodexReady: async () => options.codexProblem ?? null,
     onStateChanged: (snapshot) => { snapshots.push(snapshot) },
     ...(options.readBalanceUsd ? { readBalanceUsd: options.readBalanceUsd } : {}),
-    ...(options.images && options.imageStore !== false ? { imageStore: createRemoteImageStore(imageDirectory) } : {}),
+    ...(options.images && options.imageStore !== false ? { imageStore: observedImageStore() } : {}),
   })
-  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory }
+  return { service, channel: new FakeChannel(), channels, codex, snapshots, workspace, store, logs, logDetails, unavailable, imageDirectory, imagesSaved }
 }
 
 async function enabledAndPaired(s: Setup): Promise<FakeChannel> {
@@ -1804,7 +1831,8 @@ describe('codex-remote-service images', () => {
     channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
     await vi.waitFor(() => expect(channel.texts()).toEqual([receivedImage]))
     channel.handlers?.onInbound(imageMessage(alice, ['img-b']))
-    await vi.waitFor(() => expect(channel.fetched).toEqual(['img-a', 'img-b']))
+    await s.imagesSaved(2)
+    expect(channel.fetched).toEqual(['img-a', 'img-b'])
     const stored = storedImages(s.imageDirectory)
     expect(stored).toHaveLength(2)
     expect(stored.some((name) => name.endsWith('.png')) && stored.some((name) => name.endsWith('.jpg'))).toBe(true)
@@ -1879,7 +1907,8 @@ describe('codex-remote-service images', () => {
     codex.notify('turn/completed', { threadId: 'th-1', turn: { id: 'tu-1', status: 'failed', error: { message: 'boom' } } })
     await vi.waitFor(async () => expect((await s.service.snapshot()).task).toBe('idle'))
     channel.handlers?.onInbound(imageMessage(alice, ['img-b']))
-    await vi.waitFor(() => expect(channel.fetched).toEqual(['img-a', 'img-b']))
+    await s.imagesSaved(2)
+    expect(channel.fetched).toEqual(['img-a', 'img-b'])
     channel.handlers?.onInbound(text(alice, '新对话'))
     await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toHaveLength(1))
 
@@ -1904,7 +1933,8 @@ describe('codex-remote-service images', () => {
     const channel = await enabledAndPaired(s) as FakeImageChannel
     channel.images.set('img-a', { ok: true, bytes: pngBytes })
     channel.handlers?.onInbound(imageMessage(alice, ['img-a']))
-    await vi.waitFor(() => expect(storedImages(s.imageDirectory)).toHaveLength(1))
+    await s.imagesSaved(1)
+    expect(storedImages(s.imageDirectory)).toHaveLength(1)
     // 上次没删成留下的一张，也一起清掉。
     fs.writeFileSync(path.join(s.imageDirectory, `${'0'.repeat(32)}.png`), Buffer.from(pngBytes))
     await s.service.setChannelEnabled('feishu', false)
